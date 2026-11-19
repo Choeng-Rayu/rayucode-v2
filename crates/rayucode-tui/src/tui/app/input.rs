@@ -2319,13 +2319,7 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
-    if app.auto_scroll_paused && code == KeyCode::End && modifiers == KeyModifiers::CONTROL {
-        app.follow_chat_bottom();
-        app.request_full_repaint();
-        return true;
-    }
-
-    false
+    app.handle_jump_to_latest_key(code, modifiers)
 }
 
 pub(super) fn is_scroll_only_key(app: &App, code: KeyCode, modifiers: KeyModifiers) -> bool {
@@ -2799,7 +2793,9 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
-    if app.handle_transcript_view_key(code, modifiers) {
+    if app.handle_transcript_view_key(code, modifiers)
+        || app.handle_theme_picker_key(code, modifiers)
+    {
         return Ok(true);
     }
     app.handle_inline_interactive_preview_key(&code, modifiers)
@@ -3616,7 +3612,9 @@ impl App {
     /// Handle bracketed paste: store text content (image URLs are still detected inline)
     pub(super) fn handle_paste(&mut self, text: String) {
         self.wake_idle_hibernation();
-        if self.handle_transcript_view_paste(&text) {
+        if self.handle_transcript_view_paste(&text)
+            || crate::tui::TuiState::theme_picker_selected(self).is_some()
+        {
             return;
         }
         handle_paste(self, text);

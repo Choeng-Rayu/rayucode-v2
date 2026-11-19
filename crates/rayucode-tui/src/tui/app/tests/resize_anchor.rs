@@ -177,6 +177,19 @@ fn jump_to_latest_counts_committed_rows_and_click_resumes_tail() {
     assert!(app.auto_scroll_paused);
     app.handle_key(KeyCode::End, KeyModifiers::CONTROL).unwrap();
     assert!(!app.auto_scroll_paused);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+    app.scroll_up(10);
+    assert!(app.auto_scroll_paused);
+    runtime
+        .block_on(app.handle_remote_key(KeyCode::End, KeyModifiers::CONTROL, &mut remote))
+        .unwrap();
+    assert!(!app.auto_scroll_paused);
 }
 
 #[test]

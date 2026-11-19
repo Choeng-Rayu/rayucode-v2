@@ -7,8 +7,12 @@
 //! [`rayucode_tui_style::harmony`] so a user gets specific, actionable feedback
 //! instead of trial and error.
 
-use super::{App, DisplayMessage};
+use super::{App, DisplayMessage, KeyCode, KeyModifiers};
 use rayucode_tui_style::palette::{ALL_ROLES, Palette, Role, parse_hex, to_hex};
+use rayucode_tui_style::{
+    ALL_THEME_PRESETS, ThemeMode, ThemePreset, set_theme_mode, set_theme_preset, theme_mode,
+    theme_preset,
+};
 
 const USAGE: &str = "Usage:\n  \
     /colors                       List every configurable color role\n  \
@@ -55,10 +59,108 @@ pub(super) fn handle_colors_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
-fn handle_theme_preset_command(app: &mut App, arg: &str) {
-    use rayucode_tui_style::{ALL_THEME_PRESETS, ThemePreset, set_theme_preset, theme_preset};
+pub(super) struct ThemePicker {
+    original: Option<(ThemePreset, ThemeMode)>,
+    pub(super) selected: usize,
+}
 
-    if arg.is_empty() || arg.eq_ignore_ascii_case("list") {
+impl ThemePicker {
+    fn new() -> Self {
+        let preset = theme_preset();
+        Self {
+            original: Some((preset, theme_mode())),
+            selected: ALL_THEME_PRESETS
+                .iter()
+                .position(|&value| value == preset)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn move_selection(&mut self, offset: isize) {
+        self.selected =
+            (self.selected as isize + offset).rem_euclid(ALL_THEME_PRESETS.len() as isize) as usize;
+        let preview = ALL_THEME_PRESETS[self.selected];
+        if preview == ThemePreset::Auto
+            && let Some((_, mode)) = self.original
+        {
+            set_theme_mode(mode);
+        }
+        apply_theme(preview);
+    }
+}
+
+impl Drop for ThemePicker {
+    fn drop(&mut self) {
+        if let Some((preset, mode)) = self.original.take() {
+            apply_theme(preset);
+            set_theme_mode(mode);
+        }
+    }
+}
+
+impl App {
+    pub(super) fn handle_theme_picker_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
+        if self.presentation_modal_blocked() || self.transcript_view.is_some() {
+            return false;
+        }
+        let Some(picker) = self.theme_picker.as_mut() else {
+            return false;
+        };
+        match (code, modifiers) {
+            (KeyCode::Esc, _) => {
+                self.theme_picker = None;
+                self.request_full_repaint();
+            }
+            (KeyCode::Up, KeyModifiers::NONE) => picker.move_selection(-1),
+            (KeyCode::Down, KeyModifiers::NONE) => picker.move_selection(1),
+            (KeyCode::Enter, KeyModifiers::NONE) => {
+                let preset = ALL_THEME_PRESETS[picker.selected];
+                if save_theme(self, preset) {
+                    if let Some(picker) = &mut self.theme_picker {
+                        picker.original = None;
+                    }
+                    self.theme_picker = None;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
+fn apply_theme(preset: ThemePreset) {
+    set_theme_preset(preset);
+    crate::tui::ui::invalidate_theme_render_caches();
+}
+
+fn save_theme(app: &mut App, preset: ThemePreset) -> bool {
+    if let Err(error) = crate::config::Config::set_display_theme(preset.id()) {
+        let message = format!("Could not save the theme: {error}");
+        app.set_status_notice(&message);
+        app.push_display_message(DisplayMessage::error(message));
+        return false;
+    }
+    apply_theme(preset);
+    let msg = format!("Switched TUI theme to {} ({})", preset.id(), preset.label());
+    app.set_status_notice(&msg);
+    app.push_display_message(DisplayMessage::system(msg));
+    true
+}
+
+fn handle_theme_preset_command(app: &mut App, arg: &str) {
+    if arg.is_empty() {
+        if app.theme_picker.is_none() {
+            app.exit_copy_selection_mode();
+            app.theme_picker = Some(ThemePicker::new());
+        }
+        return;
+    }
+
+    if arg.eq_ignore_ascii_case("list") {
         let current = theme_preset();
         let mut lines = vec![format!(
             "Active TUI theme: {} ({})",
@@ -77,17 +179,8 @@ fn handle_theme_preset_command(app: &mut App, arg: &str) {
 
     match ThemePreset::from_name(arg) {
         Some(preset) => {
-            if let Err(error) = crate::config::Config::set_display_theme(preset.id()) {
-                app.push_display_message(DisplayMessage::error(format!(
-                    "Could not save the theme: {error}"
-                )));
-                return;
-            }
-            set_theme_preset(preset);
-            crate::tui::ui::invalidate_theme_render_caches();
-            let msg = format!("Switched TUI theme to {} ({})", preset.id(), preset.label());
-            app.set_status_notice(&msg);
-            app.push_display_message(DisplayMessage::system(msg));
+            app.theme_picker = None;
+            save_theme(app, preset);
         }
         None => {
             let valid: Vec<&str> = ALL_THEME_PRESETS.iter().map(|p| p.id()).collect();

@@ -790,6 +790,9 @@ pub trait TuiState {
     fn unseen_chat_messages(&self) -> usize {
         0
     }
+    fn theme_picker_selected(&self) -> Option<usize> {
+        None
+    }
     /// Whether the screen is currently in the terminal-style cleared state
     /// produced by Ctrl+L / Cmd+L: the transcript ends in a blank spacer, the
     /// view is pinned to the bottom, and nothing is streaming. In that state

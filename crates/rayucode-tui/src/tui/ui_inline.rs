@@ -6,6 +6,47 @@ fn inline_view_display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
+pub(super) fn draw_theme_picker(frame: &mut Frame, area: Rect, selected: usize) {
+    let presets = rayucode_tui_style::ALL_THEME_PRESETS;
+    if area.is_empty() {
+        return;
+    }
+    let selected_style = Style::default().fg(accent_color()).bold();
+    let mut lines = Vec::new();
+    if area.height == 1 {
+        lines.push(Line::styled(
+            format!("Theme › {}", presets[selected].id()),
+            selected_style,
+        ));
+    } else {
+        let hint = if area.width >= 29 {
+            "Theme · ↑↓ · Enter save · Esc"
+        } else {
+            "Theme ↑↓ · ↵ · Esc"
+        };
+        lines.push(Line::styled(hint, Style::default().fg(dim_color())));
+        let visible = (area.height as usize - 1).min(presets.len());
+        let start = selected.saturating_sub(visible - 1);
+        for (index, preset) in presets.iter().enumerate().skip(start).take(visible) {
+            let (marker, style) = if index == selected {
+                ("❯", selected_style)
+            } else {
+                (" ", Style::default().fg(dim_color()))
+            };
+            let label = if area.width >= 42 {
+                preset.label()
+            } else {
+                preset.id()
+            };
+            lines.push(Line::styled(format!("{marker} {label}"), style));
+        }
+    }
+    for line in &mut lines {
+        *line = truncate_line_with_ellipsis_to_width(line, area.width as usize);
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 pub(super) fn inline_ui_height(app: &dyn TuiState) -> u16 {
     match app.inline_ui_state() {
         Some(crate::tui::InlineUiStateRef::Interactive(picker)) => {

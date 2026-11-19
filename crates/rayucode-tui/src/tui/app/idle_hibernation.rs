@@ -56,6 +56,7 @@ impl App {
     fn hibernation_has_work(&self) -> bool {
         self.is_processing()
             || self.transcript_view.is_some()
+            || self.theme_picker.is_some()
             || self.justrust_status.row().is_some()
             || self.pending_turn
             || self.session_save_pending

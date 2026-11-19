@@ -164,6 +164,7 @@ pub(super) async fn handle_remote_key_internal(
     }
 
     if app.handle_transcript_view_key(code, modifiers)
+        || app.handle_theme_picker_key(code, modifiers)
         || app.handle_inline_interactive_preview_key(&code, modifiers)?
     {
         return Ok(());
@@ -563,6 +564,10 @@ pub(super) async fn handle_remote_key_internal(
         }
         let status = format!("Diffs: {}", app.diff_mode.label());
         app.set_status_notice(&status);
+        return Ok(());
+    }
+
+    if app.handle_jump_to_latest_key(code, modifiers) {
         return Ok(());
     }
 

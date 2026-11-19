@@ -249,6 +249,77 @@ mod colors {
     }
 
     #[test]
+    fn theme_picker_previews_cancels_and_persists_on_enter() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use rayucode_tui_style::{
+            ThemeMode, ThemePreset, set_theme_mode, set_theme_preset, theme_mode, theme_preset,
+        };
+
+        let name = "RAYU_THEME_PICKER_TEST";
+        if std::env::var_os(name).is_none() {
+            let home = tempfile::tempdir().unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "theme_picker_previews_cancels_and_persists_on_enter",
+                    "--test-threads=1",
+                ])
+                .env(name, "1")
+                .env("RAYU_HOME", home.path())
+                .env_remove("RAYU_THEME")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            return;
+        }
+
+        let mut app = create_test_app();
+        crate::config::Config::set_display_theme("auto").unwrap();
+        set_theme_preset(ThemePreset::Auto);
+        set_theme_mode(ThemeMode::Light);
+        app.set_input_for_test("Keep 界 e\u{301}");
+        assert!(dispatch_local_command(&mut app, "/theme"));
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(theme_preset(), ThemePreset::LightAnsi);
+        assert_eq!(crate::config::Config::load().display.theme, "auto");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 6)).unwrap();
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &app))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("light-ansi"));
+        assert!(text.contains("Keep"));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            (theme_preset(), theme_mode()),
+            (ThemePreset::Auto, ThemeMode::Light)
+        );
+        assert_eq!(app.input(), "Keep 界 e\u{301}");
+
+        assert!(dispatch_local_command(&mut app, "/theme"));
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.theme_picker.is_none());
+        assert_eq!(crate::config::Config::load().display.theme, "light-ansi");
+        assert!(dispatch_local_command(&mut app, "/theme list"));
+        assert!(last_message(&app).contains("Active TUI theme: light-ansi"));
+        assert!(dispatch_local_command(&mut app, "/theme dark"));
+        assert_eq!(crate::config::Config::load().display.theme, "dark");
+    }
+
+    #[test]
     fn colors_lists_every_role_with_its_hex_value() {
         let mut app = create_test_app();
         assert!(

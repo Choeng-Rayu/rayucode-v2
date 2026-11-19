@@ -3493,9 +3493,20 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         rows
     };
     let editable_height = reserve_rows(1);
+    let theme_picker = app.theme_picker_selected();
+    let focused_picker = app
+        .inline_interactive_state()
+        .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
+    let picker_floor = reserve_rows(u16::from(theme_picker.is_some() || focused_picker));
     let status_height = reserve_rows(u16::from(available_height >= 4));
     let overscroll_height = reserve_rows(u16::from(available_height >= 3));
-    let inline_block_height = reserve_rows(inline_ui_height(app));
+    let inline_requested = if theme_picker.is_some() {
+        rayucode_tui_style::ALL_THEME_PRESETS.len() as u16 + 1
+    } else {
+        inline_ui_height(app)
+    };
+    let inline_block_height =
+        picker_floor + reserve_rows(inline_requested.saturating_sub(picker_floor));
     let input_height =
         editable_height + reserve_rows((base_input_height + hint_line_height).saturating_sub(1));
     let inline_ui_gap_height =
@@ -3946,7 +3957,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.render_order.push("draw_input".to_string());
     }
     // Draw inline UI if active
-    if inline_block_height > 0 {
+    if let Some(selected) = theme_picker.filter(|_| inline_block_height > 0) {
+        inline_ui::draw_theme_picker(frame, chunks[5], selected);
+    } else if inline_block_height > 0 {
         draw_inline_ui(frame, app, chunks[5]);
     }
 
@@ -3956,7 +3969,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     let model_in_composer =
         has_composer_rules && input_ui::draw_composer_rules(frame, app, composer_area);
-    let _ = input_ui::draw_input(frame, app, input_area, next_prompt, &mut debug_capture);
+    if let Some(selected) = theme_picker.filter(|_| inline_block_height == 0) {
+        inline_ui::draw_theme_picker(frame, input_area, selected);
+    } else {
+        let _ = input_ui::draw_input(frame, app, input_area, next_prompt, &mut debug_capture);
+    }
 
     if overscroll_height > 0 {
         input_ui::draw_overscroll_status(frame, app, chunks[8], model_in_composer);
@@ -4064,7 +4081,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Command-suggestion popover: a late overlay pass so the palette floats
     // over existing rows (blank space, pinned footer, or the transcript tail)
     // instead of reserving layout height and shoving everything around.
-    input_ui::draw_command_suggestions_overlay(frame, app, composer_area);
+    if theme_picker.is_none() {
+        input_ui::draw_command_suggestions_overlay(frame, app, composer_area);
+    }
 
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).

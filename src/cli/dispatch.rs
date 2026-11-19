@@ -485,6 +485,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             commands::run_pair_command(list, revoke)?;
         }
         Some(Command::Permissions) => {
+            tui::theme_detect::init_theme_mode();
             tui::permissions::run_permissions()?;
         }
         Some(Command::Transcript {

@@ -971,6 +971,7 @@ pub struct App {
     auto_scroll_paused: bool,
     transcript_view: Option<super::transcript_view::TranscriptView>,
     unseen_chat_messages: usize,
+    theme_picker: Option<commands_colors::ThemePicker>,
     active_skill: Option<String>,
     is_processing: bool,
     // Live streaming/turn progress (text, per-turn tokens, TPS tracking).

@@ -611,7 +611,34 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
     let height = area.height as usize;
     let width = area.width as usize;
-    if height <= 2 || width <= 2 {
+    if height == 0 || width == 0 {
+        return;
+    }
+    if height <= 3 || width <= 8 {
+        let text = picker
+            .filtered
+            .get(picker.selected)
+            .and_then(|&index| picker.entries.get(index))
+            .map_or_else(
+                || "No matches".into(),
+                |entry| {
+                    let title = if picker.uses_compact_navigation() {
+                        account_picker_entry_title(
+                            entry,
+                            account_picker_shows_provider_badge(picker),
+                        )
+                        .0
+                    } else {
+                        picker_entry_display_name(entry)
+                    };
+                    format!("❯ {title}")
+                },
+            );
+        let line = Line::styled(
+            truncate_display(&text, width),
+            Style::default().fg(accent_color()).bold(),
+        );
+        frame.render_widget(Paragraph::new(line), area);
         return;
     }
 

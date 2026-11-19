@@ -129,26 +129,44 @@ impl PermissionsApp {
         }
 
         let perm_color = rayucode_tui_style::theme::permission_color();
+        let title = if area.width < 28 {
+            " Permissions ".to_string()
+        } else {
+            format!(" Permissions ({} pending) ", self.requests.len())
+        };
         let outer = Block::default()
-            .title(format!(" Permissions ({} pending) ", self.requests.len()))
-            .title_style(
-                Style::default()
-                    .fg(perm_color)
-                    .add_modifier(Modifier::BOLD),
-            )
+            .title(title)
+            .title_style(Style::default().fg(perm_color).add_modifier(Modifier::BOLD))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(perm_color));
-        let inner = outer.inner(area);
-        frame.render_widget(outer, area);
+        let inner = if area.height >= 4 && area.width >= 4 {
+            let inner = outer.inner(area);
+            frame.render_widget(outer, area);
+            inner
+        } else {
+            area
+        };
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        if inner.height < 12 || inner.width < 30 {
+            self.render_compact(frame, inner);
+            return;
+        }
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(5),
                 Constraint::Length(1),
-                Constraint::Length(detail_height(inner.height)),
+                Constraint::Length(detail_height(
+                    inner
+                        .height
+                        .saturating_sub(u16::from(self.review_input.is_some())),
+                )),
                 Constraint::Length(1),
+                Constraint::Length(u16::from(self.review_input.is_some())),
                 Constraint::Length(1),
             ])
             .split(inner);
@@ -157,7 +175,71 @@ impl PermissionsApp {
         self.render_separator(frame, chunks[1]);
         self.render_detail(frame, chunks[2]);
         self.render_separator(frame, chunks[3]);
-        self.render_help(frame, chunks[4]);
+        self.render_review_input(frame, chunks[4]);
+        self.render_help(frame, chunks[5]);
+    }
+
+    fn render_compact(&self, frame: &mut Frame, area: Rect) {
+        let Some(request) = self.selected_request() else {
+            return;
+        };
+        let row = |y| Rect::new(area.x, y, area.width, 1);
+        let help = if self.review_input.is_some() {
+            "↵ send · Esc"
+        } else {
+            "↑↓ a OK d deny q"
+        };
+        let bottom = area.bottom() - 1;
+        if area.height > 1 {
+            frame.render_widget(
+                Paragraph::new(help).style(Style::default().fg(rgb(140, 140, 150))),
+                row(bottom),
+            );
+        }
+        if self.review_input.is_some() {
+            self.render_review_input(
+                frame,
+                row(bottom.saturating_sub(u16::from(area.height > 1))),
+            );
+        }
+        let reserved = usize::from(area.height > 1) + usize::from(self.review_input.is_some());
+        if area.height as usize > reserved {
+            let label = Line::styled(
+                format!("❯ {}", request.action),
+                Style::default()
+                    .fg(rayucode_tui_style::theme::permission_color())
+                    .bold(),
+            );
+            frame.render_widget(Paragraph::new(label), row(area.y));
+            self.render_detail(
+                frame,
+                Rect::new(
+                    area.x,
+                    area.y + 1,
+                    area.width,
+                    area.height.saturating_sub(reserved as u16 + 1),
+                ),
+            );
+        }
+    }
+
+    fn render_review_input(&self, frame: &mut Frame, area: Rect) {
+        let Some(text) = &self.review_input else {
+            return;
+        };
+        if area.is_empty() {
+            return;
+        }
+        let label = if self.answering { "Answer: " } else { "Deny: " };
+        let line = Line::from(vec![
+            Span::styled(label, Style::default().fg(rgb(255, 100, 100)).bold()),
+            Span::raw(format!("{text}▌")),
+        ]);
+        let scroll = line
+            .width()
+            .saturating_sub(area.width as usize)
+            .min(u16::MAX as usize) as u16;
+        frame.render_widget(Paragraph::new(line).scroll((0, scroll)), area);
     }
 
     fn render_list(&self, frame: &mut Frame, area: Rect) {
@@ -257,6 +339,9 @@ impl PermissionsApp {
     }
 
     fn render_detail(&self, frame: &mut Frame, area: Rect) {
+        if area.is_empty() {
+            return;
+        }
         let Some(req) = self.selected_request() else {
             return;
         };
@@ -403,26 +488,6 @@ impl PermissionsApp {
             ]));
         }
 
-        if let Some(ref review_text) = self.review_input {
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    if self.answering {
-                        " Answer: "
-                    } else {
-                        " Deny reason: "
-                    },
-                    Style::default()
-                        .fg(rgb(255, 100, 100))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}▌", review_text),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
-        }
-
         let scroll = self
             .detail_scroll
             .min((lines.len() as u16).saturating_sub(area.height));
@@ -547,7 +612,10 @@ impl PermissionsApp {
             .map_err(|error| anyhow::anyhow!("failed to initialize terminal: {error}"))?;
 
         let result = loop {
-            terminal.draw(|frame| self.render(frame))?;
+            terminal.draw(|frame| {
+                self.render(frame);
+                rayucode_tui_style::adapt_buffer_for_display(frame.buffer_mut());
+            })?;
 
             if event::poll(Duration::from_millis(100))?
                 && let Event::Key(key) = event::read()?
@@ -909,4 +977,43 @@ pub fn run_permissions() -> Result<()> {
 
     let app = PermissionsApp::new(requests);
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_permissions_keep_selected_request_and_review_input_visible() {
+        let request = PermissionRequest {
+            id: "fixture".into(),
+            action: "Read 界 file".into(),
+            description: "Review only".into(),
+            rationale: "Fixture".into(),
+            urgency: Urgency::Normal,
+            wait: false,
+            created_at: Utc::now(),
+            context: None,
+        };
+        let mut app = PermissionsApp::new(vec![request]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 6)).unwrap();
+        let mut draw = |app: &PermissionsApp| {
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let view = draw(&app);
+        assert!(view.contains("❯ Read 界"));
+        assert!(view.contains("a OK d deny q"));
+        app.review_input = Some("Fixture reason 界".into());
+        let editing = draw(&app);
+        assert!(editing.contains("reason 界"));
+        assert!(editing.contains("↵ send · Esc"));
+    }
 }

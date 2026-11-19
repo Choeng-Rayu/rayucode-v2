@@ -890,6 +890,12 @@ impl crate::tui::TuiState for App {
         self.unseen_chat_messages
     }
 
+    fn theme_picker_selected(&self) -> Option<usize> {
+        let picker = self.theme_picker.as_ref()?;
+        (!self.presentation_modal_blocked() && self.transcript_view.is_none())
+            .then_some(picker.selected)
+    }
+
     fn terminal_clear_collapsed(&self) -> bool {
         self.terminal_clear_collapsed()
     }

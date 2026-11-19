@@ -197,14 +197,28 @@ pub(super) fn draw_prompt_history_search_overlay(
 /// Called after the chunked layout (and info widgets) have rendered so the
 /// palette floats over existing rows instead of reserving layout height.
 pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let mut bounds = frame.area();
+    if bounds.height <= 8 && !app.display_messages().is_empty() && area.y > bounds.y {
+        // Keep a transcript row visible when the palette has only a few rows
+        // to share with the composer.
+        bounds.y += 1;
+        bounds.height -= 1;
+    }
     if let Some(picker) = app.inline_interactive_state()
         && picker.kind == crate::tui::PickerKind::Model
     {
         // Use the command palette surface, not a separate bordered picker.
         // Keep it above the composer and size the window before building rows
         // so the selected model remains visible even on short terminals.
-        let height = area.y.saturating_sub(frame.area().y);
-        let lines = super::inline_interactive_ui::model_suggestion_lines(picker, height as usize);
+        let height = area.y.saturating_sub(bounds.y);
+        let mut lines =
+            super::inline_interactive_ui::model_suggestion_lines(picker, height as usize);
+        for line in &mut lines {
+            *line = rayucode_tui_render::truncate_line_with_ellipsis_to_width(
+                line,
+                area.width as usize,
+            );
+        }
         if !lines.is_empty() && area.width > 0 {
             let rect = Rect::new(
                 area.x,
@@ -222,7 +236,7 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
         return;
     }
     let rows = suggestions.len().min(app::COMMAND_SUGGESTION_VISIBLE_LIMIT) as u16;
-    let Some(rect) = command_suggestions_overlay_rect(area, rows, frame.area(), true) else {
+    let Some(rect) = command_suggestions_overlay_rect(area, rows, bounds, true) else {
         return;
     };
     let mut lines = command_suggestion_lines(app, &suggestions, usize::from(rect.height));
@@ -2450,7 +2464,7 @@ pub(super) fn draw_input(
     if app.input_drag_scroll_offset().is_some() {
         return None;
     }
-    if !super::secondary_render_active() {
+    if !super::secondary_render_active() && app.theme_picker_selected().is_none() {
         frame.set_cursor_position(cursor);
     }
     Some(cursor)

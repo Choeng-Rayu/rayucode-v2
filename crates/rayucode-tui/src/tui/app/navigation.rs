@@ -1466,6 +1466,9 @@ impl App {
             }
             finish_mouse_event!(is_mouse_scroll_kind(mouse.kind), "transcript_view");
         }
+        if crate::tui::TuiState::theme_picker_selected(self).is_some() {
+            finish_mouse_event!(false, "theme_picker");
+        }
         if self.auto_scroll_paused
             && !self.presentation_modal_blocked()
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -1963,6 +1966,19 @@ impl App {
         self.scroll_offset = 0;
         self.auto_scroll_paused = false;
         super::super::ui::request_tail_follow_snap();
+    }
+
+    pub(super) fn handle_jump_to_latest_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
+        if !self.auto_scroll_paused || code != KeyCode::End || modifiers != KeyModifiers::CONTROL {
+            return false;
+        }
+        self.follow_chat_bottom();
+        self.request_full_repaint();
+        true
     }
 
     pub(super) fn debug_scroll_up(&mut self, amount: usize) {
