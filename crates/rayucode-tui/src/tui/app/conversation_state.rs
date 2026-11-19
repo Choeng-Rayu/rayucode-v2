@@ -407,18 +407,30 @@ impl App {
     pub(crate) fn maybe_show_agent_profile_setup_hint(&mut self) {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SHOWN: AtomicBool = AtomicBool::new(false);
-        if self.pending_startup_notice.is_some()
-            || self
-                .display_messages
-                .iter()
-                .any(|m| matches!(m.role.as_str(), "user" | "assistant" | "tool"))
+        if self
+            .display_messages
+            .iter()
+            .any(|m| matches!(m.role.as_str(), "user" | "assistant" | "tool"))
         {
             return;
         }
-        let Some(hint) = crate::agent_profiles::setup_hint(&self.session) else {
+        // Remote clients hold a placeholder session; profiles live under the
+        // daemon's real session id.
+        let session_id = self
+            .remote_session_id
+            .clone()
+            .unwrap_or_else(|| self.session.id.clone());
+        let Some(hint) = crate::agent_profiles::setup_hint_for(&session_id) else {
             return;
         };
         if SHOWN.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        if self.pending_startup_notice.is_some() {
+            // Do not replace another startup card; show the tip alongside it.
+            self.push_display_message(
+                DisplayMessage::system(hint).with_title("Agent profiles".to_string()),
+            );
             return;
         }
         self.set_pending_startup_notice("Agent profiles", hint);

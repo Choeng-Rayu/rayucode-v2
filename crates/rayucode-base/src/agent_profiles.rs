@@ -131,8 +131,16 @@ pub fn render(session: &Session) -> String {
 
 /// Launch hint shown once per session while the user has no profiles.
 pub fn setup_hint(session: &Session) -> Option<String> {
+    setup_hint_for(&session.id)
+}
+
+/// Same as [`setup_hint`], keyed by session id (remote clients only know the
+/// daemon's id, not its `Session`).
+pub fn setup_hint_for(session_id: &str) -> Option<String> {
     let agents = &crate::config::config().agents;
-    if !agents.profile_setup_hint || !session.effective_agent_profiles().is_empty() {
+    if !agents.profile_setup_hint
+        || !crate::session::effective_agent_profiles_for(session_id).is_empty()
+    {
         return None;
     }
     Some(

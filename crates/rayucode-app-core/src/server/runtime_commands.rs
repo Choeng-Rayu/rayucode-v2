@@ -258,8 +258,24 @@ pub(super) async fn execute(
                     if global {
                         crate::config::Config::set_agent_model_default(target, model.as_deref())?;
                     } else {
-                        agent.set_agent_model_override(target, model)?;
+                        agent.set_agent_model_override(target, model.clone())?;
                     }
+                    let resolved = agent
+                        .session_for_split()
+                        .effective_agent_model(target, None);
+                    let message = format!(
+                        "{target} agent model [{}] → {}{}",
+                        if global { "global" } else { "session" },
+                        model.as_deref().unwrap_or("default"),
+                        match (&model, resolved.as_deref()) {
+                            (Some(raw), Some(res)) if raw != res && !global => format!(" ({res})"),
+                            _ => String::new(),
+                        }
+                    );
+                    return Ok((
+                        json!({"scope": if global { "global" } else { "session" }, "target": target, "model": model, "overrides": agent.runtime_agent_model_overrides()}),
+                        message,
+                    ));
                 }
                 _ => bail!(
                     "Usage: /agents [global] [swarm|review|judge|memory|ambient] [model|inherit]."

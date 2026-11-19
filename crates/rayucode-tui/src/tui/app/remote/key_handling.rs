@@ -515,6 +515,14 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             return Ok(());
         }
 
+        // Profile edits and `<target> <model>` must hit the daemon's real
+        // session, not this client's placeholder session.
+        if let Some(args) = app_mod::commands::agents_runtime_args(trimmed) {
+            remote.runtime_command("agents", args).await?;
+            app.set_status_notice("Updating agent models…");
+            return Ok(());
+        }
+
         if app_mod::commands::handle_agents_command(app, trimmed) {
             return Ok(());
         }

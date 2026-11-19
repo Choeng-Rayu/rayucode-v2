@@ -3318,6 +3318,50 @@ fn resume_terminal_after_editor() {
 #[path = "commands/interactive_editor_tests.rs"]
 mod interactive_editor_tests;
 
+/// `/agents [global] profile ...` and `/agents [global] <target> <model>` need
+/// the daemon's real session in remote mode. Returns runtime-command args for
+/// those forms; the picker forms stay local.
+pub(super) fn agents_runtime_args(trimmed: &str) -> Option<Vec<String>> {
+    let rest = trimmed.strip_prefix("/agents")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let words: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
+    let body = match words.first().map(String::as_str) {
+        Some("global" | "default") => &words[1..],
+        _ => &words[..],
+    };
+    let is_profile = body
+        .first()
+        .is_some_and(|w| matches!(w.as_str(), "profile" | "profiles"));
+    let is_target_set = body.len() == 2 && parse_agents_target(&body[0]).is_some();
+    if !is_profile && !is_target_set {
+        return None;
+    }
+    let mut args = words.clone();
+    if let Some(first) = args.first_mut()
+        && first == "default"
+    {
+        *first = "global".to_string();
+    }
+    // Canonicalize the target alias for the daemon (e.g. reviewer -> review).
+    let target_index = usize::from(args.first().is_some_and(|w| w == "global"));
+    if is_target_set && let Some(target) = parse_agents_target(&args[target_index]) {
+        args[target_index] = agent_target_slug(target).to_string();
+    }
+    Some(args)
+}
+
+fn agent_target_slug(target: crate::tui::AgentModelTarget) -> &'static str {
+    match target {
+        crate::tui::AgentModelTarget::Swarm => "swarm",
+        crate::tui::AgentModelTarget::Review => "review",
+        crate::tui::AgentModelTarget::Judge => "judge",
+        crate::tui::AgentModelTarget::Memory => "memory",
+        crate::tui::AgentModelTarget::Ambient => "ambient",
+    }
+}
+
 pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
     if !trimmed.starts_with("/agents") {
         return false;
@@ -3346,9 +3390,33 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    // `/agents [global] <target> <model|profile|inherit|default>` sets directly.
+    if let [target, model] = words.as_slice()
+        && let Some(target) = parse_agents_target(target)
+    {
+        let slug = agent_target_slug(target);
+        let value = (model != "default").then(|| model.clone());
+        let result = if global {
+            crate::config::Config::set_agent_model_default(slug, value.as_deref())
+        } else {
+            app.session
+                .set_agent_model_override(slug, value.clone())
+                .and_then(|()| app.session.save_prepared())
+        };
+        match result {
+            Ok(()) => app.push_display_message(DisplayMessage::system(format!(
+                "{slug} agent model [{}] → {}",
+                if global { "global" } else { "session" },
+                value.as_deref().unwrap_or("default")
+            ))),
+            Err(error) => app.push_display_message(DisplayMessage::error(error.to_string())),
+        }
+        return true;
+    }
+
     let Some(target) = parse_agents_target(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents [default|global] [swarm|review|judge|memory|ambient] | /agents [global] profile ...".to_string(),
+            "Usage: /agents [default|global] [swarm|review|judge|memory|ambient] [model|profile|inherit|default] | /agents [global] profile ...".to_string(),
         ));
         return true;
     };

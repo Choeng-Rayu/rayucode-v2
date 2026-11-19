@@ -1,6 +1,37 @@
+use super::agents_runtime_args;
 use super::ensure_swarm_prompt_edit_path;
 use super::parse_diff_mode_name;
 use super::parse_manual_subagent_spec;
+
+#[test]
+fn agents_profile_and_target_set_route_to_daemon_but_picker_stays_local() {
+    let args = |s: &str| agents_runtime_args(s).map(|v| v.join(" "));
+    assert_eq!(
+        args("/agents profile add coder claude:x Code edits").as_deref(),
+        Some("profile add coder claude:x Code edits")
+    );
+    assert_eq!(
+        args("/agents default profile list").as_deref(),
+        Some("global profile list")
+    );
+    assert_eq!(
+        args("/agents reviewer research").as_deref(),
+        Some("review research")
+    );
+    assert_eq!(
+        args("/agents global swarm coder").as_deref(),
+        Some("global swarm coder")
+    );
+    for local in [
+        "/agents",
+        "/agents global",
+        "/agents review",
+        "/agentsx profile",
+        "/agents foo bar",
+    ] {
+        assert_eq!(args(local), None, "{local}");
+    }
+}
 
 #[test]
 fn parse_diff_mode_name_maps_known_aliases() {
