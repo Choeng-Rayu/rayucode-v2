@@ -182,13 +182,15 @@ fn jump_to_latest_counts_committed_rows_and_click_resumes_tail() {
         .enable_all()
         .build()
         .unwrap();
-    let mut remote = crate::tui::backend::RemoteConnection::dummy();
-    remote.mark_history_loaded();
     app.scroll_up(10);
     assert!(app.auto_scroll_paused);
-    runtime
-        .block_on(app.handle_remote_key(KeyCode::End, KeyModifiers::CONTROL, &mut remote))
-        .unwrap();
+    runtime.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        remote.mark_history_loaded();
+        app.handle_remote_key(KeyCode::End, KeyModifiers::CONTROL, &mut remote)
+            .await
+            .unwrap();
+    });
     assert!(!app.auto_scroll_paused);
 }
 
