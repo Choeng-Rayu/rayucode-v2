@@ -880,6 +880,16 @@ impl crate::tui::TuiState for App {
         self.auto_scroll_paused
     }
 
+    fn transcript_view(&self) -> Option<&crate::tui::transcript_view::TranscriptView> {
+        self.transcript_view
+            .as_ref()
+            .filter(|_| !self.presentation_modal_blocked())
+    }
+
+    fn unseen_chat_messages(&self) -> usize {
+        self.unseen_chat_messages
+    }
+
     fn terminal_clear_collapsed(&self) -> bool {
         self.terminal_clear_collapsed()
     }

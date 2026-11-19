@@ -163,7 +163,9 @@ pub(super) async fn handle_remote_key_internal(
         return app.handle_inline_interactive_key(code, modifiers);
     }
 
-    if app.handle_inline_interactive_preview_key(&code, modifiers)? {
+    if app.handle_transcript_view_key(code, modifiers)
+        || app.handle_inline_interactive_preview_key(&code, modifiers)?
+    {
         return Ok(());
     }
     if input::handle_shortcut_help_key(app, code, modifiers) {

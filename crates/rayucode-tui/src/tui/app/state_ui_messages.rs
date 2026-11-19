@@ -155,6 +155,14 @@ impl App {
         // Appending is the hot path; rescanning every append was O(M^2) over a
         // long session.
         self.adjust_display_message_stats(&message, true);
+        if self.auto_scroll_paused
+            && message.role != "spacer"
+            && (!message.content.trim().is_empty()
+                || message.title.is_some()
+                || message.tool_data.is_some())
+        {
+            self.unseen_chat_messages = self.unseen_chat_messages.saturating_add(1);
+        }
         self.display_messages.push(message);
         self.bump_display_messages_version_no_stats();
         if is_tool && self.diff_mode.has_side_pane() && self.diff_pane_auto_scroll {
@@ -171,6 +179,8 @@ impl App {
         }
         compact_display_messages_for_storage(&mut messages);
         self.display_messages = messages;
+        self.unseen_chat_messages = 0;
+        self.transcript_view = None;
         self.attempt_committed_assistant_messages = 0;
         self.sync_compacted_history_lazy_from_display_messages();
         self.bump_display_messages_version();
@@ -638,6 +648,8 @@ impl App {
     }
 
     pub(super) fn clear_display_messages(&mut self) {
+        self.unseen_chat_messages = 0;
+        self.transcript_view = None;
         self.compacted_history_lazy = CompactedHistoryLazyState::default();
         // The transcript is about to be discarded; forget where the live reasoning
         // block started so a stale offset can't slice the new stream.
@@ -716,6 +728,10 @@ impl App {
         let recent_history = self.recent_history_window_active();
         compact_display_messages_for_storage(&mut messages);
         carry_over_tool_durations(&self.display_messages, &mut messages);
+        if let Some(view) = self.transcript_view.as_mut() {
+            let prepended = messages.len().saturating_sub(self.display_messages.len());
+            view.prepend_history(&messages[..prepended]);
+        }
         self.display_messages = messages;
         self.remote_side_pane_images = images;
         self.invalidate_side_pane_images_signature();

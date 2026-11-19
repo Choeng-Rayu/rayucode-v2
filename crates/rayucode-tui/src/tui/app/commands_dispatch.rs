@@ -13,55 +13,60 @@ use super::App;
 /// These commands belong to the terminal displaying the remote session. Saved
 /// display preferences intentionally stay on the client, never on the VM.
 pub(super) fn ssh_presentation_command(input: &str) -> bool {
-    matches!(
-        input.split_whitespace().next().unwrap_or(""),
-        "/cancel"
-            | "/stop"
-            | "/help"
-            | "/?"
-            | "/commands"
-            | "/todos"
-            | "/todo"
-            | "/diff"
-            | "/keys"
-            | "/keybindings"
-            | "/alignment"
-            | "/latex"
-            | "/reasoning"
-            | "/thinking"
-            | "/thinking-display"
-            | "/compact-notifications"
-            | "/show-agentgrep-output"
-            | "/tool-call-details"
-            | "/theme"
-            | "/colors"
-            | "/color"
-            | "/cls"
-            | "/clear-view"
-            | "/version"
-            | "/changelog"
-            | "/hotkeys"
-            | "/update-sim"
-            | "/onboarding-preview"
-            | "/observe"
-            | "/splitview"
-            | "/split-view"
-            | "/voice"
-            | "/dictate"
-            | "/dictation"
-            | "/terminal-setup"
-            | "/debug-visual"
-            | "/screenshot-mode"
-            | "/screenshot"
-            | "/record"
-            | "/feedback"
-            | "/support"
-    )
+    super::transcript_inspection::is_transcript_view_command(input)
+        || matches!(
+            input.split_whitespace().next().unwrap_or(""),
+            "/cancel"
+                | "/stop"
+                | "/help"
+                | "/?"
+                | "/commands"
+                | "/todos"
+                | "/todo"
+                | "/diff"
+                | "/keys"
+                | "/keybindings"
+                | "/alignment"
+                | "/latex"
+                | "/reasoning"
+                | "/thinking"
+                | "/thinking-display"
+                | "/compact-notifications"
+                | "/show-agentgrep-output"
+                | "/tool-call-details"
+                | "/theme"
+                | "/colors"
+                | "/color"
+                | "/cls"
+                | "/clear-view"
+                | "/version"
+                | "/changelog"
+                | "/hotkeys"
+                | "/update-sim"
+                | "/onboarding-preview"
+                | "/observe"
+                | "/splitview"
+                | "/split-view"
+                | "/voice"
+                | "/dictate"
+                | "/dictation"
+                | "/terminal-setup"
+                | "/debug-visual"
+                | "/screenshot-mode"
+                | "/screenshot"
+                | "/record"
+                | "/feedback"
+                | "/support"
+        )
 }
 
 pub(super) fn handle_ssh_presentation_command(app: &mut App, input: &str) -> bool {
     if !crate::tui::is_ssh_remote() || !ssh_presentation_command(input) {
         return false;
+    }
+    if super::transcript_inspection::is_transcript_view_command(input) {
+        app.open_transcript_view();
+        return true;
     }
     if matches!(input, "/cls" | "/clear-view") {
         app.clear_view_keep_context();
@@ -97,6 +102,9 @@ pub(super) fn handle_ssh_presentation_command(app: &mut App, input: &str) -> boo
 /// Local-only operations must not interpret the remote session's paths or IDs
 /// against the laptop. Wire-backed commands are handled before local dispatch.
 pub(super) fn ssh_unsupported_command(input: &str) -> bool {
+    if super::transcript_inspection::is_transcript_view_command(input) {
+        return false;
+    }
     let mut words = input.split_whitespace();
     let command = words.next().unwrap_or("");
     if command.starts_with('!') {
@@ -259,6 +267,10 @@ fn dispatch_command_sequence(
 }
 
 fn dispatch_single_local_command(app: &mut App, trimmed: &str) -> bool {
+    if super::transcript_inspection::is_transcript_view_command(trimmed) {
+        app.open_transcript_view();
+        return true;
+    }
     if handle_ssh_unsupported_command(app, trimmed) {
         return true;
     }

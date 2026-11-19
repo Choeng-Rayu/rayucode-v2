@@ -1452,6 +1452,31 @@ impl App {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
             finish_mouse_event!(false, "account_picker_overlay");
         }
+        if let Some(view) = crate::tui::TuiState::transcript_view(self) {
+            if view.editing.is_none() {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.scroll_up(3);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.scroll_down(3);
+                    }
+                    _ => {}
+                }
+            }
+            finish_mouse_event!(is_mouse_scroll_kind(mouse.kind), "transcript_view");
+        }
+        if self.auto_scroll_paused
+            && !self.presentation_modal_blocked()
+            && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && super::super::ui::jump_to_latest_area().is_some_and(|area| {
+                super::super::layout_utils::point_in_rect(mouse.column, mouse.row, area)
+            })
+        {
+            self.follow_chat_bottom();
+            self.request_full_repaint();
+            finish_mouse_event!(false, "jump_to_latest");
+        }
         self.normalize_diagram_state();
         let diagram_available = self.diagram_available();
         let layout = super::super::ui::last_layout_snapshot();
@@ -1912,7 +1937,7 @@ impl App {
             0
         };
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
-        let changed = if self.scroll_offset >= bottom_threshold {
+        let changed = if self.scroll_offset >= bottom_threshold && self.transcript_view.is_none() {
             self.follow_chat_bottom();
             true
         } else {
@@ -1931,6 +1956,7 @@ impl App {
     }
 
     pub(super) fn follow_chat_bottom(&mut self) {
+        self.unseen_chat_messages = 0;
         self.pending_history_anchor = None;
         // Resuming the tail drops any reading position captured for a resize.
         self.pending_resize_anchor = None;

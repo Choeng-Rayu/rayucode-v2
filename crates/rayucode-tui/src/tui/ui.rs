@@ -1653,6 +1653,57 @@ pub(crate) fn last_status_area() -> Option<Rect> {
     }
 }
 
+thread_local! {
+    static JUMP_TO_LATEST_AREA: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn jump_to_latest_area() -> Option<Rect> {
+    JUMP_TO_LATEST_AREA.get()
+}
+
+fn draw_jump_to_latest(frame: &mut Frame, app: &dyn TuiState, status: Rect) -> Rect {
+    if !app.auto_scroll_paused()
+        || status.is_empty()
+        || app
+            .inline_interactive_state()
+            .is_some_and(|picker| !picker.preview)
+    {
+        return status;
+    }
+    let count = app.unseen_chat_messages();
+    let mut label = if count > 0 {
+        format!("Jump to latest +{count}")
+    } else {
+        "Jump to latest".to_string()
+    };
+    if label.len() > usize::from(status.width) {
+        label = if count > 0 {
+            format!("Latest +{count}")
+        } else {
+            "Latest".into()
+        };
+    }
+    let line = truncate_line_with_ellipsis_to_width(
+        &Line::styled(
+            label,
+            Style::default()
+                .fg(accent_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        status.width.into(),
+    );
+    let width = (line.width() as u16).min(status.width);
+    let button = Rect::new(status.right() - width, status.y, width, 1);
+    if !secondary_render_active() {
+        JUMP_TO_LATEST_AREA.set(Some(button));
+    }
+    frame.render_widget(Paragraph::new(line), button);
+    Rect {
+        width: status.width.saturating_sub(width + 1),
+        ..status
+    }
+}
+
 use frame_metrics::{
     ChatLayoutMetrics, FLICKER_NOTICE_COPY_KEY, FullPrepPhaseMetrics, ViewportMetrics,
     begin_frame_resource_sample, finalize_frame_metrics, note_body_built, note_body_cache_hit,
@@ -2918,6 +2969,7 @@ use overflow::transcript_definitely_overflows;
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     if !secondary_render_active() {
         record_idle_animation_area(None);
+        JUMP_TO_LATEST_AREA.set(None);
     }
     if let Some(frozen) = app.hibernation_frame()
         && frozen.area == frame.area()
@@ -3399,6 +3451,33 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    if let Some(view) = app.transcript_view() {
+        let bar_height = 1;
+        let viewport = Rect {
+            height: chat_area.height.saturating_sub(bar_height),
+            ..chat_area
+        };
+        let bar = Rect::new(chat_area.x, viewport.bottom(), chat_area.width, bar_height);
+        let show_scrollbar = app.chat_native_scrollbar() && chat_area.width > 1;
+        let prepared = prepare_at(if show_scrollbar {
+            narrow_prepare_width
+        } else {
+            wide_prepare_width
+        });
+        record_layout_snapshot(viewport, None, None, None);
+        record_status_area(Rect::default());
+        draw_messages(frame, app, viewport, prepared, show_scrollbar);
+        view.draw_bar(frame, bar);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            prep_start.elapsed(),
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
     let show_donut = !onboarding_welcome && super::idle_donut_active(app);
     let available_height = chat_area.height;
     // Keep one editable row first, then leave room for the transcript. On
@@ -3625,7 +3704,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let composer_area = chunks[7];
     let has_composer_rules = composer_rules_height > 0 && composer_area.height >= 3;
     let input_area = input_ui::composer_input_area(composer_area, has_composer_rules);
-    record_status_area(chunks[3]);
 
     // Draw the inline swarm strip directly above the status line if present.
     if swarm_strip_height > 0 {
@@ -3858,7 +3936,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());
     }
-    input_ui::draw_status(frame, app, chunks[3], pending_count);
+    let status = draw_jump_to_latest(frame, app, chunks[3]);
+    record_status_area(status);
+    input_ui::draw_status(frame, app, status, pending_count);
     if notification_height > 0 {
         input_ui::draw_notification(frame, app, chunks[4]);
     }

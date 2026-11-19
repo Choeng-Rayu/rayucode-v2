@@ -692,6 +692,9 @@ pub(crate) fn hash_rendered_image_signature_fields(
     hash_rendered_image_anchor(image.anchor.as_ref(), hasher);
 }
 
+#[doc(hidden)]
+pub mod transcript_view;
+
 /// Trait for TUI state consumed by the shared renderer.
 ///
 /// This is a wide (114-method) presentation interface: the read-only surface the
@@ -781,6 +784,12 @@ pub trait TuiState {
     fn scroll_offset(&self) -> usize;
     /// Whether auto-scroll to bottom is paused (user scrolled up during streaming)
     fn auto_scroll_paused(&self) -> bool;
+    fn transcript_view(&self) -> Option<&transcript_view::TranscriptView> {
+        None
+    }
+    fn unseen_chat_messages(&self) -> usize {
+        0
+    }
     /// Whether the screen is currently in the terminal-style cleared state
     /// produced by Ctrl+L / Cmd+L: the transcript ends in a blank spacer, the
     /// view is pinned to the bottom, and nothing is streaming. In that state

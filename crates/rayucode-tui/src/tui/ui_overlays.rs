@@ -306,6 +306,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(help_entry("/config init", "Create default config file"));
     lines.push(help_entry("/config edit", "Open config in $EDITOR"));
     lines.push(help_entry(
+        "/transcript view",
+        "Read and search the current transcript",
+    ));
+    lines.push(help_entry(
         "/voice",
         "Voice input: speak, then send (Ctrl+Space)",
     ));

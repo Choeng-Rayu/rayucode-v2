@@ -111,6 +111,7 @@ mod slash_command_parser;
 mod split_view;
 mod state_ui;
 mod state_ui_input_helpers;
+mod transcript_inspection;
 mod update_rehearsal;
 mod update_sim;
 mod usage_reset;
@@ -968,6 +969,8 @@ pub struct App {
     scroll_offset: usize,
     /// Pauses auto-scroll when user scrolls up during streaming
     auto_scroll_paused: bool,
+    transcript_view: Option<super::transcript_view::TranscriptView>,
+    unseen_chat_messages: usize,
     active_skill: Option<String>,
     is_processing: bool,
     // Live streaming/turn progress (text, per-turn tokens, TPS tracking).

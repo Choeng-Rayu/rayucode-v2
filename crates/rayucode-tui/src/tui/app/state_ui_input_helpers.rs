@@ -67,10 +67,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/git", "Show git status for the session working directory"),
     RegisteredCommand::public("/colors", "List, configure, and score every TUI color"),
     RegisteredCommand::hidden("/color", "Alias for /colors"),
-    RegisteredCommand::public(
-        "/theme",
-        "Switch TUI color theme (dark, light, dark-daltonized, light-daltonized, auto)",
-    ),
+    RegisteredCommand::public("/theme", "Switch TUI color theme (dark, light, dark-daltonized, light-daltonized, auto)"),
     RegisteredCommand::public("/hotkeys", "List hotkeys with your personal usage"),
     RegisteredCommand::public("/terminal-setup", "Fix Shift+Enter newlines"),
     RegisteredCommand::public("/commit", "Make logical commits from current changes"),
@@ -783,21 +780,23 @@ impl App {
             return vec![("/git status".into(), "Show branch and working tree status")];
         }
 
-        if prefix.starts_with("/transcript ") {
-            return self.rank_suggestions(
-                input,
-                vec![(
+        if prefix_trimmed == "/transcript" || prefix.starts_with("/transcript ") {
+            let options = vec![
+                (
+                    "/transcript view".into(),
+                    "Inspect and search the loaded transcript",
+                ),
+                (
                     "/transcript path".into(),
                     "Print transcript path without opening",
-                )],
-            );
-        }
-
-        if prefix_trimmed == "/transcript" {
-            return vec![(
-                "/transcript path".into(),
-                "Print transcript path without opening",
-            )];
+                ),
+            ];
+            if prefix == "/transcript" {
+                return std::iter::once(("/transcript".into(), "Open the transcript file"))
+                    .chain(options)
+                    .collect();
+            }
+            return self.rank_suggestions(input, options);
         }
 
         if prefix.starts_with("/effort ") {

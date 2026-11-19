@@ -350,17 +350,25 @@ pub(super) fn draw_messages(
     let viewport_height = render_area.height as usize;
     // Pinned todo band (display.pin_todos): the full todo card rendered beneath
     // the sticky previous-prompt preview, including at the top of the transcript.
-    let (pinned_todo_band, pinned_todo_more_line) =
-        pinned_todo_band_lines(app, text_render_area.width, render_area.height);
+    let transcript_view = app.transcript_view();
+    let (pinned_todo_band, pinned_todo_more_line) = if transcript_view.is_some() {
+        (Vec::new(), None)
+    } else {
+        pinned_todo_band_lines(app, text_render_area.width, render_area.height)
+    };
     let pinned_todo_band_rows = pinned_todo_band.len() as u16;
-    let max_scroll = compute_max_scroll_with_prompt_preview(
-        total_lines,
-        wrapped_user_prompt_starts,
-        user_prompt_texts,
-        text_render_area,
-        pinned_todo_band.len() as u16,
-        preview_start + app.compacted_hidden_user_prompts(),
-    );
+    let max_scroll = if transcript_view.is_some() {
+        total_lines.saturating_sub(viewport_height)
+    } else {
+        compute_max_scroll_with_prompt_preview(
+            total_lines,
+            wrapped_user_prompt_starts,
+            user_prompt_texts,
+            text_render_area,
+            pinned_todo_band.len() as u16,
+            preview_start + app.compacted_hidden_user_prompts(),
+        )
+    };
 
     super::set_last_max_scroll(max_scroll);
 
@@ -417,7 +425,10 @@ pub(super) fn draw_messages(
     // handlers outside `draw` resolve anchors against it.
     super::set_last_chat_frame(prepared.clone());
 
-    let prompt_preview_lines = if crate::config::config().display.prompt_preview && scroll > 0 {
+    let prompt_preview_lines = if transcript_view.is_none()
+        && crate::config::config().display.prompt_preview
+        && scroll > 0
+    {
         compute_prompt_preview_line_count(
             wrapped_user_prompt_starts,
             user_prompt_texts,
@@ -969,6 +980,9 @@ pub(super) fn draw_messages(
         }
     }
 
+    if let Some(view) = transcript_view {
+        view.highlight(&prepared, scroll, &mut visible_lines);
+    }
     frame.render_widget(Paragraph::new(visible_lines), content_area);
 
     let centered = app.centered_mode();
@@ -1248,7 +1262,11 @@ pub(super) fn draw_messages(
         frame.render_widget(Paragraph::new(pinned_todo_band), band_area);
     }
 
-    if crate::config::config().display.prompt_preview && scroll > 0 && prompt_history_expanded() {
+    if transcript_view.is_none()
+        && crate::config::config().display.prompt_preview
+        && scroll > 0
+        && prompt_history_expanded()
+    {
         let items = expanded_prompt_preview_items(
             wrapped_user_prompt_starts,
             user_prompt_texts,
@@ -1283,7 +1301,7 @@ pub(super) fn draw_messages(
             clear_area(frame, preview_area);
             frame.render_widget(Paragraph::new(lines), preview_area);
         }
-    } else if crate::config::config().display.prompt_preview && scroll > 0 {
+    } else if prompt_preview_lines > 0 {
         let last_offscreen_prompt_idx =
             lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
 
@@ -1319,7 +1337,11 @@ pub(super) fn draw_messages(
         }
     }
 
-    if !show_native_scrollbar && app.auto_scroll_paused() && scroll < max_scroll {
+    if transcript_view.is_none()
+        && !show_native_scrollbar
+        && app.auto_scroll_paused()
+        && scroll < max_scroll
+    {
         let indicator = format!("↓{}", max_scroll - scroll);
         let indicator_area = Rect {
             x: render_area.x + render_area.width.saturating_sub(indicator.len() as u16 + 2),

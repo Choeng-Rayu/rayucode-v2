@@ -782,9 +782,19 @@ fn insert_input_text_with_undo(app: &mut App, text: &str, typed: bool) {
     // Keeping this at the shared insertion boundary also covers paste and
     // Shift+Enter, rather than relying on individual key dispatchers to remember
     // to reconcile the transcript viewport.
-    app.follow_chat_bottom_for_typing();
-
     let at_end = app.cursor_pos == app.input.len();
+    let typing_transcript_command = app.auto_scroll_paused && at_end && {
+        let candidate = format!("{}{text}", app.input);
+        let mut words = candidate.split_whitespace();
+        words
+            .next()
+            .is_some_and(|command| "/transcript".starts_with(command))
+            && words.next().is_none_or(|arg| "view".starts_with(arg))
+            && words.next().is_none()
+    };
+    if !typing_transcript_command {
+        app.follow_chat_bottom_for_typing();
+    }
 
     // A habitual space typed after an auto-inserted picker separator would
     // only add noise. Swallow it so command + space + filter still produces
@@ -2309,6 +2319,12 @@ pub(super) fn handle_navigation_shortcuts(
         return true;
     }
 
+    if app.auto_scroll_paused && code == KeyCode::End && modifiers == KeyModifiers::CONTROL {
+        app.follow_chat_bottom();
+        app.request_full_repaint();
+        return true;
+    }
+
     false
 }
 
@@ -2783,6 +2799,9 @@ pub(super) fn handle_modal_key(
         return Ok(true);
     }
 
+    if app.handle_transcript_view_key(code, modifiers) {
+        return Ok(true);
+    }
     app.handle_inline_interactive_preview_key(&code, modifiers)
 }
 
@@ -3597,6 +3616,9 @@ impl App {
     /// Handle bracketed paste: store text content (image URLs are still detected inline)
     pub(super) fn handle_paste(&mut self, text: String) {
         self.wake_idle_hibernation();
+        if self.handle_transcript_view_paste(&text) {
+            return;
+        }
         handle_paste(self, text);
     }
 
@@ -4002,6 +4024,15 @@ impl App {
         self.pasted_contents.clear();
         self.cursor_pos = 0;
         self.clear_input_undo_history();
+        if self.pending_login.is_none()
+            && self.pending_account_input.is_none()
+            && self.pending_ssh_remote_name.is_none()
+            && super::transcript_inspection::is_transcript_view_command(input.trim())
+        {
+            self.open_transcript_view();
+            crate::telemetry::record_command_family(input.trim());
+            return;
+        }
         self.follow_chat_bottom(); // Reset to bottom and resume auto-scroll on new input
 
         // If the previous assistant turn still has visible streamed text that has not yet been

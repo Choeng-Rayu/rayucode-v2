@@ -46,6 +46,140 @@ fn top_token(chat: &str) -> Option<String> {
 }
 
 #[test]
+fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact() {
+    let _lock = scroll_render_test_lock();
+    let mut app = anchored_scroll_test_app();
+    app.push_display_message(DisplayMessage::assistant("a+b 界 first"));
+    app.push_display_message(DisplayMessage::assistant("aaab 界 ignored"));
+    app.push_display_message(DisplayMessage::assistant("A+B 界 second"));
+    app.set_input_for_test("Draft with 👩‍💻 and e\u{301}");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(34, 16)).unwrap();
+    render_and_snap(&app, &mut terminal);
+    app.scroll_up(25);
+    render_and_snap(&app, &mut terminal);
+    let original = top_token(&anchored_chat_area(&terminal)).unwrap();
+    let caret = app.cursor_pos;
+
+    assert!(super::commands_dispatch::dispatch_local_command(
+        &mut app,
+        "/transcript view"
+    ));
+    render_and_snap(&app, &mut terminal);
+    assert!(!buffer_to_text(&terminal).contains("Draft with"));
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
+        .unwrap();
+    app.handle_paste("a+b 界".into());
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert!(buffer_to_text(&terminal).contains("1/2 /a+b 界"));
+    app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE)
+        .unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert!(buffer_to_text(&terminal).contains("2/2 /a+b 界"));
+    app.handle_key(KeyCode::Char('N'), KeyModifiers::SHIFT)
+        .unwrap();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
+        .unwrap();
+    app.handle_paste("discard this search".into());
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert!(buffer_to_text(&terminal).contains("1/2 /a+b 界"));
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(
+        top_token(&anchored_chat_area(&terminal)).as_deref(),
+        Some(original.as_str())
+    );
+    assert_eq!(app.input, "Draft with 👩‍💻 and e\u{301}");
+    assert_eq!(app.cursor_pos, caret);
+    assert!(app.auto_scroll_paused);
+}
+
+#[test]
+fn transcript_view_keeps_paging_results_and_typed_command_preserves_pause() {
+    let _lock = scroll_render_test_lock();
+    let mut app = anchored_scroll_test_app();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 6)).unwrap();
+    render_and_snap(&app, &mut terminal);
+    let frame = crate::tui::ui::last_chat_frame().unwrap();
+    app.scroll_offset = (0..frame.total_wrapped_lines())
+        .find(|&row| {
+            frame
+                .wrapped_plain_line(row)
+                .is_some_and(|line| line.contains("TOKEN020"))
+        })
+        .expect("fixture message is prepared");
+    app.auto_scroll_paused = true;
+    render_and_snap(&app, &mut terminal);
+    let reader_position = || {
+        let frame = crate::tui::ui::last_chat_frame().unwrap();
+        rayucode_tui_messages::content_pos_at_row(
+            &frame,
+            crate::tui::ui::last_resolved_chat_scroll(),
+        )
+    };
+    let original = reader_position().expect("the reader is parked in history");
+    type_text(&mut app, "/transcript view");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(app.transcript_view.is_some());
+    render_and_snap(&app, &mut terminal);
+
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
+        .unwrap();
+    app.handle_paste("older result".into());
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert!(buffer_to_text(&terminal).contains("0/0"));
+
+    let mut history = vec![DisplayMessage::assistant("Older Result")];
+    history.extend(app.display_messages().iter().cloned());
+    app.capture_history_anchor(0);
+    let count = history.len();
+    app.apply_compacted_history_window(history, Vec::new(), count, count, 0, 0);
+    render_and_snap(&app, &mut terminal);
+    app.reconcile_history_anchor();
+    app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE)
+        .unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert!(buffer_to_text(&terminal).contains("1/1"));
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(reader_position(), Some(original));
+    assert!(app.auto_scroll_paused);
+}
+
+#[test]
+fn jump_to_latest_counts_committed_rows_and_click_resumes_tail() {
+    let _lock = scroll_render_test_lock();
+    let mut app = anchored_scroll_test_app();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 6)).unwrap();
+    render_and_snap(&app, &mut terminal);
+    app.scroll_up(15);
+    app.replace_streaming_text("live delta".into());
+    assert_eq!(app.unseen_chat_messages, 0);
+    assert!(app.commit_pending_streaming_assistant_message());
+    assert!(!app.commit_pending_streaming_assistant_message());
+    app.push_display_message(DisplayMessage::spacer(2));
+    assert_eq!(app.unseen_chat_messages, 1);
+    render_and_snap(&app, &mut terminal);
+    let area = crate::tui::ui::jump_to_latest_area().unwrap();
+    assert!(buffer_to_text(&terminal).contains("Jump to latest +1"));
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: area.x,
+        row: area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert!(!app.auto_scroll_paused);
+    assert_eq!(app.unseen_chat_messages, 0);
+
+    app.scroll_up(10);
+    assert!(app.auto_scroll_paused);
+    app.handle_key(KeyCode::End, KeyModifiers::CONTROL).unwrap();
+    assert!(!app.auto_scroll_paused);
+}
+
+#[test]
 fn resize_keeps_the_anchored_message_under_a_paused_reader() {
     let _lock = scroll_render_test_lock();
     crate::perf::pin_full_profile_for_tests();
