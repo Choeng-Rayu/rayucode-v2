@@ -91,11 +91,11 @@ catalog for API keys), so new models appear without a `rayu` update. See
 Pair the shared Rayu bot with `rayu telegram link` after signing into your
 Rayu account, or pair a dedicated BotFather bot with
 `rayu telegram link --botfather`. Open the pairing link or scan the QR code
-in a private Telegram chat. The terminal UI also supports `/telegram-bot link`
-for the shared bot and `/telegram-bot status` to check the link. To move an
-existing hosted link from the legacy CLI, run
-`rayu telegram link --replace-existing`. This disconnects the old chat
-before creating the new pairing.
+in a private Telegram chat. In the terminal UI, `/telegram-bot` starts pairing
+with the shared bot when disconnected. Use `/telegram-bot status` to check
+the link. To move an existing hosted link from the legacy CLI, run
+`rayu telegram link --replace-existing`. This disconnects the old chat before
+creating the new pairing.
 
 Use `/sessions` to select a session, then send a prompt or an image. Use
 `/model` and `/provider` to choose among configured routes, `/interrupt` to

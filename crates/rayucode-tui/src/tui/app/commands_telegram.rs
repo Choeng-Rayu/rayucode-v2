@@ -34,34 +34,39 @@ pub(super) fn handle(app: &mut App, input: &str) -> bool {
         _ => return false,
     };
 
-    let status = match input.trim() {
+    let input = input.trim();
+    let status = match input {
         "/telegram-bot" | "/telegram-bot status" => match telegram_remote::load() {
             Ok(Some(link)) => format!("{} · @{}\nUse /telegram-bot disconnect to disconnect this host.", link.status(), link.username),
-            Ok(None) => "Telegram is disconnected. Use /telegram-bot link for the hosted Rayu bot, or run rayu telegram link --botfather in a terminal.".into(),
+            Ok(None) if input == "/telegram-bot" => return start_operation(app, link(), "Starting Telegram pairing"),
+            Ok(None) => "Telegram is disconnected. Use /telegram-bot to pair the hosted Rayu bot.".into(),
             Err(error) => format!("Could not read Telegram settings: {error}"),
         },
-        "/telegram-bot link" | "/telegram-bot disconnect" => {
-            if app.pending_telegram.is_some() {
-                app.set_status_notice("A Telegram operation is already running");
-                return true;
-            }
-            let disconnect = input.trim_end().ends_with("disconnect");
-            let (send, receiver) = tokio::sync::oneshot::channel();
-            app.pending_telegram = Some(receiver);
-            tokio::spawn(async move {
-                let result = if disconnect {
-                    disconnect_link().await
-                } else {
-                    link().await
-                };
-                let _ = send.send(result);
-            });
-            app.set_status_notice("Updating Telegram link");
-            return true;
+        "/telegram-bot link" => return start_operation(app, link(), "Starting Telegram pairing"),
+        "/telegram-bot disconnect" => {
+            return start_operation(app, disconnect_link(), "Disconnecting Telegram");
         }
         _ => "Use /telegram-bot [link|status|disconnect]. For BotFather tokens run rayu telegram link --botfather.".into(),
     };
     app.push_display_message(DisplayMessage::system(status));
+    true
+}
+
+fn start_operation(
+    app: &mut App,
+    operation: impl Future<Output = anyhow::Result<String>> + Send + 'static,
+    notice: &str,
+) -> bool {
+    if app.pending_telegram.is_some() {
+        app.set_status_notice("A Telegram operation is already running");
+        return true;
+    }
+    let (send, receiver) = tokio::sync::oneshot::channel();
+    app.pending_telegram = Some(receiver);
+    tokio::spawn(async move {
+        let _ = send.send(operation.await);
+    });
+    app.set_status_notice(notice);
     true
 }
 
@@ -97,4 +102,32 @@ pub(super) fn poll(app: &mut App) -> bool {
     app.pending_telegram = None;
     app.push_display_message(message);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tui::app::{commands_dispatch::dispatch_local_command, tests::create_test_app};
+
+    #[test]
+    fn telegram_command_starts_pairing_while_status_only_reports() -> anyhow::Result<()> {
+        let _sandbox = crate::auth::test_sandbox::AuthTestSandbox::new()?;
+        let mut app = create_test_app();
+        // Queue the pairing task without polling it or making network calls.
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let _runtime = runtime.enter();
+
+        assert!(dispatch_local_command(&mut app, "/telegram-bot status"));
+        assert!(app.pending_telegram.is_none());
+        assert!(
+            app.display_messages
+                .last()
+                .unwrap()
+                .content
+                .starts_with("Telegram is disconnected.")
+        );
+
+        assert!(dispatch_local_command(&mut app, "/telegram-bot"));
+        assert!(app.pending_telegram.is_some());
+        Ok(())
+    }
 }
