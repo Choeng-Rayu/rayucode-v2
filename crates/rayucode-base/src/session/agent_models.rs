@@ -1,6 +1,7 @@
 //! Session-specific worker routing. A separate atomic metadata file permits
 //! updates while a turn owns the agent mutex, without rewriting its transcript.
 use super::Session;
+use crate::config::AgentProfile;
 use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 
@@ -84,13 +85,124 @@ impl Session {
 
     /// Resolve session > global. "inherit" remains explicit for downstream
     /// routing, rather than becoming indistinguishable from use-global.
+    /// A value naming an agent profile (`name` or `profile:name`) resolves to
+    /// that profile's model, so every role target accepts profile names.
     pub fn effective_agent_model(&self, target: &str, global: Option<String>) -> Option<String> {
         let current = path(&self.id)
             .ok()
             .and_then(|path| read_saved(&path))
             .unwrap_or_else(|| self.agent_model_overrides.clone());
-        current.get(target).cloned().or(global)
+        let raw = current.get(target).cloned().or(global)?;
+        Some(resolve_profile_reference(
+            &self.effective_agent_profiles(),
+            &raw,
+        ))
     }
+
+    /// Session profiles only (sidecar file), without global ones.
+    pub fn session_agent_profiles(&self) -> Vec<AgentProfile> {
+        Self::read_session_agent_profiles(&self.id)
+    }
+
+    pub fn read_session_agent_profiles(id: &str) -> Vec<AgentProfile> {
+        let Ok(path) = profiles_path(id) else {
+            return Vec::new();
+        };
+        if !path.exists() {
+            return Vec::new();
+        }
+        match crate::storage::read_json::<Vec<AgentProfile>>(&path) {
+            Ok(profiles) => profiles,
+            Err(err) => {
+                crate::logging::warn(&format!(
+                    "Ignoring unreadable session agent profiles at {}: {err}",
+                    path.display()
+                ));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Global config profiles overlaid with this session's profiles.
+    pub fn effective_agent_profiles(&self) -> Vec<AgentProfile> {
+        effective_agent_profiles_for(&self.id)
+    }
+
+    /// Add or replace a session profile. Returns the normalized profile.
+    pub fn upsert_session_agent_profile(&self, profile: AgentProfile) -> Result<AgentProfile> {
+        let profile = normalize_profile(profile)?;
+        let _guard = UPDATE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut profiles = self.session_agent_profiles();
+        match profiles.iter_mut().find(|p| p.name == profile.name) {
+            Some(existing) => *existing = profile.clone(),
+            None => profiles.push(profile.clone()),
+        }
+        crate::storage::write_json(&profiles_path(&self.id)?, &profiles)?;
+        Ok(profile)
+    }
+
+    /// Remove a session profile. Returns whether one was removed.
+    pub fn remove_session_agent_profile(&self, name: &str) -> Result<bool> {
+        let name = AgentProfile::normalize_name(name).map_err(anyhow::Error::msg)?;
+        let _guard = UPDATE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut profiles = self.session_agent_profiles();
+        let before = profiles.len();
+        profiles.retain(|p| p.name != name);
+        if profiles.len() == before {
+            return Ok(false);
+        }
+        crate::storage::write_json(&profiles_path(&self.id)?, &profiles)?;
+        Ok(true)
+    }
+}
+
+fn profiles_path(id: &str) -> Result<std::path::PathBuf> {
+    Ok(path(id)?.with_file_name(format!("{id}.agent-profiles.meta")))
+}
+
+/// Validate and normalize a user-supplied profile.
+pub fn normalize_profile(profile: AgentProfile) -> Result<AgentProfile> {
+    let name = AgentProfile::normalize_name(&profile.name).map_err(anyhow::Error::msg)?;
+    let model = profile.model.trim().to_string();
+    if model.is_empty() {
+        bail!("Profile {name} needs a model");
+    }
+    let self_ref = model.strip_prefix("profile:").unwrap_or(&model).trim();
+    if self_ref.eq_ignore_ascii_case(&name) {
+        bail!("Profile {name} cannot point at itself");
+    }
+    Ok(AgentProfile {
+        name,
+        model,
+        description: profile.description.trim().to_string(),
+        effort: profile
+            .effort
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty()),
+    })
+}
+
+/// Global config profiles overlaid with a session's profiles, by session id.
+/// Works without loading the transcript.
+pub fn effective_agent_profiles_for(session_id: &str) -> Vec<AgentProfile> {
+    let config = crate::config::config();
+    crate::config::merge_agent_profiles([
+        config.agents.profiles.as_slice(),
+        Session::read_session_agent_profiles(session_id).as_slice(),
+    ])
+}
+
+/// Map a profile reference to its model. Non-profile values pass through.
+/// Explicit `profile:` prefixes that match nothing also pass through so the
+/// caller reports the unknown model instead of silently inheriting.
+pub fn resolve_profile_reference(profiles: &[AgentProfile], value: &str) -> String {
+    crate::config::find_agent_profile(profiles, value)
+        .map(|profile| profile.model.clone())
+        .unwrap_or_else(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -138,6 +250,84 @@ mod tests {
                 path("bak_owner").unwrap().with_extension("bak").exists(),
                 "override file keeps its own backup"
             );
+        });
+    }
+
+    #[test]
+    fn session_profiles_override_global_and_resolve_role_targets() {
+        with_temp_home(|home| {
+            std::fs::write(
+                home.join("config.toml"),
+                "[agents]\nswarm_model = \"coder\"\n[[agents.profiles]]\nname = \"coder\"\nmodel = \"claude:global-sonnet\"\n\n[autoreview]\nmodel = \"profile:reviewer\"\n",
+            )
+            .unwrap();
+            crate::config::Config::invalidate_cache();
+            let mut session = Session::create_with_id("prof".into(), None, None);
+            session.save_prepared().unwrap();
+            let global = crate::config::Config::load();
+            // Global default naming a profile resolves to its model.
+            assert_eq!(
+                session
+                    .effective_agent_model("swarm", global.agents.swarm_model.clone())
+                    .as_deref(),
+                Some("claude:global-sonnet")
+            );
+            // Session profile overrides the global one with the same name.
+            session
+                .upsert_session_agent_profile(AgentProfile {
+                    name: "Coder".into(),
+                    model: "openai:gpt-session-future".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(
+                session
+                    .effective_agent_model("swarm", global.agents.swarm_model.clone())
+                    .as_deref(),
+                Some("openai:gpt-session-future")
+            );
+            // Unknown `profile:` reference passes through for callers to report.
+            assert_eq!(
+                session
+                    .effective_agent_model("review", global.autoreview.model.clone())
+                    .as_deref(),
+                Some("profile:reviewer")
+            );
+            session
+                .upsert_session_agent_profile(AgentProfile {
+                    name: "reviewer".into(),
+                    model: "gemini:review-model".into(),
+                    ..Default::default()
+                })
+                .unwrap();
+            session
+                .set_agent_model_override("judge", Some("reviewer".into()))
+                .unwrap();
+            assert_eq!(
+                session.effective_agent_model("judge", None).as_deref(),
+                Some("gemini:review-model")
+            );
+            // Profiles survive reload, and removal restores the global layer.
+            let reloaded = Session::load("prof").unwrap();
+            assert_eq!(reloaded.session_agent_profiles().len(), 2);
+            assert!(reloaded.remove_session_agent_profile("coder").unwrap());
+            assert!(!reloaded.remove_session_agent_profile("coder").unwrap());
+            assert_eq!(
+                reloaded
+                    .effective_agent_model("swarm", global.agents.swarm_model)
+                    .as_deref(),
+                Some("claude:global-sonnet")
+            );
+            assert!(
+                reloaded
+                    .upsert_session_agent_profile(AgentProfile {
+                        name: "loop".into(),
+                        model: "profile:loop".into(),
+                        ..Default::default()
+                    })
+                    .is_err()
+            );
+            crate::config::Config::invalidate_cache();
         });
     }
 

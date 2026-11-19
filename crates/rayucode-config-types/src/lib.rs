@@ -515,8 +515,22 @@ pub struct AgentsConfig {
     pub swarm_model: Option<String>,
     /// Opt in to agent-selected worker models, restricted to the exact allowlist.
     pub swarm_model_selection: bool,
-    /// Exact model/route strings the agent may request. Empty denies all overrides.
+    /// Exact model/route strings the agent may request. With
+    /// `swarm_model_selection = true` this is a strict allowlist.
     pub swarm_model_allowlist: Vec<String>,
+    /// Let the coordinating agent pick a worker model per task from the live
+    /// model catalog when no strict allowlist is configured. Default true.
+    #[serde(default = "default_true")]
+    pub swarm_model_autoselect: bool,
+    /// User-defined agent profiles: a named model plus a note on when to use
+    /// it. The coordinator sees them and picks one per worker; role targets
+    /// (swarm/review/judge/memory/ambient) may reference them by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<AgentProfile>,
+    /// Show the one-time "set up agent profiles" hint on launch while no
+    /// profiles exist. Set false to silence it.
+    #[serde(default = "default_true")]
+    pub profile_setup_hint: bool,
     /// Reasoning effort for spawned swarm workers (`"low"`, `"medium"`,
     /// `"high"`, ...). The swarm tool does not let agents choose worker
     /// effort. Unset means `"low"`.
@@ -638,12 +652,99 @@ fn default_memory_rerank_min_agree() -> usize {
     2
 }
 
+/// A user-recommended model for a kind of agent work.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct AgentProfile {
+    /// Short unique name, e.g. `research` or `coder`.
+    pub name: String,
+    /// Exact model or route, e.g. `claude:claude-sonnet-4-6`.
+    pub model: String,
+    /// When the coordinator should use this profile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Optional worker reasoning effort for swarm workers using this profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+impl AgentProfile {
+    /// Normalize and validate a profile name: lowercase ASCII letters, digits,
+    /// `-` and `_`, 1-32 chars.
+    pub fn normalize_name(name: &str) -> Result<String, String> {
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty()
+            || name.len() > 32
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(format!(
+                "Invalid profile name {name:?}: use 1-32 letters, digits, '-' or '_'."
+            ));
+        }
+        if matches!(name.as_str(), "inherit" | "coordinator" | "default") {
+            return Err(format!("Profile name {name:?} is reserved."));
+        }
+        Ok(name)
+    }
+}
+
+/// Merge profile lists: later lists override earlier ones by name. Invalid or
+/// model-less entries are skipped. Order follows first appearance.
+pub fn merge_agent_profiles<'a>(
+    layers: impl IntoIterator<Item = &'a [AgentProfile]>,
+) -> Vec<AgentProfile> {
+    let mut merged: Vec<AgentProfile> = Vec::new();
+    for layer in layers {
+        for profile in layer {
+            let Ok(name) = AgentProfile::normalize_name(&profile.name) else {
+                continue;
+            };
+            let model = profile.model.trim();
+            if model.is_empty() {
+                continue;
+            }
+            let entry = AgentProfile {
+                name: name.clone(),
+                model: model.to_string(),
+                description: profile.description.trim().to_string(),
+                effort: profile
+                    .effort
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|e| !e.is_empty())
+                    .map(str::to_string),
+            };
+            match merged.iter_mut().find(|p| p.name == name) {
+                Some(existing) => *existing = entry,
+                None => merged.push(entry),
+            }
+        }
+    }
+    merged
+}
+
+/// Find a profile by name. Accepts `name` or `profile:name`.
+pub fn find_agent_profile<'a>(
+    profiles: &'a [AgentProfile],
+    reference: &str,
+) -> Option<&'a AgentProfile> {
+    let reference = reference.trim();
+    let name = reference.strip_prefix("profile:").unwrap_or(reference);
+    let name = name.trim().to_ascii_lowercase();
+    profiles.iter().find(|p| p.name == name)
+}
+
 impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
             swarm_model_selection: false,
             swarm_model_allowlist: Vec::new(),
+            swarm_model_autoselect: true,
+            profiles: Vec::new(),
+            profile_setup_hint: true,
             swarm_effort: None,
             swarm_root_effort: None,
             swarm_spawn_mode: SwarmSpawnMode::default(),
@@ -677,22 +778,37 @@ impl AgentsConfig {
         let Some(model) = model else {
             return Ok(());
         };
-        if !self.swarm_model_selection {
-            return Err(
-                "Agent-selected swarm models are disabled. Omit model to use the user-configured default.",
-            );
+        if model.trim().is_empty() {
+            return Err("Requested swarm model is blank. Omit model to use the default.");
         }
-        if model.trim().is_empty()
-            || !self
+        if self.strict_swarm_model_allowlist() {
+            if !self
                 .swarm_model_allowlist
                 .iter()
                 .any(|allowed| allowed == model)
-        {
+            {
+                return Err(
+                    "Requested swarm model is not in agents.swarm_model_allowlist. Use a profile or omit model to use the user-configured default.",
+                );
+            }
+            return Ok(());
+        }
+        if !self.swarm_model_autoselect {
             return Err(
-                "Requested swarm model is not in agents.swarm_model_allowlist. Omit model to use the user-configured default.",
+                "Agent-selected swarm models are disabled. Use a profile or omit model to use the user-configured default.",
             );
         }
         Ok(())
+    }
+
+    /// True when the user opted into a strict, exact-match model allowlist.
+    pub fn strict_swarm_model_allowlist(&self) -> bool {
+        self.swarm_model_selection && !self.swarm_model_allowlist.is_empty()
+    }
+
+    /// Whether the coordinator may pass a raw `model` to swarm spawns.
+    pub fn agent_may_choose_swarm_model(&self) -> bool {
+        self.strict_swarm_model_allowlist() || self.swarm_model_autoselect
     }
 
     /// Resolve swarm mode's root effort without allowing the orchestration
@@ -1593,6 +1709,89 @@ pub struct LaunchHotkeysConfig {
     /// Set true once auto-import has populated `entries`, so we only bake the
     /// per-repo mapping a single time and never clobber later user edits.
     pub imported: bool,
+}
+
+#[cfg(test)]
+mod agent_profile_tests {
+    use super::*;
+
+    fn profile(name: &str, model: &str) -> AgentProfile {
+        AgentProfile {
+            name: name.into(),
+            model: model.into(),
+            description: String::new(),
+            effort: None,
+        }
+    }
+
+    #[test]
+    fn profiles_parse_from_toml_and_default_on_autoselect() {
+        let agents: AgentsConfig = serde_json::from_str(
+            r#"{"profiles":[{"name":"Coder","model":"claude:sonnet","description":"edits","effort":"high"}]}"#,
+        )
+        .unwrap();
+        assert!(agents.swarm_model_autoselect);
+        assert!(agents.profile_setup_hint);
+        assert_eq!(agents.profiles.len(), 1);
+        assert_eq!(agents.profiles[0].effort.as_deref(), Some("high"));
+        let merged = merge_agent_profiles([agents.profiles.as_slice()]);
+        assert_eq!(merged[0].name, "coder");
+        assert!(find_agent_profile(&merged, "profile:CODER").is_some());
+        assert!(find_agent_profile(&merged, "claude:sonnet").is_none());
+    }
+
+    #[test]
+    fn session_layer_overrides_global_and_skips_invalid() {
+        let global = vec![
+            profile("coder", "a"),
+            profile("bad name", "x"),
+            profile("r", ""),
+        ];
+        let session = vec![profile("CODER", "b"), profile("research", "c")];
+        let merged = merge_agent_profiles([global.as_slice(), session.as_slice()]);
+        let pairs: Vec<_> = merged
+            .iter()
+            .map(|p| (p.name.as_str(), p.model.as_str()))
+            .collect();
+        assert_eq!(pairs, vec![("coder", "b"), ("research", "c")]);
+        assert!(AgentProfile::normalize_name("inherit").is_err());
+    }
+
+    #[test]
+    fn raw_model_policy_autoselect_vs_strict_allowlist() {
+        let mut agents = AgentsConfig::default();
+        // Default: the coordinator may choose any concrete route.
+        assert!(
+            agents
+                .validate_swarm_model_request(Some("openai:gpt-x"))
+                .is_ok()
+        );
+        assert!(agents.validate_swarm_model_request(Some(" ")).is_err());
+        // Strict allowlist wins over autoselect.
+        agents.swarm_model_selection = true;
+        agents.swarm_model_allowlist = vec!["claude:opus".into()];
+        assert!(
+            agents
+                .validate_swarm_model_request(Some("claude:opus"))
+                .is_ok()
+        );
+        assert!(
+            agents
+                .validate_swarm_model_request(Some("openai:gpt-x"))
+                .is_err()
+        );
+        // Autoselect off and no strict list denies raw models.
+        let agents = AgentsConfig {
+            swarm_model_autoselect: false,
+            ..Default::default()
+        };
+        assert!(
+            agents
+                .validate_swarm_model_request(Some("openai:gpt-x"))
+                .is_err()
+        );
+        assert!(agents.validate_swarm_model_request(None).is_ok());
+    }
 }
 
 #[cfg(test)]

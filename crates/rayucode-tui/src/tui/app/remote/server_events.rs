@@ -2359,6 +2359,7 @@ fn handle_server_event_inner(
             }
 
             app.maybe_show_catchup_after_history(&session_id);
+            app.maybe_show_agent_profile_setup_hint();
 
             // The bootstrap above may have cleared/replaced the transcript for a
             // brand-new session, wiping the startup notice card (launch-hotkeys /

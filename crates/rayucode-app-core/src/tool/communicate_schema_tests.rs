@@ -52,15 +52,21 @@ fn schema_still_requires_action() {
 }
 
 #[test]
-fn schema_hides_model_override_by_default_and_keeps_effort_user_configured() {
+fn schema_hides_model_override_when_autoselect_off_and_keeps_effort_user_configured() {
     let schema = CommunicateTool::new().parameters_schema();
     let props = schema["properties"]
         .as_object()
         .expect("swarm schema should have properties");
 
     let mut schema = schema.clone();
-    super::super::apply_swarm_model_policy(&mut schema, &crate::config::AgentsConfig::default());
+    let agents = crate::config::AgentsConfig {
+        swarm_model_autoselect: false,
+        ..Default::default()
+    };
+    super::super::apply_swarm_model_policy(&mut schema, &agents);
     assert!(schema["properties"].get("model").is_none());
+    // Profiles stay available because the user defined them.
+    assert!(schema["properties"].get("profile").is_some());
     // Worker effort is user-configured (`agents.swarm_effort`, default low),
     // never chosen by the coordinating agent.
     assert!(!props.contains_key("effort"));
@@ -77,6 +83,7 @@ fn schema_only_exposes_exact_allowlisted_worker_models_when_enabled() {
     let mut schema = CommunicateTool::new().parameters_schema();
     let mut agents = crate::config::AgentsConfig {
         swarm_model_allowlist: vec!["openai:gpt-5.5".to_string()],
+        swarm_model_autoselect: false,
         ..Default::default()
     };
     super::super::apply_swarm_model_policy(&mut schema, &agents);
@@ -96,6 +103,7 @@ fn schema_only_exposes_exact_allowlisted_worker_models_when_enabled() {
 fn spawning_actions_cannot_bypass_worker_model_policy() {
     let mut agents = crate::config::AgentsConfig {
         swarm_model_allowlist: vec!["claude:claude-opus-4-8".to_string()],
+        swarm_model_autoselect: false,
         ..Default::default()
     };
     for action in ["spawn", "assign_task", "assign_next", "retry", "resume"] {
@@ -129,6 +137,12 @@ async fn stale_worker_model_override_is_rejected_before_server_dispatch() {
     let temp = tempfile::TempDir::new().unwrap();
     let previous = std::env::var_os("RAYU_HOME");
     crate::env::set_var("RAYU_HOME", temp.path());
+    std::fs::write(
+        temp.path().join("config.toml"),
+        "[agents]\nswarm_model_autoselect = false\n",
+    )
+    .unwrap();
+    crate::config::Config::invalidate_cache();
     let tool = CommunicateTool::new();
     let result = tool
         .execute(
@@ -140,11 +154,46 @@ async fn stale_worker_model_override_is_rejected_before_server_dispatch() {
         Some(value) => crate::env::set_var("RAYU_HOME", value),
         None => crate::env::remove_var("RAYU_HOME"),
     }
+    crate::config::Config::invalidate_cache();
     let error = result.unwrap_err().to_string();
     assert!(
         error.contains("Agent-selected swarm models are disabled"),
         "{error}"
     );
+}
+
+#[test]
+fn schema_advertises_profile_and_per_task_model_by_default() {
+    let mut schema = CommunicateTool::new().parameters_schema();
+    super::super::apply_swarm_model_policy(&mut schema, &crate::config::AgentsConfig::default());
+    assert_eq!(schema["properties"]["profile"]["type"], json!("string"));
+    assert_eq!(schema["properties"]["model"]["type"], json!("string"));
+    assert!(schema["properties"]["model"].get("enum").is_none());
+}
+
+#[test]
+fn profile_travels_as_profile_reference_and_wins_over_model() {
+    let input: CommunicateInput = serde_json::from_value(
+        json!({"action": "spawn", "profile": " research ", "model": "openai:gpt-5.5"}),
+    )
+    .unwrap();
+    assert_eq!(input.spawn_model().as_deref(), Some("profile:research"));
+    let input: CommunicateInput =
+        serde_json::from_value(json!({"action": "spawn", "model": "openai:gpt-5.5"})).unwrap();
+    assert_eq!(input.spawn_model().as_deref(), Some("openai:gpt-5.5"));
+}
+
+#[test]
+fn profile_catalog_lists_profiles_or_explains_fallback() {
+    let empty = super::super::format_profile_catalog(&[]);
+    assert!(empty.contains("No agent profiles configured"));
+    let listed = super::super::format_profile_catalog(&[crate::config::AgentProfile {
+        name: "coder".into(),
+        model: "claude:sonnet".into(),
+        description: "Code edits".into(),
+        effort: Some("medium".into()),
+    }]);
+    assert!(listed.contains("- coder: claude:sonnet effort=medium - Code edits"));
 }
 
 #[test]

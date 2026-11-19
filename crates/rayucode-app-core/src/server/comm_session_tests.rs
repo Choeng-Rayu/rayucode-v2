@@ -512,6 +512,54 @@ fn coordinator_identity(
 }
 
 #[test]
+fn requested_profile_maps_to_model_and_effort_and_unknown_profile_errors() {
+    use super::resolve_requested_profile;
+    let profiles = vec![crate::config::AgentProfile {
+        name: "research".into(),
+        model: "openrouter:future/model-zz-9000".into(),
+        description: "Web research".into(),
+        effort: Some("high".into()),
+    }];
+    let (model, effort, name) =
+        resolve_requested_profile(Some("profile:research".into()), &profiles).unwrap();
+    assert_eq!(model.as_deref(), Some("openrouter:future/model-zz-9000"));
+    assert_eq!(effort.as_deref(), Some("high"));
+    assert_eq!(name.as_deref(), Some("research"));
+    // Bare profile names also resolve (planner `subagent_type`, role targets).
+    let (model, _, _) = resolve_requested_profile(Some("Research".into()), &profiles).unwrap();
+    assert_eq!(model.as_deref(), Some("openrouter:future/model-zz-9000"));
+    // Raw models pass through unchanged for the normal policy check.
+    let (model, effort, name) =
+        resolve_requested_profile(Some("openai:gpt-5.5".into()), &profiles).unwrap();
+    assert_eq!(model.as_deref(), Some("openai:gpt-5.5"));
+    assert!(effort.is_none() && name.is_none());
+    let error = resolve_requested_profile(Some("profile:nope".into()), &profiles).unwrap_err();
+    assert!(error.to_string().contains("Available profiles: research"));
+}
+
+#[test]
+fn profile_model_drives_spawn_selection_instead_of_coordinator() {
+    use super::resolve_requested_profile;
+    let profiles = vec![crate::config::AgentProfile {
+        name: "coder".into(),
+        model: "openai-api:gpt-future-77".into(),
+        ..Default::default()
+    }];
+    let (model, _, _) = resolve_requested_profile(Some("profile:coder".into()), &profiles).unwrap();
+    let selection = resolve_swarm_spawn_selection(
+        model,
+        None,
+        &coordinator_identity(
+            Some("claude-opus-4-8"),
+            Some("claude"),
+            Some("claude-oauth"),
+        ),
+    );
+    assert_eq!(selection.model.as_deref(), Some("gpt-future-77"));
+    assert_ne!(selection.route_api_method.as_deref(), Some("claude-oauth"));
+}
+
+#[test]
 fn resolve_swarm_spawn_model_prefers_configured_model_over_coordinator_model() {
     let selection = resolve_swarm_spawn_selection(
         None,

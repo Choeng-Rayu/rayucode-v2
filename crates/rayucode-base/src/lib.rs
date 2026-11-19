@@ -18,6 +18,7 @@
     clippy::useless_conversion
 )]
 
+pub mod agent_profiles;
 pub mod applets;
 pub mod auth;
 pub mod background;

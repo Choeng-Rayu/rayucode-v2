@@ -601,20 +601,37 @@ wake_mode = "internal"
 # Swarm root settings and defaults for helper agents (workers, subagents, sidecars).
 # All keys are optional; the values below are the built-in defaults.
 #
-# Default model for spawned swarm/subagent sessions.
-# Leave unset (or "inherit"/"coordinator") so workers inherit the model of the
-# session that spawned them. Set a concrete model to change the worker default.
+# Default model for spawned swarm/subagent sessions when the main agent does
+# not pick one. Leave unset (or "inherit"/"coordinator") so such workers inherit
+# the model of the session that spawned them. A profile name works here too.
 # Env override: RAYU_SWARM_MODEL
 # swarm_model = "inherit"
 #
-# Agent-selected worker models are disabled by default, even if an allowlist exists.
-# Enable explicitly and list exact model/route strings to permit selection.
+# The main agent picks a model per worker by default (from `swarm list_models`
+# or a profile below). Set false to stop it passing raw models; profiles still work.
+# swarm_model_autoselect = true
+#
+# Strict mode: with swarm_model_selection = true and a non-empty allowlist,
+# raw worker models must exactly match an allowlist entry.
 # A bare model does not authorize a provider-prefixed route (or vice versa).
 swarm_model_selection = false
 swarm_model_allowlist = []
-# Example opt-in:
+# Example strict opt-in:
 # swarm_model_selection = true
 # swarm_model_allowlist = ["openai:gpt-5.5", "claude:claude-sonnet-4-6"]
+#
+# Agent profiles: recommend a model per kind of work. The main agent sees the
+# name, model, and description and assigns one per worker. Role targets
+# (`/agents review <profile>`) accept profile names. Per-session profiles:
+# `/agents profile add <name> <model> [--effort <level>] <when to use>`.
+# [[agents.profiles]]
+# name = "coder"
+# model = "claude:claude-sonnet-4-6"
+# description = "Code edits, refactors, tests"
+# effort = "medium"
+#
+# Show a launch tip while no profiles exist (`/agents profile dismiss`).
+# profile_setup_hint = true
 #
 # Reasoning effort for spawned swarm workers ("low", "medium", "high", ...).
 # Agents cannot choose worker effort through the swarm tool. Unset = "low".

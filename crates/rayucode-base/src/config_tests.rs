@@ -355,28 +355,49 @@ fn test_env_override_swarm_model() {
 }
 
 #[test]
-fn swarm_model_selection_defaults_off_even_with_an_allowlist() {
+fn swarm_model_selection_defaults_to_coordinator_autoselect() {
     let agents = Config::default().agents;
     assert!(!agents.swarm_model_selection);
+    assert!(agents.swarm_model_autoselect);
     assert!(agents.swarm_model_allowlist.is_empty());
     assert!(agents.validate_swarm_model_request(None).is_ok());
-    for model in [
-        "inherit",
-        "coordinator",
-        "",
-        "  ",
-        "claude-api:claude-opus-4-8",
-    ] {
+    // The coordinator may pick concrete routes by default, never blanks.
+    assert!(
+        agents
+            .validate_swarm_model_request(Some("claude-api:claude-opus-4-8"))
+            .is_ok()
+    );
+    for model in ["", "  "] {
         assert!(agents.validate_swarm_model_request(Some(model)).is_err());
     }
+    // An allowlist without the strict switch does not restrict selection.
     let cfg: Config =
         toml::from_str("[agents]\nswarm_model_allowlist = [\"claude-api:claude-opus-4-8\"]\n")
             .unwrap();
     assert!(
         cfg.agents
+            .validate_swarm_model_request(Some("openai:gpt-5.5"))
+            .is_ok()
+    );
+    // Opting out restores the old deny-by-default behaviour.
+    let cfg: Config = toml::from_str("[agents]\nswarm_model_autoselect = false\n").unwrap();
+    assert!(
+        cfg.agents
             .validate_swarm_model_request(Some("claude-api:claude-opus-4-8"))
             .is_err()
     );
+}
+
+#[test]
+fn agent_profiles_parse_from_toml() {
+    let cfg: Config = toml::from_str(
+        "[[agents.profiles]]\nname = \"coder\"\nmodel = \"claude:claude-sonnet-4-6\"\ndescription = \"Code edits\"\neffort = \"medium\"\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.agents.profiles.len(), 1);
+    assert_eq!(cfg.agents.profiles[0].model, "claude:claude-sonnet-4-6");
+    let round_trip: Config = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+    assert_eq!(round_trip.agents.profiles, cfg.agents.profiles);
 }
 
 #[test]
@@ -406,7 +427,9 @@ fn swarm_model_selection_requires_opt_in_and_exact_route_match() {
             "{model:?}"
         );
     }
-    let cfg: Config = toml::from_str("[agents]\nswarm_model_selection = true\n").unwrap();
+    let cfg: Config =
+        toml::from_str("[agents]\nswarm_model_selection = true\nswarm_model_autoselect = false\n")
+            .unwrap();
     assert!(
         cfg.agents
             .validate_swarm_model_request(Some("claude:claude-opus-4-8"))

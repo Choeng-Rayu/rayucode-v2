@@ -401,6 +401,29 @@ impl App {
         self.pending_startup_notice = Some((title, message));
     }
 
+    /// On a fresh launch with no agent profiles, ask the user (once per
+    /// process) to set some. The main agent still picks worker models itself
+    /// when the user skips this.
+    pub(crate) fn maybe_show_agent_profile_setup_hint(&mut self) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static SHOWN: AtomicBool = AtomicBool::new(false);
+        if self.pending_startup_notice.is_some()
+            || self
+                .display_messages
+                .iter()
+                .any(|m| matches!(m.role.as_str(), "user" | "assistant" | "tool"))
+        {
+            return;
+        }
+        let Some(hint) = crate::agent_profiles::setup_hint(&self.session) else {
+            return;
+        };
+        if SHOWN.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        self.set_pending_startup_notice("Agent profiles", hint);
+    }
+
     /// Re-apply the stashed startup notice card if it is no longer present in the
     /// transcript (e.g. after the History bootstrap reset the display history).
     /// Scoped to the idle screen: once a real conversation has started the notice

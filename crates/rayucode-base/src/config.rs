@@ -4,16 +4,16 @@
 //! Environment variables override config file settings.
 
 pub use rayucode_config_types::{
-    AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig,
-    CompactionMode, CrossProviderFailoverMode, CustomWebSearchConfig, CustomWebSearchMethod,
-    DiagramDisplayMode, DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig,
-    GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
+    AgentProfile, AgentsConfig, AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig,
+    CompactionConfig, CompactionMode, CrossProviderFailoverMode, CustomWebSearchConfig,
+    CustomWebSearchMethod, DiagramDisplayMode, DiagramPanePosition, DiffDisplayMode, DisplayConfig,
+    FeatureConfig, GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
     LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MenubarConfig, NamedProviderAuth,
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
     NotificationsConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, ResumeOpenElsewhere,
     ResumeTimeMode, SafetyConfig, SessionConfig, SessionPickerResumeAction, SponsorsConfig,
     SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
-    WebSearchEngine,
+    WebSearchEngine, find_agent_profile, merge_agent_profiles,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

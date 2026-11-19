@@ -233,6 +233,15 @@ pub(super) async fn execute(
                 }
                 _ => (false, args),
             };
+            if let Some((first, rest)) = args.split_first()
+                && matches!(first.as_str(), "profile" | "profiles")
+            {
+                let message = crate::agent_profiles::run(agent.session_for_split(), global, rest)?;
+                return Ok((
+                    json!({"scope": if global { "global" } else { "session" }, "profiles": agent.session_for_split().effective_agent_profiles()}),
+                    message,
+                ));
+            }
             match args {
                 [] => {}
                 [arg]

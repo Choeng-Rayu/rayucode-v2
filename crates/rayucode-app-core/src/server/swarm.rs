@@ -1946,30 +1946,52 @@ pub(super) async fn run_swarm_task(
     prompt: &str,
 ) -> Result<String> {
     let started = Instant::now();
-    let (provider, registry, session_id, working_dir, coordinator_model, provider_key, route) = {
+    let (provider, registry, session_id, working_dir, coordinator, configured_model) = {
         let agent = agent.lock().await;
+        let configured_model = agent.subagent_model().or_else(|| {
+            agent
+                .session_for_split()
+                .effective_agent_model("swarm", crate::config::config().agents.swarm_model.clone())
+        });
         (
             agent.provider_fork(),
             agent.registry(),
             agent.session_id().to_string(),
             agent.working_dir().map(PathBuf::from),
-            agent.provider_model(),
-            agent.session_provider_key(),
-            agent.session_route_api_method(),
+            super::comm_session::TaskCoordinatorIdentity {
+                model: Some(agent.provider_model()),
+                provider_key: agent.session_provider_key(),
+                route_api_method: agent.session_route_api_method(),
+                is_canary: agent.is_canary(),
+            },
+            configured_model,
         )
     };
+    // A task type naming an agent profile picks that profile's model. Other
+    // types fall back to the session/global swarm default, then inherit.
+    let profiles = crate::session::effective_agent_profiles_for(&session_id);
+    let profile = crate::config::find_agent_profile(&profiles, subagent_type);
+    let selection = super::comm_session::resolve_task_spawn_selection(
+        profile.map(|profile| profile.model.clone()),
+        configured_model.map(|model| crate::session::resolve_profile_reference(&profiles, &model)),
+        &coordinator,
+    );
+    let profile_effort = profile.and_then(|profile| profile.effort.clone());
     let parent_session_id = session_id.clone();
     let mut session = Session::create(
         Some(session_id),
         Some(format!("{} (@{} swarm)", description, subagent_type)),
     );
     let child_session_id = session.id.clone();
-    session.model = Some(coordinator_model);
-    // Inherit the coordinator's exact auth identity so the forked worker keeps
-    // the same provider/auth route (OAuth vs API, openai-compatible profile)
-    // instead of silently falling back to the config default on persistence.
-    session.provider_key = provider_key;
-    session.route_api_method = route;
+    // Resolved model + exact auth route. When inheriting this is the
+    // coordinator's identity, so the worker keeps the same provider/auth
+    // route (OAuth vs API, openai-compatible profile).
+    session.model = selection.model.or(coordinator.model);
+    session.provider_key = selection.provider_key;
+    session.route_api_method = selection.route_api_method;
+    if let Some(effort) = profile_effort {
+        session.reasoning_effort = Some(effort);
+    }
     if let Some(dir) = working_dir {
         session.working_dir = Some(dir.display().to_string());
     }
@@ -2034,19 +2056,34 @@ pub(super) async fn run_swarm_message(agent: Arc<Mutex<Agent>>, message: &str) -
         "message_start",
         vec![("message_chars", message.chars().count().to_string())],
     );
-    let working_dir = {
+    let (working_dir, session_id) = {
         let agent = agent.lock().await;
-        agent.working_dir().map(|dir| dir.to_string())
+        (
+            agent.working_dir().map(|dir| dir.to_string()),
+            agent.session_id().to_string(),
+        )
     };
     let working_dir_hint = working_dir
         .as_deref()
         .map(|dir| format!("Working directory: {}\n", dir))
         .unwrap_or_default();
+    let profiles = crate::session::effective_agent_profiles_for(&session_id);
+    let profile_hint = if profiles.is_empty() {
+        String::new()
+    } else {
+        let mut hint = String::from(
+            "Set subagent_type to one of these user agent profiles when it fits the subtask, else \"general\":\n",
+        );
+        for profile in &profiles {
+            hint.push_str(&format!("- {}: {}\n", profile.name, profile.description));
+        }
+        hint
+    };
 
     let planner_prompt = format!(
         "{working_dir_hint}You are a task planner. Break the request into 2-4 subtasks. \
 Return ONLY a JSON array of objects with keys: description, prompt, subagent_type. \
-No extra text.\n\nRequest:\n{message}"
+No extra text.\n{profile_hint}\nRequest:\n{message}"
     );
 
     let plan_text = {

@@ -18,7 +18,9 @@ pub use window_closures::{clear_window_closed, recent_window_closures, record_wi
 
 mod agent_models;
 mod crash;
-pub use agent_models::AgentModelOverrides;
+pub use agent_models::{
+    AgentModelOverrides, effective_agent_profiles_for, normalize_profile, resolve_profile_reference,
+};
 mod journal;
 mod load_telemetry;
 mod maintenance;

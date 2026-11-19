@@ -3335,9 +3335,20 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    let words: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
+    if let Some((first, tail)) = words.split_first()
+        && matches!(first.as_str(), "profile" | "profiles")
+    {
+        match crate::agent_profiles::run(&app.session, global, tail) {
+            Ok(message) => app.push_display_message(DisplayMessage::system(message)),
+            Err(error) => app.push_display_message(DisplayMessage::error(error.to_string())),
+        }
+        return true;
+    }
+
     let Some(target) = parse_agents_target(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents [default|global] [swarm|review|judge|memory|ambient]".to_string(),
+            "Usage: /agents [default|global] [swarm|review|judge|memory|ambient] | /agents [global] profile ...".to_string(),
         ));
         return true;
     };

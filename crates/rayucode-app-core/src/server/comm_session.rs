@@ -175,9 +175,14 @@ fn spawn_visible_session_window_with_context(
 
 #[path = "spawn_model_selection.rs"]
 mod spawn_model_selection;
+pub(super) use spawn_model_selection::resolve_requested_profile;
 use spawn_model_selection::{
     CoordinatorSpawnIdentity, SwarmSpawnSelection, provider_key_for_spawn_model,
     resolve_coordinator_spawn_identity, resolve_swarm_spawn_selection, session_swarm_model,
+};
+pub(super) use spawn_model_selection::{
+    CoordinatorSpawnIdentity as TaskCoordinatorIdentity,
+    resolve_swarm_spawn_selection as resolve_task_spawn_selection,
 };
 
 fn persist_headed_startup_message(session_id: &str, message: &str) {
@@ -395,9 +400,18 @@ pub(super) async fn spawn_swarm_agent(
     client_connections: &ClientConnections,
 ) -> anyhow::Result<String> {
     let agents_config = &crate::config::config().agents;
-    agents_config
-        .validate_swarm_model_request(requested_model.as_deref())
-        .map_err(anyhow::Error::msg)?;
+    // A profile reference (`profile:<name>` or a bare profile name) is a
+    // user-approved choice: map it to the profile's model and effort before
+    // the raw-model policy check, which only governs agent-invented models.
+    let profiles = crate::session::effective_agent_profiles_for(req_session_id);
+    let (requested_model, profile_effort, profile_name) =
+        resolve_requested_profile(requested_model, &profiles)?;
+    if profile_name.is_none() {
+        agents_config
+            .validate_swarm_model_request(requested_model.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    }
+    let requested_effort = requested_effort.or(profile_effort);
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
     let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
@@ -423,7 +437,8 @@ pub(super) async fn spawn_swarm_agent(
         agents_config.swarm_effort.as_deref(),
     );
     crate::logging::info(&format!(
-        "Swarm spawn model resolution: requested_model={:?} requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
+        "Swarm spawn model resolution: profile={:?} requested_model={:?} requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
+        profile_name,
         requested_model,
         requested_effort,
         agents_config.swarm_effort,

@@ -234,7 +234,7 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput) 
         initial_message: None,
         request_nonce: Some(fresh_spawn_request_nonce(ctx)),
         spawn_mode: params.spawn_mode.clone(),
-        model: params.model.clone(),
+        model: params.spawn_model(),
         // Worker effort is not agent-controlled: the server applies
         // `agents.swarm_effort` (default "low").
         effort: None,
@@ -436,14 +436,24 @@ fn format_swarm_model_list(
             out.push_str(&format!("Configured agents.swarm_model default: {pin}\n"));
         }
         _ => out.push_str(
-            "No agents.swarm_model default configured (workers inherit the coordinator's model).\n",
+            "No agents.swarm_model default configured. Choose a profile or model per task; omitting both inherits the coordinator's model.\n",
         ),
     }
     if model_routes.is_empty() {
         out.push_str("\nNo model routes reported. Omit model to use the configured default.");
         return out;
     }
-    out.push_str("\nModel routes (informational only, overrides require agents.swarm_model_selection and an exact agents.swarm_model_allowlist entry):\n");
+    let agents = &crate::config::config().agents;
+    let header = if agents.strict_swarm_model_allowlist() {
+        "Model routes (only exact agents.swarm_model_allowlist entries may be passed as model):"
+    } else if agents.swarm_model_autoselect {
+        "Model routes (pass `model` as `<model>` or `<provider>:<model>` to pick per task):"
+    } else {
+        "Model routes (informational only, raw model selection is disabled; use a profile):"
+    };
+    out.push('\n');
+    out.push_str(header);
+    out.push('\n');
     for route in model_routes {
         let availability = if route.available {
             ""
@@ -583,9 +593,13 @@ struct CommunicateInput {
     /// threshold.
     #[serde(default)]
     tldr: Option<String>,
-    /// Optional model override, authorized by the user's opt-in and exact allowlist.
+    /// Optional model override. Under a strict allowlist only exact entries
+    /// pass. Otherwise the coordinator may choose (`swarm_model_autoselect`).
     #[serde(default)]
     model: Option<String>,
+    /// User agent profile name. Resolves to the profile's model and effort.
+    #[serde(default)]
+    profile: Option<String>,
     /// Short human-readable label for a spawned agent shown in swarm UI.
     /// Required and nonblank for the explicit `spawn` action.
     #[serde(default)]
@@ -597,6 +611,22 @@ struct CommunicateInput {
 }
 
 impl CommunicateInput {
+    /// The model field forwarded to the server: a profile wins and travels as
+    /// `profile:<name>` so the server resolves it with session profiles.
+    fn spawn_model(&self) -> Option<String> {
+        self.profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|profile| !profile.is_empty())
+            .map(|profile| {
+                format!(
+                    "profile:{}",
+                    profile.strip_prefix("profile:").unwrap_or(profile).trim()
+                )
+            })
+            .or_else(|| self.model.clone())
+    }
+
     fn spawn_initial_message(&self) -> Option<String> {
         self.initial_message
             .as_ref()
@@ -650,7 +680,7 @@ fn canonical_swarm_action(action: &str) -> &str {
 
 #[path = "swarm_model_schema.rs"]
 mod swarm_model_schema;
-use swarm_model_schema::apply_swarm_model_policy;
+use swarm_model_schema::{apply_swarm_model_policy, format_profile_catalog};
 #[async_trait]
 impl Tool for CommunicateTool {
     fn name(&self) -> &str {
@@ -809,10 +839,25 @@ impl Tool for CommunicateTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let mut params: CommunicateInput = serde_json::from_value(input)?;
-        crate::config::config()
-            .agents
-            .validate_swarm_model_request(params.model.as_deref())
-            .map_err(anyhow::Error::msg)?;
+        // Profiles are user-approved and resolved server-side, so only a raw
+        // model (with no profile) goes through the model policy here.
+        if params
+            .profile
+            .as_deref()
+            .is_none_or(|profile| profile.trim().is_empty())
+        {
+            let profiles = crate::session::effective_agent_profiles_for(&ctx.session_id);
+            let names_profile = params
+                .model
+                .as_deref()
+                .is_some_and(|model| crate::config::find_agent_profile(&profiles, model).is_some());
+            if !names_profile {
+                crate::config::config()
+                    .agents
+                    .validate_swarm_model_request(params.model.as_deref())
+                    .map_err(anyhow::Error::msg)?;
+            }
+        }
 
         // `to_session` and `target_session` both name a single session id. Historically
         // different actions required different field names (e.g. `dm` wanted `to_session`
@@ -1303,7 +1348,7 @@ impl Tool for CommunicateTool {
                     initial_message: params.spawn_initial_message(),
                     request_nonce: None,
                     spawn_mode: params.spawn_mode.clone(),
-                    model: params.model.clone(),
+                    model: params.spawn_model(),
                     // Worker effort is not agent-controlled: the server applies
                     // `agents.swarm_effort` (default "low").
                     effort: None,
@@ -1343,10 +1388,16 @@ impl Tool for CommunicateTool {
                         configured_swarm_model,
                         model_routes,
                         ..
-                    }) => Ok(ToolOutput::new(format_swarm_model_list(
-                        current_model.as_deref(),
-                        configured_swarm_model.as_deref(),
-                        &model_routes,
+                    }) => Ok(ToolOutput::new(format!(
+                        "{}{}",
+                        format_swarm_model_list(
+                            current_model.as_deref(),
+                            configured_swarm_model.as_deref(),
+                            &model_routes,
+                        ),
+                        format_profile_catalog(&crate::session::effective_agent_profiles_for(
+                            &ctx.session_id
+                        ))
                     ))),
                     Ok(response) => {
                         ensure_success(&response)?;
@@ -1615,7 +1666,7 @@ impl Tool for CommunicateTool {
                     prefer_spawn: params.prefer_spawn,
                     spawn_if_needed: params.spawn_if_needed,
                     message: params.message.clone(),
-                    model: params.model.clone(),
+                    model: params.spawn_model(),
                     // Worker effort is not agent-controlled: the server applies
                     // `agents.swarm_effort` (default "low").
                     effort: None,

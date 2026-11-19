@@ -35,7 +35,7 @@ pub(super) fn provider_key_for_spawn_model(
 /// even when the coordinator agent is mid-turn (its mutex held), which is the
 /// common case because spawns are issued from inside the coordinator's turn.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct CoordinatorSpawnIdentity {
+pub(in crate::server) struct CoordinatorSpawnIdentity {
     pub model: Option<String>,
     pub provider_key: Option<String>,
     pub route_api_method: Option<String>,
@@ -46,7 +46,7 @@ pub(super) struct CoordinatorSpawnIdentity {
 /// with, after reconciling `agents.swarm_model` config against the
 /// coordinator's identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct SwarmSpawnSelection {
+pub(in crate::server) struct SwarmSpawnSelection {
     pub model: Option<String>,
     pub provider_key: Option<String>,
     pub route_api_method: Option<String>,
@@ -192,7 +192,44 @@ pub(super) async fn session_swarm_model(
         .unwrap_or(global)
 }
 
-pub(super) fn resolve_swarm_spawn_selection(
+/// Map a requested spawn model that names an agent profile to the profile's
+/// model. Returns `(model, profile_effort, profile_name)`. An explicit
+/// `profile:` prefix that matches nothing is an error listing the valid
+/// names. A bare value that is not a profile passes through unchanged.
+pub(in crate::server) fn resolve_requested_profile(
+    requested_model: Option<String>,
+    profiles: &[crate::config::AgentProfile],
+) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
+    let Some(raw) = requested_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok((requested_model, None, None));
+    };
+    if let Some(profile) = crate::config::find_agent_profile(profiles, raw) {
+        return Ok((
+            Some(profile.model.clone()),
+            profile.effort.clone(),
+            Some(profile.name.clone()),
+        ));
+    }
+    if let Some(name) = raw.strip_prefix("profile:") {
+        let known: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+        anyhow::bail!(
+            "Unknown agent profile '{}'. Available profiles: {}",
+            name.trim(),
+            if known.is_empty() {
+                "(none configured)".to_string()
+            } else {
+                known.join(", ")
+            }
+        );
+    }
+    Ok((requested_model, None, None))
+}
+
+pub(in crate::server) fn resolve_swarm_spawn_selection(
     requested_model: Option<String>,
     configured_swarm_model: Option<String>,
     coordinator: &CoordinatorSpawnIdentity,

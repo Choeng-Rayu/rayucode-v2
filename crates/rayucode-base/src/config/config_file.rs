@@ -141,6 +141,44 @@ impl Config {
         cfg.save()
     }
 
+    /// Add or replace a global agent profile in `[[agents.profiles]]`.
+    pub fn upsert_agent_profile(profile: crate::config::AgentProfile) -> anyhow::Result<()> {
+        let profile = crate::session::normalize_profile(profile)?;
+        let mut cfg = Self::load_for_update()?;
+        match cfg
+            .agents
+            .profiles
+            .iter_mut()
+            .find(|p| p.name.eq_ignore_ascii_case(&profile.name))
+        {
+            Some(existing) => *existing = profile,
+            None => cfg.agents.profiles.push(profile),
+        }
+        cfg.save()
+    }
+
+    /// Remove a global agent profile. Returns whether one was removed.
+    pub fn remove_agent_profile(name: &str) -> anyhow::Result<bool> {
+        let name = crate::config::AgentProfile::normalize_name(name).map_err(anyhow::Error::msg)?;
+        let mut cfg = Self::load_for_update()?;
+        let before = cfg.agents.profiles.len();
+        cfg.agents
+            .profiles
+            .retain(|p| !p.name.eq_ignore_ascii_case(&name));
+        if cfg.agents.profiles.len() == before {
+            return Ok(false);
+        }
+        cfg.save()?;
+        Ok(true)
+    }
+
+    /// Silence the launch hint that suggests setting up agent profiles.
+    pub fn set_agent_profile_setup_hint(enabled: bool) -> anyhow::Result<()> {
+        let mut cfg = Self::load_for_update()?;
+        cfg.agents.profile_setup_hint = enabled;
+        cfg.save()
+    }
+
     /// Persist the Anthropic cache duration for clients and the shared daemon.
     pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;

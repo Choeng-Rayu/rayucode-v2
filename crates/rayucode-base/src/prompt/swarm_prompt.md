@@ -1,5 +1,6 @@
 - Spawn workers when work can be parallelized.
 - Avoid reviewers, auditors, critics, verifiers, or scouts; do research inside implementation or yourself.
+- Pick each worker's model for its task: pass a user `profile` when one fits, else a `model` from `list_models`.
 
 The named todo lane is the source of truth: tasks are prepopulated into the worker and updates sync only to that lane (`prompt` adds context; Missing lanes are created from `prompt`/`label`).
 
