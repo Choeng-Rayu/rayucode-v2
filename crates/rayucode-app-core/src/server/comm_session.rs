@@ -423,6 +423,18 @@ pub(super) async fn spawn_swarm_agent(
         client_terminal_env_for_session(req_session_id, client_connections).await;
     let configured_swarm_model =
         session_swarm_model(req_session_id, sessions, agents_config.swarm_model.clone()).await;
+    // A configured swarm default naming a profile also carries its effort,
+    // unless this spawn picked its own model or profile.
+    let requested_effort = requested_effort.or_else(|| {
+        if requested_model.is_some() {
+            return None;
+        }
+        let raw = crate::session::Session::read_agent_model_overrides(req_session_id)
+            .get("swarm")
+            .cloned()
+            .or_else(|| agents_config.swarm_model.clone())?;
+        crate::config::find_agent_profile(&profiles, &raw).and_then(|p| p.effort.clone())
+    });
     let resolved_spawn_mode = resolve_swarm_spawn_mode(spawn_mode, agents_config.swarm_spawn_mode);
     let selection = resolve_swarm_spawn_selection(
         requested_model.clone(),

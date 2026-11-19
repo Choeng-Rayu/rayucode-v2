@@ -28,7 +28,8 @@ impl App {
             let configured = if self.agent_models_global_scope {
                 load_agent_model_override(target)
             } else {
-                self.session.effective_agent_model(
+                self.session.effective_agent_model_for(
+                    &self.agent_models_session_id(),
                     agent_model_target_slug(target),
                     load_agent_model_override(target),
                 )
@@ -224,8 +225,11 @@ impl App {
         let configured = if global_scope {
             load_agent_model_override(target)
         } else {
-            self.session
-                .effective_agent_model(agent_model_target_slug(target), None)
+            self.session.effective_agent_model_for(
+                &self.agent_models_session_id(),
+                agent_model_target_slug(target),
+                None,
+            )
         };
         let inherit_summary = agent_model_default_summary(target, self);
         self.open_model_picker();

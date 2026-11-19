@@ -401,6 +401,14 @@ impl App {
         self.pending_startup_notice = Some((title, message));
     }
 
+    /// The session that owns agent-model overrides and profiles: the daemon's
+    /// real session in remote mode, else this app's own session.
+    pub(crate) fn agent_models_session_id(&self) -> String {
+        self.remote_session_id
+            .clone()
+            .unwrap_or_else(|| self.session.id.clone())
+    }
+
     /// On a fresh launch with no agent profiles, ask the user (once per
     /// process) to set some. The main agent still picks worker models itself
     /// when the user skips this.
@@ -416,10 +424,7 @@ impl App {
         }
         // Remote clients hold a placeholder session; profiles live under the
         // daemon's real session id.
-        let session_id = self
-            .remote_session_id
-            .clone()
-            .unwrap_or_else(|| self.session.id.clone());
+        let session_id = self.agent_models_session_id();
         let Some(hint) = crate::agent_profiles::setup_hint_for(&session_id) else {
             return;
         };

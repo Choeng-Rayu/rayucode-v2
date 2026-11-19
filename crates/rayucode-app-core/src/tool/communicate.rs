@@ -1390,14 +1390,17 @@ impl Tool for CommunicateTool {
                         ..
                     }) => Ok(ToolOutput::new(format!(
                         "{}{}",
+                        // Profiles first: the route catalog can be huge and
+                        // gets truncated, which must never drop the user's
+                        // recommendations.
+                        format_profile_catalog(&crate::session::effective_agent_profiles_for(
+                            &ctx.session_id
+                        )),
                         format_swarm_model_list(
                             current_model.as_deref(),
                             configured_swarm_model.as_deref(),
                             &model_routes,
                         ),
-                        format_profile_catalog(&crate::session::effective_agent_profiles_for(
-                            &ctx.session_id
-                        ))
                     ))),
                     Ok(response) => {
                         ensure_success(&response)?;

@@ -99,6 +99,32 @@ impl Session {
         ))
     }
 
+    /// Resolve for a client that mirrors another process's session (the
+    /// remote TUI). Overrides come from the daemon's metadata for
+    /// `session_id`, falling back to this mirror's synced copy, and profiles
+    /// are looked up under that real id.
+    pub fn effective_agent_model_for(
+        &self,
+        session_id: &str,
+        target: &str,
+        global: Option<String>,
+    ) -> Option<String> {
+        if session_id == self.id {
+            return self.effective_agent_model(target, global);
+        }
+        let saved = path(session_id).ok().and_then(|path| read_saved(&path));
+        let raw = saved
+            .as_ref()
+            .unwrap_or(&self.agent_model_overrides)
+            .get(target)
+            .cloned()
+            .or(global)?;
+        Some(resolve_profile_reference(
+            &effective_agent_profiles_for(session_id),
+            &raw,
+        ))
+    }
+
     /// Session profiles only (sidecar file), without global ones.
     pub fn session_agent_profiles(&self) -> Vec<AgentProfile> {
         Self::read_session_agent_profiles(&self.id)
@@ -327,6 +353,16 @@ mod tests {
                     })
                     .is_err()
             );
+            // A remote client mirror with a different placeholder id resolves
+            // through the daemon session's overrides and profiles.
+            let mirror = Session::create_with_id("client_placeholder".into(), None, None);
+            assert_eq!(
+                mirror
+                    .effective_agent_model_for("prof", "judge", None)
+                    .as_deref(),
+                Some("gemini:review-model")
+            );
+            assert_eq!(mirror.effective_agent_model("judge", None), None);
             crate::config::Config::invalidate_cache();
         });
     }

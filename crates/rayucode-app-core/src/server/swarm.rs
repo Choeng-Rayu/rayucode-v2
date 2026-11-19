@@ -1948,10 +1948,12 @@ pub(super) async fn run_swarm_task(
     let started = Instant::now();
     let (provider, registry, session_id, working_dir, coordinator, configured_model) = {
         let agent = agent.lock().await;
+        // Raw value (may name a profile); resolved to a model below.
         let configured_model = agent.subagent_model().or_else(|| {
-            agent
-                .session_for_split()
-                .effective_agent_model("swarm", crate::config::config().agents.swarm_model.clone())
+            Session::read_agent_model_overrides(agent.session_id())
+                .get("swarm")
+                .cloned()
+                .or_else(|| crate::config::config().agents.swarm_model.clone())
         });
         (
             agent.provider_fork(),
@@ -1970,7 +1972,11 @@ pub(super) async fn run_swarm_task(
     // A task type naming an agent profile picks that profile's model. Other
     // types fall back to the session/global swarm default, then inherit.
     let profiles = crate::session::effective_agent_profiles_for(&session_id);
-    let profile = crate::config::find_agent_profile(&profiles, subagent_type);
+    let profile = crate::config::find_agent_profile(&profiles, subagent_type).or_else(|| {
+        configured_model
+            .as_deref()
+            .and_then(|model| crate::config::find_agent_profile(&profiles, model))
+    });
     let selection = super::comm_session::resolve_task_spawn_selection(
         profile.map(|profile| profile.model.clone()),
         configured_model.map(|model| crate::session::resolve_profile_reference(&profiles, &model)),

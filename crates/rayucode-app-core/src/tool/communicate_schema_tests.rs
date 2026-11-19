@@ -194,6 +194,9 @@ fn profile_catalog_lists_profiles_or_explains_fallback() {
         effort: Some("medium".into()),
     }]);
     assert!(listed.contains("- coder: claude:sonnet effort=medium - Code edits"));
+    // It leads the list_models output, so it must not start with a blank line.
+    assert!(listed.starts_with("Agent profiles"));
+    assert!(listed.ends_with("\n\n"));
 }
 
 #[test]

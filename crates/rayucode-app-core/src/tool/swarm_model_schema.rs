@@ -45,9 +45,9 @@ pub(super) fn apply_swarm_model_policy(schema: &mut Value, agents: &crate::confi
 /// Short catalog of the effective profiles, appended to `list_models`.
 pub(super) fn format_profile_catalog(profiles: &[crate::config::AgentProfile]) -> String {
     if profiles.is_empty() {
-        return "\nNo agent profiles configured. Pick a model per task, or ask the user to add profiles with /agents profile add <name> <model> <when to use>.\n".to_string();
+        return "No agent profiles configured. Pick a model per task, or ask the user to add profiles with /agents profile add <name> <model> <when to use>.\n\n".to_string();
     }
-    let mut out = String::from("\nAgent profiles (pass `profile`, preferred):\n");
+    let mut out = String::from("Agent profiles (pass `profile`, preferred):\n");
     for profile in profiles {
         out.push_str(&format!("- {}: {}", profile.name, profile.model));
         if let Some(effort) = profile.effort.as_deref() {
@@ -58,5 +58,6 @@ pub(super) fn format_profile_catalog(profiles: &[crate::config::AgentProfile]) -
         }
         out.push('\n');
     }
+    out.push('\n');
     out
 }

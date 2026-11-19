@@ -408,7 +408,11 @@ fn current_autoreview_model_summary(app: &App) -> String {
 
 pub(super) fn current_autoreview_model_override(app: &App) -> Option<String> {
     app.session
-        .effective_agent_model("review", crate::config::Config::load().autoreview.model)
+        .effective_agent_model_for(
+            &app.agent_models_session_id(),
+            "review",
+            crate::config::Config::load().autoreview.model,
+        )
         .filter(|model| model != "inherit")
 }
 
@@ -420,7 +424,11 @@ fn current_autojudge_model_summary(app: &App) -> String {
 
 pub(super) fn current_autojudge_model_override(app: &App) -> Option<String> {
     app.session
-        .effective_agent_model("judge", crate::config::Config::load().autojudge.model)
+        .effective_agent_model_for(
+            &app.agent_models_session_id(),
+            "judge",
+            crate::config::Config::load().autojudge.model,
+        )
         .filter(|model| model != "inherit")
 }
 
@@ -644,7 +652,10 @@ fn feedback_model_override(
     role: &str,
     configured: Option<String>,
 ) -> (Option<String>, Option<String>) {
-    if let Some(choice) = app.session.effective_agent_model(role, configured) {
+    if let Some(choice) =
+        app.session
+            .effective_agent_model_for(&app.agent_models_session_id(), role, configured)
+    {
         return ((choice != "inherit").then_some(choice), None);
     }
     preferred_one_shot_review_override()

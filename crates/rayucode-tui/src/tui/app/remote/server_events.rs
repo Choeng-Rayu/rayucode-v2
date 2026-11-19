@@ -407,6 +407,15 @@ fn handle_server_event_inner(
             app.auto_poke_incomplete_todos = enabled;
             app.auto_poke_default_on = enabled;
         }
+        // Keep the client's mirror of the daemon session's agent models in
+        // sync so /review, /judge and the /agents picker see the change.
+        if command == "agents"
+            && let Ok(overrides) = serde_json::from_value::<crate::session::AgentModelOverrides>(
+                data["overrides"].clone(),
+            )
+        {
+            app.session.agent_model_overrides = overrides;
+        }
         app.push_display_message(DisplayMessage::system(message));
         return true;
     }
