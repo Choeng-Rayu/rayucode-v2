@@ -10,6 +10,42 @@ fn type_text(app: &mut App, text: &str) {
 }
 
 #[test]
+fn test_ctrl_s_swaps_complete_drafts_and_their_undo_history() {
+    let mut app = create_test_app();
+    app.input = "!echo 界 [image 1] [pasted 2 lines]".into();
+    app.cursor_pos = 5;
+    app.pending_images = vec![("image/png".into(), "cG5n".into())];
+    app.pasted_contents = vec!["first paste\nnext line".into()];
+    app.input_undo_stack = vec![("!echo [image 1]".into(), 5)];
+    app.command_suggestion_selected = 2;
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(app.input.is_empty());
+    assert!(app.pending_images.is_empty());
+    assert!(app.pasted_contents.is_empty());
+    assert!(app.input_undo_stack.is_empty());
+    assert_eq!(app.command_suggestion_selected, 0);
+
+    type_text(&mut app, "second [image 1]");
+    app.pending_images = vec![("image/jpeg".into(), "anBlZw==".into())];
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.input, "!echo 界 [image 1] [pasted 2 lines]");
+    assert_eq!(app.cursor_pos, 5);
+    assert_eq!(app.pending_images[0].0, "image/png");
+    assert_eq!(app.pasted_contents, ["first paste\nnext line"]);
+    app.undo_input_change();
+    assert_eq!(app.input, "!echo [image 1]");
+
+    app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert_eq!(app.input, "second [image 1]");
+    assert_eq!(app.pending_images[0].0, "image/jpeg");
+    assert!(app.pasted_contents.is_empty());
+}
+
+#[test]
 fn test_ctrl_enter_queues_slash_command_while_processing() {
     let mut app = create_test_app();
     app.is_processing = true;

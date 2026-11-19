@@ -1182,24 +1182,82 @@ pub(super) fn try_queue_command(app: &mut App) -> bool {
     true
 }
 
-/// The composer state a queued command temporarily displaces while it runs.
+/// Contents and edit history owned by one composer draft.
 pub(super) struct ComposerDraft {
-    input: String,
+    pub(super) input: String,
     cursor_pos: usize,
     pending_images: Vec<(String, String)>,
     pasted_contents: Vec<String>,
+    undo: Vec<(String, usize)>,
+}
+
+impl ComposerDraft {
+    pub(super) fn is_empty(&self) -> bool {
+        self.input.is_empty() && self.pending_images.is_empty() && self.pasted_contents.is_empty()
+    }
+
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.input.capacity()
+            + self
+                .undo
+                .iter()
+                .map(|(text, _)| text.capacity())
+                .sum::<usize>()
+            + self
+                .pasted_contents
+                .iter()
+                .map(String::capacity)
+                .sum::<usize>()
+            + self
+                .pending_images
+                .iter()
+                .map(|(url, label)| url.capacity() + label.capacity())
+                .sum::<usize>()
+    }
+}
+
+impl App {
+    fn reset_draft_interaction(&mut self) {
+        self.reset_tab_completion();
+        self.history_draft = None;
+        self.input_typing_undo = None;
+        if self.current_copy_selection_pane() == Some(crate::tui::CopySelectionPane::Input)
+            || self
+                .copy_selection_pending_anchor
+                .is_some_and(|point| point.pane == crate::tui::CopySelectionPane::Input)
+        {
+            self.exit_copy_selection_mode();
+        }
+    }
+
+    pub(super) fn take_composer_draft(&mut self) -> ComposerDraft {
+        self.reset_draft_interaction();
+        ComposerDraft {
+            input: std::mem::take(&mut self.input),
+            cursor_pos: std::mem::take(&mut self.cursor_pos),
+            pending_images: std::mem::take(&mut self.pending_images),
+            pasted_contents: std::mem::take(&mut self.pasted_contents),
+            undo: std::mem::take(&mut self.input_undo_stack),
+        }
+    }
+
+    pub(super) fn restore_composer_draft(&mut self, draft: ComposerDraft) {
+        self.reset_draft_interaction();
+        self.input = draft.input;
+        self.cursor_pos = draft.cursor_pos.min(self.input.len());
+        self.pending_images = draft.pending_images;
+        self.pasted_contents = draft.pasted_contents;
+        self.input_undo_stack = draft.undo;
+        self.sync_model_picker_preview_from_input();
+    }
 }
 
 /// Put `command` in the composer so the normal Enter path can run it,
 /// returning whatever the user was drafting so it can be restored afterwards.
 pub(super) fn swap_in_queued_command(app: &mut App, command: String) -> ComposerDraft {
     app.set_status_notice(format!("Running queued {}", command));
-    let draft = ComposerDraft {
-        input: std::mem::replace(&mut app.input, command),
-        cursor_pos: app.cursor_pos,
-        pending_images: std::mem::take(&mut app.pending_images),
-        pasted_contents: std::mem::take(&mut app.pasted_contents),
-    };
+    let draft = app.take_composer_draft();
+    app.input = command;
     app.cursor_pos = app.input.len();
     draft
 }
@@ -1208,16 +1266,9 @@ pub(super) fn swap_in_queued_command(app: &mut App, command: String) -> Composer
 /// its own text in the composer (e.g. one that pre-fills input) wins; the
 /// draft then goes to prompt history so Up recalls it instead of losing it.
 pub(super) fn restore_composer_draft(app: &mut App, draft: ComposerDraft) {
-    if draft.input.is_empty() && draft.pending_images.is_empty() {
-        return;
-    }
     if app.input.is_empty() {
-        app.input = draft.input;
-        app.cursor_pos = draft.cursor_pos.min(app.input.len());
-        app.pending_images = draft.pending_images;
-        app.pasted_contents = draft.pasted_contents;
-        app.sync_model_picker_preview_from_input();
-    } else {
+        app.restore_composer_draft(draft);
+    } else if !draft.is_empty() {
         let expanded = expand_paste_placeholders_with(&draft.pasted_contents, &draft.input);
         app.record_prompt_history(&expanded);
         app.pending_images.extend(draft.pending_images);

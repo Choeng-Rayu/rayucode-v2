@@ -1669,7 +1669,7 @@ pub struct App {
     // Scroll bookmark: stashed scroll position for quick teleport back
     scroll_bookmark: Option<usize>,
     // Stashed input: saved via Ctrl+S for later retrieval
-    stashed_input: Option<(String, usize)>,
+    stashed_input: Option<input::ComposerDraft>,
     // Undo history for in-progress input editing (Ctrl+Z)
     input_undo_stack: Vec<(String, usize)>,
     input_typing_undo: Option<(Instant, usize)>,
