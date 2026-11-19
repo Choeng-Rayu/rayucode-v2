@@ -16,7 +16,7 @@ fn ssh_account_header_uses_daemon_identity() {
             crate::tui::TuiState::startup_oauth_account_label(&app).as_deref(),
             Some("remote-work")
         );
-        let (persistent, secondary) = crate::tui::ui::header::build_header_sections(&app, 120);
+        let (persistent, secondary) = crate::tui::ui::header::build_header_sections(&app, 120, false);
         let text = persistent
             .iter()
             .chain(secondary.iter())

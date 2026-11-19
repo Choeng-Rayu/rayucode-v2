@@ -6,6 +6,7 @@ fn header_invalidation_discards_composed_account_quota_frames() {
         empty_prepared_messages(),
     )));
     let key = FullPrepCacheKey {
+        compact_header: false,
         width: 120,
         height: 40,
         diff_mode: crate::config::DiffDisplayMode::Off,

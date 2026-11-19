@@ -39,7 +39,7 @@ fn header_rows_clip_unicode_and_controls_without_losing_style() {
 fn startup_header_never_adds_wraparound_rows_at_narrow_widths() {
     let app = create_test_app();
     for width in [2u16, 8, 18, 32, 40, 60, 80, 120] {
-        let (mut lines, secondary) = build_header_sections(&app, width);
+        let (mut lines, secondary) = build_header_sections(&app, width, false);
         lines.extend(secondary);
         for line in lines {
             let budget = usize::from(width.saturating_sub(1));
@@ -166,7 +166,7 @@ fn left_aligned_mode_keeps_secondary_header_left_aligned() {
 #[test]
 fn combined_header_sections_match_individual_builders() {
     let app = create_test_app();
-    let (persistent, secondary) = build_header_sections(&app, 80);
+    let (persistent, secondary) = build_header_sections(&app, 80, false);
 
     assert_eq!(persistent, build_persistent_header(&app, 80));
     assert_eq!(secondary, build_header_lines(&app, 80));

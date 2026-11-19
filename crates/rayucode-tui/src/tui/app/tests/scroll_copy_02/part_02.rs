@@ -1100,10 +1100,9 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
         modifiers: KeyModifiers::empty(),
     });
 
-    // The idle composer no longer reserves space for the old send-mode glyph,
-    // so this 11-column input wraps after eight characters. Column four on the
-    // second visual line is one character into that segment.
-    assert_eq!(app.cursor_pos, 9);
+    // Three prefix cells and one caret cell leave seven cells for text.
+    // Column four of the second row maps one character into that segment.
+    assert_eq!(app.cursor_pos, 8);
 }
 
 /// End-to-end: a real left-click on an inline image's label line maps the

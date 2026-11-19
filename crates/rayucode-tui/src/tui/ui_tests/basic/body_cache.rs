@@ -564,6 +564,7 @@ fn test_prepare_body_incremental_applies_compaction_prompt_offset() {
 #[test]
 fn test_full_prep_cache_state_keeps_multiple_width_entries() {
     let key_a = FullPrepCacheKey {
+        compact_header: false,
         width: 40,
         height: 20,
         diff_mode: crate::config::DiffDisplayMode::Off,
@@ -666,6 +667,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
 #[test]
 fn test_full_prep_cache_state_does_not_reuse_a_different_mermaid_aspect_profile() {
     let key = FullPrepCacheKey {
+        compact_header: false,
         width: 80,
         height: 30,
         diff_mode: crate::config::DiffDisplayMode::Off,
@@ -703,6 +705,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
 
     for idx in 0..(FULL_PREP_CACHE_MAX_ENTRIES + 2) {
         let key = FullPrepCacheKey {
+            compact_header: false,
             width: 40 + idx as u16,
             height: 20,
             diff_mode: crate::config::DiffDisplayMode::Off,
@@ -751,6 +754,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
 #[test]
 fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
     let key = FullPrepCacheKey {
+        compact_header: false,
         width: 120,
         height: 40,
         diff_mode: crate::config::DiffDisplayMode::Off,
@@ -786,6 +790,7 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
 #[test]
 fn test_full_prep_cache_state_retains_oversized_hot_entry() {
     let key = FullPrepCacheKey {
+        compact_header: false,
         width: 140,
         height: 42,
         diff_mode: crate::config::DiffDisplayMode::Off,
@@ -823,6 +828,7 @@ fn test_full_prep_cache_state_retains_oversized_hot_entry() {
 #[test]
 fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
     let key_a = FullPrepCacheKey {
+        compact_header: false,
         width: 140,
         height: 42,
         diff_mode: crate::config::DiffDisplayMode::Off,
@@ -1051,6 +1057,7 @@ use cache_equivalence::assert_prepared_equivalent;
 fn test_full_prep_cache_drops_superseded_streaming_frames() {
     let mut cache = FullPrepCacheState::default();
     let key_for = |streaming_text_len: usize, width: u16| FullPrepCacheKey {
+        compact_header: false,
         width,
         height: 20,
         diff_mode: crate::config::DiffDisplayMode::Off,

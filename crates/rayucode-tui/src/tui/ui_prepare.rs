@@ -537,6 +537,9 @@ pub(super) fn prepare_messages(
     width: u16,
     height: u16,
 ) -> Arc<PreparedChatFrame> {
+    // Choose from terminal geometry so the welcome header does not jump
+    // when the first message arrives.
+    let compact_header = height < 44 || app.login_input_hint().is_some();
     // A cached prepared frame intentionally owns only image ids. Recover any
     // staged source evicted by the byte budget or a visibility toggle before an
     // exact frame-cache hit can bypass the normal anchored-image resolver.
@@ -544,10 +547,11 @@ pub(super) fn prepare_messages(
     super::inline_image_ui::restage_requested_payloads(app);
     super::note_prep_restage(restage_start.elapsed());
     if prep_cache_bypassed() {
-        return Arc::new(prepare_messages_inner(app, width, height));
+        return Arc::new(prepare_messages_inner(app, width, height, compact_header));
     }
 
     let key = FullPrepCacheKey {
+        compact_header,
         compact_thinking: crate::config::config().display.compact_thinking,
         width,
         height,
@@ -617,7 +621,7 @@ pub(super) fn prepare_messages(
     super::note_full_prep_cache_miss();
 
     let build_start = Instant::now();
-    let prepared = Arc::new(prepare_messages_inner(app, width, height));
+    let prepared = Arc::new(prepare_messages_inner(app, width, height, compact_header));
     let build_elapsed = build_start.elapsed();
     let prepared_bytes = super::estimate_prepared_chat_frame_bytes(&prepared);
     super::note_full_prep_built(prepared.as_ref(), prepared_bytes, build_elapsed);
@@ -667,9 +671,14 @@ fn build_top_pad_lines(width: u16, pad_top: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedChatFrame {
+fn prepare_messages_inner(
+    app: &dyn TuiState,
+    width: u16,
+    height: u16,
+    compact_header: bool,
+) -> PreparedChatFrame {
     let header_start = Instant::now();
-    let header_prepared = prepare_header_cached(app, width);
+    let header_prepared = prepare_header_cached(app, width, compact_header);
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
     let body_start = Instant::now();
@@ -963,10 +972,11 @@ pub(crate) fn invalidate_header_prep_cache() {
 
 /// Hash of the header inputs that are cheap to read every frame. Anything
 /// expensive (disk probes) is intentionally excluded and covered by the TTL.
-fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
+fn header_prep_signature(app: &dyn TuiState, width: u16, compact_header: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     width.hash(&mut hasher);
+    compact_header.hash(&mut hasher);
     app.provider_model().hash(&mut hasher);
     app.provider_name().hash(&mut hasher);
     app.session_display_name().hash(&mut hasher);
@@ -1004,9 +1014,14 @@ fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
     hasher.finish()
 }
 
-fn prepare_header_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
+fn prepare_header_cached(
+    app: &dyn TuiState,
+    width: u16,
+    compact_header: bool,
+) -> Arc<PreparedMessages> {
     let build = || {
-        let (mut all_header_lines, secondary_lines) = header::build_header_sections(app, width);
+        let (mut all_header_lines, secondary_lines) =
+            header::build_header_sections(app, width, compact_header);
         all_header_lines.extend(secondary_lines);
         Arc::new(wrap_lines(all_header_lines, &[], &[], &[], width))
     };
@@ -1015,7 +1030,7 @@ fn prepare_header_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages
         return build();
     }
 
-    let signature = header_prep_signature(app, width);
+    let signature = header_prep_signature(app, width, compact_header);
 
     if let Ok(cache) = header_prep_cache().lock()
         && let Some(state) = cache.as_ref()

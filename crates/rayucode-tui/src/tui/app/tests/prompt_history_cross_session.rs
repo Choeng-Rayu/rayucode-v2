@@ -243,7 +243,7 @@ fn test_history_search_overlay_renders_matches_in_frame() {
     let rendered = buffer_to_text(&terminal);
 
     assert!(
-        rendered.contains("history search"),
+        rendered.contains("search prompts:"),
         "overlay header missing from frame:\n{rendered}"
     );
     // No results are shown until the user types a query.

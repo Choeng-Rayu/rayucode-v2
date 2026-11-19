@@ -1349,29 +1349,26 @@ fn retained_frame_row_matches_the_rendered_screen() {
     );
 }
 
-/// Real App: the session status line is always pinned as the last row, with
-/// a pink model, and scrolling (up or down, at the bottom or not) never hides
-/// it or shows an elastic countdown.
+/// Scrolling leaves the active model and session footer pinned to the composer.
 #[test]
-fn status_line_is_always_pinned_with_pink_model_on_real_app() {
+fn composer_model_and_status_line_stay_pinned_while_scrolling() {
     let _lock = scroll_render_test_lock();
     for width in [120u16, 60] {
         let (mut app, mut terminal) = create_scroll_test_app(width, 30, 0, 36);
-        let pink = ratatui::style::Color::Rgb(255, 135, 200);
-        let last_row_pink_cells = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| {
-            let buf = terminal.backend().buffer();
-            let y = buf.area.height - 1;
-            (0..buf.area.width)
-                .filter(|&x| buf[(x, y)].fg == pink && buf[(x, y)].symbol().trim() != "")
-                .count()
+        let check_composer = |frame: &str| {
+            let rows: Vec<_> = frame.lines().collect();
+            assert!(!frame.contains("(overscroll"), "w={width}: {frame}");
+            let rule = rows[26].trim();
+            assert!(rule.starts_with('─') && rule.ends_with(" ──"), "{frame}");
+            assert!(rows[28].trim().chars().all(|cell| cell == '─'), "{frame}");
+            assert!(
+                !rows[29].trim().is_empty(),
+                "footer should stay visible: {frame}"
+            );
         };
 
         let at_rest = render_and_snap(&app, &mut terminal);
-        assert!(!at_rest.contains("(overscroll"), "w={width}: {at_rest}");
-        assert!(
-            last_row_pink_cells(&terminal) >= 3,
-            "pinned pink model at rest (w={width}): {at_rest}"
-        );
+        check_composer(&at_rest);
 
         for kind in [
             MouseEventKind::ScrollDown,
@@ -1385,11 +1382,7 @@ fn status_line_is_always_pinned_with_pink_model_on_real_app() {
                 modifiers: KeyModifiers::empty(),
             });
             let frame = render_and_snap(&app, &mut terminal);
-            assert!(!frame.contains("(overscroll"), "w={width}: {frame}");
-            assert!(
-                last_row_pink_cells(&terminal) >= 3,
-                "status line stays pinned after {kind:?} (w={width}): {frame}"
-            );
+            check_composer(&frame);
         }
     }
 }

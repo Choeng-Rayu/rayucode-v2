@@ -1367,6 +1367,7 @@ fn body_cache() -> &'static Mutex<BodyCacheState> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FullPrepCacheKey {
+    compact_header: bool,
     width: u16,
     height: u16,
     diff_mode: crate::config::DiffDisplayMode,
@@ -3424,7 +3425,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let swarm_strip_height = reserve_rows(swarm_strip_lines.len() as u16);
     let notification_height = reserve_rows(input_ui::notification_height(app, chat_area.width));
     let donut_height = reserve_rows(idle_donut_reserved_height(show_donut, input_height));
-    let composer_rules_height = input_ui::composer_rule_rows(chat_area.width, chrome_rows);
+    let composer_rules_height = if available_height >= 10
+        && app.login_input_hint().is_none()
+        && !app.terminal_clear_collapsed()
+    {
+        input_ui::composer_rule_rows(chat_area.width, chrome_rows)
+    } else {
+        0
+    };
     let composer_height = input_height + composer_rules_height;
     let fixed_height = status_height
         + queued_height

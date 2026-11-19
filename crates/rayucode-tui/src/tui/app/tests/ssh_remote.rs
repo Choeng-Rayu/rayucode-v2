@@ -289,7 +289,7 @@ fn ssh_remote_header_guides_remote_login_and_hides_local_scheduler() {
         app.remote_provider_name = Some("remote-provider".into());
         app.remote_provider_model = Some("remote-model".into());
         app.remote_skills = vec!["remote-only-skill".into()];
-        let (persistent, secondary) = crate::tui::ui::header::build_header_sections(&app, 100);
+        let (persistent, secondary) = crate::tui::ui::header::build_header_sections(&app, 100, false);
         let text = persistent
             .iter()
             .chain(secondary.iter())

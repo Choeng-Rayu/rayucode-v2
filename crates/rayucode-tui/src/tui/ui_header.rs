@@ -695,7 +695,7 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     let auth = app.auth_status();
     let active = ActiveCredentialOverrides::from_app(app);
     fit_header_lines(
-        build_persistent_header_with_auth(app, width, &auth, active),
+        build_persistent_header_with_auth(app, width, false, &auth, active),
         width,
     )
 }
@@ -729,6 +729,7 @@ fn pad_or_clip_line(line: &Line<'static>, target_width: usize, center: bool) -> 
 fn build_persistent_header_with_auth(
     app: &dyn TuiState,
     width: u16,
+    compact: bool,
     auth: &AuthStatus,
     active: ActiveCredentialOverrides,
 ) -> Vec<Line<'static>> {
@@ -869,8 +870,7 @@ fn build_persistent_header_with_auth(
         detail_lines.push(standalone_version_line());
     }
 
-    // Very narrow terminals (< 44 cols) render the compact unboxed rows directly.
-    if w < 44 {
+    if compact || w < 44 {
         return detail_lines;
     }
 
@@ -1279,6 +1279,7 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
 pub(in crate::tui) fn build_header_sections(
     app: &dyn TuiState,
     width: u16,
+    compact: bool,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let start = std::time::Instant::now();
     let auth = app.auth_status();
@@ -1286,7 +1287,7 @@ pub(in crate::tui) fn build_header_sections(
     let active = ActiveCredentialOverrides::from_app(app);
     let active_ms = start.elapsed().as_millis() - auth_ms;
     let persistent = fit_header_lines(
-        build_persistent_header_with_auth(app, width, &auth, active),
+        build_persistent_header_with_auth(app, width, compact, &auth, active),
         width,
     );
     let persistent_ms = start.elapsed().as_millis() - auth_ms - active_ms;

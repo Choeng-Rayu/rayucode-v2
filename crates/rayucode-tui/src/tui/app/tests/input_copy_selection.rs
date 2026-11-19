@@ -313,8 +313,7 @@ fn test_input_composer_selection_never_includes_prompt_prefix() {
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     let rendered = render_and_snap(&app, &mut terminal);
-    // Sanity: the prompt decoration is actually on screen ("1>" for the first prompt).
-    assert!(rendered.contains("1>"), "expected prompt prefix on screen");
+    assert!(rendered.contains("1❯"), "expected prompt prefix on screen");
 
     let points = input_pane_screen_points(80, 24);
     let row = points.first().map(|(_, r, _)| *r).expect("composer row");
@@ -330,7 +329,7 @@ fn test_input_composer_selection_never_includes_prompt_prefix() {
     let copied = drag_copy(&mut app, (0, row), end);
     assert_eq!(copied, "no prompt here");
     assert!(
-        !copied.contains('>'),
+        !copied.contains('❯'),
         "prompt decoration must never be copied, got {copied:?}"
     );
 }

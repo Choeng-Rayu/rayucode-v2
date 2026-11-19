@@ -874,8 +874,8 @@ fn test_command_suggestion_render_highlights_selected_row_by_color() {
     let first = suggestions[0].0.clone();
     let second = suggestions[1].0.clone();
 
-    let selected_base = crate::tui::color_support::rgb(255, 213, 128);
-    let unselected_base = crate::tui::color_support::rgb(128, 203, 196);
+    let selected_base = rayucode_tui_style::theme::suggestion_color();
+    let unselected_base = rayucode_tui_style::theme::dim_color();
 
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20))
         .expect("failed to create test terminal");
@@ -908,7 +908,7 @@ fn test_single_command_suggestion_uses_selected_color_only() {
     assert_command_match_recolored(
         &terminal,
         &command,
-        crate::tui::color_support::rgb(255, 213, 128),
+        rayucode_tui_style::theme::suggestion_color(),
     );
 }
 
@@ -946,7 +946,7 @@ fn test_command_suggestion_render_window_scrolls_with_selection() {
     );
     assert_eq!(
         command_cell_fg(&terminal, &selected_after_scroll),
-        Some(crate::tui::color_support::rgb(255, 213, 128))
+        Some(rayucode_tui_style::theme::suggestion_color())
     );
 }
 
