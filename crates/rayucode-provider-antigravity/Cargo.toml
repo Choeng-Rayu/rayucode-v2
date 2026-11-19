@@ -1,0 +1,11 @@
+[package]
+name = "rayucode-provider-antigravity"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+rayucode-provider-gemini = { path = "../rayucode-provider-gemini" }
+rayucode-schema-dialect = { path = "../rayucode-schema-dialect" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

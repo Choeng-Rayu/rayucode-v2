@@ -1,0 +1,30 @@
+{
+  "name": "@rayu-dev/rayucode-linux-arm64",
+  "version": "1.2.0",
+  "description": "RayuCode runtime binary for linux arm64",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES",
+    "dependency-inventory.json"
+  ],
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Choeng-Rayu/rayucode.git",
+    "directory": "sdk/npm/linux-arm64"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

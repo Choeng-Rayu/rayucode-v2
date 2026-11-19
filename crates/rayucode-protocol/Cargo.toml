@@ -1,0 +1,22 @@
+[package]
+name = "rayucode-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rayucode-batch-types = { path = "../rayucode-batch-types" }
+rayucode-config-types = { path = "../rayucode-config-types" }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-plan = { path = "../rayucode-plan" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
+rayucode-selfdev-types = { path = "../rayucode-selfdev-types" }
+rayucode-session-types = { path = "../rayucode-session-types" }
+rayucode-side-panel-types = { path = "../rayucode-side-panel-types" }
+rayucode-applet-types = { path = "../rayucode-applet-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+anyhow = "1"
+rand = "0.9"

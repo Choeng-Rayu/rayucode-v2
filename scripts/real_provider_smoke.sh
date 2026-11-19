@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+provider=${RAYU_PROVIDER:-auto}
+prompt=${1:-"Use the bash tool to run 'pwd', then use the ls tool to list the current directory, then respond with DONE."}
+expect=${RAYU_TRACE_EXPECT:-DONE}
+cargo_exec="$repo_root/scripts/cargo_exec.sh"
+
+echo "=== Real Provider Smoke ==="
+echo "Provider: ${provider}"
+
+if [[ "${RAYU_REAL_PROVIDER_TEST_API:-1}" == "1" ]]; then
+  if [[ "${provider}" == "claude" ]]; then
+    echo ""
+    echo "Test 1: Direct Anthropic smoke (test_api)"
+    if [[ "${RAYU_REMOTE_CARGO:-0}" == "1" ]]; then
+      (cd "$repo_root" && "$cargo_exec" build --bin test_api)
+      (cd "$repo_root" && ./target/debug/test_api)
+    else
+      (cd "$repo_root" && cargo run --bin test_api)
+    fi
+  else
+    echo ""
+    echo "Test 1: Skipping test_api (provider=${provider})"
+  fi
+fi
+
+echo ""
+echo "Test 2: Tool harness (network tools enabled)"
+if [[ "${RAYU_REMOTE_CARGO:-0}" == "1" ]]; then
+  (cd "$repo_root" && "$cargo_exec" build --bin rayu-harness)
+  (cd "$repo_root" && ./target/debug/rayu-harness -- --include-network)
+else
+  (cd "$repo_root" && cargo run --bin rayu-harness -- --include-network)
+fi
+
+echo ""
+echo "Test 3: End-to-end trace"
+if [[ ! -x "$repo_root/target/release/rayu" ]]; then
+  (cd "$repo_root" && "$cargo_exec" build --release)
+fi
+
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
+
+set +e
+output=$(RAYU_HOME="$workdir" PATH="$repo_root/target/release:$PATH" \
+  rayu run --no-update --trace --provider "$provider" "$prompt" 2>&1)
+status=$?
+set -e
+
+printf "%s\n" "$output"
+
+if [[ $status -ne 0 ]]; then
+  echo "Trace failed with exit code $status" >&2
+  exit $status
+fi
+
+if [[ -n "$expect" ]] && ! grep -q "$expect" <<<"$output"; then
+  echo "Trace output did not include expected marker: ${expect}" >&2
+  exit 1
+fi
+
+echo ""
+echo "=== Real provider smoke OK ==="

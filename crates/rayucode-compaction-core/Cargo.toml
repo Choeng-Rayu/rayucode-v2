@@ -1,0 +1,9 @@
+[package]
+name = "rayucode-compaction-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rayucode-message-types = { path = "../rayucode-message-types" }
+serde_json = "1"

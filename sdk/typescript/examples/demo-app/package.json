@@ -1,0 +1,15 @@
+{
+  "name": "rayucode-sdk-demo-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@rayu-dev/rayucode-sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

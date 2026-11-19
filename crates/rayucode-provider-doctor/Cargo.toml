@@ -1,0 +1,43 @@
+[package]
+name = "rayucode-provider-doctor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Provider diagnostics that sit downstream of rayucode-base: the strict
+# `rayu provider-doctor` end-to-end runner (provider_e2e), the live provider
+# probes it drives, and the auth-lifecycle contract driver. Split out of
+# rayucode-base so edits to the doctor cluster no longer rebuild the
+# base -> app-core -> tui spine, and base compiles faster with lower peak
+# memory.
+
+[lib]
+name = "rayucode_provider_doctor"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["time"] }
+
+# default-features = false: the doctor only needs base's always-on surface
+# (auth, provider runtimes, provider_catalog, live_tests). Feature unification
+# in the root binary re-enables embeddings/bedrock there.
+rayucode-base = { path = "../rayucode-base", default-features = false }
+rayucode-provider-gemini-runtime = { path = "../rayucode-provider-gemini-runtime" }
+rayucode-provider-anthropic-runtime = { path = "../rayucode-provider-anthropic-runtime" }
+rayucode-provider-openai-runtime = { path = "../rayucode-provider-openai-runtime" }
+rayucode-provider-openrouter-runtime = { path = "../rayucode-provider-openrouter-runtime" }
+rayucode-provider-cursor-runtime = { path = "../rayucode-provider-cursor-runtime" }
+rayucode-provider-antigravity-runtime = { path = "../rayucode-provider-antigravity-runtime" }
+rayucode-provider-copilot-runtime = { path = "../rayucode-provider-copilot-runtime" }
+rayucode-provider-rayu-runtime.workspace = true
+
+[dev-dependencies]
+# The auth-lifecycle driver tests run inside rayucode-base's auth test sandbox.
+rayucode-base = { path = "../rayucode-base", version = "0.1.0", default-features = false, features = ["test-support"] }
+rayucode-provider-metadata = { path = "../rayucode-provider-metadata", version = "0.1.0" }
+tokio = { version = "1", features = ["macros", "rt"] }

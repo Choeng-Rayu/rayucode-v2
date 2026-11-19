@@ -1,0 +1,167 @@
+[package]
+name = "rayucode-base"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Foundational layer of the RayuCode application core: the downward-closed set of
+# modules (provider, auth, config, session, message, memory, telemetry, ...)
+# that the server/tool/agent layer depends on. Split out of `rayucode-app-core` so
+# the two halves compile as separate rustc units, halving peak compile memory.
+# `rayucode-app-core` re-exports this crate (`pub use rayucode_base::*`) so that every
+# existing `crate::<module>` path keeps resolving unchanged.
+
+[lib]
+name = "rayucode_base"
+path = "src/lib.rs"
+
+[dependencies]
+# Memory allocator (reduces fragmentation for long-running server)
+tikv-jemalloc-ctl = { version = "0.6", optional = true }
+tikv-jemalloc-sys = { version = "0.6", optional = true }
+
+# Async runtime
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "blocking", "charset", "http2", "system-proxy", "rustls-tls", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+serde_yaml = "0.9"
+toml = "0.8"
+toml_edit = "0.20"
+
+# File operations
+
+# Utilities
+dirs = "5"               # home directory
+anyhow = "1"
+libc = "0.2"             # Unix system calls (flock)
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
+urlencoding = "2"        # URL encoding for web search
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+proctitle = "0.1"
+
+# Embeddings (local inference) - behind feature flag (163 crates, slow to compile)
+rayucode-embedding = { path = "../rayucode-embedding", optional = true }
+rayucode-gateway-types = { path = "../rayucode-gateway-types" }
+rayucode-import-core = { path = "../rayucode-import-core" }
+rayucode-logging = { path = "../rayucode-logging" }
+
+# OAuth
+base64 = "0.22"
+sha2 = "0.10"
+rayucode-transport = { path = "../rayucode-transport" }
+rand = "0.9.3"
+hex = "0.4"
+url = "2"
+open = "5"               # Open URLs in browser
+rayucode-auth-types = { path = "../rayucode-auth-types" }
+rayucode-azure-auth = { path = "../rayucode-azure-auth" }
+rayucode-agent-runtime = { path = "../rayucode-agent-runtime" }
+rayucode-provider-metadata = { path = "../rayucode-provider-metadata" }
+rayucode-provider-env = { path = "../rayucode-provider-env" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
+# default-features=false so this crate's `bedrock` feature (below) controls the
+# AWS SDK stack; the pure model-metadata/credential-detection layer is always on.
+rayucode-provider-bedrock = { path = "../rayucode-provider-bedrock", default-features = false }
+rayucode-provider-antigravity = { path = "../rayucode-provider-antigravity" }
+rayucode-provider-copilot = { path = "../rayucode-provider-copilot" }
+rayucode-provider-openai = { path = "../rayucode-provider-openai" }
+rayucode-provider-openrouter = { path = "../rayucode-provider-openrouter" }
+rayucode-provider-gemini = { path = "../rayucode-provider-gemini" }
+# NOTE: this foundation layer intentionally does NOT depend on any `rayucode-tui-*`
+# crate. The two pure-data/string symbols it used to reach for (`ResumeTarget`,
+# `reasoning_line_markup`) were moved to `rayucode-session-types` and
+# `rayucode-render-core` respectively, so the layering inversion (foundation
+# depending on presentation) is gone.
+rayucode-render-core = { path = "../rayucode-render-core" }
+rayucode-terminal-launch = { path = "../rayucode-terminal-launch" }
+rayucode-terminal-image = { path = "../rayucode-terminal-image" }
+rayucode-telemetry-core = { path = "../rayucode-telemetry-core" }
+rayucode-usage-types = { path = "../rayucode-usage-types" }
+
+# NOTE: microphone capture and transcription live in `rayucode-voice`, a
+# client-only crate. The shared runtime never opens a microphone.
+
+# Streaming
+
+# NOTE: no terminal crates (crossterm, ratatui, qrcode). Interactive login
+# prompts and QR rendering are client concerns: the CLI installs a presenter
+# from `rayucode-terminal-prompt` into `auth::login_ui`.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "ico", "tiff"] }  # PNG/JPEG plus BMP/ICO/TIFF decoding so they can be re-encoded to PNG for providers (#1712). Skip avif/rav1e, exr, etc.
+
+# NOTE: PDF text extraction (rayucode-pdf) lives in the upper rayucode-app-core crate
+# (tool/read.rs), not here.
+rayucode-background-types = { path = "../rayucode-background-types" }
+rayucode-batch-types = { path = "../rayucode-batch-types" }
+rayucode-build-meta = { path = "../rayucode-build-meta" }
+rayucode-compaction-core = { path = "../rayucode-compaction-core" }
+rayucode-config-types = { path = "../rayucode-config-types" }
+rayucode-core = { path = "../rayucode-core" }
+rayucode-memory-types = { path = "../rayucode-memory-types" }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-plan = { path = "../rayucode-plan" }
+rayucode-protocol = { path = "../rayucode-protocol" }
+rayucode-session-types = { path = "../rayucode-session-types" }
+rayucode-selfdev-types = { path = "../rayucode-selfdev-types" }
+rayucode-storage = { path = "../rayucode-storage" }
+rayucode-task-types = { path = "../rayucode-task-types" }
+rayucode-todo-policy = { path = "../rayucode-todo-policy" }
+rayucode-tool-core = { path = "../rayucode-tool-core" }
+rayucode-tool-types = { path = "../rayucode-tool-types" }
+rayucode-side-panel-types = { path = "../rayucode-side-panel-types" }
+rayucode-applet-types = { path = "../rayucode-applet-types" }
+
+# Gzip/deflate decoding (provider import helpers, browser extension unzip)
+flate2 = "1"
+tempfile = "3"
+
+[features]
+default = ["bedrock"]
+# Compiles the in-crate test helpers (storage::lock_test_env,
+# auth::test_sandbox, bus::reset_models_updated_publish_state_for_tests, ...) as
+# `pub` so downstream crates' test targets can reach them. Enabled as a
+# dev-dependency feature by rayucode-app-core / rayucode / etc.; never in normal
+# (non-test) builds.
+test-support = []
+jemalloc = [
+    "dep:tikv-jemalloc-ctl",
+    "dep:tikv-jemalloc-sys",
+    "tikv-jemalloc-ctl/stats",
+]
+jemalloc-prof = [
+    "jemalloc",
+    "tikv-jemalloc-ctl/profiling",
+]
+embeddings = ["dep:rayucode-embedding"]
+# Live AWS Bedrock support (the ~20-crate AWS SDK stack) lives in
+# rayucode-provider-bedrock (aws-sdk); forward there. Without it the Bedrock
+# provider still compiles but live calls return an explanatory error.
+bedrock = ["rayucode-provider-bedrock/aws-sdk"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+global-hotkey = "0.7"
+
+[dev-dependencies]
+# The browserless login integration test installs the real terminal presenter.
+rayucode-terminal-prompt = { path = "../rayucode-terminal-prompt" }
+# Dev-only cycle (cargo permits dev-dependencies on dependents): base's
+# MultiProvider routing tests exercise the real OpenRouter/OpenAI-compatible
+# runtime through the composition-root registry, exactly like the binary.
+rayucode-provider-openrouter-runtime = { path = "../rayucode-provider-openrouter-runtime" }
+# The Rayu catalog discovery regression tests exercise the real Rayu runtime.
+rayucode-provider-rayu-runtime = { path = "../rayucode-provider-rayu-runtime" }
+# Paused-time (auto-advancing virtual clock) tests for the background stall watchdog.
+tokio = { version = "1", features = ["test-util"] }
+

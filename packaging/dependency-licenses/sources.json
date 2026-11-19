@@ -1,0 +1,180 @@
+{
+  "async-compression 0.4.41": [
+    {
+      "file": "143368af9701a24e.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/269174b4be20e3cfcbb7e7fa4d7d9596183e287b/LICENSE-APACHE"
+    },
+    {
+      "file": "88d1e3160df48926.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/269174b4be20e3cfcbb7e7fa4d7d9596183e287b/LICENSE-MIT"
+    }
+  ],
+  "azure_core 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "azure_core_macros 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "azure_identity 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "base64-simd 0.8.0": [
+    {
+      "file": "14e66de892a0e218.txt",
+      "url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+    }
+  ],
+  "clipboard-win 5.4.1": [
+    {
+      "file": "c9bff75738922193.txt",
+      "url": "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/3b27cf2bfd1adcfa6e0264eb51c1025ddaf0f342/LICENSE"
+    }
+  ],
+  "compression-codecs 0.4.37": [
+    {
+      "file": "143368af9701a24e.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/9d848a02f13f3a56542e4123be8947a8da06097e/LICENSE-APACHE"
+    },
+    {
+      "file": "88d1e3160df48926.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/9d848a02f13f3a56542e4123be8947a8da06097e/LICENSE-MIT"
+    }
+  ],
+  "compression-core 0.4.31": [
+    {
+      "file": "143368af9701a24e.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/2a28343998e67ea519b87005b9d295b134c00dd0/LICENSE-APACHE"
+    },
+    {
+      "file": "88d1e3160df48926.txt",
+      "url": "https://raw.githubusercontent.com/Nullus157/async-compression/2a28343998e67ea519b87005b9d295b134c00dd0/LICENSE-MIT"
+    }
+  ],
+  "dasp_sample 0.11.0": [
+    {
+      "file": "756c8d2ab2dc24f2.txt",
+      "url": "https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-APACHE"
+    },
+    {
+      "file": "b1d6df41ed3aa968.txt",
+      "url": "https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT"
+    }
+  ],
+  "icy_sixel 0.5.0": [
+    {
+      "file": "aa3514293820a57b.txt",
+      "url": "https://raw.githubusercontent.com/mkrueger/icy_sixel/998cbb2c6d8ed5272f9cc4702a4660778972bf3f/LICENSE-APACHE"
+    },
+    {
+      "file": "7110f70a51841ce7.txt",
+      "url": "https://raw.githubusercontent.com/mkrueger/icy_sixel/998cbb2c6d8ed5272f9cc4702a4660778972bf3f/LICENSE-MIT"
+    }
+  ],
+  "imap-proto 0.16.6": [
+    {
+      "file": "143368af9701a24e.txt",
+      "url": "https://raw.githubusercontent.com/djc/tokio-imap/55e6c27189c7086a5726fe8bf224ba5c24d19d0c/LICENSE-APACHE"
+    },
+    {
+      "file": "d8ab53f67f8b3142.txt",
+      "url": "https://raw.githubusercontent.com/djc/tokio-imap/55e6c27189c7086a5726fe8bf224ba5c24d19d0c/LICENSE-MIT"
+    }
+  ],
+  "mdwright-latex 0.1.3": [
+    {
+      "file": "b80dd405c1d86135.txt",
+      "url": "https://raw.githubusercontent.com/jcreinhold/mdwright/a6635ec675574ae6b065542af5be7a3dba0daa36/LICENSE-APACHE"
+    },
+    {
+      "file": "ecff5871308b1e0d.txt",
+      "url": "https://raw.githubusercontent.com/jcreinhold/mdwright/a6635ec675574ae6b065542af5be7a3dba0daa36/LICENSE-MIT"
+    }
+  ],
+  "quantette 0.5.1": [
+    {
+      "file": "34cb75d73943f10a.txt",
+      "url": "https://raw.githubusercontent.com/IanManske/quantette/f85ca4da8c1b9c52215f33fdedfb103df8555329/LICENSE-APACHE"
+    },
+    {
+      "file": "8f2b430687de9562.txt",
+      "url": "https://raw.githubusercontent.com/IanManske/quantette/f85ca4da8c1b9c52215f33fdedfb103df8555329/LICENSE-MIT"
+    }
+  ],
+  "ratatui 0.30.0": [
+    {
+      "file": "50eb43e8d742c9c6.txt",
+      "url": "https://raw.githubusercontent.com/ratatui/ratatui/0a2a7c0363a4806b0cf05c1915bf7cdd438f756c/LICENSE"
+    }
+  ],
+  "ratatui-crossterm 0.1.0": [
+    {
+      "file": "50eb43e8d742c9c6.txt",
+      "url": "https://raw.githubusercontent.com/ratatui/ratatui/0a2a7c0363a4806b0cf05c1915bf7cdd438f756c/LICENSE"
+    }
+  ],
+  "rquickjs-core 0.14.0": [
+    {
+      "file": "976ad3d07927343a.txt",
+      "url": "https://raw.githubusercontent.com/DelSkayn/rquickjs/d7ef5eeae702fea24c03643064de454f1c1dd4b0/LICENSE"
+    }
+  ],
+  "rquickjs-sys 0.14.0": [
+    {
+      "file": "976ad3d07927343a.txt",
+      "url": "https://raw.githubusercontent.com/DelSkayn/rquickjs/d7ef5eeae702fea24c03643064de454f1c1dd4b0/LICENSE"
+    }
+  ],
+  "typespec 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "typespec_client_core 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "typespec_macros 1.0.0": [
+    {
+      "file": "3d4ada4e04d153d7.txt",
+      "url": "https://raw.githubusercontent.com/azure/azure-sdk-for-rust/c3c92ed4349125e25d176f13faa9ef016b790b3e/LICENSE.txt"
+    }
+  ],
+  "vsimd 0.8.0": [
+    {
+      "file": "14e66de892a0e218.txt",
+      "url": "https://raw.githubusercontent.com/Nugine/simd/d74c030d9dc4f3cae02146d1f497ff62726ef09a/LICENSE"
+    }
+  ],
+  "zune-core 0.4.12": [
+    {
+      "file": "7fa429541e55b150.txt",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/f8fbb123d5ed04441e8324a555bfcda0cb1bd28f/LICENSE-ZLIB"
+    },
+    {
+      "file": "07dd1c7661a3393f.txt",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/f8fbb123d5ed04441e8324a555bfcda0cb1bd28f/LICENSE.md"
+    }
+  ],
+  "zune-jpeg 0.4.21": [
+    {
+      "file": "7fa429541e55b150.txt",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/fa2c767a01d7d9373911d0bf63e0588553d67e0e/LICENSE-ZLIB"
+    },
+    {
+      "file": "07dd1c7661a3393f.txt",
+      "url": "https://raw.githubusercontent.com/etemesi254/zune-image/fa2c767a01d7d9373911d0bf63e0588553d67e0e/LICENSE.md"
+    }
+  ]
+}

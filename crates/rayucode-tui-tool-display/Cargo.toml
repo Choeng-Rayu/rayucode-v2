@@ -1,0 +1,10 @@
+[package]
+name = "rayucode-tui-tool-display"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rayucode-logging = { path = "../rayucode-logging" }
+serde_json = "1"
+unicode-width = "0.2"

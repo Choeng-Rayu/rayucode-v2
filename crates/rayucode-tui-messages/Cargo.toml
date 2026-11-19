@@ -1,0 +1,14 @@
+[package]
+name = "rayucode-tui-messages"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rayucode-logging = { path = "../rayucode-logging" }
+rayucode-config-types = { path = "../rayucode-config-types" }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-session-types = { path = "../rayucode-session-types" }
+rayucode-tui-markdown = { path = "../rayucode-tui-markdown" }
+ratatui = "0.30"
+serde_json = "1"

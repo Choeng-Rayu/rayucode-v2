@@ -1,0 +1,28 @@
+[package]
+name = "rayucode-telemetry-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "rayucode_telemetry_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rayucode-build-meta = { path = "../rayucode-build-meta" }
+rayucode-core = { path = "../rayucode-core" }
+rayucode-logging = { path = "../rayucode-logging" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
+rayucode-selfdev-types = { path = "../rayucode-selfdev-types" }
+rayucode-storage = { path = "../rayucode-storage" }
+rayucode-usage-types = { path = "../rayucode-usage-types" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "charset", "http2", "system-proxy", "rustls-tls", "rustls-tls-native-roots"] }
+serde_json = "1"
+walkdir = "2"
+tokio = { version = "1", features = ["rt"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"

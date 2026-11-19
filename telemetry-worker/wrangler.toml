@@ -1,0 +1,91 @@
+name = "rayucode-telemetry"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# Custom domain for the website beacon. Configure your own domain and D1/R2
+# identifiers before deploying:
+# routes = [
+#   { pattern = "telemetry.rayucode.com", custom_domain = true }
+# ]
+
+# Nightly retention prune (see RETENTION_DAYS in src/worker.js). Workers Paid
+# hard-caps each D1 database at 10 GB; pruning keeps durable raw history inside
+# the worker's lower storage-budget guardrail.
+[triggers]
+crons = ["17 4 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "rayucode-telemetry"
+database_id = "<REPLACE_WITH_D1_DATABASE_ID>"
+
+# High-volume raw families (BULK_EVENTS in src/worker.js) live in a second
+# database so each stays under D1's 10 GB per-database cap. Same schema.sql.
+[[d1_databases]]
+binding = "DB_BULK"
+database_name = "rayucode-telemetry-bulk"
+database_id = "<REPLACE_WITH_BULK_D1_DATABASE_ID>"
+
+# Separately consented prompt/transcript content. Keep this bucket private and
+# configure an R2 lifecycle rule that deletes objects after 30 days.
+[[r2_buckets]]
+binding = "TRANSCRIPTS"
+bucket_name = "rayucode-consented-transcripts"
+
+# High-volume firehose: every event is also written to Workers Analytics
+# Engine (time-series store, ~90-day retention, no database size cap). This is
+# the primary store for raw turn_end / session_start / onboarding_step
+# analysis; D1 keeps only a short raw tail for those events plus the durable
+# identity/lifecycle rows and the daily_active_users rollup. The firehose
+# write happens before the D1 insert, so telemetry keeps recording even if D1
+# hits its size cap. See FIREHOSE_SCHEMA in src/worker.js for column mapping.
+#
+# ACTION REQUIRED: Analytics Engine needs a one-time enable in the Cloudflare
+# dashboard (Workers & Pages -> Analytics Engine). Until then this binding
+# must stay commented out or `wrangler deploy` fails with code 10089. The worker
+# code degrades gracefully without the binding (responses report firehose:false).
+[[analytics_engine_datasets]]
+binding = "FIREHOSE"
+dataset = "rayucode_telemetry_firehose"
+
+# Web/subscription firehose (FIREHOSE_WEB_SCHEMA in src/worker.js). The main
+# FIREHOSE_SCHEMA is at Analytics Engine's 20-blob/20-double capacity, so
+# website + subscription events get their own dataset. Same one-time enable
+# caveat as above; the worker degrades gracefully without the binding.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_WEB"
+dataset = "rayucode_web_firehose"
+
+# Privacy-safe sponsored-discovery funnel and reliability telemetry. A separate
+# dataset avoids repurposing the full main firehose schema.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_DISCOVERY"
+dataset = "rayucode_discovery_firehose"
+
+# Complete website -> installer -> first-run conversion reconstruction. This
+# remains queryable for roughly 90 days even during a D1 size-cap incident.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_INSTALL"
+dataset = "rayucode_install_firehose"
+
+# Coarse geography (country only, from Cloudflare's edge). Separate dataset
+# because the main and web schemas are at the 20-blob limit. See
+# FIREHOSE_GEO_SCHEMA in src/worker.js. Same one-time Analytics Engine enable
+# caveat as above; the worker degrades gracefully without the binding (the D1
+# country_daily rollup still records).
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_GEO"
+dataset = "rayucode_geo_firehose"
+
+# Full raw concurrency payloads, including quality/version/presence metadata.
+# The main firehose has no concurrency fields. No old slot is repurposed.
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_CONCURRENCY"
+dataset = "rayucode_concurrency_firehose"
+
+[[analytics_engine_datasets]]
+binding = "FIREHOSE_USAGE"
+dataset = "rayucode_usage_firehose"
+
+[vars]
+ALLOWED_ORIGIN = "*"

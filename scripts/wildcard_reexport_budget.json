@@ -1,0 +1,23 @@
+{
+  "total": 18,
+  "files": {
+    "crates/rayucode-app-core/src/lib.rs": 1,
+    "crates/rayucode-app-core/src/setup_hints.rs": 1,
+    "crates/rayucode-base/src/env.rs": 1,
+    "crates/rayucode-base/src/id.rs": 1,
+    "crates/rayucode-base/src/lib.rs": 1,
+    "crates/rayucode-base/src/logging.rs": 1,
+    "crates/rayucode-base/src/memory_types.rs": 1,
+    "crates/rayucode-base/src/plan.rs": 1,
+    "crates/rayucode-base/src/protocol.rs": 1,
+    "crates/rayucode-base/src/provider_catalog.rs": 1,
+    "crates/rayucode-base/src/stdin_detect.rs": 1,
+    "crates/rayucode-base/src/storage.rs": 1,
+    "crates/rayucode-base/src/todo.rs": 1,
+    "crates/rayucode-base/src/transport/mod.rs": 1,
+    "crates/rayucode-base/src/util.rs": 1,
+    "crates/rayucode-tui/src/lib.rs": 1,
+    "crates/rayucode-tui/src/tui/mod.rs": 1,
+    "src/lib.rs": 1
+  }
+}

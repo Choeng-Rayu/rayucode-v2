@@ -1,0 +1,28 @@
+[package]
+name = "rayucode-provider-rayu-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Rayu (RayuCode) hosted-model runtime for RayuCode over the Rayu gateway's Anthropic Messages surface (direct HTTPS)"
+
+[lib]
+name = "rayucode_provider_rayu_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+# default-features = false: see rayucode-provider-openrouter-runtime/Cargo.toml.
+rayucode-base = { path = "../rayucode-base", default-features = false }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
+rayucode-provider-anthropic = { path = "../rayucode-provider-anthropic" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "charset", "http2", "system-proxy", "rustls-tls", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+dirs = "5"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+tempfile = "3"

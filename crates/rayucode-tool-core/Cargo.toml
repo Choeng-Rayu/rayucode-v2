@@ -1,0 +1,17 @@
+[package]
+name = "rayucode-tool-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rayucode_tool_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+rayucode-agent-runtime = { path = "../rayucode-agent-runtime" }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-tool-types = { path = "../rayucode-tool-types" }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }

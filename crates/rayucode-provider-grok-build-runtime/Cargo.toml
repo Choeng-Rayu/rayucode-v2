@@ -1,0 +1,22 @@
+[package]
+name = "rayucode-provider-grok-build-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Grok Build subscription runtime for RayuCode over the Grok CLI chat proxy (direct HTTPS)"
+
+[lib]
+name = "rayucode_provider_grok_build_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
+# default-features = false: see rayucode-provider-openrouter-runtime/Cargo.toml.
+rayucode-base = { path = "../rayucode-base", default-features = false }
+rayucode-message-types = { path = "../rayucode-message-types" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
+rayucode-provider-openrouter-runtime = { path = "../rayucode-provider-openrouter-runtime" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -1,0 +1,18 @@
+[package]
+name = "rayucode-provider-env"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "rayucode_provider_env"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+rayucode-core = { path = "../rayucode-core" }
+rayucode-logging = { path = "../rayucode-logging" }
+rayucode-provider-metadata = { path = "../rayucode-provider-metadata" }
+rayucode-storage = { path = "../rayucode-storage" }
+
+[dev-dependencies]
+tempfile = "3"
