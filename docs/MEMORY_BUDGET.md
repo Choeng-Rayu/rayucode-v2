@@ -32,12 +32,12 @@ Use existing debug surfaces instead of ad hoc instrumentation:
 - Process-lifetime timeline: `python scripts/analyze_runtime_memory_log.py --days 1`
 
 Primary sources in code:
-- `src/tui/app/debug_cmds.rs`
-- `src/tui/memory_profile.rs`
-- `src/session.rs`
-- `src/tui/markdown.rs`
-- `src/tui/mermaid.rs`
-- `src/runtime_memory_log.rs`
+- `crates/rayucode-tui/src/tui/app/debug_cmds.rs`
+- `crates/rayucode-tui/src/tui/memory_profile.rs`
+- `crates/rayucode-base/src/session.rs`, `crates/rayucode-base/src/session/memory_profile.rs`
+- `crates/rayucode-tui-markdown/src/lib.rs`
+- `crates/rayucode-tui-mermaid/src/lib.rs`, `crates/rayucode-tui-mermaid/src/mermaid_cache_render.rs`
+- `crates/rayucode-base/src/runtime_memory_log.rs`
 
 ## Budget model
 
@@ -55,7 +55,7 @@ We use two kinds of budgets:
 
 ### Markdown cache budget
 
-Source: `src/tui/markdown.rs`
+Source: `crates/rayucode-tui-markdown/src/lib.rs`
 
 | Metric | Budget | Why |
 |---|---:|---|
@@ -69,14 +69,18 @@ Required review action if violated:
 ### Mermaid cache budget
 
 Sources:
-- `src/tui/mermaid.rs`
-- `src/tui/mermaid_cache_render.rs`
+- `crates/rayucode-tui-mermaid/src/lib.rs`
+- `crates/rayucode-tui-mermaid/src/mermaid_cache_render.rs`
 
 | Metric | Budget | Why |
 |---|---:|---|
-| `render_cache_entries` | `<= 64` | Explicit render-cache cap (`RENDER_CACHE_MAX`) |
-| `image_state_entries` | `<= 12` | Explicit protocol-state cap (`IMAGE_STATE_MAX`) |
-| `source_cache_entries` | `<= 8` | Explicit decoded-source cap (`SOURCE_CACHE_MAX`) |
+| `render_cache_entries` | `<= 512` | Explicit render-cache cap (`RENDER_CACHE_MAX` in `mermaid_cache_render.rs`) |
+| `image_state_entries` | `<= 24` | Explicit protocol-state cap (`IMAGE_STATE_MAX`) |
+| `image_state_decoded_bytes` | `<= 48 MiB` | Decoded source-pixel budget for protocol state (`IMAGE_STATE_MAX_SOURCE_BYTES`) |
+| `source_cache_entries` | `<= 16` | Explicit decoded-source cap (`SOURCE_CACHE_MAX`) |
+| `source_cache_decoded_bytes` | `<= 48 MiB` | Exact decoded-byte budget for viewport/fit source images (`SOURCE_CACHE_MAX_BYTES`) |
+| `fitted_source_cache_entries` | `<= 16` | Pre-scaled variant cap (`FITTED_SOURCE_CACHE_MAX`) |
+| `fitted_source_cache_bytes` | `<= 32 MiB` | Byte budget for pre-scaled variants (`FITTED_SOURCE_CACHE_MAX_BYTES`) |
 | `active_diagrams` | `<= 128` | Explicit active-diagram cap (`ACTIVE_DIAGRAMS_MAX`) |
 | `cache_disk_png_bytes` | `<= 50 MiB` | Explicit on-disk cache cap (`CACHE_MAX_SIZE_BYTES`) |
 | `cache_disk_max_age_secs` | `<= 259200` | 3-day expiry (`CACHE_MAX_AGE_SECS`) |
@@ -90,7 +94,7 @@ Required review action if violated:
 
 ### Session and transcript memory
 
-Source: `src/session.rs`, `src/tui/memory_profile.rs`
+Source: `crates/rayucode-base/src/session.rs`, `crates/rayucode-base/src/session/memory_profile.rs`, `crates/rayucode-tui/src/tui/memory_profile.rs`
 
 These are not strict caps yet, but they are expected relationships.
 
@@ -108,7 +112,7 @@ Required review action if violated:
 
 ### Runtime memory log expectations
 
-Source: `src/runtime_memory_log.rs`
+Source: `crates/rayucode-base/src/runtime_memory_log.rs`
 
 Runtime memory logs are the regression detection mechanism, not just a debug feature.
 
@@ -150,9 +154,13 @@ When changing memory-heavy code, capture and include:
 These are the concrete enforced limits today:
 
 - Markdown highlight cache entries: 256
-- Mermaid render cache entries: 64
-- Mermaid protocol image-state entries: 12
-- Mermaid decoded source-cache entries: 8
+- Mermaid render cache entries: 512
+- Mermaid protocol image-state entries: 24
+- Mermaid protocol decoded source bytes: 48 MiB
+- Mermaid decoded source-cache entries: 16
+- Mermaid decoded source-cache bytes: 48 MiB
+- Mermaid fitted (pre-scaled) source entries: 16
+- Mermaid fitted (pre-scaled) source bytes: 32 MiB
 - Mermaid active diagrams: 128
 - Mermaid on-disk PNG cache: 50 MiB, max age 3 days
 

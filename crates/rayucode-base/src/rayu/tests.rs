@@ -981,6 +981,11 @@ fn enable_other_provider_false_locks_auth_and_multiprovider_to_rayu_only() {
             .set_model("rayu-test-model-2")
             .expect("bare model should route to Rayu");
         assert_eq!(multi.model(), "rayu-test-model-2");
+
+        // Forking preserves Rayu provider identity and model cleanly.
+        let forked = multi.fork();
+        assert_eq!(forked.name(), RAYU_PROVIDER_DISPLAY_NAME);
+        assert_eq!(forked.model(), "rayu-test-model-2");
     }
 
     match prev_or {
@@ -999,5 +1004,91 @@ fn enable_other_provider_false_locks_auth_and_multiprovider_to_rayu_only() {
         Some(v) => crate::env::set_var("RAYU_PROVIDER", v),
         None => crate::env::remove_var("RAYU_PROVIDER"),
     }
+    drop(env);
+}
+
+#[tokio::test]
+async fn enable_other_provider_false_unauthenticated_completion_and_fork_never_mention_openrouter() {
+    use crate::provider::Provider;
+
+    let env = RayuTestEnv::new();
+    let _rayu_only = scoped_other_providers_enabled_for_tests(false);
+    crate::auth::AuthStatus::invalidate_cache();
+    let multi = crate::provider::MultiProvider::from_auth_status(crate::auth::AuthStatus::default());
+
+    let forked = multi.fork();
+    assert_eq!(forked.name(), RAYU_PROVIDER_DISPLAY_NAME);
+    assert_eq!(forked.model(), "rayu");
+
+    let err = match multi.complete(&[], &[], "sys", None).await {
+        Ok(_) => panic!("unauthenticated Rayu-only completion must fail"),
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Rayu"),
+        "expected Rayu auth error, got: {msg}"
+    );
+    assert!(
+        !msg.to_ascii_lowercase().contains("openrouter")
+            && !msg.to_ascii_lowercase().contains("claude")
+            && !msg.to_ascii_lowercase().contains("openai"),
+        "unauthenticated Rayu-only completion leaked 3P provider: {msg}"
+    );
+
+    let split_err = match multi.complete_split(&[], &[], "static", "dyn", None).await {
+        Ok(_) => panic!("unauthenticated Rayu-only split completion must fail"),
+        Err(err) => err,
+    };
+    let split_msg = split_err.to_string();
+    assert!(
+        split_msg.contains("Rayu") && !split_msg.to_ascii_lowercase().contains("openrouter"),
+        "unexpected split completion error: {split_msg}"
+    );
+
+    let anthropic_usage = crate::usage::get().await;
+    assert!(anthropic_usage.last_error.is_none());
+    let openai_usage = crate::usage::get_openai_usage().await;
+    assert!(openai_usage.last_error.is_none());
+    assert!(crate::usage::get_openai_usage_sync().last_error.is_none());
+
+    drop(env);
+}
+
+#[test]
+fn preferred_fallback_model_precedence_and_disable_sentinel() {
+    let env = RayuTestEnv::new();
+    let _compiled = scoped_default_fallback_model_for_tests(Some("deepseek-v4.1-flash-1017-cloud"));
+
+    // 1. Falls back to compile-time `.env` default when neither process env nor rayu.env sets it.
+    assert_eq!(
+        preferred_fallback_model().as_deref(),
+        Some("deepseek-v4.1-flash-1017-cloud")
+    );
+
+    // 2. `~/.config/rayucode/rayu.env` overrides compile-time `.env` default without recompile.
+    let config_dir = crate::storage::app_config_dir().expect("config dir");
+    std::fs::create_dir_all(&config_dir).expect("mkdir");
+    std::fs::write(
+        config_dir.join("rayu.env"),
+        "RAYU_FALLBACK_MODEL=qwen4-max-preview\n",
+    )
+    .expect("write rayu.env");
+    assert_eq!(
+        preferred_fallback_model().as_deref(),
+        Some("qwen4-max-preview")
+    );
+
+    // 3. Process environment variable wins over both rayu.env and compile-time default.
+    crate::env::set_var(RAYU_FALLBACK_MODEL_ENV, "deepseek-v4.1-flash-1017-cloud");
+    assert_eq!(
+        preferred_fallback_model().as_deref(),
+        Some("deepseek-v4.1-flash-1017-cloud")
+    );
+
+    // 4. Explicit disable sentinel restores default ranking without falling through.
+    crate::env::set_var(RAYU_FALLBACK_MODEL_ENV, "none");
+    assert_eq!(preferred_fallback_model(), None);
+
     drop(env);
 }

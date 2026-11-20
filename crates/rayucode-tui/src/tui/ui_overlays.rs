@@ -332,14 +332,16 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "/keys",
         "Show keybinding conflicts with your terminal/OS",
     ));
-    lines.push(help_entry(
-        "/reset usage limits openai",
-        "Review a banked reset, then confirm or cancel",
-    ));
-    lines.push(help_entry(
-        "/reset usage limits claude",
-        "Review the Claude session-limit reset, then confirm or cancel",
-    ));
+    if crate::rayu::other_providers_enabled() {
+        lines.push(help_entry(
+            "/reset usage limits openai",
+            "Review a banked reset, then confirm or cancel",
+        ));
+        lines.push(help_entry(
+            "/reset usage limits claude",
+            "Review the Claude session-limit reset, then confirm or cancel",
+        ));
+    }
     lines.push(help_entry("/usage", "Show connected provider usage limits"));
     lines.push(help_entry(
         "/support",
@@ -465,14 +467,22 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(Line::from(Span::styled("  Auth & Accounts", section_style)));
     lines.push(Line::from(""));
     lines.push(help_entry("/auth", "Show authentication status"));
-    lines.push(help_entry(
-        "/login [provider]",
-        "Interactive or direct login",
-    ));
-    lines.push(help_entry(
-        "/account",
-        "Open combined Claude/OpenAI account picker",
-    ));
+    if crate::rayu::other_providers_enabled() {
+        lines.push(help_entry(
+            "/login [provider]",
+            "Interactive or direct login",
+        ));
+        lines.push(help_entry(
+            "/account",
+            "Open combined Claude/OpenAI account picker",
+        ));
+    } else {
+        lines.push(help_entry("/login", "Sign in with Rayu account or API key"));
+        lines.push(help_entry(
+            "/account",
+            "Manage Rayu account, API key, and defaults",
+        ));
+    }
     lines.push(help_entry(
         "/account rayu status",
         "Show Rayu account, plan, and credits",

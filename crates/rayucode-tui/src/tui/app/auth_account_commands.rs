@@ -83,11 +83,15 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
                 crate::rayu::other_providers_disabled_message().to_string(),
             ));
         } else {
-            let valid = providers
-                .iter()
-                .map(|provider| provider.id)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let valid = if !crate::rayu::other_providers_enabled() {
+                "rayu, rayu-api".to_string()
+            } else {
+                providers
+                    .iter()
+                    .map(|provider| provider.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             app.push_display_message(DisplayMessage::error(format!(
                 "Unknown provider '{}'. Use: {}",
                 provider.trim(),
@@ -444,7 +448,51 @@ pub(crate) fn account_command_from_picker(
     }
 }
 
+fn reject_disabled_other_provider_account_command(app: &mut App, command: &AccountCommand) -> bool {
+    if crate::rayu::other_providers_enabled() {
+        return false;
+    }
+    let allowed = match command {
+        AccountCommand::OpenOverlay { provider_filter }
+        | AccountCommand::Doctor {
+            provider_id: provider_filter,
+        } => provider_filter
+            .as_deref()
+            .is_none_or(|p| p.eq_ignore_ascii_case("rayu")),
+        AccountCommand::ShowSettings { provider_id }
+        | AccountCommand::Login { provider_id }
+        | AccountCommand::Add { provider_id, .. } => provider_id.eq_ignore_ascii_case("rayu"),
+        AccountCommand::RayuStatus
+        | AccountCommand::RayuApiKey
+        | AccountCommand::RayuManage
+        | AccountCommand::RayuLogout
+        | AccountCommand::SetDefaultProvider(_)
+        | AccountCommand::SetDefaultModel(_) => true,
+        AccountCommand::Switch { .. }
+        | AccountCommand::SwitchShorthand { .. }
+        | AccountCommand::Remove { .. }
+        | AccountCommand::SetOpenAiTransport(_)
+        | AccountCommand::SetOpenAiEffort(_)
+        | AccountCommand::SetOpenAiFast(_)
+        | AccountCommand::SetCopilotPremium(_)
+        | AccountCommand::SetOpenAiCompatApiBase(_)
+        | AccountCommand::SetOpenAiCompatApiKeyName(_)
+        | AccountCommand::SetOpenAiCompatEnvFile(_)
+        | AccountCommand::SetOpenAiCompatDefaultModel(_) => false,
+    };
+    if !allowed {
+        app.push_display_message(DisplayMessage::error(
+            crate::rayu::other_providers_disabled_message().to_string(),
+        ));
+        return true;
+    }
+    false
+}
+
 pub(crate) fn execute_account_command_local(app: &mut App, command: AccountCommand) {
+    if reject_disabled_other_provider_account_command(app, &command) {
+        return;
+    }
     if crate::tui::is_ssh_remote() {
         match command {
             AccountCommand::OpenOverlay { provider_filter } => {
@@ -537,6 +585,9 @@ pub(crate) async fn execute_account_command_remote(
     command: AccountCommand,
     remote: &mut crate::tui::backend::RemoteConnection,
 ) -> anyhow::Result<()> {
+    if reject_disabled_other_provider_account_command(app, &command) {
+        return Ok(());
+    }
     // Ordinary shared-daemon clients run on the same host as their auth/config.
     // is_remote means wire-connected, not SSH. Only SSH/cloud must isolate the
     // laptop stores. Named switches remain daemon-only for every wire client.

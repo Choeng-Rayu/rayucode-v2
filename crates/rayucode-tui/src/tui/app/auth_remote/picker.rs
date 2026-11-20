@@ -122,9 +122,14 @@ impl App {
             preview: false,
         });
         let host = host.to_string();
-        self.set_status_notice(format!(
-            "Login on {host}: choose a provider or Import local login. Some methods require setup directly on the SSH host. Esc cancels."
-        ));
+        let notice = if crate::rayu::other_providers_enabled() {
+            format!(
+                "Login on {host}: choose a provider or Import local login. Some methods require setup directly on the SSH host. Esc cancels."
+            )
+        } else {
+            format!("Login on {host}: choose Rayu to sign in on the SSH host. Esc cancels.")
+        };
+        self.set_status_notice(notice);
         if tokio::runtime::Handle::try_current().is_ok() {
             self.remote_login
                 .as_mut()

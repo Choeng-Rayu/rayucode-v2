@@ -274,6 +274,14 @@ pub(super) async fn handle_set_premium_mode(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    if !crate::rayu::other_providers_enabled() {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: crate::rayu::other_providers_disabled_message().to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
     use crate::provider::copilot::PremiumMode;
 
     let premium_mode = match mode {
@@ -331,6 +339,9 @@ fn apply_set_model(
 }
 
 pub(super) fn automatic_failover_source_is_pool_member(agent: &Agent) -> bool {
+    if !crate::rayu::other_providers_enabled() {
+        return false;
+    }
     let provider = agent.provider_handle();
     let name = provider.name().to_ascii_lowercase();
     let name = match name.as_str() {
@@ -1202,6 +1213,14 @@ pub(super) async fn handle_switch_anthropic_account(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    if !crate::rayu::other_providers_enabled() {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: crate::rayu::other_providers_disabled_message().to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
     match crate::auth::claude::set_active_account(&label) {
         Ok(()) => {
             crate::auth::AuthStatus::invalidate_cache();
@@ -1229,6 +1248,14 @@ pub(super) async fn handle_switch_openai_account(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    if !crate::rayu::other_providers_enabled() {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: crate::rayu::other_providers_disabled_message().to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
     match crate::auth::codex::set_active_account(&label) {
         Ok(()) => {
             crate::auth::AuthStatus::invalidate_cache();
@@ -1255,6 +1282,14 @@ pub(super) async fn handle_invalidate_openai_usage(
     account_label: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    if !crate::rayu::other_providers_enabled() {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: crate::rayu::other_providers_disabled_message().to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
     // Only local state changes here. A retry of this request is harmless and
     // cannot spend another reset. Acknowledge after invalidation so a following
     // prompt cannot be rejected by the pre-reset quota cooldown.
@@ -1267,6 +1302,14 @@ pub(super) async fn handle_invalidate_anthropic_usage(
     account_label: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
+    if !crate::rayu::other_providers_enabled() {
+        let _ = client_event_tx.send(ServerEvent::Error {
+            id,
+            message: crate::rayu::other_providers_disabled_message().to_string(),
+            retry_after_secs: None,
+        });
+        return;
+    }
     // Local cache and cooldown state only, so retries cannot spend a reset.
     crate::usage::invalidate_anthropic_usage_reset_state(account_label.as_deref());
     let _ = client_event_tx.send(ServerEvent::Done { id });

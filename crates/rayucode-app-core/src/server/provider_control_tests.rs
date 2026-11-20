@@ -244,6 +244,37 @@ async fn account_switch_cross_provider_uses_target_oauth_catalog() {
     );
 }
 
+#[tokio::test]
+async fn third_party_account_rpcs_are_rejected_when_other_providers_disabled() {
+    let _guard = EnvGuard::save(&[]);
+    let _rayu_only = crate::rayu::scoped_other_providers_enabled_for_tests(false);
+    let provider = Arc::new(AuthChangeMockProvider::new());
+    let agent = Arc::new(Mutex::new(Agent::new(provider, Registry::empty())));
+    assert!(!automatic_failover_source_is_pool_member(
+        &*agent.lock().await
+    ));
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    handle_switch_anthropic_account(901, "work".into(), &agent, &tx).await;
+    handle_switch_openai_account(902, "work".into(), &agent, &tx).await;
+    handle_invalidate_openai_usage(903, None, &tx).await;
+    handle_invalidate_anthropic_usage(904, None, &tx).await;
+    handle_set_premium_mode(905, 1, &agent, &tx).await;
+
+    for expected_id in [901, 902, 903, 904, 905] {
+        match rx.try_recv() {
+            Ok(ServerEvent::Error { id, message, .. }) => {
+                assert_eq!(id, expected_id);
+                assert!(
+                    message.contains("ENABLE_OTHER_PROVIDER=false"),
+                    "unexpected error for id {expected_id}: {message}"
+                );
+            }
+            other => panic!("expected ServerEvent::Error for id {expected_id}, got {other:?}"),
+        }
+    }
+}
+
 impl AuthChangeMockProvider {
     fn new() -> Self {
         let state = AuthChangeMockState {

@@ -70,9 +70,10 @@ pub use rayucode_provider_core::{
     summarize_model_catalog_refresh,
 };
 pub use rayucode_provider_core::{
-    FallbackPickOptions, error_looks_like_credential_failure, model_route_provider_labels_match,
-    normalize_model_route_provider_label, pick_next_fallback_route,
-    pick_next_fallback_route_with_options,
+    FallbackPickOptions, error_looks_like_credential_failure, fallback_model_matches,
+    model_route_provider_labels_match, normalize_model_route_provider_label,
+    pick_next_fallback_route, pick_next_fallback_route_with_options,
+    rank_fallback_routes_with_preferred_model,
 };
 pub use rayucode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
 pub use route_builders::{
@@ -594,7 +595,9 @@ impl MultiProvider {
         mode: CompletionMode<'_>,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        self.bind_auto_account_for_request(self.active_provider())?;
+        if crate::rayu::other_providers_enabled() {
+            self.bind_auto_account_for_request(self.active_provider())?;
+        }
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
 
@@ -623,6 +626,35 @@ impl MultiProvider {
             } else {
                 tools
             };
+
+        if !crate::rayu::other_providers_enabled() {
+            return match mode {
+                CompletionMode::Unified { system } => {
+                    self.complete_on_provider(
+                        ActiveProvider::OpenRouter,
+                        messages,
+                        tools,
+                        system,
+                        resume_session_id,
+                    )
+                    .await
+                }
+                CompletionMode::Split {
+                    system_static,
+                    system_dynamic,
+                } => {
+                    self.complete_split_on_provider(
+                        ActiveProvider::OpenRouter,
+                        messages,
+                        tools,
+                        system_static,
+                        system_dynamic,
+                        resume_session_id,
+                    )
+                    .await
+                }
+            };
+        }
 
         let active = self.active_provider();
         // Saved account requests remain session-local. Only configured pool
@@ -1740,6 +1772,10 @@ impl MultiProvider {
     }
 
     fn fork_model_switch_request(&self, active: ActiveProvider, current_model: &str) -> String {
+        if !crate::rayu::other_providers_enabled() {
+            let bare = current_model.strip_prefix("rayu:").unwrap_or(current_model);
+            return format!("rayu:{bare}");
+        }
         if let Some(label) = self.selected_account_for_provider(active) {
             let method = if active == ActiveProvider::Claude {
                 "claude-oauth"
@@ -3083,7 +3119,12 @@ impl Provider for MultiProvider {
         provider.spawn_openai_catalog_refresh_if_needed();
         let catalog_ms = catalog_start.elapsed().as_millis();
         let set_model_start = std::time::Instant::now();
-        if !current_model.trim().is_empty() {
+        if !current_model.trim().is_empty()
+            && (crate::rayu::other_providers_enabled()
+                || ProviderRegistry::new(&provider)
+                    .compatible_profile(RAYU_PROFILE_ID)
+                    .is_some())
+        {
             let switch_request = self.fork_model_switch_request(active, &current_model);
             let _ = provider.set_model(&switch_request);
         }

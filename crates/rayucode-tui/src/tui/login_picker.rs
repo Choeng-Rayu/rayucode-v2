@@ -434,7 +434,11 @@ impl LoginPicker {
                 Style::default().fg(Color::Gray).italic(),
             )));
             lines.push(Line::from(Span::styled(
-                "Try `openai`, `oauth`, `configured`, or `setup`.",
+                if crate::rayu::other_providers_enabled() {
+                    "Try `openai`, `oauth`, `configured`, or `setup`."
+                } else {
+                    "Try `rayu`, `oauth`, or `configured`."
+                },
                 Style::default().fg(MUTED),
             )));
         } else {

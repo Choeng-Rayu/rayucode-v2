@@ -86,7 +86,8 @@ pub(super) fn pick_failover_target(agent: &Agent, error: &str) -> Option<Failove
     let current_api_method = agent.session_route_api_method().unwrap_or_default();
     let source_key = rayucode_provider_core::route_pool_key(&current_api_method);
     let pool = crate::auth::account_pool::AccountPool::load();
-    let ranked = rayucode_provider_core::rank_fallback_routes(
+    let preferred_fallback_model = crate::rayu::preferred_fallback_model();
+    let ranked = rayucode_provider_core::rank_fallback_routes_with_preferred_model(
         &routes,
         &agent.provider_model(),
         &agent.provider_name(),
@@ -95,6 +96,7 @@ pub(super) fn pick_failover_target(agent: &Agent, error: &str) -> Option<Failove
             credential_failure: true,
         },
         &pool.ordered_members(),
+        preferred_fallback_model.as_deref(),
     );
     ranked
         .into_iter()

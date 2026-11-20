@@ -369,8 +369,56 @@ fn remote_model_catalog_cache_path() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join(REMOTE_MODEL_CATALOG_CACHE_FILE))
 }
 
-fn remote_model_catalog_cache_origin() -> String {
-    crate::server::socket_path().to_string_lossy().into_owned()
+pub(super) fn remote_model_catalog_cache_origin() -> String {
+    let socket = crate::server::socket_path();
+    if crate::rayu::other_providers_enabled() {
+        socket.to_string_lossy().into_owned()
+    } else {
+        format!("{}|rayu-only", socket.display())
+    }
+}
+
+fn route_allowed_in_build_mode(route: &crate::provider::ModelRoute) -> bool {
+    crate::rayu::other_providers_enabled()
+        || route
+            .api_method
+            .eq_ignore_ascii_case(crate::rayu::RAYU_ROUTE_API_METHOD)
+}
+
+fn filter_catalog_snapshot_for_build_mode(
+    snapshot: &mut rayucode_provider_core::ModelCatalogSnapshot,
+) {
+    if crate::rayu::other_providers_enabled() {
+        return;
+    }
+    if snapshot.provider_name.as_deref().is_some_and(|name| {
+        !name.eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME)
+            && crate::provider_catalog::is_known_other_provider_id(name)
+    }) {
+        snapshot.provider_name = Some(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string());
+    }
+    let had_non_empty_routes = !snapshot.model_routes.is_empty();
+    snapshot.model_routes.retain(route_allowed_in_build_mode);
+    if !snapshot.model_routes.is_empty() {
+        let rayu_models: HashSet<&str> = snapshot
+            .model_routes
+            .iter()
+            .map(|route| route.model.as_str())
+            .collect();
+        snapshot
+            .available_models
+            .retain(|model| rayu_models.contains(model.as_str()));
+    } else if had_non_empty_routes {
+        snapshot.available_models.clear();
+    } else if snapshot
+        .available_models
+        .iter()
+        .any(|model| model.starts_with("rayu:"))
+    {
+        snapshot
+            .available_models
+            .retain(|model| model.starts_with("rayu:"));
+    }
 }
 
 fn remote_catalog_text_is_safe(value: &str, max_bytes: usize, allow_empty: bool) -> bool {
@@ -697,8 +745,9 @@ impl App {
 
     pub(super) fn replace_remote_model_catalog_snapshot(
         &mut self,
-        snapshot: rayucode_provider_core::ModelCatalogSnapshot,
+        mut snapshot: rayucode_provider_core::ModelCatalogSnapshot,
     ) -> CatalogReplaceOutcome {
+        filter_catalog_snapshot_for_build_mode(&mut snapshot);
         let mut provider_meta_changed = false;
         let mut provider_name_changed = false;
         if let Some(name) = snapshot.provider_name
@@ -796,6 +845,13 @@ impl App {
         remote_available_entries: &[String],
         routes: &mut Vec<crate::provider::ModelRoute>,
     ) {
+        if !crate::rayu::other_providers_enabled() {
+            routes.retain(route_allowed_in_build_mode);
+            if !crate::tui::is_ssh_remote() && !remote_available_entries.is_empty() {
+                helpers::extend_rayu_remote_routes(remote_available_entries, routes);
+            }
+            return;
+        }
         if crate::tui::is_ssh_remote() || remote_available_entries.is_empty() {
             // The SSH daemon's routes are authoritative. Never infer routes
             // from this computer's credentials, profiles, or model caches.
@@ -886,8 +942,9 @@ impl App {
 
     fn hydrate_remote_model_catalog_snapshot(
         &mut self,
-        snapshot: rayucode_provider_core::ModelCatalogSnapshot,
+        mut snapshot: rayucode_provider_core::ModelCatalogSnapshot,
     ) -> bool {
+        filter_catalog_snapshot_for_build_mode(&mut snapshot);
         if !snapshot.has_routes() {
             return false;
         }
@@ -1655,12 +1712,31 @@ impl App {
             )
         };
 
+        let routes = if !crate::rayu::other_providers_enabled() {
+            routes
+                .into_iter()
+                .filter(|route| {
+                    route_allowed_in_build_mode(route) || route.api_method == "current"
+                })
+                .collect()
+        } else {
+            routes
+        };
         let routes = if routes.is_empty() && is_remote && current_model != "unknown" {
+            let fallback_provider = if !crate::rayu::other_providers_enabled()
+                && remote_provider_name
+                    .as_deref()
+                    .is_some_and(crate::provider_catalog::is_known_other_provider_id)
+            {
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string()
+            } else {
+                remote_provider_name
+                    .clone()
+                    .unwrap_or_else(|| "current".to_string())
+            };
             vec![crate::provider::ModelRoute {
                 model: current_model.clone(),
-                provider: remote_provider_name
-                    .clone()
-                    .unwrap_or_else(|| "current".to_string()),
+                provider: fallback_provider,
                 api_method: "current".to_string(),
                 available: true,
                 detail: "catalog still loading".to_string(),
@@ -2363,26 +2439,35 @@ impl App {
     }
 
     pub(super) fn build_remote_model_routes_fallback(&self) -> Vec<crate::provider::ModelRoute> {
-        if crate::tui::is_ssh_remote() {
-            return self.build_remote_model_routes_lightweight_fallback(
+        let mut routes = if crate::tui::is_ssh_remote() {
+            self.build_remote_model_routes_lightweight_fallback(
                 self.remote_provider_model.as_deref().unwrap_or("unknown"),
-            );
+            )
+        } else {
+            crate::provider::remote_model_routes_fallback(
+                self.remote_provider_name.as_deref(),
+                &self.remote_available_entries,
+            )
+        };
+        if !crate::rayu::other_providers_enabled() {
+            routes.retain(route_allowed_in_build_mode);
         }
-        crate::provider::remote_model_routes_fallback(
-            self.remote_provider_name.as_deref(),
-            &self.remote_available_entries,
-        )
+        routes
     }
 
     fn build_remote_model_routes_lightweight_fallback(
         &self,
         current_model: &str,
     ) -> Vec<crate::provider::ModelRoute> {
-        crate::provider::remote_model_routes_lightweight_fallback(
+        let mut routes = crate::provider::remote_model_routes_lightweight_fallback(
             self.remote_provider_name.as_deref(),
             &self.remote_available_entries,
             current_model,
-        )
+        );
+        if !crate::rayu::other_providers_enabled() {
+            routes.retain(route_allowed_in_build_mode);
+        }
+        routes
     }
 
     /// When a runtime model-picker preview is visible, route its favorite/default
@@ -3842,6 +3927,17 @@ impl App {
                     }
                     PickerAction::Login(provider) => {
                         self.inline_interactive_state = None;
+                        if !crate::rayu::other_providers_enabled()
+                            && !matches!(
+                                provider.target,
+                                crate::provider_catalog::LoginProviderTarget::Rayu
+                            )
+                        {
+                            self.push_display_message(DisplayMessage::error(
+                                crate::rayu::other_providers_disabled_message().to_string(),
+                            ));
+                            return Ok(());
+                        }
                         self.start_login_provider(provider);
                     }
                     PickerAction::LoginRayuApiKey => {

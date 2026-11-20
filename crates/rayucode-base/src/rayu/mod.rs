@@ -14,6 +14,7 @@
 pub const RAYU_PROVIDER_DISPLAY_NAME: &str = "Rayu";
 pub const RAYU_ROUTE_API_METHOD: &str = "rayu";
 pub const RAYU_API_KEY_ENV: &str = "RAYU_API_KEY";
+pub const RAYU_FALLBACK_MODEL_ENV: &str = "RAYU_FALLBACK_MODEL";
 pub const RAYU_CACHE_NAMESPACE: &str = "rayu";
 
 mod api;
@@ -35,10 +36,13 @@ pub use apikey::{
 };
 pub use login::{PreparedRayuLogin, RayuLoginOptions, exchange_callback_url, login};
 pub use onboarding::{has_completed_first_run_onboarding, mark_first_run_onboarding_completed};
-pub use rayucode_build_meta::{ENABLE_OTHER_PROVIDER, other_providers_enabled};
+pub use rayucode_build_meta::{
+    DEFAULT_FALLBACK_MODEL, ENABLE_OTHER_PROVIDER, default_fallback_model, other_providers_enabled,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use rayucode_build_meta::{
-    ScopedOtherProvidersGuard, scoped_other_providers_enabled_for_tests,
+    ScopedDefaultFallbackModelGuard, ScopedOtherProvidersGuard,
+    scoped_default_fallback_model_for_tests, scoped_other_providers_enabled_for_tests,
 };
 pub(crate) use refresh::telegram_access_token;
 pub use refresh::{access_token, refresh_access_token};
@@ -60,6 +64,48 @@ pub fn require_other_providers_enabled() -> anyhow::Result<()> {
         anyhow::bail!("{}", other_providers_disabled_message());
     }
     Ok(())
+}
+
+fn normalize_fallback_model_setting(raw: &str) -> Option<Option<String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "none" | "off" | "auto" | "default"
+    ) {
+        return Some(None);
+    }
+    Some(Some(trimmed.to_string()))
+}
+
+/// Preferred model offered first when a turn fails and the user presses Ctrl+Y
+/// to switch and resend (or during server-side failover when eligible).
+///
+/// Resolution precedence:
+/// 1. Process environment variable `RAYU_FALLBACK_MODEL`
+/// 2. User config env file `~/.config/rayucode/rayu.env` (`RAYU_FALLBACK_MODEL=...`)
+/// 3. Compile-time default read from repository `.env` (`RAYU_FALLBACK_MODEL=...`)
+///
+/// Setting any tier to `none`, `off`, `auto`, or `default` disables the override
+/// and restores default generation/pool fallback ranking.
+pub fn preferred_fallback_model() -> Option<String> {
+    if let Ok(raw) = std::env::var(RAYU_FALLBACK_MODEL_ENV)
+        && let Some(resolved) = normalize_fallback_model_setting(&raw)
+    {
+        return resolved;
+    }
+    if let Some(raw) =
+        rayucode_provider_env::load_env_value_from_config_file(RAYU_FALLBACK_MODEL_ENV, "rayu.env")
+        && let Some(resolved) = normalize_fallback_model_setting(&raw)
+    {
+        return resolved;
+    }
+    default_fallback_model()
+        .as_deref()
+        .and_then(normalize_fallback_model_setting)
+        .flatten()
 }
 
 /// Whether first-install / pre-provider Rayu authentication enforcement is active.
@@ -151,6 +197,7 @@ pub(super) mod test_support {
         "RAYU_WEB_URL",
         "RAYU_GATEWAY_URL",
         "RAYU_API_KEY",
+        "RAYU_FALLBACK_MODEL",
         "USE_RAYU_OAUTH",
     ];
 

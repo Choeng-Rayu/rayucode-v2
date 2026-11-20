@@ -80,6 +80,9 @@ fn try_spawn_refresh(usage: Arc<RwLock<UsageData>>) {
 
 /// Get current usage data, refreshing if stale
 pub async fn get() -> UsageData {
+    if !crate::rayu::other_providers_enabled() {
+        return UsageData::default();
+    }
     let usage = get_usage().await;
 
     // Check if we need to refresh
@@ -144,6 +147,9 @@ fn try_spawn_openai_refresh(usage: Arc<RwLock<OpenAIUsageData>>) {
 }
 
 pub async fn get_openai_usage() -> OpenAIUsageData {
+    if !crate::rayu::other_providers_enabled() {
+        return OpenAIUsageData::default();
+    }
     let usage = get_openai_usage_cell().await;
 
     let (should_refresh, current_data) = {
@@ -159,6 +165,9 @@ pub async fn get_openai_usage() -> OpenAIUsageData {
 }
 
 pub fn get_openai_usage_sync() -> OpenAIUsageData {
+    if !crate::rayu::other_providers_enabled() {
+        return OpenAIUsageData::default();
+    }
     if let Some(usage) = OPENAI_USAGE.get()
         && let Ok(data) = usage.try_read()
     {
@@ -186,6 +195,9 @@ static OPENAI_LABEL_REFRESH_IN_FLIGHT: std::sync::OnceLock<
 /// background. Use this for the account a request actually authenticates
 /// as, not `get_openai_usage_sync`, which follows the global active login.
 pub fn get_openai_usage_for_label_sync(label: &str) -> OpenAIUsageData {
+    if !crate::rayu::other_providers_enabled() {
+        return OpenAIUsageData::default();
+    }
     let label = label.trim().to_string();
     if label.is_empty() {
         return OpenAIUsageData::default();

@@ -211,6 +211,52 @@ pub fn resolve_enable_other_provider(
     (true, None)
 }
 
+/// Normalize an optional `RAYU_FALLBACK_MODEL` value.
+///
+/// Empty/whitespace strings return `None` (unspecified; fall through to lower
+/// precedence). Explicit disable sentinels (`none`, `off`, `auto`, `default`)
+/// return `Some(None)` so higher-precedence env values can disable a `.env`
+/// default without falling through.
+#[allow(dead_code)] // Used by build.rs and unit tests.
+pub fn normalize_fallback_model_value(raw: &str) -> Option<Option<String>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "none" | "off" | "auto" | "default"
+    ) {
+        return Some(None);
+    }
+    Some(Some(trimmed.to_string()))
+}
+
+/// Resolve compile-time `RAYU_FALLBACK_MODEL` with precedence:
+/// 1. Explicit process env `RAYU_FALLBACK_MODEL` (when non-empty)
+/// 2. Workspace `.env` `RAYU_FALLBACK_MODEL` (when non-empty)
+/// 3. `None` (use default fallback ranking)
+#[allow(dead_code)] // Used by build.rs and unit tests.
+pub fn resolve_fallback_model(
+    env_value: Option<&str>,
+    dotenv_contents: Option<&str>,
+) -> Option<String> {
+    if let Some(raw) = env_value
+        && let Some(resolved) = normalize_fallback_model_value(raw)
+    {
+        return resolved;
+    }
+
+    if let Some(contents) = dotenv_contents
+        && let Some(raw) = read_dotenv_value(contents, "RAYU_FALLBACK_MODEL")
+        && let Some(resolved) = normalize_fallback_model_value(&raw)
+    {
+        return resolved;
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +389,41 @@ mod tests {
             resolve_enable_other_provider(None, Some("ENABLE_OTHER_PROVIDER=maybe"));
         assert!(enabled);
         assert!(warning.is_some());
+    }
+
+    #[test]
+    fn dotenv_fallback_model_parsing_and_precedence() {
+        assert_eq!(resolve_fallback_model(None, None), None);
+        assert_eq!(
+            resolve_fallback_model(
+                None,
+                Some("RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud # ctrl+y\n")
+            )
+            .as_deref(),
+            Some("deepseek-v4.1-flash-1017-cloud")
+        );
+        assert_eq!(
+            resolve_fallback_model(
+                Some("qwen4-max-preview"),
+                Some("RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud\n")
+            )
+            .as_deref(),
+            Some("qwen4-max-preview")
+        );
+        assert_eq!(
+            resolve_fallback_model(
+                Some("none"),
+                Some("RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud\n")
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_fallback_model(
+                Some(""),
+                Some("export RAYU_FALLBACK_MODEL=\"deepseek-v4.1-flash-1017-cloud\"\r\n")
+            )
+            .as_deref(),
+            Some("deepseek-v4.1-flash-1017-cloud")
+        );
     }
 }

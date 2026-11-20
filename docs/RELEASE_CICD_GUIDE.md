@@ -66,3 +66,35 @@ If a bad release is published:
 1. Mark the broken release as a pre-release or delete it in `Choeng-Rayu/rayucode-v2-releases`.
 2. Update `releases/latest/version` in `Choeng-Rayu/rayucode-v2-releases` back to the previous known-good tag (e.g. `v3.0.0`).
 3. New installs and `rayu update` immediately revert to the known-good release.
+
+## Release ordering: v3 binaries before the legacy bridge
+
+Publish the `rayucode-v2-releases` v3 binaries **before** the legacy migration
+bridge (`rayu-cli` → `Actions → Publish v3 Migration Bridge Release`) and before
+publishing `@rayu-dev/rayu-cli@2.6.0`. The order matters because
+`rayu-web/public/install-rayu-legacy.sh` resolves `releases/latest/download` in
+`Choeng-Rayu/rayu-cli` first:
+
+1. `try_install_native` probes `rayu-cli-<platform>` and `manifest.json`. With no
+   `rayu-cli` release it falls through to the npm tarball path, which is today's
+   working 2.5.3 install.
+2. Once the bridge release exists, that probe succeeds and the installer replaces
+   the Node CLI with `rayu-v3-migrator`, which shells out to
+   `https://rayucode.com/install.sh`.
+3. If `rayucode-v2-releases` has no `releases/latest/version` and no GitHub
+   release tag yet, `install.sh` exits with **Failed to determine latest
+   version** — after the legacy `rayu` has already been replaced.
+
+So publishing the bridge first converts a working legacy install into a migrator
+that cannot complete. The `Publish legacy migration release` job also needs
+`actions/checkout` because `gh release` shells out to git and fails with
+`fatal: not a git repository` outside a checkout; that was fixed in `6b2e6ec`.
+
+Use this order:
+
+1. `PUBLIC_RELEASE_TOKEN` present and `v3.0.0` tagged → `Release (Closed-Source
+   Public Binaries)` publishes to `rayucode-v2-releases`.
+2. Verify `https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2-releases/main/releases/latest/version`
+   returns `v3.0.0`.
+3. Only then run the migration bridge workflow and `npm publish
+   --access public` for `@rayu-dev/rayu-cli@2.6.0`.

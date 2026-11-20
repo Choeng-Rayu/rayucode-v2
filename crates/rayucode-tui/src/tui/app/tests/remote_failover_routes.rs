@@ -1174,3 +1174,157 @@ fn test_remote_fallback_resend_dropped_when_switch_fails() {
     rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
     assert!(!app.is_processing, "no resend should fire");
 }
+
+#[test]
+fn test_ctrl_y_fallback_prefers_configured_rayu_fallback_model_over_gpt_generation_rank() {
+    with_temp_rayu_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let _fallback = crate::rayu::scoped_default_fallback_model_for_tests(Some(
+            "deepseek-v4.1-flash-1017-cloud",
+        ));
+
+        let rayu_route = |model: &str| crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "Rayu".to_string(),
+            api_method: "rayu".to_string(),
+            available: true,
+            detail: "Rayu hosted models · live catalog".to_string(),
+            usage: None,
+            cheapness: None,
+        };
+
+        app.is_remote = true;
+        app.remote_provider_name = Some("Rayu".to_string());
+        app.remote_provider_model = Some("qwen4-max-preview".to_string());
+        app.session.route_api_method = Some("rayu".to_string());
+        app.remote_model_options = vec![
+            rayu_route("qwen4-max-preview"),
+            rayu_route("gpt-6.1-sol"),
+            rayu_route("deepseek-v4.1-flash-1017-cloud"),
+        ];
+
+        let payload = Some(crate::tui::app::FallbackResendPayload {
+            retry_attempts: 0,
+            content: "hello".to_string(),
+            images: vec![],
+            is_system: false,
+            auto_retry: false,
+            system_reminder: None,
+            raw_input: Some("hello".to_string()),
+        });
+
+        assert!(app.offer_fallback_after_error_with_payload(
+            "Rayu gateway stream transport error: error decoding response body",
+            payload,
+        ));
+        let offer = app
+            .pending_fallback_offer
+            .as_ref()
+            .expect("expected Ctrl+Y fallback offer");
+        assert_eq!(offer.selection.model, "deepseek-v4.1-flash-1017-cloud");
+        assert_eq!(offer.selection.api_method, "rayu");
+        assert!(
+            app.display_messages.iter().any(|msg| msg.content.contains(
+                "Press Ctrl+Y to switch to deepseek-v4.1-flash-1017-cloud via rayu (Rayu) and resend."
+            )),
+            "expected Ctrl+Y offer prompt for deepseek-v4.1-flash-1017-cloud"
+        );
+
+        assert!(app.apply_pending_fallback_offer());
+        let selected = app
+            .pending_route_selection
+            .as_ref()
+            .expect("expected staged route selection after Ctrl+Y");
+        assert_eq!(selected.model, "deepseek-v4.1-flash-1017-cloud");
+        assert_eq!(selected.api_method, "rayu");
+        assert!(app.pending_fallback_resend.is_some());
+    });
+}
+
+#[test]
+fn test_ctrl_y_rayu_prefixed_route_confirms_bare_model_changed_and_handles_upstream_429() {
+    with_temp_rayu_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        remote.mark_history_loaded();
+        let _fallback = crate::rayu::scoped_default_fallback_model_for_tests(Some(
+            "deepseek-v4.1-flash-1017-cloud",
+        ));
+
+        let rayu_route = |model: &str| crate::provider::ModelRoute {
+            model: model.to_string(),
+            provider: "Rayu".to_string(),
+            api_method: "rayu".to_string(),
+            available: true,
+            detail: "Rayu hosted models · live catalog".to_string(),
+            usage: None,
+            cheapness: None,
+        };
+
+        app.is_remote = true;
+        app.remote_provider_name = Some("Rayu".to_string());
+        app.remote_provider_model = Some("qwen4-max-preview".to_string());
+        app.session.route_api_method = Some("rayu".to_string());
+        app.remote_model_options = vec![
+            rayu_route("rayu:qwen4-max-preview"),
+            rayu_route("rayu:gpt-6.1-sol"),
+            rayu_route("rayu:deepseek-v4.1-flash-1017-cloud"),
+        ];
+
+        let payload = Some(crate::tui::app::FallbackResendPayload {
+            retry_attempts: 0,
+            content: "retry me".to_string(),
+            images: vec![],
+            is_system: false,
+            auto_retry: false,
+            system_reminder: None,
+            raw_input: Some("retry me".to_string()),
+        });
+
+        // Upstream per-model 429 rate limit on Rayu should still offer sibling deepseek route.
+        assert!(app.offer_fallback_after_error_with_payload("429 Too Many Requests", payload));
+        assert!(
+            app.display_messages.iter().any(|msg| msg.content.contains(
+                "Press Ctrl+Y to switch to deepseek-v4.1-flash-1017-cloud via rayu (Rayu) and resend."
+            )),
+            "expected clean unprefixed display label in Ctrl+Y prompt"
+        );
+        assert!(app.apply_pending_fallback_offer());
+
+        // Simulate remote dispatcher sending SetRoute id=7 and server confirming bare model name.
+        let staged = app.pending_route_selection.take().unwrap();
+        app.pending_automatic_failover_route = Some(staged);
+        app.pending_automatic_failover_request_id = Some(7);
+        app.remote_model_switch_in_flight = true;
+
+        app.handle_server_event(
+            crate::protocol::ServerEvent::ModelChanged {
+                id: 7,
+                model: "deepseek-v4.1-flash-1017-cloud".to_string(),
+                provider_name: Some("Rayu".to_string()),
+                context_window: None,
+                error: None,
+                provider_oauth_email: None,
+                provider_oauth_account_label: None,
+                resolved_credential: None,
+                reasoning_effort: None,
+            },
+            &mut remote,
+        );
+
+        assert!(
+            !app.display_messages
+                .iter()
+                .any(|msg| msg.content.contains("did not confirm")),
+            "bare ModelChanged confirmation for rayu: route must succeed"
+        );
+        assert!(
+            app.pending_fallback_resend.is_some(),
+            "resend payload must stay queued for immediate retry"
+        );
+    });
+}

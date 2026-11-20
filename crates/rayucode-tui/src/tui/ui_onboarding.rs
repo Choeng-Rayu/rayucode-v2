@@ -510,7 +510,13 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                     );
                     lines.push(
                         Line::from(Span::styled(
-                            "Press Enter to choose a provider (OpenAI, Anthropic, and more).",
+                            if rayu_auth_gate_active_in_ui()
+                                || !crate::rayu::other_providers_enabled()
+                            {
+                                "Press Enter to open Rayu sign-in (Rayu account or Rayu API key)."
+                            } else {
+                                "Press Enter to choose a provider (OpenAI, Anthropic, and more)."
+                            },
                             Style::default().fg(dim_color()),
                         ))
                         .alignment(align),
@@ -542,6 +548,23 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                         lines.push(
                             Line::from(Span::styled(
                                 "Press Enter to choose Sign in with Rayu account or Enter Rayu API key.",
+                                Style::default().fg(dim_color()),
+                            ))
+                            .alignment(align),
+                        );
+                    } else if !crate::rayu::other_providers_enabled() {
+                        lines.push(
+                            Line::from(Span::styled(
+                                "Sign in to Rayu to get started.",
+                                Style::default()
+                                    .fg(welcome_accent())
+                                    .add_modifier(Modifier::BOLD),
+                            ))
+                            .alignment(align),
+                        );
+                        lines.push(
+                            Line::from(Span::styled(
+                                "Press Enter to open Rayu sign-in (Rayu account or Rayu API key).",
                                 Style::default().fg(dim_color()),
                             ))
                             .alignment(align),
@@ -634,9 +657,14 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
             if rayu_auth_gate_active_in_ui() {
                 return rayu_first_run_welcome_lines(yes_highlighted, align);
             }
+            let title = if crate::rayu::other_providers_enabled() {
+                "Log in to OpenAI?"
+            } else {
+                "Sign in to Rayu?"
+            };
             lines.push(
                 Line::from(Span::styled(
-                    "Log in to OpenAI?",
+                    title,
                     Style::default()
                         .fg(welcome_accent())
                         .add_modifier(Modifier::BOLD),

@@ -62,6 +62,16 @@ impl MultiProvider {
         system: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if !crate::rayu::other_providers_enabled() {
+            self.reconcile_auth_if_provider_missing(ActiveProvider::OpenRouter);
+            if let Some(rayu) = ProviderRegistry::new(self).compatible_profile(RAYU_PROFILE_ID) {
+                self.bind_provider_session(rayu.as_ref());
+                return rayu
+                    .complete(messages, tools, system, resume_session_id)
+                    .await;
+            }
+            return Err(anyhow::anyhow!("{}", crate::rayu::auth_gate_error_message()));
+        }
         self.reconcile_auth_if_provider_missing(provider);
         match provider {
             ActiveProvider::Claude => {
@@ -189,6 +199,22 @@ impl MultiProvider {
         system_dynamic: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if !crate::rayu::other_providers_enabled() {
+            self.reconcile_auth_if_provider_missing(ActiveProvider::OpenRouter);
+            if let Some(rayu) = ProviderRegistry::new(self).compatible_profile(RAYU_PROFILE_ID) {
+                self.bind_provider_session(rayu.as_ref());
+                return rayu
+                    .complete_split(
+                        messages,
+                        tools,
+                        system_static,
+                        system_dynamic,
+                        resume_session_id,
+                    )
+                    .await;
+            }
+            return Err(anyhow::anyhow!("{}", crate::rayu::auth_gate_error_message()));
+        }
         self.reconcile_auth_if_provider_missing(provider);
         match provider {
             ActiveProvider::Claude => {

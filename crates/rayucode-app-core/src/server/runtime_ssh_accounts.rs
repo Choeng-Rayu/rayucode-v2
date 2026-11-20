@@ -240,8 +240,16 @@ fn doctor(provider: Option<&str>) -> Result<String> {
     let status = crate::auth::AuthStatus::check_fast();
     let providers = match provider {
         Some(id) => vec![
-            crate::provider_catalog::resolve_login_provider(id)
-                .ok_or_else(|| anyhow::anyhow!("Unknown provider"))?,
+            crate::provider_catalog::resolve_login_provider(id).ok_or_else(|| {
+                if !crate::rayu::other_providers_enabled()
+                    && (crate::provider_catalog::is_known_other_provider_id(id)
+                        || id.eq_ignore_ascii_case("openai-compatible"))
+                {
+                    anyhow::anyhow!("{}", crate::rayu::other_providers_disabled_message())
+                } else {
+                    anyhow::anyhow!("Unknown provider")
+                }
+            })?,
         ],
         None => crate::provider_catalog::auth_status_login_providers().to_vec(),
     };
@@ -266,6 +274,12 @@ fn doctor(provider: Option<&str>) -> Result<String> {
 
 fn settings(provider: &str) -> Result<String> {
     if crate::provider_catalog::resolve_login_provider(provider).is_none() {
+        if !crate::rayu::other_providers_enabled()
+            && (crate::provider_catalog::is_known_other_provider_id(provider)
+                || provider.eq_ignore_ascii_case("openai-compatible"))
+        {
+            bail!("{}", crate::rayu::other_providers_disabled_message())
+        }
         bail!("Unknown provider")
     }
     let cfg = crate::config::Config::load();

@@ -36,11 +36,18 @@ pub const PKG_VERSION: &str = env!("RAYU_PKG_VERSION");
 /// workspace `.env`, defaulting to `true`).
 pub const ENABLE_OTHER_PROVIDER: bool =
     matches!(env!("RAYU_ENABLE_OTHER_PROVIDER").as_bytes(), b"true");
+/// Compile-time preferred Ctrl+Y / failover fallback model.
+///
+/// Resolved at build time from `RAYU_FALLBACK_MODEL` (process env takes precedence over
+/// workspace `.env`, defaulting to `""` meaning default fallback ranking).
+pub const DEFAULT_FALLBACK_MODEL: &str = env!("RAYU_FALLBACK_MODEL");
 
 #[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
     static TEST_OTHER_PROVIDERS_OVERRIDE: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
+    static TEST_DEFAULT_FALLBACK_MODEL_OVERRIDE: std::cell::RefCell<Option<Option<String>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -98,6 +105,55 @@ impl Drop for ScopedOtherProvidersGuard {
 pub fn scoped_other_providers_enabled_for_tests(enabled: bool) -> ScopedOtherProvidersGuard {
     let previous = TEST_OTHER_PROVIDERS_OVERRIDE.with(|cell| cell.replace(Some(enabled)));
     ScopedOtherProvidersGuard { previous }
+}
+
+/// Returns the compile-time default Ctrl+Y / failover fallback model configured via
+/// `RAYU_FALLBACK_MODEL` (workspace `.env` or build environment).
+///
+/// In Cargo unit-test harness executables (`target/<profile>/deps/*`), returns `None`
+/// unless explicitly scoped with [`scoped_default_fallback_model_for_tests`] so existing
+/// fallback unit tests stay independent of the developer's local `.env`, while production
+/// `rayu` binaries always observe [`DEFAULT_FALLBACK_MODEL`].
+pub fn default_fallback_model() -> Option<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(override_value) =
+            TEST_DEFAULT_FALLBACK_MODEL_OVERRIDE.with(|cell| cell.borrow().clone())
+        {
+            return override_value;
+        }
+        if is_test_harness_exe() {
+            return None;
+        }
+    }
+    let trimmed = DEFAULT_FALLBACK_MODEL.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// RAII guard restoring the previous thread-local `default_fallback_model` test override on drop.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScopedDefaultFallbackModelGuard {
+    previous: Option<Option<String>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for ScopedDefaultFallbackModelGuard {
+    fn drop(&mut self) {
+        TEST_DEFAULT_FALLBACK_MODEL_OVERRIDE.with(|cell| cell.replace(self.previous.take()));
+    }
+}
+
+/// Temporarily override [`default_fallback_model`] on the current test thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn scoped_default_fallback_model_for_tests(
+    model: Option<&str>,
+) -> ScopedDefaultFallbackModelGuard {
+    let next = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let previous = TEST_DEFAULT_FALLBACK_MODEL_OVERRIDE.with(|cell| cell.replace(Some(next)));
+    ScopedDefaultFallbackModelGuard { previous }
 }
 
 static RUNTIME_RELEASE_SEMVER: OnceLock<Option<String>> = OnceLock::new();
@@ -252,5 +308,28 @@ mod tests {
             assert!(!super::other_providers_enabled());
         }
         assert!(super::other_providers_enabled());
+    }
+
+    #[test]
+    fn scoped_default_fallback_model_override_restores_previous_state() {
+        assert_eq!(super::default_fallback_model(), None);
+        {
+            let _outer = super::scoped_default_fallback_model_for_tests(Some(
+                "deepseek-v4.1-flash-1017-cloud",
+            ));
+            assert_eq!(
+                super::default_fallback_model().as_deref(),
+                Some("deepseek-v4.1-flash-1017-cloud")
+            );
+            {
+                let _inner = super::scoped_default_fallback_model_for_tests(None);
+                assert_eq!(super::default_fallback_model(), None);
+            }
+            assert_eq!(
+                super::default_fallback_model().as_deref(),
+                Some("deepseek-v4.1-flash-1017-cloud")
+            );
+        }
+        assert_eq!(super::default_fallback_model(), None);
     }
 }

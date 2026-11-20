@@ -130,6 +130,20 @@ impl App {
             self.push_display_message(DisplayMessage::system("Use /login --import-local openai or /login --import-local claude for a one-time import of the selected local account. Confirmation is required before local credentials are read. No local credentials were accessed."));
             return true;
         }
+        if !crate::rayu::other_providers_enabled() {
+            if provider.is_some_and(|p| !p.eq_ignore_ascii_case("rayu")) {
+                self.push_display_message(DisplayMessage::error(
+                    crate::rayu::other_providers_disabled_message().to_string(),
+                ));
+                return true;
+            }
+            if words.len() > 2 {
+                self.push_display_message(DisplayMessage::system(
+                    "SSH login supports: /login rayu.",
+                ));
+                return true;
+            }
+        }
         if !importing
             && (words.len() > 2
                 || provider.is_some_and(|p| {

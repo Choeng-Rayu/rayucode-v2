@@ -37,9 +37,9 @@ pub use failover::{
     is_definitive_usage_exhaustion, parse_failover_prompt_message,
 };
 pub use fallback_pick::{
-    FallbackPickOptions, error_looks_like_credential_failure, model_generation_rank,
-    pick_next_fallback_route, pick_next_fallback_route_with_options, rank_fallback_routes,
-    route_pool_key,
+    FallbackPickOptions, error_looks_like_credential_failure, fallback_model_matches,
+    model_generation_rank, pick_next_fallback_route, pick_next_fallback_route_with_options,
+    rank_fallback_routes, rank_fallback_routes_with_preferred_model, route_pool_key,
 };
 pub use fingerprint::{log_provider_canonical_input, stable_hash_json, stable_hash_str};
 pub use models::{

@@ -78,6 +78,19 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         // Do not run local resume lookup, provider bootstrap, or self-dev setup.
         return super::ssh::run(args).await;
     }
+    if !crate::rayu::other_providers_enabled() {
+        if !matches!(args.provider, ProviderChoice::Auto | ProviderChoice::Rayu) {
+            anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+        }
+        if args
+            .provider_profile
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| !value.is_empty())
+        {
+            anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+        }
+    }
     // Import is a narrow stdin-only credential operation. Do not trigger config
     // migrations, provider discovery, or unrelated credential imports first.
     if let Some(Command::Auth(AuthCommand::Import { json, .. })) = &args.command {

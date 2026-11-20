@@ -636,6 +636,9 @@ Do not ask the user anything unless absolutely necessary. Keep your own session 
 }
 
 pub(super) fn preferred_one_shot_review_override() -> Option<(String, String)> {
+    if !crate::rayu::other_providers_enabled() {
+        return None;
+    }
     let creds = crate::auth::codex::load_credentials().ok()?;
     let has_oauth = !creds.refresh_token.trim().is_empty() || creds.id_token.is_some();
     if has_oauth {

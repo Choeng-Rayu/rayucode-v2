@@ -167,6 +167,9 @@ pub(super) fn remote_lines(
     provider_name: &str,
     selected_label: Option<&str>,
 ) -> Option<Vec<Line<'static>>> {
+    if !crate::rayu::other_providers_enabled() {
+        return None;
+    }
     let (anthropic, openai) = crate::usage::remote_account_list()?;
     Some(remote_inventory_lines(
         &anthropic,

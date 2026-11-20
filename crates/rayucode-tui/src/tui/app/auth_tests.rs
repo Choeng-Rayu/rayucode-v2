@@ -1203,6 +1203,155 @@ fn enable_other_provider_false_hides_third_party_providers_across_tui() -> anyho
                 .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
         );
 
+        // Empty /usage card mentions Rayu only (never claude/openai).
+        let usage_cards = app.usage_cards(&[], false, 0, 0, false);
+        assert_eq!(usage_cards.len(), 1);
+        let usage_body = usage_cards[0].1.to_ascii_lowercase();
+        assert!(usage_body.contains("/login rayu"));
+        assert!(!usage_body.contains("claude") && !usage_body.contains("openai"));
+
+        // Direct AccountCommand execution for 3P actions is blocked even if constructed programmatically.
+        super::auth_account_commands::execute_account_command_local(
+            &mut app,
+            super::auth_types::AccountCommand::Switch {
+                provider_id: "claude".to_string(),
+                label: "work".to_string(),
+            },
+        );
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+        super::auth_account_commands::execute_account_command_local(
+            &mut app,
+            super::auth_types::AccountCommand::Remove {
+                provider_id: "openai".to_string(),
+                label: "work".to_string(),
+            },
+        );
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+
+        // Typing `/login` opens an inline preview showing ONLY Rayu options.
+        app.set_input_for_test("/login");
+        app.sync_model_picker_preview_from_input();
+        let login_preview = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("/login should open inline preview picker");
+        assert_eq!(login_preview.kind, crate::tui::PickerKind::Login);
+        assert!(login_preview.preview);
+        let preview_names: Vec<&str> = login_preview
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(preview_names, vec!["Rayu", "Rayu API Key"]);
+        app.inline_interactive_state = None;
+        app.input.clear();
+        app.cursor_pos = 0;
+
+        // Even if a stale remote snapshot or cache carries third-party models/routes,
+        // the client strips them in Rayu-only mode and isolates the disk cache origin.
+        assert!(super::inline_interactive::remote_model_catalog_cache_origin().ends_with("|rayu-only"));
+        app.is_remote = true;
+        let stale_snapshot = rayucode_provider_core::ModelCatalogSnapshot::new(
+            Some("OpenAI".to_string()),
+            Some("rayu:glm-5.1".to_string()),
+            vec!["gpt-5.5".to_string(), "rayu:glm-5.1".to_string()],
+            vec![
+                crate::provider::ModelRoute {
+                    model: "gpt-5.5".to_string(),
+                    provider: "OpenAI".to_string(),
+                    api_method: "openai-oauth".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                    cheapness: None,
+                },
+                crate::provider::ModelRoute {
+                    model: "rayu:glm-5.1".to_string(),
+                    provider: "Rayu".to_string(),
+                    api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                    cheapness: None,
+                },
+            ],
+        );
+        app.replace_remote_model_catalog_snapshot(stale_snapshot);
+        assert_eq!(app.remote_provider_name.as_deref(), Some("Rayu"));
+        assert_eq!(app.remote_available_entries, vec!["rayu:glm-5.1".to_string()]);
+        assert_eq!(app.remote_model_options.len(), 1);
+        assert_eq!(app.remote_model_options[0].provider, "Rayu");
+        app.is_remote = false;
+
+        // Onboarding LoginOpenAi fallback routes to Rayu instead of OpenAI:
+        // (1) when Rayu credentials already exist, completes without starting OpenAI login;
+        app.onboarding_flow = Some(super::onboarding_flow::OnboardingFlow {
+            phase: super::onboarding_flow::OnboardingPhase::LoginOpenAi {
+                yes_highlighted: true,
+            },
+        });
+        app.onboarding_answer_login_openai(true);
+        assert!(matches!(
+            app.status_notice.as_ref().map(|(s, _)| s.as_str()),
+            Some("Rayu is already connected")
+        ));
+        assert!(app.pending_login.is_none());
+
+        // (2) when Rayu credentials are cleared, attempts Rayu sign-in (never OpenAI).
+        crate::rayu::logout()?;
+        app.onboarding_flow = Some(super::onboarding_flow::OnboardingFlow {
+            phase: super::onboarding_flow::OnboardingPhase::LoginOpenAi {
+                yes_highlighted: true,
+            },
+        });
+        app.onboarding_answer_login_openai(true);
+        assert!(
+            matches!(
+                app.pending_login,
+                Some(
+                    super::auth_types::PendingLogin::Rayu
+                        | super::auth_types::PendingLogin::RayuCallback
+                )
+            ) || app.display_messages.last().is_some_and(|m| {
+                m.content.contains("Rayu account login") && !m.content.contains("OpenAI")
+            })
+        );
+        assert!(
+            !app.status_notice
+                .as_ref()
+                .is_some_and(|(notice, _)| notice.contains("OpenAI"))
+        );
+        app.pending_login = None;
+
+        // `/usage openai` and `/auth doctor openai` are rejected with ENABLE_OTHER_PROVIDER=false,
+        // and review/judge one-shot override never falls back to OpenAI.
+        assert_eq!(
+            super::commands_review::preferred_one_shot_review_override(),
+            None
+        );
+        app.input = "/usage openai".to_string();
+        app.submit_input();
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+        app.input = "/auth doctor openai".to_string();
+        app.submit_input();
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+
         Ok(())
     })
 }

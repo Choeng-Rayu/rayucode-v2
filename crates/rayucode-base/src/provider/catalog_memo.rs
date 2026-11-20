@@ -150,6 +150,7 @@ impl MultiProvider {
                     },
                     std::env::var_os("RAYU_HOME").map(|value| value.into_encoded_bytes()),
                     crate::config::config_reload_generation(),
+                    crate::rayu::other_providers_enabled(),
                 ),
                 Self::provider_key(active),
                 self.model(),

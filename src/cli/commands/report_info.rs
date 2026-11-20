@@ -555,10 +555,17 @@ fn select_auth_doctor_providers(
     if let Some(provider_arg) = provider_arg {
         let provider =
             crate::provider_catalog::resolve_login_provider(provider_arg).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Unknown provider '{}'. Use `rayu provider list` to see valid provider ids.",
-                    provider_arg
-                )
+                if !crate::rayu::other_providers_enabled()
+                    && (crate::provider_catalog::is_known_other_provider_id(provider_arg)
+                        || provider_arg.eq_ignore_ascii_case("openai-compatible"))
+                {
+                    anyhow::anyhow!("{}", crate::rayu::other_providers_disabled_message())
+                } else {
+                    anyhow::anyhow!(
+                        "Unknown provider '{}'. Use `rayu provider list` to see valid provider ids.",
+                        provider_arg
+                    )
+                }
             })?;
         return Ok(vec![provider]);
     }

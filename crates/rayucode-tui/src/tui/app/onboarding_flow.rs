@@ -1026,7 +1026,9 @@ impl super::App {
         if self.onboarding_flow.is_some() {
             return;
         }
-        let detected = if rayu_auth_gate_active_in_tui() {
+        let rayu_only = !crate::rayu::other_providers_enabled();
+        let rayu_gate = rayu_auth_gate_active_in_tui();
+        let detected = if rayu_gate || rayu_only {
             Ok(Vec::new())
         } else if self.onboarding_sim_active() {
             crate::external_auth::detected_external_auth_review_candidates()
@@ -1049,7 +1051,7 @@ impl super::App {
             self.set_status_notice(format!(
                 "{title}: review detected logins (arrows/hl to move, Enter to choose)"
             ));
-        } else if rayu_auth_gate_active_in_tui() {
+        } else if rayu_gate || rayu_only {
             self.set_status_notice(
                 "Sign in to Rayu to get started (1: Rayu account, 2: Rayu API key)",
             );

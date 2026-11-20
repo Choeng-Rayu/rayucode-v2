@@ -201,6 +201,17 @@ impl App {
             }
             OverlayAction::Execute(provider) => {
                 self.login_picker_overlay = None;
+                if !crate::rayu::other_providers_enabled()
+                    && !matches!(
+                        provider.target,
+                        crate::provider_catalog::LoginProviderTarget::Rayu
+                    )
+                {
+                    self.push_display_message(DisplayMessage::error(
+                        crate::rayu::other_providers_disabled_message().to_string(),
+                    ));
+                    return Ok(());
+                }
                 self.start_login_provider(provider);
             }
         }

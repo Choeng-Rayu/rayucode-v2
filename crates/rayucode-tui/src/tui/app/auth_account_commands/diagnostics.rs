@@ -4,6 +4,12 @@ pub(super) fn render_provider_settings_markdown(app: &App, provider_id: &str) ->
     let status = crate::auth::AuthStatus::check();
     let cfg = crate::config::Config::load();
     let Some(provider) = resolve_account_provider_descriptor(provider_id) else {
+        if !crate::rayu::other_providers_enabled()
+            && (crate::provider_catalog::is_known_other_provider_id(provider_id)
+                || provider_id.eq_ignore_ascii_case("openai-compatible"))
+        {
+            return crate::rayu::other_providers_disabled_message().to_string();
+        }
         return format!("Unknown provider {}.", provider_id);
     };
     let assessment = status.assessment_for_provider(provider);
@@ -154,6 +160,12 @@ pub(super) fn render_auth_doctor_markdown(provider_filter: Option<&str>) -> Stri
         Some(provider_id) => match resolve_account_provider_descriptor(provider_id) {
             Some(provider) => vec![provider],
             None => {
+                if !crate::rayu::other_providers_enabled()
+                    && (crate::provider_catalog::is_known_other_provider_id(provider_id)
+                        || provider_id.eq_ignore_ascii_case("openai-compatible"))
+                {
+                    return crate::rayu::other_providers_disabled_message().to_string();
+                }
                 return format!(
                     "Unknown provider {}. Use /account <provider> doctor with a valid provider id.",
                     provider_id

@@ -102,6 +102,9 @@ where
 }
 
 async fn fetch() -> Snapshot {
+    if !crate::rayu::other_providers_enabled() {
+        return Snapshot::default();
+    }
     use crate::usage::MultiAccountProviderKind;
     let (anthropic, openai) = tokio::join!(
         crate::usage::fetch_oauth_account_usage(MultiAccountProviderKind::Anthropic),
@@ -339,5 +342,13 @@ mod tests {
         let refreshed = snapshot_with(&state, worker, false).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(refreshed.openai, first.openai);
+    }
+
+    #[tokio::test]
+    async fn fetch_returns_empty_snapshot_when_other_providers_disabled() {
+        let _rayu_only = crate::rayu::scoped_other_providers_enabled_for_tests(false);
+        let snapshot = fetch().await;
+        assert!(snapshot.anthropic.is_empty());
+        assert!(snapshot.openai.is_empty());
     }
 }

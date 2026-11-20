@@ -1298,7 +1298,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         app.is_processing(),
     );
     let line = if line.width() == 0 && !app.is_processing() {
-        Line::styled("Rayu ready", Style::default().fg(dim_color()))
+        Line::styled("Rayu ready enjoy your coding bro", Style::default().fg(dim_color()))
     } else {
         line
     };

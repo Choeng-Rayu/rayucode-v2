@@ -537,6 +537,11 @@ pub(crate) fn resolve_auth_test_targets(
         let status = crate::auth::AuthStatus::check_fast();
         let targets = configured_auth_test_targets(&status);
         if targets.is_empty() {
+            if !crate::rayu::other_providers_enabled() {
+                anyhow::bail!(
+                    "No configured Rayu authentication found. Run `rayu login --provider rayu` first, or set RAYU_API_KEY."
+                );
+            }
             anyhow::bail!(
                 "No configured supported auth providers found. Run `rayu login --provider <provider>` first, or choose an explicit --provider."
             );

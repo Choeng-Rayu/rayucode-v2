@@ -2729,7 +2729,18 @@ fn handle_server_event_inner(
                 let actual_provider = provider_name
                     .as_deref()
                     .and_then(rayucode_provider_core::parse_provider_hint);
-                let matches = selection.model == model
+                let expected_model = match selection.runtime_key {
+                    RuntimeKey::Rayu => selection
+                        .model
+                        .strip_prefix("rayu:")
+                        .unwrap_or(&selection.model),
+                    _ => selection.model.as_str(),
+                };
+                let actual_model = match selection.runtime_key {
+                    RuntimeKey::Rayu => model.strip_prefix("rayu:").unwrap_or(&model),
+                    _ => model.as_str(),
+                };
+                let matches = expected_model == actual_model
                     && selection.account_label().is_none_or(|label| {
                         provider_oauth_account_label.as_deref() == Some(label)
                     })
@@ -2818,7 +2829,9 @@ fn handle_server_event_inner(
                 // earlier acknowledgement updates confirmed state, but must
                 // not discard the newer target used to anchor the next cycle.
                 // Persist the daemon's label, never the optimistic target.
-                if resolved_credential == Some(rayucode_provider_core::ResolvedCredential::Oauth) {
+                if crate::rayu::other_providers_enabled()
+                    && resolved_credential == Some(rayucode_provider_core::ResolvedCredential::Oauth)
+                {
                     let method = match acknowledged_provider {
                         Some(rayucode_provider_core::ActiveProvider::Claude) => {
                             Some("claude-oauth")
@@ -2892,7 +2905,11 @@ fn handle_server_event_inner(
         ServerEvent::AccountUsage {
             anthropic, openai, ..
         } => {
-            crate::usage::set_remote_account_usage(anthropic, openai);
+            if crate::rayu::other_providers_enabled() {
+                crate::usage::set_remote_account_usage(anthropic, openai);
+            } else {
+                crate::usage::set_remote_account_usage(Vec::new(), Vec::new());
+            }
             crate::tui::ui::prepare::invalidate_header_prep_cache();
             true
         }

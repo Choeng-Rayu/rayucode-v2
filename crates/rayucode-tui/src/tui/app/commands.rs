@@ -3812,6 +3812,16 @@ pub(super) fn handle_usage_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     let filter = rest.trim();
+    if !crate::rayu::other_providers_enabled()
+        && !filter.is_empty()
+        && (crate::provider_catalog::is_known_other_provider_id(filter)
+            || filter.eq_ignore_ascii_case("openai-compatible"))
+    {
+        app.push_display_message(DisplayMessage::error(
+            crate::rayu::other_providers_disabled_message().to_string(),
+        ));
+        return true;
+    }
     app.usage_provider_filter = (!filter.is_empty()).then(|| filter.to_string());
     app.open_usage_inline_loading();
     app.request_usage_report();

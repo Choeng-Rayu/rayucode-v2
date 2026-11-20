@@ -1034,7 +1034,11 @@ fn build_header_lines_with_auth(
         }
     } else {
         (
-            "Account router · /account to manage · /login to add credential".to_string(),
+            if crate::rayu::other_providers_enabled() {
+                "Account router · /account to manage · /login to add credential".to_string()
+            } else {
+                "Rayu account · /account to manage · /login to sign in".to_string()
+            },
             account_router::lines(
                 auth,
                 active,

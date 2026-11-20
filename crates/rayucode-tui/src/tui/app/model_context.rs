@@ -599,8 +599,18 @@ impl App {
 
     /// Short label for a route, e.g. "claude-sonnet-4 via OAuth (Anthropic)".
     fn describe_route(route: &crate::provider::ModelRoute) -> String {
-        let method = crate::provider::ModelRouteApiMethod::parse(&route.api_method).display_label();
-        format!("{} via {} ({})", route.model, method, route.provider)
+        let method_kind = crate::provider::ModelRouteApiMethod::parse(&route.api_method);
+        let display_model = if matches!(method_kind, crate::provider::ModelRouteApiMethod::Rayu) {
+            route.model.strip_prefix("rayu:").unwrap_or(&route.model)
+        } else {
+            route.model.as_str()
+        };
+        format!(
+            "{} via {} ({})",
+            display_model,
+            method_kind.display_label(),
+            route.provider
+        )
     }
 
     /// After a provider turn error, compute the next best available route and, if
@@ -687,11 +697,45 @@ impl App {
         // broken API key) breaks every route behind that credential, so widen
         // the exclusion set: offering a sibling model on the same broken
         // credential would fail identically.
+        //
+        // Exception for Rayu's multi-model gateway: a per-model upstream 429
+        // rate limit does not break sibling models hosted behind the same Rayu
+        // account, whereas real auth failures (401/403/invalid key) or balance
+        // exhaustion (402/out of credits) do.
         let failover_decision = rayucode_provider_core::classify_failover_error_message(error);
+        let is_rayu_route = matches!(
+            crate::provider::ModelRouteApiMethod::parse(&current_api_method),
+            crate::provider::ModelRouteApiMethod::Rayu
+        ) || current_provider
+            .trim()
+            .eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME);
+        let lower_error = error.to_ascii_lowercase();
+        let has_status_code = |code: &str| {
+            let bytes = lower_error.as_bytes();
+            lower_error.match_indices(code).any(|(start, _)| {
+                let before_ok = start == 0 || !bytes[start - 1].is_ascii_digit();
+                let end = start + code.len();
+                let after_ok = end == bytes.len() || !bytes[end].is_ascii_digit();
+                before_ok && after_ok
+            })
+        };
+        let rayu_account_wide_failure = crate::provider::error_looks_like_credential_failure(error)
+            || rayucode_provider_core::is_definitive_usage_exhaustion(error)
+            || lower_error.contains("payment required")
+            || lower_error.contains("billing")
+            || lower_error.contains("forbidden")
+            || has_status_code("401")
+            || has_status_code("402")
+            || has_status_code("403");
         let options = crate::provider::FallbackPickOptions {
-            credential_failure: crate::provider::error_looks_like_credential_failure(error)
-                || failover_decision.should_mark_provider_unavailable()
-                || crate::provider::parse_failover_prompt_message(error).is_some(),
+            credential_failure: if is_rayu_route {
+                rayu_account_wide_failure
+                    || crate::provider::parse_failover_prompt_message(error).is_some()
+            } else {
+                crate::provider::error_looks_like_credential_failure(error)
+                    || failover_decision.should_mark_provider_unavailable()
+                    || crate::provider::parse_failover_prompt_message(error).is_some()
+            },
         };
         if !self.is_remote
             && failover_decision.should_mark_provider_unavailable()
@@ -750,15 +794,18 @@ impl App {
                 .provider
                 .cross_provider_failover
                 == crate::config::CrossProviderFailoverMode::Countdown;
-        // One shared ranking for both the automatic and manual paths: pool
-        // order, then newest generation, then affinity.
-        let ranked = rayucode_provider_core::rank_fallback_routes(
+        // One shared ranking for both the automatic and manual paths: preferred
+        // fallback model (RAYU_FALLBACK_MODEL), then pool order, then newest
+        // generation, then affinity.
+        let preferred_fallback_model = crate::rayu::preferred_fallback_model();
+        let ranked = rayucode_provider_core::rank_fallback_routes_with_preferred_model(
             &routes,
             &current_model,
             &current_provider,
             &current_api_method,
             options,
             &pool.ordered_members(),
+            preferred_fallback_model.as_deref(),
         );
         if automatic {
             // Never let an excluded preferred route hide an approved later one.
@@ -1819,7 +1866,7 @@ impl App {
 
     /// One card per provider, plus a status card while refreshing or when
     /// nothing matches. Returns `(title, content)` pairs.
-    fn usage_cards(
+    pub(super) fn usage_cards(
         &self,
         shown: &[crate::usage::ProviderUsage],
         refreshing: bool,
@@ -1846,6 +1893,7 @@ impl App {
                 Some(filter) => format!(
                     "*none\tno match\n- No connected provider matches \"{filter}\".\n- Run `/usage` to see every connected provider."
                 ),
+                None if !crate::rayu::other_providers_enabled() => "*none\tnot connected\n- Rayu is not connected yet.\n- Run `/login rayu` or `/login rayu-api`, then `/usage` again.".to_string(),
                 None => "*none\tnot connected\n- No providers are connected yet.\n- Run `/login claude` or `/login openai`, then `/usage` again.".to_string(),
             };
             return vec![(title, content)];

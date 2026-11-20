@@ -256,6 +256,11 @@ impl App {
     /// picker is still reachable via `/login`.
     pub(super) fn onboarding_start_default_login(&mut self) {
         crate::telemetry::record_setup_step_once("login_picker_opened");
+        if !crate::rayu::other_providers_enabled() {
+            self.start_rayu_login();
+            self.set_status_notice("Login: opening Rayu sign-in (or type /login for options)");
+            return;
+        }
         self.start_login_provider(crate::provider_catalog::OPENAI_LOGIN_PROVIDER);
         self.set_status_notice("Login: opening OpenAI sign-in (or type /login for others)");
     }
@@ -714,6 +719,20 @@ impl App {
         ) {
             return;
         }
+        if !crate::rayu::other_providers_enabled() {
+            if wants_openai && crate::rayu::has_credentials() {
+                self.onboarding_after_login();
+                self.set_status_notice("Rayu is already connected");
+            } else if wants_openai {
+                self.onboarding_start_default_login();
+            } else {
+                self.onboarding_finish();
+                let hint = "No problem. When you're ready to log in, run /login rayu (or /login rayu-api) to connect Rayu.";
+                self.push_display_message(DisplayMessage::system(hint.to_string()));
+                self.set_status_notice("Run /login rayu when you're ready");
+            }
+            return;
+        }
         if wants_openai && Self::openai_already_connected() {
             // Re-running onboarding with OpenAI already signed in: there is
             // nothing to sign in to, so continue as if the sign-in just
@@ -757,8 +776,13 @@ impl App {
             })
         );
         let choice = if yes { "Yes" } else { "No" };
+        let subject = if crate::rayu::other_providers_enabled() {
+            "Log in to OpenAI?"
+        } else {
+            "Sign in to Rayu?"
+        };
         self.set_status_notice(format!(
-            "Log in to OpenAI? [{choice}] - hl to move, Enter to choose (No skips for now)"
+            "{subject} [{choice}] - hl to move, Enter to choose (No skips for now)"
         ));
     }
 
@@ -828,7 +852,11 @@ impl App {
             // The user declined every detected login. Fall back to manual login
             // so they can still authenticate.
             self.onboarding_import_in_progress = None;
-            self.set_status_notice("No logins imported. Press Enter to choose a provider.");
+            self.set_status_notice(if crate::rayu::other_providers_enabled() {
+                "No logins imported. Press Enter to choose a provider."
+            } else {
+                "No logins imported. Press Enter to open Rayu login options."
+            });
             return;
         }
 
@@ -1644,9 +1672,11 @@ impl App {
                 .map(|r| Self::summarize_import_error(&r))
                 .unwrap_or(fallback),
         );
-        self.set_status_notice(
-            "Import failed. Press Enter to choose a provider and log in manually.",
-        );
+        self.set_status_notice(if crate::rayu::other_providers_enabled() {
+            "Import failed. Press Enter to choose a provider and log in manually."
+        } else {
+            "Sign in failed. Press Enter to open Rayu login options."
+        });
     }
 
     /// Condense a (possibly multi-line markdown) import-failure message into a

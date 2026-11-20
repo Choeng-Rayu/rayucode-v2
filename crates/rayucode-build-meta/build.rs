@@ -136,6 +136,12 @@ fn main() {
     if let Some(warning) = enable_other_provider_warning {
         println!("cargo:warning={warning}");
     }
+    let env_fallback_model = std::env::var("RAYU_FALLBACK_MODEL").ok();
+    let default_fallback_model = build_inputs::resolve_fallback_model(
+        env_fallback_model.as_deref(),
+        dotenv_contents.as_deref(),
+    )
+    .unwrap_or_default();
 
     // Set environment variables for compilation
     println!("cargo:rustc-env=RAYU_GIT_HASH={}", git_hash);
@@ -154,6 +160,10 @@ fn main() {
         } else {
             "false"
         }
+    );
+    println!(
+        "cargo:rustc-env=RAYU_FALLBACK_MODEL={}",
+        default_fallback_model
     );
 
     // Forward RAYU_RELEASE_BUILD env var if set (CI sets this for release binaries)
@@ -198,6 +208,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RAYU_BUILD_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=RAYU_BUILD_GIT_TAG");
     println!("cargo:rerun-if-env-changed=ENABLE_OTHER_PROVIDER");
+    println!("cargo:rerun-if-env-changed=RAYU_FALLBACK_MODEL");
     if dotenv_path.exists() {
         println!("cargo:rerun-if-changed={}", dotenv_path.display());
     }

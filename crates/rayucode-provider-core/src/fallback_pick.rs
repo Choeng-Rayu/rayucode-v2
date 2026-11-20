@@ -45,6 +45,42 @@ fn models_match(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
 
+fn strip_rayu_prefix(model: &str) -> &str {
+    let trimmed = model.trim();
+    if trimmed.len() > 5 && trimmed[..5].eq_ignore_ascii_case("rayu:") {
+        &trimmed[5..]
+    } else {
+        trimmed
+    }
+}
+
+/// Whether `route` matches a configured preferred fallback model spec (such as
+/// `RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud` or
+/// `RAYU_FALLBACK_MODEL=rayu:deepseek-v4.1-flash-1017-cloud`).
+pub fn fallback_model_matches(route: &ModelRoute, configured: &str) -> bool {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        return false;
+    }
+    if models_match(&route.model, configured) {
+        return true;
+    }
+    if let Some((wanted_provider, wanted_model)) = configured.split_once(':') {
+        let route_bare = route
+            .model
+            .split_once(':')
+            .map_or(route.model.as_str(), |(_, bare)| bare);
+        let provider_matches = model_route_provider_labels_match(&route.provider, wanted_provider)
+            || models_match(&route.provider, wanted_provider)
+            || api_methods_match(&route.api_method, wanted_provider);
+        return provider_matches && models_match(route_bare, wanted_model);
+    }
+    if let Some((_, route_bare)) = route.model.split_once(':') {
+        return models_match(route_bare, configured);
+    }
+    false
+}
+
 fn api_methods_match(a: &str, b: &str) -> bool {
     ModelRouteApiMethod::parse(a) == ModelRouteApiMethod::parse(b)
 }
@@ -452,22 +488,56 @@ pub fn rank_fallback_routes(
     options: FallbackPickOptions,
     pool_members: &[String],
 ) -> Vec<usize> {
+    rank_fallback_routes_with_preferred_model(
+        routes,
+        current_model,
+        current_provider,
+        current_api_method,
+        options,
+        pool_members,
+        None,
+    )
+}
+
+/// [`rank_fallback_routes`] with an optional preferred fallback model (e.g.
+/// from `RAYU_FALLBACK_MODEL` in `.env` / process env).
+///
+/// When `preferred_model` matches one or more eligible routes (not excluded as
+/// the exact failed route or broken credential), matching routes sort ahead of
+/// every other candidate, preferring same-provider matches first. When no
+/// eligible route matches (or `preferred_model` is `None`), ranking is
+/// identical to [`rank_fallback_routes`].
+pub fn rank_fallback_routes_with_preferred_model(
+    routes: &[ModelRoute],
+    current_model: &str,
+    current_provider: &str,
+    current_api_method: &str,
+    options: FallbackPickOptions,
+    pool_members: &[String],
+    preferred_model: Option<&str>,
+) -> Vec<usize> {
     let unknown_method = current_api_method.trim().is_empty();
+    let preferred_model = preferred_model.map(str::trim).filter(|m| !m.is_empty());
     let mut ranked: Vec<_> = routes
         .iter()
         .enumerate()
         .filter(|(_, route)| route.available)
         .filter_map(|(index, route)| {
-            let same_model = models_match(&route.model, current_model);
+            let same_provider =
+                model_route_provider_labels_match(&route.provider, current_provider)
+                    || models_match(&route.provider, current_provider);
+            let same_model = models_match(&route.model, current_model)
+                || (same_provider
+                    && models_match(
+                        strip_rayu_prefix(&route.model),
+                        strip_rayu_prefix(current_model),
+                    ));
             // Different saved accounts are different credentials: a spent
             // `claude-oauth@fox` must not exclude `claude-oauth@otter`.
             let same_method = api_methods_match(&route.api_method, current_api_method)
                 && crate::oauth_account_label(&route.api_method)
                     .zip(crate::oauth_account_label(current_api_method))
                     .is_none_or(|(a, b)| a == b);
-            let same_provider =
-                model_route_provider_labels_match(&route.provider, current_provider)
-                    || models_match(&route.provider, current_provider);
             if same_model && same_provider && (same_method || unknown_method) {
                 return None;
             }
@@ -477,7 +547,7 @@ pub fn rank_fallback_routes(
             let pool_position = route_pool_key(&route.api_method)
                 .and_then(|key| pool_members.iter().position(|member| *member == key))
                 .unwrap_or(usize::MAX);
-            let tier = if same_model && !same_method {
+            let tier: u8 = if same_model && !same_method {
                 0
             } else if same_provider {
                 1
@@ -487,15 +557,19 @@ pub fn rank_fallback_routes(
             let prefers_oauth = u8::from(!api_method_is_oauth(&ModelRouteApiMethod::parse(
                 &route.api_method,
             )));
-            Some((
+            let is_preferred =
+                preferred_model.is_some_and(|preferred| fallback_model_matches(route, preferred));
+            let key = if is_preferred {
+                (0u8, usize::from(tier), pool_position, prefers_oauth)
+            } else {
                 (
+                    1u8,
                     pool_position,
                     model_generation_rank(&route.model),
-                    tier,
-                    prefers_oauth,
-                ),
-                index,
-            ))
+                    (tier << 1) | prefers_oauth,
+                )
+            };
+            Some((key, index))
         })
         .collect();
     ranked.sort();
@@ -572,5 +646,124 @@ mod unified_rank_account_tests {
             &["claude:claude-fox".into(), "claude:claude-otter".into()],
         );
         assert_eq!(ranked, vec![0]);
+    }
+}
+
+#[cfg(test)]
+mod preferred_fallback_tests {
+    use super::*;
+
+    fn route(model: &str, provider: &str, api_method: &str) -> ModelRoute {
+        ModelRoute {
+            model: model.into(),
+            provider: provider.into(),
+            api_method: api_method.into(),
+            available: true,
+            detail: String::new(),
+            usage: None,
+            cheapness: None,
+        }
+    }
+
+    #[test]
+    fn preferred_rayu_fallback_beats_curated_openai_generation_rank() {
+        let routes = vec![
+            route("qwen4-max-preview", "Rayu", "rayu"),
+            route("gpt-6.1-sol", "Rayu", "rayu"),
+            route("deepseek-v4.1-flash-1017-cloud", "Rayu", "rayu"),
+        ];
+        // Without an override, gpt-6.1-sol wins because model_generation_rank recognizes it.
+        let default_ranked = rank_fallback_routes(
+            &routes,
+            "qwen4-max-preview",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+        );
+        assert_eq!(routes[default_ranked[0]].model, "gpt-6.1-sol");
+
+        // With RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud, deepseek wins first.
+        let preferred_ranked = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "qwen4-max-preview",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+            Some("deepseek-v4.1-flash-1017-cloud"),
+        );
+        assert_eq!(
+            routes[preferred_ranked[0]].model,
+            "deepseek-v4.1-flash-1017-cloud"
+        );
+    }
+
+    #[test]
+    fn preferred_fallback_handles_rayu_prefix_and_never_reoffers_failed_model() {
+        let routes = vec![
+            route("rayu:qwen4-max-preview", "Rayu", "rayu"),
+            route("rayu:gpt-6.1-sol", "Rayu", "rayu"),
+            route("rayu:deepseek-v4.1-flash-1017-cloud", "Rayu", "rayu"),
+        ];
+        // Bare preferred model matches `rayu:`-prefixed catalog route.
+        let ranked = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "qwen4-max-preview",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+            Some("deepseek-v4.1-flash-1017-cloud"),
+        );
+        assert_eq!(
+            routes[ranked[0]].model,
+            "rayu:deepseek-v4.1-flash-1017-cloud"
+        );
+
+        // When deepseek itself fails, never suggest switching back to deepseek.
+        let self_failed = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "deepseek-v4.1-flash-1017-cloud",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+            Some("deepseek-v4.1-flash-1017-cloud"),
+        );
+        assert_ne!(
+            routes[self_failed[0]].model,
+            "rayu:deepseek-v4.1-flash-1017-cloud"
+        );
+    }
+
+    #[test]
+    fn preferred_fallback_prefers_same_provider_and_honors_provider_prefix() {
+        let routes = vec![
+            route("qwen4-max-preview", "Rayu", "rayu"),
+            route("deepseek-v4.1-flash-1017-cloud", "OpenRouter", "openrouter"),
+            route("deepseek-v4.1-flash-1017-cloud", "Rayu", "rayu"),
+        ];
+        let ranked = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "qwen4-max-preview",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &["openrouter".into()],
+            Some("deepseek-v4.1-flash-1017-cloud"),
+        );
+        assert_eq!(routes[ranked[0]].provider, "Rayu");
+
+        let explicit_or = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "qwen4-max-preview",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+            Some("openrouter:deepseek-v4.1-flash-1017-cloud"),
+        );
+        assert_eq!(routes[explicit_or[0]].provider, "OpenRouter");
     }
 }

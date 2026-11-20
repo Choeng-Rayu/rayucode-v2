@@ -197,12 +197,20 @@ impl App {
         }
         crate::telemetry::record_setup_step_once("login_picker_opened");
         self.open_login_picker_inline();
-        self.set_status_notice("Login: choose a provider");
+        self.set_status_notice(if crate::rayu::other_providers_enabled() {
+            "Login: choose a provider"
+        } else {
+            "Login: choose Rayu account or API key"
+        });
     }
 
     pub(super) fn show_interactive_logout(&mut self) {
         self.open_logout_picker_inline();
-        self.set_status_notice("Logout: choose a provider");
+        self.set_status_notice(if crate::rayu::other_providers_enabled() {
+            "Logout: choose a provider"
+        } else {
+            "Logout: confirm Rayu logout"
+        });
     }
 
     pub(super) fn start_logout_provider(

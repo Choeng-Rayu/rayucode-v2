@@ -3,6 +3,7 @@ use super::*;
 impl App {
     pub(super) fn command_help(&self, topic: &str) -> Option<String> {
         let topic = topic.trim().trim_start_matches('/').to_lowercase();
+        let other_providers = crate::rayu::other_providers_enabled();
         let help = match topic.as_str() {
             "help" | "commands" => {
                 "/help\nShow general command list and keyboard shortcuts.\n\n/help <command>\nShow detailed help for one command."
@@ -10,8 +11,11 @@ impl App {
             "compact" => {
                 "/compact\nForce context compaction now.\nStarts background summarization and applies it automatically when ready.\n\n/compact mode\nShow current compaction mode for this session.\n\n/compact mode <reactive|proactive|semantic>\nChange compaction mode for this session."
             }
-            "cache" => {
+            "cache" if other_providers => {
                 "/cache  or  /cache stats\nShow KV cache stats for this session: cache read/write totals, hit ratios, active-route retention, current baseline, and recent miss attributions. Does not change cache preferences.\n\n/cache extend  or  /cache 1h\nPermanently select 1-hour Anthropic caching for subsequent requests and future sessions. Cache writes cost 2x base input tokens.\n\n/cache 5m\nSave 5-minute Anthropic caching. Existing cache entries are not extended retroactively. OpenAI retention is provider/model-managed, not changed by this preference."
+            }
+            "cache" => {
+                "/cache  or  /cache stats\nShow KV cache stats for this session: cache read/write totals, hit ratios, active-route retention, current baseline, and recent miss attributions. Does not change cache preferences."
             }
             "fix" => {
                 "/fix\nRun recovery actions when the model cannot continue.\nRepairs missing tool outputs, resets provider session state, and starts compaction when possible."
@@ -25,8 +29,11 @@ impl App {
             "cls" | "clear-view" => {
                 "/cls\nClear the rendered view only. The model keeps its full context; nothing is sent or forgotten. (Ctrl+L clears the screen but keeps history in scrollback.)"
             }
-            "model" => {
+            "model" if other_providers => {
                 "/model\nOpen model picker.\n\n/model <name>\nSwitch model.\n\n/model <name>@<provider>\nPin OpenRouter routing (@auto clears pin)."
+            }
+            "model" => {
+                "/model\nOpen model picker.\n\n/model <name>\nSwitch Rayu model."
             }
             "provider-test-coverage"
             | "provider test coverage"
@@ -100,17 +107,26 @@ impl App {
             "autojudge" => {
                 "/autojudge\nShow autojudge status for this session.\n\n/autojudge on\nEnable end-of-turn autojudge for this session. The autojudge acts like a completion manager: it tells the parent agent either to continue with specific next steps or that it is fine to stop.\n\n/autojudge off\nDisable autojudge for this session.\n\n/autojudge now\nLaunch a headed autojudge immediately in a new window."
             }
-            "review" => {
+            "review" if other_providers => {
                 "/review\nLaunch a one-shot headed review session immediately.\n\nThe reviewer will DM this session when done. If OpenAI ChatGPT OAuth is available, it prefers gpt-5.5."
             }
-            "judge" => {
+            "review" => {
+                "/review\nLaunch a one-shot headed review session immediately.\n\nThe reviewer will DM this session when done."
+            }
+            "judge" if other_providers => {
                 "/judge\nLaunch a one-shot headed judge session immediately.\n\nThe judge will DM this session when done. If OpenAI ChatGPT OAuth is available, it prefers gpt-5.5."
+            }
+            "judge" => {
+                "/judge\nLaunch a one-shot headed judge session immediately.\n\nThe judge will DM this session when done."
             }
             "effort" => {
                 "/effort\nShow current effort.\n\n/effort <level>\nSet effort (none|minimal|low|medium|high|xhigh|max|swarm). Which levels apply depends on the model. The swarm rung [Beta] appends \"Use swarms to get things done in parallel.\" to each message you send. Root reasoning is configurable via [agents] swarm_root_effort (default low).\n\nAlso: {effort_keys} to cycle."
             }
-            "fast" => {
+            "fast" if other_providers => {
                 "/fast\nShow whether fast mode is enabled, plus the saved default.\n\n/fast on\nEnable fast mode (service_tier = priority) for the current session.\n\n/fast ultra\nEnable OpenAI Ultrafast (service_tier = ultrafast) on models that support it, such as GPT-6 Astra.\n\n/fast off\nDisable fast mode for the current session.\n\nAlt+Up / Alt+Down cycle Standard -> Fast -> Ultrafast (configure speed_increase / speed_decrease).\n\n/fast status\nShow current fast-mode status.\n\n/fast default on\nSave fast mode as the default on startup.\n\n/fast default off\nSave fast mode as the default off on startup.\n\n/fast default status\nShow the saved fast-mode default."
+            }
+            "fast" => {
+                "/fast\nShow whether fast mode is enabled, plus the saved default.\n\n/fast on\nEnable fast mode (service_tier = priority) for the current session.\n\n/fast off\nDisable fast mode for the current session.\n\n/fast status\nShow current fast-mode status.\n\n/fast default on\nSave fast mode as the default on startup.\n\n/fast default off\nSave fast mode as the default off on startup.\n\n/fast default status\nShow the saved fast-mode default."
             }
             "memory" => "/memory [on|off|status]\nToggle memory features for this session.",
             "log" => {
@@ -175,8 +191,11 @@ impl App {
             "context" => {
                 "/context\nShow the full session context snapshot: prompt/context composition, compaction state, model/provider/runtime details, queued work, todos, and side-panel state."
             }
-            "usage" => {
+            "usage" if other_providers => {
                 "/usage [provider]\nFetch and display usage limits for connected providers. Pass a provider (claude, openai, copilot, cursor, gemini, ...) to show a card for just that provider. This command only reports real connected-provider usage windows and reset times."
+            }
+            "usage" => {
+                "/usage\nFetch and display usage limits for your connected Rayu account."
             }
             "rayu" => {
                 "/login rayu\nSign in to your Rayu account in the browser and connect Rayu hosted models with a live catalog.\n\n/account rayu status\nShow the signed-in account, plan, and remaining credits.\n\n/account rayu manage\nOpen your Rayu dashboard in the browser.\n\n/account rayu logout\nClear the local Rayu session and caches."
@@ -202,14 +221,20 @@ impl App {
             "tool-call-details" => {
                 "/tool-call-details\nShow whether the dimmed technical detail (command, path, args) renders next to the model-provided intent on tool rows.\n\n/tool-call-details on\nShow the technical detail after the intent, e.g. `bash · Run tests · $ cargo test`.\n\n/tool-call-details off\nShow only the intent on tool rows that have one. Rows without an intent still show the technical detail, and error summaries always render."
             }
-            "auth" | "login" => {
+            "auth" | "login" if other_providers => {
                 "/auth\nShow authentication status for all providers.\n\n/login\nInteractive provider selection - pick a provider to log into.\n\n/login <provider>\nStart login flow directly for any provider shown by /login or the /login completions.\n\nUse /login rayu to sign in to your Rayu account in the browser and connect Rayu hosted models with a live catalog. No API key is pasted into the terminal."
             }
-            "reset" => {
+            "auth" | "login" => {
+                "/auth\nShow Rayu authentication status.\n\n/login\nChoose between Rayu account login and Rayu API key.\n\n/login rayu\nSign in to your Rayu account in the browser and connect Rayu hosted models with a live catalog.\n\n/login rayu-api\nEnter or replace your RAYU_API_KEY."
+            }
+            "reset" if other_providers => {
                 "/reset  or  /reset usage limits openai\nCheck available banked OpenAI resets without spending one. Repeating this command shows the same pending confirmation.\n\n/reset usage limits openai confirm\nSpend the reviewed reset. This cannot be undone. On an uncertain error, confirm again to retry the same request safely.\n\n/reset usage limits openai cancel\nClear the pending confirmation. An already submitted reset cannot be cancelled."
             }
-            "account" | "accounts" => {
+            "account" | "accounts" if other_providers => {
                 "/account\nOpen the inline account picker showing both Claude and OpenAI accounts together. It lists saved accounts plus new/replace actions for each provider.\n\n/account claude  or  /account openai\nOpen the inline picker filtered to that provider.\n\n/account <provider> settings\nShow provider-specific account/settings details.\n\n/account <provider> login\nStart or refresh credentials for a provider.\n\n/account claude add  or  /account openai add\nCreate the next numbered OAuth account directly.\n\n/account <provider> switch <label>\nSwitch the active account for multi-account providers.\n\n/account <provider> remove <label>\nRemove a saved account.\n\n/account rayu status\nShow the signed-in Rayu account, plan, and remaining credits.\n\n/account rayu manage\nOpen your Rayu dashboard in the browser.\n\n/account rayu logout\nClear the local Rayu session and caches.\n\n/account default-provider <provider|auto>\nSet the preferred default provider for future sessions.\n\n/account default-model <model|clear>\nSet the preferred default model for future sessions.\n\nOpenAI-specific settings:\n  /account openai transport ...\n  /account openai effort ...\n  /account openai fast on|off\n\nCustom provider settings:\n  /account openai-compatible api-base ...\n  /account openai-compatible api-key-name ...\n  /account openai-compatible env-file ...\n  /account openai-compatible default-model ..."
+            }
+            "account" | "accounts" => {
+                "/account\nOpen the inline Rayu account and API key picker.\n\n/account rayu status\nShow the signed-in Rayu account, plan, and remaining credits.\n\n/account rayu api-key\nEnter or replace your RAYU_API_KEY.\n\n/account rayu manage\nOpen your Rayu dashboard in the browser.\n\n/account rayu logout\nClear the local Rayu session, saved API key, and caches.\n\n/account default-model <model|clear>\nSet the preferred default Rayu model for future sessions."
             }
             "save" => {
                 "/save\nBookmark the current session for the Saved filter in /resume. Recently used bookmarks also appear at the top of All for 7 days after their last resume-menu selection.\n\n/save <label>\nBookmark with a custom label for easy identification.\n\nSaved sessions remain in the Saved filter even after their temporary top placement in All expires."
