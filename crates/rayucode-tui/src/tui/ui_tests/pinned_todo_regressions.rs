@@ -196,7 +196,10 @@ fn pinned_tasks_show_active_worker_once_at_any_width() {
             report_back_to_session_id: None,
             todo_progress: None,
             todo_items: Vec::new(),
-            runtime: Default::default(),
+            runtime: crate::protocol::SwarmMemberRuntime {
+                model: Some("gpt-5.6".into()),
+                ..Default::default()
+            },
         };
         let state = TestState {
             pinned_todos_payload: Some(todo_payload()),
@@ -217,6 +220,11 @@ fn pinned_tasks_show_active_worker_once_at_any_width() {
             );
             assert!(lines.iter().all(|line| line.width() <= width as usize));
             assert!(text.contains("Pinned regression task"), "{width}: {text}");
+            assert!(
+                text.lines()
+                    .any(|line| line.contains("placement-worker · GPT-5.6")),
+                "{width}: {text}"
+            );
         }
         clear_flicker_frame_history_for_tests();
         let mut terminal = Terminal::new(TestBackend::new(160, 36)).unwrap();

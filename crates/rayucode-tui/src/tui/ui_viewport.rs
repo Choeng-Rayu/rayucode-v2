@@ -1591,12 +1591,18 @@ pub(super) fn prepare_pinned_todo_band(
                 };
                 metrics.push_str(&format!("{sep}↓{}", short(output)));
             }
+            let style = Style::default().fg(dim_color());
+            let mut label = vec![Span::styled(format!("    └─ {name}"), style)];
+            if let Some(model) = super::messages::swarm_worker_model_span(
+                member.runtime.model.as_deref(),
+                (usize::from(width) / 4).min(28),
+            ) {
+                label.extend([Span::raw(" · "), model]);
+            }
+            label.push(Span::styled(format!(" · {current}"), style));
             let line = super::truncate_line_preserving_suffix_to_width(
-                &Line::styled(
-                    format!("    └─ {name} · {current}"),
-                    Style::default().fg(dim_color()),
-                ),
-                &Line::styled(metrics, Style::default().fg(dim_color())),
+                &Line::from(label),
+                &Line::styled(metrics, style),
                 width.saturating_sub(1) as usize,
             );
             lines.insert(insertion + index, line);

@@ -267,6 +267,67 @@ fn live_telemetry_uses_one_compact_lane_row_without_task_summaries() {
 }
 
 #[test]
+fn staged_worker_rows_show_each_runtime_model_with_its_own_metrics() {
+    let members: Vec<crate::protocol::SwarmMemberStatus> = serde_json::from_value(serde_json::json!([
+        {"session_id":"fox", "friendly_name":"fox", "status":"running", "runtime":{
+            "model":"gpt-5.6", "live_status":{"phase":"streaming", "elapsed_ms":34000,
+                "input_tokens":4000, "output_tokens":504, "output_tps_milli":357300}}},
+        {"session_id":"owl", "friendly_name":"owl", "status":"running", "runtime":{
+            "model":"claude-opus-4-8", "live_status":{"phase":"sending", "elapsed_ms":20000,
+                "input_tokens":5000, "output_tokens":200, "output_tps_milli":400000}}},
+        {"session_id":"elk", "friendly_name":"elk", "status":"ready", "runtime":{"model":"gemini-2.5-pro"}},
+        {"session_id":"cat", "friendly_name":"cat", "status":"ready"}
+    ])).unwrap();
+    let agents: Vec<_> = members.iter().map(TodoCardAgent::from_member).collect();
+    let tasks = vec![
+        assigned(laned("Review source", "in_progress", 1, "Review"), "fox"),
+        assigned(laned("Check fixtures", "in_progress", 1, "Check"), "owl"),
+        assigned(laned("Pending task", "pending", 2, "Pending"), "elk"),
+        assigned(
+            laned("Metadata missing", "pending", 2, "Older worker"),
+            "cat",
+        ),
+    ];
+    for width in [100, 160] {
+        let rows = render(&tasks, &agents, width);
+        let review = rows
+            .iter()
+            .find(|row| row.contains("Review"))
+            .expect("review row");
+        let check = rows
+            .iter()
+            .find(|row| row.contains("Check"))
+            .expect("check row");
+        for (row, fields) in [
+            (review, ["GPT-5.6", "34s", "357.3 tps", "↑4k ↓504"]),
+            (check, ["Claude Opus 4.8", "20s", "400.0 tps", "↑5k ↓200"]),
+        ] {
+            assert!(fields.iter().all(|field| row.contains(field)), "{row}");
+        }
+        assert!(
+            !review.contains("Claude") && !check.contains("GPT"),
+            "{rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("Pending") && row.contains("Gemini 2.5 Pro")),
+            "{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .find(|row| row.contains("Older worker"))
+                .unwrap()
+                .contains("Gemini")
+        );
+        assert_fits(&rows, width);
+    }
+    for width in 20..100 {
+        assert_fits(&render(&tasks, &agents, width), width);
+    }
+}
+
+#[test]
 fn inline_columns_stay_fixed_across_activity_and_name_changes() {
     let mut item = laned("Stable task title", "in_progress", 1, "Build");
     item.assigned_to = Some("fox".into());
@@ -661,6 +722,7 @@ fn agent(name: &str, status: &str, activity: Option<&str>, age: Option<u64>) -> 
         session_id: format!("session_{name}_1700000000"),
         live_status: None,
         name: Some(name.to_string()),
+        model: None,
         status: status.to_string(),
         activity: activity.map(str::to_string),
         age_secs: age,

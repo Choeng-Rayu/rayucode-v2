@@ -27,6 +27,8 @@ pub(crate) struct TodoCardAgent {
     pub shortcut: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     pub status: String,
     /// Short live activity note (current tool intent or status detail).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,6 +92,7 @@ impl TodoCardAgent {
             live_status: member.runtime.live_status.clone(),
             shortcut: None,
             name: member.friendly_name.clone(),
+            model: member.runtime.model.clone(),
             status: if member.runtime.wait_reason.is_some() && is_live_status(&member.status) {
                 "waiting".to_string()
             } else {
@@ -133,6 +136,24 @@ impl TodoCardAgent {
                 .unwrap_or_else(|| "◆".to_string()),
         }
     }
+}
+
+pub(in crate::tui::ui) fn swarm_worker_model_span(
+    model: Option<&str>,
+    width: usize,
+) -> Option<Span<'static>> {
+    let model = crate::message::strip_ansi_escape_sequences(model?);
+    let model = model.lines().next()?.trim();
+    if model.is_empty() || width < 4 {
+        return None;
+    }
+    let label = crate::tui::app::helpers::model_names::pretty_model_display_name(model);
+    let label = if label.width() > width {
+        format!("{}…", truncate_to_width(&label, width - 1))
+    } else {
+        label
+    };
+    Some(Span::styled(label, Style::default().fg(todo_meta_color())))
 }
 
 /// Emoji for an `assigned_to` value with no live member record.
@@ -960,6 +981,10 @@ pub(crate) fn push_stage_lines(
         }
         let statuses = lane_item_statuses(&items, agents);
         let mut telemetry = Vec::new();
+        // The live columns are fixed by terminal width, even when a model or
+        // activity changes. Measure the status against the space it will have.
+        let pip_width = 6.min((inner_width / 10).max(1));
+        let worker_width = 24.min(inner_width / 4);
         if items.iter().any(|todo| {
             todo.assigned_to.as_deref().is_some_and(|owner| {
                 agents
@@ -967,13 +992,10 @@ pub(crate) fn push_stage_lines(
                     .any(|agent| agent.matches(owner) && agent.live_status.is_some())
             })
         }) {
-            push_lane_status_lines(&mut telemetry, &items, agents, "", inner_width);
+            let status_width = inner_width.saturating_sub(pip_width + worker_width + 4);
+            push_lane_status_lines(&mut telemetry, &items, agents, "", status_width + 2);
         }
         if !telemetry.is_empty() {
-            // Column budgets depend only on terminal width, never changing
-            // worker names, task counts, token totals, or live status text.
-            let pip_width = 6.min((inner_width / 10).max(1));
-            let worker_width = 24.min(inner_width / 4);
             // Progress pips stay static when the same row already has a live
             // activity indicator beside the worker's status.
             let static_statuses: Vec<_> = statuses
@@ -1001,16 +1023,6 @@ pub(crate) fn push_stage_lines(
                 // Strip only the legacy continuation-row indent.
                 status.extend(line.spans.into_iter().skip(2));
             }
-            if let Some(live) =
-                lane_live_agent(&items, agents).and_then(|agent| agent.live_status.as_ref())
-                && live.phase != "streaming"
-                && let Some(tps) = live.output_tps_milli
-            {
-                status.push(Span::styled(
-                    format!(" · {:.1} tps", tps as f64 / 1000.0),
-                    Style::default().fg(todo_meta_color()),
-                ));
-            }
             // Live activity owns the remaining width instead of repeating task titles.
             let status = super::truncate_line_with_ellipsis_to_width(&Line::from(status), room);
             row.extend(status.spans);
@@ -1028,6 +1040,20 @@ pub(crate) fn push_stage_lines(
             let pad = name_width.saturating_sub(width_of(&name)) + 2;
             row.extend(name);
             row.push(Span::raw(" ".repeat(pad)));
+        }
+        let mut label_budget = inner_width.saturating_sub(width_of(&row)) / 3;
+        let mut seen = std::collections::HashSet::new();
+        for agent in items
+            .iter()
+            .filter_map(|todo| todo.assigned_to.as_deref())
+            .filter_map(|owner| agents.iter().find(|agent| agent.matches(owner)))
+            .filter(|agent| seen.insert(agent.session_id.as_str()))
+        {
+            let room = label_budget.saturating_sub(2).min(24);
+            if let Some(model) = swarm_worker_model_span(agent.model.as_deref(), room) {
+                label_budget -= model.width() + 2;
+                row.extend([model, Span::raw("  ")]);
+            }
         }
         let room = inner_width.saturating_sub(width_of(&row));
         // The live note (intent, liveness) gets up to a third of the row so it
@@ -1188,14 +1214,48 @@ fn push_lane_status_lines_inner(
             live.tool_intent = None;
         }
         let mut row = vec![Span::raw("  ")];
-        row.extend(
-            super::super::input_ui::live_processing_status_line(
-                &live,
-                agent.activity_age_secs.map(|age| age as f32),
-                LIVE_DOT_SENTINEL,
-            )
-            .spans,
+        let mut status = super::super::input_ui::live_processing_status_line(
+            &live,
+            agent.activity_age_secs.map(|age| age as f32),
+            LIVE_DOT_SENTINEL,
         );
+        let active = matches!(
+            live.phase.as_str(),
+            "running" | "running_tool" | "sending" | "thinking" | "connecting" | "streaming"
+        );
+        if active
+            && live.phase != "streaming"
+            && let Some(tps) = live.output_tps_milli
+        {
+            status.spans.push(Span::styled(
+                format!(" · {:.1} tps", tps as f64 / 1000.0),
+                Style::default().fg(todo_meta_color()),
+            ));
+        }
+        let status_width = width.saturating_sub(2);
+        if let Some(model) =
+            swarm_worker_model_span(agent.model.as_deref(), (status_width / 3).min(28))
+        {
+            let room = status_width.saturating_sub(model.width() + 3);
+            row.extend([model, Span::raw(" · ")]);
+            if active && status.width() > room {
+                let stats = crate::tui::TurnFooterSnapshot {
+                    elapsed: Some(std::time::Duration::from_millis(live.elapsed_ms)),
+                    output_tps: live.output_tps_milli.map(|tps| tps as f32 / 1000.0),
+                    input_tokens: live.input_tokens,
+                    output_tokens: live.output_tokens,
+                    ..Default::default()
+                };
+                let metrics =
+                    super::super::input_ui::turn_footer_metrics(stats, false).unwrap_or_default();
+                let meta = Style::default().fg(todo_meta_color());
+                status = Line::from(vec![
+                    Span::styled(LIVE_DOT_SENTINEL, Style::default().fg(ai_color())),
+                    Span::styled(format!(" {metrics}"), meta),
+                ]);
+            }
+        }
+        row.extend(status.spans);
         lines.push(todo_card_line(row, indent, width));
     }
 }

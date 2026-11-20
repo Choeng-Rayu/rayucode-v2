@@ -706,6 +706,7 @@ fn hash_todo_card_agents(agents: &[crate::tui::ui::TodoCardAgent]) -> u64 {
     for agent in agents {
         agent.session_id.hash(&mut hasher);
         agent.shortcut.hash(&mut hasher);
+        agent.model.hash(&mut hasher);
         agent.status.hash(&mut hasher);
         agent.activity.hash(&mut hasher);
         agent.todo_statuses.hash(&mut hasher);
@@ -959,6 +960,17 @@ mod tests {
         };
         let before = hash_todo_card_agents(&[agent.clone()]);
         agent.todo_statuses.swap(0, 1);
+        assert_ne!(before, hash_todo_card_agents(&[agent]));
+    }
+
+    #[test]
+    fn worker_model_changes_invalidate_pinned_payload() {
+        let mut agent = crate::tui::ui::TodoCardAgent {
+            model: Some("gpt-5.6".into()),
+            ..Default::default()
+        };
+        let before = hash_todo_card_agents(&[agent.clone()]);
+        agent.model = Some("claude-opus-4-8".into());
         assert_ne!(before, hash_todo_card_agents(&[agent]));
     }
 
