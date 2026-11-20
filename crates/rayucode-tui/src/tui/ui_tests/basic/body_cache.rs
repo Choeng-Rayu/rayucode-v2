@@ -7,6 +7,7 @@ fn test_body_cache_state_keeps_multiple_width_entries() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,
@@ -111,6 +112,7 @@ fn test_body_cache_state_does_not_reuse_a_different_mermaid_aspect_profile() {
         diagram_mode: crate::config::DiagramDisplayMode::None,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: Some(1500),
         pin_images: true,
         inline_images_visible: true,
@@ -146,6 +148,7 @@ fn test_body_cache_state_evicts_oldest_entries() {
             diagram_mode: crate::config::DiagramDisplayMode::Pinned,
             centered: false,
             compact_thinking: false,
+            tool_rows: ToolRowsKey::default(),
             mermaid_aspect_bucket: None,
             pin_images: true,
             inline_images_visible: true,
@@ -190,6 +193,7 @@ fn test_body_cache_state_accepts_large_single_entry_within_total_budget() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,
@@ -222,6 +226,7 @@ fn test_body_cache_state_retains_oversized_hot_entry() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,
@@ -255,6 +260,7 @@ fn test_body_cache_state_keeps_two_oversized_width_entries_hot() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,
@@ -295,6 +301,7 @@ fn test_body_cache_state_uses_oversized_hot_entry_as_incremental_base() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,
@@ -572,6 +579,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         is_processing: false,
         streaming_text_len: 0,
@@ -675,6 +683,7 @@ fn test_full_prep_cache_state_does_not_reuse_a_different_mermaid_aspect_profile(
         diagram_mode: crate::config::DiagramDisplayMode::None,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: Some(1500),
         is_processing: false,
         streaming_text_len: 0,
@@ -713,6 +722,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
             diagram_mode: crate::config::DiagramDisplayMode::Pinned,
             centered: false,
             compact_thinking: false,
+            tool_rows: ToolRowsKey::default(),
             mermaid_aspect_bucket: None,
             is_processing: false,
             streaming_text_len: 0,
@@ -762,6 +772,7 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         is_processing: false,
         streaming_text_len: 0,
@@ -798,6 +809,7 @@ fn test_full_prep_cache_state_retains_oversized_hot_entry() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         is_processing: true,
         streaming_text_len: 4096,
@@ -836,6 +848,7 @@ fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         is_processing: true,
         streaming_text_len: 4096,
@@ -1065,6 +1078,7 @@ fn test_full_prep_cache_drops_superseded_streaming_frames() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         is_processing: streaming_text_len > 0,
         streaming_text_len,
@@ -1100,9 +1114,18 @@ fn test_full_prep_cache_drops_superseded_streaming_frames() {
     cache.insert(key_for(10, 80), prepared());
     cache.insert(key_for(20, 80), prepared());
 
-    assert!(cache.get_exact(&key_for(0, 80)).is_some(), "settled frame kept");
-    assert!(cache.get_exact(&key_for(10, 80)).is_none(), "stale stream frame dropped");
-    assert!(cache.get_exact(&key_for(20, 80)).is_some(), "newest stream frame kept");
+    assert!(
+        cache.get_exact(&key_for(0, 80)).is_some(),
+        "settled frame kept"
+    );
+    assert!(
+        cache.get_exact(&key_for(10, 80)).is_none(),
+        "stale stream frame dropped"
+    );
+    assert!(
+        cache.get_exact(&key_for(20, 80)).is_some(),
+        "newest stream frame kept"
+    );
 }
 
 #[test]
@@ -1115,6 +1138,7 @@ fn test_body_cache_drops_superseded_message_versions() {
         diagram_mode: crate::config::DiagramDisplayMode::Pinned,
         centered: false,
         compact_thinking: false,
+        tool_rows: ToolRowsKey::default(),
         mermaid_aspect_bucket: None,
         pin_images: true,
         inline_images_visible: true,

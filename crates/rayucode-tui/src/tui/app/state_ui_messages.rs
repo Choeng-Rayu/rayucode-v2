@@ -4,6 +4,7 @@ use super::state_ui_storage::{
 };
 use super::*;
 use crate::overnight::OvernightRunStatus;
+use crate::tui::core::{PENDING_TOOL_ROLE, ToolActivity};
 use std::time::{Duration, Instant};
 
 const COMPACTED_HISTORY_CHUNK_MESSAGES: usize = 64;
@@ -124,8 +125,80 @@ impl App {
         self.status_detail = Some(detail);
     }
 
+    fn pending_tool_row(&self, id: &str) -> Option<usize> {
+        self.display_messages.iter().rposition(|message| {
+            message.role == PENDING_TOOL_ROLE
+                && message.tool_data.as_ref().is_some_and(|tool| tool.id == id)
+        })
+    }
+
+    pub(super) fn show_tool_activity(&mut self, tool: &ToolCall, activity: ToolActivity) {
+        let label = activity.label();
+        if let Some(index) = self.pending_tool_row(&tool.id) {
+            let row = &mut self.display_messages[index];
+            if row.content == label && row.tool_data.as_ref() == Some(tool) {
+                return;
+            }
+            row.content = label.into();
+            row.tool_data = Some(tool.clone());
+        } else {
+            let mut row = DisplayMessage::tool(label, tool.clone());
+            row.role = PENDING_TOOL_ROLE.into();
+            self.display_messages.push(row);
+        }
+        self.bump_display_messages_version_no_stats();
+    }
+
+    pub(super) fn refresh_tool_activity_input(&mut self, tool: &ToolCall) -> bool {
+        let Some(index) = self.pending_tool_row(&tool.id) else {
+            return false;
+        };
+        let row = &mut self.display_messages[index];
+        if row.tool_data.as_ref() == Some(tool) {
+            return false;
+        }
+        row.tool_data = Some(tool.clone());
+        self.bump_display_messages_version_no_stats();
+        true
+    }
+
+    pub(super) fn clear_pending_tool_calls(&mut self) {
+        self.streaming_tool_calls.clear();
+        let len = self.display_messages.len();
+        self.display_messages
+            .retain(|message| message.role != PENDING_TOOL_ROLE);
+        if self.display_messages.len() != len {
+            self.bump_display_messages_version_no_stats();
+        }
+    }
+
+    pub(super) fn interrupt_pending_tools(&mut self) {
+        let pending: Vec<_> = self
+            .display_messages
+            .iter()
+            .filter(|message| message.role == PENDING_TOOL_ROLE)
+            .filter_map(|message| message.tool_data.clone())
+            .collect();
+        for tool in pending {
+            self.push_display_message(DisplayMessage::tool("Error: Interrupted by user", tool));
+        }
+        self.clear_pending_tool_calls();
+    }
+
     pub fn push_display_message(&mut self, mut message: DisplayMessage) {
+        let pending = if message.role == "tool" {
+            message
+                .tool_data
+                .as_ref()
+                .and_then(|tool| self.pending_tool_row(&tool.id))
+        } else {
+            None
+        };
         if is_background_task_lifecycle_message(&message.content) {
+            if let Some(index) = pending {
+                self.display_messages.remove(index);
+                self.bump_display_messages_version_no_stats();
+            }
             return;
         }
         if message.role == "tool" && message.duration_secs.is_none() {
@@ -135,7 +208,7 @@ impl App {
         // Keep Ctrl+L's spacer as a clear boundary when new content arrives.
         // The renderer packs only the content after it while following the tail,
         // so sending a prompt does not restore the pre-clear conversation.
-        if self.try_coalesce_repeated_display_message(&message) {
+        if pending.is_none() && self.try_coalesce_repeated_display_message(&message) {
             return;
         }
         let is_tool = message.role == "tool";
@@ -163,7 +236,11 @@ impl App {
         {
             self.unseen_chat_messages = self.unseen_chat_messages.saturating_add(1);
         }
-        self.display_messages.push(message);
+        if let Some(index) = pending {
+            self.display_messages[index] = message;
+        } else {
+            self.display_messages.push(message);
+        }
         self.bump_display_messages_version_no_stats();
         if is_tool && self.diff_mode.has_side_pane() && self.diff_pane_auto_scroll {
             self.diff_pane_scroll = usize::MAX;
@@ -171,7 +248,10 @@ impl App {
     }
 
     pub(super) fn replace_display_messages(&mut self, mut messages: Vec<DisplayMessage>) {
-        messages.retain(|message| !is_background_task_lifecycle_message(&message.content));
+        messages.retain(|message| {
+            message.role != PENDING_TOOL_ROLE
+                && !is_background_task_lifecycle_message(&message.content)
+        });
         for message in &mut messages {
             if message.role == "tool" && message.duration_secs.is_none() {
                 message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content);
@@ -251,6 +331,15 @@ impl App {
             return true;
         }
 
+        if self.display_messages[idx].role == PENDING_TOOL_ROLE
+            && let Some(tool) = self.display_messages[idx].tool_data.clone()
+        {
+            let mut result = DisplayMessage::tool(content, tool);
+            result.title = title;
+            result.duration_secs = self.display_messages[idx].duration_secs;
+            self.push_display_message(result);
+            return true;
+        }
         self.replace_display_message_title_and_content(idx, title, content)
     }
 
@@ -1146,5 +1235,85 @@ fn carry_over_tool_durations(previous: &[DisplayMessage], incoming: &mut [Displa
         {
             message.duration_secs = Some(*seconds);
         }
+    }
+}
+
+#[cfg(test)]
+mod tool_activity_tests {
+    use super::*;
+    use crate::protocol::ServerEvent;
+
+    #[test]
+    fn sibling_tool_results_replace_live_rows_in_start_order() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            remote.mark_history_loaded();
+            app.is_processing = true;
+            for id in ["first", "second"] {
+                app.handle_server_event(
+                    ServerEvent::ToolStart {
+                        id: id.into(),
+                        name: "bash".into(),
+                    },
+                    &mut remote,
+                );
+            }
+            app.handle_server_event(
+                ServerEvent::ToolInput {
+                    id: Some("second".into()),
+                    delta: r#"{"command":"printf fixture"}"#.into(),
+                },
+                &mut remote,
+            );
+            app.handle_server_event(
+                ServerEvent::ToolExec {
+                    id: "second".into(),
+                    name: "bash".into(),
+                },
+                &mut remote,
+            );
+            assert_eq!(app.display_messages[1].content, "Running…");
+            assert_eq!(
+                app.display_messages[1].tool_data.as_ref().unwrap().input["command"],
+                "printf fixture"
+            );
+            app.handle_server_event(
+                ServerEvent::ToolDone {
+                    id: "second".into(),
+                    name: "bash".into(),
+                    output: "completed second".into(),
+                    error: None,
+                },
+                &mut remote,
+            );
+            assert_eq!(app.display_messages[0].role, PENDING_TOOL_ROLE);
+            assert_eq!(app.display_messages[1].content, "[bash] completed second");
+            app.handle_server_event(ServerEvent::Interrupted, &mut remote);
+            assert_eq!(
+                app.display_messages[0].content,
+                "Error: Interrupted by user"
+            );
+            assert!(
+                app.display_messages
+                    .iter()
+                    .all(|row| row.role != PENDING_TOOL_ROLE)
+            );
+
+            app.handle_server_event(
+                ServerEvent::ToolExec {
+                    id: "reconnected".into(),
+                    name: "read".into(),
+                },
+                &mut remote,
+            );
+            assert!(app.pending_tool_row("reconnected").is_some());
+            app.rollback_streaming_attempt();
+            assert!(app.pending_tool_row("reconnected").is_none());
+        });
     }
 }

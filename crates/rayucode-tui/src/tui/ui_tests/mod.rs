@@ -128,6 +128,7 @@ struct TestState {
     info_widget_data: info_widget::InfoWidgetData,
     suppress_info_widgets: bool,
     display_messages: Vec<DisplayMessage>,
+    transcript_view: Option<std::rc::Rc<crate::tui::transcript_view::TranscriptView>>,
     messages_version: u64,
     streaming_text: String,
     streaming_tools: Vec<ToolCall>,
@@ -180,6 +181,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn pinned_todos_payload(&self) -> Option<&str> {
         self.pinned_todos_payload.as_deref()
+    }
+    fn transcript_view(&self) -> Option<&crate::tui::transcript_view::TranscriptView> {
+        self.transcript_view.as_deref()
     }
     fn display_messages(&self) -> &[DisplayMessage] {
         &self.display_messages
@@ -236,7 +240,7 @@ impl crate::tui::TuiState for TestState {
         0
     }
     fn auto_scroll_paused(&self) -> bool {
-        false
+        self.transcript_view.is_some()
     }
     fn provider_name(&self) -> String {
         self.provider_name

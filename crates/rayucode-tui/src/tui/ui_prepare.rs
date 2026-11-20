@@ -2,6 +2,7 @@
 mod assistant_aux;
 use assistant_aux::*;
 
+use super::messages::{render_compact_tool_message, render_expanded_tool_message};
 use super::*;
 use crate::tui::ui::{self, WrappedLineMap};
 
@@ -139,6 +140,7 @@ fn is_error_copy_content(content: &str) -> bool {
 
 #[path = "ui_prepare/copy_targets.rs"]
 mod copy_targets;
+use copy_targets::tool_output_copy_target;
 pub(super) use copy_targets::{
     assistant_message_copy_targets, compute_image_regions, error_copy_target, offset_copy_target,
     tool_message_copy_target,
@@ -306,6 +308,15 @@ fn active_codemode(app: &dyn TuiState) -> Option<crate::message::ToolCall> {
         .into_iter()
         .rev()
         .find(|tool| tools_ui::canonical_tool_name(&tool.name) == "codemode")
+        .filter(|tool| {
+            !app.display_messages().iter().rev().any(|message| {
+                message.role == crate::tui::core::PENDING_TOOL_ROLE
+                    && message
+                        .tool_data
+                        .as_ref()
+                        .is_some_and(|pending| pending.id == tool.id)
+            })
+        })
 }
 
 fn active_batch_progress(app: &dyn TuiState) -> Option<crate::bus::BatchProgress> {
@@ -470,18 +481,31 @@ fn prepare_active_batch_progress(
     let row_width = block_width.saturating_sub(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    if prefix_blank {
+    let attached = app.display_messages().iter().rev().any(|msg| {
+        msg.role == crate::tui::core::PENDING_TOOL_ROLE
+            && msg
+                .tool_data
+                .as_ref()
+                .is_some_and(|tool| tool.id == progress.tool_call_id)
+    });
+    if prefix_blank && !attached {
         lines.push(Line::from(""));
     }
-
-    let mut header = vec![
-        Span::styled(format!("  {} ", spinner), Style::default().fg(accent)),
-        Span::styled("batch", Style::default().fg(tool_color())),
-        Span::styled(
-            format!(" · {}/{} done", progress.completed, progress.total),
-            Style::default().fg(dim_color()),
-        ),
-    ];
+    let mut header = if attached {
+        vec![Span::styled(
+            format!("  ⎿ {spinner} "),
+            Style::default().fg(accent),
+        )]
+    } else {
+        vec![
+            Span::styled(format!("  {spinner} "), Style::default().fg(accent)),
+            Span::styled("batch · ", Style::default().fg(tool_color())),
+        ]
+    };
+    header.push(Span::styled(
+        format!("{}/{} done", progress.completed, progress.total),
+        Style::default().fg(dim_color()),
+    ));
     if let Some(last) = progress
         .last_completed
         .as_ref()
@@ -539,7 +563,8 @@ pub(super) fn prepare_messages(
 ) -> Arc<PreparedChatFrame> {
     // Choose from terminal geometry so the welcome header does not jump
     // when the first message arrives.
-    let compact_header = height < 18 || app.login_input_hint().is_some();
+    let compact_header =
+        height < 24 || (width < 70 && height < 32) || app.login_input_hint().is_some();
     // A cached prepared frame intentionally owns only image ids. Recover any
     // staged source evicted by the byte budget or a visibility toggle before an
     // exact frame-cache hit can bypass the normal anchored-image resolver.
@@ -553,6 +578,7 @@ pub(super) fn prepare_messages(
     let key = FullPrepCacheKey {
         compact_header,
         compact_thinking: crate::config::config().display.compact_thinking,
+        tool_rows: ToolRowsKey::new(app),
         width,
         height,
         diff_mode: app.diff_mode(),
@@ -682,10 +708,7 @@ fn prepare_messages_inner(
     let pad_top = if app.centered_mode() {
         initial_header_pad_top(height, header_prepared.wrapped_lines.len())
     } else {
-        // The fullscreen welcome stays at the top. Only actual release notes
-        // occupy rows before it.
-        let updates = header::build_updates_box_lines(width, 10);
-        updates.len() + usize::from(!updates.is_empty())
+        0
     };
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -1060,6 +1083,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
 
     let key = BodyCacheKey {
         compact_thinking: crate::config::config().display.compact_thinking,
+        tool_rows: ToolRowsKey::new(app),
         width,
         diff_mode: app.diff_mode(),
         // Pinning changes which tool messages participate in the transcript.
@@ -1185,7 +1209,7 @@ pub(super) fn build_body_from_base(
     }
     // The selected base shares this key's width/mode/image signature. Find the
     // longest message prefix whose hashes still match the current transcript.
-    let k = matching_prefix_len(prev.as_ref(), messages);
+    let mut k = matching_prefix_len(prev.as_ref(), messages);
     if k == prev_count && prev_count == msg_count {
         // Exact same messages (the body differs only by something not in the
         // cache key, e.g. a width-independent flag); reuse as-is.
@@ -1201,9 +1225,42 @@ pub(super) fn build_body_from_base(
     // Instead, when a message suffix still matches, render only the new head
     // and stitch the prepared suffix below it.
     let base_msgs = prev.message_boundaries.len();
-    let s = matching_suffix_len(prev.as_ref(), messages)
+    let mut s = matching_suffix_len(prev.as_ref(), messages)
         .min(base_msgs.saturating_sub(1))
         .min(msg_count.saturating_sub(1));
+    if compact_tool_groups(app.transcript_view().is_some()) {
+        // A tool run can change the length and label of its first row across
+        // either splice point. Re-render that run and retain the unaffected base.
+        if let Some(group) = k
+            .checked_sub(1)
+            .and_then(|i| tools_ui::tool_group(&messages[i]))
+        {
+            let old_group_continues = prev
+                .message_boundaries
+                .get(k)
+                .is_some_and(|next| next.wrapped_len == prev.message_boundaries[k - 1].wrapped_len);
+            if old_group_continues || messages.get(k).and_then(tools_ui::tool_group) == Some(group)
+            {
+                while k > 0 && tools_ui::tool_group(&messages[k - 1]) == Some(group) {
+                    k -= 1;
+                }
+            }
+        }
+        if s > 0 {
+            let head = msg_count - s;
+            let drop = base_msgs - s;
+            if let Some(group) = tools_ui::tool_group(&messages[head]) {
+                let old_group_continues = prev.message_boundaries[drop].wrapped_len
+                    == prev.message_boundaries[drop - 1].wrapped_len;
+                if old_group_continues || tools_ui::tool_group(&messages[head - 1]) == Some(group) {
+                    s -= messages[head..]
+                        .iter()
+                        .take_while(|msg| tools_ui::tool_group(msg) == Some(group))
+                        .count();
+                }
+            }
+        }
+    }
     if s > k {
         let drop_msgs = base_msgs - s;
         let head_count = msg_count - s;
@@ -1454,15 +1511,43 @@ fn render_message_into(
         // Hidden messages still occupy a position in the transcript cache.
         // Without this zero-length boundary, incremental updates compare later
         // messages against the wrong indices and can truncate earlier content.
-        acc.segments.push((
-            msg.stable_cache_hash(),
-            acc.lines.len(),
-            acc.raw_plain_lines.len(),
-            acc.user_prompt_texts.len(),
-        ));
+        record_message_boundary(acc, msg);
         return;
     }
     let align = default_message_alignment(role, centered);
+    let expanded_tools = ctx.app.is_some_and(|app| app.transcript_view().is_some());
+    if compact_tool_groups(expanded_tools)
+        && let Some(group) = group_for_message(ctx, msg)
+    {
+        if msg_global_idx > 0
+            && group_for_message(ctx, &ctx.messages[msg_global_idx - 1]) == Some(group)
+        {
+            record_message_boundary(acc, msg);
+            return;
+        }
+        let end = msg_global_idx
+            + 1
+            + ctx.messages[msg_global_idx + 1..]
+                .iter()
+                .take_while(|following| group_for_message(ctx, following) == Some(group))
+                .count();
+        if end - msg_global_idx > 1 {
+            if acc.body_has_content || !acc.lines.is_empty() {
+                acc.push_blank();
+            }
+            acc.push_auto(align_if_unset(
+                tools_ui::tool_group_line(
+                    group,
+                    &ctx.messages[msg_global_idx..end],
+                    width,
+                    centered,
+                ),
+                align,
+            ));
+            record_message_boundary(acc, msg);
+            return;
+        }
+    }
 
     if (acc.body_has_content || !acc.lines.is_empty())
         && super::messages::needs_message_separator(msg)
@@ -1573,10 +1658,26 @@ fn render_message_into(
             }));
             acc.line_copy_offsets.push(prefix_width);
         }
+        crate::tui::core::PENDING_TOOL_ROLE => {
+            for line in tools_ui::pending_tool_lines(msg, width) {
+                acc.push_auto(align_if_unset(line, align));
+            }
+        }
         "tool" => {
             let tool_start_line = acc.lines.len();
-            let cached = get_cached_message_lines(msg, width, diff_mode, render_tool_message);
-            if let Some(target) = tool_message_copy_target(msg, cached.len()) {
+            let cached = if expanded_tools {
+                render_expanded_tool_message(msg, width, diff_mode)
+            } else {
+                get_cached_message_lines(msg, width, diff_mode, render_compact_tool_message)
+            };
+            let copy_target = tool_message_copy_target(msg, cached.len()).or_else(|| {
+                if expanded_tools {
+                    tool_output_copy_target(&msg.content, cached.len())
+                } else {
+                    None
+                }
+            });
+            if let Some(target) = copy_target {
                 acc.copy_targets
                     .push(offset_copy_target(target, tool_start_line));
             }
@@ -1801,6 +1902,22 @@ fn render_message_into(
         _ => {}
     }
 
+    record_message_boundary(acc, msg);
+}
+
+fn compact_tool_groups(expanded: bool) -> bool {
+    !expanded && !tools_ui::show_tool_call_details()
+}
+
+fn group_for_message(ctx: &BodyRenderCtx<'_>, msg: &DisplayMessage) -> Option<tools_ui::ToolGroup> {
+    let tool = msg.tool_data.as_ref()?;
+    if ctx.anchored_images.by_tool.contains_key(&tool.id) {
+        return None;
+    }
+    tools_ui::tool_group(msg)
+}
+
+fn record_message_boundary(acc: &mut BodyAcc, msg: &DisplayMessage) {
     acc.segments.push((
         msg.stable_cache_hash(),
         acc.lines.len(),

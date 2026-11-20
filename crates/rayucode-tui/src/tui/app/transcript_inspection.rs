@@ -35,7 +35,11 @@ impl App {
             position,
         ));
         self.exit_copy_selection_mode();
-        self.pending_resize_anchor = None;
+        self.pending_resize_anchor = position.map(|target| PendingResizeAnchor {
+            target,
+            captured_width: 0,
+            captured_scroll: scroll,
+        });
         self.auto_scroll_paused = true;
         self.scroll_offset = scroll;
         self.request_full_repaint();

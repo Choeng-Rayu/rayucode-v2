@@ -700,30 +700,13 @@ pub(super) fn build_persistent_header(app: &dyn TuiState, width: u16) -> Vec<Lin
     )
 }
 
-fn pad_or_clip_line(line: &Line<'static>, target_width: usize, center: bool) -> Vec<Span<'static>> {
-    let clipped = rayucode_tui_render::truncate_line_with_ellipsis_to_width(line, target_width);
-    let w = clipped.width();
-    let pad = target_width.saturating_sub(w);
-    if pad == 0 {
-        return clipped.spans;
+fn pad_or_clip_line(line: &Line<'static>, target_width: usize) -> Vec<Span<'static>> {
+    let mut clipped = rayucode_tui_render::truncate_line_with_ellipsis_to_width(line, target_width);
+    let padding = target_width.saturating_sub(clipped.width());
+    if padding > 0 {
+        clipped.spans.push(Span::raw(" ".repeat(padding)));
     }
-    if center {
-        let left = pad / 2;
-        let right = pad - left;
-        let mut out = Vec::with_capacity(clipped.spans.len() + 2);
-        if left > 0 {
-            out.push(Span::raw(" ".repeat(left)));
-        }
-        out.extend(clipped.spans);
-        if right > 0 {
-            out.push(Span::raw(" ".repeat(right)));
-        }
-        out
-    } else {
-        let mut out = clipped.spans;
-        out.push(Span::raw(" ".repeat(pad)));
-        out
-    }
+    clipped.spans
 }
 
 fn build_persistent_header_with_auth(
@@ -870,7 +853,10 @@ fn build_persistent_header_with_auth(
         detail_lines.extend(model_line);
         if let Some(dir) = app.working_dir() {
             detail_lines.push(Line::styled(
-                abbreviate_home(&dir),
+                app.git_branch().map_or_else(
+                    || abbreviate_home(&dir),
+                    |branch| format!("{} ({branch})", abbreviate_home(&dir)),
+                ),
                 Style::default().fg(dim_color()),
             ));
         }
@@ -879,196 +865,95 @@ fn build_persistent_header_with_auth(
         }
         return detail_lines;
     }
-    if client_version_label.is_none() {
-        detail_lines.push(standalone_version_line());
-    }
-
-    let border_color = rayucode_tui_style::theme::header_border_color();
     let brand = rayucode_tui_style::theme::brand_color();
-    let border_style = Style::default().fg(border_color);
-    let dim_border_style = Style::default()
-        .fg(border_color)
-        .add_modifier(Modifier::DIM);
-    let box_width = w.saturating_sub(1);
-    let inner_width = box_width.saturating_sub(4); // "│ " + content + " │"
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Top rounded border with embedded title: `╭─── Rayu-CLI v{version} ───...─╮`
-    let ver = semver();
-    let title_spans = if w >= 70 {
-        vec![
-            Span::styled(" ", border_style),
-            Span::styled("Rayu-CLI", Style::default().fg(brand).bold()),
-            Span::styled(format!(" {ver} "), Style::default().fg(dim_color())),
-        ]
-    } else {
-        vec![
-            Span::styled(" ", border_style),
-            Span::styled("Rayu-CLI", Style::default().fg(brand).bold()),
-            Span::styled(" ", border_style),
-        ]
-    };
-    let title_line = Line::from(title_spans);
-    let title_w = title_line.width();
-    let prefix_dashes = if w >= 70 { 3 } else { 1 };
-    let total_dashes = box_width.saturating_sub(2 + title_w);
-    let left_dashes = prefix_dashes.min(total_dashes);
-    let right_dashes = total_dashes.saturating_sub(left_dashes);
-    let mut top_spans = vec![Span::styled(
-        format!("╭{}", "─".repeat(left_dashes)),
-        border_style,
-    )];
-    top_spans.extend(title_line.spans);
-    top_spans.push(Span::styled(
-        format!("{}╮", "─".repeat(right_dashes)),
-        border_style,
-    ));
-    lines.push(Line::from(top_spans).alignment(align));
-
-    let push_boxed_row = |lines: &mut Vec<Line<'static>>, row_spans: Vec<Span<'static>>| {
-        let row_line = Line::from(row_spans);
-        let padded = pad_or_clip_line(&row_line, inner_width, false);
-        let mut full = Vec::with_capacity(padded.len() + 2);
-        full.push(Span::styled("│ ", border_style));
-        full.extend(padded);
-        full.push(Span::styled(" │", border_style));
-        lines.push(Line::from(full).alignment(align));
-    };
-
-    // Build left column (Welcome back + 6-row RAYU Clawd gradient banner + CWD)
-    let mut left_rows: Vec<Line<'static>> = Vec::new();
-    left_rows.push(Line::from(Span::styled(
-        "Welcome back!",
-        Style::default().fg(Color::White).bold(),
-    )));
-    for banner_line in
-        crate::tui::brand_banner::banner_lines(crate::tui::brand_banner::BannerVariant::Clawd, 36)
-    {
-        left_rows.push(banner_line);
-    }
+    let mut welcome = crate::tui::brand_banner::banner_lines(
+        crate::tui::brand_banner::BannerVariant::Clawd,
+        width,
+    );
+    welcome.push(Line::from(vec![
+        Span::styled("Rayu-CLI ", Style::default().fg(brand).bold()),
+        Span::styled(semver().to_owned(), Style::default().fg(dim_color())),
+    ]));
     if model_line.is_some() {
-        let label = if provider_label.is_empty() {
-            nice_model
-        } else {
-            format!("{nice_model} · {provider_label}")
-        };
-        left_rows.push(Line::styled(label, Style::default().fg(dim_color())));
+        let mut spans = vec![model_header_span(nice_model)];
+        let provider = app.provider_name();
+        if !provider.is_empty() {
+            spans.push(Span::styled(
+                format!(" · {provider}"),
+                Style::default().fg(dim_color()),
+            ));
+        }
+        welcome.push(Line::from(spans));
     }
     if let Some(dir) = app.working_dir() {
-        let display_dir =
-            rayucode_tui_tool_display::truncate_middle_display(&abbreviate_home(&dir), 36);
-        left_rows.push(Line::from(Span::styled(
-            display_dir,
-            Style::default().fg(dim_color()),
-        )));
-    }
-
-    let banner_width = usize::from(crate::tui::brand_banner::BANNER_MIN_WIDTH);
-    if inner_width >= banner_width + 3 + 32 {
-        let left_w = (inner_width / 2).clamp(banner_width, 38);
-        let right_w = inner_width.saturating_sub(left_w + 3);
-
-        let mut right_rows = Vec::new();
-        if !app.is_replay() && !crate::tui::is_ssh_remote() {
-            right_rows.push(Line::from(Span::styled(
-                "Recent activity",
-                Style::default().fg(brand).bold(),
-            )));
-            right_rows.extend(recent_activity_rows(app.current_session_id().as_deref()));
-            right_rows.push(Line::from(Span::styled(
-                "/resume for more",
-                Style::default().fg(dim_color()).italic(),
-            )));
-            right_rows.push(Line::from(Span::styled(
-                "─".repeat(right_w),
-                Style::default().fg(brand),
-            )));
-        }
-
-        let changelog = unseen_changelog_entries();
-        if !changelog.is_empty() {
-            right_rows.push(Line::from(Span::styled(
-                "What's new",
-                Style::default().fg(brand).bold(),
-            )));
-            for entry in changelog.iter().take(3) {
-                right_rows.push(Line::from(Span::styled(
-                    format!("• {entry}"),
-                    Style::default().fg(dim_color()),
-                )));
-            }
+        let location = abbreviate_home(&dir);
+        if let Some(branch) = app.git_branch() {
+            welcome.push(Line::styled(
+                format!("{location} ({branch})"),
+                Style::default().fg(dim_color()),
+            ));
         } else {
-            right_rows.push(Line::from(Span::styled(
-                "Tips for getting started",
-                Style::default().fg(brand).bold(),
-            )));
-            right_rows.push(Line::from(Span::styled(
-                "• /model to switch models",
-                Style::default().fg(dim_color()),
-            )));
-            right_rows.push(Line::from(Span::styled(
-                "• ! opens the shell · / lists commands",
-                Style::default().fg(dim_color()),
-            )));
-            right_rows.push(Line::from(Span::styled(
-                "• Ctrl+R to search prompt history",
-                Style::default().fg(dim_color()),
-            )));
-        }
-
-        let row_count = left_rows.len().max(right_rows.len());
-        let empty_line = Line::from("");
-        for idx in 0..row_count {
-            let l_line = left_rows.get(idx).unwrap_or(&empty_line);
-            let r_line = right_rows.get(idx).unwrap_or(&empty_line);
-            let mut combined = pad_or_clip_line(l_line, left_w, true);
-            combined.push(Span::styled(" │ ", dim_border_style));
-            combined.extend(pad_or_clip_line(r_line, right_w, false));
-            push_boxed_row(&mut lines, combined);
-        }
-    } else {
-        // Compact single-column layout (`LogoV2` Compact mode, 44 <= width < 70)
-        for l_line in &left_rows {
-            let centered = pad_or_clip_line(l_line, inner_width, true);
-            push_boxed_row(&mut lines, centered);
+            welcome.push(Line::styled(location, Style::default().fg(dim_color())));
         }
     }
+    welcome.push(Line::from(vec![
+        Span::styled("↑ ", Style::default().fg(brand).bold()),
+        Span::styled(
+            "Welcome!, Thank You For Choosing Rayu!",
+            Style::default().fg(dim_color()),
+        ),
+    ]));
 
-    // Horizontal rule inside box separating visual banner from runtime/model facts
-    push_boxed_row(
-        &mut lines,
-        vec![Span::styled(
-            "─".repeat(inner_width),
-            Style::default().fg(brand).add_modifier(Modifier::DIM),
-        )],
-    );
-    for dline in detail_lines {
-        push_boxed_row(&mut lines, dline.spans);
+    let left_width = 40;
+    let gap = 3;
+    let right_width = w.saturating_sub(left_width + gap + 1);
+    let mut details = Vec::new();
+    if !app.is_replay() && !crate::tui::is_ssh_remote() {
+        details.push(Line::styled(
+            "Recent activity",
+            Style::default().fg(brand).bold(),
+        ));
+        details.extend(recent_activity_rows(app.current_session_id().as_deref()));
+        details.push(Line::styled(
+            "/resume for more",
+            Style::default().fg(dim_color()),
+        ));
+        details.push(Line::from(""));
+    }
+    details.extend(detail_lines);
+    if let Some(entry) = unseen_changelog_entries().into_iter().next() {
+        details.push(Line::styled(
+            "What's new · /changelog",
+            Style::default().fg(brand),
+        ));
+        details.push(Line::styled(entry, Style::default().fg(dim_color())));
+    }
+    if right_width < 25 {
+        welcome.push(Line::from(""));
+        welcome.extend(
+            details
+                .into_iter()
+                .filter(|line| !line.spans.is_empty())
+                .take(6),
+        );
+        return welcome;
     }
 
-    // Bottom rounded border `╰───...───╯`
-    lines.push(
-        Line::from(Span::styled(
-            format!("╰{}╯", "─".repeat(box_width.saturating_sub(2))),
-            border_style,
-        ))
-        .alignment(align),
-    );
-
-    // WelcomeTagline row below LogoV2: `  ↑ Welcome!, Thank You For Choosing Rayu!`
-    lines.push(
-        Line::from(vec![
-            Span::styled("  ↑ ", Style::default().fg(brand).bold()),
-            Span::styled(
-                "Welcome!, Thank You For Choosing Rayu!",
-                Style::default().fg(dim_color()),
-            ),
-        ])
-        .alignment(align),
-    );
-
-    lines
+    // Keep the welcome self-contained on the left. Runtime metadata and
+    // session activity share the available space alongside it on wide screens.
+    let empty = Line::from("");
+    (0..welcome.len().max(details.len()))
+        .map(|index| {
+            let left = welcome.get(index).unwrap_or(&empty);
+            let right = details.get(index).unwrap_or(&empty);
+            let mut spans = pad_or_clip_line(left, left_width);
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.extend(
+                rayucode_tui_render::truncate_line_with_ellipsis_to_width(right, right_width).spans,
+            );
+            Line::from(spans).alignment(align)
+        })
+        .collect()
 }
 
 fn recent_activity_rows(current_session_id: Option<&str>) -> Vec<Line<'static>> {
@@ -1213,20 +1098,6 @@ fn build_header_lines_with_auth(
         lines.push(
             Line::from(Span::styled(skills_text, Style::default().fg(dim_color())))
                 .alignment(align),
-        );
-    }
-
-    if let Some(dir) = app.working_dir() {
-        let display_dir = abbreviate_home(&dir);
-        let mut text = display_dir;
-        if let Some(branch) = app.git_branch() {
-            let with_branch = format!("{} ({})", text, branch);
-            if with_branch.chars().count() <= w {
-                text = with_branch;
-            }
-        }
-        lines.push(
-            Line::from(Span::styled(text, Style::default().fg(dim_color()))).alignment(align),
         );
     }
 

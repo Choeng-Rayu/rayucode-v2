@@ -195,7 +195,7 @@ impl App {
                                         self.pending_soft_interrupt_requests.clear();
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
-                                        self.streaming_tool_calls.clear();
+                                        self.clear_pending_tool_calls();
                                         self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
@@ -445,7 +445,7 @@ impl App {
                                         }
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
-                                        self.streaming_tool_calls.clear();
+                                        self.clear_pending_tool_calls();
                                         self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
@@ -515,7 +515,7 @@ impl App {
                                         });
                                         // Clear streaming state and continue with new turn
                                         self.clear_streaming_render_state();
-                                        self.streaming_tool_calls.clear();
+                                        self.clear_pending_tool_calls();
                                         self.stream_buffer = StreamBuffer::new();
                                         reasoning_content.clear();
                                         interleaved = true;
@@ -658,16 +658,16 @@ impl App {
                                                 crate::tui::info_widget::MemoryState::Embedding,
                                             );
                                         }
-                                        self.streaming_tool_calls.push(ToolCall {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                            input: serde_json::Value::Null,
-                                            intent: None, thought_signature: None, });
-                                        pending_tools.start(ToolCall {
+                                        let tool = ToolCall {
                                             id,
                                             name,
                                             input: serde_json::Value::Null,
-                                            intent: None, thought_signature: None, });
+                                            intent: None,
+                                            thought_signature: None,
+                                        };
+                                        self.show_tool_activity(&tool, crate::tui::core::ToolActivity::Preparing);
+                                        self.streaming_tool_calls.push(tool.clone());
+                                        pending_tools.start(tool);
                                         if eager_stream_redraw {
                                             status_spinner_renderer.draw_full(self, terminal)?;
                                         }
@@ -716,15 +716,7 @@ impl App {
                                             });
                                             self.commit_pending_streaming_assistant_message();
 
-                                            // Add tool call as its own display message
-                                            self.push_display_message(DisplayMessage {
-                                                role: "tool".to_string(),
-                                                content: tool.name.clone(),
-                                                tool_calls: vec![],
-                                                duration_secs: None,
-                                                title: None,
-                                                tool_data: Some(tool.clone()),
-                                            });
+                                            self.show_tool_activity(&tool, crate::tui::core::ToolActivity::Queued);
 
                                             tool_calls.push(tool);
                                             if eager_stream_redraw {
@@ -1037,13 +1029,16 @@ impl App {
                                             is_error,
                                         });
 
-                                        // Update the tool's DisplayMessage with the output (if it exists)
-                                        if let Some(dm) = self.display_messages.iter_mut().rev().find(|dm| {
-                                            dm.tool_data.as_ref().map(|td| &td.id) == Some(&tool_use_id)
-                                        }) {
-                                            dm.duration_secs = DisplayMessage::tool_duration_from_output(&content);
-                                            dm.content = content.clone();
-                                            self.bump_display_messages_version();
+                                        let display_output = if is_error
+                                            && !rayucode_tui_tool_display::tool_output_looks_failed(&content)
+                                        {
+                                            format!("Error: {content}")
+                                        } else {
+                                            content.clone()
+                                        };
+                                        self.replace_latest_tool_display_message(&tool_use_id, None, display_output);
+                                        if let Some(seconds) = DisplayMessage::tool_duration_from_output(&content) {
+                                            self.set_latest_tool_duration(&tool_use_id, seconds);
                                         }
 
                                         // Clear this tool from streaming_tool_calls
@@ -1314,9 +1309,9 @@ impl App {
                 } else {
                     None
                 };
-                let message_id = self
-                    .session
-                    .add_message_ext(Role::Assistant, content_clone, None, token_usage);
+                let message_id =
+                    self.session
+                        .add_message_ext(Role::Assistant, content_clone, None, token_usage);
                 let _ = self.session.save();
                 for tc in &tool_calls {
                     self.tool_result_ids.insert(tc.id.clone());
@@ -1385,7 +1380,11 @@ impl App {
             }
             self.clear_streaming_render_state();
             self.stream_buffer.clear();
-            self.streaming_tool_calls.clear();
+            if tool_calls.is_empty() {
+                self.clear_pending_tool_calls();
+            } else {
+                self.streaming_tool_calls.clear();
+            }
 
             // If no tool calls, we're done
             if tool_calls.is_empty() {
@@ -1412,6 +1411,9 @@ impl App {
             // SDK may have executed some tools, but custom tools need local execution
             for tc in tool_calls {
                 self.status = ProcessingStatus::RunningTool(tc.name.clone());
+                if !sdk_tool_results.contains_key(&tc.id) {
+                    self.show_tool_activity(&tc, crate::tui::core::ToolActivity::Running);
+                }
                 self.observe_tool_call(&tc);
                 if matches!(tc.name.as_str(), "memory") {
                     crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
@@ -1555,7 +1557,7 @@ impl App {
                                             }
                                             self.clear_streaming_render_state();
                                             self.stream_buffer.clear();
-                                            self.streaming_tool_calls.clear();
+                                            self.interrupt_pending_tools();
                                             self.batch_progress = None;
                                             self.schedule_queued_dispatch_after_interrupt();
                                             self.push_display_message(DisplayMessage::system("Interrupted"));

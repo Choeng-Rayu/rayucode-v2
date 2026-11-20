@@ -142,12 +142,13 @@ use memory_ui::{
 };
 use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
+#[cfg(test)]
+pub(crate) use messages::render_tool_message;
 #[cfg_attr(test, allow(unused_imports))]
 pub(crate) use messages::{
     SWARM_AGENT_SNAPSHOT_TITLE, TodoCardAgent, TodoCardBackgroundTask, compact_swarm_await_summary,
     encode_swarm_agent_snapshot, render_assistant_message, render_background_task_message,
-    render_reasoning_message, render_swarm_message, render_system_message, render_tool_message,
-    render_usage_message,
+    render_reasoning_message, render_swarm_message, render_system_message, render_usage_message,
 };
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
@@ -1041,6 +1042,25 @@ fn update_prompt_entry_animation(
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct ToolRowsKey {
+    expanded: bool,
+    show_bash_output: bool,
+    show_agentgrep_output: bool,
+    show_arguments: bool,
+}
+
+impl ToolRowsKey {
+    fn new(app: &dyn TuiState) -> Self {
+        Self {
+            expanded: app.transcript_view().is_some(),
+            show_bash_output: tools_ui::show_bash_output(),
+            show_agentgrep_output: crate::config::config().display.show_agentgrep_output,
+            show_arguments: tools_ui::show_tool_call_details(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BodyCacheKey {
     width: u16,
@@ -1049,6 +1069,7 @@ struct BodyCacheKey {
     diagram_mode: crate::config::DiagramDisplayMode,
     centered: bool,
     compact_thinking: bool,
+    tool_rows: ToolRowsKey,
     /// Mermaid render geometry depends on the scoped transcript/pane aspect
     /// profile as well as width. A vertical terminal resize can change this
     /// bucket without changing `width`, so it must invalidate the prepared body.
@@ -1156,6 +1177,7 @@ impl BodyCacheState {
                     && entry.key.diagram_mode == key.diagram_mode
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
+                    && entry.key.tool_rows == key.tool_rows
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1180,6 +1202,7 @@ impl BodyCacheState {
                     && entry.key.diagram_mode == key.diagram_mode
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
+                    && entry.key.tool_rows == key.tool_rows
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1223,6 +1246,7 @@ impl BodyCacheState {
                     && entry.key.diagram_mode == key.diagram_mode
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
+                    && entry.key.tool_rows == key.tool_rows
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1248,6 +1272,7 @@ impl BodyCacheState {
                     && entry.key.diagram_mode == key.diagram_mode
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
+                    && entry.key.tool_rows == key.tool_rows
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1375,6 +1400,7 @@ struct FullPrepCacheKey {
     diagram_mode: crate::config::DiagramDisplayMode,
     centered: bool,
     compact_thinking: bool,
+    tool_rows: ToolRowsKey,
     /// The scoped Mermaid profile can also change when pane geometry changes
     /// while the transcript rectangle stays the same.
     mermaid_aspect_bucket: Option<u16>,

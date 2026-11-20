@@ -192,12 +192,12 @@ fn changes_widget_end_to_end_on_real_git_repo() {
             .to_string()
     };
     assert!(
-        row("lib.rs").contains("M● src/lib.rs"),
+        row("src/lib.rs").contains("M● src/lib.rs"),
         "agent dot on edited file:\n{frame}"
     );
     assert!(row("new_name.rs").contains("R  new_name.rs"), "{frame}");
     assert!(row("gone.txt").contains("D  gone.txt"), "{frame}");
-    assert!(row("lib.rs").contains("+3 −1"), "{frame}");
+    assert!(row("src/lib.rs").contains("+3 −1"), "{frame}");
     assert!(
         row("new.rs").contains("?  new.rs"),
         "no dot on files agent did not edit:\n{frame}"

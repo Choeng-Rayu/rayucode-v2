@@ -4,6 +4,10 @@ use super::{dim_color, rgb, tool_color, truncate_line_preserving_suffix_to_width
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+#[path = "ui_tools/transcript.rs"]
+mod transcript;
+pub(super) use transcript::*;
+
 /// Source is a dedicated body, independent of the optional technical summary.
 /// Bound visual rows, not source lines: agents frequently submit one long line.
 pub(super) fn codemode_preview(tool: &ToolCall, width: usize) -> Vec<Line<'static>> {

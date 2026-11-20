@@ -1207,7 +1207,7 @@ pub(super) fn handle_disconnect(
         }
     }
     app.clear_streaming_render_state();
-    app.streaming_tool_calls.clear();
+    app.clear_pending_tool_calls();
     app.batch_progress = None;
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;

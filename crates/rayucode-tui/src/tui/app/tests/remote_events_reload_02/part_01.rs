@@ -233,7 +233,12 @@ fn test_handle_server_event_tool_start_flushes_streaming_text_before_tool_messag
     );
 
     assert!(app.streaming.streaming_text.is_empty());
-    assert_eq!(app.display_messages().len(), 1);
+    assert_eq!(app.display_messages().len(), 2);
+    assert_eq!(
+        app.display_messages()[1].role,
+        crate::tui::core::PENDING_TOOL_ROLE
+    );
+    assert_eq!(app.display_messages()[1].content, "Preparing…");
     assert_eq!(app.display_messages()[0].role, "assistant");
     assert_eq!(
         app.display_messages()[0].content,

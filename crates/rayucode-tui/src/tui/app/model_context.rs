@@ -1528,7 +1528,7 @@ impl App {
         self.context_warning_shown = false;
         self.clear_streaming_render_state();
         self.stream_buffer.clear();
-        self.streaming_tool_calls.clear();
+        self.clear_pending_tool_calls();
         self.streaming.streaming_input_tokens = 0;
         self.streaming.streaming_output_tokens = 0;
         self.streaming.streaming_cache_read_tokens = None;

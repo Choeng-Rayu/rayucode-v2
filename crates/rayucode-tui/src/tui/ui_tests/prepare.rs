@@ -908,7 +908,7 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
 
     let placeholder = DisplayMessage {
         role: "tool".to_string(),
-        content: "pending".to_string(),
+        content: "1\tFirst line".to_string(),
         tool_calls: vec![],
         duration_secs: None,
         title: None,
@@ -916,7 +916,7 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
     };
     let final_message = DisplayMessage {
         role: "tool".to_string(),
-        content: "x".repeat(7_600),
+        content: "1\tFirst line\n2\tSecond line".into(),
         tool_calls: vec![],
         duration_secs: None,
         title: None,
@@ -946,20 +946,21 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
         .collect();
 
     assert!(
-        first_rendered.iter().any(|line| line.contains("1 tok")),
-        "expected initial render to reflect placeholder tool output: {first_rendered:?}"
+        first_rendered
+            .iter()
+            .any(|line| line.contains("⎿ Read 1 line")),
+        "{first_rendered:?}"
     );
     assert!(
         refreshed_rendered
             .iter()
-            .any(|line| line.contains("1.9k tok")),
-        "expected refreshed render to include final tool token badge: {refreshed_rendered:?}"
+            .any(|line| line.contains("⎿ Read 2 lines")),
+        "{refreshed_rendered:?}"
     );
     assert!(
         refreshed_rendered
             .iter()
-            .any(|line| line.contains("✓ read src/main.rs · 1.9k tok")),
-        "expected refreshed tool row summary in final render: {refreshed_rendered:?}"
+            .any(|line| line.contains("● Read(src/main.rs)"))
     );
 }
 
@@ -1342,3 +1343,122 @@ mod reasoning_history;
 
 #[path = "prepare_error_tests.rs"]
 mod error_rows;
+
+#[test]
+fn tool_groups_rebuild_only_the_changed_boundary_on_append_and_prepend() {
+    let width = 80;
+    let tool = |name: &str, id: &str, content: &str| {
+        DisplayMessage::tool(
+            content,
+            ToolCall {
+                name: name.into(),
+                id: id.into(),
+                input: serde_json::json!({"file_path": "src/測試.rs", "pattern": "fixture"}),
+                intent: None,
+                thought_signature: None,
+            },
+        )
+    };
+    let read = tool("read", "read", "1\tFixture");
+    let grep = tool("agentgrep", "grep", "Found 2 matches");
+    let failure = tool("read", "failed", "Error: path not found");
+    let after = DisplayMessage::assistant("Separate assistant prose.");
+    let initial = TestState {
+        display_messages: vec![DisplayMessage::user("Original prompt"), read.clone()],
+        ..Default::default()
+    };
+    let before = Arc::new(prepare::prepare_body(&initial, width, false));
+    let appended = TestState {
+        display_messages: vec![
+            initial.display_messages[0].clone(),
+            read.clone(),
+            grep.clone(),
+            failure.clone(),
+            after.clone(),
+        ],
+        ..Default::default()
+    };
+    let (actual, path) = prepare::build_body_from_base(&appended, width, before, 2, 0, 5);
+    let expected = prepare::prepare_body(&appended, width, false);
+    assert_eq!(path, "prefix_reuse");
+    assert_eq!(actual.wrapped_plain_lines, expected.wrapped_plain_lines);
+    assert_eq!(actual.message_boundaries, expected.message_boundaries);
+    let text = actual.wrapped_plain_lines.join("\n");
+    assert!(
+        text.contains("Searched for 1 pattern, read 1 file"),
+        "{text}"
+    );
+    assert!(text.contains("path not found"), "{text}");
+    assert_eq!(
+        actual.message_boundaries[1].wrapped_len,
+        actual.message_boundaries[2].wrapped_len
+    );
+
+    let old = TestState {
+        display_messages: vec![
+            DisplayMessage::meta("older history"),
+            read.clone(),
+            failure.clone(),
+            after.clone(),
+        ],
+        ..Default::default()
+    };
+    let before = Arc::new(prepare::prepare_body(&old, width, false));
+    let prepended = TestState {
+        display_messages: vec![
+            DisplayMessage::meta("history loaded"),
+            grep,
+            read,
+            failure,
+            after,
+        ],
+        ..Default::default()
+    };
+    let (actual, path) = prepare::build_body_from_base(&prepended, width, before, 4, 0, 5);
+    let expected = prepare::prepare_body(&prepended, width, false);
+    assert_eq!(path, "suffix_reuse");
+    assert_eq!(actual.wrapped_plain_lines, expected.wrapped_plain_lines);
+    assert_eq!(actual.message_boundaries, expected.message_boundaries);
+}
+
+#[test]
+fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
+    let msg = DisplayMessage::tool(
+        "one\ntwo\nthree\nfour\nfive",
+        ToolCall {
+            id: "bash".into(),
+            name: "bash".into(),
+            input: serde_json::json!({"command": "printf '測試 🐈'"}),
+            intent: Some("Fixture output".into()),
+            thought_signature: None,
+        },
+    );
+    tools_ui::tests_show_bash_output_override::set(true);
+    let compact =
+        messages::render_compact_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
+    tools_ui::tests_show_bash_output_override::set(false);
+    let hidden =
+        messages::render_compact_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
+    let expanded =
+        messages::render_expanded_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
+    let plain = |lines: Vec<Line<'static>>| {
+        lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let compact = plain(compact);
+    assert!(compact.contains("● Bash(Fixture output)"), "{compact}");
+    assert!(
+        compact.contains("⎿ one") && compact.contains("… +2 lines"),
+        "{compact}"
+    );
+    assert!(!plain(hidden).contains("one"));
+    let expanded = plain(expanded);
+    assert!(
+        expanded.contains("Arguments: printf '測試 🐈'"),
+        "{expanded}"
+    );
+    assert!(expanded.contains("five"), "{expanded}");
+}

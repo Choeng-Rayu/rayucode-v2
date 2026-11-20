@@ -3300,3 +3300,36 @@ mod provider_identity;
 
 #[path = "memory_profile_tests.rs"]
 mod memory_profile;
+
+#[test]
+fn render_stored_tool_failure_keeps_its_diagnostic_and_call_id() {
+    let mut session = Session::create_with_id("tool_failure_fixture".into(), None, None);
+    session.add_message(
+        Role::Assistant,
+        vec![ContentBlock::ToolUse {
+            id: "read-failure".into(),
+            name: "read".into(),
+            input: serde_json::json!({"file_path": "missing"}),
+            thought_signature: None,
+        }],
+    );
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::ToolResult {
+            tool_use_id: "read-failure".into(),
+            content: "Missing fixture file".into(),
+            is_error: Some(true),
+        }],
+    );
+    let rendered = render_messages_and_images(&session).0;
+    let result = rendered
+        .iter()
+        .find(|message| message.role == "tool")
+        .unwrap();
+    assert_eq!(result.content, "Error: Missing fixture file");
+    assert_eq!(result.tool_data.as_ref().unwrap().id, "read-failure");
+    assert!(matches!(
+        &session.messages[1].content[0],
+        ContentBlock::ToolResult { content, .. } if content == "Missing fixture file"
+    ));
+}

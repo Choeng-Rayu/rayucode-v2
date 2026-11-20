@@ -95,7 +95,7 @@ fn start_visible_overnight_turn(app: &mut App, content: String) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
-    app.streaming_tool_calls.clear();
+    app.clear_pending_tool_calls();
     app.batch_progress = None;
     app.streaming.streaming_input_tokens = 0;
     app.streaming.streaming_output_tokens = 0;

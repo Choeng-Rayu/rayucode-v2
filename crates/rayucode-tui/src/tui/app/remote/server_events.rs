@@ -607,27 +607,40 @@ fn handle_server_event_inner(
                 crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
             }
             app.status = ProcessingStatus::RunningTool(name.clone());
-            app.streaming_tool_calls.push(ToolCall {
+            let tool = ToolCall {
                 id,
                 name,
                 input: serde_json::Value::Null,
                 intent: None,
                 thought_signature: None,
-            });
+            };
+            if !app
+                .streaming_tool_calls
+                .iter()
+                .any(|active| active.id == tool.id)
+            {
+                app.show_tool_activity(&tool, crate::tui::core::ToolActivity::Preparing);
+                app.streaming_tool_calls.push(tool);
+            }
             eager_stream_redraw
         }
         ServerEvent::ToolInput { id, delta } => {
             remote.handle_tool_input(id.as_deref(), &delta);
-            if let Some(id) = id.as_deref() {
+            let target = id.or_else(|| app.streaming_tool_calls.last().map(|tool| tool.id.clone()));
+            let updated = target.as_deref().and_then(|id| {
                 let input = remote.get_tool_input(id);
-                if !input.is_null()
-                    && let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id)
-                {
-                    tc.input = input;
-                    tc.refresh_intent_from_input();
+                if input.is_null() {
+                    return None;
                 }
-            }
-            false
+                let tool = app
+                    .streaming_tool_calls
+                    .iter_mut()
+                    .find(|tool| tool.id == id)?;
+                tool.input = input;
+                tool.refresh_intent_from_input();
+                Some(tool.clone())
+            });
+            updated.is_some_and(|tool| app.refresh_tool_activity_input(&tool))
         }
         ServerEvent::ToolExec { id, name } => {
             // A reconnect can resume during execution, without replaying the
@@ -652,9 +665,11 @@ fn handle_server_event_inner(
                 app.maybe_surface_swarm_config_hint();
             }
             if let Some(tc) = app.streaming_tool_calls.iter_mut().find(|tc| tc.id == id) {
-                tc.input = parsed_input;
-                tc.refresh_intent_from_input();
+                *tc = tool_call.clone();
+            } else {
+                app.streaming_tool_calls.push(tool_call.clone());
             }
+            app.show_tool_activity(&tool_call, crate::tui::core::ToolActivity::Running);
             remote.handle_tool_exec(&id, &name);
             app.observe_tool_call(&tool_call);
             eager_stream_redraw
@@ -1085,7 +1100,7 @@ fn handle_server_event_inner(
             }
             app.clear_streaming_render_state();
             app.stream_buffer.clear();
-            app.streaming_tool_calls.clear();
+            app.interrupt_pending_tools();
             app.batch_progress = None;
             app.thought_line_inserted = false;
             app.thinking_prefix_emitted = false;
@@ -1235,7 +1250,7 @@ fn handle_server_event_inner(
                 app.replay_elapsed_override = None;
                 app.remote_resume_activity = None;
                 app.batch_progress = None;
-                app.streaming_tool_calls.clear();
+                app.clear_pending_tool_calls();
                 app.current_message_id = None;
                 app.thought_line_inserted = false;
                 app.thinking_prefix_emitted = false;
@@ -1934,7 +1949,7 @@ fn handle_server_event_inner(
                 app.status_detail = None;
                 app.clear_display_messages();
                 app.clear_streaming_render_state();
-                app.streaming_tool_calls.clear();
+                app.clear_pending_tool_calls();
                 app.thought_line_inserted = false;
                 app.thinking_prefix_emitted = false;
                 app.thinking_buffer.clear();
@@ -2319,7 +2334,7 @@ fn handle_server_event_inner(
                             {
                                 app.stream_buffer.clear();
                                 app.clear_streaming_render_state();
-                                app.streaming_tool_calls.clear();
+                                app.clear_pending_tool_calls();
                                 app.batch_progress = None;
                                 app.thought_line_inserted = false;
                                 app.thinking_prefix_emitted = false;

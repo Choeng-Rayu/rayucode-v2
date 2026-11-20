@@ -10,6 +10,7 @@ pub(super) fn handle_tool_done(
 ) -> bool {
     // Read the raw output before client-side diff rendering replaces it.
     let observed_duration = remote.take_tool_duration(&id);
+    let input = remote.get_tool_input(&id);
     let duration_secs = DisplayMessage::tool_duration_from_output(&output).or(observed_duration);
     let display_output = remote.handle_tool_done(&id, &name, &output);
     let display_output = if error.is_some()
@@ -17,7 +18,12 @@ pub(super) fn handle_tool_done(
         && !display_output.starts_with("error:")
         && !display_output.starts_with("Failed:")
     {
-        format!("Error: {}", display_output)
+        let reason = if output.trim().is_empty() {
+            error.as_deref().unwrap_or("Tool call failed")
+        } else {
+            &display_output
+        };
+        format!("Error: {reason}")
     } else {
         display_output
     };
@@ -25,12 +31,19 @@ pub(super) fn handle_tool_done(
         .streaming_tool_calls
         .iter()
         .find(|tc| tc.id == id)
-        .cloned();
+        .cloned()
+        .map(|mut tool| {
+            if tool.input.is_null() && !input.is_null() {
+                tool.input = input.clone();
+                tool.refresh_intent_from_input();
+            }
+            tool
+        });
     let tool_call = existing_tool_call.unwrap_or_else(|| ToolCall {
         id: id.clone(),
         name: name.clone(),
-        input: serde_json::Value::Null,
-        intent: None,
+        intent: ToolCall::intent_from_input(&input),
+        input,
         thought_signature: None,
     });
     app.commit_pending_streaming_assistant_message();

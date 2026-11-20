@@ -367,8 +367,10 @@ pub(super) fn needs_message_separator(msg: &DisplayMessage) -> bool {
     let compact_reasoning = crate::config::config().display.compact_thinking
         && (msg.effective_role() == "reasoning"
             || (msg.effective_role() == "assistant" && starts_with_reasoning(&msg.content)));
-    !matches!(msg.effective_role(), "tool" | "meta" | "swarm")
-        && !compact_reasoning
+    !matches!(
+        msg.effective_role(),
+        "tool" | crate::tui::core::PENDING_TOOL_ROLE | "meta" | "swarm"
+    ) && !compact_reasoning
         && !is_kv_cache_footer(msg)
 }
 
@@ -3938,10 +3940,75 @@ fn render_tool_failure_reason(content: &str, width: usize, indent: usize) -> Lin
     )
 }
 
+#[cfg(test)]
 pub(crate) fn render_tool_message(
     msg: &DisplayMessage,
     width: u16,
     diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    render_tool_message_mode(msg, width, diff_mode, false, false)
+}
+
+pub(super) fn render_compact_tool_message(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    render_tool_message_mode(msg, width, diff_mode, true, false)
+}
+
+pub(super) fn render_expanded_tool_message(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let mut lines = render_tool_message_mode(msg, width, diff_mode, false, true);
+    let Some(tool) = &msg.tool_data else {
+        return lines;
+    };
+    let centered = markdown::center_code_blocks();
+    let block = if centered {
+        super::centered_content_block_width(width, 96)
+    } else {
+        usize::from(width)
+    };
+    let cells = block.saturating_sub(1);
+    let mut details = Vec::new();
+    // Reuse the tool summary so structured arguments follow their native display
+    // rules. Bash commands need the complete value to inspect multiline input.
+    let arguments = if tools_ui::is_shell_tool(tool) {
+        tool.input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    } else {
+        Some(tools_ui::get_tool_summary_with_budget(tool, 200, None))
+    };
+    if let Some(arguments) = arguments.filter(|text| !text.trim().is_empty()) {
+        details.extend(tools_ui::output_rows(
+            &format!("Arguments: {arguments}"),
+            cells,
+            None,
+        ));
+    }
+    let output = tools_ui::retained_tool_output(tool, &msg.content);
+    if !output.trim().is_empty() {
+        details.push(tools_ui::tool_response("Output", cells));
+        details.extend(tools_ui::output_rows(output, cells, None));
+    }
+    if centered {
+        super::left_pad_lines_to_block_width(&mut details, width, block);
+    }
+    lines.extend(details);
+    lines
+}
+
+fn render_tool_message_mode(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+    compact: bool,
+    expanded: bool,
 ) -> Vec<Line<'static>> {
     if let Some(lines) = render_scheduled_tool_message(msg, width) {
         return lines;
@@ -3996,6 +4063,17 @@ pub(crate) fn render_tool_message(
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let Some(ref tc) = msg.tool_data else {
+        if !msg.content.trim().is_empty() {
+            lines.push(Line::styled(
+                "● Tool",
+                Style::default().fg(tool_color()).bold(),
+            ));
+            lines.extend(tools_ui::output_rows(
+                &msg.content,
+                width.saturating_sub(1) as usize,
+                compact.then_some(3),
+            ));
+        }
         return lines;
     };
 
@@ -4132,7 +4210,7 @@ pub(crate) fn render_tool_message(
     };
     let reserved_summary_width = row_width
         .saturating_sub(UnicodeWidthStr::width(base_prefix.as_str()))
-        .saturating_sub(token_suffix_width)
+        .saturating_sub(if compact { 0 } else { token_suffix_width })
         .saturating_sub(edit_suffix_width);
 
     let intent = tc
@@ -4187,87 +4265,128 @@ pub(crate) fn render_tool_message(
         summary
     };
 
-    let tool_category_fg = match rayucode_tui_tool_display::classify_tool_color_category(&tc.name) {
-        rayucode_tui_tool_display::ToolColorCategory::Execute => {
-            rayucode_tui_style::theme::tool_execute_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Read => {
-            rayucode_tui_style::theme::tool_read_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Search => {
-            rayucode_tui_style::theme::tool_search_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Edit => {
-            rayucode_tui_style::theme::tool_edit_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Web => {
-            rayucode_tui_style::theme::tool_web_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Task => {
-            rayucode_tui_style::theme::tool_task_color()
-        }
-        rayucode_tui_tool_display::ToolColorCategory::Brand => {
-            rayucode_tui_style::theme::brand_color()
-        }
-    };
-    let mut tool_line = vec![
-        Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
-        Span::styled(
-            display_name,
-            Style::default()
-                .fg(tool_category_fg)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if let Some(intent) = intent {
-        tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            intent.to_string(),
-            Style::default().fg(tool_color()),
-        ));
-        let show_detail = tools_ui::show_tool_call_details() || is_partial_batch;
-        if show_detail && !summary.is_empty() && summary != intent {
+    let rendered_tool_line = if compact {
+        let subject = intent.unwrap_or(&summary);
+        tools_ui::tool_header(
+            tc,
+            subject,
+            tools_ui::outcome_color(is_error, is_partial_batch),
+            row_width,
+        )
+    } else {
+        let tool_category_fg =
+            match rayucode_tui_tool_display::classify_tool_color_category(&tc.name) {
+                rayucode_tui_tool_display::ToolColorCategory::Execute => {
+                    rayucode_tui_style::theme::tool_execute_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Read => {
+                    rayucode_tui_style::theme::tool_read_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Search => {
+                    rayucode_tui_style::theme::tool_search_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Edit => {
+                    rayucode_tui_style::theme::tool_edit_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Web => {
+                    rayucode_tui_style::theme::tool_web_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Task => {
+                    rayucode_tui_style::theme::tool_task_color()
+                }
+                rayucode_tui_tool_display::ToolColorCategory::Brand => {
+                    rayucode_tui_style::theme::brand_color()
+                }
+            };
+        let mut tool_line = vec![
+            Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
+            Span::styled(
+                display_name,
+                Style::default()
+                    .fg(tool_category_fg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if let Some(intent) = intent {
             tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
-            tool_line.push(Span::styled(summary, Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                intent.to_string(),
+                Style::default().fg(tool_color()),
+            ));
+            let show_detail = (!expanded && tools_ui::show_tool_call_details()) || is_partial_batch;
+            if show_detail && !summary.is_empty() && summary != intent {
+                tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+                tool_line.push(Span::styled(
+                    summary.clone(),
+                    Style::default().fg(dim_color()),
+                ));
+            }
+        } else if !summary.is_empty() {
+            tool_line.push(Span::styled(
+                format!(" {}", summary),
+                Style::default().fg(dim_color()),
+            ));
         }
-    } else if !summary.is_empty() {
-        tool_line.push(Span::styled(
-            format!(" {}", summary),
-            Style::default().fg(dim_color()),
+        if show_header_diff_counts {
+            tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                format!("+{}", additions),
+                Style::default().fg(diff_add_color()),
+            ));
+            tool_line.push(Span::styled(" ", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(
+                format!("-{}", deletions),
+                Style::default().fg(diff_del_color()),
+            ));
+            tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
+        }
+        let mut usage_spans = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
+        usage_spans.extend(tools_ui::tool_usage_spans(
+            token_badge.label,
+            token_badge.color,
+            msg.duration_secs,
+            &msg.content,
         ));
-    }
-    if show_header_diff_counts {
-        tool_line.push(Span::styled(" (", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            format!("+{}", additions),
-            Style::default().fg(diff_add_color()),
-        ));
-        tool_line.push(Span::styled(" ", Style::default().fg(dim_color())));
-        tool_line.push(Span::styled(
-            format!("-{}", deletions),
-            Style::default().fg(diff_del_color()),
-        ));
-        tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
-    }
-    let mut usage_spans = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
-    usage_spans.extend(tools_ui::tool_usage_spans(
-        token_badge.label,
-        token_badge.color,
-        msg.duration_secs,
-        &msg.content,
-    ));
-    let token_suffix = Line::from(usage_spans);
+        let token_suffix = Line::from(usage_spans);
 
-    let rendered_tool_line = super::truncate_line_preserving_suffix_to_width(
-        &Line::from(tool_line),
-        &token_suffix,
-        row_width,
-    );
+        super::truncate_line_preserving_suffix_to_width(
+            &Line::from(tool_line),
+            &token_suffix,
+            row_width,
+        )
+    };
     let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
     lines.push(rendered_tool_line);
+    if compact
+        && intent.is_some_and(|intent| intent != summary)
+        && !summary.is_empty()
+        && tools_ui::show_tool_call_details()
+    {
+        lines.push(tools_ui::tool_response(summary.clone(), row_width));
+    }
+    if compact && batch_counts.is_some() && intent.is_some() && !tools_ui::show_tool_call_details()
+    {
+        lines.push(tools_ui::tool_response(summary, row_width));
+    }
+    if compact && show_header_diff_counts {
+        lines.push(tools_ui::tool_response(
+            format!("+{additions} -{deletions}"),
+            row_width,
+        ));
+    }
     lines.extend(tools_ui::codemode_preview(tc, row_width));
     if is_error && (tc.name != "batch" || batch_counts.is_none()) {
-        lines.push(render_tool_failure_reason(&msg.content, row_width, 2));
+        if compact {
+            let reason = tools_ui::parse_tool_failure(&msg.content)
+                .map(|failure| failure.reason)
+                .unwrap_or_else(|| "Tool call failed".into());
+            lines.push(tools_ui::tool_response(
+                reason.split_whitespace().collect::<Vec<_>>().join(" "),
+                row_width,
+            ));
+        } else {
+            lines.push(render_tool_failure_reason(&msg.content, row_width, 2));
+        }
         if centered {
             super::left_pad_lines_to_block_width(&mut lines, width, block_width);
         }
@@ -4296,7 +4415,9 @@ pub(crate) fn render_tool_message(
     // intent. With an intent present, the command summary is inline-only: it
     // shows on the tool row when it fits and is dropped otherwise, never
     // spilling onto a second line.
-    if tools_ui::canonical_tool_name(&tc.name) == "bash"
+    if !compact
+        && !expanded
+        && tools_ui::canonical_tool_name(&tc.name) == "bash"
         && intent.is_none()
         && !rendered_tool_line_text.contains('$')
         && let Some(command) = tc.input.get("command").and_then(|v| v.as_str())
@@ -4325,7 +4446,22 @@ pub(crate) fn render_tool_message(
         }
     }
 
-    if tools_ui::canonical_tool_name(&tc.name) == "bash"
+    if compact {
+        if tools_ui::is_shell_tool(tc) && tools_ui::show_bash_output() {
+            let output = tools_ui::retained_tool_output(tc, &msg.content).trim_end();
+            if output.is_empty() || output == "Command completed successfully (no output)" {
+                lines.push(tools_ui::tool_response("(No output)", row_width));
+            } else {
+                lines.extend(tools_ui::output_rows(output, row_width, Some(3)));
+            }
+        } else if let Some(summary) = tools_ui::read_search_result_summary(tc, &msg.content) {
+            lines.push(tools_ui::tool_response(summary, row_width));
+        }
+    }
+
+    if !compact
+        && !expanded
+        && tools_ui::canonical_tool_name(&tc.name) == "bash"
         && tools_ui::show_bash_output()
         && msg.content.trim() != "Command completed successfully (no output)"
     {

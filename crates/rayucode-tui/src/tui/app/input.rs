@@ -3881,7 +3881,7 @@ impl App {
         self.streaming.response_output.reset();
         self.stream_buffer.clear();
         self.clear_streaming_render_state();
-        self.streaming_tool_calls.clear();
+        self.clear_pending_tool_calls();
         self.batch_progress = None;
         self.thought_line_inserted = false;
         self.thinking_prefix_emitted = false;
@@ -4243,7 +4243,7 @@ impl App {
         self.thought_line_inserted = false;
         self.thinking_prefix_emitted = false;
         self.thinking_buffer.clear();
-        self.streaming_tool_calls.clear();
+        self.clear_pending_tool_calls();
         self.streaming.streaming_input_tokens = 0;
         self.streaming.streaming_output_tokens = 0;
         self.streaming.streaming_cache_read_tokens = None;
@@ -4319,7 +4319,7 @@ impl App {
             self.thought_line_inserted = false;
             self.thinking_prefix_emitted = false;
             self.thinking_buffer.clear();
-            self.streaming_tool_calls.clear();
+            self.clear_pending_tool_calls();
             self.streaming.streaming_input_tokens = 0;
             self.streaming.streaming_output_tokens = 0;
             self.streaming.streaming_cache_read_tokens = None;

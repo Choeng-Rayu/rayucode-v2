@@ -4,6 +4,27 @@
 //! and helper methods used by both local and remote TUI modes.
 use super::DisplayMessage;
 
+// Client-only display rows. Provider context and the session store use
+// their own message types.
+pub(super) const PENDING_TOOL_ROLE: &str = "tool_pending";
+
+#[derive(Clone, Copy)]
+pub(super) enum ToolActivity {
+    Preparing,
+    Queued,
+    Running,
+}
+
+impl ToolActivity {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Preparing => "Preparing…",
+            Self::Queued => "Queued…",
+            Self::Running => "Running…",
+        }
+    }
+}
+
 /// Find the byte offset of the previous character boundary before `pos`.
 /// Returns 0 if `pos` is 0 or at the start.
 pub fn prev_char_boundary(s: &str, pos: usize) -> usize {

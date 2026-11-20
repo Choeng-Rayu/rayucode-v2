@@ -156,7 +156,7 @@ fn test_prepare_messages_restored_history_matches_live_tool_rows() {
     assert!(
         restored
             .iter()
-            .any(|line| line.contains("bash · Check repo state")),
+            .any(|line| line.contains("● Bash(Check repo state)")),
         "restored={restored:#?}"
     );
     assert_eq!(live, restored);

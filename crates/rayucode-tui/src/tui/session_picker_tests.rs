@@ -1837,7 +1837,7 @@ fn test_preview_transcript_omits_picker_metadata() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("1› hello"), "{text}");
-    assert!(text.contains("Updates"), "{text}");
+    assert!(text.contains("What's new"), "{text}");
     assert!(
         text.contains("Deterministic preview changelog fixture"),
         "{text}"
@@ -1852,8 +1852,7 @@ fn test_preview_transcript_omits_picker_metadata() {
             "unexpected picker metadata: {text}"
         );
     }
-    // Startup Updates boxes legitimately contain horizontal borders. Only the
-    // standalone picker separator is metadata, not every run of border glyphs.
+    // The picker separator is separate from the scrolling startup header.
     assert!(
         !text.lines().any(|line| {
             let line = line.trim();

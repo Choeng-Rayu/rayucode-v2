@@ -725,12 +725,19 @@ fn format_model_name_labels_slashed_models_with_active_provider() {
 }
 
 #[test]
-fn logo_v2_renders_two_column_box_and_welcome_tagline_on_wide_terminals() {
+fn fullscreen_welcome_puts_the_rayu_mark_before_its_version_and_keeps_activity() {
     let app = create_test_app();
     let lines = rendered_header_lines(&app, 100);
     let full = lines.join("\n");
-    assert!(full.contains("╭─── Rayu-CLI"), "missing top title: {full}");
-    assert!(full.contains("Welcome back!"), "missing welcome: {full}");
+    let mark = lines
+        .iter()
+        .position(|line| line.contains("██████╗"))
+        .unwrap();
+    let name = lines
+        .iter()
+        .position(|line| line.contains("Rayu-CLI"))
+        .unwrap();
+    assert!(mark < name, "{full}");
     assert!(
         full.contains("Recent activity"),
         "missing Recent activity feed: {full}"

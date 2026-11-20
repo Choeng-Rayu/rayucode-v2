@@ -565,7 +565,7 @@ pub fn render_messages_and_images_with_compacted_history(
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
-                    ..
+                    is_error,
                 } => {
                     let combined = format!("{}{}", reasoning, text);
                     if !combined.is_empty() {
@@ -596,11 +596,27 @@ pub fn render_messages_and_images_with_compacted_history(
                     });
                     current_tool = tool_data.clone();
 
+                    // The persisted failure flag may be the only indication
+                    // that an SDK or older provider tool returned an error.
+                    let trimmed = content.trim_start();
+                    let content = if *is_error == Some(true)
+                        && !["Error:", "error:", "Failed:"]
+                            .iter()
+                            .any(|prefix| trimmed.starts_with(prefix))
+                    {
+                        if trimmed.is_empty() {
+                            "Error: Tool call failed".into()
+                        } else {
+                            format!("Error: {content}")
+                        }
+                    } else {
+                        content.clone()
+                    };
                     rendered.push(RenderedMessage {
                         response_stats: None,
                         tool_duration_ms: msg.tool_duration_ms,
                         role: "tool".to_string(),
-                        content: content.clone(),
+                        content,
                         tool_calls: Vec::new(),
                         tool_data,
                         stored_index: Some(stored_index),
