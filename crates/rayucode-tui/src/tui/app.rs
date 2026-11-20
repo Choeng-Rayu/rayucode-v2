@@ -1754,7 +1754,9 @@ pub struct App {
     pending_transfer_request: bool,
     // Local transfer preparation currently running in the background.
     pending_local_transfer: Option<PendingLocalTransfer>,
-    pending_telegram: Option<tokio::sync::oneshot::Receiver<anyhow::Result<DisplayMessage>>>,
+    pending_telegram:
+        Option<tokio::sync::oneshot::Receiver<anyhow::Result<commands_telegram::Completion>>>,
+    telegram_pairing: Option<commands_telegram::PairingWatch>,
     // Queue mode: if true, Enter during processing queues; if false, Enter queues to send next
     // Toggle with Ctrl+Tab or Ctrl+T
     queue_mode: bool,

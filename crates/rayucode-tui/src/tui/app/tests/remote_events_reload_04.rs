@@ -2113,7 +2113,7 @@ fn test_externally_started_turn_adopts_processing_state_and_settles_on_done() {
 }
 
 #[test]
-fn test_externally_started_tool_turn_shows_running_tool_status() {
+fn test_externally_started_tool_turn_reports_running_only_at_execution() {
     let mut app = create_test_app();
     app.is_remote = true;
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -2130,6 +2130,20 @@ fn test_externally_started_tool_turn_shows_running_tool_status() {
     );
 
     assert!(app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Streaming));
+    assert!(
+        app.display_messages
+            .iter()
+            .any(|row| row.content == "Preparing…")
+    );
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolExec {
+            id: "tool_1".to_string(),
+            name: "bash".to_string(),
+        },
+        &mut remote,
+    );
     assert!(
         matches!(&app.status, ProcessingStatus::RunningTool(name) if name == "bash"),
         "adopted tool turn should show the running tool, got {:?}",

@@ -610,7 +610,9 @@ fn handle_server_event_inner(
             if matches!(name.as_str(), "memory") {
                 crate::memory::set_state(crate::tui::info_widget::MemoryState::Embedding);
             }
-            app.status = ProcessingStatus::RunningTool(name.clone());
+            if !matches!(app.status, ProcessingStatus::RunningTool(_)) {
+                app.status = ProcessingStatus::Streaming;
+            }
             let tool = ToolCall {
                 id,
                 name,
@@ -654,6 +656,7 @@ fn handle_server_event_inner(
             // snapshots often arrive later. Keep collecting deltas while excluding tool
             // runtime from the elapsed TPS denominator.
             app.pause_streaming_tps(true);
+            app.status = ProcessingStatus::RunningTool(name.clone());
             let parsed_input = remote.get_tool_input(&id);
             let tool_call = ToolCall {
                 id: id.clone(),

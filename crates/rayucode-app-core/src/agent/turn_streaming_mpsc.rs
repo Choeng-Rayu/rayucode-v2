@@ -32,6 +32,7 @@ impl Agent {
             self.graceful_shutdown.clone(),
         );
         let trace = trace_enabled();
+        let telegram_turn = crate::telegram_remote::is_remote(self.session_id());
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
@@ -681,10 +682,12 @@ impl Agent {
                                 ToolCall::parse_streamed_input_to_object(&current_tool_input);
                             tool.refresh_intent_from_input();
 
-                            let _ = event_tx.send(ServerEvent::ToolExec {
-                                id: tool.id.clone(),
-                                name: tool.name.clone(),
-                            });
+                            if !telegram_turn {
+                                let _ = event_tx.send(ServerEvent::ToolExec {
+                                    id: tool.id.clone(),
+                                    name: tool.name.clone(),
+                                });
+                            }
 
                             tool_calls.push(tool);
                             if current_tool == input_tool_id {
@@ -1570,13 +1573,8 @@ impl Agent {
                     execution_mode: ToolExecutionMode::AgentTurn,
                 };
 
-                if trace {
-                    eprintln!("[trace] tool_exec_start name={} id={}", tc.name, tc.id);
-                }
-
-                logging::info(&format!("Tool starting: {}", tc.name));
                 crate::session_metrics::record_activity(&self.session.id);
-                if inline_output_tap {
+                if inline_output_tap && !telegram_turn {
                     // Surface the tool execution on the coordinator's inline
                     // viewport immediately: workers spend most wall-clock time
                     // here, where no assistant text streams.
@@ -1585,66 +1583,78 @@ impl Agent {
                 }
                 let tool_start = Instant::now();
 
-                // Spawn independently so automatic and Alt+B handoffs keep it running.
                 let registry_clone = self.registry.clone();
                 let tool_name_for_spawn = tc.name.clone();
                 let tool_input_for_spawn = tc.input.clone();
                 let tool_progress_tx = event_tx.clone();
-                let tool_handle =
-                    crate::runtime_activity::spawn_session(&self.session.id, async move {
-                        crate::tool::bash_progress::with_bash_progress(
-                            tool_progress_tx,
-                            registry_clone.execute(&tool_name_for_spawn, tool_input_for_spawn, ctx),
-                        )
-                        .await
-                    })
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Session transfer in progress; tool not accepted")
-                    })?;
-
-                // Reset background signal before waiting
-                self.background_tool_signal.reset();
-
-                // All tools share the same default foreground budget, including
-                // tools without their own background execution support.
-                let bg_signal = self.background_tool_signal.clone();
+                let call_id = tc.id.clone();
+                let run_tool = async move {
+                    let on_start = || {
+                        if trace {
+                            eprintln!(
+                                "[trace] tool_exec_start name={tool_name_for_spawn} id={call_id}"
+                            );
+                        }
+                        logging::info(&format!("Tool starting: {tool_name_for_spawn}"));
+                        if telegram_turn {
+                            let _ = tool_progress_tx.send(ServerEvent::ToolExec {
+                                id: call_id,
+                                name: tool_name_for_spawn.clone(),
+                            });
+                        }
+                    };
+                    crate::tool::bash_progress::with_bash_progress(
+                        tool_progress_tx.clone(),
+                        registry_clone.execute_with_start(
+                            &tool_name_for_spawn,
+                            tool_input_for_spawn,
+                            ctx,
+                            on_start,
+                        ),
+                    )
+                    .await
+                };
                 let shutdown_signal = self.graceful_shutdown.clone();
                 let foreground_budget = tool_handoff::foreground_budget();
-                let allow_reload_handoff = tc.name == "bash";
-                let tool_result;
                 let mut automatic_background = false;
-                let mut tool_handle = tool_handle;
-                let running_tool_guard =
-                    crate::running_tool_registry::register(self.session_id(), &tc.id, &tc.name);
-                tokio::select! {
-                    biased;
-                    res = &mut tool_handle => {
-                        tool_result = Some(match res {
-                            Ok(r) => r,
-                            Err(e) => Err(anyhow::anyhow!("Tool task panicked: {}", e)),
-                        });
+                let mut background_handle = None;
+                let tool_result = if telegram_turn {
+                    // A permission wait belongs to the turn. Cancel it with the
+                    // turn and keep it out of the normal tool handoff paths.
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_signal.notified() => Some(Err(anyhow::anyhow!("Telegram tool call interrupted"))),
+                        result = run_tool => Some(result),
                     }
-                    automatic = wait_for_tool_handoff(&bg_signal, &shutdown_signal, auto_background_allowed(&tc.name, &tc.input), foreground_budget) => {
-                        automatic_background = automatic;
-                        if self.is_graceful_shutdown() && allow_reload_handoff {
-                            tool_result = match tokio::time::timeout(
-                                Duration::from_millis(750),
-                                &mut tool_handle,
-                            )
-                            .await
-                            {
-                                Ok(res) => Some(match res {
-                                    Ok(r) => r,
-                                    Err(e) => Err(anyhow::anyhow!("Tool task panicked: {}", e)),
-                                }),
-                                Err(_) => None,
-                            };
-                        } else {
-                            tool_result = None;
+                } else {
+                    // Spawn independently so automatic and Alt+B handoffs keep it running.
+                    let mut handle =
+                        crate::runtime_activity::spawn_session(&self.session.id, run_tool)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Session transfer in progress; tool not accepted")
+                            })?;
+                    self.background_tool_signal.reset();
+                    let _running =
+                        crate::running_tool_registry::register(self.session_id(), &tc.id, &tc.name);
+                    let outcome = tokio::select! {
+                        biased;
+                        res = &mut handle => Some(res.unwrap_or_else(|err| Err(anyhow::anyhow!("Tool task panicked: {err}")))),
+                        automatic = wait_for_tool_handoff(&self.background_tool_signal, &shutdown_signal, auto_background_allowed(&tc.name, &tc.input), foreground_budget) => {
+                            automatic_background = automatic;
+                            if self.is_graceful_shutdown() && tc.name == "bash" {
+                                tokio::time::timeout(Duration::from_millis(750), &mut handle)
+                                    .await.ok()
+                                    .map(|res| res.unwrap_or_else(|err| Err(anyhow::anyhow!("Tool task panicked: {err}"))))
+                            } else {
+                                None
+                            }
                         }
+                    };
+                    if outcome.is_none() {
+                        background_handle = Some(handle);
                     }
+                    outcome
                 };
-                drop(running_tool_guard);
 
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
@@ -1657,7 +1667,7 @@ impl Agent {
                         tc.name,
                         tool_elapsed.as_secs_f64()
                     ));
-                    if inline_output_tap {
+                    if inline_output_tap && !telegram_turn {
                         // Update the tool marker in place with duration/error.
                         self.inline_tail
                             .finish_tool(tool_elapsed.as_secs_f64(), result.is_err());
@@ -1727,7 +1737,7 @@ impl Agent {
                         tc.name,
                         tool_elapsed.as_secs_f64()
                     ));
-                    tool_handle.abort();
+                    background_handle.expect("interrupted spawned tool").abort();
 
                     // For selfdev reload and wait-like tools, the interruption is expected:
                     // selfdev initiated the restart, while wait-like tools should be resumed
@@ -1786,7 +1796,7 @@ impl Agent {
                             &self.session.id,
                             true,
                             false,
-                            tool_handle,
+                            background_handle.expect("tool handed off from the foreground"),
                         )
                         .await;
 

@@ -981,6 +981,16 @@ impl Registry {
 
     /// Execute a tool by name
     pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+        self.execute_with_start(name, input, ctx, || {}).await
+    }
+
+    pub(crate) async fn execute_with_start(
+        &self,
+        name: &str,
+        input: Value,
+        ctx: ToolContext,
+        on_start: impl FnOnce() + Send,
+    ) -> Result<ToolOutput> {
         let _runtime_activity =
             crate::runtime_activity::global().try_enter_session(&ctx.session_id)?;
         // Mark this call in-flight for the whole execution so the missing
@@ -1140,6 +1150,7 @@ impl Registry {
             Self::tool_lifecycle_fields("start", name, resolved_name, &input, &ctx),
         );
 
+        on_start();
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;

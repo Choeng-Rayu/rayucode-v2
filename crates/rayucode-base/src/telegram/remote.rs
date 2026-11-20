@@ -421,7 +421,12 @@ impl Transport {
     pub async fn edit(&self, chat: i64, message: i64, text: &str) -> Result<()> {
         self.relay(
             "editMessageText",
-            json!({"chat_id":chat.to_string(),"message_id":message,"text":text}),
+            json!({
+                "chat_id": chat.to_string(),
+                "message_id": message,
+                "text": text,
+                "reply_markup": {"inline_keyboard": []},
+            }),
         )
         .await?;
         Ok(())

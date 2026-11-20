@@ -39,6 +39,16 @@ async fn execute_with_background_budget(
     ctx: ToolContext,
     budget: Duration,
 ) -> Result<crate::tool::ToolOutput> {
+    if crate::telegram_remote::is_remote(&ctx.session_id) {
+        let shutdown = ctx.graceful_shutdown_signal.clone();
+        return tokio::select! {
+            biased;
+            _ = async { if let Some(signal) = shutdown { signal.notified().await } }, if ctx.graceful_shutdown_signal.is_some() => {
+                Err(anyhow::anyhow!("Telegram tool call interrupted"))
+            }
+            result = registry.execute(&name, input, ctx) => result,
+        };
+    }
     let auto_background = auto_background_allowed(&name, &input);
     let session_id = ctx.session_id.clone();
     let tool_name = name.clone();

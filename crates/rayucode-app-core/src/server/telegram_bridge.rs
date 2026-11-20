@@ -2,7 +2,7 @@
 
 mod turn;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -47,7 +47,7 @@ struct Bridge {
     transport: Transport,
     outbound: JoinSet<Result<()>>,
     control: Option<mpsc::Sender<Control>>,
-    shown: HashSet<String>,
+    shown: HashMap<String, Option<ApprovalCard>>,
     album: Vec<Message>,
     album_at: Option<tokio::time::Instant>,
     cursor: Cursor,
@@ -55,6 +55,11 @@ struct Bridge {
     model_choices: Vec<crate::provider::RouteSelection>,
     model_menu: String,
     uninstall: Option<Confirmation>,
+}
+
+struct ApprovalCard {
+    message_id: i64,
+    text: String,
 }
 
 impl Bridge {
@@ -111,7 +116,7 @@ impl Bridge {
             transport,
             outbound: JoinSet::new(),
             control: None,
-            shown: HashSet::new(),
+            shown: HashMap::new(),
             album: Vec::new(),
             album_at: None,
             cursor,
@@ -323,8 +328,16 @@ impl Bridge {
         }
         if let Some((decision, id)) = data.split_once(':')
             && matches!(decision, "allow" | "deny")
-            && self.shown.contains(id)
+            && permissions::manages(id)
         {
+            let card = self.shown.get(id).and_then(Option::as_ref);
+            if !callback.message.as_ref().is_some_and(|message| {
+                card.is_some_and(|card| card.message_id == message.message_id)
+            }) {
+                return self
+                    .say(chat, "This permission request has already closed.")
+                    .await;
+            }
             let outcome = permissions::decide(
                 id,
                 decision == "allow",
@@ -447,7 +460,7 @@ impl Bridge {
         let mut questions = pending.iter().filter(|entry| {
             entry.generation == self.link.generation
                 && entry.request.action == "ask_user"
-                && self.shown.contains(&entry.request.id)
+                && self.shown.contains_key(&entry.request.id)
         });
         let Some(question) = questions.next() else {
             return self.control(chat, Control::Answer(text.into())).await;
@@ -466,7 +479,7 @@ impl Bridge {
                 entry.generation == self.link.generation
                     && entry.request.action == "ask_user"
                     && entry.request.id == id
-                    && self.shown.contains(id)
+                    && self.shown.contains_key(id)
             })
         {
             return self
@@ -725,11 +738,23 @@ impl Bridge {
             .into_iter()
             .filter(|entry| entry.generation == self.link.generation)
             .collect();
-        self.shown
-            .retain(|id| pending.iter().any(|entry| &entry.request.id == id));
+        let mut closed_cards = Vec::new();
+        self.shown.retain(|id, card| {
+            if pending.iter().any(|entry| &entry.request.id == id) {
+                return true;
+            }
+            closed_cards.extend(card.take());
+            false
+        });
+        for card in closed_cards {
+            let text = format!("{}\n\nRequest closed.", card.text);
+            if let Err(error) = self.transport.edit(chat, card.message_id, &text).await {
+                crate::logging::warn(&format!("Could not close Telegram approval card: {error}"));
+            }
+        }
         for entry in pending {
             let request = entry.request;
-            if self.shown.contains(&request.id) {
+            if self.shown.contains_key(&request.id) {
                 continue;
             }
             let visible_input = request.description.encode_utf16().count() <= 3200;
@@ -763,8 +788,12 @@ impl Bridge {
                     None,
                 )
             };
-            self.transport.send(chat, &text, buttons).await?;
-            self.shown.insert(request.id);
+            let has_buttons = buttons.is_some();
+            let message_id = self.transport.send(chat, &text, buttons).await?;
+            self.shown.insert(
+                request.id,
+                has_buttons.then_some(ApprovalCard { message_id, text }),
+            );
         }
         Ok(())
     }
