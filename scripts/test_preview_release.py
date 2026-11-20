@@ -367,6 +367,9 @@ class ArmArchiveRuntimeTests(unittest.TestCase):
             self.addCleanup(mocked.stop)
 
     def make_archive(self, name=arm_runtime.MEMBER, mode=0o755, kind=tarfile.REGTYPE, extra=False):
+        # Release archives carry the runtime plus the notices attached by
+        # build_linux_compat.sh, and verify() requires exactly that set.
+        notices = (b"LICENSE", b"THIRD_PARTY_NOTICES", b"dependency-inventory.json")
         with tarfile.open(self.archive, "w:gz") as package:
             member = tarfile.TarInfo(name)
             member.size = len(self.binary)
@@ -374,6 +377,10 @@ class ArmArchiveRuntimeTests(unittest.TestCase):
             member.type = kind
             member.linkname = "/tmp/not-the-upload"
             package.addfile(member, io.BytesIO(self.binary))
+            for notice in notices:
+                info = tarfile.TarInfo(notice.decode())
+                info.size = len(notice)
+                package.addfile(info, io.BytesIO(notice))
             if extra:
                 package.addfile(tarfile.TarInfo("unexpected"))
 

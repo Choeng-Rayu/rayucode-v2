@@ -120,27 +120,22 @@ class PublicReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verifier.verify_metadata(data, TAG, allow_draft=True)
 
-    def test_workflow_verifies_before_announcements_and_package_updates(self):
+    def test_workflow_verifies_anonymously_after_publishing(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        publish = workflow.index("      - name: Publish completed release")
-        verify = workflow.index("      - name: Verify public assets and exact source provenance")
-        announce = workflow.index("      - name: Queue Discord release announcement")
-        packages = workflow.index("      - name: Update Homebrew formula")
-        staged = workflow.index("      - name: Verify staged assets before publication")
-        self.assertLess(staged, publish)
-        staged_step = workflow[staged:publish]
-        self.assertIn('--allow-draft', staged_step)
-        self.assertIn('--sha "$TAG_SHA"', staged_step)
-        self.assertNotIn("continue-on-error", staged_step)
+        publish = workflow.index("  publish-public-release:")
+        verify = workflow.index("  verify-public-release:")
         self.assertLess(publish, verify)
-        self.assertLess(verify, announce)
-        self.assertLess(verify, packages)
-        step = workflow[verify:announce]
+        step = workflow[verify:]
+        # The verification job must prove anonymous access, so it may not carry a token.
+        self.assertIn("unset GITHUB_TOKEN GH_TOKEN || true", step)
         self.assertNotIn("continue-on-error", step)
-        self.assertNotIn("--allow-draft", step)
-        self.assertIn('--sha "$TAG_SHA"', step)
-        self.assertIn('git show "$WORKFLOW_SHA:scripts/verify_public_release.py"', step)
-        self.assertIn("Smoke test public Linux installer in an isolated home", step)
+        # Publication must be gated on the complete platform asset set.
+        self.assertIn("Missing required release asset:", workflow[publish:verify])
+        self.assertIn("sha256sum -c SHA256SUMS", step)
+        self.assertIn('meta_ver=$(curl -fsSL', step)
+        self.assertIn('${PUBLIC_RELEASE_REPO}/main/releases/latest/version', step)
+        # Sandboxed installer smoke test: isolated HOME, pinned version.
+        self.assertIn("install_home=$(mktemp -d)", step)
         self.assertIn('HOME="$install_home"', step)
         self.assertIn('RAYU_VERSION="$RELEASE_TAG"', step)
         self.assertIn("RAYU_SKIP_SERVER_RELOAD=1 RAYU_NO_TELEMETRY=1", step)

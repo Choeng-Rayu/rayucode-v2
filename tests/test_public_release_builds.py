@@ -15,64 +15,26 @@ ROOT = Path(__file__).resolve().parents[1]
 class PublicReleaseTests(unittest.TestCase):
     def test_workflow_preserves_release_and_toolchains(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
+        # The closed-source release builds plain cargo on hosted runners, so the
+        # justrust wrapper is disabled and the opt level is pinned explicitly.
+        self.assertIn('RAYU_USE_PLAIN_CARGO: "1"', workflow)
         self.assertIn('CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"', workflow)
-        self.assertIn("JUSTRUST_TOOLCHAIN: system", workflow)
-        self.assertIn("RUSTUP_TOOLCHAIN=nightly justrust build --local --locked -Z build-std=std,panic_abort", workflow)
-        self.assertIn('& justrust @cargoArgs', workflow)
-        self.assertIn('if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }', workflow)
+        self.assertIn('CARGO_BUILD_RUSTC_WRAPPER: ""', workflow)
         cargo = (ROOT / "Cargo.toml").read_text()
         self.assertIn('[profile.release]\nopt-level = 1', cargo)
         self.assertIn('[profile.selfdev]\ninherits = "release"\nopt-level = 0', cargo)
 
-    def test_freebsd_lock_guard_without_git_metadata(self):
+    def test_freebsd_smoke_builds_locked_without_git_metadata(self):
+        # FreeBSD has no hosted runner, so its smoke workflow is the only FreeBSD
+        # guard. It must stay `--locked` and must not depend on git metadata.
+        workflow = (ROOT / ".github/workflows/freebsd-smoke.yml").read_text()
+        self.assertIn("cargo build --locked", workflow)
+        self.assertIn("-p rayucode --bin rayu", workflow)
+        self.assertNotIn("git rev-parse", workflow)
+
+    def test_public_release_repo_is_configurable(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        vm = workflow.split('  build-freebsd:', 1)[1]
-        fragment = vm[vm.index('            lock_snapshot='):]
-        fragment = fragment[:fragment.index('            echo "::endgroup::"')]
-        fragment = '\n'.join(line[12:] for line in fragment.splitlines())
-        self.assertIn('cargo build --locked --release -p rayucode --bin rayu', fragment)
-        self.assertNotIn('git ', fragment)
-        for mode in ('unchanged', 'modified', 'missing', 'missing_before_build',
-                     'missing_snapshot', 'build_failed'):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
-                directory = Path(temp)
-                source = directory / 'source'
-                source.mkdir()
-                self.assertFalse((source / '.git').exists())
-                if mode != 'missing_before_build':
-                    (source / 'Cargo.lock').write_text('original lockfile\n')
-                cargo = directory / 'cargo'
-                cargo.write_text(
-                    '#!/bin/sh\n'
-                    'printf "%s\\n" "$@" > cargo-args\n'
-                    # The snapshot must not be inside the copied source tree.
-                    'case "$lock_snapshot" in "$PWD"/*) exit 90 ;; esac\n'
-                    'printf "%s" "$lock_snapshot" > snapshot-path\n'
-                    'case "$LOCK_TEST_MODE" in\n'
-                    'modified) printf "changed\\n" > Cargo.lock ;;\n'
-                    'missing) rm Cargo.lock ;;\n'
-                    'missing_snapshot) rm "$lock_snapshot" ;;\n'
-                    'build_failed) exit 42 ;;\n'
-                    'esac\n'
-                )
-                cargo.chmod(0o755)
-                env = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}",
-                           LOCK_TEST_MODE=mode)
-                result = subprocess.run(
-                    ['/bin/sh', '-ec', 'export lock_snapshot\n' + fragment],
-                    cwd=source, env=env, capture_output=True, text=True)
-                if mode == 'unchanged':
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                else:
-                    self.assertNotEqual(result.returncode, 0, result.stdout)
-                if mode == 'missing_before_build':
-                    self.assertFalse((source / 'cargo-args').exists())
-                else:
-                    self.assertEqual((source / 'cargo-args').read_text().splitlines(),
-                                     ['build', '--locked', '--release', '-p', 'rayucode',
-                                      '--bin', 'rayu'])
-                    snapshot = Path((source / 'snapshot-path').read_text())
-                    self.assertFalse(snapshot.exists(), 'snapshot was not cleaned up')
+        self.assertIn("PUBLIC_RELEASE_REPO: ${{ vars.PUBLIC_RELEASE_REPO || 'Choeng-Rayu/rayucode-v2-releases' }}", workflow)
 
     def test_compatibility_ci_and_local_selection(self):
         source = (ROOT / "scripts/build_linux_compat.sh").read_text()
