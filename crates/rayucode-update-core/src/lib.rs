@@ -480,7 +480,7 @@ mod tests {
     #[test]
     fn summarize_update_error_is_always_one_short_line() {
         let inputs = [
-            "Update failed: Update check failed: error sending request for url (https://api.github.com/repos/Choeng-Rayu/rayucode/releases/latest)\n\nCaused by:\n    dns error: failed to lookup address information",
+            "Update failed: Update check failed: error sending request for url (https://api.github.com/repos/Choeng-Rayu/rayucode-v2-releases/releases/latest)\n\nCaused by:\n    dns error: failed to lookup address information",
             "cargo build failed: error[E0308]: mismatched types\n  --> src/lib.rs:1:1",
             "Checksum mismatch for rayu-linux-x86_64.tar.gz: expected aaa, got bbb",
             "Failed to install /home/u/.rayu/builds/versions/0.1.0/rayu: Permission denied (os error 13)",

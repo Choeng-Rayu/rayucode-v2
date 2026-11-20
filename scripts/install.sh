@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
+# RayuCode CLI (v3 Rust) — universal installer for Linux, macOS, and Git Bash.
+# rayu-installer-api: 2
+#
+#   curl -fsSL https://rayucode.com/install | bash
+#   curl -fsSL https://rayucode.com/install.sh | bash
+#
+# Need the legacy Node/Bun v2 CLI instead?
+#   curl -fsSL https://rayucode.com/install-rayu-legacy.sh | bash
 set -euo pipefail
 
-REPO="Choeng-Rayu/rayucode"
-RELEASE_METADATA_BASE="${RAYU_RELEASE_METADATA_BASE:-https://rayucode.com/releases}"
+REPO="${RAYU_RELEASE_REPO:-Choeng-Rayu/rayucode-v2-releases}"
+RELEASE_METADATA_BASE="${RAYU_RELEASE_METADATA_BASE:-https://raw.githubusercontent.com/$REPO/main/releases}"
+LEGACY_INSTALLER_URL="${RAYU_LEGACY_INSTALLER_URL:-https://rayucode.com/install-rayu-legacy.sh}"
+NPM_LEGACY_PACKAGE="@rayu-dev/rayu-cli"
+
 IS_WINDOWS=false
 IS_TERMUX=false
 INSTALL_STAGE="startup"
@@ -12,8 +23,103 @@ INSTALL_ARCH="unknown"
 INSTALL_VERSION="unknown"
 tmpdir=""
 
-info() { printf '\033[1;34m%s\033[0m\n' "$*"; }
+WANT_VERSION="${RAYU_VERSION:-}"
+MODIFY_PATH=1
+QUIET=0
+DO_UNINSTALL=0
+LEGACY_ACTION="ask"
+if [ "${RAYU_REMOVE_LEGACY:-0}" = "1" ]; then
+  LEGACY_ACTION="remove"
+elif [ "${RAYU_KEEP_LEGACY:-0}" = "1" ]; then
+  LEGACY_ACTION="keep"
+fi
+
+info() { [ "$QUIET" -eq 1 ] || printf '\033[1;34m%s\033[0m\n' "$*"; }
+ok()   { [ "$QUIET" -eq 1 ] || printf '\033[1;32m%s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mwarning: %s\033[0m\n' "$*" >&2; }
 err()  { printf '\033[1;31merror: %s\033[0m\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<USAGE
+RayuCode CLI installer (v3 Rust — Linux / macOS / Git Bash)
+
+  curl -fsSL https://rayucode.com/install | bash
+
+Options:
+  --version <v>      install an exact v3.x release tag (e.g. v3.0.0)
+  --dir <path>       launcher directory (default: ~/.local/bin)
+  --no-modify-path   do not modify shell startup profiles
+  --remove-legacy    automatically uninstall legacy Node rayu (rayu-legacy) after upgrade
+  --keep-legacy      keep legacy Node rayu as rayu-legacy without prompting
+  --uninstall        uninstall RayuCode binaries (keeps user settings in ~/.rayu)
+  --quiet, -q        reduce output (implies non-interactive)
+  --help, -h         show this help message
+
+Legacy Node v2 CLI:
+  curl -fsSL $LEGACY_INSTALLER_URL | bash
+
+Environment:
+  RAYU_INSTALL_DIR, RAYU_HOME, RAYU_VERSION, RAYU_RELEASE_REPO,
+  RAYU_RELEASE_METADATA_BASE, RAYU_REMOVE_LEGACY, RAYU_KEEP_LEGACY
+USAGE
+  exit 0
+}
+
+EXPLICIT_VERSION_ARG=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --version)
+      [ "$#" -ge 2 ] || err "--version requires a value"
+      WANT_VERSION="$2"
+      EXPLICIT_VERSION_ARG=1
+      shift 2
+      ;;
+    --version=*)
+      WANT_VERSION="${1#--version=}"
+      EXPLICIT_VERSION_ARG=1
+      shift
+      ;;
+    --dir)
+      [ "$#" -ge 2 ] || err "--dir requires a path"
+      RAYU_INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --dir=*)
+      RAYU_INSTALL_DIR="${1#--dir=}"
+      shift
+      ;;
+    --no-modify-path)
+      MODIFY_PATH=0
+      shift
+      ;;
+    --remove-legacy)
+      LEGACY_ACTION="remove"
+      shift
+      ;;
+    --keep-legacy)
+      LEGACY_ACTION="keep"
+      shift
+      ;;
+    --uninstall|--remove)
+      DO_UNINSTALL=1
+      shift
+      ;;
+    --quiet|-q)
+      QUIET=1
+      shift
+      ;;
+    --npm-tarball|--no-native)
+      # Accepted for compatibility with legacy installer invocations.
+      shift
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      err "Unknown option: $1 (try --help)"
+      ;;
+  esac
+done
 
 valid_release_tag() {
   printf '%s' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([+.-][[:alnum:].-]+)?$'
@@ -81,14 +187,44 @@ install_exit() {
   trap - EXIT
   set +e
   [ -z "$tmpdir" ] || rm -rf "$tmpdir"
-  if [ "$INSTALL_SUCCEEDED" = "1" ] && [ "$status" = "0" ]; then
-    report_install_funnel "installer_finish" "success" ""
-  else
-    report_install_funnel "installer_finish" "failure" "$INSTALL_STAGE"
+  if [ "$DO_UNINSTALL" = "0" ]; then
+    if [ "$INSTALL_SUCCEEDED" = "1" ] && [ "$status" = "0" ]; then
+      report_install_funnel "installer_finish" "success" ""
+    else
+      report_install_funnel "installer_finish" "failure" "$INSTALL_STAGE"
+    fi
   fi
   exit "$status"
 }
 trap install_exit EXIT
+
+# ---------------------------------------------------------------------------
+# Uninstall mode (--uninstall)
+# ---------------------------------------------------------------------------
+
+if [ "$DO_UNINSTALL" -eq 1 ]; then
+  OS_UN="$(uname -s)"
+  case "$OS_UN" in
+    MINGW*|MSYS*|CYGWIN*)
+      UN_RAYU_HOME="${RAYU_HOME:-${LOCALAPPDATA:?LOCALAPPDATA not set}/rayu}"
+      UN_DIR="${RAYU_INSTALL_DIR:-$LOCALAPPDATA/rayu/bin}"
+      rm -f "$UN_DIR/rayu.exe" "$UN_DIR/rayucode.exe"
+      rm -rf "$UN_RAYU_HOME/builds"
+      ;;
+    *)
+      UN_RAYU_HOME="${RAYU_HOME:-$HOME/.rayu}"
+      UN_DIR="${RAYU_INSTALL_DIR:-$HOME/.local/bin}"
+      rm -f "$UN_DIR/rayu" "$UN_DIR/rayucode"
+      rm -rf "$UN_RAYU_HOME/builds"
+      ;;
+  esac
+  ok "RayuCode binaries uninstalled. Your settings and sessions in $UN_RAYU_HOME were kept."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
 
 INSTALL_STAGE="platform_detection"
 OS="$(uname -s)"
@@ -103,16 +239,16 @@ fi
 case "$OS" in
   Linux)
     case "$ARCH" in
-      x86_64)  ARTIFACT="rayu-linux-x86_64" ;;
+      x86_64)        ARTIFACT="rayu-linux-x86_64" ;;
       aarch64|arm64) ARTIFACT="rayu-linux-aarch64" ;;
-      *)       err "Unsupported Linux architecture: $ARCH" ;;
+      *)             err "Unsupported Linux architecture: $ARCH" ;;
     esac
     ;;
   Darwin)
     case "$ARCH" in
-      arm64)   ARTIFACT="rayu-macos-aarch64" ;;
-      x86_64)  ARTIFACT="rayu-macos-x86_64" ;;
-      *)       err "Unsupported macOS architecture: $ARCH" ;;
+      arm64)  ARTIFACT="rayu-macos-aarch64" ;;
+      x86_64) ARTIFACT="rayu-macos-x86_64" ;;
+      *)      err "Unsupported macOS architecture: $ARCH" ;;
     esac
     ;;
   MINGW*|MSYS*|CYGWIN*)
@@ -133,30 +269,55 @@ case "$OS" in
       done
     fi
     case "$WINDOWS_ARCH" in
-      x86_64) ARTIFACT="rayu-windows-x86_64" ;;
+      x86_64)  ARTIFACT="rayu-windows-x86_64" ;;
       aarch64) ARTIFACT="rayu-windows-aarch64" ;;
-      *) err "Unsupported Windows architecture: $ARCH" ;;
+      *)       err "Unsupported Windows architecture: $ARCH" ;;
     esac
     ;;
   *)
-    err "Unsupported OS: $OS (try building from source: https://github.com/$REPO)"
+    err "Unsupported OS: $OS (check releases at https://github.com/$REPO/releases)"
     ;;
 esac
 
 report_install_funnel "installer_start" "success" ""
 
+RAYU_HOME_DIR="${RAYU_HOME:-$HOME/.rayu}"
 if [ "$IS_WINDOWS" = true ]; then
   INSTALL_DIR="${RAYU_INSTALL_DIR:-$LOCALAPPDATA/rayu/bin}"
+  EXE=".exe"
+  builds_dir="${LOCALAPPDATA}/rayu/builds"
 else
   INSTALL_DIR="${RAYU_INSTALL_DIR:-$HOME/.local/bin}"
+  EXE=""
+  builds_dir="$RAYU_HOME_DIR/builds"
 fi
 
-# Prefer GitHub's stable redirect when it is reachable so publication changes
-# are visible immediately. rayucode.com keeps a static copy of the latest published
-# tag as an independent fallback for GitHub outages, blocks, and shared-network
-# throttling. Neither path uses the rate-limited unauthenticated GitHub API.
+# ---------------------------------------------------------------------------
+# Release resolution
+# ---------------------------------------------------------------------------
+
 INSTALL_STAGE="release_lookup"
-VERSION="${RAYU_VERSION:-}"
+VERSION="$WANT_VERSION"
+if [ -n "$VERSION" ]; then
+  case "$VERSION" in
+    v*) ;;
+    *)  VERSION="v$VERSION" ;;
+  esac
+  # Legacy v2 auto-updaters invoke this installer with `--version 2.x.y`.
+  # Upgrade seamlessly to the latest v3.x release unless explicitly opted out.
+  if [ "$EXPLICIT_VERSION_ARG" -eq 1 ] && [ "${RAYU_ALLOW_LEGACY_TAG:-0}" != "1" ]; then
+    req_major="${VERSION#v}"
+    req_major="${req_major%%.*}"
+    case "$req_major" in
+      0|1|2)
+        info "Requested legacy version $VERSION — upgrading to the latest RayuCode v3 (Rust) release."
+        info "  (To install the legacy Node v2 CLI instead: curl -fsSL $LEGACY_INSTALLER_URL | bash)"
+        VERSION=""
+        ;;
+    esac
+  fi
+fi
+
 if [ -z "$VERSION" ]; then
   METADATA_VERSION=$(curl -fsSL --retry 2 --connect-timeout 10 \
     "$RELEASE_METADATA_BASE/latest/version" 2>/dev/null | tr -d '\r\n' || true)
@@ -170,7 +331,7 @@ if [ -z "$VERSION" ]; then
     VERSION="$GITHUB_VERSION"
   elif valid_release_tag "$METADATA_VERSION"; then
     VERSION="$METADATA_VERSION"
-    info "GitHub release lookup unavailable; using cached rayucode.com metadata ($VERSION)."
+    info "GitHub release lookup unavailable; using fallback release metadata ($VERSION)."
   fi
 fi
 valid_release_tag "$VERSION" || err "Failed to determine latest version"
@@ -178,13 +339,6 @@ INSTALL_VERSION="${VERSION#v}"
 
 GITHUB_RELEASE_BASE="https://github.com/$REPO/releases/download/$VERSION"
 
-if [ "$IS_WINDOWS" = true ]; then
-  EXE=".exe"
-  builds_dir="$LOCALAPPDATA/rayu/builds"
-else
-  EXE=""
-  builds_dir="$HOME/.rayu/builds"
-fi
 stable_dir="$builds_dir/stable"
 current_dir="$builds_dir/current"
 version_dir="$builds_dir/versions"
@@ -209,6 +363,10 @@ info "  launcher: $launcher_path"
 
 tmpdir=$(mktemp -d)
 
+# ---------------------------------------------------------------------------
+# Artifact download & SHA-256 verification (before touching any legacy files!)
+# ---------------------------------------------------------------------------
+
 INSTALL_STAGE="artifact_download"
 download_mode=""
 downloaded_asset=""
@@ -225,7 +383,7 @@ for candidate in "$ARTIFACT.tar.gz" "$ARTIFACT$EXE"; do
       downloaded_asset="$candidate"
       case "$candidate" in
         *.tar.gz) download_mode="tar" ;;
-        *) download_mode="bin" ;;
+        *)        download_mode="bin" ;;
       esac
       break 2
     fi
@@ -258,6 +416,10 @@ if [ -n "$download_mode" ]; then
   info "Verified SHA-256: $downloaded_asset"
 fi
 
+# ---------------------------------------------------------------------------
+# Binary installation
+# ---------------------------------------------------------------------------
+
 INSTALL_STAGE="binary_install"
 mkdir -p "$INSTALL_DIR" "$stable_dir" "$current_dir" "$version_dir"
 
@@ -266,7 +428,7 @@ dest_version_dir="$version_dir/$version"
 mkdir -p "$dest_version_dir"
 
 bin_name="rayu${EXE}"
-notices_source=
+notices_source=""
 
 if [ "$download_mode" = "tar" ]; then
   tar xzf "$tmpdir/rayu.download" -C "$tmpdir"
@@ -279,6 +441,9 @@ if [ "$download_mode" = "tar" ]; then
 elif [ "$download_mode" = "bin" ]; then
   mv "$tmpdir/rayu.download" "$dest_version_dir/$bin_name"
 else
+  if [ "${RAYU_ALLOW_SOURCE_BUILD:-0}" != "1" ]; then
+    err "No prebuilt binary found for $ARTIFACT in $VERSION. Check available downloads at https://github.com/$REPO/releases"
+  fi
   info "No prebuilt asset found for $ARTIFACT in $VERSION; building from source..."
   command -v git >/dev/null 2>&1 || err "git is required to build from source"
   command -v cargo >/dev/null 2>&1 || err "cargo is required to build from source"
@@ -308,7 +473,7 @@ if [ "$IS_TERMUX" = true ] && [ "$IS_WINDOWS" = false ]; then
   termux_glibc_linker=""
   case "$ARCH" in
     aarch64|arm64) termux_glibc_linker="$termux_glibc_dir/ld-linux-aarch64.so.1" ;;
-    x86_64) termux_glibc_linker="$termux_glibc_dir/ld-linux-x86-64.so.2" ;;
+    x86_64)        termux_glibc_linker="$termux_glibc_dir/ld-linux-x86-64.so.2" ;;
   esac
   if [ "$OS" = "Linux" ] && [ -n "$termux_glibc_linker" ]; then
     if [ -x "$termux_glibc_linker" ]; then
@@ -355,10 +520,6 @@ fi
 
 if [ "$(uname -s)" = "Darwin" ]; then
   xattr -d com.apple.quarantine "$dest_version_dir/$bin_name" 2>/dev/null || true
-  # Generate the architecture-matched, faceless notification broker from the
-  # verified binary and remove legacy CLI launcher bundles from ~/Applications.
-  # RayuCode Desktop is the only Spotlight/Launchpad entry. Best-effort here: the
-  # first interactive rayu launch performs the same version-gated repair.
   if "$launcher_path" setup-launcher </dev/null >/dev/null 2>&1; then
     info "Installed macOS turn-notification helper."
   fi
@@ -373,13 +534,7 @@ Darwin|Linux)
   ;;
 esac
 
-# Retire any background server still running the old binary so the freshly
-# installed version is picked up without the user having to kill a daemon by
-# hand (issue #291). We use the graceful `server reload` path, which hands live
-# headless/swarm sessions to a newly-exec'd server instead of dropping them, and
-# only reloads when the running server is genuinely older than what we just
-# installed (so a newer/dev daemon is never downgraded). This is best-effort:
-# it must never fail the install, and it is skipped when no server is running.
+# Gracefully retire any background server running the old Rust binary.
 INSTALL_STAGE="server_reload"
 if [ "${RAYU_SKIP_SERVER_RELOAD:-}" != "1" ]; then
   reload_bin="$launcher_path"
@@ -391,19 +546,223 @@ if [ "${RAYU_SKIP_SERVER_RELOAD:-}" != "1" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Legacy Node v2 CLI migration (runs ONLY after Rust v3 binary is installed!)
+# ---------------------------------------------------------------------------
+
+INSTALL_STAGE="legacy_migration"
+
+LEGACY_FOUND=0
+LEGACY_SCRIPT_FOUND=0
+LEGACY_RENAMED_NOW=0
+LEGACY_NPM_FOUND=0
+LEGACY_VERSION=""
+LEGACY_BIN_DIR="$RAYU_HOME_DIR/bin"
+LEGACY_BIN_PATH=""
+LEGACY_NPM_BIN_RENAMED=""
+LEGACY_SHADOW_WARNING=""
+
+read_legacy_install_json_field() {
+  _json="$1"
+  _key="$2"
+  [ -f "$_json" ] || return 0
+  sed -n "s/.*\"${_key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$_json" 2>/dev/null | head -n1 || true
+}
+
+write_guarded_legacy_launcher() {
+  _target="$1"
+  _node_bin="$2"
+  _entry="$3"
+  cat > "${_target}.tmp" <<LEGACY_LAUNCHER
+#!/bin/sh
+# Legacy Rayu CLI (Node v2) launcher — preserved as rayu-legacy during RayuCode v3 upgrade.
+RAYU_HOME="\${RAYU_HOME:-$RAYU_HOME_DIR}"
+ENTRY="$_entry"
+NODE="$_node_bin"
+
+if [ ! -x "\$NODE" ]; then
+  NODE="\$(command -v node 2>/dev/null || true)"
+fi
+if [ -z "\$NODE" ] || [ ! -x "\$NODE" ]; then
+  echo "rayu-legacy: Node runtime not found." >&2
+  exit 127
+fi
+if [ ! -f "\$ENTRY" ]; then
+  echo "rayu-legacy: legacy bundle missing (\$ENTRY)." >&2
+  exit 127
+fi
+
+# Legacy launcher preserved as rayu-legacy; prevent self-update from overwriting rayu (rayucode-v2).
+if [ "\${1:-}" = "update" ] || [ "\${1:-}" = "upgrade" ]; then
+  echo "rayu-legacy: self-update is disabled because 'rayu' is now managed by RayuCode v3." >&2
+  echo "rayu-legacy: run 'rayu update' to update RayuCode instead." >&2
+  exit 1
+fi
+
+exec "\$NODE" "\$ENTRY" "\$@"
+LEGACY_LAUNCHER
+  chmod 755 "${_target}.tmp"
+  mv -f "${_target}.tmp" "$_target"
+}
+
+remove_legacy_profile_block() {
+  _file="$1"
+  [ -f "$_file" ] || return 0
+  grep -qF '# >>> rayu cli >>>' "$_file" 2>/dev/null || return 0
+  _tmp="${_file}.rayu-legacy.$$"
+  awk '
+    index($0, "# >>> rayu cli >>>") { skip = 1; next }
+    index($0, "# <<< rayu cli <<<") { skip = 0; next }
+    !skip { print }
+  ' "$_file" > "$_tmp" && cat "$_tmp" > "$_file" && rm -f "$_tmp"
+}
+
+migrate_legacy_node_cli() {
+  _install_json="$RAYU_HOME_DIR/install.json"
+  _json_bin_dir="$(read_legacy_install_json_field "$_install_json" "binDir")"
+  _json_version="$(read_legacy_install_json_field "$_install_json" "version")"
+  _json_node="$(read_legacy_install_json_field "$_install_json" "node")"
+  if [ -n "$_json_bin_dir" ]; then
+    LEGACY_BIN_DIR="$_json_bin_dir"
+  fi
+  if [ -n "$_json_version" ]; then
+    LEGACY_VERSION="$_json_version"
+  fi
+
+  _legacy_entry="$RAYU_HOME_DIR/lib/current/rayu.js"
+  _old_rayu="$LEGACY_BIN_DIR/rayu${EXE}"
+  _legacy_rayu="$LEGACY_BIN_DIR/rayu-legacy${EXE}"
+  _old_installer="$LEGACY_BIN_DIR/.rayu-installer"
+
+  # 1. Detect legacy script-managed install (~/.rayu/bin/rayu or ~/.rayu/lib).
+  if [ "$LEGACY_BIN_DIR" != "$INSTALL_DIR" ]; then
+    if [ -e "$_old_rayu" ] || [ -L "$_old_rayu" ]; then
+      # Confirm it is a legacy Node launcher, migrator binary, or paired with legacy metadata/lib.
+      _is_legacy_old=0
+      if [ -f "$_install_json" ] || [ -f "$_legacy_entry" ] || [ -d "$RAYU_HOME_DIR/lib" ]; then
+        _is_legacy_old=1
+      elif grep -qF "rayu.js" "$_old_rayu" 2>/dev/null || grep -qF "Rayu CLI launcher" "$_old_rayu" 2>/dev/null; then
+        _is_legacy_old=1
+      fi
+
+      if [ "$_is_legacy_old" -eq 1 ]; then
+        LEGACY_FOUND=1
+        LEGACY_SCRIPT_FOUND=1
+        if [ -z "$LEGACY_VERSION" ] && [ -x "$_old_rayu" ]; then
+          LEGACY_VERSION=$("$_old_rayu" --version 2>/dev/null | head -n1 || true)
+        fi
+        mkdir -p "$LEGACY_BIN_DIR"
+        if [ "$IS_WINDOWS" = false ] && [ -f "$_legacy_entry" ]; then
+          # Preserve working legacy Node CLI as rayu-legacy with update guard,
+          # and remove the old rayu path so ~/.local/bin/rayu wins on PATH.
+          _node_candidate="${_json_node:-$RAYU_HOME_DIR/runtime/node/bin/node}"
+          [ "$_node_candidate" != "embedded" ] || _node_candidate=""
+          write_guarded_legacy_launcher "$_legacy_rayu" "$_node_candidate" "$_legacy_entry"
+          rm -f "$_old_rayu"
+        else
+          mv -f "$_old_rayu" "$_legacy_rayu"
+        fi
+        rm -f "$_old_installer"
+        LEGACY_RENAMED_NOW=1
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      fi
+    elif [ -e "$_legacy_rayu" ] || [ -L "$_legacy_rayu" ] || [ -f "$_legacy_entry" ] || [ -f "$_install_json" ]; then
+      # Legacy install already renamed earlier (e.g. ~/.rayu/bin/rayu-legacy) or remnants remain.
+      LEGACY_FOUND=1
+      LEGACY_SCRIPT_FOUND=1
+      rm -f "$_old_installer"
+      if [ -e "$_legacy_rayu" ] || [ -L "$_legacy_rayu" ]; then
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      elif [ "$IS_WINDOWS" = false ] && [ -f "$_legacy_entry" ]; then
+        mkdir -p "$LEGACY_BIN_DIR"
+        _node_candidate="${_json_node:-$RAYU_HOME_DIR/runtime/node/bin/node}"
+        [ "$_node_candidate" != "embedded" ] || _node_candidate=""
+        write_guarded_legacy_launcher "$_legacy_rayu" "$_node_candidate" "$_legacy_entry"
+        LEGACY_RENAMED_NOW=1
+        LEGACY_BIN_PATH="$_legacy_rayu"
+      fi
+    fi
+  fi
+
+  # 2. Detect global npm @rayu-dev/rayu-cli installation (if npm is installed).
+  if [ "${RAYU_SKIP_NPM_CHECK:-0}" != "1" ] && command -v npm >/dev/null 2>&1; then
+    _npm_ver=$(npm ls -g --depth=0 "$NPM_LEGACY_PACKAGE" 2>/dev/null \
+      | sed -n "s/.*@rayu-dev\/rayu-cli@\([^[:space:]]*\).*/\1/p" | head -n1 || true)
+    if [ -n "$_npm_ver" ]; then
+      LEGACY_FOUND=1
+      LEGACY_NPM_FOUND=1
+      [ -n "$LEGACY_VERSION" ] || LEGACY_VERSION="npm $_npm_ver"
+
+      # Check if npm's global `rayu` binary shadows our new launcher.
+      _npm_prefix=$(npm config get prefix 2>/dev/null || true)
+      _npm_bin=""
+      if [ -n "$_npm_prefix" ] && [ -e "$_npm_prefix/bin/rayu" ]; then
+        _npm_bin="$_npm_prefix/bin/rayu"
+      fi
+      if [ -n "$_npm_bin" ] && [ "$_npm_bin" != "$launcher_path" ] && [ "$_npm_bin" != "$_old_rayu" ]; then
+        _npm_bin_dir=$(dirname "$_npm_bin")
+        # If this is not already the 2.6.0 bridge (which ships rayu-legacy),
+        # rename npm's rayu symlink -> rayu-legacy when writable so Rust rayu wins.
+        if [ -w "$_npm_bin_dir" ] && [ ! -e "$_npm_bin_dir/rayu-legacy" ] && [ "${RAYU_FROM_NPM_POSTINSTALL:-0}" != "1" ] && [ -z "${npm_lifecycle_event:-}" ]; then
+          if mv "$_npm_bin" "$_npm_bin_dir/rayu-legacy" 2>/dev/null; then
+            LEGACY_RENAMED_NOW=1
+            LEGACY_NPM_BIN_RENAMED="$_npm_bin_dir/rayu-legacy"
+            [ -n "$LEGACY_BIN_PATH" ] || LEGACY_BIN_PATH="$LEGACY_NPM_BIN_RENAMED"
+          fi
+        elif [ -e "$_npm_bin_dir/rayu-legacy" ]; then
+          [ -n "$LEGACY_BIN_PATH" ] || LEGACY_BIN_PATH="$_npm_bin_dir/rayu-legacy"
+        else
+          LEGACY_SHADOW_WARNING="$_npm_bin"
+        fi
+      fi
+    fi
+  fi
+}
+
+uninstall_legacy_node_cli() {
+  if [ "$LEGACY_SCRIPT_FOUND" -eq 1 ]; then
+    rm -f "$LEGACY_BIN_DIR/rayu-legacy${EXE}" "$LEGACY_BIN_DIR/.rayu-installer"
+    rm -rf "$RAYU_HOME_DIR/lib" "$RAYU_HOME_DIR/runtime" "$RAYU_HOME_DIR/install.json"
+    rmdir "$LEGACY_BIN_DIR" 2>/dev/null || true
+    for _rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.zshenv" \
+               "$HOME/.profile" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"; do
+      remove_legacy_profile_block "$_rc"
+    done
+  fi
+
+  if [ -n "$LEGACY_NPM_BIN_RENAMED" ] && [ -e "$LEGACY_NPM_BIN_RENAMED" ]; then
+    rm -f "$LEGACY_NPM_BIN_RENAMED"
+  fi
+
+  if [ "$LEGACY_NPM_FOUND" -eq 1 ]; then
+    if [ "${RAYU_FROM_NPM_POSTINSTALL:-0}" = "1" ] || [ -n "${npm_lifecycle_event:-}" ]; then
+      warn "Running inside npm lifecycle; finish removing the legacy npm package with:"
+      info "    npm uninstall -g $NPM_LEGACY_PACKAGE"
+    elif command -v npm >/dev/null 2>&1; then
+      if npm uninstall -g "$NPM_LEGACY_PACKAGE" >/dev/null 2>&1; then
+        ok "Uninstalled global npm package $NPM_LEGACY_PACKAGE."
+      else
+        warn "Could not run 'npm uninstall -g $NPM_LEGACY_PACKAGE' automatically. Run it manually to finish cleanup."
+      fi
+    fi
+  fi
+
+  ok "✅ Removed rayu-legacy. Your settings, API keys, and sessions in $RAYU_HOME_DIR were kept."
+}
+
+migrate_legacy_node_cli
+
+# ---------------------------------------------------------------------------
+# PATH configuration & summary output
+# ---------------------------------------------------------------------------
+
 if [ "$IS_WINDOWS" = true ]; then
   INSTALL_STAGE="path_configuration"
   win_install_dir=$(cygpath -w "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")
 
-  # Persist the launcher dir on the USER PATH so every future shell (PowerShell,
-  # cmd, Git Bash, Windows Terminal) finds rayu without manual setup. This is
-  # the Git Bash (`curl | sh`) counterpart of install.ps1's Set-RayuUserPath:
-  # read the user PATH, drop stale rayu launcher entries (case- and trailing-
-  # slash-insensitive), prepend the canonical dir, and broadcast
-  # WM_SETTINGCHANGE so already-open apps can pick up the change.
   win_path_persisted=false
   _win_path_key() { printf '%s' "$1" | sed 's|[\\/]*$||' | tr '[:upper:]' '[:lower:]'; }
-  if command -v powershell.exe >/dev/null 2>&1; then
+  if [ "$MODIFY_PATH" -eq 1 ] && command -v powershell.exe >/dev/null 2>&1; then
     current_user_path=$(powershell.exe -NoProfile -NonInteractive -Command \
       "[Environment]::GetEnvironmentVariable('Path','User')" 2>/dev/null | tr -d '\r' || true)
     target_key=$(_win_path_key "$win_install_dir")
@@ -422,10 +781,6 @@ if [ "$IS_WINDOWS" = true ]; then
     elif RAYU_NEW_USER_PATH="$new_user_path" powershell.exe -NoProfile -NonInteractive -Command \
       '[Environment]::SetEnvironmentVariable("Path", $env:RAYU_NEW_USER_PATH, "User")' >/dev/null 2>&1; then
       win_path_persisted=true
-      # Broadcast WM_SETTINGCHANGE (0x001A) with the "Environment" lParam to
-      # HWND_BROADCAST so running shells learn about the new PATH. Best-effort.
-      # The script lives in a quoted heredoc so no bash expansion touches it;
-      # setup_friction_eval.sh parse-checks this exact block with real pwsh.
       win_broadcast_ps=$(cat <<'RAYU_PS_BROADCAST_EOF'
 $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
 $type = Add-Type -MemberDefinition $sig -Name 'RayuEnvBroadcast' -Namespace Win32 -PassThru
@@ -437,23 +792,25 @@ RAYU_PS_BROADCAST_EOF
     fi
   fi
 
-  echo ""
-  info "✅ rayu $VERSION installed successfully!"
-  echo ""
+  [ "$QUIET" -eq 1 ] || echo ""
+  ok "✅ rayu $VERSION installed successfully!"
+  [ "$QUIET" -eq 1 ] || echo ""
   if [ "$win_path_persisted" = true ]; then
     info "Added $win_install_dir to your user PATH. New terminals will find rayu automatically."
   fi
   if command -v rayu >/dev/null 2>&1; then
     info "Run 'rayu' to get started."
   else
-    echo "  To start using rayu in THIS terminal right now, run:"
-    echo ""
-    printf '    \033[1;32mexport PATH="%s:$PATH" && rayu\033[0m\n' "$INSTALL_DIR"
-    if [ "$win_path_persisted" != true ]; then
+    if [ "$QUIET" -eq 0 ]; then
+      echo "  To start using rayu in THIS terminal right now, run:"
       echo ""
-      echo "  To add rayu to PATH permanently (PowerShell):"
-      echo ""
-      printf '    \033[1;32m[Environment]::SetEnvironmentVariable("Path", "%s;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")\033[0m\n' "$win_install_dir"
+      printf '    \033[1;32mexport PATH="%s:$PATH" && rayu\033[0m\n' "$INSTALL_DIR"
+      if [ "$win_path_persisted" != true ]; then
+        echo ""
+        echo "  To add rayu to PATH permanently (PowerShell):"
+        echo ""
+        printf '    \033[1;32m[Environment]::SetEnvironmentVariable("Path", "%s;" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")\033[0m\n' "$win_install_dir"
+      fi
     fi
   fi
 else
@@ -463,12 +820,6 @@ else
 
   _have() { command -v "$1" >/dev/null 2>&1; }
 
-  # Append the POSIX (bash/zsh/sh) PATH line to an rc file, idempotently.
-  #   ensure_posix_rc <rc-file> <create:yes|no>
-  # With create=yes the file (and parent dir) is created if missing; with
-  # create=no we only touch files that already exist, so we never change how a
-  # login shell resolves its startup files (e.g. creating ~/.bash_profile would
-  # stop bash from reading ~/.profile).
   ensure_posix_rc() {
     rc="$1"; create="$2"
     if [ ! -f "$rc" ]; then
@@ -481,7 +832,6 @@ else
     fi
   }
 
-  # fish uses its own syntax and does not read POSIX rc files.
   ensure_fish_rc() {
     create="$1"
     rc="${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
@@ -500,38 +850,28 @@ else
     fi
   }
 
-  # zsh: ~/.zshenv is read for every zsh invocation (login, interactive and
-  # scripts), so it is the most reliable single place to export PATH.
-  if _have zsh || [ "$(uname -s)" = "Darwin" ] || [ -f "$HOME/.zshenv" ] || [ -f "$HOME/.zshrc" ]; then
-    ensure_posix_rc "$HOME/.zshenv" yes
+  if [ "$MODIFY_PATH" -eq 1 ]; then
+    if _have zsh || [ "$(uname -s)" = "Darwin" ] || [ -f "$HOME/.zshenv" ] || [ -f "$HOME/.zshrc" ]; then
+      ensure_posix_rc "$HOME/.zshenv" yes
+    fi
+    if _have bash || [ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]; then
+      ensure_posix_rc "$HOME/.bashrc" yes
+    fi
+    ensure_posix_rc "$HOME/.profile" yes
+    if _have fish || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ]; then
+      ensure_fish_rc yes
+    fi
+    for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
+      ensure_posix_rc "$rc" no
+    done
+    if [ -n "$added_to" ]; then
+      info "Added $INSTALL_DIR to PATH in:$added_to"
+    fi
   fi
 
-  # bash: ~/.bashrc for interactive shells, ~/.profile for login shells (macOS
-  # Terminal, ssh, etc.). We only create ~/.profile, never ~/.bash_profile, so
-  # we don't override an existing login-file lookup order.
-  if _have bash || [ -f "$HOME/.bashrc" ] || [ -f "$HOME/.bash_profile" ]; then
-    ensure_posix_rc "$HOME/.bashrc" yes
-  fi
-  ensure_posix_rc "$HOME/.profile" yes
-
-  # fish: only set it up when fish is installed or already configured.
-  if _have fish || [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" ]; then
-    ensure_fish_rc yes
-  fi
-
-  # Also patch other common startup files when they already exist, so we cover
-  # users with custom login-shell setups without creating new files.
-  for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
-    ensure_posix_rc "$rc" no
-  done
-
-  if [ -n "$added_to" ]; then
-    info "Added $INSTALL_DIR to PATH in:$added_to"
-  fi
-
-  echo ""
-  info "✅ rayu $VERSION installed successfully!"
-  echo ""
+  [ "$QUIET" -eq 1 ] || echo ""
+  ok "✅ rayu $VERSION installed successfully!"
+  [ "$QUIET" -eq 1 ] || echo ""
 
   if [ "$(uname -s)" = "Darwin" ]; then
     if [ "$hotkey_setup_ready" = true ]; then
@@ -543,12 +883,79 @@ else
 
   if command -v rayu >/dev/null 2>&1; then
     info "Run 'rayu' to get started."
-  else
+  elif [ "$QUIET" -eq 0 ]; then
     echo "  To start using rayu right now, run:"
     echo ""
     printf '    \033[1;32mexport PATH="%s:\$PATH" && rayu\033[0m\n' "$INSTALL_DIR"
     echo ""
     echo "  Future terminal sessions will have rayu on PATH automatically."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Post-install legacy migration status & interactive removal prompt
+# ---------------------------------------------------------------------------
+
+if [ "$LEGACY_FOUND" -eq 1 ]; then
+  _legacy_label="legacy Node Rayu"
+  [ -z "$LEGACY_VERSION" ] || _legacy_label="legacy Node Rayu ($LEGACY_VERSION)"
+  if [ "$QUIET" -eq 0 ]; then
+    echo ""
+    info "Migration status:"
+    if [ "$LEGACY_RENAMED_NOW" -eq 1 ]; then
+      info "  • Your old $_legacy_label was renamed to: rayu-legacy"
+    else
+      info "  • Existing $_legacy_label detected as: rayu-legacy"
+    fi
+    [ -z "$LEGACY_BIN_PATH" ] || info "    Location: $LEGACY_BIN_PATH"
+    info "  • New RayuCode $VERSION (Rust) is installed at: $launcher_path"
+    info "  • Your settings, API keys, and sessions in $RAYU_HOME_DIR were preserved."
+    if [ -n "$LEGACY_SHADOW_WARNING" ]; then
+      warn "Another legacy 'rayu' binary exists at $LEGACY_SHADOW_WARNING and may shadow $launcher_path."
+      info "  Remove it with: npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
+    echo ""
+  fi
+
+  if [ "$LEGACY_ACTION" = "remove" ]; then
+    uninstall_legacy_node_cli
+  elif [ "$LEGACY_ACTION" = "keep" ] || [ "$QUIET" -eq 1 ] || [ -n "${CI:-}" ]; then
+    if [ "$QUIET" -eq 0 ]; then
+      info "Kept rayu-legacy. You can still run the old CLI with 'rayu-legacy'."
+      info "To uninstall rayu-legacy later, run:"
+      [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+      [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
+  else
+    _prompt_done=0
+    _reply=""
+    if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      printf 'Do you want to uninstall rayu-legacy now? [y/N] ' >/dev/tty
+      IFS= read -r _reply </dev/tty || _reply=""
+      _prompt_done=1
+    elif [ -t 0 ]; then
+      printf 'Do you want to uninstall rayu-legacy now? [y/N] '
+      IFS= read -r _reply || _reply=""
+      _prompt_done=1
+    fi
+
+    if [ "$_prompt_done" -eq 1 ]; then
+      case "$_reply" in
+        y|Y|yes|YES|Yes)
+          uninstall_legacy_node_cli
+          ;;
+        *)
+          info "Kept rayu-legacy. You can still run the old CLI with 'rayu-legacy'."
+          info "To uninstall rayu-legacy later, run:"
+          [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+          [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+          ;;
+      esac
+    else
+      info "Kept rayu-legacy (non-interactive shell). To uninstall it later, run:"
+      [ "$LEGACY_SCRIPT_FOUND" -eq 0 ] || info "  curl -fsSL $LEGACY_INSTALLER_URL | bash -s -- --uninstall"
+      [ "$LEGACY_NPM_FOUND" -eq 0 ] || info "  npm uninstall -g $NPM_LEGACY_PACKAGE"
+    fi
   fi
 fi
 

@@ -5865,7 +5865,7 @@ dependencies = [
 
 [[package]]
 name = "rayucode"
-version = "0.99.1"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "async-stream",

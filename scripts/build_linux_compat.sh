@@ -77,6 +77,9 @@ docker run --rm \
   -e CARGO_PROFILE_RELEASE_OPT_LEVEL \
   -e CARGO_BUILD_JOBS \
   -e RAYU_CI_BUILD \
+  -e RAYU_USE_PLAIN_CARGO \
+  -e ENABLE_OTHER_PROVIDER \
+  -e RAYU_FALLBACK_MODEL \
   -e RAYU_RELEASE_BUILD="${RAYU_RELEASE_BUILD:-1}" \
   -e RAYU_BUILD_SEMVER="${RAYU_BUILD_SEMVER:-}" \
   -e RAYU_BUILD_METADATA_FILE=/rayu-build-meta \
@@ -149,7 +152,7 @@ docker run --rm \
 	    export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
 	    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-static-libgcc}"
 	    build_command=(cargo build)
-	    if [[ "${RAYU_CI_BUILD:-0}" == 1 ]]; then
+	    if [[ "${RAYU_CI_BUILD:-0}" == 1 && "${RAYU_USE_PLAIN_CARGO:-0}" != 1 ]]; then
 	      # Hosted Ubuntu cannot produce our glibc 2.17 baseline yet. Run the
 	      # static justrust client inside the existing manylinux2014 container.
 	      export JUSTRUST_TOOLCHAIN=system JUSTRUST_SLOTS=0 JUSTRUST_NO_TELEMETRY=1

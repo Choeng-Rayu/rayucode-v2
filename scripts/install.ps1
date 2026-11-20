@@ -1,16 +1,20 @@
 <#
+# rayu-installer-api: 2
 .SYNOPSIS
-    Install rayu on Windows.
+    Install RayuCode CLI (v3 Rust) on Windows.
 .DESCRIPTION
-    Downloads the latest rayu release and installs it to %LOCALAPPDATA%\rayu\bin.
+    Downloads the latest RayuCode v3 release and installs it to %LOCALAPPDATA%\rayu\bin.
 
     One-liner install:
       irm https://rayucode.com/install.ps1 | iex
 
     Or download and run (allows parameters):
       & ([scriptblock]::Create((irm https://rayucode.com/install.ps1)))
+
+    Need the legacy Node/Bun v2 CLI instead?
+      irm https://rayucode.com/install-rayu-legacy.ps1 | iex
 .PARAMETER InstallDir
-    Override the installation directory (default: $env:LOCALAPPDATA\rayu\bin)
+    Override the installation directory (default: $env:LOCALAPPDATA\rayu\bin). Alias: -Dir.
 .PARAMETER Version
     Override the version tag to install. Required when using a local artifact path.
 .PARAMETER ArtifactExePath
@@ -20,6 +24,16 @@
 .PARAMETER BuildFromSource
     If no prebuilt release asset is available, explicitly allow a source build.
     Source builds require Git, Rust, and the Visual Studio C++ Build Tools.
+.PARAMETER NoModifyPath
+    Do not update the user PATH environment variable.
+.PARAMETER Quiet
+    Reduce output and skip interactive prompts.
+.PARAMETER RemoveLegacy
+    Automatically uninstall legacy Node Rayu (rayu-legacy) after upgrade.
+.PARAMETER KeepLegacy
+    Keep legacy Node Rayu as rayu-legacy without prompting.
+.PARAMETER Uninstall
+    Uninstall RayuCode binaries (keeps user settings in %USERPROFILE%\.rayu).
 .PARAMETER ConfigureAlacritty
     Install Alacritty through winget when it is not already available.
 .PARAMETER ConfigureHotkey
@@ -30,11 +44,18 @@
     Deprecated compatibility switch. Hotkey setup is opt-in by default.
 #>
 param(
+    [Alias('Dir')]
     [string]$InstallDir,
     [string]$Version,
     [string]$ArtifactExePath,
     [string]$ArtifactTgzPath,
     [switch]$BuildFromSource,
+    [switch]$NoModifyPath,
+    [switch]$Quiet,
+    [switch]$RemoveLegacy,
+    [switch]$KeepLegacy,
+    [switch]$Uninstall,
+    [switch]$NpmTarball,
     [switch]$ConfigureAlacritty,
     [switch]$ConfigureHotkey,
     [switch]$SkipAlacrittySetup,
@@ -48,12 +69,22 @@ if ($PSVersionTable.PSVersion.Major -lt 5) {
     exit 1
 }
 
-$Repo = "Choeng-Rayu/rayucode"
+$Repo = if ($env:RAYU_RELEASE_REPO) {
+    $env:RAYU_RELEASE_REPO
+} else {
+    "Choeng-Rayu/rayucode-v2-releases"
+}
 $ReleaseMetadataBase = if ($env:RAYU_RELEASE_METADATA_BASE) {
     $env:RAYU_RELEASE_METADATA_BASE.TrimEnd('/')
 } else {
-    "https://rayucode.com/releases"
+    "https://raw.githubusercontent.com/$Repo/main/releases"
 }
+$LegacyInstallerUrl = if ($env:RAYU_LEGACY_INSTALLER_URL) {
+    $env:RAYU_LEGACY_INSTALLER_URL
+} else {
+    "https://rayucode.com/install-rayu-legacy.ps1"
+}
+$NpmLegacyPackage = "@rayu-dev/rayu-cli"
 
 if (-not $InstallDir) {
     $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData) }
@@ -72,8 +103,9 @@ $RayuHome = if ($env:RAYU_HOME) {
 $HotkeyDir = Join-Path $RayuHome "hotkey"
 $SetupHintsPath = Join-Path $RayuHome "setup_hints.json"
 
-function Write-Info($msg) { Write-Host $msg -ForegroundColor Blue }
-function Write-Err($msg) { throw "error: $msg" }
+function Write-Info($msg) { if (-not $Quiet) { Write-Host $msg -ForegroundColor Blue } }
+function Write-Ok($msg)   { if (-not $Quiet) { Write-Host $msg -ForegroundColor Green } }
+function Write-Err($msg)  { throw "error: $msg" }
 function Write-Warn($msg) { Write-Host "warning: $msg" -ForegroundColor Yellow }
 
 function ConvertFrom-RayuWebContent($Content) {
@@ -927,7 +959,224 @@ function Get-RayuWindowsArtifact {
     Write-Err "Unsupported architecture: $displayArch (supported: x86_64, ARM64)"
 }
 
+function Invoke-RayuUninstall {
+    $BuildsDir = Join-Path (Get-RayuLocalAppDataDir) "rayu\builds"
+    foreach ($f in @("rayu.exe", "rayucode.exe")) {
+        $p = Join-Path $InstallDir $f
+        if (Test-Path -LiteralPath $p) {
+            Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if (Test-Path -LiteralPath $BuildsDir) {
+        Remove-Item -LiteralPath $BuildsDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $NoModifyPath) {
+        Remove-RayuUserPath -InstallDir $InstallDir | Out-Null
+    }
+    Write-Ok "RayuCode binaries uninstalled. Your settings and sessions in $RayuHome were kept."
+}
+
+function Write-GuardedLegacyCmdLauncher([string]$TargetPath, [string]$NodeExe, [string]$EntryPath) {
+    $cmd = @"
+@echo off
+setlocal
+set "RAYU_NODE=$NodeExe"
+set "RAYU_ENTRY=$EntryPath"
+if not exist "%RAYU_NODE%" for %%I in (node.exe) do @set "RAYU_NODE=%%~`$PATH:I"
+if not exist "%RAYU_NODE%" (
+  echo rayu-legacy: Node was not found. 1>&2
+  exit /b 127
+)
+if not exist "%RAYU_ENTRY%" (
+  echo rayu-legacy: legacy bundle missing (%RAYU_ENTRY%). 1>&2
+  exit /b 127
+)
+if /i "%~1"=="update" goto :blocked
+if /i "%~1"=="upgrade" goto :blocked
+"%RAYU_NODE%" "%RAYU_ENTRY%" %*
+exit /b %ERRORLEVEL%
+:blocked
+echo rayu-legacy: self-update is disabled because 'rayu' is now managed by RayuCode v3. 1>&2
+echo rayu-legacy: run 'rayu update' to update RayuCode instead. 1>&2
+exit /b 1
+"@
+    Set-Content -Path $TargetPath -Value $cmd -Encoding ASCII
+}
+
+function Invoke-RayuLegacyMigration([string]$LauncherPath, [string]$InstalledVersion) {
+    $legacyFound = $false
+    $legacyScriptFound = $false
+    $legacyRenamedNow = $false
+    $legacyNpmFound = $false
+    $legacyVersion = ""
+    $legacyBinDir = Join-Path $RayuHome "bin"
+    $legacyBinPath = ""
+    $legacyNodeExe = ""
+    $legacyEntryPath = ""
+
+    $installJsonPath = Join-Path $RayuHome "install.json"
+    if (Test-Path -LiteralPath $installJsonPath) {
+        try {
+            $meta = Get-Content -LiteralPath $installJsonPath -Raw | ConvertFrom-Json
+            if ($meta.binDir) { $legacyBinDir = [string]$meta.binDir }
+            if ($meta.version) { $legacyVersion = [string]$meta.version }
+            if ($meta.node -and $meta.node -ne "embedded") { $legacyNodeExe = [string]$meta.node }
+        } catch {}
+    }
+
+    $libDir = Join-Path $RayuHome "lib"
+    if (Test-Path -LiteralPath $libDir) {
+        $latestLib = Get-ChildItem -LiteralPath $libDir -Directory -Filter "rayu-*" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($latestLib) {
+            $candidateEntry = Join-Path $latestLib.FullName "rayu.js"
+            if (Test-Path -LiteralPath $candidateEntry) { $legacyEntryPath = $candidateEntry }
+        }
+    }
+
+    $sameInstallDir = (ConvertTo-RayuPathKey $legacyBinDir) -eq (ConvertTo-RayuPathKey $InstallDir)
+    if (-not $sameInstallDir) {
+        $oldCmd = Join-Path $legacyBinDir "rayu.cmd"
+        $oldExe = Join-Path $legacyBinDir "rayu.exe"
+        $legacyCmd = Join-Path $legacyBinDir "rayu-legacy.cmd"
+        $legacyExe = Join-Path $legacyBinDir "rayu-legacy.exe"
+        $oldInstaller = Join-Path $legacyBinDir ".rayu-installer.ps1"
+
+        if (Test-Path -LiteralPath $oldCmd) {
+            $legacyFound = $true
+            $legacyScriptFound = $true
+            if (-not $legacyEntryPath) {
+                $m = Select-String -Path $oldCmd -Pattern '^set "RAYU_ENTRY=(.+)"$' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($m) { $legacyEntryPath = $m.Matches[0].Groups[1].Value }
+            }
+            if (-not $legacyNodeExe) {
+                $m = Select-String -Path $oldCmd -Pattern '^set "RAYU_NODE=(.+)"$' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($m) { $legacyNodeExe = $m.Matches[0].Groups[1].Value }
+            }
+            if ($legacyEntryPath -and (Test-Path -LiteralPath $legacyEntryPath)) {
+                Write-GuardedLegacyCmdLauncher -TargetPath $legacyCmd -NodeExe $legacyNodeExe -EntryPath $legacyEntryPath
+                Remove-Item -LiteralPath $oldCmd -Force -ErrorAction SilentlyContinue
+            } else {
+                Move-Item -LiteralPath $oldCmd -Destination $legacyCmd -Force
+            }
+            if (Test-Path -LiteralPath $oldExe) { Remove-Item -LiteralPath $oldExe -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $oldInstaller) { Remove-Item -LiteralPath $oldInstaller -Force -ErrorAction SilentlyContinue }
+            $legacyRenamedNow = $true
+            $legacyBinPath = $legacyCmd
+        } elseif ((Test-Path -LiteralPath $oldExe) -and ((Test-Path -LiteralPath $installJsonPath) -or $legacyEntryPath)) {
+            $legacyFound = $true
+            $legacyScriptFound = $true
+            if ($legacyEntryPath -and (Test-Path -LiteralPath $legacyEntryPath)) {
+                Write-GuardedLegacyCmdLauncher -TargetPath $legacyCmd -NodeExe $legacyNodeExe -EntryPath $legacyEntryPath
+                Remove-Item -LiteralPath $oldExe -Force -ErrorAction SilentlyContinue
+                $legacyBinPath = $legacyCmd
+            } else {
+                Move-Item -LiteralPath $oldExe -Destination $legacyExe -Force
+                $legacyBinPath = $legacyExe
+            }
+            if (Test-Path -LiteralPath $oldInstaller) { Remove-Item -LiteralPath $oldInstaller -Force -ErrorAction SilentlyContinue }
+            $legacyRenamedNow = $true
+        } elseif ((Test-Path -LiteralPath $legacyCmd) -or (Test-Path -LiteralPath $legacyExe) -or $legacyEntryPath -or (Test-Path -LiteralPath $installJsonPath)) {
+            $legacyFound = $true
+            $legacyScriptFound = $true
+            if (Test-Path -LiteralPath $oldInstaller) { Remove-Item -LiteralPath $oldInstaller -Force -ErrorAction SilentlyContinue }
+            if (Test-Path -LiteralPath $legacyCmd) { $legacyBinPath = $legacyCmd }
+            elseif (Test-Path -LiteralPath $legacyExe) { $legacyBinPath = $legacyExe }
+            elseif ($legacyEntryPath) {
+                New-Item -ItemType Directory -Force -Path $legacyBinDir | Out-Null
+                Write-GuardedLegacyCmdLauncher -TargetPath $legacyCmd -NodeExe $legacyNodeExe -EntryPath $legacyEntryPath
+                $legacyRenamedNow = $true
+                $legacyBinPath = $legacyCmd
+            }
+        }
+    }
+
+    if ($env:RAYU_SKIP_NPM_CHECK -ne "1" -and (Get-Command npm -ErrorAction SilentlyContinue)) {
+        try {
+            $npmOut = (& npm ls -g --depth=0 $NpmLegacyPackage 2>$null | Out-String)
+            if ($npmOut -match '@rayu-dev/rayu-cli@([^\s]+)') {
+                $legacyFound = $true
+                $legacyNpmFound = $true
+                if (-not $legacyVersion) { $legacyVersion = "npm $($Matches[1])" }
+            }
+        } catch {}
+    }
+
+    if (-not $legacyFound) { return }
+
+    $legacyLabel = if ($legacyVersion) { "legacy Node Rayu ($legacyVersion)" } else { "legacy Node Rayu" }
+    if (-not $Quiet) {
+        Write-Host ""
+        Write-Info "Migration status:"
+        if ($legacyRenamedNow) {
+            Write-Info "  * Your old $legacyLabel was renamed to: rayu-legacy"
+        } else {
+            Write-Info "  * Existing $legacyLabel detected as: rayu-legacy"
+        }
+        if ($legacyBinPath) { Write-Info "    Location: $legacyBinPath" }
+        Write-Info "  * New RayuCode $InstalledVersion (Rust) is installed at: $LauncherPath"
+        Write-Info "  * Your settings, API keys, and sessions in $RayuHome were preserved."
+        Write-Host ""
+    }
+
+    $action = "ask"
+    if ($RemoveLegacy -or $env:RAYU_REMOVE_LEGACY -eq "1") { $action = "remove" }
+    elseif ($KeepLegacy -or $env:RAYU_KEEP_LEGACY -eq "1" -or $Quiet -or $env:CI) { $action = "keep" }
+
+    $doRemove = $false
+    if ($action -eq "remove") {
+        $doRemove = $true
+    } elseif ($action -eq "ask" -and [Environment]::UserInteractive -and $Host.Name -ne 'ServerRemoteHost') {
+        try {
+            $reply = Read-Host "Do you want to uninstall rayu-legacy now? [y/N]"
+            if ($reply -match '^(y|yes)$') { $doRemove = $true }
+        } catch {}
+    }
+
+    if ($doRemove) {
+        if ($legacyScriptFound) {
+            foreach ($f in @("rayu-legacy.cmd", "rayu-legacy.exe", "rayu.cmd", ".rayu-installer.ps1")) {
+                $p = Join-Path $legacyBinDir $f
+                if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+            }
+            foreach ($d in @((Join-Path $RayuHome "lib"), (Join-Path $RayuHome "runtime"))) {
+                if (Test-Path -LiteralPath $d) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+            if (Test-Path -LiteralPath $installJsonPath) { Remove-Item -LiteralPath $installJsonPath -Force -ErrorAction SilentlyContinue }
+            try { Remove-RayuUserPath -InstallDir $legacyBinDir | Out-Null } catch {}
+        }
+        if ($legacyNpmFound) {
+            if ($env:RAYU_FROM_NPM_POSTINSTALL -eq "1" -or $env:npm_lifecycle_event) {
+                Write-Warn "Running inside npm lifecycle; finish removing the legacy npm package with:"
+                Write-Info "    npm uninstall -g $NpmLegacyPackage"
+            } elseif (Get-Command npm -ErrorAction SilentlyContinue) {
+                try {
+                    & npm uninstall -g $NpmLegacyPackage 2>$null | Out-Null
+                    Write-Ok "Uninstalled global npm package $NpmLegacyPackage."
+                } catch {
+                    Write-Warn "Could not run 'npm uninstall -g $NpmLegacyPackage' automatically."
+                }
+            }
+        }
+        Write-Ok "Removed rayu-legacy. Your settings, API keys, and sessions in $RayuHome were kept."
+    } elseif (-not $Quiet) {
+        Write-Info "Kept rayu-legacy. You can still run the old CLI with 'rayu-legacy'."
+        Write-Info "To uninstall rayu-legacy later, run:"
+        if ($legacyScriptFound) {
+            Write-Info "  irm $LegacyInstallerUrl -OutFile install-rayu-legacy.ps1; .\install-rayu-legacy.ps1 -Uninstall"
+        }
+        if ($legacyNpmFound) {
+            Write-Info "  npm uninstall -g $NpmLegacyPackage"
+        }
+    }
+}
+
 function Invoke-RayuInstall {
+if ($Uninstall) {
+    Invoke-RayuUninstall
+    return
+}
+
 $Artifact = Get-RayuWindowsArtifact
 
 $ResolvedArtifactExePath = Resolve-OptionalPath $ArtifactExePath
@@ -935,6 +1184,15 @@ $ResolvedArtifactTgzPath = Resolve-OptionalPath $ArtifactTgzPath
 
 if ($ResolvedArtifactExePath -and $ResolvedArtifactTgzPath) {
     Write-Err "Provide only one of -ArtifactExePath or -ArtifactTgzPath"
+}
+
+if ($Version -and -not $ResolvedArtifactExePath -and -not $ResolvedArtifactTgzPath) {
+    if (-not $Version.StartsWith('v')) { $Version = "v$Version" }
+    if ($env:RAYU_ALLOW_LEGACY_TAG -ne "1" -and $Version -match '^v([012])\.') {
+        Write-Info "Requested legacy version $Version - upgrading to the latest RayuCode v3 (Rust) release."
+        Write-Info "  (To install the legacy Node v2 CLI instead: irm $LegacyInstallerUrl | iex)"
+        $Version = ""
+    }
 }
 
 if (-not $Version) {
@@ -1138,17 +1396,19 @@ if ($env:RAYU_SKIP_SERVER_RELOAD -ne "1") {
     }
 }
 
-$userPathUpdate = Set-RayuUserPath -InstallDir $InstallDir
-if ($userPathUpdate.Changed) {
-    Write-Info "Updated user PATH with $InstallDir"
-    if ($userPathUpdate.RemovedManagedEntries -gt 0 -or $userPathUpdate.RemovedDuplicateEntries -gt 0) {
-        Write-Info "  removed $($userPathUpdate.RemovedManagedEntries) stale rayu PATH entr$(if ($userPathUpdate.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) and $($userPathUpdate.RemovedDuplicateEntries) duplicate entr$(if ($userPathUpdate.RemovedDuplicateEntries -eq 1) { 'y' } else { 'ies' })"
+if (-not $NoModifyPath) {
+    $userPathUpdate = Set-RayuUserPath -InstallDir $InstallDir
+    if ($userPathUpdate.Changed) {
+        Write-Info "Updated user PATH with $InstallDir"
+        if ($userPathUpdate.RemovedManagedEntries -gt 0 -or $userPathUpdate.RemovedDuplicateEntries -gt 0) {
+            Write-Info "  removed $($userPathUpdate.RemovedManagedEntries) stale rayu PATH entr$(if ($userPathUpdate.RemovedManagedEntries -eq 1) { 'y' } else { 'ies' }) and $($userPathUpdate.RemovedDuplicateEntries) duplicate entr$(if ($userPathUpdate.RemovedDuplicateEntries -eq 1) { 'y' } else { 'ies' })"
+        }
+    } else {
+        Write-Info "User PATH already contains $InstallDir"
     }
-} else {
-    Write-Info "User PATH already contains $InstallDir"
-}
 
-Set-RayuProcessPath -InstallDir $InstallDir | Out-Null
+    Set-RayuProcessPath -InstallDir $InstallDir | Out-Null
+}
 
 $installedAlacritty = $false
 $configuredHotkey = $false
@@ -1177,9 +1437,13 @@ if ($shouldSetupHotkey) {
 
 Set-SetupHintsState -AlacrittyConfigured:(Test-AlacrittyInstalled) -HotkeyConfigured:$configuredHotkey
 
-Write-Host ""
-Write-Info "rayu $Version installed successfully!"
-Write-Host ""
+if (-not $Quiet) {
+    Write-Host ""
+    Write-Ok "rayu $Version installed successfully!"
+    Write-Host ""
+}
+
+Invoke-RayuLegacyMigration -LauncherPath $LauncherPath -InstalledVersion $Version
 
 if (Test-AlacrittyInstalled) {
     $alacrittyPath = Find-AlacrittyPath

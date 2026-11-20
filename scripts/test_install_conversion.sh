@@ -31,16 +31,16 @@ done
 [ -z "${DOWNLOAD_URL_LOG:-}" ] || printf '%s\n' "$url" >> "$DOWNLOAD_URL_LOG"
 case "$url" in
   *telemetry.example.invalid*) printf '%s\n' "$payload" >> "$INSTALL_TELEMETRY_LOG" ;;
-  *rayucode.com/releases/latest/version)
+  *releases/latest/version)
     [ "${FAIL_RELEASE:-0}" != "1" ] || exit 22
     [ "${FAIL_METADATA_RELEASE:-0}" != "1" ] || exit 22
     printf 'v1.2.3\n'
     ;;
-  *rayucode.com/releases/v1.2.3/download-bases)
+  *releases/v1.2.3/download-bases)
     printf 'https://mirror.invalid/releases/v1.2.3\n'
-    printf 'https://github.com/Choeng-Rayu/rayucode/releases/download/v1.2.3\n'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/download/v1.2.3\n'
     ;;
-  *rayucode.com/releases/v1.2.3/SHA256SUMS)
+  *releases/v1.2.3/SHA256SUMS)
     if [ "${METADATA_CHECKSUM_HTML:-0}" = "1" ]; then
       printf '<!doctype html><title>fallback page</title>\n'
       exit 0
@@ -57,7 +57,7 @@ case "$url" in
   *github.com*/releases/latest)
     [ "${FAIL_RELEASE:-0}" != "1" ] || exit 22
     [ "${FAIL_GITHUB_RELEASE:-0}" != "1" ] || exit 22
-    printf 'https://github.com/Choeng-Rayu/rayucode/releases/tag/v1.2.3'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/tag/v1.2.3'
     ;;
   *mirror.invalid*) exit 22 ;;
   *github.com*/releases/download/*)

@@ -7,9 +7,39 @@ fn test_version_is_newer() {
     assert!(version_is_newer("0.1.3", "0.1.2"));
     assert!(version_is_newer("0.2.0", "0.1.9"));
     assert!(version_is_newer("1.0.0", "0.9.9"));
+    assert!(version_is_newer("v3.0.1", "3.0.0"));
+    assert!(version_is_newer("v3.0.0", "2.5.3"));
+    assert!(!version_is_newer("v3.0.0", "3.0.0"));
     assert!(!version_is_newer("0.1.2", "0.1.2"));
     assert!(!version_is_newer("0.1.1", "0.1.2"));
     assert!(!version_is_newer("0.0.9", "0.1.0"));
+}
+
+#[test]
+fn stable_release_requires_sha256sums() {
+    let release = GitHubRelease {
+        tag_name: "v3.0.1".to_string(),
+        _name: Some("v3.0.1".to_string()),
+        _html_url: "https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/tag/v3.0.1"
+            .to_string(),
+        _published_at: Some("2026-11-21T00:00:00Z".to_string()),
+        assets: vec![GitHubAsset {
+            name: format!("{}.tar.gz", get_asset_name()),
+            browser_download_url: "https://example.invalid/rayu.tar.gz".to_string(),
+            _size: 128,
+        }],
+        _target_commitish: "main".to_string(),
+    };
+    let client = reqwest::blocking::Client::new();
+    let asset = platform_asset(&release).unwrap();
+    let err = verify_asset_checksum_if_available(&client, &release, asset, b"test")
+        .expect_err("stable release download must fail closed without SHA256SUMS");
+    assert!(err.to_string().contains("missing SHA256SUMS"));
+}
+
+#[test]
+fn github_repo_targets_public_releases_repo() {
+    assert_eq!(GITHUB_REPO, "Choeng-Rayu/rayucode-v2-releases");
 }
 
 #[test]

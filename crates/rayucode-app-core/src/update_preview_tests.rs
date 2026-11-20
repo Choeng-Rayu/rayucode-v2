@@ -3,7 +3,7 @@ use super::*;
 fn preview_fixture(tag: &str) -> PreviewRelease {
     serde_json::from_value(serde_json::json!({
         "tag_name": tag,
-        "html_url": "https://github.com/Choeng-Rayu/rayucode/releases/test",
+        "html_url": "https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/test",
         "published_at": "2026-10-26T00:00:00Z",
         "draft": false,
         "prerelease": true,
@@ -18,22 +18,24 @@ fn preview_fixture(tag: &str) -> PreviewRelease {
 }
 
 #[test]
-fn preview_discovery_requires_exact_v1_preview_tags() {
+fn preview_discovery_requires_valid_semver_preview_tags() {
     for tag in [
         "v1.0.0-preview.1",
         "v1.0.0-preview.10",
         "v1.0.0-preview.999",
+        "v3.0.0-preview.1",
+        "v3.1.2-preview.42",
     ] {
         assert!(preview_is_installable(&preview_fixture(tag)), "{tag}");
     }
     for tag in [
         "v1.0.0",
-        "v1.0.1-preview.1",
-        "v2.0.0-preview.1",
+        "v3.0.0",
         "1.0.0-preview.1",
         "v1.0.0-preview.",
         "v1.0.0-preview.0",
         "v1.0.0-preview.01",
+        "v01.0.0-preview.1",
         "v1.0.0-preview.1+build",
         "v1.0.0-preview.1-extra",
         "v1.0.0-preview.-1",
@@ -41,6 +43,8 @@ fn preview_discovery_requires_exact_v1_preview_tags() {
         assert!(!preview_is_installable(&preview_fixture(tag)), "{tag}");
     }
     assert!(preview_number("v1.0.0-preview.10") > preview_number("v1.0.0-preview.9"));
+    assert!(preview_number("v3.0.0-preview.1") > preview_number("v1.0.0-preview.999"));
+    assert!(preview_number("v3.0.1-preview.1") > preview_number("v3.0.0-preview.99"));
 }
 
 #[test]

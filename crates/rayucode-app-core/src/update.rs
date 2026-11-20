@@ -28,7 +28,7 @@ use update_metadata::{record_release_update_duration, record_source_update_durat
 pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
 use update_rate_limit::{clear_rate_limit_backoff, rate_limit_error};
 
-const GITHUB_REPO: &str = "Choeng-Rayu/rayucode";
+const GITHUB_REPO: &str = "Choeng-Rayu/rayucode-v2-releases";
 /// Minimum gap between *automatic* update checks.
 ///
 /// Every automatic check costs one or two unauthenticated `api.github.com`
@@ -320,14 +320,10 @@ fn verify_asset_checksum_if_available(
     bytes: &[u8],
 ) -> Result<()> {
     let Some(checksum_asset) = checksum_asset(release) else {
-        if preview_number(&release.tag_name).is_some() {
-            anyhow::bail!("Preview release is missing SHA256SUMS");
-        }
-        crate::logging::info(&format!(
-            "Release {} does not include SHA256SUMS; skipping checksum verification",
+        anyhow::bail!(
+            "Release {} is missing SHA256SUMS; refusing to install unverified binary",
             release.tag_name
-        ));
-        return Ok(());
+        );
     };
 
     let response = client
@@ -417,6 +413,13 @@ fn prepare_release_update(release: GitHubRelease) -> Result<PreparedUpdate> {
 }
 
 fn prepare_main_update_blocking() -> Result<PreparedUpdate> {
+    if is_release_build() {
+        crate::logging::info(
+            "Main channel: public binary releases do not publish source; checking latest stable release",
+        );
+        return prepare_stable_update_blocking();
+    }
+
     let current_hash = rayucode_build_meta::git_hash();
     if current_hash.is_empty() || current_hash == "unknown" {
         crate::logging::info("Main channel: no git hash in binary, skipping update check");
@@ -609,6 +612,13 @@ pub fn check_for_update_blocking() -> Result<Option<GitHubRelease>> {
 ///   - Tries to build from source if cargo is available
 ///   - Falls back to latest GitHub Release if not
 fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
+    if is_release_build() {
+        crate::logging::info(
+            "Main channel: public binary releases do not publish source; checking latest stable release",
+        );
+        return update_preview::check_for_stable_update_blocking();
+    }
+
     let current_hash = rayucode_build_meta::git_hash();
     if current_hash.is_empty() || current_hash == "unknown" {
         crate::logging::info("Main channel: no git hash in binary, skipping update check");

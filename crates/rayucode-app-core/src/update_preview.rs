@@ -14,18 +14,40 @@ struct PreviewRelease {
     prerelease: bool,
 }
 
-pub(super) fn preview_number(tag: &str) -> Option<u64> {
-    let number = tag.strip_prefix("v1.0.0-preview.")?;
-    if number.is_empty()
-        || !number.bytes().all(|b| b.is_ascii_digit())
-        || (number.len() > 1 && number.starts_with('0'))
-    {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct PreviewTag {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    number: u64,
+}
+
+pub(super) fn preview_number(tag: &str) -> Option<PreviewTag> {
+    let rest = tag.strip_prefix('v')?;
+    let (base, number) = rest.split_once("-preview.")?;
+    let mut parts = base.split('.');
+    let major_str = parts.next()?;
+    let minor_str = parts.next()?;
+    let patch_str = parts.next()?;
+    if parts.next().is_some() {
         return None;
     }
-    match number.parse::<u64>() {
-        Ok(number) if number > 0 => Some(number),
-        _ => None,
-    }
+    let parse_component = |s: &str| -> Option<u64> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0')) {
+            return None;
+        }
+        s.parse::<u64>().ok()
+    };
+    let major = parse_component(major_str)?;
+    let minor = parse_component(minor_str)?;
+    let patch = parse_component(patch_str)?;
+    let number = parse_component(number).filter(|&n| n > 0)?;
+    Some(PreviewTag {
+        major,
+        minor,
+        patch,
+        number,
+    })
 }
 
 fn preview_is_installable(candidate: &PreviewRelease) -> bool {
@@ -153,7 +175,7 @@ pub(super) fn prepare_stable_update_blocking() -> Result<PreparedUpdate> {
     prepare_release_update(release)
 }
 
-fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
+pub(super) fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
     let release = fetch_latest_release_blocking()?;
 
     if release_is_update(&release)? {

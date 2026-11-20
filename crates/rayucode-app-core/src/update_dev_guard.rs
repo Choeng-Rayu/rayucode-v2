@@ -151,7 +151,8 @@ fn github_response(
     }
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         bail!(
-            "Cannot safely install release: GitHub could not find release {release_tag} or compiled commit {current_hash} for comparison (404)"
+            "Cannot safely install release: GitHub could not find release {release_tag} or compiled commit {current_hash} in {} (404). For local dev builds, run `rayu update stable` or ensure the release tag exists locally.",
+            super::GITHUB_REPO
         );
     }
     if !response.status().is_success() {
