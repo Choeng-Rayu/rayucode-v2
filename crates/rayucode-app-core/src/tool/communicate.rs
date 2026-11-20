@@ -418,10 +418,69 @@ fn format_channels(channels: &[SwarmChannelInfo]) -> ToolOutput {
     ToolOutput::new(format_comm_channels(channels))
 }
 
+/// Most route lines `list_models` prints. Large multi-provider catalogs run to
+/// thousands of routes (~70k tokens), past the single-output guard, which
+/// would withhold the whole result, profiles included.
+const MAX_LISTED_ROUTES: usize = 120;
+
 /// Render the swarm model catalog for the `list_models` action: the current
 /// (spawn-default) model, any config pin, and one line per route with
 /// availability, auth method, and a relative cost estimate.
+#[cfg(test)]
 fn format_swarm_model_list(
+    current_model: Option<&str>,
+    configured_swarm_model: Option<&str>,
+    model_routes: &[rayucode_provider_core::ModelRoute],
+) -> String {
+    format_swarm_model_list_filtered(current_model, configured_swarm_model, model_routes, None)
+}
+
+/// Like [`format_swarm_model_list`], keeping only routes whose model,
+/// provider or method contains `filter` (case-insensitive), and capping the
+/// output at [`MAX_LISTED_ROUTES`] lines with a note on how to narrow it.
+/// Available routes are listed before unavailable ones.
+fn format_swarm_model_list_filtered(
+    current_model: Option<&str>,
+    configured_swarm_model: Option<&str>,
+    model_routes: &[rayucode_provider_core::ModelRoute],
+    filter: Option<&str>,
+) -> String {
+    let filter = filter
+        .map(|f| f.trim().to_ascii_lowercase())
+        .filter(|f| !f.is_empty());
+    let mut matching: Vec<&rayucode_provider_core::ModelRoute> = model_routes
+        .iter()
+        .filter(|route| {
+            filter.as_deref().is_none_or(|f| {
+                [&route.model, &route.provider, &route.api_method]
+                    .iter()
+                    .any(|field| field.to_ascii_lowercase().contains(f))
+            })
+        })
+        .collect();
+    matching.sort_by_key(|route| !route.available);
+    let total = matching.len();
+    let listed: Vec<rayucode_provider_core::ModelRoute> = matching
+        .into_iter()
+        .take(MAX_LISTED_ROUTES)
+        .cloned()
+        .collect();
+    let mut out = format_swarm_model_list_inner(current_model, configured_swarm_model, &listed);
+    if let Some(f) = filter.as_deref()
+        && total == 0
+    {
+        out.push_str(&format!("\nNo routes match \"{f}\".\n"));
+    }
+    if total > listed.len() {
+        out.push_str(&format!(
+            "\n{} more route(s) not shown. Narrow with list_models and `message` set to a provider or model substring (e.g. \"claude\", \"openrouter\").\n",
+            total - listed.len()
+        ));
+    }
+    out
+}
+
+fn format_swarm_model_list_inner(
     current_model: Option<&str>,
     configured_swarm_model: Option<&str>,
     model_routes: &[rayucode_provider_core::ModelRoute],
@@ -1390,16 +1449,16 @@ impl Tool for CommunicateTool {
                         ..
                     }) => Ok(ToolOutput::new(format!(
                         "{}{}",
-                        // Profiles first: the route catalog can be huge and
-                        // gets truncated, which must never drop the user's
-                        // recommendations.
+                        // Profiles first, and the route list is capped, so
+                        // large catalogs never hide the user's recommendations.
                         format_profile_catalog(&crate::session::effective_agent_profiles_for(
                             &ctx.session_id
                         )),
-                        format_swarm_model_list(
+                        format_swarm_model_list_filtered(
                             current_model.as_deref(),
                             configured_swarm_model.as_deref(),
                             &model_routes,
+                            params.message.as_deref(),
                         ),
                     ))),
                     Ok(response) => {

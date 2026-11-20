@@ -422,6 +422,36 @@ fn format_swarm_model_list_renders_routes_and_default() {
 }
 
 #[test]
+fn format_swarm_model_list_caps_huge_catalogs_and_filters() {
+    let route = |model: String, available: bool| rayucode_provider_core::ModelRoute {
+        model,
+        provider: "OpenRouter".to_string(),
+        api_method: "openrouter".to_string(),
+        available,
+        detail: String::new(),
+        usage: None,
+        cheapness: None,
+    };
+    let mut routes: Vec<_> = (0..3000)
+        .map(|i| route(format!("vendor/model-{i}"), i % 2 == 0))
+        .collect();
+    routes.push(route("anthropic/claude-future-9".into(), true));
+    let output = format_swarm_model_list_filtered(None, None, &routes, None);
+    let listed = output.lines().filter(|l| l.starts_with("- ")).count();
+    assert_eq!(listed, super::super::MAX_LISTED_ROUTES);
+    assert!(output.contains("more route(s) not shown"));
+    // Bounded well under the 50k-token single-output guard.
+    assert!(output.len() < 20_000, "{}", output.len());
+    // Available routes are listed before unavailable ones.
+    assert!(!output.contains("[unavailable]"));
+    let output = format_swarm_model_list_filtered(None, None, &routes, Some("CLAUDE"));
+    assert!(output.contains("anthropic/claude-future-9"));
+    assert!(!output.contains("not shown"));
+    let output = format_swarm_model_list_filtered(None, None, &routes, Some("zzz"));
+    assert!(output.contains("No routes match \"zzz\""));
+}
+
+#[test]
 fn format_swarm_model_list_handles_empty_catalog() {
     let output = format_swarm_model_list(None, None, &[]);
     assert!(output.contains("Current coordinator model: unknown"));

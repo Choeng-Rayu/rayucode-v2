@@ -160,3 +160,53 @@ fn runtime_command_result_renders_without_starting_or_disrupting_turn() {
         assert_eq!(app.input, "draft prompt");
     }
 }
+
+#[test]
+fn agents_runtime_result_syncs_daemon_overrides_into_client_mirror() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _runtime_guard = runtime.enter();
+    let mut app = create_test_app();
+    let mut remote = RemoteConnection::dummy();
+    app.remote_session_id = Some("session_daemon_real".into());
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::RuntimeCommandResult {
+            id: 7,
+            command: "agents".into(),
+            data: serde_json::json!({"scope": "session", "target": "review", "model": "coder",
+                "overrides": {"review": "coder"}}),
+            message: "review agent model [session] → coder".into(),
+        },
+        &mut remote,
+    ));
+    assert_eq!(
+        app.session
+            .agent_model_overrides
+            .get("review")
+            .map(String::as_str),
+        Some("coder")
+    );
+    // Lookups go through the daemon's real session id, not the placeholder.
+    assert_eq!(app.agent_models_session_id(), "session_daemon_real");
+    assert_ne!(app.session.id, "session_daemon_real");
+    // The synced mirror resolves the role even though the daemon's metadata
+    // file is not present in this process.
+    assert_eq!(
+        app.session
+            .effective_agent_model_for(&app.agent_models_session_id(), "review", None)
+            .as_deref(),
+        Some("coder")
+    );
+    // Results for other commands leave the mirror alone.
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::RuntimeCommandResult {
+            id: 8,
+            command: "poke".into(),
+            data: serde_json::json!({"overrides": {}}),
+            message: "ok".into(),
+        },
+        &mut remote,
+    ));
+    assert_eq!(app.session.agent_model_overrides.len(), 1);
+}
