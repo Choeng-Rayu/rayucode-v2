@@ -1209,7 +1209,7 @@ pub(super) fn build_body_from_base(
     }
     // The selected base shares this key's width/mode/image signature. Find the
     // longest message prefix whose hashes still match the current transcript.
-    let mut k = matching_prefix_len(prev.as_ref(), messages);
+    let k = matching_prefix_len(prev.as_ref(), messages);
     if k == prev_count && prev_count == msg_count {
         // Exact same messages (the body differs only by something not in the
         // cache key, e.g. a width-independent flag); reuse as-is.
@@ -1225,42 +1225,9 @@ pub(super) fn build_body_from_base(
     // Instead, when a message suffix still matches, render only the new head
     // and stitch the prepared suffix below it.
     let base_msgs = prev.message_boundaries.len();
-    let mut s = matching_suffix_len(prev.as_ref(), messages)
+    let s = matching_suffix_len(prev.as_ref(), messages)
         .min(base_msgs.saturating_sub(1))
         .min(msg_count.saturating_sub(1));
-    if compact_tool_groups(app.transcript_view().is_some()) {
-        // A tool run can change the length and label of its first row across
-        // either splice point. Re-render that run and retain the unaffected base.
-        if let Some(group) = k
-            .checked_sub(1)
-            .and_then(|i| tools_ui::tool_group(&messages[i]))
-        {
-            let old_group_continues = prev
-                .message_boundaries
-                .get(k)
-                .is_some_and(|next| next.wrapped_len == prev.message_boundaries[k - 1].wrapped_len);
-            if old_group_continues || messages.get(k).and_then(tools_ui::tool_group) == Some(group)
-            {
-                while k > 0 && tools_ui::tool_group(&messages[k - 1]) == Some(group) {
-                    k -= 1;
-                }
-            }
-        }
-        if s > 0 {
-            let head = msg_count - s;
-            let drop = base_msgs - s;
-            if let Some(group) = tools_ui::tool_group(&messages[head]) {
-                let old_group_continues = prev.message_boundaries[drop].wrapped_len
-                    == prev.message_boundaries[drop - 1].wrapped_len;
-                if old_group_continues || tools_ui::tool_group(&messages[head - 1]) == Some(group) {
-                    s -= messages[head..]
-                        .iter()
-                        .take_while(|msg| tools_ui::tool_group(msg) == Some(group))
-                        .count();
-                }
-            }
-        }
-    }
     if s > k {
         let drop_msgs = base_msgs - s;
         let head_count = msg_count - s;
@@ -1516,39 +1483,6 @@ fn render_message_into(
     }
     let align = default_message_alignment(role, centered);
     let expanded_tools = ctx.app.is_some_and(|app| app.transcript_view().is_some());
-    if compact_tool_groups(expanded_tools)
-        && let Some(group) = group_for_message(ctx, msg)
-    {
-        if msg_global_idx > 0
-            && group_for_message(ctx, &ctx.messages[msg_global_idx - 1]) == Some(group)
-        {
-            record_message_boundary(acc, msg);
-            return;
-        }
-        let end = msg_global_idx
-            + 1
-            + ctx.messages[msg_global_idx + 1..]
-                .iter()
-                .take_while(|following| group_for_message(ctx, following) == Some(group))
-                .count();
-        if end - msg_global_idx > 1 {
-            if acc.body_has_content || !acc.lines.is_empty() {
-                acc.push_blank();
-            }
-            acc.push_auto(align_if_unset(
-                tools_ui::tool_group_line(
-                    group,
-                    &ctx.messages[msg_global_idx..end],
-                    width,
-                    centered,
-                ),
-                align,
-            ));
-            record_message_boundary(acc, msg);
-            return;
-        }
-    }
-
     if (acc.body_has_content || !acc.lines.is_empty())
         && super::messages::needs_message_separator(msg)
     {
@@ -1903,18 +1837,6 @@ fn render_message_into(
     }
 
     record_message_boundary(acc, msg);
-}
-
-fn compact_tool_groups(expanded: bool) -> bool {
-    !expanded && !tools_ui::show_tool_call_details()
-}
-
-fn group_for_message(ctx: &BodyRenderCtx<'_>, msg: &DisplayMessage) -> Option<tools_ui::ToolGroup> {
-    let tool = msg.tool_data.as_ref()?;
-    if ctx.anchored_images.by_tool.contains_key(&tool.id) {
-        return None;
-    }
-    tools_ui::tool_group(msg)
 }
 
 fn record_message_boundary(acc: &mut BodyAcc, msg: &DisplayMessage) {

@@ -29,7 +29,10 @@ pub(in crate::tui::ui) fn tool_header(
     let label = tool_label(tool);
     let mut spans = vec![
         Span::styled("● ", Style::default().fg(color)),
-        Span::styled(label.to_owned(), Style::default().fg(tool_color()).bold()),
+        Span::styled(
+            label.to_owned(),
+            Style::default().fg(tool_category_color(&tool.name)).bold(),
+        ),
     ];
     let subject = crate::message::strip_ansi_escape_sequences(subject);
     let subject = subject.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -41,6 +44,47 @@ pub(in crate::tui::ui) fn tool_header(
         ));
     }
     super::super::truncate_line_with_ellipsis_to_width(&Line::from(spans), width)
+}
+
+pub(in crate::tui::ui) fn tool_category_color(name: &str) -> Color {
+    use rayucode_tui_tool_display::ToolColorCategory::*;
+    match rayucode_tui_tool_display::classify_tool_color_category(name) {
+        Execute => theme::tool_execute_color(),
+        Read => theme::tool_read_color(),
+        Search => theme::tool_search_color(),
+        Edit => theme::tool_edit_color(),
+        Web => theme::tool_web_color(),
+        Task => theme::tool_task_color(),
+        Brand => theme::brand_color(),
+    }
+}
+
+/// Give the call and its metrics separate width budgets so a long intent
+/// or path cannot make the duration and token count disappear.
+pub(in crate::tui::ui) fn tool_header_with_metrics(
+    tool: &ToolCall,
+    subject: &str,
+    color: Color,
+    width: usize,
+    metrics: Vec<Span<'static>>,
+) -> Vec<Line<'static>> {
+    let metrics = Line::from(metrics);
+    let minimum_header = tool_label(tool).width() + 2 + if subject.is_empty() { 0 } else { 5 };
+    if minimum_header + 3 + metrics.width() <= width {
+        let mut header = tool_header(tool, subject, color, width - 3 - metrics.width());
+        header
+            .spans
+            .push(Span::styled(" · ", Style::default().fg(dim_color())));
+        header.spans.extend(metrics.spans);
+        vec![header]
+    } else {
+        let mut detail = Line::from(vec![Span::styled("  ⎿ ", Style::default().fg(dim_color()))]);
+        detail.spans.extend(metrics.spans);
+        vec![
+            tool_header(tool, subject, color, width),
+            super::super::truncate_line_with_ellipsis_to_width(&detail, width),
+        ]
+    }
 }
 
 pub(in crate::tui::ui) fn tool_response(text: impl Into<String>, width: usize) -> Line<'static> {
@@ -233,95 +277,4 @@ pub(in crate::tui::ui) fn read_search_result_summary(
         }),
         _ => None,
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::tui::ui) enum ToolGroup {
-    Discovery,
-    Shell,
-}
-
-pub(in crate::tui::ui) fn tool_group(message: &DisplayMessage) -> Option<ToolGroup> {
-    let tool = message.tool_data.as_ref()?;
-    let output = retained_tool_output(tool, &message.content);
-    if message.role != "tool"
-        || runs_in_background(tool)
-        || tool_output_looks_failed(output)
-        || output.starts_with("[image:")
-        || output.starts_with("Image:")
-        || output.starts_with("Shell command · ")
-    {
-        return None;
-    }
-    if is_shell_tool(tool) {
-        return Some(ToolGroup::Shell);
-    }
-    match tool_label(tool) {
-        "Read" | "Grep" | "Glob" | "List" => Some(ToolGroup::Discovery),
-        "AgentGrep"
-            if !crate::config::config().display.show_agentgrep_output
-                && matches!(
-                    tool.input.get("mode").and_then(serde_json::Value::as_str),
-                    None | Some("grep" | "find")
-                ) =>
-        {
-            Some(ToolGroup::Discovery)
-        }
-        _ => None,
-    }
-}
-
-pub(in crate::tui::ui) fn tool_group_line(
-    group: ToolGroup,
-    calls: &[DisplayMessage],
-    width: u16,
-    centered: bool,
-) -> Line<'static> {
-    let label = match group {
-        ToolGroup::Shell => format!("Ran {} shell commands", calls.len()),
-        ToolGroup::Discovery => {
-            let (mut searches, mut reads, mut listings) = (0, 0, 0);
-            for tool in calls.iter().filter_map(|call| call.tool_data.as_ref()) {
-                match tool_label(tool) {
-                    "Read" => reads += 1,
-                    "List" => listings += 1,
-                    _ => searches += 1,
-                }
-            }
-            let counts = [
-                (searches, "Searched for", "pattern", "patterns"),
-                (reads, "Read", "file", "files"),
-                (listings, "Listed", "directory", "directories"),
-            ];
-            let mut parts: Vec<String> = counts
-                .into_iter()
-                .filter(|(count, ..)| *count > 0)
-                .map(|(count, verb, single, plural)| {
-                    let noun = if count == 1 { single } else { plural };
-                    format!("{verb} {count} {noun}")
-                })
-                .collect();
-            for part in parts.iter_mut().skip(1) {
-                part.make_ascii_lowercase();
-            }
-            parts.join(", ")
-        }
-    };
-    let cells = if centered {
-        super::super::centered_content_block_width(width, 96)
-    } else {
-        usize::from(width)
-    };
-    let mut lines = [super::super::truncate_line_with_ellipsis_to_width(
-        &Line::from(vec![
-            Span::styled("● ", Style::default().fg(theme::success_color())),
-            Span::styled(label, Style::default().fg(dim_color()).bold()),
-        ]),
-        cells.saturating_sub(1),
-    )];
-    if centered {
-        super::super::left_pad_lines_to_block_width(&mut lines, width, cells);
-    }
-    let [line] = lines;
-    line
 }

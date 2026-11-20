@@ -1124,6 +1124,7 @@ pub struct App {
     session_save_pending: bool,
     // Tool calls detected during streaming (shown in real-time with details)
     streaming_tool_calls: Vec<ToolCall>,
+    tool_execution_starts: std::collections::HashMap<String, Instant>,
     // Assistant transcript messages committed during the current provider
     // attempt (at ToolStart boundaries). A RetryRollback removes exactly this
     // many trailing assistant messages; reset whenever a new API attempt's

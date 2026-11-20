@@ -745,6 +745,12 @@ impl crate::tui::TuiState for App {
             .map(|_| self.idle_hibernation.notice.as_str())
     }
 
+    fn tool_elapsed(&self, id: &str) -> Option<std::time::Duration> {
+        self.tool_execution_starts
+            .get(id)
+            .map(|start| start.elapsed())
+    }
+
     fn display_messages(&self) -> &[DisplayMessage] {
         &self.display_messages
     }

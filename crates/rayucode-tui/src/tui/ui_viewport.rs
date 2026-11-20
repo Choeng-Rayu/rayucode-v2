@@ -319,6 +319,59 @@ pub(crate) fn reserve_copy_badge_margins(
     }
 }
 
+/// Elapsed time is display-only. Updating a visible activity row never changes
+/// the corresponding transcript boundary or invalidates prepared history.
+fn apply_running_tool_details(
+    app: &dyn TuiState,
+    frame: &PreparedChatFrame,
+    top: usize,
+    lines: &mut [Line<'static>],
+    width: u16,
+) {
+    let Some(body) = frame
+        .sections
+        .iter()
+        .find(|section| section.kind == PreparedSectionKind::Body)
+    else {
+        return;
+    };
+    let boundaries = &body.prepared.message_boundaries;
+    let first =
+        boundaries.partition_point(|boundary| body.line_start + boundary.wrapped_len <= top);
+    for idx in first..boundaries.len() {
+        let start = idx
+            .checked_sub(1)
+            .map_or(0, |prev| boundaries[prev].wrapped_len);
+        let row = body.line_start + start + 1;
+        if row >= top + lines.len() {
+            break;
+        }
+        if row < top || boundaries[idx].wrapped_len <= start + 1 {
+            continue;
+        }
+        let Some(message) = app.display_messages().get(idx) else {
+            break;
+        };
+        if message.role != crate::tui::core::PENDING_TOOL_ROLE
+            || message.stable_cache_hash() != boundaries[idx].msg_hash
+        {
+            continue;
+        }
+        let Some(tool) = &message.tool_data else {
+            continue;
+        };
+        if let Some(elapsed) = app.tool_elapsed(&tool.id) {
+            let value = crate::message::Message::format_duration(
+                (elapsed.as_millis().min(u64::MAX as u128) as u64 / 1000) * 1000,
+            );
+            let cells = usize::from(width).saturating_sub(1);
+            let mut line = super::tools_ui::tool_response(format!("Running · {value}"), cells);
+            line.alignment = lines[row - top].alignment;
+            lines[row - top] = line;
+        }
+    }
+}
+
 pub(super) fn draw_messages(
     frame: &mut Frame,
     app: &dyn TuiState,
@@ -492,6 +545,13 @@ pub(super) fn draw_messages(
         .collect();
 
     let mut visible_lines = prepared.materialize_line_slice(scroll, visible_end);
+    apply_running_tool_details(
+        app,
+        &prepared,
+        scroll,
+        &mut visible_lines,
+        content_area.width,
+    );
     let stability_hash = super::viewport_stability_hash(
         &visible_lines,
         &visible_user_indices,

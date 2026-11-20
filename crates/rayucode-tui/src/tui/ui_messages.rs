@@ -4016,8 +4016,12 @@ fn render_tool_message_mode(
 
     let centered = markdown::center_code_blocks();
     let mut token_badge = tool_output_token_badge(&msg.content);
-    token_badge.label =
-        tools_ui::tool_usage_label(&token_badge.label, msg.duration_secs, &msg.content);
+    let token_label = if compact {
+        format!("~{}", token_badge.label)
+    } else {
+        token_badge.label.clone()
+    };
+    token_badge.label = tools_ui::tool_usage_label(&token_label, msg.duration_secs, &msg.content);
 
     // A restored or remotely mirrored transcript can occasionally retain the
     // todo result while losing its paired ToolCall metadata. Recognize the
@@ -4265,39 +4269,35 @@ fn render_tool_message_mode(
         summary
     };
 
-    let rendered_tool_line = if compact {
-        let subject = intent.unwrap_or(&summary);
-        tools_ui::tool_header(
+    let file_tool = is_edit_tool
+        || matches!(
+            tools_ui::canonical_tool_name(&tc.name),
+            "read" | "Read" | "file_read"
+        );
+    let rendered_tool_lines = if compact {
+        // File operations need an identifiable target even when the model
+        // supplies a generic intent or the diff is in a separate pane.
+        let path_summary = file_tool.then(|| {
+            tools_ui::get_tool_summary_with_budget(tc, 50, Some(row_width.saturating_sub(8)))
+        });
+        let subject = path_summary
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .unwrap_or_else(|| intent.unwrap_or(&summary));
+        tools_ui::tool_header_with_metrics(
             tc,
             subject,
             tools_ui::outcome_color(is_error, is_partial_batch),
             row_width,
+            tools_ui::tool_usage_spans(
+                token_badge.label,
+                token_badge.color,
+                msg.duration_secs,
+                &msg.content,
+            ),
         )
     } else {
-        let tool_category_fg =
-            match rayucode_tui_tool_display::classify_tool_color_category(&tc.name) {
-                rayucode_tui_tool_display::ToolColorCategory::Execute => {
-                    rayucode_tui_style::theme::tool_execute_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Read => {
-                    rayucode_tui_style::theme::tool_read_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Search => {
-                    rayucode_tui_style::theme::tool_search_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Edit => {
-                    rayucode_tui_style::theme::tool_edit_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Web => {
-                    rayucode_tui_style::theme::tool_web_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Task => {
-                    rayucode_tui_style::theme::tool_task_color()
-                }
-                rayucode_tui_tool_display::ToolColorCategory::Brand => {
-                    rayucode_tui_style::theme::brand_color()
-                }
-            };
+        let tool_category_fg = tools_ui::tool_category_color(&tc.name);
         let mut tool_line = vec![
             Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
             Span::styled(
@@ -4349,14 +4349,14 @@ fn render_tool_message_mode(
         ));
         let token_suffix = Line::from(usage_spans);
 
-        super::truncate_line_preserving_suffix_to_width(
+        vec![super::truncate_line_preserving_suffix_to_width(
             &Line::from(tool_line),
             &token_suffix,
             row_width,
-        )
+        )]
     };
-    let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
-    lines.push(rendered_tool_line);
+    let rendered_tool_line_text = super::line_plain_text(&rendered_tool_lines[0]);
+    lines.extend(rendered_tool_lines);
     if compact
         && intent.is_some_and(|intent| intent != summary)
         && !summary.is_empty()

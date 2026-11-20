@@ -133,6 +133,11 @@ impl App {
     }
 
     pub(super) fn show_tool_activity(&mut self, tool: &ToolCall, activity: ToolActivity) {
+        if matches!(activity, ToolActivity::Running) {
+            self.tool_execution_starts
+                .entry(tool.id.clone())
+                .or_insert_with(std::time::Instant::now);
+        }
         let label = activity.label();
         if let Some(index) = self.pending_tool_row(&tool.id) {
             let row = &mut self.display_messages[index];
@@ -164,6 +169,7 @@ impl App {
 
     pub(super) fn clear_pending_tool_calls(&mut self) {
         self.streaming_tool_calls.clear();
+        self.tool_execution_starts.clear();
         let len = self.display_messages.len();
         self.display_messages
             .retain(|message| message.role != PENDING_TOOL_ROLE);
@@ -194,15 +200,21 @@ impl App {
         } else {
             None
         };
+        if message.role == "tool"
+            && let Some(tool) = message.tool_data.as_ref()
+        {
+            let observed = self.tool_execution_starts.remove(&tool.id);
+            if message.duration_secs.is_none() {
+                message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content)
+                    .or_else(|| observed.map(|start| start.elapsed().as_secs_f32()));
+            }
+        }
         if is_background_task_lifecycle_message(&message.content) {
             if let Some(index) = pending {
                 self.display_messages.remove(index);
                 self.bump_display_messages_version_no_stats();
             }
             return;
-        }
-        if message.role == "tool" && message.duration_secs.is_none() {
-            message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content);
         }
         compact_display_message_tool_data(&mut message);
         // Keep Ctrl+L's spacer as a clear boundary when new content arrives.
@@ -327,6 +339,7 @@ impl App {
         // so remove the transient tool card instead of turning it into a second
         // transcript representation.
         if is_background_task_lifecycle_message(&content) {
+            self.tool_execution_starts.remove(tool_call_id);
             self.remove_display_message(idx);
             return true;
         }

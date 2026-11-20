@@ -1345,7 +1345,7 @@ mod reasoning_history;
 mod error_rows;
 
 #[test]
-fn tool_groups_rebuild_only_the_changed_boundary_on_append_and_prepend() {
+fn consecutive_tool_metrics_stay_visible_on_append_and_prepend() {
     let width = 80;
     let tool = |name: &str, id: &str, content: &str| {
         DisplayMessage::tool(
@@ -1359,7 +1359,8 @@ fn tool_groups_rebuild_only_the_changed_boundary_on_append_and_prepend() {
             },
         )
     };
-    let read = tool("read", "read", "1\tFixture");
+    let mut read = tool("read", "read", "1\tFixture");
+    read.duration_secs = Some(2.4);
     let grep = tool("agentgrep", "grep", "Found 2 matches");
     let failure = tool("read", "failed", "Error: path not found");
     let after = DisplayMessage::assistant("Separate assistant prose.");
@@ -1380,19 +1381,20 @@ fn tool_groups_rebuild_only_the_changed_boundary_on_append_and_prepend() {
     };
     let (actual, path) = prepare::build_body_from_base(&appended, width, before, 2, 0, 5);
     let expected = prepare::prepare_body(&appended, width, false);
-    assert_eq!(path, "prefix_reuse");
+    assert_eq!(path, "incremental");
     assert_eq!(actual.wrapped_plain_lines, expected.wrapped_plain_lines);
     assert_eq!(actual.message_boundaries, expected.message_boundaries);
     let text = actual.wrapped_plain_lines.join("\n");
     assert!(
-        text.contains("Searched for 1 pattern, read 1 file"),
+        text.contains("● Read(src/測試.rs) · 2.4s, ~2 tok"),
+        "{text}"
+    );
+    assert!(
+        text.contains("● AgentGrep") && text.contains("Found 2 matches"),
         "{text}"
     );
     assert!(text.contains("path not found"), "{text}");
-    assert_eq!(
-        actual.message_boundaries[1].wrapped_len,
-        actual.message_boundaries[2].wrapped_len
-    );
+    assert!(actual.message_boundaries[1].wrapped_len < actual.message_boundaries[2].wrapped_len);
 
     let old = TestState {
         display_messages: vec![

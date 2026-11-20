@@ -713,6 +713,10 @@ pub trait TuiState {
         None
     }
     // ---- Transcript ----
+    fn tool_elapsed(&self, _id: &str) -> Option<std::time::Duration> {
+        None
+    }
+
     fn display_messages(&self) -> &[DisplayMessage];
     fn display_user_message_count(&self) -> usize;
     /// Number of user prompts hidden before the first visible message because of
