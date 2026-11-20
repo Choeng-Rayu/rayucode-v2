@@ -131,7 +131,10 @@ default = ["bedrock"]
 # `pub` so downstream crates' test targets can reach them. Enabled as a
 # dev-dependency feature by rayucode-app-core / rayucode / etc.; never in normal
 # (non-test) builds.
-test-support = []
+test-support = [
+    "rayucode-build-meta/test-support",
+    "rayucode-provider-metadata/test-support",
+]
 jemalloc = [
     "dep:tikv-jemalloc-ctl",
     "dep:tikv-jemalloc-sys",
@@ -154,6 +157,7 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 global-hotkey = "0.7"
 
 [dev-dependencies]
+rayucode-build-meta = { path = "../rayucode-build-meta", features = ["test-support"] }
 # The browserless login integration test installs the real terminal presenter.
 rayucode-terminal-prompt = { path = "../rayucode-terminal-prompt" }
 # Dev-only cycle (cargo permits dev-dependencies on dependents): base's

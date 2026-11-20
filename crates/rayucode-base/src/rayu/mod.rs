@@ -35,6 +35,11 @@ pub use apikey::{
 };
 pub use login::{PreparedRayuLogin, RayuLoginOptions, exchange_callback_url, login};
 pub use onboarding::{has_completed_first_run_onboarding, mark_first_run_onboarding_completed};
+pub use rayucode_build_meta::{ENABLE_OTHER_PROVIDER, other_providers_enabled};
+#[cfg(any(test, feature = "test-support"))]
+pub use rayucode_build_meta::{
+    ScopedOtherProvidersGuard, scoped_other_providers_enabled_for_tests,
+};
 pub(crate) use refresh::telegram_access_token;
 pub use refresh::{access_token, refresh_access_token};
 pub use session::{
@@ -43,14 +48,34 @@ pub use session::{
 };
 pub use urls::{account_url, api_base, config_dir, gateway_base, pricing_url, web_base};
 
+/// Error guidance shown whenever a non-Rayu provider is requested in a build
+/// compiled with `ENABLE_OTHER_PROVIDER=false`.
+pub fn other_providers_disabled_message() -> &'static str {
+    "Other providers are disabled in this build (ENABLE_OTHER_PROVIDER=false). Use Rayu authentication ('rayu login --provider rayu' / '/login rayu') or RAYU_API_KEY, or recompile with ENABLE_OTHER_PROVIDER=true."
+}
+
+/// Returns `Err` when third-party / non-Rayu providers are disabled at compile time.
+pub fn require_other_providers_enabled() -> anyhow::Result<()> {
+    if !other_providers_enabled() {
+        anyhow::bail!("{}", other_providers_disabled_message());
+    }
+    Ok(())
+}
+
 /// Whether first-install / pre-provider Rayu authentication enforcement is active.
 ///
-/// Honors `USE_RAYU_OAUTH`: `0`/`false`/`off`/`no` disables; `1`/`true`/`yes`/`on`
-/// enables. Defaults to `true` in production binaries and integration tests, and
-/// is never silently bypassed merely because `RAYU_HOME` or `RAYU_CONFIG_DIR` is
-/// set. Under `#[cfg(test)]` unit tests default to `false` unless `USE_RAYU_OAUTH`
-/// is explicitly enabled.
+/// When compiled with `ENABLE_OTHER_PROVIDER=false`, Rayu authentication is always
+/// required because no other provider is available in the build.
+///
+/// Otherwise honors `USE_RAYU_OAUTH`: `0`/`false`/`off`/`no` disables;
+/// `1`/`true`/`yes`/`on` enables. Defaults to `true` in production binaries and
+/// integration tests, and is never silently bypassed merely because `RAYU_HOME`
+/// or `RAYU_CONFIG_DIR` is set. Under `#[cfg(test)]` unit tests default to
+/// `false` unless `USE_RAYU_OAUTH` is explicitly enabled.
 pub fn auth_gate_enabled() -> bool {
+    if !other_providers_enabled() {
+        return true;
+    }
     if let Some(raw) = std::env::var_os("USE_RAYU_OAUTH") {
         let value = raw.to_string_lossy().trim().to_ascii_lowercase();
         match value.as_str() {
@@ -70,7 +95,11 @@ pub fn auth_gate_active() -> bool {
 /// Clear guidance shown whenever a command, provider choice, or turn is gated
 /// on Rayu authentication.
 pub fn auth_gate_error_message() -> &'static str {
-    "Rayu authentication required before using Rayu or third-party providers. Run 'rayu login --provider rayu' (or '/login rayu' in TUI), or set RAYU_API_KEY."
+    if !other_providers_enabled() {
+        "Rayu authentication required. Run 'rayu login --provider rayu' (or '/login rayu' in TUI), or set RAYU_API_KEY."
+    } else {
+        "Rayu authentication required before using Rayu or third-party providers. Run 'rayu login --provider rayu' (or '/login rayu' in TUI), or set RAYU_API_KEY."
+    }
 }
 
 /// Returns `Err` with actionable sign-in instructions when [`auth_gate_active`]

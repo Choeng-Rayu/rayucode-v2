@@ -92,6 +92,7 @@ pub(crate) fn run_provider_add_command(options: ProviderAddOptions) -> Result<()
 pub(crate) fn configure_provider_profile(
     options: ProviderAddOptions,
 ) -> Result<ProviderSetupReport> {
+    crate::rayu::require_other_providers_enabled()?;
     let name = validate_profile_name(&options.name)?;
     ensure_profile_name_not_reserved(&name)?;
 

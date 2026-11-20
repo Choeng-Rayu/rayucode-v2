@@ -1381,159 +1381,164 @@ impl MultiProvider {
         if crate::rayu::auth_gate_active() {
             return;
         }
+        let other_providers_enabled = crate::rayu::other_providers_enabled();
 
-        if self.anthropic_provider().is_none()
-            && (crate::auth::claude::load_credentials().is_ok()
-                || crate::provider_catalog::load_api_key_from_env_or_config(
-                    "ANTHROPIC_API_KEY",
-                    "anthropic.env",
-                )
-                .is_some())
-        {
-            crate::logging::info("Hot-initialized Anthropic provider after auth change");
-            *self
-                .anthropic
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME);
-        }
-
-        if let Some(openai) = self.openai_provider() {
-            openai.reload_credentials();
-        } else if crate::auth::codex::load_credentials().is_ok()
-            && let Some(openai) =
-                external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
-        {
-            crate::logging::info("Hot-initialized OpenAI provider after auth change");
-            *self
-                .openai
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(openai);
-        }
-
-        let current_openrouter_model = self.openrouter_provider().map(|existing| {
-            let model = existing.model();
-            existing
-                .explicit_provider_pin_for_current_model()
-                .map(|pin| format!("{model}@{pin}"))
-                .unwrap_or(model)
-        });
-        if openrouter::has_credentials() {
-            match external::instantiate_openrouter_runtime(external::OpenRouterRuntimeSpec::Default)
+        if other_providers_enabled {
+            if self.anthropic_provider().is_none()
+                && (crate::auth::claude::load_credentials().is_ok()
+                    || crate::provider_catalog::load_api_key_from_env_or_config(
+                        "ANTHROPIC_API_KEY",
+                        "anthropic.env",
+                    )
+                    .is_some())
             {
-                Ok(provider) => {
-                    let should_install = if preserve_existing_openrouter_profile {
-                        self.openrouter_provider()
-                            .as_deref()
-                            .map(|existing| {
-                                Self::should_replace_openrouter_after_auth_change(
-                                    existing,
-                                    provider.as_ref(),
-                                )
-                            })
-                            .unwrap_or(true)
-                    } else {
-                        true
-                    };
-                    if should_install {
-                        if let Some(model) = current_openrouter_model.as_deref()
-                            && let Err(error) = provider.set_model(model)
-                        {
-                            crate::logging::warn(&format!(
-                                "Failed to preserve OpenRouter model routing after auth change: {error}"
-                            ));
+                crate::logging::info("Hot-initialized Anthropic provider after auth change");
+                *self
+                    .anthropic
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME);
+            }
+
+            if let Some(openai) = self.openai_provider() {
+                openai.reload_credentials();
+            } else if crate::auth::codex::load_credentials().is_ok()
+                && let Some(openai) =
+                    external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
+            {
+                crate::logging::info("Hot-initialized OpenAI provider after auth change");
+                *self
+                    .openai
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(openai);
+            }
+
+            let current_openrouter_model = self.openrouter_provider().map(|existing| {
+                let model = existing.model();
+                existing
+                    .explicit_provider_pin_for_current_model()
+                    .map(|pin| format!("{model}@{pin}"))
+                    .unwrap_or(model)
+            });
+            if openrouter::has_credentials() {
+                match external::instantiate_openrouter_runtime(
+                    external::OpenRouterRuntimeSpec::Default,
+                ) {
+                    Ok(provider) => {
+                        let should_install = if preserve_existing_openrouter_profile {
+                            self.openrouter_provider()
+                                .as_deref()
+                                .map(|existing| {
+                                    Self::should_replace_openrouter_after_auth_change(
+                                        existing,
+                                        provider.as_ref(),
+                                    )
+                                })
+                                .unwrap_or(true)
+                        } else {
+                            true
+                        };
+                        if should_install {
+                            if let Some(model) = current_openrouter_model.as_deref()
+                                && let Err(error) = provider.set_model(model)
+                            {
+                                crate::logging::warn(&format!(
+                                    "Failed to preserve OpenRouter model routing after auth change: {error}"
+                                ));
+                            }
+                            crate::logging::info(
+                                "Hot-initialized OpenRouter/OpenAI-compatible provider after auth change",
+                            );
+                            *self
+                                .openrouter
+                                .write()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
+                        } else {
+                            crate::logging::info(
+                                "Preserved existing OpenRouter/OpenAI-compatible provider after unrelated auth change",
+                            );
                         }
-                        crate::logging::info(
-                            "Hot-initialized OpenRouter/OpenAI-compatible provider after auth change",
-                        );
-                        *self
-                            .openrouter
-                            .write()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
-                    } else {
-                        crate::logging::info(
-                            "Preserved existing OpenRouter/OpenAI-compatible provider after unrelated auth change",
-                        );
+                    }
+                    Err(e) => {
+                        crate::logging::info(&format!(
+                            "Failed to hot-initialize OpenRouter/OpenAI-compatible provider after auth change: {}",
+                            e
+                        ));
                     }
                 }
-                Err(e) => {
-                    crate::logging::info(&format!(
-                        "Failed to hot-initialize OpenRouter/OpenAI-compatible provider after auth change: {}",
-                        e
-                    ));
+            }
+
+            let already_has = self.copilot_provider().is_some();
+            if !already_has {
+                let status = crate::auth::AuthStatus::check_fast();
+                // The composition-root factory schedules tier detection itself.
+                if status.copilot_has_api_token
+                    && let Some(provider) =
+                        external::instantiate_expected_external_provider(external::COPILOT_RUNTIME)
+                {
+                    crate::logging::info("Hot-initialized Copilot API provider after login");
+                    *self
+                        .copilot_api
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
                 }
             }
-        }
 
-        let already_has = self.copilot_provider().is_some();
-        if !already_has {
-            let status = crate::auth::AuthStatus::check_fast();
-            // The composition-root factory schedules tier detection itself.
-            if status.copilot_has_api_token
-                && let Some(provider) =
-                    external::instantiate_expected_external_provider(external::COPILOT_RUNTIME)
+            let already_has_antigravity = self.antigravity_provider().is_some();
+            if !already_has_antigravity
+                && crate::auth::antigravity::load_tokens().is_ok()
+                && let Some(antigravity) =
+                    external::instantiate_expected_external_provider(external::ANTIGRAVITY_RUNTIME)
             {
-                crate::logging::info("Hot-initialized Copilot API provider after login");
+                crate::logging::info("Hot-initialized Antigravity provider after login");
                 *self
-                    .copilot_api
+                    .antigravity
                     .write()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(provider);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(antigravity);
             }
-        }
 
-        let already_has_antigravity = self.antigravity_provider().is_some();
-        if !already_has_antigravity
-            && crate::auth::antigravity::load_tokens().is_ok()
-            && let Some(antigravity) =
-                external::instantiate_expected_external_provider(external::ANTIGRAVITY_RUNTIME)
-        {
-            crate::logging::info("Hot-initialized Antigravity provider after login");
-            *self
-                .antigravity
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(antigravity);
-        }
+            let already_has_gemini = self.gemini_provider().is_some();
+            if !already_has_gemini
+                && crate::auth::gemini::load_tokens().is_ok()
+                && let Some(gemini) =
+                    external::instantiate_expected_external_provider(external::GEMINI_RUNTIME)
+            {
+                crate::logging::info("Hot-initialized Gemini provider after login");
+                *self
+                    .gemini
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(gemini);
+            }
 
-        let already_has_gemini = self.gemini_provider().is_some();
-        if !already_has_gemini
-            && crate::auth::gemini::load_tokens().is_ok()
-            && let Some(gemini) =
-                external::instantiate_expected_external_provider(external::GEMINI_RUNTIME)
-        {
-            crate::logging::info("Hot-initialized Gemini provider after login");
-            *self
-                .gemini
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(gemini);
-        }
+            let already_has_cursor = self.cursor_provider().is_some();
+            if !already_has_cursor
+                && crate::auth::AuthStatus::check_fast()
+                    .assessment_for_provider(crate::provider_catalog::CURSOR_LOGIN_PROVIDER)
+                    .is_available()
+                && let Some(cursor) =
+                    external::instantiate_expected_external_provider(external::CURSOR_RUNTIME)
+            {
+                crate::logging::info("Hot-initialized Cursor provider after login");
+                *self
+                    .cursor
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cursor);
+            }
 
-        let already_has_cursor = self.cursor_provider().is_some();
-        if !already_has_cursor
-            && crate::auth::AuthStatus::check_fast()
-                .assessment_for_provider(crate::provider_catalog::CURSOR_LOGIN_PROVIDER)
-                .is_available()
-            && let Some(cursor) =
-                external::instantiate_expected_external_provider(external::CURSOR_RUNTIME)
-        {
-            crate::logging::info("Hot-initialized Cursor provider after login");
-            *self
-                .cursor
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(cursor);
-        }
-
-        let already_has_bedrock = self.bedrock_provider().is_some();
-        if !already_has_bedrock && bedrock::BedrockProvider::has_credentials() {
-            crate::logging::info("Hot-initialized AWS Bedrock provider after login");
-            *self
-                .bedrock
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(Arc::new(new_bedrock_provider()));
+            let already_has_bedrock = self.bedrock_provider().is_some();
+            if !already_has_bedrock && bedrock::BedrockProvider::has_credentials() {
+                crate::logging::info("Hot-initialized AWS Bedrock provider after login");
+                *self
+                    .bedrock
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(Arc::new(new_bedrock_provider()));
+            }
         }
 
         let registry = ProviderRegistry::new(self);
-        if crate::auth::grok_build::has_cached_login()
+        if other_providers_enabled
+            && crate::auth::grok_build::has_cached_login()
             && registry.compatible_profile(GROK_BUILD_PROFILE_ID).is_none()
             && let Some(grok) =
                 external::instantiate_expected_external_provider(external::GROK_BUILD_RUNTIME)
@@ -1553,20 +1558,24 @@ impl MultiProvider {
                 registry.install_compatible_profile(RAYU_PROFILE_ID, rayu);
                 just_installed_rayu = true;
             }
-            if !preserve_existing_openrouter_profile
+            if (!other_providers_enabled || !preserve_existing_openrouter_profile)
                 && registry.compatible_profile(RAYU_PROFILE_ID).is_some()
             {
                 let runtime_provider_is_rayu = std::env::var("RAYU_RUNTIME_PROVIDER")
                     .ok()
                     .is_some_and(|value| value.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID));
-                let explicit_non_rayu_default = crate::config::config()
-                    .provider
-                    .default_provider
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .is_some_and(|value| !value.eq_ignore_ascii_case(RAYU_PROFILE_ID));
-                if runtime_provider_is_rayu || (just_installed_rayu && !explicit_non_rayu_default) {
+                let explicit_non_rayu_default = other_providers_enabled
+                    && crate::config::config()
+                        .provider
+                        .default_provider
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .is_some_and(|value| !value.eq_ignore_ascii_case(RAYU_PROFILE_ID));
+                if !other_providers_enabled
+                    || runtime_provider_is_rayu
+                    || (just_installed_rayu && !explicit_non_rayu_default)
+                {
                     registry.set_active_compatible_profile(RAYU_PROFILE_ID);
                     self.set_active_provider(ActiveProvider::OpenRouter);
                 }
@@ -1575,29 +1584,33 @@ impl MultiProvider {
             registry.remove_compatible_profile(RAYU_PROFILE_ID);
         }
 
-        if let Some(anthropic) = self.anthropic_provider() {
-            self.spawn_post_auth_model_refresh(anthropic, "Anthropic");
-        }
-        if let Some(openai) = self.openai_provider() {
-            self.spawn_post_auth_model_refresh(openai, "OpenAI");
-        }
-        if let Some(antigravity) = self.antigravity_provider() {
-            self.spawn_post_auth_model_refresh(antigravity, "Antigravity");
-        }
-        if let Some(gemini) = self.gemini_provider() {
-            self.spawn_post_auth_model_refresh(gemini, "Gemini");
-        }
-        if let Some(cursor) = self.cursor_provider() {
-            self.spawn_post_auth_model_refresh(cursor, "Cursor");
-        }
-        if let Some(openrouter) = self.openrouter_provider() {
-            self.spawn_post_auth_model_refresh(openrouter, "OpenRouter");
-        }
-        if let Some(bedrock) = self.bedrock_provider() {
-            self.spawn_post_auth_model_refresh(bedrock, "AWS Bedrock");
-        }
-        if let Some(grok) = ProviderRegistry::new(self).compatible_profile(GROK_BUILD_PROFILE_ID) {
-            self.spawn_post_auth_model_refresh(grok, "Grok Build");
+        if other_providers_enabled {
+            if let Some(anthropic) = self.anthropic_provider() {
+                self.spawn_post_auth_model_refresh(anthropic, "Anthropic");
+            }
+            if let Some(openai) = self.openai_provider() {
+                self.spawn_post_auth_model_refresh(openai, "OpenAI");
+            }
+            if let Some(antigravity) = self.antigravity_provider() {
+                self.spawn_post_auth_model_refresh(antigravity, "Antigravity");
+            }
+            if let Some(gemini) = self.gemini_provider() {
+                self.spawn_post_auth_model_refresh(gemini, "Gemini");
+            }
+            if let Some(cursor) = self.cursor_provider() {
+                self.spawn_post_auth_model_refresh(cursor, "Cursor");
+            }
+            if let Some(openrouter) = self.openrouter_provider() {
+                self.spawn_post_auth_model_refresh(openrouter, "OpenRouter");
+            }
+            if let Some(bedrock) = self.bedrock_provider() {
+                self.spawn_post_auth_model_refresh(bedrock, "AWS Bedrock");
+            }
+            if let Some(grok) =
+                ProviderRegistry::new(self).compatible_profile(GROK_BUILD_PROFILE_ID)
+            {
+                self.spawn_post_auth_model_refresh(grok, "Grok Build");
+            }
         }
         if let Some(rayu) = ProviderRegistry::new(self).compatible_profile(RAYU_PROFILE_ID) {
             self.spawn_post_auth_model_refresh(rayu, "Rayu");
@@ -1613,6 +1626,18 @@ impl MultiProvider {
         let model = model.trim();
         if model.is_empty() {
             anyhow::bail!("Model cannot be empty");
+        }
+
+        if !crate::rayu::other_providers_enabled() {
+            if let Some(pref) = default_provider
+                .map(str::trim)
+                .filter(|pref| !pref.is_empty())
+                && !pref.eq_ignore_ascii_case(RAYU_PROFILE_ID)
+                && !pref.eq_ignore_ascii_case("auto")
+            {
+                anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+            }
+            return self.set_model(model);
         }
 
         // The model picker persists default_model as a full model spec that
@@ -1870,6 +1895,9 @@ impl Provider for MultiProvider {
     }
 
     fn name(&self) -> &str {
+        if !crate::rayu::other_providers_enabled() {
+            return crate::rayu::RAYU_PROVIDER_DISPLAY_NAME;
+        }
         match self.active_provider() {
             ActiveProvider::Claude => "Claude",
             ActiveProvider::OpenAI => "OpenAI",
@@ -1883,6 +1911,12 @@ impl Provider for MultiProvider {
     }
 
     fn display_name(&self) -> String {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.runtime_display_name())
+                .unwrap_or_else(|| crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string());
+        }
         // The OpenRouter slot multiplexes the public aggregator and every
         // direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, ...). Ask the
         // active execution runtime for its own label so the UI reflects the
@@ -1896,6 +1930,12 @@ impl Provider for MultiProvider {
     }
 
     fn model(&self) -> String {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.model())
+                .unwrap_or_else(|| RAYU_PROFILE_ID.to_string());
+        }
         match self.active_provider() {
             ActiveProvider::Claude => {
                 // Prefer anthropic if available
@@ -2154,6 +2194,43 @@ impl Provider for MultiProvider {
             anyhow::bail!("Model cannot be empty");
         }
 
+        if !crate::rayu::other_providers_enabled() {
+            let target_model = if let Some(rest) = requested_model.strip_prefix("rayu:") {
+                rest.trim()
+            } else {
+                let has_blocked_prefix = requested_model
+                    .split_once(':')
+                    .is_some_and(|(prefix, _)| {
+                        prefix.starts_with("claude-oauth@")
+                            || prefix.starts_with("openai-oauth@")
+                            || prefix.eq_ignore_ascii_case("grok-build")
+                            || prefix.eq_ignore_ascii_case("openai-compatible")
+                            || rayucode_provider_metadata::is_known_other_provider_id(prefix)
+                    })
+                    || explicit_model_provider_prefix(requested_model).is_some()
+                    || Self::named_provider_profile_model_prefix(requested_model).is_some();
+                if has_blocked_prefix {
+                    anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+                }
+                requested_model
+            };
+            if target_model.is_empty() {
+                anyhow::bail!("Rayu model cannot be empty");
+            }
+            let registry = ProviderRegistry::new(self);
+            let provider = registry
+                .compatible_profile(RAYU_PROFILE_ID)
+                .or_else(|| {
+                    external::instantiate_expected_external_provider(external::RAYU_RUNTIME)
+                })
+                .ok_or_else(|| anyhow!("Rayu is not authenticated"))?;
+            provider.set_model(target_model)?;
+            registry.install_compatible_profile(RAYU_PROFILE_ID, provider);
+            registry.set_active_compatible_profile(RAYU_PROFILE_ID);
+            self.set_active_provider(ActiveProvider::OpenRouter);
+            return Ok(());
+        }
+
         if let Some((prefix, target_model)) = requested_model.split_once(':')
             && let Some((method, label)) = prefix.split_once('@')
             && matches!(method, "claude-oauth" | "openai-oauth")
@@ -2351,6 +2428,9 @@ impl Provider for MultiProvider {
     }
 
     fn available_models(&self) -> Vec<&'static str> {
+        if !crate::rayu::other_providers_enabled() {
+            return Vec::new();
+        }
         let mut models = Vec::new();
         models.extend_from_slice(ALL_CLAUDE_MODELS);
         models.extend_from_slice(ALL_OPENAI_MODELS);
@@ -2358,6 +2438,12 @@ impl Provider for MultiProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|rayu| rayu.available_models_for_switching())
+                .unwrap_or_default();
+        }
         match self.active_provider() {
             ActiveProvider::Claude => {
                 if let Some(anthropic) = self.anthropic_provider() {

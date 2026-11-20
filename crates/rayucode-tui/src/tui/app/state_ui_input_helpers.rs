@@ -252,9 +252,12 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
 /// hand-written sections have not covered, so a newly registered command can
 /// never be invisible to users.
 pub(crate) fn registered_command_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
+    let other_providers_enabled = crate::rayu::other_providers_enabled();
     REGISTERED_COMMANDS
         .iter()
-        .filter(|command| !command.hidden)
+        .filter(move |command| {
+            !command.hidden && (other_providers_enabled || command.name != "/reset")
+        })
         .map(|command| (command.name, command.help))
 }
 
@@ -328,10 +331,13 @@ impl App {
             }
         }
 
+        let other_providers_enabled = crate::rayu::other_providers_enabled();
         let mut seen = std::collections::HashSet::new();
         let mut commands: Vec<(String, &'static str)> = REGISTERED_COMMANDS
             .iter()
-            .filter(|command| !command.hidden)
+            .filter(|command| {
+                !command.hidden && (other_providers_enabled || command.name != "/reset")
+            })
             .filter_map(|command| {
                 let name = command.name.to_string();
                 seen.insert(name.clone()).then_some((name, command.help))
@@ -892,10 +898,56 @@ impl App {
                     .iter()
                     .map(|provider| (format!("{} {}", base, provider.id), provider.menu_detail)),
             );
+            if !crate::rayu::other_providers_enabled() {
+                suggestions.push((
+                    format!("{} rayu-api", base),
+                    "Authenticate with a Rayu API key (RAYU_API_KEY)",
+                ));
+            }
             return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/account ") || prefix.starts_with("/accounts ") {
+            if !crate::rayu::other_providers_enabled() {
+                let suggestions = vec![
+                    ("/account list".into(), "Open Rayu account actions"),
+                    ("/account rayu".into(), "Open Rayu account actions"),
+                    (
+                        "/account rayu status".into(),
+                        "Inspect Rayu account profile, plan, and remaining credits",
+                    ),
+                    (
+                        "/account rayu login".into(),
+                        "Sign in or refresh Rayu account login",
+                    ),
+                    (
+                        "/account rayu api-key".into(),
+                        "Configure or replace RAYU_API_KEY",
+                    ),
+                    (
+                        "/account rayu manage".into(),
+                        "Open Rayu account dashboard in browser",
+                    ),
+                    ("/account rayu logout".into(), "Log out of Rayu"),
+                    (
+                        "/account rayu settings".into(),
+                        "Show Rayu account commands and defaults",
+                    ),
+                    (
+                        "/account rayu doctor".into(),
+                        "Diagnose Rayu authentication status",
+                    ),
+                    (
+                        "/account default-provider".into(),
+                        "Set preferred default provider (rayu or auto)",
+                    ),
+                    (
+                        "/account default-model".into(),
+                        "Set preferred default model",
+                    ),
+                ];
+                return self.rank_suggestions(input, suggestions);
+            }
             let mut suggestions = vec![
                 ("/account list".into(), "Open all provider/account actions"),
                 ("/account switch".into(), "Switch active account by label"),

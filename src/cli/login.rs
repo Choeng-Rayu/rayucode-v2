@@ -215,6 +215,17 @@ pub async fn run_login(
     options: LoginOptions,
 ) -> Result<()> {
     options.validate()?;
+    if !crate::rayu::other_providers_enabled() {
+        if !matches!(choice, ProviderChoice::Auto | ProviderChoice::Rayu) {
+            anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+        }
+        return Box::pin(run_login_provider(
+            crate::provider_catalog::RAYU_LOGIN_PROVIDER,
+            account_label,
+            options,
+        ))
+        .await;
+    }
     if let Some(provider) = login_provider_for_choice(choice) {
         return run_login_provider(provider, account_label, options).await;
     }
@@ -269,6 +280,7 @@ pub async fn run_login_provider(
 ) -> Result<()> {
     options.validate()?;
     if provider.target != LoginProviderTarget::Rayu {
+        crate::rayu::require_other_providers_enabled()?;
         super::startup::require_cli_auth_gate()?;
     }
     if options.cancel {

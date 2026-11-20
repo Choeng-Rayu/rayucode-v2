@@ -74,13 +74,21 @@ impl MultiProvider {
         let cfg = crate::config::config();
         let provider_state = ProviderState::from_parts(cfg, &auth_status);
         let rayu_gate_active = crate::rayu::auth_gate_active();
+        let other_providers_enabled = crate::rayu::other_providers_enabled();
+        let allow_other_providers = !rayu_gate_active && other_providers_enabled;
+        let runtime_provider_is_rayu = std::env::var("RAYU_RUNTIME_PROVIDER")
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID));
         let initial_provider = if rayu_gate_active {
             None
+        } else if !other_providers_enabled {
+            Self::initial_provider_from_env()
+                .filter(|initial| matches!(initial, ActiveProvider::OpenRouter) && runtime_provider_is_rayu)
         } else {
             Self::initial_provider_from_env()
         };
         let mut default_named_provider_profile: Option<String> = None;
-        if !rayu_gate_active
+        if allow_other_providers
             && initial_provider.is_none()
             && std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
             && std::env::var_os("RAYU_NAMED_PROVIDER_PROFILE").is_none()
@@ -108,21 +116,23 @@ impl MultiProvider {
         }
 
         let creds_start = std::time::Instant::now();
-        let has_claude_creds = !rayu_gate_active
+        let has_claude_creds = allow_other_providers
             && (auth::claude::load_credentials().is_ok() || anthropic::has_anthropic_api_key());
-        let has_openai_creds = !rayu_gate_active && auth::codex::load_credentials().is_ok();
+        let has_openai_creds = allow_other_providers && auth::codex::load_credentials().is_ok();
         let has_copilot_api =
-            !rayu_gate_active && provider_state.auth_status().copilot_has_api_token;
-        let has_antigravity_creds = !rayu_gate_active && auth::antigravity::load_tokens().is_ok();
-        let has_gemini_creds = !rayu_gate_active
+            allow_other_providers && provider_state.auth_status().copilot_has_api_token;
+        let has_antigravity_creds =
+            allow_other_providers && auth::antigravity::load_tokens().is_ok();
+        let has_gemini_creds = allow_other_providers
             && (auth::gemini::load_tokens().is_ok() || auth::gemini::has_api_key());
-        let has_cursor_creds = !rayu_gate_active
+        let has_cursor_creds = allow_other_providers
             && provider_state
                 .auth_status()
                 .assessment_for_provider(crate::provider_catalog::CURSOR_LOGIN_PROVIDER)
                 .is_available();
-        let has_bedrock_creds = !rayu_gate_active && bedrock::BedrockProvider::has_credentials();
-        let has_openrouter_creds = !rayu_gate_active && openrouter::has_credentials();
+        let has_bedrock_creds =
+            allow_other_providers && bedrock::BedrockProvider::has_credentials();
+        let has_openrouter_creds = allow_other_providers && openrouter::has_credentials();
         let creds_ms = creds_start.elapsed().as_millis();
         let runtimes_start = std::time::Instant::now();
 
@@ -237,7 +247,7 @@ impl MultiProvider {
             None
         };
 
-        let copilot_premium_zero = !rayu_gate_active
+        let copilot_premium_zero = allow_other_providers
             && matches!(
                 std::env::var("RAYU_COPILOT_PREMIUM").ok().as_deref(),
                 Some("0")
@@ -253,17 +263,17 @@ impl MultiProvider {
             openrouter: openrouter.is_some(),
             copilot_premium_zero,
         };
-        let mut active = Self::auto_default_provider(availability);
+        let mut active = if other_providers_enabled {
+            Self::auto_default_provider(availability)
+        } else {
+            ActiveProvider::OpenRouter
+        };
 
         if copilot_premium_zero && matches!(active, ActiveProvider::Copilot) {
             crate::logging::info(
                 "Copilot premium mode is Zero (free requests) - defaulting to Copilot provider",
             );
         }
-
-        let runtime_provider_is_rayu = std::env::var("RAYU_RUNTIME_PROVIDER")
-            .ok()
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID));
 
         if let Some(initial) = initial_provider {
             active = initial;
@@ -290,7 +300,7 @@ impl MultiProvider {
                     Self::provider_key(initial)
                 ));
             }
-        } else if !rayu_gate_active && let Some(pref) = provider_state.default_provider_key() {
+        } else if allow_other_providers && let Some(pref) = provider_state.default_provider_key() {
             if let Some(selection) = provider_state.default_provider_selection() {
                 let preferred = selection.active_provider();
                 let is_configured = provider_state
@@ -344,9 +354,10 @@ impl MultiProvider {
         // and third-party providers unless the caller explicitly pinned another
         // provider via CLI/env or `config.toml` `default_provider`.
         let mut rayu_activated_as_default = false;
-        let explicit_non_rayu_default = provider_state
-            .default_provider_selection()
-            .is_some_and(|selection| !matches!(selection, ConfigProviderSelection::Rayu));
+        let explicit_non_rayu_default = other_providers_enabled
+            && provider_state
+                .default_provider_selection()
+                .is_some_and(|selection| !matches!(selection, ConfigProviderSelection::Rayu));
         if crate::rayu::has_credentials()
             && let Some(rayu) =
                 external::instantiate_expected_external_provider(external::RAYU_RUNTIME)
@@ -356,10 +367,11 @@ impl MultiProvider {
             let explicit_rayu_initial =
                 matches!(result.initial_provider, Some(ActiveProvider::OpenRouter))
                     && runtime_provider_is_rayu;
-            let no_explicit_override = (result.initial_provider.is_none() || explicit_rayu_initial)
-                && std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
-                && std::env::var_os("RAYU_NAMED_PROVIDER_PROFILE").is_none()
-                && !explicit_non_rayu_default;
+            let no_explicit_override = !other_providers_enabled
+                || ((result.initial_provider.is_none() || explicit_rayu_initial)
+                    && std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
+                    && std::env::var_os("RAYU_NAMED_PROVIDER_PROFILE").is_none()
+                    && !explicit_non_rayu_default);
             if no_explicit_override {
                 registry.set_active_compatible_profile(RAYU_PROFILE_ID);
                 result.set_active_provider(ActiveProvider::OpenRouter);
@@ -376,37 +388,53 @@ impl MultiProvider {
             && result.initial_provider.is_none()
             && let Some(model) = provider_state.default_model()
         {
-            let effective_model = if matches!(
-                provider_state.default_provider_selection(),
-                Some(ConfigProviderSelection::Rayu)
-            ) {
-                format!("rayu:{}", model.strip_prefix("rayu:").unwrap_or(model))
-            } else {
-                model.to_string()
-            };
-            if let Err(e) = result
-                .set_config_default_model(&effective_model, provider_state.default_provider_key())
-            {
-                crate::logging::warn(&format!(
-                    "Failed to apply default_model '{}' from config: {}",
-                    model, e
-                ));
-            } else {
-                preserve_config_default |= !result.config_default_allows_pool_selection(
+            let rayu_only_skip = !other_providers_enabled
+                && provider_state
+                    .default_provider_selection()
+                    .is_some_and(|selection| !matches!(selection, ConfigProviderSelection::Rayu));
+            if !rayu_only_skip {
+                let effective_model = if !other_providers_enabled
+                    || matches!(
+                        provider_state.default_provider_selection(),
+                        Some(ConfigProviderSelection::Rayu)
+                    ) {
+                    if !other_providers_enabled && !model.starts_with("rayu:") {
+                        model.to_string()
+                    } else {
+                        format!("rayu:{}", model.strip_prefix("rayu:").unwrap_or(model))
+                    }
+                } else {
+                    model.to_string()
+                };
+                if let Err(e) = result.set_config_default_model(
                     &effective_model,
-                    provider_state.default_provider_key(),
-                );
-                crate::logging::info(&format!("Applied default model '{}' from config", model));
+                    if other_providers_enabled {
+                        provider_state.default_provider_key()
+                    } else {
+                        Some(RAYU_PROFILE_ID)
+                    },
+                ) {
+                    crate::logging::warn(&format!(
+                        "Failed to apply default_model '{}' from config: {}",
+                        model, e
+                    ));
+                } else {
+                    preserve_config_default |= !result.config_default_allows_pool_selection(
+                        &effective_model,
+                        provider_state.default_provider_key(),
+                    );
+                    crate::logging::info(&format!("Applied default model '{}' from config", model));
+                }
             }
         }
 
-        if !rayu_gate_active {
+        if allow_other_providers {
             result.spawn_anthropic_catalog_refresh_if_needed();
             crate::auth::oauth::prefetch_missing_claude_subscription_metadata();
         }
         let runtimes_ms = runtimes_start.elapsed().as_millis();
         let route_start = std::time::Instant::now();
-        if !rayu_gate_active {
+        if allow_other_providers {
             result.spawn_openai_catalog_refresh_if_needed();
             if !preserve_config_default {
                 result.select_fresh_session_pool_route();
@@ -677,6 +705,9 @@ impl MultiProvider {
     }
 
     pub(super) fn spawn_openai_catalog_refresh_if_needed(&self) {
+        if !crate::rayu::other_providers_enabled() {
+            return;
+        }
         let Some(provider) = self.openai_provider() else {
             return;
         };
@@ -696,6 +727,9 @@ impl MultiProvider {
     }
 
     pub(super) fn spawn_anthropic_catalog_refresh_if_needed(&self) {
+        if !crate::rayu::other_providers_enabled() {
+            return;
+        }
         let api_stale = anthropic::load_anthropic_api_key().is_ok()
             && should_refresh_anthropic_model_catalog_for_scope(
                 &anthropic_catalog_scope_for_route(false),

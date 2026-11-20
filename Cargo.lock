@@ -6651,6 +6651,7 @@ dependencies = [
 name = "rayucode-provider-metadata"
 version = "0.1.0"
 dependencies = [
+ "rayucode-build-meta",
  "url",
 ]
 

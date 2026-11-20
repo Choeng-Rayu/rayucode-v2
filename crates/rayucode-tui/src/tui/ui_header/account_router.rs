@@ -61,6 +61,16 @@ fn cached_inventory() -> Inventory {
 }
 
 fn load_inventory() -> Inventory {
+    if !crate::rayu::other_providers_enabled() {
+        let mut pool = AccountPool::load();
+        let priority = pool.priority("rayu");
+        pool.priorities.insert("rayu".to_string(), priority);
+        return Inventory {
+            logins: Vec::new(),
+            pool,
+            expired: Vec::new(),
+        };
+    }
     // Local auth files only. Retain metadata, never access/refresh tokens.
     let now = chrono::Utc::now().timestamp_millis();
     let mut expired = Vec::new();
@@ -172,6 +182,9 @@ fn remote_inventory_lines(
     provider_name: &str,
     selected_label: Option<&str>,
 ) -> Vec<Line<'static>> {
+    if !crate::rayu::other_providers_enabled() {
+        return Vec::new();
+    }
     use rayucode_provider_core::ActiveProvider;
     let current_provider = rayucode_provider_core::parse_provider_hint(provider_name);
     let display_used = crate::config::config().display.usage_display_used();
@@ -224,6 +237,12 @@ fn inventory_lines(
     provider_name: &str,
     selected_label: Option<&str>,
 ) -> Vec<Line<'static>> {
+    if !crate::rayu::other_providers_enabled() {
+        if auth.rayu != AuthState::NotConfigured {
+            return vec![detail(auth.rayu, "rayu".into(), true)];
+        }
+        return Vec::new();
+    }
     use crate::auth::{ActiveCredential, resolve_dual_credential_auth};
     use rayucode_provider_core::ActiveProvider;
     let mut entries = Vec::new();

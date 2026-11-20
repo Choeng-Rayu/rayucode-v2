@@ -36,6 +36,40 @@ pub fn simplified_model_routes_for_picker(
         .any(|model| model.starts_with("rayu:"));
     let mut routes: Vec<ModelRoute> = Vec::new();
 
+    if !crate::rayu::other_providers_enabled() {
+        for model in display_models {
+            if model.starts_with("rayu:")
+                || (provider_is_rayu && !has_prefixed_rayu && !model.contains('/'))
+            {
+                routes.push(ModelRoute {
+                    model,
+                    provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                    api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                    available: crate::rayu::has_credentials(),
+                    detail: "Rayu hosted models · live catalog".to_string(),
+                    usage: None,
+                    cheapness: None,
+                });
+            }
+        }
+        if routes.is_empty()
+            && !current_model.is_empty()
+            && current_model != "unknown"
+            && current_model != RAYU_PROFILE_ID
+        {
+            routes.push(ModelRoute {
+                model: current_model.to_string(),
+                provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                available: crate::rayu::has_credentials(),
+                detail: "Rayu hosted models · live catalog".to_string(),
+                usage: None,
+                cheapness: None,
+            });
+        }
+        return dedupe_model_routes(routes);
+    }
+
     for model in display_models {
         if model.starts_with("rayu:")
             || (provider_is_rayu && !has_prefixed_rayu && !model.contains('/'))
@@ -193,6 +227,9 @@ pub fn simplified_model_routes_for_picker(
 /// API-key and other provider routes stay unchanged. The account-qualified API
 /// method is carried through RPC, deduplication, selection, and restoration.
 fn expand_saved_account_routes(mut routes: Vec<ModelRoute>) -> Vec<ModelRoute> {
+    if !crate::rayu::other_providers_enabled() {
+        return dedupe_model_routes(routes);
+    }
     let claude = match crate::auth::claude::list_accounts() {
         Ok(accounts) => accounts,
         Err(error) => {
@@ -393,15 +430,15 @@ struct OpenRouterRouteStats {
 /// one place per provider instead of one 400-line function.
 pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelRoute> {
     let routes_started = std::time::Instant::now();
-    provider.spawn_anthropic_catalog_refresh_if_needed();
-    provider.spawn_openai_catalog_refresh_if_needed();
+    let other_providers_enabled = crate::rayu::other_providers_enabled();
+    if other_providers_enabled {
+        provider.spawn_anthropic_catalog_refresh_if_needed();
+        provider.spawn_openai_catalog_refresh_if_needed();
+    }
 
     let mut routes: Vec<ModelRoute> = Vec::new();
     let mut openrouter_stats = OpenRouterRouteStats::default();
 
-    let has_oauth = crate::auth::claude::load_credentials().is_ok();
-    let has_api_key = crate::provider::anthropic::has_anthropic_api_key();
-    let openai_auth = crate::auth::AuthStatus::check_fast();
     let rayu_profile = ProviderRegistry::new(provider).compatible_profile(RAYU_PROFILE_ID);
     let has_rayu_profile = rayu_profile.is_some();
 
@@ -420,6 +457,14 @@ pub(super) fn multiprovider_model_routes(provider: &MultiProvider) -> Vec<ModelR
             }
         }
     }
+
+    if !other_providers_enabled {
+        return dedupe_model_routes(routes);
+    }
+
+    let has_oauth = crate::auth::claude::load_credentials().is_ok();
+    let has_api_key = crate::provider::anthropic::has_anthropic_api_key();
+    let openai_auth = crate::auth::AuthStatus::check_fast();
 
     // When Rayu is configured, do not flood the picker with unconfigured
     // hardcoded Claude/OpenAI/OpenRouter placeholder routes that cannot run.

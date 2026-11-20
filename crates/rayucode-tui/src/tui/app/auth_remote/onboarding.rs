@@ -34,6 +34,10 @@ fn remote_has_no_logins(providers: &[super::command::ProviderStatus]) -> bool {
 
 impl App {
     pub(in crate::tui::app) fn poll_ssh_login_onboarding(&mut self) -> bool {
+        if !crate::rayu::other_providers_enabled() {
+            self.remote_login_onboarding.dismiss();
+            return false;
+        }
         if !crate::tui::is_ssh_remote() || self.remote_login_onboarding.checked {
             return false;
         }

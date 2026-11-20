@@ -20,6 +20,9 @@ use ratatui::{prelude::*, widgets::Paragraph};
 const GAP: u16 = 1;
 
 fn rayu_auth_gate_active_in_ui() -> bool {
+    if !crate::rayu::other_providers_enabled() {
+        return !crate::rayu::has_credentials();
+    }
     if cfg!(test) && std::env::var_os("USE_RAYU_OAUTH").is_none() {
         return false;
     }
@@ -782,7 +785,11 @@ fn rayu_first_run_welcome_lines(yes_highlighted: bool, align: Alignment) -> Vec<
             );
             lines.push(
                 Line::from(Span::styled(
-                    "A Rayu account or Rayu API key is required before using other providers.",
+                    if crate::rayu::other_providers_enabled() {
+                        "A Rayu account or Rayu API key is required before using other providers."
+                    } else {
+                        "Sign in with your Rayu account or enter a Rayu API key to continue."
+                    },
                     Style::default().fg(dim_color()),
                 ))
                 .alignment(align),

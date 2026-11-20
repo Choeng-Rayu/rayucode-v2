@@ -123,6 +123,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        crate::rayu::require_other_providers_enabled()?;
         provider_catalog::apply_named_provider_profile_env(profile_name)?;
         crate::env::set_var("RAYU_PROVIDER_PROFILE_NAME", profile_name);
         crate::env::set_var("RAYU_PROVIDER_PROFILE_ACTIVE", "1");
@@ -1224,6 +1225,11 @@ struct BootstrapCredentialState {
 }
 
 async fn detect_bootstrap_credentials() -> BootstrapCredentialState {
+    if !crate::rayu::other_providers_enabled() {
+        return BootstrapCredentialState {
+            has_any: crate::rayu::has_credentials(),
+        };
+    }
     let (has_claude, has_openai) = tokio::join!(
         tokio::task::spawn_blocking(|| auth::claude::load_credentials().is_ok()),
         tokio::task::spawn_blocking(|| auth::codex::load_credentials().is_ok()),
@@ -1233,9 +1239,15 @@ async fn detect_bootstrap_credentials() -> BootstrapCredentialState {
     let has_openrouter = provider::openrouter::has_credentials();
     let has_copilot = auth::copilot::has_copilot_credentials();
     let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
+    let has_rayu = crate::rayu::has_credentials();
 
     BootstrapCredentialState {
-        has_any: has_claude || has_openai || has_openrouter || has_copilot || has_api_key,
+        has_any: has_rayu
+            || has_claude
+            || has_openai
+            || has_openrouter
+            || has_copilot
+            || has_api_key,
     }
 }
 

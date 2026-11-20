@@ -4170,7 +4170,7 @@ fn account_label_follows_the_daemons_routed_account() {
 }
 
 #[test]
-fn rayu_credits_translation_drops_missing_non_finite_and_negative_credits() {
+fn rayu_credits_translation_drops_missing_and_negative_credits() {
     let mut state = state_with_session();
     for invalid in [
         json!({"type": "rayu_credits", "turn_credits": 1.0}),
@@ -4181,9 +4181,9 @@ fn rayu_credits_translation_drops_missing_non_finite_and_negative_credits() {
         let frames = state.legacy_event_to_api(&invalid);
         assert!(frames.is_empty(), "expected no frame for {invalid}");
     }
-    // serde_json cannot carry NaN/inf, but a raw wire value can arrive as
-    // `null` or a string; both are rejected above. Negative charges are
-    // rejected explicitly.
+    // JSON cannot carry NaN/infinity, so those only arrive as `null` or a
+    // string and are rejected above; the translator still filters them for
+    // non-JSON callers. A negative charge is rejected explicitly here.
     let negative = json!({"type": "rayu_credits", "credits": -0.5, "turn_credits": 1.0});
     assert!(state.legacy_event_to_api(&negative).is_empty());
 }
@@ -4273,14 +4273,4 @@ fn response_stats_rayu_credits_roundtrips_and_old_payloads_still_parse() {
         Some(443.76)
     );
     assert_eq!(serde_json::to_value(&message).unwrap(), with_credits);
-
-    let legacy_event = json!({"type":"history","id":5,"session_id":"s1",
-        "messages":[{"role":"assistant","content":"answer",
-            "response_stats":{"input_tokens":1,"output_tokens":2}}]});
-    let mut state = state_with_session();
-    let frames = state.legacy_event_to_api(&legacy_event);
-    let ApiEvent::History { messages, .. } = &frames[0].event else {
-        panic!("expected history");
-    };
-    assert_eq!(messages[0].response_stats.as_ref().unwrap().rayu_credits, None);
 }

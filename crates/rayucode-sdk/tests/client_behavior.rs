@@ -1248,3 +1248,75 @@ fn tool_names_arrive_before_any_arguments_and_interleaved_inputs_keep_call_ids()
         );
     }
 }
+
+#[test]
+fn run_collects_rayu_credits_and_ignores_other_sessions() {
+    let client = fake_harness(|frame, writer| {
+        if let ApiRequest::SendMessage { session_id, .. } = &frame.request {
+            push(
+                ApiEvent::MessageAccepted {
+                    session_id: session_id.clone(),
+                },
+                writer,
+            );
+            // Another session's charge must never leak into this turn result.
+            push(
+                ApiEvent::RayuCredits {
+                    session_id: "other".into(),
+                    credits: 99.0,
+                    turn_credits: 99.0,
+                    billable_tokens: None,
+                    tokens_per_credit: None,
+                },
+                writer,
+            );
+            for (credits, turn_credits) in [(1.25, 1.25), (2.50, 3.75)] {
+                push(
+                    ApiEvent::RayuCredits {
+                        session_id: session_id.clone(),
+                        credits,
+                        turn_credits,
+                        billable_tokens: Some(1250),
+                        tokens_per_credit: Some(1000),
+                    },
+                    writer,
+                );
+            }
+            push(
+                ApiEvent::TurnDone {
+                    session_id: session_id.clone(),
+                    pending_soft_interrupts: None,
+                },
+                writer,
+            );
+        }
+    });
+    let result = client.run("s1", "hello", Default::default()).unwrap();
+    assert_eq!(result.rayu_credits, Some(3.75));
+}
+
+#[test]
+fn run_leaves_rayu_credits_absent_for_byok_turns() {
+    let client = fake_harness(|frame, writer| {
+        if let ApiRequest::SendMessage { session_id, .. } = &frame.request {
+            push(
+                ApiEvent::TextDelta {
+                    session_id: session_id.clone(),
+                    message_id: None,
+                    text: "answer".into(),
+                },
+                writer,
+            );
+            push(
+                ApiEvent::TurnDone {
+                    session_id: session_id.clone(),
+                    pending_soft_interrupts: None,
+                },
+                writer,
+            );
+        }
+    });
+    let result = client.run("s1", "hello", Default::default()).unwrap();
+    assert_eq!(result.rayu_credits, None);
+    assert_eq!(result.text, "answer");
+}

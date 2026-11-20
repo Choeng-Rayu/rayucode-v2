@@ -675,6 +675,9 @@ pub(crate) fn rayu_auth_gate_enabled_in_tui() -> bool {
     if let Some(enabled) = TEST_RAYU_GATE_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
+    if !crate::rayu::other_providers_enabled() {
+        return true;
+    }
     if cfg!(test) && std::env::var_os("USE_RAYU_OAUTH").is_none() {
         return false;
     }
@@ -837,9 +840,11 @@ impl super::App {
                 true
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
-                self.set_status_notice(
-                    "Rayu authentication is required before using other providers",
-                );
+                self.set_status_notice(if crate::rayu::other_providers_enabled() {
+                    "Rayu authentication is required before using other providers"
+                } else {
+                    "Rayu authentication is required to continue"
+                });
                 true
             }
             _ => false,
@@ -942,6 +947,15 @@ impl super::App {
         &mut self,
         target: crate::provider_catalog::LoginProviderTarget,
     ) -> bool {
+        if !crate::rayu::other_providers_enabled()
+            && !matches!(target, crate::provider_catalog::LoginProviderTarget::Rayu)
+        {
+            self.push_display_message(super::DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
+            self.set_status_notice("Other providers are disabled in this build");
+            return true;
+        }
         if matches!(target, crate::provider_catalog::LoginProviderTarget::Rayu)
             || !rayu_auth_gate_active_in_tui()
         {

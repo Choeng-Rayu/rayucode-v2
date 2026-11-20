@@ -105,10 +105,12 @@ impl App {
                 .map(|provider| provider_entry(provider, host))
                 .collect()
         };
-        entries.extend([
-            import_entry("openai", "OpenAI", host),
-            import_entry("claude", "Claude", host),
-        ]);
+        if crate::rayu::other_providers_enabled() {
+            entries.extend([
+                import_entry("openai", "OpenAI", host),
+                import_entry("claude", "Claude", host),
+            ]);
+        }
         self.inline_view_state = None;
         self.inline_interactive_state = Some(InlineInteractiveState {
             kind: PickerKind::Login,

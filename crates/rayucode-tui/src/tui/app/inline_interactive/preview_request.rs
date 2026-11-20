@@ -84,11 +84,15 @@ pub(super) fn picker_account_provider_scope(picker: &InlineInteractiveState) -> 
         PickerAction::Account(AccountPickerAction::OpenCenter {
             provider_filter: Some(ref provider_id),
         }) => Some(provider_id.as_str()),
+        PickerAction::Account(
+            AccountPickerAction::RayuStatus | AccountPickerAction::RayuManage,
+        ) => Some("rayu"),
         PickerAction::Account(AccountPickerAction::OpenCenter {
             provider_filter: None,
         })
         | PickerAction::Model
         | PickerAction::Login(_)
+        | PickerAction::LoginRayuApiKey
         | PickerAction::RemoteLogin { .. }
         | PickerAction::RemoteImportDecision { .. }
         | PickerAction::Logout(_)

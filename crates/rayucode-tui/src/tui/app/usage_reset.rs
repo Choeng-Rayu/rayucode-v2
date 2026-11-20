@@ -298,6 +298,12 @@ impl App {
         let Some(action) = parse(input) else {
             return false;
         };
+        if !crate::rayu::other_providers_enabled() {
+            self.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
+            return true;
+        }
         let action = match action {
             Action::Prepare(None) => {
                 // A pending review or in-flight check stays the target of a bare /reset.

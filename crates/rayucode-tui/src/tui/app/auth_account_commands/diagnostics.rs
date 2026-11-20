@@ -106,6 +106,14 @@ pub(super) fn render_provider_settings_markdown(app: &App, provider_id: &str) ->
             lines.push("  - /account openai-compatible env-file <file.env|clear>".to_string());
             lines.push("  - /account openai-compatible default-model <model|clear>".to_string());
         }
+        "rayu" => {
+            lines.push("Commands:".to_string());
+            lines.push("  - /account rayu status".to_string());
+            lines.push("  - /account rayu login".to_string());
+            lines.push("  - /account rayu api-key".to_string());
+            lines.push("  - /account rayu manage".to_string());
+            lines.push("  - /account rayu logout".to_string());
+        }
         _ => {
             lines.push("No provider-specific settings are exposed here yet. Use /login to configure credentials.".to_string());
         }
@@ -125,10 +133,14 @@ pub(super) fn render_provider_settings_markdown(app: &App, provider_id: &str) ->
                 .as_deref()
                 .unwrap_or("(provider default)")
         ));
-        lines.push(
-            "  - /account default-provider <claude|openai|copilot|gemini|openrouter|auto>"
-                .to_string(),
-        );
+        if !crate::rayu::other_providers_enabled() {
+            lines.push("  - /account default-provider <rayu|auto>".to_string());
+        } else {
+            lines.push(
+                "  - /account default-provider <claude|openai|copilot|gemini|openrouter|auto>"
+                    .to_string(),
+            );
+        }
         lines.push("  - /account default-model <model|clear>".to_string());
     }
 

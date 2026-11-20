@@ -480,8 +480,13 @@ pub(super) async fn run_usage_command(emit_json: bool) -> Result<()> {
         println!("No connected providers");
         println!();
         println!("Next steps:");
-        println!("- Use `rayu login --provider claude` to connect Claude OAuth.");
-        println!("- Use `rayu login --provider openai` to connect ChatGPT / Codex OAuth.");
+        if !crate::rayu::other_providers_enabled() {
+            println!("- Use `rayu login --provider rayu` to sign in with your Rayu account.");
+            println!("- Or set `RAYU_API_KEY` (or run `rayu login --provider rayu --api-key <key>`).");
+        } else {
+            println!("- Use `rayu login --provider claude` to connect Claude OAuth.");
+            println!("- Use `rayu login --provider openai` to connect ChatGPT / Codex OAuth.");
+        }
         return Ok(());
     }
 
@@ -630,39 +635,44 @@ fn banked_reset_report(provider: &crate::usage::ProviderUsage) -> Option<UsageBa
 }
 
 pub(super) fn list_cli_providers() -> Vec<ProviderListEntry> {
-    let choices = [
-        ProviderChoice::Rayu,
-        ProviderChoice::Claude,
-        ProviderChoice::Openai,
-        ProviderChoice::Openrouter,
-        ProviderChoice::Azure,
-        ProviderChoice::Opencode,
-        ProviderChoice::OpencodeGo,
-        ProviderChoice::Zai,
-        ProviderChoice::Kimi,
-        ProviderChoice::Conifer,
-        ProviderChoice::Groq,
-        ProviderChoice::Mistral,
-        ProviderChoice::Perplexity,
-        ProviderChoice::TogetherAi,
-        ProviderChoice::Deepinfra,
-        ProviderChoice::Novita,
-        ProviderChoice::Xai,
-        ProviderChoice::GrokBuild,
-        ProviderChoice::Chutes,
-        ProviderChoice::Cerebras,
-        ProviderChoice::AlibabaCodingPlan,
-        ProviderChoice::OpenaiCompatible,
-        ProviderChoice::Cursor,
-        ProviderChoice::Copilot,
-        ProviderChoice::Gemini,
-        ProviderChoice::Antigravity,
-        ProviderChoice::Google,
-        ProviderChoice::Auto,
-    ];
+    let choices: &[ProviderChoice] = if !crate::rayu::other_providers_enabled() {
+        &[ProviderChoice::Rayu]
+    } else {
+        &[
+            ProviderChoice::Rayu,
+            ProviderChoice::Claude,
+            ProviderChoice::Openai,
+            ProviderChoice::Openrouter,
+            ProviderChoice::Azure,
+            ProviderChoice::Opencode,
+            ProviderChoice::OpencodeGo,
+            ProviderChoice::Zai,
+            ProviderChoice::Kimi,
+            ProviderChoice::Conifer,
+            ProviderChoice::Groq,
+            ProviderChoice::Mistral,
+            ProviderChoice::Perplexity,
+            ProviderChoice::TogetherAi,
+            ProviderChoice::Deepinfra,
+            ProviderChoice::Novita,
+            ProviderChoice::Xai,
+            ProviderChoice::GrokBuild,
+            ProviderChoice::Chutes,
+            ProviderChoice::Cerebras,
+            ProviderChoice::AlibabaCodingPlan,
+            ProviderChoice::OpenaiCompatible,
+            ProviderChoice::Cursor,
+            ProviderChoice::Copilot,
+            ProviderChoice::Gemini,
+            ProviderChoice::Antigravity,
+            ProviderChoice::Google,
+            ProviderChoice::Auto,
+        ]
+    };
 
     choices
-        .into_iter()
+        .iter()
+        .copied()
         .map(|choice| {
             if let Some(provider) = provider_init::login_provider_for_choice(&choice) {
                 ProviderListEntry {
@@ -914,6 +924,42 @@ mod tests {
                 .recommended_actions
                 .iter()
                 .any(|line| { line == "Review current state: rayu auth status --json" })
+        );
+    }
+
+    #[tokio::test]
+    async fn enable_other_provider_false_locks_cli_providers_and_login_to_rayu() {
+        let _rayu_only = crate::rayu::scoped_other_providers_enabled_for_tests(false);
+
+        let listed = list_cli_providers();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "rayu");
+
+        crate::auth::AuthStatus::invalidate_cache();
+        let status = build_auth_status_report();
+        assert_eq!(status.providers.len(), 1);
+        assert_eq!(status.providers[0].id, "rayu");
+
+        // Must return a clean error instead of panicking on unreachable!().
+        let login_err = crate::cli::login::run_login(
+            &ProviderChoice::Openai,
+            None,
+            crate::cli::login::LoginOptions::default(),
+        )
+        .await
+        .expect_err("non-Rayu CLI login must fail cleanly when ENABLE_OTHER_PROVIDER=false");
+        assert!(
+            login_err.to_string().contains("ENABLE_OTHER_PROVIDER=false"),
+            "unexpected login error: {login_err}"
+        );
+
+        let init_err = provider_init::init_provider_for_validation(&ProviderChoice::Openai, None)
+            .await
+            .err()
+            .expect("non-Rayu provider init must fail cleanly when ENABLE_OTHER_PROVIDER=false");
+        assert!(
+            init_err.to_string().contains("ENABLE_OTHER_PROVIDER=false"),
+            "unexpected init error: {init_err}"
         );
     }
 }

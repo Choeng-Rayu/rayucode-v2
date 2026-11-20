@@ -50,6 +50,7 @@ async fn remove_account(
     label: &str,
     confirmed: bool,
 ) -> Result<String> {
+    crate::rayu::require_other_providers_enabled()?;
     if !matches!(provider, "claude" | "openai") {
         bail!("Provider does not support named account removal")
     }
@@ -91,6 +92,7 @@ async fn remove_account(
 }
 
 async fn reset(agent: &Agent, args: &[String]) -> Result<String> {
+    crate::rayu::require_other_providers_enabled()?;
     let (provider, action) = match args {
         [] => (
             if agent
@@ -321,6 +323,7 @@ fn settings(provider: &str) -> Result<String> {
 }
 
 fn save_compat(setting: &str, raw: &str) -> Result<String> {
+    crate::rayu::require_other_providers_enabled()?;
     let value = clear(raw);
     let old = crate::provider_catalog::resolve_openai_compatible_profile(
         crate::provider_catalog::OPENAI_COMPAT_PROFILE,
@@ -433,9 +436,15 @@ pub(super) async fn execute(
         }
         ("default-provider", [value]) => {
             let value = clear(value);
-            if value.is_some_and(|v| {
-                !matches!(v, "claude" | "openai" | "copilot" | "gemini" | "openrouter")
-                    && rayucode_provider_core::AuthRoute::parse(v).is_none()
+            if !crate::rayu::other_providers_enabled() {
+                if value.is_some_and(|v| !v.eq_ignore_ascii_case("rayu")) {
+                    bail!("{}", crate::rayu::other_providers_disabled_message())
+                }
+            } else if value.is_some_and(|v| {
+                !matches!(
+                    v,
+                    "rayu" | "claude" | "openai" | "copilot" | "gemini" | "openrouter"
+                ) && rayucode_provider_core::AuthRoute::parse(v).is_none()
             }) {
                 bail!("Unsupported default provider")
             }
@@ -447,6 +456,7 @@ pub(super) async fn execute(
             "Saved default model on runtime host for future sessions.".into()
         }
         ("openai", [setting, value]) => {
+            crate::rayu::require_other_providers_enabled()?;
             let provider = agent.provider_handle();
             match setting.as_str() {
                 "transport" => {
@@ -508,6 +518,7 @@ pub(super) async fn execute(
         }
         ("compat", [setting, value]) => save_compat(setting, value)?,
         ("copilot", [setting, value]) if setting == "premium" => {
+            crate::rayu::require_other_providers_enabled()?;
             let value = match value.as_str() {
                 "normal" | "clear" => None,
                 "one" | "zero" => Some(value.as_str()),

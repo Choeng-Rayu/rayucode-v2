@@ -28,17 +28,35 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
         .strip_prefix("/login ")
         .or_else(|| trimmed.strip_prefix("/auth "))
     {
+        let normalized_arg = provider.trim().to_ascii_lowercase();
+        if matches!(
+            normalized_arg.as_str(),
+            "rayu-api" | "rayu-key" | "rayu-apikey" | "api-key"
+        ) {
+            app.start_rayu_api_key_login();
+            return true;
+        }
         let providers = crate::provider_catalog::tui_login_providers();
         if let Some(provider) =
             crate::provider_catalog::resolve_login_selection(provider, &providers)
         {
             app.start_login_provider(provider);
+        } else if !crate::rayu::other_providers_enabled()
+            && crate::provider_catalog::is_known_other_provider_id(provider.trim())
+        {
+            app.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
         } else {
-            let valid = providers
-                .iter()
-                .map(|provider| provider.id)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let valid = if !crate::rayu::other_providers_enabled() {
+                "rayu, rayu-api".to_string()
+            } else {
+                providers
+                    .iter()
+                    .map(|provider| provider.id)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             app.push_display_message(DisplayMessage::error(format!(
                 "Unknown provider '{}'. Use: {}",
                 provider.trim(),
@@ -58,6 +76,12 @@ pub(crate) fn handle_auth_command(app: &mut App, trimmed: &str) -> bool {
             crate::provider_catalog::resolve_login_selection(provider, &providers)
         {
             app.start_logout_provider(provider);
+        } else if !crate::rayu::other_providers_enabled()
+            && crate::provider_catalog::is_known_other_provider_id(provider.trim())
+        {
+            app.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
         } else {
             let valid = providers
                 .iter()
@@ -154,6 +178,11 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
             }));
         }
         "switch" | "use" => {
+            if !crate::rayu::other_providers_enabled() {
+                return Some(Err(
+                    crate::rayu::other_providers_disabled_message().to_string()
+                ));
+            }
             if remainder.is_empty() {
                 return Some(Err("Usage: /account switch <label>".to_string()));
             }
@@ -162,12 +191,22 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
             }));
         }
         "add" | "login" => {
+            if !crate::rayu::other_providers_enabled() {
+                return Some(Ok(AccountCommand::Login {
+                    provider_id: "rayu".to_string(),
+                }));
+            }
             return Some(Ok(AccountCommand::Add {
                 provider_id: "claude".to_string(),
                 label: (!remainder.is_empty()).then(|| remainder.to_string()),
             }));
         }
         "remove" | "rm" | "delete" => {
+            if !crate::rayu::other_providers_enabled() {
+                return Some(Err(
+                    crate::rayu::other_providers_disabled_message().to_string()
+                ));
+            }
             if remainder.is_empty() {
                 return Some(Err("Usage: /account remove <label>".to_string()));
             }
@@ -178,10 +217,12 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
         }
         "default-provider" => {
             if remainder.is_empty() {
-                return Some(Err(
+                let usage = if !crate::rayu::other_providers_enabled() {
+                    "Usage: /account default-provider <rayu|auto>"
+                } else {
                     "Usage: /account default-provider <claude|openai|copilot|gemini|openrouter|auto>"
-                        .to_string(),
-                ));
+                };
+                return Some(Err(usage.to_string()));
             }
             return Some(Ok(AccountCommand::SetDefaultProvider(
                 normalize_clearish_value(remainder),
@@ -231,6 +272,7 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
                 provider_id: provider.id.to_string(),
             },
             "status" if provider.id == "rayu" => AccountCommand::RayuStatus,
+            "api-key" | "apikey" | "key" if provider.id == "rayu" => AccountCommand::RayuApiKey,
             "manage" if provider.id == "rayu" => AccountCommand::RayuManage,
             "logout" if provider.id == "rayu" => AccountCommand::RayuLogout,
             "add" => AccountCommand::Add {
@@ -343,6 +385,20 @@ fn parse_account_command(trimmed: &str) -> Option<Result<AccountCommand, String>
         return Some(Ok(parsed));
     }
 
+    if !crate::rayu::other_providers_enabled() {
+        if crate::provider_catalog::is_known_other_provider_id(first)
+            || first.eq_ignore_ascii_case("openai-compatible")
+        {
+            return Some(Err(
+                crate::rayu::other_providers_disabled_message().to_string()
+            ));
+        }
+        return Some(Err(format!(
+            "Unknown /account command '{}'. Use /account, /account rayu status, /account rayu login, /account rayu api-key, /account rayu manage, or /account rayu logout.",
+            first
+        )));
+    }
+
     Some(Ok(AccountCommand::SwitchShorthand {
         label: first.to_string(),
     }))
@@ -422,6 +478,7 @@ pub(crate) fn execute_account_command_local(app: &mut App, command: AccountComma
             }
         }
         AccountCommand::RayuStatus => app.show_rayu_status(),
+        AccountCommand::RayuApiKey => app.start_rayu_api_key_login(),
         AccountCommand::RayuManage => app.open_rayu_account_management(),
         AccountCommand::RayuLogout => app.start_rayu_account_logout(),
         AccountCommand::Add { provider_id, label } => {
@@ -767,10 +824,37 @@ fn normalize_normal_mode_value(value: &str) -> Option<String> {
 
 fn save_default_provider_setting(app: &mut App, provider: Option<&str>) {
     let normalized = provider.map(|provider| provider.trim().to_ascii_lowercase());
+    if !crate::rayu::other_providers_enabled() {
+        let provider = match normalized.as_deref() {
+            None | Some("auto") => None,
+            Some("rayu" | "rayucode") => Some("rayu".to_string()),
+            Some(_) => {
+                app.push_display_message(DisplayMessage::error(
+                    crate::rayu::other_providers_disabled_message().to_string(),
+                ));
+                return;
+            }
+        };
+        match crate::config::Config::set_default_provider(provider.as_deref()) {
+            Ok(()) => {
+                let label = provider.as_deref().unwrap_or("auto");
+                app.set_status_notice(format!("Default provider: {}", label));
+                app.push_display_message(DisplayMessage::system(format!(
+                    "Saved default provider: {}. This affects future sessions.",
+                    label
+                )));
+            }
+            Err(err) => app.push_display_message(DisplayMessage::error(format!(
+                "Failed to save default provider: {}",
+                err
+            ))),
+        }
+        return;
+    }
     let provider = match normalized.as_deref() {
         None => None,
         Some("auto") => None,
-        Some("claude" | "openai" | "copilot" | "gemini" | "openrouter") => normalized,
+        Some("rayu" | "claude" | "openai" | "copilot" | "gemini" | "openrouter") => normalized,
         // Accept the dual-auth credential spellings too (`anthropic-api`,
         // `claude-api`, `openai-api`, `claude-oauth`, ...). These are the same
         // values the model picker's "set default" path writes, and startup now

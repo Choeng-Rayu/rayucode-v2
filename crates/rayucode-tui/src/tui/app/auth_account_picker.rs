@@ -11,6 +11,10 @@ use super::*;
 impl App {
     /// Cycle only switchable accounts, never login/add/remove management rows.
     pub(crate) fn cycle_account(&mut self, forward: bool) {
+        if !crate::rayu::other_providers_enabled() {
+            self.set_status_notice("No saved OAuth accounts to switch");
+            return;
+        }
         use crate::tui::{AccountPickerAction, PickerAction};
         let remote = self.is_remote || crate::tui::is_ssh_remote();
         let (accounts, current): (Vec<AccountPickerAction>, Option<usize>) = if remote {
@@ -94,6 +98,12 @@ impl App {
     }
 
     pub(crate) fn remote_account_management_notice(&mut self) {
+        if !crate::rayu::other_providers_enabled() {
+            self.push_display_message(DisplayMessage::system(
+                "Remote accounts: Rayu account management must be performed directly on the remote host. No local credentials or settings were accessed.",
+            ));
+            return;
+        }
         self.push_display_message(DisplayMessage::system(
             "Remote accounts: only daemon-reported Claude/OpenAI OAuth account inventory and switching are supported here. Account creation/replacement/removal, diagnostics, provider settings and saved defaults must be managed directly on the remote host. For SSH login use /login <provider>. No local credentials or settings were accessed.",
         ));
@@ -104,6 +114,10 @@ impl App {
     pub(crate) fn open_remote_account_picker(&mut self, provider_filter: Option<&str>) {
         self.account_picker_overlay = None;
         self.inline_interactive_state = None;
+        if !crate::rayu::other_providers_enabled() {
+            self.remote_account_management_notice();
+            return;
+        }
         let Some(scope) = self.inline_account_picker_scope_key(provider_filter) else {
             self.remote_account_management_notice();
             return;
@@ -218,6 +232,13 @@ impl App {
             return;
         }
         let Some(scope_key) = self.inline_account_picker_scope_key(provider_filter) else {
+            if !crate::rayu::other_providers_enabled() {
+                self.push_display_message(DisplayMessage::error(
+                    crate::rayu::other_providers_disabled_message().to_string(),
+                ));
+                self.set_status_notice("Account picker unavailable");
+                return;
+            }
             if let Some(provider_id) = provider_filter {
                 self.push_display_message(DisplayMessage::system(format!(
                     "Inline /account picker is only available for Claude and OpenAI accounts. Use /account {} settings for provider details.",
@@ -236,8 +257,27 @@ impl App {
             "all" => "All credentials",
             "claude" => "Claude",
             "openai" => "OpenAI",
+            "rayu" => "Rayu",
             _ => scope_key.as_str(),
         };
+
+        if scope_key == "rayu" {
+            let (models, selected) = self.build_rayu_inline_account_picker();
+            self.inline_view_state = None;
+            self.inline_interactive_state = Some(crate::tui::InlineInteractiveState {
+                kind: crate::tui::PickerKind::Account,
+                filtered: (0..models.len()).collect(),
+                entries: models,
+                selected,
+                column: 0,
+                filter: String::new(),
+                preview: false,
+            });
+            self.input.clear();
+            self.cursor_pos = 0;
+            self.set_status_notice("Account → Rayu (↑↓ or j/k, Enter select)");
+            return;
+        }
 
         let (mut models, mut selected) = match scope_key.as_str() {
             "all" => self.build_all_inline_account_picker(),
@@ -438,6 +478,15 @@ impl App {
         &self,
         provider_filter: Option<&str>,
     ) -> Option<String> {
+        if !crate::rayu::other_providers_enabled() {
+            return match provider_filter.map(|f| f.trim().to_ascii_lowercase()) {
+                None => Some("rayu".to_string()),
+                Some(ref f) if matches!(f.as_str(), "rayu" | "rayucode") => {
+                    Some("rayu".to_string())
+                }
+                Some(_) => None,
+            };
+        }
         if let Some(filter) = provider_filter {
             return match filter.to_ascii_lowercase().as_str() {
                 "claude" | "anthropic" => Some("claude".to_string()),
@@ -459,8 +508,77 @@ impl App {
         {
             "claude" => Some("claude".to_string()),
             "openai" => Some("openai".to_string()),
+            "rayu" => Some("rayu".to_string()),
             _ => None,
         }
+    }
+
+    fn build_rayu_inline_account_picker(&self) -> (Vec<crate::tui::PickerEntry>, usize) {
+        let rayu_provider = crate::provider_catalog::RAYU_LOGIN_PROVIDER;
+        let has_session = crate::rayu::has_usable_session();
+        let has_key = crate::rayu::has_api_key();
+        let mut entries = Vec::with_capacity(6);
+
+        let mut oauth_entry = Self::account_credential_entry(
+            "Rayu Account".to_string(),
+            "OAuth".to_string(),
+            if has_session { "active" } else { "setup" }.to_string(),
+            if has_session {
+                "Signed in with Rayu account · refresh or switch account".to_string()
+            } else {
+                "Sign in with your Rayu account in the browser".to_string()
+            },
+            crate::tui::PickerAction::Login(rayu_provider),
+        );
+        oauth_entry.is_current = has_session;
+        oauth_entry.recommended = true;
+        entries.push(oauth_entry);
+
+        let mut key_entry = Self::account_credential_entry(
+            "Rayu API Key".to_string(),
+            "API key".to_string(),
+            if has_key { "configured" } else { "setup" }.to_string(),
+            "Enter or replace RAYU_API_KEY (rayu_sk_live_…)".to_string(),
+            crate::tui::PickerAction::LoginRayuApiKey,
+        );
+        key_entry.is_current = !has_session && has_key;
+        entries.push(key_entry);
+
+        entries.push(Self::account_credential_entry(
+            "Rayu status & credits".to_string(),
+            "Rayu".to_string(),
+            "status".to_string(),
+            "Inspect Rayu account profile, plan, and remaining credits (/account rayu status)"
+                .to_string(),
+            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::RayuStatus),
+        ));
+        entries.push(Self::account_credential_entry(
+            "Manage Rayu account".to_string(),
+            "Rayu".to_string(),
+            "manage".to_string(),
+            "Open Rayu account & billing dashboard in browser (/account rayu manage)".to_string(),
+            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::RayuManage),
+        ));
+        entries.push(Self::account_credential_entry(
+            "Log out of Rayu".to_string(),
+            "Rayu".to_string(),
+            "logout".to_string(),
+            "Clear local Rayu session, saved API key, and cached catalogs (/account rayu logout)"
+                .to_string(),
+            crate::tui::PickerAction::Logout(rayu_provider),
+        ));
+        entries.push(Self::account_credential_entry(
+            "open account center".to_string(),
+            "Rayu".to_string(),
+            "manage".to_string(),
+            "Open Rayu diagnostics and default model settings".to_string(),
+            crate::tui::PickerAction::Account(crate::tui::AccountPickerAction::OpenCenter {
+                provider_filter: Some("rayu".to_string()),
+            }),
+        ));
+
+        let selected = if !has_session && has_key { 1 } else { 0 };
+        (entries, selected)
     }
 
     fn build_all_inline_account_picker(&self) -> (Vec<crate::tui::PickerEntry>, usize) {

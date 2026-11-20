@@ -879,3 +879,125 @@ fn deferred_multiprovider_and_auth_status_respect_rayu_gate_and_config_sources()
     }
     drop(env);
 }
+
+#[test]
+fn enable_other_provider_false_locks_auth_and_multiprovider_to_rayu_only() {
+    use crate::provider::Provider;
+
+    let env = RayuTestEnv::new();
+    let prev_or = std::env::var_os("OPENROUTER_API_KEY");
+    let prev_ant = std::env::var_os("ANTHROPIC_API_KEY");
+    let prev_oai = std::env::var_os("OPENAI_API_KEY");
+    let prev_prov = std::env::var_os("RAYU_PROVIDER");
+
+    // Register Rayu runtime so MultiProvider can hot-init Rayu when credentials exist.
+    crate::provider::external::register_external_provider(
+        crate::provider::external::RAYU_RUNTIME,
+        || std::sync::Arc::new(rayucode_provider_rayu_runtime::RayuProvider::new()),
+    );
+
+    crate::env::set_var("USE_RAYU_OAUTH", "false");
+    crate::env::set_var("OPENROUTER_API_KEY", "sk-or-fake-3p");
+    crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-fake-3p");
+    crate::env::set_var("OPENAI_API_KEY", "sk-oai-fake-3p");
+    crate::env::set_var("RAYU_PROVIDER", "openai");
+
+    {
+        let _rayu_only = scoped_other_providers_enabled_for_tests(false);
+        assert!(!other_providers_enabled());
+
+        // Even with USE_RAYU_OAUTH=false, Rayu auth gate stays enforced when no other provider exists.
+        assert!(auth_gate_enabled());
+        assert!(auth_gate_active());
+        assert!(!auth_gate_error_message().contains("third-party"));
+
+        // AuthStatus probes ONLY Rayu, ignoring 3P keys in env.
+        crate::auth::AuthStatus::invalidate_cache();
+        let status = crate::auth::AuthStatus::check_fast();
+        assert_eq!(status.rayu, crate::auth::AuthState::NotConfigured);
+        assert_eq!(status.anthropic.state, crate::auth::AuthState::NotConfigured);
+        assert_eq!(status.openai, crate::auth::AuthState::NotConfigured);
+        assert_eq!(status.openrouter, crate::auth::AuthState::NotConfigured);
+        assert!(!status.has_any_available());
+        assert!(!crate::auth::AuthStatus::has_any_untrusted_external_auth());
+        assert!(
+            crate::external_auth::detected_external_auth_review_candidates()
+                .unwrap()
+                .is_empty()
+        );
+
+        // Unauthenticated MultiProvider reports "Rayu" (never "Claude").
+        let multi = crate::provider::MultiProvider::from_auth_status(status);
+        assert_eq!(multi.name(), RAYU_PROVIDER_DISPLAY_NAME);
+        assert_eq!(multi.display_name(), RAYU_PROVIDER_DISPLAY_NAME);
+        assert_eq!(multi.model(), "rayu");
+        assert!(multi.available_models().is_empty());
+        assert!(multi.model_routes().is_empty());
+
+        // Saving a Rayu API key activates Rayu only; 3P runtimes stay unloaded even after auth change.
+        save_api_key("rayu_sk_live_rayu_only_test").unwrap();
+        crate::auth::AuthStatus::invalidate_cache();
+        let authed_status = crate::auth::AuthStatus::check_fast();
+        assert_eq!(authed_status.rayu, crate::auth::AuthState::Available);
+        assert_eq!(
+            authed_status.anthropic.state,
+            crate::auth::AuthState::NotConfigured
+        );
+        assert_eq!(authed_status.openai, crate::auth::AuthState::NotConfigured);
+        assert!(authed_status.has_any_available());
+
+        multi.on_auth_changed();
+        assert_eq!(multi.name(), RAYU_PROVIDER_DISPLAY_NAME);
+        assert_eq!(multi.display_name(), RAYU_PROVIDER_DISPLAY_NAME);
+        assert!(
+            multi
+                .model_routes()
+                .iter()
+                .all(|route| route.api_method == RAYU_ROUTE_API_METHOD)
+        );
+
+        // Explicit non-Rayu prefixes are rejected cleanly; rayu: and bare models stay on Rayu.
+        for blocked in [
+            "openai:gpt-5",
+            "claude:claude-sonnet-4-5",
+            "claude-oauth@work:claude-sonnet-4-5",
+            "openrouter:anthropic/claude-sonnet-4",
+            "deepseek:deepseek-chat",
+            "grok-build:grok-4",
+        ] {
+            let err = multi
+                .set_model(blocked)
+                .expect_err(&format!("{blocked} must be rejected in Rayu-only mode"));
+            assert!(
+                err.to_string().contains("ENABLE_OTHER_PROVIDER=false"),
+                "unexpected error for {blocked}: {err}"
+            );
+        }
+        multi
+            .set_model("rayu:rayu-test-model-1")
+            .expect("rayu: prefix should work");
+        assert_eq!(multi.model(), "rayu-test-model-1");
+        multi
+            .set_model("rayu-test-model-2")
+            .expect("bare model should route to Rayu");
+        assert_eq!(multi.model(), "rayu-test-model-2");
+    }
+
+    match prev_or {
+        Some(v) => crate::env::set_var("OPENROUTER_API_KEY", v),
+        None => crate::env::remove_var("OPENROUTER_API_KEY"),
+    }
+    match prev_ant {
+        Some(v) => crate::env::set_var("ANTHROPIC_API_KEY", v),
+        None => crate::env::remove_var("ANTHROPIC_API_KEY"),
+    }
+    match prev_oai {
+        Some(v) => crate::env::set_var("OPENAI_API_KEY", v),
+        None => crate::env::remove_var("OPENAI_API_KEY"),
+    }
+    match prev_prov {
+        Some(v) => crate::env::set_var("RAYU_PROVIDER", v),
+        None => crate::env::remove_var("RAYU_PROVIDER"),
+    }
+    drop(env);
+}

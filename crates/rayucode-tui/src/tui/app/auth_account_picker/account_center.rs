@@ -36,14 +36,24 @@ impl App {
             ..Default::default()
         };
 
+        let other_providers_enabled = crate::rayu::other_providers_enabled();
         let provider_scope = provider_filter.map(|value| value.to_string());
-        let claude_accounts = crate::auth::claude::list_accounts().unwrap_or_default();
-        let openai_accounts = crate::auth::codex::list_accounts().unwrap_or_default();
-        let add_replace_scope_supports_multi_account = match provider_scope.as_deref() {
-            None => true,
-            Some("claude" | "anthropic" | "openai") => true,
-            Some(_) => false,
+        let claude_accounts = if other_providers_enabled {
+            crate::auth::claude::list_accounts().unwrap_or_default()
+        } else {
+            Vec::new()
         };
+        let openai_accounts = if other_providers_enabled {
+            crate::auth::codex::list_accounts().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let add_replace_scope_supports_multi_account = other_providers_enabled
+            && match provider_scope.as_deref() {
+                None => true,
+                Some("claude" | "anthropic" | "openai") => true,
+                Some(_) => false,
+            };
 
         if add_replace_scope_supports_multi_account {
             let scoped_saved_accounts = match provider_scope.as_deref() {
@@ -280,6 +290,36 @@ impl App {
                         },
                     ));
                 }
+                "rayu" => {
+                    items.push(AccountPickerItem::action(
+                        provider.id,
+                        provider.display_name,
+                        "Enter Rayu API key",
+                        "Configure or replace RAYU_API_KEY (rayu_sk_live_…)",
+                        AccountPickerCommand::SubmitInput("/login rayu-api".to_string()),
+                    ));
+                    items.push(AccountPickerItem::action(
+                        provider.id,
+                        provider.display_name,
+                        "Account status & credits",
+                        "Inspect Rayu profile, plan, and remaining credits",
+                        AccountPickerCommand::SubmitInput("/account rayu status".to_string()),
+                    ));
+                    items.push(AccountPickerItem::action(
+                        provider.id,
+                        provider.display_name,
+                        "Manage account",
+                        "Open Rayu account & billing dashboard in browser",
+                        AccountPickerCommand::SubmitInput("/account rayu manage".to_string()),
+                    ));
+                    items.push(AccountPickerItem::action(
+                        provider.id,
+                        provider.display_name,
+                        "Log out",
+                        "Clear local Rayu session and saved API key",
+                        AccountPickerCommand::SubmitInput("/account rayu logout".to_string()),
+                    ));
+                }
                 _ => {}
             }
         }
@@ -290,7 +330,12 @@ impl App {
             "Default provider",
             cfg.provider.default_provider.as_deref().unwrap_or("auto"),
             AccountPickerCommand::PromptValue {
-                prompt: "Enter the default provider: claude, openai, copilot, gemini, openrouter, or auto.".to_string(),
+                prompt: if other_providers_enabled {
+                    "Enter the default provider: claude, openai, copilot, gemini, openrouter, or auto."
+                        .to_string()
+                } else {
+                    "Enter the default provider: rayu or auto.".to_string()
+                },
                 command_prefix: "/account default-provider".to_string(),
                 empty_value: Some("auto".to_string()),
                 status_notice: "Account: editing default provider...".to_string(),

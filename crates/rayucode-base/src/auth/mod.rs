@@ -59,15 +59,18 @@ use std::time::Instant;
 /// must never be served for another (issue #361: parallel provider tests
 /// intermittently observed another test's auth snapshot through this global
 /// cache). In production the home never changes, so the key check is free.
-type CachedAuthStatus = (AuthStatus, Instant, Option<std::ffi::OsString>);
+type CachedAuthStatus = (AuthStatus, Instant, (Option<std::ffi::OsString>, bool));
 
 static AUTH_STATUS_CACHE: std::sync::LazyLock<RwLock<Option<CachedAuthStatus>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
 static AUTH_STATUS_FAST_CACHE: std::sync::LazyLock<RwLock<Option<CachedAuthStatus>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
 
-fn auth_cache_home_key() -> Option<std::ffi::OsString> {
-    std::env::var_os("RAYU_HOME")
+fn auth_cache_home_key() -> (Option<std::ffi::OsString>, bool) {
+    (
+        std::env::var_os("RAYU_HOME"),
+        crate::rayu::other_providers_enabled(),
+    )
 }
 
 const AUTH_STATUS_CACHE_TTL_SECS: u64 = 30;
@@ -425,6 +428,9 @@ impl AuthStatus {
 
     /// Returns true if at least one provider has usable credentials.
     pub fn has_any_available(&self) -> bool {
+        if !crate::rayu::other_providers_enabled() {
+            return self.rayu == AuthState::Available;
+        }
         self.anthropic.state == AuthState::Available
             || self.rayu == AuthState::Available
             || self.openai == AuthState::Available
@@ -478,6 +484,9 @@ impl AuthStatus {
     }
 
     pub fn has_any_untrusted_external_auth() -> bool {
+        if !crate::rayu::other_providers_enabled() {
+            return false;
+        }
         crate::auth::codex::has_unconsented_legacy_credentials()
             || crate::auth::claude::has_unconsented_external_auth().is_some()
             || crate::auth::external::has_any_unconsented_external_auth()
@@ -511,6 +520,14 @@ impl AuthStatus {
     }
 
     pub fn state_for_provider(&self, provider: LoginProviderDescriptor) -> AuthState {
+        if !crate::rayu::other_providers_enabled()
+            && !matches!(
+                provider.target,
+                crate::provider_catalog::LoginProviderTarget::Rayu
+            )
+        {
+            return AuthState::NotConfigured;
+        }
         match provider.target {
             crate::provider_catalog::LoginProviderTarget::AutoImport => {
                 if Self::has_any_untrusted_external_auth() {
@@ -858,6 +875,9 @@ fn build_auth_status_uncached(mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static
     let mut timings = Vec::new();
 
     record_auth_probe_step(&mut timings, "rayu", || probe_rayu_status(&mut status));
+    if !crate::rayu::other_providers_enabled() {
+        return (status, timings);
+    }
     record_auth_probe_step(&mut timings, "anthropic", || {
         probe_anthropic_status(&mut status)
     });

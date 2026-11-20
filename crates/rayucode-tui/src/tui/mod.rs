@@ -1740,6 +1740,8 @@ pub enum AccountPickerAction {
     Add { provider_id: String },
     Replace { provider_id: String, label: String },
     OpenCenter { provider_filter: Option<String> },
+    RayuStatus,
+    RayuManage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1756,6 +1758,7 @@ pub enum PickerAction {
     Model,
     Account(AccountPickerAction),
     Login(crate::provider_catalog::LoginProviderDescriptor),
+    LoginRayuApiKey,
     /// Native SSH actions never dispatch through laptop-local authentication.
     RemoteLogin {
         provider: &'static str,
@@ -1822,6 +1825,8 @@ impl InlineInteractiveState {
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
         PickerAction::Model
+        | PickerAction::LoginRayuApiKey
+        | PickerAction::Account(AccountPickerAction::RayuStatus | AccountPickerAction::RayuManage)
         | PickerAction::RemoteLogin { .. }
         | PickerAction::RemoteImportDecision { .. }
         | PickerAction::AgentTarget(_)
@@ -2091,6 +2096,8 @@ impl PickerEntry {
             PickerAction::Account(AccountPickerAction::Add { .. }) => Some("add"),
             PickerAction::Account(AccountPickerAction::Replace { .. }) => Some("replace"),
             PickerAction::Account(AccountPickerAction::OpenCenter { .. }) => Some("manage"),
+            PickerAction::Account(AccountPickerAction::RayuStatus) => Some("status"),
+            PickerAction::Account(AccountPickerAction::RayuManage) => Some("manage"),
             _ => None,
         }
     }

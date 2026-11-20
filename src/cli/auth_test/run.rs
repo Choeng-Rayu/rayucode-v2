@@ -521,6 +521,15 @@ pub(crate) fn resolve_auth_test_targets(
     choice: &super::provider_init::ProviderChoice,
     all_configured: bool,
 ) -> Result<Vec<ResolvedAuthTestTarget>> {
+    if !crate::rayu::other_providers_enabled()
+        && !all_configured
+        && !matches!(
+            choice,
+            super::provider_init::ProviderChoice::Auto | super::provider_init::ProviderChoice::Rayu
+        )
+    {
+        crate::rayu::require_other_providers_enabled()?;
+    }
     if all_configured || matches!(choice, super::provider_init::ProviderChoice::Auto) {
         // Auth-test discovery must not run slow or blocking provider-global probes.
         // Generic OpenAI-compatible providers only need local env/config detection,

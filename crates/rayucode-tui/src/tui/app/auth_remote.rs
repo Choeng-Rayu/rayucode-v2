@@ -78,6 +78,12 @@ impl App {
         if !crate::tui::is_ssh_remote() {
             return;
         }
+        if !crate::rayu::other_providers_enabled() {
+            self.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
+            return;
+        }
         if !matches!(provider, "claude" | "openai") {
             self.push_display_message(DisplayMessage::error(
                 "Named SSH login is supported only for Claude and OpenAI. No login was started.",
@@ -111,6 +117,12 @@ impl App {
         self.remote_login_onboarding.dismiss();
         let words: Vec<_> = input.split_whitespace().collect();
         let importing = words.get(1) == Some(&"--import-local");
+        if !crate::rayu::other_providers_enabled() && importing {
+            self.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
+            return true;
+        }
         let provider = words.get(if importing { 2 } else { 1 }).copied();
         if importing
             && (words.len() > 3 || provider.is_some_and(|p| !matches!(p, "openai" | "claude")))

@@ -2532,6 +2532,17 @@ impl App {
             return;
         }
         match action {
+            AccountPickerAction::RayuStatus => self.show_rayu_status(),
+            AccountPickerAction::RayuManage => self.open_rayu_account_management(),
+            AccountPickerAction::Switch { .. }
+            | AccountPickerAction::Add { .. }
+            | AccountPickerAction::Replace { .. }
+                if !crate::rayu::other_providers_enabled() =>
+            {
+                self.push_display_message(DisplayMessage::error(
+                    crate::rayu::other_providers_disabled_message().to_string(),
+                ));
+            }
             AccountPickerAction::Switch { provider_id, label } => match provider_id.as_str() {
                 "claude" => self.switch_account(&label),
                 "openai" => self.switch_openai_account(&label),
@@ -3832,6 +3843,10 @@ impl App {
                     PickerAction::Login(provider) => {
                         self.inline_interactive_state = None;
                         self.start_login_provider(provider);
+                    }
+                    PickerAction::LoginRayuApiKey => {
+                        self.inline_interactive_state = None;
+                        self.start_rayu_api_key_login();
                     }
                     PickerAction::RemoteLogin { provider, import } => {
                         self.inline_interactive_state = None;

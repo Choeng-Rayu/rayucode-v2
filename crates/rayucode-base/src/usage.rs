@@ -303,6 +303,12 @@ where
     } else {
         Vec::new()
     };
+    if !crate::rayu::other_providers_enabled() {
+        cached_results.retain(|report| {
+            report.provider_name.eq_ignore_ascii_case("rayu")
+                || report.provider_name.starts_with("Rayu")
+        });
+    }
     local_activity::refresh_cached_oauth_activity(&mut cached_results);
     sort_reports_most_recent_first(&mut cached_results);
     let all_fresh = if let Ok(map) = cache.lock() {
@@ -457,58 +463,60 @@ fn attach_activity(report: &mut ProviderUsage, source_key: &str) {
 fn enqueue_provider_usage_tasks(tasks: &mut tokio::task::JoinSet<Option<ProviderUsage>>) -> usize {
     let mut total = 0usize;
 
-    total += enqueue_anthropic_usage_tasks(tasks);
-    total += enqueue_openai_usage_tasks(tasks);
-    total += enqueue_api_key_usage_tasks(tasks);
+    if crate::rayu::other_providers_enabled() {
+        total += enqueue_anthropic_usage_tasks(tasks);
+        total += enqueue_openai_usage_tasks(tasks);
+        total += enqueue_api_key_usage_tasks(tasks);
 
-    if openrouter_api_key().is_some() {
-        tasks.spawn(async {
-            fetch_openrouter_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "openrouter");
-                report
-            })
-        });
-        total += 1;
-    }
+        if openrouter_api_key().is_some() {
+            tasks.spawn(async {
+                fetch_openrouter_usage_report().await.map(|mut report| {
+                    attach_activity(&mut report, "openrouter");
+                    report
+                })
+            });
+            total += 1;
+        }
 
-    if auth::copilot::has_copilot_credentials() {
-        tasks.spawn(async {
-            fetch_copilot_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "copilot");
-                report
-            })
-        });
-        total += 1;
-    }
+        if auth::copilot::has_copilot_credentials() {
+            tasks.spawn(async {
+                fetch_copilot_usage_report().await.map(|mut report| {
+                    attach_activity(&mut report, "copilot");
+                    report
+                })
+            });
+            total += 1;
+        }
 
-    if auth::antigravity::has_cached_auth() {
-        tasks.spawn(async {
-            fetch_antigravity_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "antigravity");
-                report
-            })
-        });
-        total += 1;
-    }
+        if auth::antigravity::has_cached_auth() {
+            tasks.spawn(async {
+                fetch_antigravity_usage_report().await.map(|mut report| {
+                    attach_activity(&mut report, "antigravity");
+                    report
+                })
+            });
+            total += 1;
+        }
 
-    if auth::gemini::has_api_key() {
-        tasks.spawn(async {
-            fetch_gemini_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "gemini");
-                report
-            })
-        });
-        total += 1;
-    }
+        if auth::gemini::has_api_key() {
+            tasks.spawn(async {
+                fetch_gemini_usage_report().await.map(|mut report| {
+                    attach_activity(&mut report, "gemini");
+                    report
+                })
+            });
+            total += 1;
+        }
 
-    if auth::cursor::has_cursor_native_auth() {
-        tasks.spawn(async {
-            fetch_cursor_usage_report().await.map(|mut report| {
-                attach_activity(&mut report, "cursor");
-                report
-            })
-        });
-        total += 1;
+        if auth::cursor::has_cursor_native_auth() {
+            tasks.spawn(async {
+                fetch_cursor_usage_report().await.map(|mut report| {
+                    attach_activity(&mut report, "cursor");
+                    report
+                })
+            });
+            total += 1;
+        }
     }
 
     if crate::rayu::has_credentials() {
@@ -569,9 +577,11 @@ fn activity_source_has_dedicated_report(source_key: &str) -> bool {
 /// One catch-all task that reports every ledger entry without a dedicated
 /// fetcher: last-used recency plus locally tracked spend.
 fn enqueue_activity_sweeper_task(tasks: &mut tokio::task::JoinSet<Option<ProviderUsage>>) -> usize {
+    let other_enabled = crate::rayu::other_providers_enabled();
     let leftover: Vec<(String, crate::provider_activity::ProviderActivityEntry)> =
         crate::provider_activity::all_entries()
             .into_iter()
+            .filter(|(key, _)| other_enabled || key == "rayu")
             .filter(|(key, _)| !activity_source_has_dedicated_report(key))
             .collect();
     if leftover.is_empty() {

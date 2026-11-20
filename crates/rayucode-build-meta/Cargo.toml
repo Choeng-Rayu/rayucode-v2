@@ -14,6 +14,9 @@ publish = false
 # without duplicating the build script (which would double-increment the dev
 # patch counter).
 
+[features]
+test-support = []
+
 [dependencies]
 
 [build-dependencies]

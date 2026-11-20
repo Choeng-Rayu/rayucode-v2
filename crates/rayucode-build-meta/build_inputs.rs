@@ -90,6 +90,127 @@ pub fn metadata_rerun_inputs(path: Option<&OsStr>) -> Vec<String> {
     inputs
 }
 
+/// Parse a boolean build flag (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`).
+#[allow(dead_code)] // Used by build.rs and unit tests.
+pub fn parse_bool_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Read the last value assigned to `target_key` from `.env`-formatted text.
+///
+/// Supports optional `export ` prefix, blank/comment lines, `\r\n` endings,
+/// single/double quotes, and inline `#` comments on unquoted values.
+#[allow(dead_code)] // Used by build.rs and unit tests.
+pub fn read_dotenv_value(contents: &str, target_key: &str) -> Option<String> {
+    let mut found = None;
+    for (idx, raw_line) in contents.lines().enumerate() {
+        let line = if idx == 0 {
+            raw_line.strip_prefix('\u{feff}').unwrap_or(raw_line)
+        } else {
+            raw_line
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let body = trimmed
+            .strip_prefix("export")
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .map(str::trim_start)
+            .unwrap_or(trimmed);
+        let Some((key, raw_value)) = body.split_once('=') else {
+            continue;
+        };
+        if key.trim() != target_key {
+            continue;
+        }
+        found = Some(parse_dotenv_rhs(raw_value));
+    }
+    found
+}
+
+fn parse_dotenv_rhs(raw_value: &str) -> String {
+    let trimmed = raw_value.trim();
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        let mut out = String::new();
+        let mut chars = rest.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+                '"' => break,
+                other => out.push(other),
+            }
+        }
+        return out;
+    }
+    if let Some(rest) = trimmed.strip_prefix('\'') {
+        return rest.split_once('\'').map_or(rest, |(val, _)| val).to_string();
+    }
+    // Strip inline `#` comment on unquoted values when `#` is at the start or
+    // preceded by whitespace.
+    let mut end = trimmed.len();
+    let mut prev_ws = true;
+    for (byte_idx, ch) in trimmed.char_indices() {
+        if ch == '#' && prev_ws {
+            end = byte_idx;
+            break;
+        }
+        prev_ws = ch.is_whitespace();
+    }
+    trimmed[..end].trim().to_string()
+}
+
+/// Resolve compile-time `ENABLE_OTHER_PROVIDER` with precedence:
+/// 1. Explicit process env `ENABLE_OTHER_PROVIDER` (when non-empty)
+/// 2. Workspace `.env` `ENABLE_OTHER_PROVIDER` (when non-empty)
+/// 3. Default `true`
+///
+/// Returns `(enabled, optional_warning)`.
+#[allow(dead_code)] // Used by build.rs and unit tests.
+pub fn resolve_enable_other_provider(
+    env_value: Option<&str>,
+    dotenv_contents: Option<&str>,
+) -> (bool, Option<String>) {
+    if let Some(raw) = env_value.map(str::trim).filter(|v| !v.is_empty()) {
+        return match parse_bool_flag(raw) {
+            Some(value) => (value, None),
+            None => (
+                true,
+                Some(format!(
+                    "Invalid ENABLE_OTHER_PROVIDER env value {:?}; expected true/false, defaulting to true",
+                    raw
+                )),
+            ),
+        };
+    }
+
+    if let Some(contents) = dotenv_contents
+        && let Some(raw) = read_dotenv_value(contents, "ENABLE_OTHER_PROVIDER")
+        && !raw.trim().is_empty()
+    {
+        return match parse_bool_flag(&raw) {
+            Some(value) => (value, None),
+            None => (
+                true,
+                Some(format!(
+                    "Invalid ENABLE_OTHER_PROVIDER value {:?} in .env; expected true/false, defaulting to true",
+                    raw
+                )),
+            ),
+        };
+    }
+
+    (true, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +296,52 @@ mod tests {
         let inputs = metadata_rerun_inputs(Some(OsStr::new(".rayu-release-metadata/build.txt")));
         assert!(inputs.contains(&"cargo:rerun-if-changed=.rayu-release-metadata/build.txt".into()));
         assert_eq!(inputs.len(), 4);
+    }
+
+    #[test]
+    fn dotenv_enable_other_provider_parsing_and_precedence() {
+        assert_eq!(resolve_enable_other_provider(None, None), (true, None));
+        assert_eq!(
+            resolve_enable_other_provider(Some("false"), Some("ENABLE_OTHER_PROVIDER=true")),
+            (false, None)
+        );
+        assert_eq!(
+            resolve_enable_other_provider(Some("true"), Some("ENABLE_OTHER_PROVIDER=false")),
+            (true, None)
+        );
+        assert_eq!(
+            resolve_enable_other_provider(Some(""), Some("ENABLE_OTHER_PROVIDER=false\r\n")),
+            (false, None)
+        );
+
+        let dotenv = "\u{feff}# leading comment\r\n\
+            USE_RAYU_OAUTH=true\r\n\
+            ENABLE_OTHER_PROVIDER=true # first\r\n\
+            export ENABLE_OTHER_PROVIDER=\"false\" # last wins\r\n";
+        assert_eq!(
+            read_dotenv_value(dotenv, "ENABLE_OTHER_PROVIDER").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            resolve_enable_other_provider(None, Some(dotenv)),
+            (false, None)
+        );
+
+        let single_quoted = "ENABLE_OTHER_PROVIDER='0' # comment";
+        assert_eq!(
+            resolve_enable_other_provider(None, Some(single_quoted)),
+            (false, None)
+        );
+
+        let unquoted_comment = "ENABLE_OTHER_PROVIDER=no # rayu only";
+        assert_eq!(
+            resolve_enable_other_provider(None, Some(unquoted_comment)),
+            (false, None)
+        );
+
+        let (enabled, warning) =
+            resolve_enable_other_provider(None, Some("ENABLE_OTHER_PROVIDER=maybe"));
+        assert!(enabled);
+        assert!(warning.is_some());
     }
 }

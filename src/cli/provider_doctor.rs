@@ -16,6 +16,11 @@ pub async fn run_provider_doctor_command(
     tier: &str,
     emit_json: bool,
 ) -> Result<()> {
+    if !crate::rayu::other_providers_enabled()
+        && crate::auth::lifecycle::normalized_auth_provider_id(Some(provider)) != Some("rayu")
+    {
+        crate::rayu::require_other_providers_enabled()?;
+    }
     let tier: DoctorTier = tier
         .parse()
         .map_err(|message: String| anyhow!("{message}"))?;

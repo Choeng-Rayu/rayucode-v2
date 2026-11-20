@@ -499,6 +499,9 @@ pub fn profile_for_choice(choice: &ProviderChoice) -> Option<OpenAiCompatiblePro
 
 #[allow(deprecated)]
 pub fn login_provider_for_choice(choice: &ProviderChoice) -> Option<LoginProviderDescriptor> {
+    if !crate::rayu::other_providers_enabled() && !matches!(choice, ProviderChoice::Rayu) {
+        return None;
+    }
     PROVIDER_CHOICE_LOGIN_PROVIDERS
         .iter()
         .find(|(candidate, _)| candidate == choice)
@@ -737,6 +740,20 @@ fn maybe_enable_compat_provider_for_auto() -> Result<bool> {
 }
 
 async fn detect_auto_provider_flags() -> AutoProviderAvailability {
+    if !crate::rayu::other_providers_enabled() {
+        let auth_status = auth::AuthStatus::check_fast();
+        return AutoProviderAvailability {
+            has_claude: false,
+            has_openai: false,
+            has_copilot: false,
+            has_antigravity: false,
+            has_gemini: false,
+            has_cursor: false,
+            has_openrouter: false,
+            has_rayu: auth_status.rayu == auth::AuthState::Available,
+            auth_status,
+        };
+    }
     // An exec-based daemon reload inherits this one-shot, non-secret snapshot
     // from its predecessor. Consuming it avoids repeating credential discovery
     // on the reload critical path while ensuring later processes cannot reuse it.
@@ -1511,6 +1528,17 @@ async fn init_provider_with_model_policy(
 
     let model = model.or_else(|| env_model_for_choice(choice));
 
+    if !crate::rayu::other_providers_enabled() {
+        if let Ok(profile_name) = std::env::var("RAYU_PROVIDER_PROFILE_NAME")
+            && !profile_name.trim().is_empty()
+        {
+            anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+        }
+        if !matches!(choice, ProviderChoice::Auto | ProviderChoice::Rayu) {
+            anyhow::bail!("{}", crate::rayu::other_providers_disabled_message());
+        }
+    }
+
     if let Ok(profile_name) = std::env::var("RAYU_PROVIDER_PROFILE_NAME")
         && !profile_name.trim().is_empty()
     {
@@ -1518,7 +1546,8 @@ async fn init_provider_with_model_policy(
         crate::env::set_var("RAYU_PROVIDER_PROFILE_ACTIVE", "1");
     }
 
-    if std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
+    if crate::rayu::other_providers_enabled()
+        && std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
         && std::env::var_os("RAYU_NAMED_PROVIDER_PROFILE").is_none()
     {
         if let Some(profile) = profile_for_choice(choice) {
@@ -1701,7 +1730,9 @@ async fn init_provider_with_model_policy(
             let auto_detect_start = std::time::Instant::now();
             let mut availability = detect_auto_provider_flags().await;
 
-            let reviewed_external_auth = if !availability.has_any_provider() {
+            let reviewed_external_auth = if crate::rayu::other_providers_enabled()
+                && !availability.has_any_provider()
+            {
                 maybe_run_external_auth_auto_import_flow().await?.is_some()
             } else {
                 false
@@ -1713,7 +1744,7 @@ async fn init_provider_with_model_policy(
 
             let auto_detect_ms = auto_detect_start.elapsed().as_millis();
 
-            if !availability.has_any_provider() {
+            if crate::rayu::other_providers_enabled() && !availability.has_any_provider() {
                 let supplemental_start = std::time::Instant::now();
                 let mut has_claude = availability.has_claude;
                 let mut has_openai = availability.has_openai;

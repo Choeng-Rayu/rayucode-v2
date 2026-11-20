@@ -121,9 +121,11 @@ pub async fn run() -> Result<()> {
     // Invert the legacy provider_catalog -> auth dependency: provider_catalog
     // consults registered fallback resolvers, and auth (the higher layer)
     // registers its external-CLI credential scan here.
-    crate::provider_catalog::register_api_key_fallback_resolver(
-        crate::auth::external::load_api_key_for_env,
-    );
+    if crate::rayu::other_providers_enabled() {
+        crate::provider_catalog::register_api_key_fallback_resolver(
+            crate::auth::external::load_api_key_for_env,
+        );
+    }
 
     // Register externally-implemented provider runtimes with the base
     // provider registry. These crates sit downstream of rayucode-base (so
@@ -264,12 +266,15 @@ fn is_telemetry_subcommand_invocation(
 /// discoverable as more providers move out of the base crate.
 pub fn register_external_provider_runtimes() {
     crate::provider::external::register_external_provider(
-        crate::provider::external::GROK_BUILD_RUNTIME,
-        || std::sync::Arc::new(rayucode_provider_grok_build_runtime::GrokBuildProvider::new()),
-    );
-    crate::provider::external::register_external_provider(
         crate::provider::external::RAYU_RUNTIME,
         || std::sync::Arc::new(rayucode_provider_rayu_runtime::RayuProvider::new()),
+    );
+    if !crate::rayu::other_providers_enabled() {
+        return;
+    }
+    crate::provider::external::register_external_provider(
+        crate::provider::external::GROK_BUILD_RUNTIME,
+        || std::sync::Arc::new(rayucode_provider_grok_build_runtime::GrokBuildProvider::new()),
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::GEMINI_RUNTIME,
@@ -574,6 +579,9 @@ fn report_main_error(error: &anyhow::Error) {
 }
 
 pub(super) fn cli_auth_gate_active() -> bool {
+    if !crate::rayu::other_providers_enabled() {
+        return !crate::rayu::has_credentials();
+    }
     if cfg!(test) && std::env::var_os("USE_RAYU_OAUTH").is_none() {
         return false;
     }
@@ -590,6 +598,9 @@ pub(super) fn require_cli_auth_gate() -> Result<()> {
 /// Apply read-only legacy `providers.json` compat fallback strictly behind the
 /// Rayu Auth gate as the lowest-precedence provider source (never mutates disk).
 pub(super) fn maybe_enable_legacy_compat_provider_fallback() -> Result<bool> {
+    if !crate::rayu::other_providers_enabled() {
+        return Ok(false);
+    }
     let rayu_auth_satisfied = !cli_auth_gate_active();
     if !rayu_auth_satisfied {
         return Ok(false);

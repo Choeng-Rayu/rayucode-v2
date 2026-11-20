@@ -47,6 +47,9 @@ pub fn bump_catalog_generation() {
 /// first successful start this is a single atomic load. It is a no-op when no
 /// tokio runtime is available, and will start on a later call once one is.
 pub(crate) fn ensure_started() {
+    if !crate::rayu::other_providers_enabled() {
+        return;
+    }
     if SCHEDULER_STARTED.get().is_some() {
         return;
     }
@@ -88,6 +91,9 @@ pub(crate) fn profile_catalog_cache_needs_refresh(
 /// stale or missing. Returns the number of refreshes actually scheduled, which
 /// is typically zero on most sweeps.
 fn sweep_stale_profile_catalogs() -> usize {
+    if !crate::rayu::other_providers_enabled() {
+        return 0;
+    }
     let mut scheduled = 0usize;
 
     for profile in crate::provider_catalog::openai_compatible_profiles()

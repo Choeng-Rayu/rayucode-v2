@@ -30,6 +30,75 @@ pub const UPDATE_SEMVER: &str = env!("RAYU_UPDATE_SEMVER");
 pub const CHANGELOG: &str = env!("RAYU_CHANGELOG");
 /// Compile-time root crate package version.
 pub const PKG_VERSION: &str = env!("RAYU_PKG_VERSION");
+/// Compile-time switch controlling whether non-Rayu providers are enabled.
+///
+/// Resolved at build time from `ENABLE_OTHER_PROVIDER` (process env takes precedence over
+/// workspace `.env`, defaulting to `true`).
+pub const ENABLE_OTHER_PROVIDER: bool =
+    matches!(env!("RAYU_ENABLE_OTHER_PROVIDER").as_bytes(), b"true");
+
+#[cfg(any(test, feature = "test-support"))]
+std::thread_local! {
+    static TEST_OTHER_PROVIDERS_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static IS_TEST_HARNESS_EXE: OnceLock<bool> = OnceLock::new();
+
+#[cfg(any(test, feature = "test-support"))]
+fn is_test_harness_exe() -> bool {
+    *IS_TEST_HARNESS_EXE.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.parent()
+                    .and_then(|parent| parent.file_name())
+                    .map(|name| name == std::ffi::OsStr::new("deps"))
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Returns whether non-Rayu providers are enabled for this build.
+///
+/// In production binaries this returns the compile-time constant [`ENABLE_OTHER_PROVIDER`].
+/// In Cargo unit-test harness executables (`target/<profile>/deps/*`), it defaults to `true`
+/// unless explicitly scoped with [`scoped_other_providers_enabled_for_tests`] so existing
+/// multi-provider unit tests remain independent of the developer's local `.env`, while spawned
+/// `rayu` binaries still observe [`ENABLE_OTHER_PROVIDER`].
+pub fn other_providers_enabled() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(override_value) = TEST_OTHER_PROVIDERS_OVERRIDE.with(|cell| cell.get()) {
+            return override_value;
+        }
+        if is_test_harness_exe() {
+            return true;
+        }
+    }
+    ENABLE_OTHER_PROVIDER
+}
+
+/// RAII guard restoring the previous thread-local `other_providers_enabled` test override on drop.
+#[cfg(any(test, feature = "test-support"))]
+pub struct ScopedOtherProvidersGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for ScopedOtherProvidersGuard {
+    fn drop(&mut self) {
+        TEST_OTHER_PROVIDERS_OVERRIDE.with(|cell| cell.set(self.previous));
+    }
+}
+
+/// Temporarily override [`other_providers_enabled`] on the current test thread.
+#[cfg(any(test, feature = "test-support"))]
+pub fn scoped_other_providers_enabled_for_tests(enabled: bool) -> ScopedOtherProvidersGuard {
+    let previous = TEST_OTHER_PROVIDERS_OVERRIDE.with(|cell| cell.replace(Some(enabled)));
+    ScopedOtherProvidersGuard { previous }
+}
 
 static RUNTIME_RELEASE_SEMVER: OnceLock<Option<String>> = OnceLock::new();
 static RUNTIME_VERSION: OnceLock<Option<String>> = OnceLock::new();
@@ -168,5 +237,20 @@ mod tests {
         assert_eq!(parse_release_semver("1.2"), None);
         assert_eq!(parse_release_semver("1.2.3.4"), None);
         assert_eq!(parse_release_semver("1.2.beta"), None);
+    }
+
+    #[test]
+    fn scoped_other_providers_override_restores_previous_state() {
+        assert!(super::other_providers_enabled());
+        {
+            let _outer = super::scoped_other_providers_enabled_for_tests(false);
+            assert!(!super::other_providers_enabled());
+            {
+                let _inner = super::scoped_other_providers_enabled_for_tests(true);
+                assert!(super::other_providers_enabled());
+            }
+            assert!(!super::other_providers_enabled());
+        }
+        assert!(super::other_providers_enabled());
     }
 }

@@ -266,6 +266,9 @@ pub fn pending_external_auth_review_candidates() -> Result<Vec<ExternalAuthRevie
 /// machine where rayu is already set up. Importing an already-trusted
 /// candidate is a no-op, so offering these is safe.
 pub fn detected_external_auth_review_candidates() -> Result<Vec<ExternalAuthReviewCandidate>> {
+    if !crate::rayu::other_providers_enabled() {
+        return Ok(Vec::new());
+    }
     let mut candidates = Vec::new();
 
     for source in auth::external::detected_sources() {
@@ -672,6 +675,9 @@ async fn validate_external_auth_review_candidate(
 }
 
 pub async fn maybe_run_external_auth_auto_import_flow() -> Result<Option<usize>> {
+    if !crate::rayu::other_providers_enabled() {
+        return Ok(None);
+    }
     if !can_prompt_for_external_auth() {
         return Ok(None);
     }
@@ -712,6 +718,7 @@ pub async fn run_external_auth_auto_import_candidates(
     candidates: &[ExternalAuthReviewCandidate],
     selected: &[usize],
 ) -> Result<ExternalAuthAutoImportOutcome> {
+    crate::rayu::require_other_providers_enabled()?;
     let mut outcome = ExternalAuthAutoImportOutcome {
         imported: 0,
         messages: Vec::new(),
@@ -780,6 +787,7 @@ pub async fn run_external_auth_import_candidates_preserving_existing(
     candidates: &[ExternalAuthReviewCandidate],
     selected: &[usize],
 ) -> Result<ExternalAuthAutoImportOutcome> {
+    crate::rayu::require_other_providers_enabled()?;
     auth::AuthStatus::invalidate_cache();
     let status = auth::AuthStatus::check();
     let mut kept = Vec::new();

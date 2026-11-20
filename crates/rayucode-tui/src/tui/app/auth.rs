@@ -179,9 +179,15 @@ impl App {
             message.push_str(line.trim_end());
             message.push('\n');
         }
-        message.push_str(
-            "\nUse /login <provider> to authenticate. /login rayu signs in to your Rayu account for hosted models; /account opens the provider/account management center, /account <provider> settings shows provider-specific controls, and /auth doctor or /account <provider> doctor shows recovery steps.",
-        );
+        if !crate::rayu::other_providers_enabled() {
+            message.push_str(
+                "\nUse /login rayu to sign in with your Rayu account, /login rayu-api to configure RAYU_API_KEY, /account to manage your Rayu account and credits, or /auth doctor to inspect Rayu authentication status.",
+            );
+        } else {
+            message.push_str(
+                "\nUse /login <provider> to authenticate. /login rayu signs in to your Rayu account for hosted models; /account opens the provider/account management center, /account <provider> settings shows provider-specific controls, and /auth doctor or /account <provider> doctor shows recovery steps.",
+            );
+        }
         self.push_display_message(DisplayMessage::system(message));
     }
 
@@ -207,6 +213,12 @@ impl App {
 
         if matches!(provider.target, LoginProviderTarget::Rayu) {
             self.start_rayu_account_logout();
+            return;
+        }
+        if !crate::rayu::other_providers_enabled() {
+            self.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
             return;
         }
 
@@ -299,6 +311,10 @@ impl App {
     }
 
     pub(super) fn start_logout_all(&mut self) {
+        if !crate::rayu::other_providers_enabled() {
+            self.start_rayu_account_logout();
+            return;
+        }
         let mut summary: Vec<String> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
 
@@ -444,6 +460,17 @@ impl App {
         &mut self,
         provider: crate::provider_catalog::LoginProviderDescriptor,
     ) {
+        if !crate::rayu::other_providers_enabled()
+            && !matches!(
+                provider.target,
+                crate::provider_catalog::LoginProviderTarget::Rayu
+            )
+        {
+            self.push_display_message(DisplayMessage::error(
+                crate::rayu::other_providers_disabled_message().to_string(),
+            ));
+            return;
+        }
         if self.rayu_gate_blocks_provider_login(provider.target) {
             return;
         }

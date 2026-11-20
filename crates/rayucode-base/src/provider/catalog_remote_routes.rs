@@ -25,6 +25,28 @@ pub fn remote_model_routes_fallback(
             .collect();
     }
 
+    if !crate::rayu::other_providers_enabled() {
+        return remote_available_entries
+            .iter()
+            .filter(|model| {
+                model.starts_with("rayu:")
+                    || (provider_is_rayu
+                        && !has_prefixed_rayu
+                        && !model.contains('/')
+                        && !model.trim().is_empty())
+            })
+            .map(|model| ModelRoute {
+                model: model.clone(),
+                provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "Rayu hosted models · live catalog".to_string(),
+                usage: None,
+                cheapness: None,
+            })
+            .collect();
+    }
+
     let auth = AuthStatus::check_fast();
     let mut routes = Vec::new();
     for model in remote_available_entries {
@@ -230,13 +252,21 @@ pub fn remote_model_routes_lightweight_fallback(
     let has_prefixed_rayu = remote_available_entries
         .iter()
         .any(|model| model.starts_with("rayu:"));
-    let provider = remote_provider_name
-        .map(str::to_string)
-        .unwrap_or_else(|| "remote".to_string());
+    let other_providers_enabled = crate::rayu::other_providers_enabled();
+    let provider = if !other_providers_enabled {
+        crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string()
+    } else {
+        remote_provider_name
+            .map(str::to_string)
+            .unwrap_or_else(|| "remote".to_string())
+    };
     let mut routes = Vec::new();
     for model in remote_available_entries {
         let model_is_rayu =
             model.starts_with("rayu:") || (is_rayu && !has_prefixed_rayu && !model.contains('/'));
+        if !other_providers_enabled && !model_is_rayu {
+            continue;
+        }
         if !model_is_rayu && !is_listable_model_name(model) {
             continue;
         }
@@ -263,11 +293,19 @@ pub fn remote_model_routes_lightweight_fallback(
         });
     }
 
-    if routes.is_empty() && !current_model.is_empty() && current_model != "unknown" {
+    if routes.is_empty()
+        && !current_model.is_empty()
+        && current_model != "unknown"
+        && (other_providers_enabled || current_model != RAYU_PROFILE_ID)
+    {
         routes.push(ModelRoute {
             model: current_model.to_string(),
             provider,
-            api_method: "current".to_string(),
+            api_method: if other_providers_enabled {
+                "current".to_string()
+            } else {
+                crate::rayu::RAYU_ROUTE_API_METHOD.to_string()
+            },
             available: true,
             detail: "refreshing model catalog…".to_string(),
             usage: None,

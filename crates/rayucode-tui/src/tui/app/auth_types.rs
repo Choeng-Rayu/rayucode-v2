@@ -157,6 +157,7 @@ pub(crate) enum AccountCommand {
         provider_id: String,
     },
     RayuStatus,
+    RayuApiKey,
     RayuManage,
     RayuLogout,
     Add {

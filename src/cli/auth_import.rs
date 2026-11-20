@@ -75,6 +75,16 @@ fn read_private_stdin() -> Result<Vec<u8>, &'static str> {
 }
 
 pub(crate) fn run(choice: &ProviderChoice, json: bool) -> Result<()> {
+    if !crate::rayu::other_providers_enabled() {
+        let message = crate::rayu::other_providers_disabled_message();
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"status":"error", "provider":"unsupported", "message":message})
+            );
+        }
+        anyhow::bail!("{message}");
+    }
     let provider = selected_provider(choice);
     let provider_id = provider
         .as_ref()

@@ -7,5 +7,12 @@ edition = "2024"
 name = "rayucode_provider_metadata"
 path = "src/lib.rs"
 
+[features]
+test-support = ["rayucode-build-meta/test-support"]
+
 [dependencies]
+rayucode-build-meta = { path = "../rayucode-build-meta" }
 url = "2"
+
+[dev-dependencies]
+rayucode-build-meta = { path = "../rayucode-build-meta", features = ["test-support"] }

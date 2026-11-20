@@ -1079,3 +1079,130 @@ fn rayu_auth_gate_forces_rayu_onboarding_and_blocks_esc_3p_and_turns() -> anyhow
         Ok(())
     })
 }
+
+#[test]
+fn enable_other_provider_false_hides_third_party_providers_across_tui() -> anyhow::Result<()> {
+    with_temp_rayu_home(|| {
+        let _rayu_dir = RayuConfigDirGuard::new();
+        let _rayu_only = crate::rayu::scoped_other_providers_enabled_for_tests(false);
+        crate::rayu::save_api_key("rayu_sk_live_tui_rayu_only_test")?;
+        crate::auth::AuthStatus::invalidate_cache();
+
+        let mut app = crate::tui::app::tests::create_test_app();
+
+        // /login inline picker shows ONLY Rayu Account (OAuth) + Rayu API Key.
+        app.open_login_picker_inline();
+        let login_picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("login picker should open");
+        assert_eq!(login_picker.entries.len(), 2);
+        assert!(matches!(
+            login_picker.entries[0].action,
+            crate::tui::PickerAction::Login(provider) if provider.id == "rayu"
+        ));
+        assert!(matches!(
+            login_picker.entries[1].action,
+            crate::tui::PickerAction::LoginRayuApiKey
+        ));
+
+        // /logout inline picker shows ONLY Rayu (no "All providers" or 3P providers).
+        app.open_logout_picker_inline();
+        let logout_picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("logout picker should open");
+        assert_eq!(logout_picker.entries.len(), 1);
+        assert!(matches!(
+            logout_picker.entries[0].action,
+            crate::tui::PickerAction::Logout(provider) if provider.id == "rayu"
+        ));
+
+        // /login openai is blocked with ENABLE_OTHER_PROVIDER=false message.
+        app.input = "/login openai".to_string();
+        app.submit_input();
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+
+        // /login rayu-api opens Rayu API key entry directly.
+        app.input = "/login rayu-api".to_string();
+        app.submit_input();
+        assert!(matches!(
+            &app.pending_login,
+            Some(super::auth_types::PendingLogin::ApiKeyProfile {
+                provider_id,
+                key_name,
+                ..
+            }) if provider_id == "rayu" && key_name == "RAYU_API_KEY"
+        ));
+        app.pending_login = None;
+
+        // /account inline picker shows ONLY Rayu actions (zero Claude/OpenAI rows).
+        app.open_account_picker(None);
+        let account_picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("account picker should open");
+        assert!(!account_picker.entries.is_empty());
+        for entry in &account_picker.entries {
+            let lower = entry.name.to_ascii_lowercase();
+            assert!(
+                !lower.contains("claude") && !lower.contains("openai"),
+                "unexpected 3P entry in /account picker: {}",
+                entry.name
+            );
+        }
+
+        // Slash suggestions for /login and /account contain ONLY Rayu items, and /reset is hidden.
+        app.set_input_for_test("/login ");
+        let login_suggestions = app.command_suggestions();
+        assert!(login_suggestions.iter().any(|(cmd, _)| cmd == "/login rayu"));
+        assert!(
+            login_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd == "/login rayu-api")
+        );
+        assert!(
+            !login_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.contains("openai") || cmd.contains("claude"))
+        );
+
+        app.set_input_for_test("/account ");
+        let account_suggestions = app.command_suggestions();
+        assert!(
+            account_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd == "/account rayu status")
+        );
+        assert!(
+            account_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd == "/account rayu api-key")
+        );
+        assert!(
+            !account_suggestions
+                .iter()
+                .any(|(cmd, _)| cmd.contains("openai") || cmd.contains("claude"))
+        );
+
+        assert!(
+            !super::state_ui_input_helpers::registered_command_entries()
+                .any(|(name, _)| name == "/reset")
+        );
+
+        // /reset command itself is rejected in Rayu-only mode.
+        app.input = "/reset".to_string();
+        app.submit_input();
+        assert!(
+            app.display_messages
+                .last()
+                .is_some_and(|m| m.role == "error" && m.content.contains("ENABLE_OTHER_PROVIDER=false"))
+        );
+
+        Ok(())
+    })
+}

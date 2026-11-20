@@ -125,6 +125,18 @@ fn main() {
         format!("v{}.{}.{}-dev ({})", major, minor, patch, git_hash)
     };
 
+    let dotenv_path = repo_root.join(".env");
+    let dotenv_contents = fs::read_to_string(&dotenv_path).ok();
+    let env_enable_other_provider = std::env::var("ENABLE_OTHER_PROVIDER").ok();
+    let (enable_other_provider, enable_other_provider_warning) =
+        build_inputs::resolve_enable_other_provider(
+            env_enable_other_provider.as_deref(),
+            dotenv_contents.as_deref(),
+        );
+    if let Some(warning) = enable_other_provider_warning {
+        println!("cargo:warning={warning}");
+    }
+
     // Set environment variables for compilation
     println!("cargo:rustc-env=RAYU_GIT_HASH={}", git_hash);
     println!("cargo:rustc-env=RAYU_GIT_DATE={}", git_date);
@@ -135,6 +147,14 @@ fn main() {
     println!("cargo:rustc-env=RAYU_GIT_TAG={}", git_tag);
     println!("cargo:rustc-env=RAYU_CHANGELOG={}", changelog);
     println!("cargo:rustc-env=RAYU_PKG_VERSION={}", pkg_version);
+    println!(
+        "cargo:rustc-env=RAYU_ENABLE_OTHER_PROVIDER={}",
+        if enable_other_provider {
+            "true"
+        } else {
+            "false"
+        }
+    );
 
     // Forward RAYU_RELEASE_BUILD env var if set (CI sets this for release binaries)
     if std::env::var("RAYU_RELEASE_BUILD").is_ok() {
@@ -177,6 +197,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RAYU_BUILD_GIT_DATE");
     println!("cargo:rerun-if-env-changed=RAYU_BUILD_GIT_DIRTY");
     println!("cargo:rerun-if-env-changed=RAYU_BUILD_GIT_TAG");
+    println!("cargo:rerun-if-env-changed=ENABLE_OTHER_PROVIDER");
+    if dotenv_path.exists() {
+        println!("cargo:rerun-if-changed={}", dotenv_path.display());
+    }
     let metadata_path = std::env::var_os("RAYU_BUILD_METADATA_FILE");
     for directive in build_inputs::metadata_rerun_inputs(metadata_path.as_deref()) {
         println!("{directive}");

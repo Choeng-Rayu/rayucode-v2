@@ -163,16 +163,41 @@ impl App {
             .collect::<Vec<_>>();
 
         if !logout {
-            let mut saved_accounts =
-                super::super::auth_account_picker_saved_accounts::saved_login_picker_entries(
-                    self.provider.name(),
-                    self.provider.oauth_account_label().as_deref(),
-                );
-            saved_accounts.extend(models);
-            models = saved_accounts;
+            if crate::rayu::other_providers_enabled() {
+                let mut saved_accounts =
+                    super::super::auth_account_picker_saved_accounts::saved_login_picker_entries(
+                        self.provider.name(),
+                        self.provider.oauth_account_label().as_deref(),
+                    );
+                saved_accounts.extend(models);
+                models = saved_accounts;
+            } else {
+                let has_key = crate::rayu::has_api_key();
+                models.push(PickerEntry {
+                    name: "Rayu API Key".to_string(),
+                    options: vec![PickerOption {
+                        provider: "API key".to_string(),
+                        api_method: if has_key { "configured" } else { "setup" }.to_string(),
+                        available: true,
+                        detail: "Enter or replace RAYU_API_KEY (rayu_sk_live_…)".to_string(),
+                        estimated_reference_cost_micros: None,
+                    }],
+                    action: PickerAction::LoginRayuApiKey,
+                    selected_option: 0,
+                    is_current: has_key && !crate::rayu::has_usable_session(),
+                    is_default: false,
+                    is_favorite: false,
+                    recommended: false,
+                    recommendation_rank: usize::MAX,
+                    usage_score: 0,
+                    old: false,
+                    created_date: None,
+                    effort: None,
+                });
+            }
         }
 
-        if logout {
+        if logout && crate::rayu::other_providers_enabled() {
             // Prepend a synthetic "All providers" entry that logs out everywhere.
             models.insert(
                 0,
@@ -244,7 +269,7 @@ impl App {
         }
 
         if let Some(ref mut picker) = self.inline_interactive_state {
-            if target == AgentModelTarget::Memory {
+            if target == AgentModelTarget::Memory && crate::rayu::other_providers_enabled() {
                 picker.entries.retain(|entry| {
                     matches!(
                         crate::provider::provider_for_model(&model_entry_base_name(entry)),

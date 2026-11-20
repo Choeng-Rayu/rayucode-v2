@@ -152,12 +152,45 @@ pub use muse::{
     MUSE_SUBSCRIPTION_PROFILE,
 };
 
+const RAYU_ONLY_LOGIN_PROVIDERS: [LoginProviderDescriptor; 1] = [RAYU_LOGIN_PROVIDER];
+
 pub fn openai_compatible_profiles() -> &'static [OpenAiCompatibleProfile] {
+    if !rayucode_build_meta::other_providers_enabled() {
+        return &[];
+    }
     &OPENAI_COMPAT_PROFILES
 }
 
 pub fn login_providers() -> &'static [LoginProviderDescriptor] {
+    if !rayucode_build_meta::other_providers_enabled() {
+        return &RAYU_ONLY_LOGIN_PROVIDERS;
+    }
     &LOGIN_PROVIDERS
+}
+
+/// Returns `true` when `input` matches a built-in non-Rayu login provider id/alias
+/// or OpenAI-compatible profile id (regardless of whether `ENABLE_OTHER_PROVIDER`
+/// is enabled). Used to reject explicit third-party provider prefixes cleanly in
+/// Rayu-only builds.
+pub fn is_known_other_provider_id(input: &str) -> bool {
+    let Some(normalized) = normalize_provider_input(input) else {
+        return false;
+    };
+    if normalized == RAYU_LOGIN_PROVIDER.id
+        || RAYU_LOGIN_PROVIDER
+            .aliases
+            .iter()
+            .any(|alias| *alias == normalized)
+    {
+        return false;
+    }
+    LOGIN_PROVIDERS.iter().any(|provider| {
+        !matches!(provider.target, LoginProviderTarget::Rayu)
+            && (provider.id == normalized
+                || provider.aliases.iter().any(|alias| *alias == normalized))
+    }) || OPENAI_COMPAT_PROFILES
+        .iter()
+        .any(|profile| profile.id == normalized)
 }
 
 fn login_providers_for_surface(surface: LoginProviderSurface) -> Vec<LoginProviderDescriptor> {
@@ -868,5 +901,57 @@ mod tests {
             resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
+    }
+
+    #[test]
+    fn rayu_only_mode_filters_login_and_compatible_catalogs() {
+        let _guard = rayucode_build_meta::scoped_other_providers_enabled_for_tests(false);
+        assert!(openai_compatible_profiles().is_empty());
+        assert_eq!(login_providers().len(), 1);
+        assert_eq!(login_providers()[0].id, "rayu");
+
+        for providers in [
+            cli_login_providers(),
+            tui_login_providers(),
+            server_bootstrap_login_providers(),
+            auto_init_login_providers(),
+            auth_status_login_providers(),
+        ] {
+            assert_eq!(providers.len(), 1);
+            assert_eq!(providers[0].id, "rayu");
+        }
+
+        assert_eq!(resolve_login_provider("rayu").map(|p| p.id), Some("rayu"));
+        assert_eq!(
+            resolve_login_provider("rayucode").map(|p| p.id),
+            Some("rayu")
+        );
+        assert_eq!(
+            resolve_login_provider_loose("Rayu").map(|p| p.id),
+            Some("rayu")
+        );
+        for blocked in [
+            "claude",
+            "anthropic",
+            "openai",
+            "openrouter",
+            "copilot",
+            "gemini",
+            "bedrock",
+            "azure",
+            "auto-import",
+            "openai-compatible",
+            "zai",
+            "ollama",
+        ] {
+            assert!(
+                resolve_login_provider(blocked).is_none(),
+                "{blocked} should be hidden when ENABLE_OTHER_PROVIDER=false"
+            );
+            assert!(
+                resolve_login_provider_loose(blocked).is_none(),
+                "{blocked} should not loose-resolve when ENABLE_OTHER_PROVIDER=false"
+            );
+        }
     }
 }
