@@ -1,0 +1,32 @@
+/*
+ * RayuCode VS Code Webview Theme Preset.
+ *
+ * ZERO HARDCODED COLOURS. Every colour resolves through `--vscode-*` custom
+ * properties injected by VS Code for the active colour theme, guaranteeing
+ * native fidelity across Light, Dark, High Contrast Dark, and High Contrast Light.
+ */
+@layer rayucode.theme {
+  :root {
+    --rc-bg: var(--vscode-sideBar-background);
+    --rc-surface: var(--vscode-editor-background);
+    --rc-surface-elevated: var(--vscode-editorWidget-background);
+    --rc-border: var(--vscode-panel-border);
+    --rc-fg: var(--vscode-foreground);
+    --rc-muted: var(--vscode-descriptionForeground);
+    --rc-accent: var(--vscode-button-background);
+    --rc-accent-fg: var(--vscode-button-foreground);
+    --rc-danger: var(--vscode-errorForeground);
+    --rc-warning: var(--vscode-editorWarning-foreground);
+    --rc-focus: var(--vscode-focusBorder);
+    --rc-diff-add-bg: var(--vscode-diffEditor-insertedLineBackground);
+    --rc-diff-del-bg: var(--vscode-diffEditor-removedLineBackground);
+    --rc-code-bg: var(--vscode-textCodeBlock-background);
+    --rc-scroll-thumb: var(--vscode-scrollbarSlider-background);
+    --rc-scroll-track: transparent;
+
+    --rc-font-sans: var(--vscode-font-family);
+    --rc-font-mono: var(--vscode-editor-font-family);
+
+    accent-color: var(--rc-accent);
+  }
+}

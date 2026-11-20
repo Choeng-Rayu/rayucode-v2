@@ -1,0 +1,31 @@
+/*
+ * RayuCode Shared Structural Design Tokens.
+ *
+ * Layer order is declared upfront so host applications (Next.js Tailwind CSS or
+ * VS Code Webviews) can extend or override components cleanly without fighting
+ * specificity or resorting to `!important`.
+ */
+@layer rayucode.tokens, rayucode.theme, rayucode.components;
+
+@layer rayucode.tokens {
+  :root {
+    /* Spacing & radii (never colour — colours live in themes/web.css or themes/vscode.css) */
+    --rc-space-1: 4px;
+    --rc-space-2: 8px;
+    --rc-space-3: 12px;
+    --rc-space-4: 16px;
+    --rc-space-6: 24px;
+
+    --rc-radius-sm: 4px;
+    --rc-radius-md: 8px;
+    --rc-radius-lg: 12px;
+    --rc-radius-full: 9999px;
+
+    --rc-font-size-xs: 0.75rem;
+    --rc-font-size-sm: 0.875rem;
+    --rc-font-size-base: 0.9375rem;
+    --rc-line-height: 1.55;
+
+    --rc-sidebar-width: 260px;
+  }
+}

@@ -1,0 +1,112 @@
+/*
+ * RayuCode Web Theme Preset (Next.js / Browser).
+ *
+ * Aligns with Rayu Web DESIGN.md tokens (`#00d992` primary on `#101010` dark
+ * canvas) while providing an accessible WCAG-AA light palette and automatic
+ * `color-scheme: light dark` adaptation with full fallback support.
+ */
+@layer rayucode.theme {
+  :root {
+    /* Tier 1: Literal palette tokens */
+    --rc-raw-bg-light: #ffffff;
+    --rc-raw-bg-dark: #101010;
+    --rc-raw-surface-light: #f6f7f8;
+    --rc-raw-surface-dark: #18181b;
+    --rc-raw-surface-elevated-light: #eef0f2;
+    --rc-raw-surface-elevated-dark: #202024;
+    --rc-raw-border-light: #d8dce0;
+    --rc-raw-border-dark: #3d3a39;
+    --rc-raw-fg-light: #141619;
+    --rc-raw-fg-dark: #f2f2f2;
+    --rc-raw-muted-light: #57606a;
+    --rc-raw-muted-dark: #8b949e;
+    --rc-raw-accent-light: #047857;
+    --rc-raw-accent-dark: #00d992;
+    --rc-raw-accent-fg-light: #ffffff;
+    --rc-raw-accent-fg-dark: #062118;
+    --rc-raw-danger-light: #c81e32;
+    --rc-raw-danger-dark: #ff4d5e;
+    --rc-raw-warning-light: #9a6700;
+    --rc-raw-warning-dark: #e3b341;
+    --rc-raw-diff-add-bg-light: rgba(4, 120, 87, 0.12);
+    --rc-raw-diff-add-bg-dark: rgba(0, 217, 146, 0.14);
+    --rc-raw-diff-del-bg-light: rgba(200, 30, 50, 0.12);
+    --rc-raw-diff-del-bg-dark: rgba(255, 77, 94, 0.16);
+    --rc-raw-scroll-thumb-light: #8c959f;
+    --rc-raw-scroll-thumb-dark: #52525b;
+    --rc-raw-scroll-track-light: #f0f2f4;
+    --rc-raw-scroll-track-dark: #161618;
+
+    /* Tier 2: Semantic UI tokens (default to light, switch via media query / light-dark()) */
+    --rc-bg: var(--rc-raw-bg-light);
+    --rc-surface: var(--rc-raw-surface-light);
+    --rc-surface-elevated: var(--rc-raw-surface-elevated-light);
+    --rc-border: var(--rc-raw-border-light);
+    --rc-fg: var(--rc-raw-fg-light);
+    --rc-muted: var(--rc-raw-muted-light);
+    --rc-accent: var(--rc-raw-accent-light);
+    --rc-accent-fg: var(--rc-raw-accent-fg-light);
+    --rc-danger: var(--rc-raw-danger-light);
+    --rc-warning: var(--rc-raw-warning-light);
+    --rc-focus: var(--rc-accent);
+    --rc-diff-add-bg: var(--rc-raw-diff-add-bg-light);
+    --rc-diff-del-bg: var(--rc-raw-diff-del-bg-light);
+    --rc-code-bg: var(--rc-raw-surface-elevated-light);
+    --rc-scroll-thumb: var(--rc-raw-scroll-thumb-light);
+    --rc-scroll-track: var(--rc-raw-scroll-track-light);
+
+    --rc-font-sans: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif);
+    --rc-font-mono: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+
+    color-scheme: light dark;
+    accent-color: var(--rc-accent);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --rc-bg: var(--rc-raw-bg-dark);
+      --rc-surface: var(--rc-raw-surface-dark);
+      --rc-surface-elevated: var(--rc-raw-surface-elevated-dark);
+      --rc-border: var(--rc-raw-border-dark);
+      --rc-fg: var(--rc-raw-fg-dark);
+      --rc-muted: var(--rc-raw-muted-dark);
+      --rc-accent: var(--rc-raw-accent-dark);
+      --rc-accent-fg: var(--rc-raw-accent-fg-dark);
+      --rc-danger: var(--rc-raw-danger-dark);
+      --rc-warning: var(--rc-raw-warning-dark);
+      --rc-diff-add-bg: var(--rc-raw-diff-add-bg-dark);
+      --rc-diff-del-bg: var(--rc-raw-diff-del-bg-dark);
+      --rc-code-bg: var(--rc-raw-surface-elevated-dark);
+      --rc-scroll-thumb: var(--rc-raw-scroll-thumb-dark);
+      --rc-scroll-track: var(--rc-raw-scroll-track-dark);
+    }
+  }
+
+  @supports (color: light-dark(white, black)) {
+    :root {
+      --rc-bg: light-dark(var(--rc-raw-bg-light), var(--rc-raw-bg-dark));
+      --rc-surface: light-dark(var(--rc-raw-surface-light), var(--rc-raw-surface-dark));
+      --rc-surface-elevated: light-dark(var(--rc-raw-surface-elevated-light), var(--rc-raw-surface-elevated-dark));
+      --rc-border: light-dark(var(--rc-raw-border-light), var(--rc-raw-border-dark));
+      --rc-fg: light-dark(var(--rc-raw-fg-light), var(--rc-raw-fg-dark));
+      --rc-muted: light-dark(var(--rc-raw-muted-light), var(--rc-raw-muted-dark));
+      --rc-accent: light-dark(var(--rc-raw-accent-light), var(--rc-raw-accent-dark));
+      --rc-accent-fg: light-dark(var(--rc-raw-accent-fg-light), var(--rc-raw-accent-fg-dark));
+      --rc-danger: light-dark(var(--rc-raw-danger-light), var(--rc-raw-danger-dark));
+      --rc-warning: light-dark(var(--rc-raw-warning-light), var(--rc-raw-warning-dark));
+      --rc-diff-add-bg: light-dark(var(--rc-raw-diff-add-bg-light), var(--rc-raw-diff-add-bg-dark));
+      --rc-diff-del-bg: light-dark(var(--rc-raw-diff-del-bg-light), var(--rc-raw-diff-del-bg-dark));
+      --rc-code-bg: light-dark(var(--rc-raw-surface-elevated-light), var(--rc-raw-surface-elevated-dark));
+      --rc-scroll-thumb: light-dark(var(--rc-raw-scroll-thumb-light), var(--rc-raw-scroll-thumb-dark));
+      --rc-scroll-track: light-dark(var(--rc-raw-scroll-track-light), var(--rc-raw-scroll-track-dark));
+    }
+  }
+
+  [data-theme="dark"] {
+    color-scheme: dark;
+  }
+
+  [data-theme="light"] {
+    color-scheme: light;
+  }
+}

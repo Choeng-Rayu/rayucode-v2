@@ -1,0 +1,21 @@
+{
+  "name": "rayucode-workspace",
+  "private": true,
+  "description": "RayuCode shared TypeScript/React workspace (SDK + shared UI component system for Web and VS Code)",
+  "workspaces": [
+    "sdk/typescript",
+    "packages/*"
+  ],
+  "scripts": {
+    "build:sdk": "npm --workspace @rayu-dev/rayucode-sdk run build",
+    "build:ui": "npm --workspace @rayu-dev/rayucode-ui run build",
+    "build:ts": "npm run build:sdk && npm run build:ui",
+    "typecheck:ts": "npm --workspace @rayu-dev/rayucode-sdk run typecheck && npm --workspace @rayu-dev/rayucode-ui run typecheck",
+    "test:sdk": "npm --workspace @rayu-dev/rayucode-sdk run check",
+    "test:ui": "npm --workspace @rayu-dev/rayucode-ui run check",
+    "check:ts": "npm run test:sdk && npm run test:ui"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

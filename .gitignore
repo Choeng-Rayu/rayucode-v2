@@ -1,5 +1,10 @@
 /target
 /rayucode-rust/
+node_modules/
+sdk/typescript/dist/
+packages/*/dist/
+*.vsix
+.turbo/
 __pycache__/
 /.wrangler/
 /tmp/

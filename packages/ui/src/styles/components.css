@@ -1,0 +1,256 @@
+/*
+ * RayuCode Shared Component Styles.
+ *
+ * Zero global `*` resets, zero hardcoded colours (semantic `--rc-*` tokens only),
+ * logical spacing properties, explicit `:hover:not(:disabled)` states, and
+ * standard `scrollbar-color` with progressive fallback.
+ */
+@layer rayucode.components {
+  :where(.rc-workspace) {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    background-color: var(--rc-bg);
+    color: var(--rc-fg);
+    font-family: var(--rc-font-sans);
+    font-size: var(--rc-font-size-sm);
+    line-height: var(--rc-line-height);
+    container-type: inline-size;
+    container-name: rc-workspace;
+  }
+
+  :where(.rc-workspace) :where(div, section, aside, main, header, footer, pre, code, textarea, input, button) {
+    box-sizing: border-box;
+  }
+
+  :where(.rc-workspace) :where(button, a[href], input, select, textarea, summary, [role="button"]):focus-visible {
+    outline: 2px solid var(--rc-focus);
+    outline-offset: 1px;
+  }
+
+  .rc-scroll {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--rc-scroll-thumb) var(--rc-scroll-track);
+  }
+
+  @supports not (scrollbar-color: auto) {
+    .rc-scroll {
+      scrollbar-width: auto;
+    }
+    .rc-scroll::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    .rc-scroll::-webkit-scrollbar-thumb {
+      background: var(--rc-scroll-thumb);
+      border-radius: var(--rc-radius-full);
+    }
+    .rc-scroll::-webkit-scrollbar-track {
+      background: var(--rc-scroll-track);
+    }
+  }
+
+  .rc-sidebar {
+    width: var(--rc-sidebar-width);
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    border-inline-end: 1px solid var(--rc-border);
+    background-color: var(--rc-surface);
+  }
+
+  .rc-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .rc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--rc-space-2);
+    padding-block: var(--rc-space-2);
+    padding-inline: var(--rc-space-3);
+    border-block-end: 1px solid var(--rc-border);
+    background-color: var(--rc-surface);
+    flex: 0 0 auto;
+  }
+
+  .rc-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding-block: 5px;
+    padding-inline: 10px;
+    border-radius: var(--rc-radius-md);
+    border: 1px solid var(--rc-border);
+    background-color: var(--rc-surface-elevated);
+    color: var(--rc-fg);
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .rc-btn:hover:not(:disabled) {
+    border-color: var(--rc-accent);
+  }
+
+  .rc-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .rc-btn-primary {
+    background-color: var(--rc-accent);
+    color: var(--rc-accent-fg);
+    border-color: transparent;
+    font-weight: 600;
+  }
+
+  .rc-btn-danger {
+    border-color: var(--rc-danger);
+    color: var(--rc-danger);
+  }
+
+  .rc-transcript {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: var(--rc-space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--rc-space-3);
+  }
+
+  .rc-message {
+    display: flex;
+    flex-direction: column;
+    gap: var(--rc-space-2);
+    padding: var(--rc-space-3);
+    border-radius: var(--rc-radius-lg);
+    border: 1px solid var(--rc-border);
+    background-color: var(--rc-surface);
+  }
+
+  .rc-message[data-role="user"] {
+    background-color: var(--rc-surface-elevated);
+  }
+
+  .rc-credits-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--rc-space-2);
+    font-size: var(--rc-font-size-xs);
+    color: var(--rc-muted);
+    padding-block-start: var(--rc-space-1);
+    border-block-start: 1px solid var(--rc-border);
+  }
+
+  .rc-credits-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 500;
+    color: var(--rc-fg);
+  }
+
+  .rc-code-block {
+    border: 1px solid var(--rc-border);
+    border-radius: var(--rc-radius-md);
+    overflow: hidden;
+    background-color: var(--rc-code-bg);
+    margin-block: var(--rc-space-2);
+  }
+
+  .rc-code-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-block: 4px;
+    padding-inline: var(--rc-space-3);
+    border-block-end: 1px solid var(--rc-border);
+    font-size: var(--rc-font-size-xs);
+    color: var(--rc-muted);
+  }
+
+  .rc-code-pre {
+    margin: 0;
+    padding: var(--rc-space-3);
+    overflow-x: auto;
+    font-family: var(--rc-font-mono);
+    font-size: 0.85em;
+  }
+
+  .rc-tool-card,
+  .rc-permission-card,
+  .rc-diff-viewer,
+  .rc-todo-card,
+  .rc-thinking {
+    border: 1px solid var(--rc-border);
+    border-radius: var(--rc-radius-md);
+    background-color: var(--rc-surface-elevated);
+    padding: var(--rc-space-2) var(--rc-space-3);
+  }
+
+  .rc-diff-line {
+    display: grid;
+    grid-template-columns: 3.2em 3.2em 1.2em 1fr;
+    font-family: var(--rc-font-mono);
+    font-size: var(--rc-font-size-xs);
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding-inline: var(--rc-space-2);
+  }
+
+  .rc-diff-line[data-kind="added"] {
+    background-color: var(--rc-diff-add-bg);
+  }
+
+  .rc-diff-line[data-kind="removed"] {
+    background-color: var(--rc-diff-del-bg);
+  }
+
+  .rc-composer {
+    border-block-start: 1px solid var(--rc-border);
+    padding: var(--rc-space-3);
+    background-color: var(--rc-surface);
+    display: flex;
+    flex-direction: column;
+    gap: var(--rc-space-2);
+  }
+
+  .rc-composer-input {
+    width: 100%;
+    min-height: 64px;
+    resize: vertical;
+    padding: var(--rc-space-2) var(--rc-space-3);
+    border-radius: var(--rc-radius-md);
+    border: 1px solid var(--rc-border);
+    background-color: var(--rc-bg);
+    color: var(--rc-fg);
+    font: inherit;
+  }
+
+  .rc-activity-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--rc-space-2);
+    padding-block: 6px;
+    padding-inline: var(--rc-space-3);
+    border-block-start: 1px solid var(--rc-border);
+    background-color: var(--rc-surface-elevated);
+    font-size: var(--rc-font-size-xs);
+    color: var(--rc-muted);
+  }
+
+  @container rc-workspace (max-width: 640px) {
+    .rc-sidebar {
+      display: none;
+    }
+  }
+}
