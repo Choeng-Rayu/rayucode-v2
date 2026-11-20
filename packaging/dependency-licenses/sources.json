@@ -69,6 +69,18 @@
       "url": "https://raw.githubusercontent.com/rustaudio/sample/97c3bb9b2363c0b46ac1633858bf1054fd02a980/LICENSE-MIT"
     }
   ],
+  "fax 0.2.6": [
+    {
+      "file": "3ba40a1168abff9d.txt",
+      "url": "https://raw.githubusercontent.com/pdf-rs/fax/4de57f7a4b050f9ffa6029dc9ff954a5164392e9/LICENSE"
+    }
+  ],
+  "fax_derive 0.2.0": [
+    {
+      "file": "3ba40a1168abff9d.txt",
+      "url": "https://raw.githubusercontent.com/pdf-rs/fax/4de57f7a4b050f9ffa6029dc9ff954a5164392e9/LICENSE"
+    }
+  ],
   "icy_sixel 0.5.0": [
     {
       "file": "aa3514293820a57b.txt",
