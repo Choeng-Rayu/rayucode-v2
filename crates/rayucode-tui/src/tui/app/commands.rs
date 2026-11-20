@@ -3496,10 +3496,8 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
             "Thinking display is currently {}.\n\n\
              Modes:\n\
              • off - never show thinking text\n\
-             • compact - preview thinking live and keep the full trace in /transcript view
-\
-             • full - keep every thinking trace visible inline\n\
-             • current - show only the live thinking, then collapse it once a tool runs or the answer commits\n\n\
+             • compact or full - preview three rows and open details for retained reasoning\n\
+             • current - preview three rows and retain reasoning for this turn\n\n\
              Use /thinking-display <off|compact|full|current> to change it. To change how hard the model thinks, use /effort.",
             current.label()
         )));
@@ -3508,7 +3506,7 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(mode) = crate::config::ReasoningDisplayMode::parse(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /thinking-display (show), then off, full, or current".to_string(),
+            "Usage: /thinking-display <show|off|compact|full|current>".to_string(),
         ));
         return true;
     };

@@ -1175,6 +1175,8 @@ pub struct KeybindingsConfig {
     pub side_panel_toggle: String,
     /// Toggle copy/selection mode (default: "alt+y")
     pub copy_selection_toggle: String,
+    /// Toggle the read-only detailed transcript.
+    pub transcript_toggle: String,
     /// Toggle the diagram pane position (default: "alt+t")
     pub diagram_pane_toggle: String,
     /// Show/hide the pinned diagram pane (default: "alt+shift+m")
@@ -1243,6 +1245,7 @@ impl Default for KeybindingsConfig {
             workspace_right: get("workspace_right", "alt+l"),
             side_panel_toggle: get("side_panel_toggle", "alt+m"),
             copy_selection_toggle: get("copy_selection_toggle", "alt+y"),
+            transcript_toggle: get("transcript_toggle", "ctrl+o"),
             diagram_pane_toggle: get("diagram_pane_toggle", "alt+t"),
             diagram_pane_visibility_toggle: get("diagram_pane_visibility_toggle", "alt+shift+m"),
             typing_scroll_lock_toggle: get("typing_scroll_lock_toggle", "alt+s"),

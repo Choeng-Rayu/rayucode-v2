@@ -4191,6 +4191,7 @@ pub(super) fn render_expanded_tool_message(
     msg: &DisplayMessage,
     width: u16,
     diff_mode: crate::config::DiffDisplayMode,
+    raw_result: Option<&str>,
 ) -> Vec<Line<'static>> {
     let mut lines = render_tool_message_mode(msg, width, diff_mode, false, true);
     let Some(tool) = &msg.tool_data else {
@@ -4203,28 +4204,12 @@ pub(super) fn render_expanded_tool_message(
         usize::from(width)
     };
     let cells = block.saturating_sub(1);
-    let mut details = Vec::new();
-    // Bash and batch expose their retained arguments here. In compact chat,
-    // one command or a list of children is enough to identify the call.
-    let arguments = if tools_ui::is_shell_tool(tool) {
-        tool.input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned)
-    } else if tools_ui::canonical_tool_name(&tool.name) == "batch" {
-        serde_json::to_string_pretty(&tool.input).ok()
-    } else {
-        Some(tools_ui::get_tool_summary_with_budget(tool, 200, None))
-    };
-    if let Some(arguments) = arguments.filter(|text| !text.trim().is_empty()) {
-        details.extend(tools_ui::output_rows(
-            &format!("Arguments: {arguments}"),
-            cells,
-            None,
-        ));
-    }
-    let output = tools_ui::retained_tool_output(tool, &msg.content);
-    if !output.trim().is_empty() {
+    let mut details = tools_ui::full_tool_argument_rows(tool, cells);
+    let output = raw_result.unwrap_or_else(|| tools_ui::retained_tool_output(tool, &msg.content));
+    let output_is_diff = raw_result.is_none()
+        && tools_ui::is_edit_tool_name(&tool.name)
+        && edit_tool_has_inline_diff(tool, &msg.content);
+    if !output_is_diff && !output.trim().is_empty() {
         details.push(tools_ui::tool_response("Output", cells));
         details.extend(tools_ui::output_rows(output, cells, None));
     }
@@ -4712,7 +4697,9 @@ fn render_tool_message_mode(
         );
         lines.push(tools_ui::tool_response(stats, row_width));
     }
-    lines.extend(tools_ui::codemode_preview(tc, row_width));
+    if !compact && !expanded {
+        lines.extend(tools_ui::codemode_preview(tc, row_width));
+    }
     if is_error && (tc.name != "batch" || batch_counts.is_none()) {
         if compact {
             let failure = tools_ui::parse_tool_failure(&msg.content);
@@ -4754,7 +4741,9 @@ fn render_tool_message_mode(
     // Optionally render the full agentgrep search output inline in the
     // transcript. Gated behind `display.show_agentgrep_output` (default false)
     // so most users keep the compact one-line summary.
-    if tools_ui::canonical_tool_name(&tc.name) == "agentgrep"
+    if !compact
+        && !expanded
+        && tools_ui::canonical_tool_name(&tc.name) == "agentgrep"
         && crate::config::config().display.show_agentgrep_output
         && !msg.content.trim().is_empty()
     {

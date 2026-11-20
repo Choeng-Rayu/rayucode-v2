@@ -564,8 +564,19 @@ fn prepare_active_batch_progress(
             line = tools_ui::fit_batch_subcall_metrics(line, Line::from(usage), row_width);
         }
         lines.push(line);
+        if app.transcript_view().is_some() {
+            lines.extend(tools_ui::full_tool_argument_rows(
+                &subcall.tool_call,
+                row_width,
+            ));
+        }
         if let Some(progress) = progress {
-            let mut output = tools_ui::live_bash_output_rows(progress, row_width.saturating_sub(4));
+            let cells = row_width.saturating_sub(4);
+            let mut output = if app.transcript_view().is_some() {
+                tools_ui::output_rows(&progress.tail, cells, None)
+            } else {
+                tools_ui::live_bash_output_rows(progress, cells)
+            };
             for row in &mut output {
                 row.spans.insert(0, Span::raw("    "));
             }
@@ -788,8 +799,7 @@ fn prepare_messages_inner(
     let (answer, thinking) = live_start.map_or((stream, ""), |start| stream.split_at(start));
     let reasoning_prepared =
         if !thinking.is_empty() && reasoning_mode != crate::config::ReasoningDisplayMode::Off {
-            let compact = reasoning_mode == crate::config::ReasoningDisplayMode::Compact
-                && app.transcript_view().is_none();
+            let compact = app.transcript_view().is_none();
             Arc::new(prepare_live_reasoning(thinking, width, compact))
         } else {
             Arc::new(empty_prepared_messages())
@@ -1524,10 +1534,13 @@ fn render_message_into(
     }
     let align = default_message_alignment(role, centered);
     let expanded_tools = ctx.app.is_some_and(|app| app.transcript_view().is_some());
+    if msg.is_turn_metrics() && !expanded_tools {
+        record_message_boundary(acc, msg);
+        return;
+    }
     let reasoning_mode = crate::config::config().display.reasoning_display();
     let hide_reasoning = reasoning_mode == crate::config::ReasoningDisplayMode::Off;
-    let summarize_reasoning =
-        reasoning_mode == crate::config::ReasoningDisplayMode::Compact && !expanded_tools;
+    let summarize_reasoning = !hide_reasoning && !expanded_tools;
     if role == "reasoning" && hide_reasoning {
         record_message_boundary(acc, msg);
         return;
@@ -1628,6 +1641,26 @@ fn render_message_into(
                     acc.push_auto(align_if_unset(line, align));
                 }
             }
+            if expanded_tools && let Some(stats) = original.response_stats() {
+                let fields = super::turn_footer_metrics(
+                    crate::tui::TurnFooterSnapshot::from_response_stats(&stats),
+                    false,
+                );
+                let cache = super::input_ui::turn_cache_metrics(
+                    stats.cache_read_tokens,
+                    stats.cache_creation_tokens,
+                );
+                let details = fields.into_iter().chain(cache).collect::<Vec<_>>();
+                if !details.is_empty() {
+                    acc.push_auto(align_if_unset(
+                        Line::styled(
+                            format!("  {}", details.join(" · ")),
+                            Style::default().fg(dim_color()),
+                        ),
+                        align,
+                    ));
+                }
+            }
         }
         "meta" => {
             let raw_line = acc.raw_plain_lines.len();
@@ -1657,20 +1690,39 @@ fn render_message_into(
                 .tool_data
                 .as_ref()
                 .and_then(|tool| ctx.app?.bash_progress(&tool.id));
-            for line in tools_ui::pending_tool_lines(msg, width, preview) {
+            for line in tools_ui::pending_tool_lines(msg, width, preview, expanded_tools) {
                 acc.push_auto(align_if_unset(line, align));
             }
         }
         "tool" => {
             let tool_start_line = acc.lines.len();
             let cached = if expanded_tools {
-                render_expanded_tool_message(msg, width, diff_mode)
+                let raw = msg
+                    .tool_data
+                    .as_ref()
+                    .and_then(|tool| ctx.app?.raw_tool_result(&tool.id));
+                render_expanded_tool_message(
+                    msg,
+                    width,
+                    crate::config::DiffDisplayMode::FullInline,
+                    raw,
+                )
             } else {
-                get_cached_message_lines(msg, width, diff_mode, render_compact_tool_message)
+                let compact_diff = if diff_mode.is_full_inline() {
+                    diff_mode
+                } else {
+                    crate::config::DiffDisplayMode::Off
+                };
+                get_cached_message_lines(msg, width, compact_diff, render_compact_tool_message)
             };
             let copy_target = tool_message_copy_target(msg, cached.len()).or_else(|| {
                 if expanded_tools {
-                    tool_output_copy_target(&msg.content, cached.len())
+                    let output = msg
+                        .tool_data
+                        .as_ref()
+                        .and_then(|tool| ctx.app?.raw_tool_result(&tool.id))
+                        .unwrap_or(&msg.content);
+                    tool_output_copy_target(output, cached.len())
                 } else {
                     None
                 }
@@ -1720,7 +1772,7 @@ fn render_message_into(
                         .unwrap_or_else(|| "unknown".to_string());
                     // Outside the inline modes the diff body is hidden entirely,
                     // so any edit with a diff can be expanded into full inline.
-                    let expandable = if diff_mode.is_inline() {
+                    let expandable = if diff_mode.is_full_inline() || expanded_tools {
                         messages::edit_tool_inline_diff_is_expandable(tc, &msg.content, width)
                     } else {
                         messages::edit_tool_has_inline_diff(tc, &msg.content)
@@ -2485,24 +2537,55 @@ pub(super) fn prepare_body_prepended(
 }
 
 fn prepare_live_reasoning(text: &str, width: u16, compact: bool) -> PreparedMessages {
-    let cells = width.saturating_sub(4) as usize;
-    let rendered = markdown::render_markdown_with_width(text, Some(cells.max(1)));
-    let prepared = wrap_lines(rendered, &[], &[], &[], width.saturating_sub(3).max(1));
+    let indentation = if width > 3 { "  " } else { "" };
+    let cells = width.saturating_sub(indentation.len() as u16).max(1);
+    let text = if compact {
+        // Each reasoning source line carries its own styling markup. Keep
+        // enough whole lines to produce the three-row tail after wrapping.
+        let start = text.rmatch_indices('\n').nth(3).map_or(0, |(i, _)| i + 1);
+        &text[start..]
+    } else {
+        text
+    };
+    let rendered = markdown::render_markdown_with_width(text, Some(usize::from(cells)));
+    let prepared = wrap_lines(rendered, &[], &[], &[], cells);
     let skip = if compact {
         prepared.wrapped_lines.len().saturating_sub(3)
     } else {
         0
     };
-    let mut lines = vec![Line::styled(
-        "⣿ Thinking…",
-        Style::default().fg(dim_color()).italic(),
+    let mut lines = vec![super::truncate_line_with_ellipsis_to_width(
+        &Line::styled("⣿ Thinking…", Style::default().fg(dim_color()).italic()),
+        usize::from(width),
     )];
     for mut line in prepared.wrapped_lines.into_iter().skip(skip) {
         line.alignment = Some(ratatui::layout::Alignment::Left);
-        line.spans.insert(0, Span::raw("  "));
+        line.spans.insert(0, Span::raw(indentation));
         lines.push(line);
     }
     wrap_lines(lines, &[], &[], &[], width)
+}
+
+#[cfg(test)]
+#[test]
+fn compact_thinking_caps_the_wrapped_tail_and_keeps_the_partial_line() {
+    let mut text = String::new();
+    for row in ["earliest", "next", "third", "fourth"] {
+        text.push_str(&rayucode_tui_markdown::reasoning_line_markup(row));
+    }
+    text.push_str(&rayucode_tui_markdown::reasoning_partial_markup(&format!(
+        "{} newest",
+        "界👩‍💻e\u{301} ".repeat(20)
+    )));
+    for width in [20, 34, 80, 100] {
+        let compact = prepare_live_reasoning(&text, width, true);
+        assert_eq!(compact.wrapped_lines.len(), 4);
+        let compact_text = compact.wrapped_plain_lines.join("\n");
+        assert!(!compact_text.contains("earliest"));
+        assert!(compact_text.contains("newest"));
+        let expanded = prepare_live_reasoning(&text, width, false);
+        assert!(expanded.wrapped_plain_lines.join("\n").contains("earliest"));
+    }
 }
 
 fn prepare_streaming_cached(

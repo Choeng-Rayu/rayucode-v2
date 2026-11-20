@@ -2762,6 +2762,9 @@ pub(super) fn handle_modal_key(
     }
 
     if app.copy_selection_mode {
+        if app.transcript_view.is_some() && app.handle_transcript_toggle(code, modifiers) {
+            return Ok(true);
+        }
         if modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'))
         {
@@ -3252,6 +3255,10 @@ impl App {
             return Ok(());
         }
 
+        if self.handle_transcript_toggle(code, modifiers) {
+            return Ok(());
+        }
+
         if self.handle_key_during_provider_failover(code) {
             return Ok(());
         }
@@ -3668,61 +3675,6 @@ impl App {
         }
     }
 
-    /// Garbage-collect *stale* reasoning traces (every anchored trace except
-    /// the most recent one) that are provably above the tail-following
-    /// viewport, so their removal causes zero visible motion. Keeps `current`
-    /// mode meaning "the current thought": old thoughts dissolve once they
-    /// scroll out of view instead of accumulating across a long agentic turn.
-    /// Skipped entirely while the user has scrolled up (their reading position
-    /// must not shift).
-    pub(super) fn gc_offscreen_reasoning_traces(&mut self) -> bool {
-        // Only the traces *before* the most recent one are stale.
-        if self.turn_reasoning_traces.len() < 2 {
-            return false;
-        }
-        if self.auto_scroll_paused {
-            // User is reading history; never remove anything they might see.
-            return false;
-        }
-        let total = crate::tui::ui::last_total_wrapped_lines();
-        let viewport = crate::tui::ui::last_layout_snapshot()
-            .map(|l| l.messages_area.height as usize)
-            .unwrap_or(0);
-        if total == 0 || viewport == 0 {
-            return false;
-        }
-        // A trace anchored when the transcript was `at_anchor` lines tall sits
-        // entirely above wrapped line `at_anchor`. While tail-following, the
-        // viewport shows the last `viewport` lines, so once the transcript has
-        // grown a full viewport past the anchor point (with margin for the
-        // separator blank line), the trace cannot be on screen.
-        let last = self.turn_reasoning_traces.len() - 1;
-        let stale: Vec<usize> = self.turn_reasoning_traces[..last]
-            .iter()
-            .filter(|t| total.saturating_sub(t.wrapped_lines_at_anchor) > viewport + 2)
-            .map(|t| t.display_index)
-            .collect();
-        if stale.is_empty() {
-            return false;
-        }
-        let removed = self.remove_reasoning_trace_messages(stale.iter().copied());
-        if removed > 0 {
-            // Re-track surviving traces with adjusted display indices.
-            self.turn_reasoning_traces.retain_mut(|t| {
-                if stale.contains(&t.display_index) {
-                    return false;
-                }
-                let shift = stale.iter().filter(|&&s| s < t.display_index).count();
-                t.display_index -= shift;
-                true
-            });
-            self.bump_display_messages_version();
-            self.refresh_split_view_if_needed();
-            return true;
-        }
-        false
-    }
-
     /// Remove reasoning display messages at the given (pre-removal) indices.
     /// Returns how many were removed.
     pub(super) fn remove_reasoning_trace_messages(
@@ -3882,6 +3834,7 @@ impl App {
     /// replayed from the top, so everything from the aborted attempt must
     /// disappear or the replay would render duplicated output.
     pub(super) fn rollback_streaming_attempt(&mut self) {
+        self.rollback_turn_footer_round();
         self.streaming.response_output.reset();
         self.stream_buffer.clear();
         self.clear_streaming_render_state();

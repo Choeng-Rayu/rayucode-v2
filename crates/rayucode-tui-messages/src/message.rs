@@ -1,5 +1,5 @@
 use rayucode_message_types::ToolCall;
-use rayucode_session_types::RenderedMessage;
+use rayucode_session_types::{RenderedMessage, ResponseStats};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -17,6 +17,42 @@ pub struct DisplayMessage {
 }
 
 impl DisplayMessage {
+    const TURN_METRICS_TITLE: &str = "turn-metrics";
+    const RESPONSE_STATS_PREFIX: &str = "response-stats:";
+
+    pub fn turn_metrics(content: String) -> Self {
+        Self {
+            role: "meta".into(),
+            content,
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: Some(Self::TURN_METRICS_TITLE.into()),
+            tool_data: None,
+        }
+    }
+
+    pub fn is_turn_metrics(&self) -> bool {
+        self.role == "meta" && self.title.as_deref() == Some(Self::TURN_METRICS_TITLE)
+    }
+
+    pub fn with_response_stats(mut self, stats: Option<ResponseStats>) -> Self {
+        if let Some(stats) = stats
+            && let Ok(json) = serde_json::to_string(&stats)
+        {
+            self.title = Some(format!("{}{json}", Self::RESPONSE_STATS_PREFIX));
+        }
+        self
+    }
+
+    pub fn response_stats(&self) -> Option<ResponseStats> {
+        serde_json::from_str(
+            self.title
+                .as_deref()?
+                .strip_prefix(Self::RESPONSE_STATS_PREFIX)?,
+        )
+        .ok()
+    }
+
     /// Create an error message.
     pub fn error(content: impl Into<String>) -> Self {
         Self {
@@ -236,6 +272,7 @@ impl DisplayMessage {
             title: None,
             tool_data: item.tool_data,
         }
+        .with_response_stats(item.response_stats)
     }
 
     /// Create a tool message with title.

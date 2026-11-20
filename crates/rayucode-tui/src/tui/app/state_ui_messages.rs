@@ -1,7 +1,5 @@
 use super::state_ui_history_marker::parse_compacted_history_marker;
-use super::state_ui_storage::{
-    compact_display_message_tool_data, compact_display_messages_for_storage,
-};
+use super::state_ui_storage::compact_display_messages_for_storage;
 use super::*;
 use crate::overnight::OvernightRunStatus;
 use crate::tui::core::{PENDING_TOOL_ROLE, ToolActivity};
@@ -424,7 +422,6 @@ impl App {
             }
             return;
         }
-        compact_display_message_tool_data(&mut message);
         // Keep Ctrl+L's spacer as a clear boundary when new content arrives.
         // The renderer packs only the content after it while following the tail,
         // so sending a prompt does not restore the pre-clear conversation.
@@ -478,6 +475,7 @@ impl App {
             }
         }
         compact_display_messages_for_storage(&mut messages);
+        self.restore_turn_footer(&messages);
         self.display_messages = messages;
         self.unseen_chat_messages = 0;
         self.transcript_view = None;
@@ -959,6 +957,8 @@ impl App {
     }
 
     pub(super) fn clear_display_messages(&mut self) {
+        self.raw_tool_results.clear();
+        self.turn_footer = Default::default();
         self.unseen_chat_messages = 0;
         self.transcript_view = None;
         self.compacted_history_lazy = CompactedHistoryLazyState::default();

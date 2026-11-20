@@ -823,7 +823,188 @@ fn live_status_snapshot(app: &dyn TuiState, elapsed: f32) -> crate::protocol::Sw
     }
 }
 
+pub(crate) fn turn_footer_metrics(
+    stats: crate::tui::TurnFooterSnapshot,
+    so_far: bool,
+) -> Option<String> {
+    let mut fields = turn_metric_fields(stats);
+    fields.extend(
+        stats
+            .credits
+            .map(|credits| rayucode_session_types::rayu_credits_label(credits, so_far)),
+    );
+    (!fields.is_empty()).then(|| fields.join(" · "))
+}
+
+pub(crate) fn turn_cache_metrics(
+    read: Option<u64>,
+    write: Option<u64>,
+) -> impl Iterator<Item = String> {
+    [
+        read.filter(|count| *count > 0)
+            .map(|n| format!("cache read {}", format_stream_tokens(n))),
+        write
+            .filter(|count| *count > 0)
+            .map(|n| format!("cache write {}", format_stream_tokens(n))),
+    ]
+    .into_iter()
+    .flatten()
+}
+
+fn turn_metric_fields(stats: crate::tui::TurnFooterSnapshot) -> Vec<String> {
+    let mut fields = Vec::new();
+    fields.extend(
+        stats
+            .elapsed
+            .map(|elapsed| crate::message::Message::format_duration(elapsed.as_millis() as u64)),
+    );
+    fields.extend(stats.output_tps.map(|tps| format!("{tps:.1} tps")));
+    let tokens = [
+        stats
+            .input_tokens
+            .map(|n| format!("↑{}", format_stream_tokens(n))),
+        stats
+            .output_tokens
+            .map(|n| format!("↓{}", format_stream_tokens(n))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if !tokens.is_empty() {
+        fields.push(tokens.join(" "));
+    }
+    fields
+}
+
+fn turn_footer_line(
+    app: &dyn TuiState,
+    stats: crate::tui::TurnFooterSnapshot,
+    width: usize,
+    pending_count: usize,
+) -> Line<'static> {
+    use crate::tui::TurnFooterOutcome::*;
+    use unicode_width::UnicodeWidthStr;
+
+    const VERBS: [(&str, &str); 5] = [
+        ("brewing", "brewed"),
+        ("building", "built"),
+        ("working", "worked"),
+        ("crunching", "crunched"),
+        ("crafting", "crafted"),
+    ];
+    let (present, past) = VERBS[stats.verb % VERBS.len()];
+    let spinner = super::activity_indicator(app.animation_elapsed(), 12.5);
+    let (glyph, phrase, short, color) = match stats.outcome {
+        Running => {
+            let (activity, color) = if app.rate_limit_remaining().is_some()
+                || matches!(app.status(), ProcessingStatus::WaitingForNetwork { .. })
+            {
+                ("waiting", rgb(255, 193, 7))
+            } else if matches!(
+                app.status(),
+                ProcessingStatus::Connecting(crate::message::ConnectionPhase::Retrying { .. })
+            ) {
+                ("retrying", rgb(255, 193, 7))
+            } else {
+                (present, ai_color())
+            };
+            (spinner, format!("Rayu’s {activity}…"), "Ra", color)
+        }
+        Completed => (
+            "✓",
+            format!("Rayu {past}"),
+            "Ra",
+            rayucode_tui_style::theme::success_color(),
+        ),
+        Interrupted => ("◼", "Rayu interrupted".into(), "Ra stop", rgb(225, 165, 90)),
+        Failed => (
+            "✗",
+            "Rayu failed".into(),
+            "Ra fail",
+            rayucode_tui_style::theme::error_color(),
+        ),
+    };
+    let prefix = format!("{glyph} {phrase}");
+    let mut full = turn_footer_metrics(stats, stats.outcome == Running)
+        .map_or(prefix.clone(), |metrics| format!("{prefix} · {metrics}"));
+    let mut context = Vec::new();
+    if width >= 50 && stats.outcome == Running {
+        if let Some(remaining) = app.rate_limit_remaining() {
+            context.push(format!("retry in {}s", remaining.as_secs()));
+        } else if let ProcessingStatus::RunningTool(name) = app.status() {
+            context.push(format!("running {name}"));
+        }
+        if pending_count > 0 {
+            context.push(format!("+{pending_count} queued"));
+        }
+    }
+    if width >= 50 {
+        let running = app
+            .background_task_rows()
+            .iter()
+            .filter(|task| task.status == crate::tui::BackgroundTaskRowStatus::Running)
+            .count();
+        if running > 0 {
+            context.push(format!("{running} background"));
+        }
+    }
+    if full.width() <= width {
+        for label in context {
+            if full.width() + 3 + label.width() <= width {
+                full.push_str(" · ");
+                full.push_str(&label);
+            }
+        }
+    } else {
+        let elapsed = stats
+            .elapsed
+            .map(|elapsed| crate::message::Message::format_duration(elapsed.as_millis() as u64));
+        let credits = stats.credits.map(|credits| {
+            format!(
+                "{} cr",
+                rayucode_session_types::format_rayu_credits(credits)
+            )
+        });
+        let mut abbreviated = format!("{glyph} {short}");
+        for value in elapsed.into_iter().chain(credits) {
+            if abbreviated.width() + 1 + value.width() <= width {
+                abbreviated.push(' ');
+                abbreviated.push_str(&value);
+            }
+        }
+        for token in [
+            stats
+                .output_tokens
+                .map(|n| format!("↓{}", format_stream_tokens(n))),
+            stats
+                .input_tokens
+                .map(|n| format!("↑{}", format_stream_tokens(n))),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if abbreviated.width() + 1 + token.width() <= width {
+                abbreviated.push(' ');
+                abbreviated.push_str(&token);
+            }
+        }
+        full = abbreviated;
+    }
+    super::truncate_line_with_ellipsis_to_width(
+        &Line::styled(full, Style::default().fg(color)),
+        width,
+    )
+}
+
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
+    if area.is_empty() {
+        return;
+    }
+    if let Some(stats) = app.turn_footer() {
+        let line = turn_footer_line(app, stats, area.width as usize, pending_count);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
     let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
     let (cache_read, cache_creation) = app.streaming_cache_tokens();
@@ -1116,6 +1297,11 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         area.width as usize,
         app.is_processing(),
     );
+    let line = if line.width() == 0 && !app.is_processing() {
+        Line::styled("Rayu ready", Style::default().fg(dim_color()))
+    } else {
+        line
+    };
 
     crate::memory::check_staleness();
 
@@ -1547,23 +1733,29 @@ pub(super) fn draw_overscroll_status(
 
     let mut facts_area = area;
     let centered = app.centered_mode();
-    const HELP_HINT: &str = "? for shortcuts";
+    let hint = if !app.display_messages().is_empty() {
+        crate::tui::keybind::transcript_toggle_key_label().map(|key| format!("{key} details"))
+    } else if app.input().is_empty() && !app.is_processing() {
+        Some("? for shortcuts".into())
+    } else {
+        None
+    };
     if !centered
-        && app.input().is_empty()
-        && !app.is_processing()
         && !app.is_replay()
         && !super::secondary_render_active()
         && app.login_input_hint().is_none()
         && app.inline_ui_state().is_none()
-        && usize::from(area.width) >= HELP_HINT.len() + 18
+        && let Some(hint) = hint
     {
-        let hint_width = HELP_HINT.len() as u16;
-        frame.render_widget(
-            Paragraph::new(HELP_HINT).style(Style::default().fg(dim_color())),
-            Rect::new(area.x, area.y, hint_width, 1),
-        );
-        facts_area.x += hint_width + 2;
-        facts_area.width -= hint_width + 2;
+        let hint_width = unicode_width::UnicodeWidthStr::width(hint.as_str()) as u16;
+        if area.width >= hint_width + 40 {
+            frame.render_widget(
+                Paragraph::new(hint).style(Style::default().fg(dim_color())),
+                Rect::new(area.x, area.y, hint_width, 1),
+            );
+            facts_area.x += hint_width + 2;
+            facts_area.width -= hint_width + 2;
+        }
     }
     let (spans, _) = overscroll_fit_facts(&facts, usize::from(facts_area.width));
     let alignment = if centered {

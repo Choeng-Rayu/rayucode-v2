@@ -703,6 +703,41 @@ pub mod transcript_view;
 /// workspace, diagram pane, diff pane, side panel, inline, overlay, copy
 /// selection, onboarding, misc). See `docs/TUISTATE_TRAIT_DECOMPOSITION.md` for
 /// the incremental plan to split these into composable sub-traits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TurnFooterOutcome {
+    #[default]
+    Running,
+    Completed,
+    Interrupted,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TurnFooterSnapshot {
+    pub outcome: TurnFooterOutcome,
+    pub verb: usize,
+    pub elapsed: Option<std::time::Duration>,
+    pub output_tps: Option<f32>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub credits: Option<f64>,
+}
+
+impl TurnFooterSnapshot {
+    pub(crate) fn from_response_stats(stats: &rayucode_session_types::ResponseStats) -> Self {
+        Self {
+            outcome: TurnFooterOutcome::Completed,
+            elapsed: stats
+                .duration_secs
+                .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok()),
+            input_tokens: stats.input_tokens,
+            output_tokens: stats.output_tokens,
+            credits: stats.rayu_credits,
+            ..Self::default()
+        }
+    }
+}
+
 pub trait TuiState {
     /// Bounded last frame while derived caches are released. Source transcripts
     /// remain resident, but the renderer must not re-materialize them at idle.
@@ -727,6 +762,12 @@ pub trait TuiState {
     }
 
     fn display_messages(&self) -> &[DisplayMessage];
+    fn raw_tool_result(&self, _call_id: &str) -> Option<&str> {
+        None
+    }
+    fn turn_footer(&self) -> Option<TurnFooterSnapshot> {
+        None
+    }
     fn display_user_message_count(&self) -> usize;
     /// Number of user prompts hidden before the first visible message because of
     /// compacted-history truncation. Used to keep prompt numbers absolute.
@@ -1826,7 +1867,9 @@ fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
         PickerAction::Model
         | PickerAction::LoginRayuApiKey
-        | PickerAction::Account(AccountPickerAction::RayuStatus | AccountPickerAction::RayuManage)
+        | PickerAction::Account(
+            AccountPickerAction::RayuStatus | AccountPickerAction::RayuManage,
+        )
         | PickerAction::RemoteLogin { .. }
         | PickerAction::RemoteImportDecision { .. }
         | PickerAction::AgentTarget(_)

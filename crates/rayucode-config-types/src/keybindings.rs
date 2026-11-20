@@ -194,6 +194,12 @@ pub fn is_bound_value(value: &str) -> bool {
 /// layer will then warn you to confirm or fix it.
 pub const KEYBINDING_DEFAULTS: &[KeybindingDefault] = &[
     KeybindingDefault {
+        id: "transcript_toggle",
+        description: "Toggle the detailed transcript",
+        macos: PlatformDefault::dev("ctrl+o"),
+        other: PlatformDefault::dev("ctrl+o"),
+    },
+    KeybindingDefault {
         id: "scroll_up",
         description: "Scroll the transcript up one step",
         // Shift+J/K scroll incrementally; the un-shifted Ctrl+J/K move by prompt.

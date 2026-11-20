@@ -33,7 +33,7 @@ fn explicit_reasoning_display_is_distinguishable_from_the_legacy_fallback() {
         ..DisplayConfig::default()
     };
     assert!(!display.has_explicit_reasoning_display());
-    assert_eq!(display.reasoning_display(), ReasoningDisplayMode::Full);
+    assert_eq!(display.reasoning_display(), ReasoningDisplayMode::Compact);
 
     display.set_reasoning_display(ReasoningDisplayMode::Current);
     assert!(display.has_explicit_reasoning_display());

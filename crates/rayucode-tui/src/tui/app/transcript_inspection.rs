@@ -18,6 +18,25 @@ impl App {
             || self.prompt_history_search.is_some()
     }
 
+    pub(super) fn handle_transcript_toggle(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> bool {
+        if self.presentation_modal_blocked()
+            || self.theme_picker.is_some()
+            || !self.toggle_keys.transcript.matches(code, modifiers)
+        {
+            return false;
+        }
+        if self.transcript_view.is_some() {
+            self.close_transcript_view();
+        } else {
+            self.open_transcript_view();
+        }
+        true
+    }
+
     pub(super) fn open_transcript_view(&mut self) {
         if self.transcript_view.is_some() {
             return;
@@ -35,13 +54,19 @@ impl App {
             position,
         ));
         self.exit_copy_selection_mode();
-        self.pending_resize_anchor = position.map(|target| PendingResizeAnchor {
-            target,
-            captured_width: 0,
-            captured_scroll: scroll,
-        });
-        self.auto_scroll_paused = true;
-        self.scroll_offset = scroll;
+        self.pending_resize_anchor =
+            position
+                .filter(|_| self.auto_scroll_paused)
+                .map(|target| PendingResizeAnchor {
+                    target,
+                    captured_width: 0,
+                    captured_scroll: scroll,
+                });
+        if self.auto_scroll_paused {
+            self.scroll_offset = scroll;
+        } else {
+            self.follow_chat_bottom();
+        }
         self.request_full_repaint();
     }
 
@@ -50,6 +75,7 @@ impl App {
             return;
         };
         self.pending_history_anchor = None;
+        self.exit_copy_selection_mode();
         if view.origin_paused {
             self.scroll_offset = view.origin_scroll;
             self.auto_scroll_paused = true;
@@ -71,6 +97,22 @@ impl App {
     ) -> bool {
         if self.presentation_modal_blocked() {
             return false;
+        }
+        if self.transcript_view.is_some() && self.handle_transcript_toggle(code, modifiers) {
+            return true;
+        }
+        if self
+            .transcript_view
+            .as_ref()
+            .is_some_and(|view| view.editing.is_none())
+        {
+            if self.toggle_keys.copy_selection.matches(code, modifiers) {
+                self.toggle_copy_selection_mode();
+                return true;
+            }
+            if super::input::handle_visible_copy_shortcut(self, code, modifiers) {
+                return true;
+            }
         }
         let Some(view) = self.transcript_view.as_mut() else {
             return false;
@@ -105,9 +147,12 @@ impl App {
         }
         let page = ui::last_chat_viewport_height().saturating_sub(1).max(1);
         match (code, modifiers) {
-            (KeyCode::Esc, _) => self.close_transcript_view(),
+            (KeyCode::Esc, _)
+            | (KeyCode::Char('q'), KeyModifiers::NONE)
+            | (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.close_transcript_view(),
             (KeyCode::Char('/'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
                 view.editing = Some(String::new());
+                self.pause_chat_auto_scroll();
             }
             (KeyCode::Char('n'), KeyModifiers::NONE) => self.move_transcript_match(false),
             (KeyCode::Char('N'), KeyModifiers::NONE | KeyModifiers::SHIFT)
@@ -116,19 +161,21 @@ impl App {
                 self.scroll_up(1);
             }
             (KeyCode::Down, _) => {
+                self.pause_chat_auto_scroll();
                 self.scroll_down(1);
             }
             (KeyCode::PageUp, _) => {
                 self.scroll_up(page);
             }
             (KeyCode::PageDown, _) => {
+                self.pause_chat_auto_scroll();
                 self.scroll_down(page);
             }
             (KeyCode::Home, _) => {
                 self.scroll_up(self.scroll_offset.saturating_add(1));
             }
             (KeyCode::End, _) => {
-                self.scroll_down(ui::last_max_scroll());
+                self.follow_chat_bottom();
             }
             _ => {}
         }

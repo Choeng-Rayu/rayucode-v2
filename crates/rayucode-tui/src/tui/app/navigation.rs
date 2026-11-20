@@ -1453,12 +1453,19 @@ impl App {
             finish_mouse_event!(false, "account_picker_overlay");
         }
         if let Some(view) = crate::tui::TuiState::transcript_view(self) {
-            if view.editing.is_none() {
+            let editing = view.editing.is_some();
+            if self.copy_selection_mode
+                && let Some(scroll_only) = self.handle_copy_selection_mouse(mouse)
+            {
+                finish_mouse_event!(scroll_only, "transcript_copy_selection");
+            }
+            if !editing {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         self.scroll_up(3);
                     }
                     MouseEventKind::ScrollDown => {
+                        self.pause_chat_auto_scroll();
                         self.scroll_down(3);
                     }
                     _ => {}

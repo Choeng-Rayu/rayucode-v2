@@ -189,6 +189,7 @@ impl App {
                                     let scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
                                     let _ = self.handle_key_press_event(key);
                                     if self.cancel_requested {
+                                        self.finish_turn_footer(crate::tui::TurnFooterOutcome::Interrupted);
                                         self.cancel_requested = false;
                                         self.interleave_message = None;
                                         self.pending_soft_interrupts.clear();
@@ -446,6 +447,7 @@ impl App {
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
                                         self.clear_pending_tool_calls();
+                                        self.finish_turn_footer(crate::tui::TurnFooterOutcome::Interrupted);
                                         self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
@@ -749,6 +751,7 @@ impl App {
                                         cache_read_input_tokens,
                                         cache_creation_input_tokens,
                                     } => {
+                                        self.record_turn_footer_usage(input_tokens, output_tokens);
                                         call_usage.observe(
                                             input_tokens,
                                             output_tokens,
@@ -1353,11 +1356,9 @@ impl App {
                         title: None,
                         tool_data: None,
                     });
-                    self.push_turn_footer(duration);
-                    self.streaming.streaming_rayu_credits.reset();
+                    self.record_turn_footer_cache_usage();
                 } else if self.has_streaming_footer_stats() {
-                    self.push_turn_footer(duration);
-                    self.streaming.streaming_rayu_credits.reset();
+                    self.record_turn_footer_cache_usage();
                 }
             } else {
                 // Had tool calls - only display text that came AFTER the last tool
@@ -1377,7 +1378,7 @@ impl App {
                     }
                 }
                 if self.has_streaming_footer_stats() {
-                    self.push_turn_footer_with_credits_mode(duration, true);
+                    self.record_turn_footer_cache_usage();
                 }
             }
             self.clear_streaming_render_state();
@@ -1406,6 +1407,7 @@ impl App {
                     );
                     continue;
                 }
+                self.finish_turn_footer(crate::tui::TurnFooterOutcome::Completed);
                 break;
             }
 

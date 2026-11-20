@@ -69,6 +69,7 @@ mod inline_interactive_ui;
 mod inline_ui;
 #[path = "ui_input.rs"]
 pub(crate) mod input_ui;
+pub(crate) use input_ui::turn_footer_metrics;
 #[path = "ui_memory_estimates.rs"]
 mod memory_estimates;
 #[path = "ui_memory.rs"]
@@ -1709,6 +1710,9 @@ fn draw_jump_to_latest(frame: &mut Frame, app: &dyn TuiState, status: Rect) -> R
     } else {
         "Jump to latest".to_string()
     };
+    if app.turn_footer().is_some() && status.width < 34 {
+        label = "↓".into();
+    }
     if label.len() > usize::from(status.width) {
         label = if count > 0 {
             format!("Latest +{count}")
@@ -3485,9 +3489,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if let Some(view) = app.transcript_view() {
+        let status_height = u16::from(chat_area.height >= 3 && app.turn_footer().is_some());
         let bar_height = 1;
         let viewport = Rect {
-            height: chat_area.height.saturating_sub(bar_height),
+            height: chat_area.height.saturating_sub(bar_height + status_height),
             ..chat_area
         };
         let bar = Rect::new(chat_area.x, viewport.bottom(), chat_area.width, bar_height);
@@ -3498,9 +3503,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             wide_prepare_width
         });
         record_layout_snapshot(viewport, None, None, None);
-        record_status_area(Rect::default());
         draw_messages(frame, app, viewport, prepared, show_scrollbar);
         view.draw_bar(frame, bar);
+        let footer = Rect::new(chat_area.x, bar.bottom(), chat_area.width, status_height);
+        record_status_area(footer);
+        if status_height > 0 {
+            input_ui::draw_status(frame, app, footer, pending_count);
+        }
         finalize_frame_metrics(
             app,
             total_start,
@@ -3531,7 +3540,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .inline_interactive_state()
         .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
     let picker_floor = reserve_rows(u16::from(theme_picker.is_some() || focused_picker));
-    let status_height = reserve_rows(u16::from(available_height >= 4));
+    let status_height = reserve_rows(u16::from(available_height >= 3));
     let overscroll_height = reserve_rows(u16::from(available_height >= 3));
     let inline_requested = if theme_picker.is_some() {
         rayucode_tui_style::ALL_THEME_PRESETS.len() as u16 + 1
@@ -3710,13 +3719,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         Constraint::Min(min_messages_height)
     };
+    let footer = Rect::new(
+        chat_area.x,
+        chat_area.bottom().saturating_sub(status_height),
+        chat_area.width,
+        status_height,
+    );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             transcript_height,
             Constraint::Length(queued_height),
             Constraint::Length(swarm_strip_height),
-            Constraint::Length(status_height),
             Constraint::Length(notification_height),
             Constraint::Length(inline_block_height),
             Constraint::Length(inline_ui_gap_height),
@@ -3724,8 +3738,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             Constraint::Length(composer_height),
             Constraint::Length(overscroll_height),
         ])
-        .split(chat_area);
-    let composer_area = chunks[8];
+        .split(Rect {
+            height: chat_area.height.saturating_sub(status_height),
+            ..chat_area
+        });
+    let composer_area = chunks[7];
     let has_composer_rules = composer_rules_height > 0 && composer_area.height >= 3;
     let input_area = input_ui::composer_input_area(composer_area, has_composer_rules);
 
@@ -3743,7 +3760,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         if queued_height > 0 {
             capture.layout.queued_area = Some(chunks[1].into());
         }
-        capture.layout.status_area = Some(chunks[3].into());
+        capture.layout.status_area = Some(footer.into());
         capture.layout.input_area = Some(input_area.into());
         capture.layout.input_lines_raw = app.input().lines().count().max(1);
         capture.layout.input_lines_wrapped = base_input_height as usize;
@@ -3960,24 +3977,24 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());
     }
-    let status = draw_jump_to_latest(frame, app, chunks[3]);
+    let status = draw_jump_to_latest(frame, app, footer);
     record_status_area(status);
     input_ui::draw_status(frame, app, status, pending_count);
     if notification_height > 0 {
-        input_ui::draw_notification(frame, app, chunks[4]);
+        input_ui::draw_notification(frame, app, chunks[3]);
     }
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_input".to_string());
     }
     // Draw inline UI if active
     if let Some(selected) = theme_picker.filter(|_| inline_block_height > 0) {
-        inline_ui::draw_theme_picker(frame, chunks[5], selected);
+        inline_ui::draw_theme_picker(frame, chunks[4], selected);
     } else if inline_block_height > 0 {
-        draw_inline_ui(frame, app, chunks[5]);
+        draw_inline_ui(frame, app, chunks[4]);
     }
 
     if !blocker_lines.is_empty() && inline_ui_gap_height > 0 {
-        frame.render_widget(Paragraph::new(blocker_lines), chunks[6]);
+        frame.render_widget(Paragraph::new(blocker_lines), chunks[5]);
     }
 
     let model_in_composer =
@@ -3989,11 +4006,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[9], model_in_composer);
+        input_ui::draw_overscroll_status(frame, app, chunks[8], model_in_composer);
     }
 
     if donut_height > 0 {
-        animations::draw_idle_animation(frame, app, chunks[7]);
+        animations::draw_idle_animation(frame, app, chunks[6]);
     }
     let chrome_elapsed = chrome_start.elapsed();
 

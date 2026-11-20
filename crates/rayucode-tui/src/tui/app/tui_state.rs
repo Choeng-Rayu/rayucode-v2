@@ -769,6 +769,14 @@ impl crate::tui::TuiState for App {
         &self.display_messages
     }
 
+    fn raw_tool_result(&self, call_id: &str) -> Option<&str> {
+        self.raw_tool_results.get(call_id).map(String::as_str)
+    }
+
+    fn turn_footer(&self) -> Option<crate::tui::TurnFooterSnapshot> {
+        self.pinned_turn_footer()
+    }
+
     fn display_user_message_count(&self) -> usize {
         self.display_user_message_count
     }

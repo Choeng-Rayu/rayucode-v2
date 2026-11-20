@@ -102,6 +102,14 @@ pub(super) fn history_payload_fingerprint(messages: &[crate::protocol::HistoryMe
     messages.len().hash(&mut hasher);
     for message in messages {
         message.tool_duration_ms.hash(&mut hasher);
+        if let Some(stats) = &message.response_stats {
+            stats.duration_secs.map(f64::to_bits).hash(&mut hasher);
+            stats.input_tokens.hash(&mut hasher);
+            stats.output_tokens.hash(&mut hasher);
+            stats.cache_read_tokens.hash(&mut hasher);
+            stats.cache_creation_tokens.hash(&mut hasher);
+            stats.rayu_credits.map(f64::to_bits).hash(&mut hasher);
+        }
         message.role.hash(&mut hasher);
         message.content.hash(&mut hasher);
         match &message.tool_calls {

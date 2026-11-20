@@ -172,6 +172,7 @@ pub(in crate::tui::ui) fn pending_tool_lines(
     message: &DisplayMessage,
     width: u16,
     progress: Option<&crate::protocol::BashProgress>,
+    expanded: bool,
 ) -> Vec<Line<'static>> {
     let Some(tool) = &message.tool_data else {
         return Vec::new();
@@ -195,21 +196,62 @@ pub(in crate::tui::ui) fn pending_tool_lines(
         dim_color(),
         cells,
     )];
-    let preview = progress.map_or_else(Vec::new, |progress| live_bash_output_rows(progress, cells));
+    let preview = progress.map_or_else(Vec::new, |progress| {
+        if expanded {
+            output_rows(&progress.tail, cells, None)
+        } else {
+            live_bash_output_rows(progress, cells)
+        }
+    });
     let inline_metrics = running && bash_metrics_on_header(tool, cells);
     if !inline_metrics {
         lines.push(tool_response(activity, cells));
     }
-    lines.extend(inline_bash_command(tool, cells));
+    if expanded {
+        lines.extend(full_tool_argument_rows(tool, cells));
+    } else {
+        lines.extend(inline_bash_command(tool, cells));
+    }
     if inline_metrics && preview.is_empty() {
         lines.push(tool_response(activity, cells));
     }
     lines.extend(preview);
-    lines.extend(codemode_preview(tool, cells));
     if centered {
         super::super::left_pad_lines_to_block_width(&mut lines, width, block);
     }
     lines
+}
+
+pub(in crate::tui::ui) fn full_tool_argument_rows(
+    tool: &ToolCall,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if tool.input.is_null() || tool.input.as_object().is_some_and(|input| input.is_empty()) {
+        return Vec::new();
+    }
+    let mut rows = vec![tool_response("Arguments", width)];
+    if is_shell_tool(tool)
+        && let Some(command) = tool
+            .input
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+    {
+        rows.extend(output_rows(command, width, None));
+        let mut options = tool.input.clone();
+        if let Some(options) = options.as_object_mut() {
+            options.remove("command");
+        }
+        if options
+            .as_object()
+            .is_some_and(|options| options.is_empty())
+        {
+            return rows;
+        }
+        rows.extend(output_rows(&options.to_string(), width, None));
+    } else if let Ok(arguments) = serde_json::to_string_pretty(&tool.input) {
+        rows.extend(output_rows(&arguments, width, None));
+    }
+    rows
 }
 
 pub(in crate::tui::ui) fn live_bash_output_rows(

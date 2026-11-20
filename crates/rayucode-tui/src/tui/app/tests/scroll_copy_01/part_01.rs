@@ -1358,9 +1358,9 @@ fn composer_model_and_status_line_stay_pinned_while_scrolling() {
         let check_composer = |frame: &str| {
             let rows: Vec<_> = frame.lines().collect();
             assert!(!frame.contains("(overscroll"), "w={width}: {frame}");
-            let rule = rows[26].trim();
+            let rule = rows[25].trim();
             assert!(rule.starts_with('─') && rule.ends_with(" ──"), "{frame}");
-            assert!(rows[28].trim().chars().all(|cell| cell == '─'), "{frame}");
+            assert!(rows[27].trim().chars().all(|cell| cell == '─'), "{frame}");
             assert!(
                 !rows[29].trim().is_empty(),
                 "footer should stay visible: {frame}"

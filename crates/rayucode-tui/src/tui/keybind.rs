@@ -426,6 +426,7 @@ pub struct ToggleKeys {
     pub auto_poke: ToggleBinding,
     pub side_panel: ToggleBinding,
     pub copy_selection: ToggleBinding,
+    pub transcript: ToggleBinding,
     pub diagram_pane: ToggleBinding,
     pub diagram_pane_visibility: ToggleBinding,
     pub typing_scroll_lock: ToggleBinding,
@@ -448,6 +449,13 @@ pub fn load_toggle_keys() -> ToggleKeys {
         ),
         side_panel: ToggleBinding::load(&cfg.keybindings.side_panel_toggle, 'm'),
         copy_selection: ToggleBinding::load(&cfg.keybindings.copy_selection_toggle, 'y'),
+        transcript: ToggleBinding::load_with_default(
+            &cfg.keybindings.transcript_toggle,
+            KeyBinding {
+                code: KeyCode::Char('o'),
+                modifiers: KeyModifiers::CONTROL,
+            },
+        ),
         diagram_pane: ToggleBinding::load(&cfg.keybindings.diagram_pane_toggle, 't'),
         diagram_pane_visibility: ToggleBinding::load_with_default(
             &cfg.keybindings.diagram_pane_visibility_toggle,
@@ -484,6 +492,10 @@ fn swarm_panel_focus_default() -> KeyBinding {
 
 pub(crate) fn side_panel_toggle_key_label() -> String {
     rayucode_tui_core::keybind::alt_chord("M")
+}
+
+pub(crate) fn transcript_toggle_key_label() -> Option<String> {
+    load_toggle_keys().transcript.binding().map(format_binding)
 }
 
 pub(crate) fn diagram_pane_visibility_key_label() -> String {

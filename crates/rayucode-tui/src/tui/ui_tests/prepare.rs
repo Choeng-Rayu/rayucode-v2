@@ -1242,7 +1242,7 @@ fn with_compact_thinking_config(compact: bool, f: impl FnOnce()) {
     f();
 }
 
-fn assert_thinking_tool_adjacency(embedded_assistant: bool, compact: bool) {
+fn assert_thinking_tool_adjacency(embedded_assistant: bool, _compact: bool) {
     clear_test_render_state_for_tests();
     let tool = |id: &str, title: &str| DisplayMessage {
         role: "tool".into(),
@@ -1282,20 +1282,23 @@ fn assert_thinking_tool_adjacency(embedded_assistant: bool, compact: bool) {
         .iter()
         .map(extract_line_text)
         .collect();
+    assert!(
+        !rows.iter().any(|row| row.contains("Thinking compactly")),
+        "{rows:?}"
+    );
     let thinking = rows
         .iter()
-        .position(|row| row.contains("Thinking compactly"))
-        .unwrap();
+        .position(|row| row.to_lowercase().contains("thought"))
+        .expect("thought summary");
     let before = rows
         .iter()
         .position(|row| row.contains("Before thinking"))
         .unwrap();
-    assert_eq!(
-        thinking - before,
-        if compact { 1 } else { 2 } + usize::from(!embedded_assistant),
-        "{rows:?}"
-    );
-    assert!(rows[thinking + 1].contains("After thinking"), "{rows:?}");
+    let after = rows
+        .iter()
+        .position(|row| row.contains("After thinking"))
+        .unwrap();
+    assert!(before < thinking && thinking < after, "{rows:?}");
     let answer = rows
         .iter()
         .position(|row| row.contains("Final answer"))
@@ -1458,7 +1461,7 @@ fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
     let hidden =
         messages::render_compact_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
     let expanded =
-        messages::render_expanded_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
+        messages::render_expanded_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off, None);
     let plain = |lines: Vec<Line<'static>>| {
         lines
             .iter()
@@ -1483,7 +1486,7 @@ fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
     );
     let expanded = plain(expanded);
     assert!(
-        expanded.contains("Arguments: printf '測試 🐈'"),
+        expanded.contains("Arguments") && expanded.contains("printf '測試 🐈'"),
         "{expanded}"
     );
     assert!(

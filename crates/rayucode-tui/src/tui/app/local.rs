@@ -105,7 +105,6 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     app.progress_mouse_scroll_animation();
     needs_redraw |= app.update_pinned_images_auto_hide();
     // Dissolve stale (off-screen) reasoning traces with zero visible motion.
-    needs_redraw |= app.gc_offscreen_reasoning_traces();
     // Adopt the resolved scroll position once a frame containing newly loaded
     // older history has rendered, so manual scrolling resumes seamlessly.
     needs_redraw |= app.reconcile_history_anchor();
@@ -645,6 +644,13 @@ fn handle_input_shell_completed(app: &mut App, shell: InputShellCompleted) {
 }
 
 pub(super) fn finish_turn(app: &mut App) {
+    let outcome = if app.last_stream_error.is_some() {
+        crate::tui::TurnFooterOutcome::Failed
+    } else {
+        crate::tui::TurnFooterOutcome::Completed
+    };
+    app.finish_turn_footer(outcome);
+    app.streaming.streaming_rayu_credits.reset();
     app.remember_terminal_title_work();
     let turn_duration_secs = app.display_turn_duration_secs();
     app.token_accounting.total_input_tokens += app.streaming.streaming_input_tokens;

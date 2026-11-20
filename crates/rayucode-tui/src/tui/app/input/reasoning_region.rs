@@ -119,30 +119,7 @@ impl App {
         });
         self.reasoning_region_started = None;
 
-        // In `current` mode, reasoning is ephemeral: it is never written to the
-        // persistent transcript. The closed block is sliced out of the live
-        // stream and anchored *in place* as a display-only reasoning message in
-        // the transcript flow: it never moves again (no bottom-following, no
-        // hoisting), stays readable for the rest of the turn, and is removed
-        // when the next user prompt starts a new turn.
-        if self.reasoning_current_mode()
-            || crate::config::config().display.reasoning_display()
-                == crate::config::ReasoningDisplayMode::Compact
-        {
-            self.anchor_current_reasoning_block(duration);
-            return;
-        }
-
-        // Terminate the reasoning block with a blank line so following output
-        // renders as a normal paragraph.
-        if !self.streaming.streaming_text.ends_with("\n\n") {
-            if self.streaming.streaming_text.ends_with('\n') {
-                self.streaming.streaming_text.push('\n');
-            } else {
-                self.streaming.streaming_text.push_str("\n\n");
-            }
-        }
-        self.refresh_split_view_if_needed();
+        self.anchor_current_reasoning_block(duration);
     }
 
     /// True when the active reasoning-display mode is `current` (live-only,
@@ -190,15 +167,7 @@ impl App {
             }
         }
         if self.reasoning_current_mode() {
-            self.turn_reasoning_traces
-                .push(crate::tui::app::TurnReasoningTrace {
-                    display_index: self.display_messages.len(),
-                    // Snapshot the transcript height when this trace anchors. The trace
-                    // begins life at the viewport tail; once the transcript grows a
-                    // full viewport beyond this point the trace is provably off-screen
-                    // (while tail-following) and can be GC'd without visible motion.
-                    wrapped_lines_at_anchor: crate::tui::ui::last_total_wrapped_lines(),
-                });
+            self.turn_reasoning_traces.push(self.display_messages.len());
         }
         let mut message = DisplayMessage::reasoning(block);
         message.duration_secs = duration;
@@ -216,7 +185,7 @@ impl App {
             return;
         }
         let traces = std::mem::take(&mut self.turn_reasoning_traces);
-        let removed = self.remove_reasoning_trace_messages(traces.iter().map(|t| t.display_index));
+        let removed = self.remove_reasoning_trace_messages(traces.into_iter());
         if removed > 0 {
             self.bump_display_messages_version();
             self.refresh_split_view_if_needed();

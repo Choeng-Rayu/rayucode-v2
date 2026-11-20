@@ -10,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy)]
 struct SearchHit {
+    section: usize,
     raw_line: usize,
     start: usize,
     end: usize,
@@ -18,7 +19,7 @@ struct SearchHit {
 
 #[derive(Default)]
 struct SearchIndex {
-    body: Option<Arc<PreparedMessages>>,
+    sections: Vec<(usize, Arc<PreparedMessages>, Vec<SearchHit>)>,
     hits: Vec<SearchHit>,
     selected: Option<usize>,
     position: Option<(ContentPos, usize)>,
@@ -61,23 +62,13 @@ impl TranscriptView {
         *self.index.get_mut() = SearchIndex::default();
     }
 
-    fn update_search(&self, frame: &PreparedChatFrame) -> Option<usize> {
-        let pattern = self.pattern.as_ref()?;
-        let body = frame
-            .sections
-            .iter()
-            .find(|section| section.kind == PreparedSectionKind::Body)?;
-        let mut index = self.index.borrow_mut();
-        if index
-            .body
-            .as_ref()
-            .is_some_and(|cached| Arc::ptr_eq(cached, &body.prepared))
-        {
-            return Some(body.line_start);
-        }
-
-        let mut rows = vec![0..0; body.prepared.raw_plain_lines.len()];
-        for (row, wrap) in body.prepared.wrapped_line_map.iter().enumerate() {
+    fn search_section(
+        pattern: &regex::Regex,
+        section: usize,
+        prepared: &PreparedMessages,
+    ) -> Vec<SearchHit> {
+        let mut rows = vec![0..0; prepared.raw_plain_lines.len()];
+        for (row, wrap) in prepared.wrapped_line_map.iter().enumerate() {
             if let Some(raw_rows) = rows.get_mut(wrap.raw_line) {
                 if raw_rows.start == raw_rows.end {
                     raw_rows.start = row;
@@ -86,8 +77,8 @@ impl TranscriptView {
             }
         }
 
-        index.hits.clear();
-        for (raw_line, text) in body.prepared.raw_plain_lines.iter().enumerate() {
+        let mut hits = Vec::new();
+        for (raw_line, text) in prepared.raw_plain_lines.iter().enumerate() {
             if rows[raw_line].start == rows[raw_line].end {
                 continue;
             }
@@ -108,12 +99,13 @@ impl TranscriptView {
                         .take_while(|(byte, _)| *byte < found.end())
                         .map(|(_, grapheme)| grapheme.width())
                         .sum::<usize>();
-                let wraps = &body.prepared.wrapped_line_map;
+                let wraps = &prepared.wrapped_line_map;
                 if let Some(row) = rows[raw_line].clone().find(|&row| {
                     let wrap = &wraps[row];
                     wrap.raw_line == raw_line && wrap.start_col < end && start < wrap.end_col
                 }) {
-                    index.hits.push(SearchHit {
+                    hits.push(SearchHit {
+                        section,
                         raw_line,
                         start,
                         end,
@@ -123,15 +115,50 @@ impl TranscriptView {
             }
         }
 
+        hits
+    }
+
+    fn update_search(&self, frame: &PreparedChatFrame) {
+        let Some(pattern) = self.pattern.as_ref() else {
+            return;
+        };
+        let mut index = self.index.borrow_mut();
+        let searchable = frame.sections.iter().enumerate().filter(|(_, section)| {
+            matches!(
+                section.kind,
+                PreparedSectionKind::Body
+                    | PreparedSectionKind::BatchProgress
+                    | PreparedSectionKind::Streaming
+                    | PreparedSectionKind::Reasoning
+            )
+        });
+        let mut old_sections = std::mem::take(&mut index.sections);
+        index.hits.clear();
+        for (number, section) in searchable {
+            let hits = old_sections
+                .iter()
+                .position(|(old_number, prepared, _)| {
+                    *old_number == number && Arc::ptr_eq(prepared, &section.prepared)
+                })
+                .map_or_else(
+                    || Self::search_section(pattern, number, &section.prepared),
+                    |old| std::mem::take(&mut old_sections[old].2),
+                );
+            index.hits.extend(hits.iter().map(|hit| SearchHit {
+                row: section.line_start + hit.row,
+                ..*hit
+            }));
+            index
+                .sections
+                .push((number, Arc::clone(&section.prepared), hits));
+        }
         index.selected = index.position.and_then(|(position, column)| {
             let row = rayucode_tui_messages::resolve_content_pos(&position, frame, usize::MAX)?;
             index
                 .hits
                 .iter()
-                .position(|hit| body.line_start + hit.row == row && hit.start == column)
+                .position(|hit| hit.row == row && hit.start == column)
         });
-        index.body = Some(Arc::clone(&body.prepared));
-        Some(body.line_start)
     }
 
     /// Existing message anchors number identical messages from the start of
@@ -159,7 +186,7 @@ impl TranscriptView {
         current_row: usize,
         backward: bool,
     ) -> Option<usize> {
-        let body_start = self.update_search(frame)?;
+        self.update_search(frame);
         let mut index = self.index.borrow_mut();
         let count = index.hits.len();
         if count == 0 {
@@ -171,16 +198,16 @@ impl TranscriptView {
             (None, true) => index
                 .hits
                 .iter()
-                .rposition(|hit| body_start + hit.row <= current_row)
+                .rposition(|hit| hit.row <= current_row)
                 .unwrap_or(count - 1),
             (None, false) => index
                 .hits
                 .iter()
-                .position(|hit| body_start + hit.row >= current_row)
+                .position(|hit| hit.row >= current_row)
                 .unwrap_or(0),
         };
         let hit = index.hits[selected];
-        let row = body_start + hit.row;
+        let row = hit.row;
         index.selected = Some(selected);
         index.position = rayucode_tui_messages::content_pos_at_row(frame, row)
             .map(|position| (position, hit.start));
@@ -193,19 +220,19 @@ impl TranscriptView {
         scroll: usize,
         lines: &mut [Line<'static>],
     ) {
-        let Some(body_start) = self.update_search(frame) else {
-            return;
-        };
+        self.update_search(frame);
         let index = self.index.borrow();
         let Some(hit) = index.selected.and_then(|selected| index.hits.get(selected)) else {
             return;
         };
-        let Some(body) = &index.body else { return };
+        let Some(section) = frame.sections.get(hit.section) else {
+            return;
+        };
         for (i, line) in lines.iter_mut().enumerate() {
             let absolute = scroll + i;
             let Some(wrap) = absolute
-                .checked_sub(body_start)
-                .and_then(|row| body.wrapped_line_map.get(row))
+                .checked_sub(section.line_start)
+                .and_then(|row| section.prepared.wrapped_line_map.get(row))
             else {
                 continue;
             };
@@ -246,9 +273,15 @@ impl TranscriptView {
             if area.width < 34 {
                 "Transcript / · Esc"
             } else {
-                "Transcript · / search · Esc close"
+                "Details · / search · Esc close"
             }
             .into()
+        };
+        let label = if self.editing.is_none() && self.query.is_empty() && area.width >= 45 {
+            super::keybind::transcript_toggle_key_label()
+                .map_or(label.clone(), |chord| format!("{label} · {chord} toggle"))
+        } else {
+            label
         };
         let line = rayucode_tui_render::truncate_line_with_ellipsis_to_width(
             &Line::styled(

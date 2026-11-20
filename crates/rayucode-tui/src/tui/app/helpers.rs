@@ -389,6 +389,7 @@ pub(super) fn parse_clock_time_to_duration(time_str: &str) -> Option<Duration> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn format_cache_footer(
     read_tokens: Option<u64>,
     write_tokens: Option<u64>,
@@ -398,6 +399,7 @@ pub(super) fn format_cache_footer(
 }
 
 /// Format token count for display (e.g., 63000 -> "63K")
+#[cfg(test)]
 pub(super) fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)

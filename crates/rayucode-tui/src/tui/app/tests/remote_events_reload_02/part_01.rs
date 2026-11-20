@@ -246,6 +246,14 @@ fn test_handle_server_event_tool_start_flushes_streaming_text_before_tool_messag
     );
     assert_eq!(app.streaming_tool_calls.len(), 1);
     assert_eq!(app.streaming_tool_calls[0].name, "batch");
+    assert!(matches!(app.status, ProcessingStatus::Streaming));
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ToolExec {
+            id: "tool_batch".into(),
+            name: "batch".into(),
+        },
+        &mut remote,
+    );
     assert!(matches!(app.status, ProcessingStatus::RunningTool(ref name) if name == "batch"));
 }
 

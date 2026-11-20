@@ -107,6 +107,7 @@ impl App {
         self.build_turn_footer_with_credits_mode(duration, false)
     }
 
+    #[cfg(test)]
     pub(super) fn build_turn_footer_with_credits_mode(
         &self,
         duration: Option<f32>,
@@ -173,15 +174,12 @@ impl App {
             || self.compute_streaming_tps().is_some()
     }
 
-    pub(super) fn push_turn_footer(&mut self, duration: Option<f32>) {
-        self.push_turn_footer_with_credits_mode(duration, false);
+    #[cfg(test)]
+    pub(super) fn push_turn_footer(&mut self, _duration: Option<f32>) {
+        self.record_turn_footer_cache_usage();
     }
 
-    pub(super) fn push_turn_footer_with_credits_mode(
-        &mut self,
-        duration: Option<f32>,
-        credits_so_far: bool,
-    ) {
+    pub(super) fn record_turn_footer_cache_usage(&mut self) {
         self.log_cache_miss_if_unexpected();
         self.record_completed_stream_cache_usage();
 
@@ -202,17 +200,6 @@ impl App {
                 );
                 if input > 0 { Some(input) } else { None }
             };
-        }
-
-        if let Some(footer) = self.build_turn_footer_with_credits_mode(duration, credits_so_far) {
-            self.push_display_message(DisplayMessage {
-                role: "meta".to_string(),
-                content: footer,
-                tool_calls: vec![],
-                duration_secs: None,
-                title: None,
-                tool_data: None,
-            });
         }
     }
 

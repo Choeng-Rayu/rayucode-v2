@@ -96,6 +96,9 @@ pub(super) async fn handle_remote_key_internal(
     // composer in client mode: Enter submitted the draft and letters were
     // typed into it, so nothing was ever copied.
     if app.copy_selection_mode {
+        if app.transcript_view.is_some() && app.handle_transcript_toggle(code, modifiers) {
+            return Ok(());
+        }
         let ctrl_copy_or_quit = modifiers.contains(KeyModifiers::CONTROL)
             && matches!(code, KeyCode::Char('c') | KeyCode::Char('d'));
         if !ctrl_copy_or_quit {
@@ -179,6 +182,10 @@ pub(super) async fn handle_remote_key_internal(
     // can claim them. This mirrors the local path in `input.rs`
     // `handle_key_core`.
     if app.model_picker_preview_hotkey(code, modifiers)? {
+        return Ok(());
+    }
+
+    if app.handle_transcript_toggle(code, modifiers) {
         return Ok(());
     }
 

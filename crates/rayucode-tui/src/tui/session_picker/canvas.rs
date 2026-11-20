@@ -8,9 +8,8 @@ pub(super) fn panel_area(area: Rect) -> Rect {
     let width = ((area.width as u32 * 36 / 100) as u16)
         .clamp(30, 52)
         .min(area.width.saturating_sub(12).max(1));
-    // Reserve the three composer rows and footer. Keep at least four card
-    // rows when possible so short terminals can still browse sessions.
-    let footer = 4.min(area.height.saturating_sub(1));
+    // Leave the model rule and both footer rows outside the selection card.
+    let footer = (if area.height >= 10 { 5 } else { 4 }).min(area.height.saturating_sub(1));
     let min_top = 5.min(area.height.saturating_sub(footer + 4));
     let available = area.height - min_top - footer;
     let height = ((area.height as u32 * 4 / 5) as u16).max(6).min(available);
@@ -33,7 +32,7 @@ mod tests {
         for height in [40, 50, 80, 100, 160] {
             let area = Rect::new(3, 7, 120, height);
             let panel = panel_area(area);
-            assert_eq!(panel.height, (height * 4 / 5).min(height - 9));
+            assert_eq!(panel.height, (height * 4 / 5).min(height - 10));
             assert_eq!(panel.y - area.y, ((height - panel.height) / 2).max(5));
             assert!(panel.x > area.x + area.width / 2);
         }
@@ -51,7 +50,10 @@ mod tests {
                     assert!(panel.height >= 4);
                     assert!(panel.bottom() <= area.bottom() - 4);
                 }
-                if width > 0 && height >= 13 {
+                if width > 0 && height >= 10 {
+                    assert!(panel.bottom() <= area.bottom() - 5);
+                }
+                if width > 0 && height >= 14 {
                     assert!(panel.y >= area.y + 5);
                 }
             }

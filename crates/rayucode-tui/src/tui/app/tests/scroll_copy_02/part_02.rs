@@ -304,18 +304,18 @@ fn assert_rendered_expand_badge_shortcut_expands_to_full_diff(
 
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(
-        rendered.contains("more changes"),
-        "expected collapsed diff:\n{rendered}"
+        rendered.contains("+20 -20"),
+        "expected compact edit counts:
+{rendered}"
+    );
+    assert!(
+        !rendered.contains("old line 0"),
+        "compact transcript hides diff bodies"
     );
     assert!(
         rendered.contains("⇧E] expand"),
-        "expected visible expand badge for collapsed edit diff:\n{rendered}"
-    );
-    assert!(
-        rendered
-            .lines()
-            .any(|line| line.contains("╰─") && line.contains("⇧E] expand")),
-        "expand badge should be on the footer:\n{rendered}"
+        "expected visible shortcut for the full edit diff:
+{rendered}"
     );
     assert!(
         !rendered
@@ -532,9 +532,10 @@ fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_lowercase_event()
 }
 
 #[test]
-fn test_expand_badge_does_not_render_for_short_untruncated_edit_diff() {
+fn test_expand_badge_does_not_render_when_short_diff_is_explicitly_expanded() {
     let _render_lock = scroll_render_test_lock();
-    let (app, mut terminal) = make_edit_badge_test_app(2);
+    let (mut app, mut terminal) = make_edit_badge_test_app(2);
+    app.diff_mode = crate::config::DiffDisplayMode::FullInline;
 
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(

@@ -60,10 +60,9 @@ fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact
     let original = top_token(&anchored_chat_area(&terminal)).unwrap();
     let caret = app.cursor_pos;
 
-    assert!(super::commands_dispatch::dispatch_local_command(
-        &mut app,
-        "/transcript view"
-    ));
+    app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(app.transcript_view.is_some());
     render_and_snap(&app, &mut terminal);
     assert!(!buffer_to_text(&terminal).contains("Draft with"));
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
@@ -84,7 +83,8 @@ fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
     render_and_snap(&app, &mut terminal);
     assert!(buffer_to_text(&terminal).contains("1/2 /a+b 界"));
-    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE)
+        .unwrap();
     render_and_snap(&app, &mut terminal);
     assert_eq!(
         top_token(&anchored_chat_area(&terminal)).as_deref(),
@@ -93,6 +93,41 @@ fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact
     assert_eq!(app.input, "Draft with 👩‍💻 and e\u{301}");
     assert_eq!(app.cursor_pos, caret);
     assert!(app.auto_scroll_paused);
+}
+
+#[test]
+fn completed_turn_credit_bar_stays_at_bottom_on_short_screens() {
+    use crate::tui::TurnFooterOutcome;
+    let _lock = scroll_render_test_lock();
+    let mut app = anchored_scroll_test_app();
+    app.visible_turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(33));
+    app.is_processing = true;
+    app.record_turn_footer_usage(Some(4_000), Some(504));
+    app.streaming.streaming_rayu_credits.sync_turn_total(3.75);
+    for (width, height) in [(20, 6), (34, 16), (80, 24), (100, 48)] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        render_and_snap(&app, &mut terminal);
+        let frame = crate::tui::ui::last_layout_snapshot().unwrap();
+        let status = crate::tui::ui::last_status_area().unwrap();
+        assert!(frame.messages_area.height > 0);
+        assert_eq!(status.y, height - 1);
+        assert!(
+            buffer_to_text(&terminal)
+                .lines()
+                .last()
+                .unwrap()
+                .contains("3.75")
+        );
+    }
+    app.finish_turn_footer(TurnFooterOutcome::Completed);
+    app.is_processing = false;
+    app.streaming.streaming_rayu_credits.reset();
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    render_and_snap(&app, &mut terminal);
+    let text = buffer_to_text(&terminal);
+    assert_eq!(text.matches("Credits: 3.75").count(), 1, "{text}");
+    assert!(text.lines().last().unwrap().contains("Credits: 3.75"));
 }
 
 #[test]

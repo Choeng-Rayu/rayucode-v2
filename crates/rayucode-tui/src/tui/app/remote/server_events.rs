@@ -729,12 +729,10 @@ fn handle_server_event_inner(
             message,
             crate::config::config().features.kv_cache_miss_notices,
         ),
-        ServerEvent::RayuCredits { turn_credits, .. } => {
-            app.streaming
-                .streaming_rayu_credits
-                .sync_turn_total(turn_credits);
-            false
-        }
+        ServerEvent::RayuCredits { turn_credits, .. } => app
+            .streaming
+            .streaming_rayu_credits
+            .sync_turn_total(turn_credits),
         ServerEvent::TokenUsage {
             input,
             output,
@@ -742,6 +740,7 @@ fn handle_server_event_inner(
             cache_creation_input,
             ..
         } => {
+            app.record_turn_footer_usage(Some(input), Some(output));
             let previous_input = app.streaming.streaming_input_tokens;
             let previous_output = app.streaming.streaming_output_tokens;
             let previous_cache_read = app.streaming.streaming_cache_read_tokens;
@@ -1080,6 +1079,9 @@ fn handle_server_event_inner(
             not_queued,
         } => app.finish_soft_interrupt_recovery(id, &cancelled, &not_queued),
         ServerEvent::Interrupted => {
+            if app.is_processing {
+                app.finish_turn_footer(crate::tui::TurnFooterOutcome::Interrupted);
+            }
             app.streaming.streaming_rayu_credits.reset();
             crate::logging::info(&format!(
                 "REMOTE_INTERRUPT_EVENT_RECEIVED kind=interrupted session={:?} current_message_id={:?} is_processing={} status={:?} streaming_text_bytes={} pending_soft_interrupts={} queued_messages={}",
@@ -1249,11 +1251,11 @@ fn handle_server_event_inner(
                             tool_data: None,
                         });
                     }
-                    app.push_turn_footer(duration);
+                    app.record_turn_footer_cache_usage();
                 } else if app.has_streaming_footer_stats() {
-                    let duration = app.display_turn_duration_secs();
-                    app.push_turn_footer(duration);
+                    app.record_turn_footer_cache_usage();
                 }
+                app.finish_turn_footer(crate::tui::TurnFooterOutcome::Completed);
                 app.streaming.streaming_rayu_credits.reset();
                 crate::tui::mermaid::clear_streaming_preview_diagram();
                 app.is_processing = false;
@@ -1420,11 +1422,13 @@ fn handle_server_event_inner(
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
                 app.processing_started = None;
-                app.clear_visible_turn_started();
                 app.current_message_id = None;
                 remote.clear_pending();
                 remote.reset_call_output_tokens_seen();
                 return false;
+            }
+            if app.is_processing {
+                app.finish_turn_footer(crate::tui::TurnFooterOutcome::Failed);
             }
             // Snapshot the failed turn's payload before the cleanup below (and
             // the retry-budget bookkeeping) clears it, so a fallback offer
@@ -1826,7 +1830,7 @@ fn handle_server_event_inner(
                             tool_duration_ms: msg
                                 .duration_secs
                                 .map(|secs| (secs * 1000.0).round() as u64),
-                            response_stats: None,
+                            response_stats: msg.response_stats(),
                             role: msg.role,
                             content: msg.content,
                             tool_calls: (!msg.tool_calls.is_empty()).then_some(msg.tool_calls),
@@ -2309,14 +2313,7 @@ fn handle_server_event_inner(
                     } else {
                         let mut restored_messages: Vec<DisplayMessage> = messages
                             .into_iter()
-                            .map(|msg| DisplayMessage {
-                                role: msg.role,
-                                content: msg.content,
-                                tool_calls: msg.tool_calls.unwrap_or_default(),
-                                duration_secs: msg.tool_duration_ms.map(|ms| ms as f32 / 1000.0),
-                                title: None,
-                                tool_data: msg.tool_data,
-                            })
+                            .map(display_history_message)
                             .collect();
                         super::super::remote_notifications::normalize_swarm_delivery_messages(
                             &mut restored_messages,
@@ -2517,14 +2514,7 @@ fn handle_server_event_inner(
             }
             let mut restored_messages: Vec<_> = messages
                 .into_iter()
-                .map(|msg| DisplayMessage {
-                    role: msg.role,
-                    content: msg.content,
-                    tool_calls: msg.tool_calls.unwrap_or_default(),
-                    duration_secs: msg.tool_duration_ms.map(|ms| ms as f32 / 1000.0),
-                    title: None,
-                    tool_data: msg.tool_data,
-                })
+                .map(display_history_message)
                 .collect();
             if !app.recent_history_page_contains_visible_tail(
                 &mut restored_messages,
@@ -3109,7 +3099,7 @@ fn handle_server_event_inner(
                         tool_data: None,
                     });
                 }
-                app.push_turn_footer(duration);
+                app.record_turn_footer_cache_usage();
             }
             app.mark_soft_interrupt_injected(&content);
             let role = display_role.unwrap_or_else(|| "user".to_string());
@@ -3583,3 +3573,15 @@ use activity_notice::runtime_activity_status_notice;
 #[cfg(test)]
 #[path = "server_events/runtime_command_tests.rs"]
 mod runtime_command_tests;
+
+fn display_history_message(msg: crate::protocol::HistoryMessage) -> DisplayMessage {
+    DisplayMessage {
+        role: msg.role,
+        content: msg.content,
+        tool_calls: msg.tool_calls.unwrap_or_default(),
+        duration_secs: msg.tool_duration_ms.map(|ms| ms as f32 / 1000.0),
+        title: None,
+        tool_data: msg.tool_data,
+    }
+    .with_response_stats(msg.response_stats)
+}

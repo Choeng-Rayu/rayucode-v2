@@ -131,6 +131,7 @@ mod terminal_setup_command;
 mod terminal_title;
 mod todo_completion;
 mod todos_view;
+mod turn_footer;
 mod wake_stats;
 pub(crate) use todos_view::pinned_todos_payload_for_session;
 mod tui_lifecycle;
@@ -179,17 +180,6 @@ struct PendingSplitPrompt {
 
 struct PendingLocalTransfer {
     receiver: mpsc::Receiver<anyhow::Result<PreparedTransferSession>>,
-}
-
-/// A reasoning trace anchored in the transcript during the current turn
-/// (`current` display mode). `wrapped_lines_at_anchor` snapshots the
-/// transcript's total wrapped-line count when the trace anchored; once the
-/// transcript grows a viewport past that point the trace is provably above
-/// the tail-following viewport and can be removed with zero visible motion.
-#[derive(Debug, Clone, Copy)]
-struct TurnReasoningTrace {
-    display_index: usize,
-    wrapped_lines_at_anchor: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -941,6 +931,8 @@ pub struct App {
     agent_models_global_scope: bool,
     pending_agent_model_request_id: Option<u64>,
     display_messages: Vec<DisplayMessage>,
+    raw_tool_results: std::collections::HashMap<String, String>,
+    turn_footer: turn_footer::TurnFooterState,
     display_messages_version: u64,
     display_user_message_count: usize,
     display_edit_tool_message_count: usize,
@@ -1185,7 +1177,7 @@ pub struct App {
     // motion). All remaining traces are removed when the next user prompt is
     // submitted, keeping `current` mode ephemeral across turns without ever
     // moving a trace while it is visible.
-    turn_reasoning_traces: Vec<TurnReasoningTrace>,
+    turn_reasoning_traces: Vec<usize>,
     // Hot-reload: if set, exec into new binary with this session ID (no rebuild)
     reload_requested: Option<String>,
     // Hot-rebuild: if set, do full git pull + cargo build + tests then exec

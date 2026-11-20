@@ -141,6 +141,11 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
         "toggle copy/selection mode",
     );
     push(
+        inputs.toggles.transcript.binding().cloned(),
+        "transcript_toggle",
+        "toggle the detailed transcript",
+    );
+    push(
         inputs.toggles.side_panel.binding().cloned(),
         "side_panel_toggle",
         "cycle the side panel (split, fullscreen, hidden)",
@@ -1103,6 +1108,7 @@ mod tests {
         // Canonical ids -> the action id(s) the feedback registry uses.
         // A None mapping documents an intentional exclusion.
         let mapping: &[(&str, Option<&[&str]>)] = &[
+            ("transcript_toggle", Some(&["transcript_toggle"])),
             ("scroll_up", Some(&["scroll_up"])),
             ("scroll_down", Some(&["scroll_down"])),
             ("scroll_page_up", Some(&["scroll_page_up"])),
@@ -1201,6 +1207,7 @@ mod tests {
             ("auto_poke_toggle", toggles.auto_poke.binding()),
             ("side_panel_toggle", toggles.side_panel.binding()),
             ("copy_selection_toggle", toggles.copy_selection.binding()),
+            ("transcript_toggle", toggles.transcript.binding()),
             ("diagram_pane_toggle", toggles.diagram_pane.binding()),
             (
                 "diagram_pane_visibility_toggle",

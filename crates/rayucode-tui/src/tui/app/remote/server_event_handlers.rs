@@ -17,6 +17,13 @@ pub(super) fn handle_tool_done(
         .or_else(|| DisplayMessage::tool_duration_from_output(&output))
         .or(observed_duration);
     let display_output = remote.handle_tool_done(&id, &name, &output);
+    if display_output.starts_with('[')
+        && display_output
+            .split_once("] ")
+            .is_some_and(|(_, result)| result != output)
+    {
+        app.raw_tool_results.insert(id.clone(), output.clone());
+    }
     let display_output = if error.is_some()
         && !display_output.starts_with("Error:")
         && !display_output.starts_with("error:")

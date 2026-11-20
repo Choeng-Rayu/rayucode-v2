@@ -37,7 +37,8 @@ pub(in crate::tui::app) async fn begin_remote_send(
     app.status = ProcessingStatus::Sending;
     app.status_detail = None;
     app.processing_started = Some(Instant::now());
-    if !content.is_empty() {
+    let resuming_retry = retry_attempts > 0 && app.resume_turn_footer_retry();
+    if !resuming_retry && !content.is_empty() {
         if is_system {
             app.visible_turn_started.get_or_insert_with(Instant::now);
         } else {
@@ -46,7 +47,9 @@ pub(in crate::tui::app) async fn begin_remote_send(
     }
     app.last_stream_activity = Some(Instant::now());
     app.remote_resume_activity = None;
-    app.reset_streaming_tps();
+    if !resuming_retry {
+        app.reset_streaming_tps();
+    }
     // New turn -> new API call: the next usage report must replace, not merge
     // into, the previous call's cache counters (issue #441). Newer servers
     // also emit KvCacheRequest per call, which re-arms this flag per call.

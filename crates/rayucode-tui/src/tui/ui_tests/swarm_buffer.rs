@@ -112,15 +112,8 @@ fn swarm_strip_full_draw_writes_chips_row_above_status_line() {
     let status_area = crate::tui::ui::last_status_area().expect("status area recorded");
     assert!(status_area.y > 0, "status line should not be the top row");
     let rows = buffer_rows(&terminal);
-    // Vertical strip (default layout): one agent per row directly above the
-    // status line, first row carrying the 🐝 marker.
-    let strip_rows = rows[..status_area.y as usize]
-        .iter()
-        .rev()
-        .take(2)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n");
+    // The worker strip is above the composer, with the status row pinned below it.
+    let strip_rows = rows[..status_area.y as usize].join("\n");
     assert!(
         strip_rows.contains("🐝"),
         "expected the swarm marker above the status line, got: {strip_rows:?}"
@@ -278,10 +271,12 @@ fn notification_full_draw_survives_overwide_swarm_plan_notice() {
 
         let status_area = crate::tui::ui::last_status_area().expect("status area recorded");
         let rows = buffer_rows(&terminal);
-        let notification_row = &rows[(status_area.y + 1) as usize];
+        assert_eq!(status_area.y, height - 1);
         assert!(
-            notification_row.contains("Swarm plan v3"),
-            "expected notification cells below status line at {width}x{height}, got: {notification_row:?}"
+            rows[..status_area.y as usize]
+                .iter()
+                .any(|row| row.contains("Swarm plan v3")),
+            "expected notification above the pinned status line at {width}x{height}: {rows:?}"
         );
     }
 }
