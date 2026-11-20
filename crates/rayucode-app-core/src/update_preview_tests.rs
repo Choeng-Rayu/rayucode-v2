@@ -3,7 +3,7 @@ use super::*;
 fn preview_fixture(tag: &str) -> PreviewRelease {
     serde_json::from_value(serde_json::json!({
         "tag_name": tag,
-        "html_url": "https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/test",
+        "html_url": "https://github.com/Choeng-Rayu/rayucode-v2/releases/test",
         "published_at": "2026-10-26T00:00:00Z",
         "draft": false,
         "prerelease": true,

@@ -4,12 +4,12 @@
   "title": "RayuCode v3 native Rust release",
   "highlights": [
     "Ship RayuCode v3 as a native Rust CLI, distributed as verified cross-platform binaries for Linux, macOS, and Windows on x86_64 and aarch64",
-    "Publish closed-source binaries from a private source repository to a public releases repository, with SHA-256 checksums verified by every installer and by `rayu update`",
+    "Publish verified cross-platform binaries directly on GitHub Releases (`Choeng-Rayu/rayucode-v2`), with SHA-256 checksums verified by every installer and by `rayu update`",
     "Migrate existing Node v2 users automatically: the one-time bridge installs v3, preserves the old CLI as `rayu-legacy`, and offers to remove it"
   ],
   "improvements": [
     "Serve `/install`, `/install.sh`, `/install.ps1`, `/cli-update.json`, and the legacy Node installers from rayucode.com with byte-identical copies of the repository scripts",
-    "Add closed-source release CI that builds six platform targets and runs an anonymous download verification job with no GitHub token",
+    "Add public release CI that compiles all six Linux, macOS, and Windows targets natively on free GitHub Actions runners and verifies anonymous downloads with no GitHub token",
     "Add a Rayu-only build mode via `ENABLE_OTHER_PROVIDER`",
     "Add user agent profiles and per-task worker models, with each swarm worker's model shown in pinned tasks",
     "Add transcript inspection and search, plus detailed per-tool transcripts",

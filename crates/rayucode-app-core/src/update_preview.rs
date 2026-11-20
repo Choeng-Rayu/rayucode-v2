@@ -33,7 +33,10 @@ pub(super) fn preview_number(tag: &str) -> Option<PreviewTag> {
         return None;
     }
     let parse_component = |s: &str| -> Option<u64> {
-        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0')) {
+        if s.is_empty()
+            || !s.bytes().all(|b| b.is_ascii_digit())
+            || (s.len() > 1 && s.starts_with('0'))
+        {
             return None;
         }
         s.parse::<u64>().ok()

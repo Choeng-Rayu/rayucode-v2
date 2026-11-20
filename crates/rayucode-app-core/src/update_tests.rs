@@ -20,8 +20,7 @@ fn stable_release_requires_sha256sums() {
     let release = GitHubRelease {
         tag_name: "v3.0.1".to_string(),
         _name: Some("v3.0.1".to_string()),
-        _html_url: "https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/tag/v3.0.1"
-            .to_string(),
+        _html_url: "https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v3.0.1".to_string(),
         _published_at: Some("2026-11-21T00:00:00Z".to_string()),
         assets: vec![GitHubAsset {
             name: format!("{}.tar.gz", get_asset_name()),
@@ -39,7 +38,7 @@ fn stable_release_requires_sha256sums() {
 
 #[test]
 fn github_repo_targets_public_releases_repo() {
-    assert_eq!(GITHUB_REPO, "Choeng-Rayu/rayucode-v2-releases");
+    assert_eq!(GITHUB_REPO, "Choeng-Rayu/rayucode-v2");
 }
 
 #[test]

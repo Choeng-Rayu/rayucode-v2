@@ -12,8 +12,9 @@ See the [MIT license](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES).
   Run dozens of agents in parallel without melting your machine. More agents, less RAM, no lag.
 </p>
 
-[![Last Commit](https://img.shields.io/github/last-commit/Choeng-Rayu/rayucode/master?style=flat-square&logo=github)](https://github.com/Choeng-Rayu/rayucode/commits/master)
-[![GitHub Stars](https://img.shields.io/github/stars/Choeng-Rayu/rayucode?style=flat-square&logo=github)](https://github.com/Choeng-Rayu/rayucode/stargazers)
+[![Latest Release](https://img.shields.io/github/v/release/Choeng-Rayu/rayucode-v2?style=flat-square&logo=github)](https://github.com/Choeng-Rayu/rayucode-v2/releases/latest)
+[![Last Commit](https://img.shields.io/github/last-commit/Choeng-Rayu/rayucode-v2/main?style=flat-square&logo=github)](https://github.com/Choeng-Rayu/rayucode-v2/commits/main)
+[![GitHub Stars](https://img.shields.io/github/stars/Choeng-Rayu/rayucode-v2?style=flat-square&logo=github)](https://github.com/Choeng-Rayu/rayucode-v2/stargazers)
 
 </div>
 
@@ -24,9 +25,22 @@ See the [MIT license](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES).
 </div>
 
 ```bash
-# macOS & Linux
+# Linux & macOS (x86_64 and ARM64)
 curl -fsSL https://rayucode.com/install | bash
+
+# Or directly from GitHub:
+curl -fsSL https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/main/scripts/install.sh | bash
 ```
+
+```powershell
+# Windows (PowerShell — x64 and ARM64)
+irm https://rayucode.com/install.ps1 | iex
+
+# Or directly from GitHub:
+irm https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/main/scripts/install.ps1 | iex
+```
+
+Prebuilt binaries and `SHA256SUMS` for Linux, macOS, and Windows are published on [GitHub Releases](https://github.com/Choeng-Rayu/rayucode-v2/releases/latest).
 
 <div align="center">
 

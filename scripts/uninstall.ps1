@@ -7,7 +7,7 @@
     from the user PATH. By default user data under %USERPROFILE%\.rayu is kept.
 
     One-liner uninstall:
-      irm https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2-releases/main/uninstall.ps1 | iex
+      irm https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/main/scripts/uninstall.ps1 | iex
 .PARAMETER InstallDir
     Override the launcher directory (default: $env:LOCALAPPDATA\rayu\bin)
 .PARAMETER Purge

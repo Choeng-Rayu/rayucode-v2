@@ -11,7 +11,7 @@
 #   --yes       Skip the confirmation prompt.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2-releases/main/uninstall.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/main/scripts/uninstall.sh | bash
 #   bash scripts/uninstall.sh --purge
 set -euo pipefail
 

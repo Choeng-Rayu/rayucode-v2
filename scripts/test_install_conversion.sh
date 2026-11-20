@@ -38,7 +38,7 @@ case "$url" in
     ;;
   *releases/v1.2.3/download-bases)
     printf 'https://mirror.invalid/releases/v1.2.3\n'
-    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/download/v1.2.3\n'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/download/v1.2.3\n'
     ;;
   *releases/v1.2.3/SHA256SUMS)
     if [ "${METADATA_CHECKSUM_HTML:-0}" = "1" ]; then
@@ -57,7 +57,7 @@ case "$url" in
   *github.com*/releases/latest)
     [ "${FAIL_RELEASE:-0}" != "1" ] || exit 22
     [ "${FAIL_GITHUB_RELEASE:-0}" != "1" ] || exit 22
-    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/tag/v1.2.3'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v1.2.3'
     ;;
   *mirror.invalid*) exit 22 ;;
   *github.com*/releases/download/*)

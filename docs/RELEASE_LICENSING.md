@@ -9,7 +9,7 @@ is listed in `unresolved_notices`, and `scripts/verify_public_release.py
 
 | Pipeline | Runs `--check-archive` | Blocked by unresolved notices |
 |---|---|---|
-| `release.yml` (public closed-source release) | **no** | **no** — v3.0.0 is unaffected |
+| `release.yml` (public cross-platform release) | **no** | **no** — v3.0.0 is unaffected |
 | `preview.yml` (`native-arm-runtime` / hosted previews) | yes | yes |
 | `scripts/prepare_sdk_runtime_packages.sh` | yes | yes |
 

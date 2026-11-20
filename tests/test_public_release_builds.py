@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PublicReleaseTests(unittest.TestCase):
     def test_workflow_preserves_release_and_toolchains(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        # The closed-source release builds plain cargo on hosted runners, so the
+        # Public release builds plain cargo on free hosted runners, so the
         # justrust wrapper is disabled and the opt level is pinned explicitly.
         self.assertIn('RAYU_USE_PLAIN_CARGO: "1"', workflow)
         self.assertIn('CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"', workflow)
@@ -32,9 +32,22 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertIn("-p rayucode --bin rayu", workflow)
         self.assertNotIn("git rev-parse", workflow)
 
-    def test_public_release_repo_is_configurable(self):
+    def test_public_release_publishes_directly_to_rayucode_v2(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn("PUBLIC_RELEASE_REPO: ${{ vars.PUBLIC_RELEASE_REPO || 'Choeng-Rayu/rayucode-v2-releases' }}", workflow)
+        self.assertIn("github.repository == 'Choeng-Rayu/rayucode-v2'", workflow)
+        self.assertIn("contents: write", workflow)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
+        self.assertNotIn("rayucode-v2-releases", workflow)
+        self.assertNotIn("PUBLIC_RELEASE_TOKEN", workflow)
+        for target in (
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        ):
+            self.assertIn(target, workflow)
 
     def test_compatibility_ci_and_local_selection(self):
         source = (ROOT / "scripts/build_linux_compat.sh").read_text()

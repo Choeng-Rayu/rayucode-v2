@@ -87,9 +87,9 @@ while [ "$#" -gt 0 ]; do
 done
 case "$url" in
   *telemetry.rayucode.com*) ;;
-  *rayucode.com/releases/latest/version) printf 'v%s\n' "${EVAL_VERSION:-1.2.3}" ;;
-  *rayucode.com/releases/v*/download-bases)
-    printf 'https://github.com/Choeng-Rayu/rayucode/releases/download/v%s\n' "${EVAL_VERSION:-1.2.3}"
+  *releases/latest/version) printf 'v%s\n' "${EVAL_VERSION:-1.2.3}" ;;
+  *releases/v*/download-bases)
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/download/v%s\n' "${EVAL_VERSION:-1.2.3}"
     ;;
   *SHA256SUMS)
     # Checksum of the deterministic fake archive written by the tar mock's
@@ -98,7 +98,7 @@ case "$url" in
       "${EVAL_CHECKSUM_ASSET:-rayu-linux-x86_64.tar.gz}"
     ;;
   *github.com*/releases/latest)
-    printf 'https://github.com/Choeng-Rayu/rayucode/releases/tag/v%s' "${EVAL_VERSION:-1.2.3}"
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v%s' "${EVAL_VERSION:-1.2.3}"
     ;;
   *github.com*/releases/download/*)
     [ -n "$output" ] || exit 2

@@ -51,10 +51,10 @@ case "\$url" in
     printf 'v3.0.0\n'
     ;;
   *github.com*/releases/latest)
-    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/tag/v3.0.0'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v3.0.0'
     ;;
   *releases/v3.0.0/download-bases)
-    printf 'https://github.com/Choeng-Rayu/rayucode-v2-releases/releases/download/v3.0.0\n'
+    printf 'https://github.com/Choeng-Rayu/rayucode-v2/releases/download/v3.0.0\n'
     ;;
   *SHA256SUMS)
     if [ "\${BAD_CHECKSUM:-0}" = "1" ]; then

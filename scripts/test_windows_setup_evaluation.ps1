@@ -1,4 +1,4 @@
-param()
+﻿param()
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -152,13 +152,13 @@ try {
     . $installScript -SkipAlacrittySetup -SkipHotkeySetup
 
     Invoke-Case 'release_lookup_avoids_unauthenticated_github_api' {
-        Assert-Equal 'v1.2.3' (Resolve-RayuReleaseTagFromUri 'https://github.com/Choeng-Rayu/rayucode/releases/tag/v1.2.3') 'release redirect parser should extract the stable tag'
-        Assert-Equal 'v1.2.3-rc.1' (Resolve-RayuReleaseTagFromUri 'https://github.com/Choeng-Rayu/rayucode/releases/tag/v1.2.3-rc.1?source=latest') 'release redirect parser should stop before query parameters'
+        Assert-Equal 'v1.2.3' (Resolve-RayuReleaseTagFromUri 'https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v1.2.3') 'release redirect parser should extract the stable tag'
+        Assert-Equal 'v1.2.3-rc.1' (Resolve-RayuReleaseTagFromUri 'https://github.com/Choeng-Rayu/rayucode-v2/releases/tag/v1.2.3-rc.1?source=latest') 'release redirect parser should stop before query parameters'
         Assert-Equal $true (Test-RayuReleaseTag 'v1.2.3') 'stable release tags should validate'
         Assert-Equal $false (Test-RayuReleaseTag 'latest') 'unversioned release labels should not validate'
         $scriptText = Get-Content -LiteralPath $installScript -Raw
         Assert-NotContains $scriptText 'api.github.com/repos/$Repo/releases/latest' 'installer should not use the rate-limited unauthenticated GitHub API'
-        Assert-Contains $scriptText 'rayucode.com/releases' 'installer should include independent static release metadata'
+        Assert-Contains $scriptText 'release-metadata/releases' 'installer should include independent static release metadata'
 
         $script:releaseLookupRequests = @()
         function Invoke-WebRequest {
@@ -169,13 +169,13 @@ try {
                 [string]$OutFile
             )
             $script:releaseLookupRequests += $Uri
-            if ($Uri -eq 'https://rayucode.com/releases/latest/version') {
+            if ($Uri -eq 'https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/release-metadata/releases/latest/version') {
                 return [pscustomobject]@{ Content = "v1.2.3`n" }
             }
-            if ($Uri -eq 'https://rayucode.com/releases/v1.2.3/download-bases') {
+            if ($Uri -eq 'https://raw.githubusercontent.com/Choeng-Rayu/rayucode-v2/release-metadata/releases/v1.2.3/download-bases') {
                 return [pscustomobject]@{ Content = "https://mirror.example/releases/v1.2.3`n" }
             }
-            if ($Uri -eq 'https://github.com/Choeng-Rayu/rayucode/releases/latest') {
+            if ($Uri -eq 'https://github.com/Choeng-Rayu/rayucode-v2/releases/latest') {
                 throw 'simulated GitHub block'
             }
             throw "unexpected URI: $Uri"
@@ -184,7 +184,7 @@ try {
             Assert-Equal 'v1.2.3' (Get-LatestRayuReleaseTag) 'static metadata should cover a blocked GitHub release lookup'
             $bases = @(Get-RayuReleaseDownloadBases 'v1.2.3')
             Assert-Equal 'https://mirror.example/releases/v1.2.3' $bases[0] 'configured mirror should be preferred'
-            Assert-Equal 'https://github.com/Choeng-Rayu/rayucode/releases/download/v1.2.3' $bases[1] 'GitHub should remain the final fallback'
+            Assert-Equal 'https://github.com/Choeng-Rayu/rayucode-v2/releases/download/v1.2.3' $bases[1] 'GitHub should remain the final fallback'
         } finally {
             Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
         }

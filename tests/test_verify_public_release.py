@@ -133,7 +133,9 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertIn("Missing required release asset:", workflow[publish:verify])
         self.assertIn("sha256sum -c SHA256SUMS", step)
         self.assertIn('meta_ver=$(curl -fsSL', step)
-        self.assertIn('${PUBLIC_RELEASE_REPO}/main/releases/latest/version', step)
+        self.assertIn('${GITHUB_REPOSITORY}/release-metadata/releases/latest/version', step)
+        self.assertNotIn("rayucode-v2-releases", workflow)
+        self.assertNotIn("PUBLIC_RELEASE_TOKEN", workflow)
         # Sandboxed installer smoke test: isolated HOME, pinned version.
         self.assertIn("install_home=$(mktemp -d)", step)
         self.assertIn('HOME="$install_home"', step)

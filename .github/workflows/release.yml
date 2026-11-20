@@ -1,4 +1,4 @@
-name: Release (Closed-Source Public Binaries)
+name: Release
 
 env:
   RAYU_CI: "1"
@@ -6,7 +6,6 @@ env:
   RAYU_RELEASE_BUILD: "1"
   RAYU_USE_PLAIN_CARGO: "1"
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  PUBLIC_RELEASE_REPO: ${{ vars.PUBLIC_RELEASE_REPO || 'Choeng-Rayu/rayucode-v2-releases' }}
   ENABLE_OTHER_PROVIDER: ${{ vars.ENABLE_OTHER_PROVIDER || 'false' }}
   RAYU_FALLBACK_MODEL: ${{ vars.RAYU_FALLBACK_MODEL || 'deepseek-v4.1-flash-1017-cloud' }}
   # CI builds without the local parallel-frontend rustc wrapper from .cargo/config.toml.
@@ -48,19 +47,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify PUBLIC_RELEASE_TOKEN secret is configured
-        shell: bash
-        env:
-          PUBLIC_RELEASE_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${PUBLIC_RELEASE_TOKEN:-}" ]; then
-            echo "::error::Missing repository secret PUBLIC_RELEASE_TOKEN."
-            echo "Create a Fine-Grained PAT scoped ONLY to ${PUBLIC_RELEASE_REPO} (Contents: Read and write)" >&2
-            echo "and save it as secret PUBLIC_RELEASE_TOKEN in ${GITHUB_REPOSITORY}." >&2
-            exit 1
-          fi
-
       - name: Validate release tag and Cargo.toml version
         id: validate
         shell: bash
@@ -87,7 +73,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Verify frozen Cargo.lock and installer syntax
+      - name: Verify frozen Cargo.lock and installer tests
         shell: bash
         run: |
           set -euo pipefail
@@ -96,8 +82,9 @@ jobs:
           bash -n scripts/install.sh scripts/uninstall.sh scripts/build_linux_compat.sh
           bash scripts/test_install_conversion.sh
           bash scripts/test_legacy_migration.sh
+          bash scripts/setup_friction_eval.sh
 
-      - name: Generate public-safe release notes
+      - name: Generate release notes
         shell: bash
         run: |
           set -euo pipefail
@@ -123,24 +110,38 @@ jobs:
             cat > release_notes.md <<EOF
           # RayuCode ${RELEASE_TAG}
 
-          Official cross-platform binary release of RayuCode CLI (Rust).
+          Official cross-platform binary release of RayuCode CLI (Rust) for Linux, macOS, and Windows.
           EOF
           fi
           cat >> release_notes.md <<EOF
 
           ## Install
 
-          **macOS / Linux:**
+          **Linux / macOS:**
           \`\`\`bash
           curl -fsSL https://rayucode.com/install | bash
+          # or directly from GitHub:
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh | bash
           \`\`\`
 
           **Windows (PowerShell):**
           \`\`\`powershell
           irm https://rayucode.com/install.ps1 | iex
+          # or directly from GitHub:
+          irm https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.ps1 | iex
           \`\`\`
 
-          ## Verify checksums
+          ## Supported Platforms
+          | Platform | Architecture | Asset |
+          |---|---|---|
+          | Linux | x86_64 (glibc 2.17+) | \`rayu-linux-x86_64.tar.gz\` |
+          | Linux | ARM64 (aarch64) | \`rayu-linux-aarch64.tar.gz\` |
+          | macOS | Apple Silicon (arm64) | \`rayu-macos-aarch64.tar.gz\` |
+          | macOS | Intel (x86_64) | \`rayu-macos-x86_64.tar.gz\` |
+          | Windows | x64 (x86_64) | \`rayu-windows-x86_64.exe\` / \`rayu-windows-x86_64.tar.gz\` |
+          | Windows | ARM64 (aarch64) | \`rayu-windows-aarch64.exe\` / \`rayu-windows-aarch64.tar.gz\` |
+
+          ## Verify Checksums
           Every release asset is listed in \`SHA256SUMS\`. The official installers and \`rayu update\` verify SHA-256 checksums automatically before installing.
           EOF
 
@@ -149,6 +150,7 @@ jobs:
         with:
           name: release-notes
           path: release_notes.md
+          if-no-files-found: error
 
   build-unix:
     name: Build (${{ matrix.target }})
@@ -163,23 +165,31 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: rayu-linux-x86_64
             compat_container: true
-            cross_linux_arm64: false
-          - os: ubuntu-22.04
+            native_linux_arm64: false
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: rayu-linux-aarch64
             compat_container: false
-            cross_linux_arm64: true
+            native_linux_arm64: true
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: rayu-macos-aarch64
             compat_container: false
-            cross_linux_arm64: false
-          - os: macos-latest
+            native_linux_arm64: false
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact: rayu-macos-x86_64
             compat_container: false
-            cross_linux_arm64: false
+            native_linux_arm64: false
     steps:
+      - name: Free disk space on Linux runner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost || true
+          df -h
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare-release.outputs.tag_sha }}
@@ -200,17 +210,13 @@ jobs:
           key: release-${{ matrix.target }}
           cache-all-crates: "true"
 
-      - name: Install Linux ARM64 cross-compilation toolchain
-        if: matrix.cross_linux_arm64 == true
+      - name: Install native Linux ARM64 build prerequisites
+        if: matrix.native_linux_arm64 == true
+        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            perl \
-            pkg-config
+          sudo apt-get install -y -qq build-essential cmake perl pkg-config
 
       - name: Build portable Linux x86_64 release binary (manylinux2014 glibc 2.17)
         if: matrix.compat_container == true
@@ -219,8 +225,9 @@ jobs:
         env:
           RAYU_BUILD_SEMVER: ${{ env.RELEASE_TAG }}
           RAYU_COMPAT_ARTIFACT: ${{ matrix.artifact }}
+          CARGO_BUILD_JOBS: "3"
 
-      - name: Build release binary (Linux ARM64 cross / macOS)
+      - name: Build native release binary (Linux ARM64 / macOS)
         if: matrix.compat_container != true
         shell: bash
         env:
@@ -230,23 +237,21 @@ jobs:
           if command -v sccache >/dev/null 2>&1 && sccache --start-server 2>/dev/null; then
             export RUSTC_WRAPPER=sccache
           fi
-          if [ "${{ matrix.cross_linux_arm64 }}" = "true" ]; then
-            export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-            export AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          if [ "${{ matrix.native_linux_arm64 }}" = "true" ]; then
+            export CARGO_BUILD_JOBS=3
             export OPENSSL_STATIC=1
             cargo build --locked --release --target "${{ matrix.target }}" \
-              --features linux-compat-vendored-openssl
+              -p rayucode --bin rayu --features linux-compat-vendored-openssl
           else
-            cargo build --locked --release --target "${{ matrix.target }}"
+            cargo build --locked --release --target "${{ matrix.target }}" \
+              -p rayucode --bin rayu
           fi
 
       - name: Verify Cargo.lock unchanged
         shell: bash
         run: git diff --exit-code -- Cargo.lock
 
-      - name: Package binary & attach notices
+      - name: Package binary, smoke-test natively & attach notices
         if: matrix.compat_container != true
         shell: bash
         run: |
@@ -258,13 +263,16 @@ jobs:
             codesign --force --sign - --identifier com.rayucode.cli "dist/${{ matrix.artifact }}"
             codesign -dv "dist/${{ matrix.artifact }}" 2>&1 | grep -qx 'Identifier=com.rayucode.cli'
           fi
-          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
-            "dist/${{ matrix.artifact }}" --version
-          fi
+          reported=$("dist/${{ matrix.artifact }}" --no-update --no-selfdev --version)
+          echo "Native smoke test: $reported"
+          [[ "$reported" == "rayu ${RELEASE_TAG}"* ]] || {
+            echo "::error::Expected version starting with 'rayu ${RELEASE_TAG}', got '${reported}'"
+            exit 1
+          }
           tar czf "dist/${{ matrix.artifact }}.tar.gz" -C dist "${{ matrix.artifact }}"
           if [ -f scripts/release_licenses.py ]; then
             extra_args=()
-            if [ "${{ matrix.cross_linux_arm64 }}" = "true" ]; then
+            if [ "${{ matrix.native_linux_arm64 }}" = "true" ]; then
               extra_args+=(--features linux-compat-vendored-openssl)
             fi
             license_dir="$RUNNER_TEMP/licenses"
@@ -288,26 +296,27 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
 
   build-windows:
     name: Build (${{ matrix.target }})
     needs: prepare-release
-    runs-on: windows-latest
-    timeout-minutes: 75
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
             msvc_arch: amd64
             artifact: rayu-windows-x86_64
             cargo_args: ""
-            native_test: true
-          - target: aarch64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
             msvc_arch: amd64_arm64
             artifact: rayu-windows-aarch64
             cargo_args: "--no-default-features --features pdf"
-            native_test: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -343,15 +352,16 @@ jobs:
             }
           }
 
-          $cargoArgs = @("build", "--locked", "--release", "--target", "${{ matrix.target }}")
+          $cargoArgs = @("build", "--locked", "--release", "--target", "${{ matrix.target }}", "-p", "rayucode", "--bin", "rayu")
           $extraArgs = "${{ matrix.cargo_args }}"
           $features = @()
           if (-not [string]::IsNullOrWhiteSpace($extraArgs)) {
-            $features = $extraArgs -split ' '
+            $features = $extraArgs -split '\s+'
             $cargoArgs += $features
           }
           if (Test-Path "scripts/release_licenses.py") {
-            & python scripts/release_licenses.py generate "${{ matrix.target }}" "dist/licenses" @features
+            $pythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
+            & $pythonCmd scripts/release_licenses.py generate "${{ matrix.target }}" "dist/licenses" @features
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $env:RAYU_RELEASE_NOTICES = (Resolve-Path "dist/licenses/THIRD_PARTY_NOTICES").Path
           }
@@ -364,21 +374,26 @@ jobs:
         run: git diff --exit-code -- Cargo.lock
 
       - name: Validate Windows installer syntax and native binary launch
-        if: matrix.native_test == true
         shell: pwsh
         run: |
-          $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path "scripts/install.ps1").Path,
-            [ref]$null,
-            [ref]$parseErrors
-          ) | Out-Null
-          if ($parseErrors -and $parseErrors.Count -gt 0) {
-            $parseErrors | ForEach-Object { Write-Error $_.ToString() }
-            exit 1
+          foreach ($psFile in @("scripts/install.ps1", "scripts/uninstall.ps1")) {
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $psFile).Path,
+              [ref]$null,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors -and $parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_.ToString() }
+              exit 1
+            }
           }
-          & "target/${{ matrix.target }}/release/rayu.exe" --version
+          $reported = (& "target/${{ matrix.target }}/release/rayu.exe" --no-update --no-selfdev --version | Select-Object -First 1).Trim()
+          Write-Host "Native Windows smoke test: $reported"
           if ($LASTEXITCODE -ne 0) { throw "Built Windows binary failed --version" }
+          if (-not $reported.StartsWith("rayu ${{ env.RELEASE_TAG }}")) {
+            throw "Expected version starting with 'rayu ${{ env.RELEASE_TAG }}', got '$reported'"
+          }
 
       - name: Package Windows .exe and .tar.gz
         shell: pwsh
@@ -388,7 +403,8 @@ jobs:
           tar czf "dist/${{ matrix.artifact }}.tar.gz" -C dist "${{ matrix.artifact }}.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ((Test-Path "scripts/release_licenses.py") -and (Test-Path "dist/licenses")) {
-            & python scripts/release_licenses.py attach "dist/${{ matrix.artifact }}.tar.gz" "dist/licenses"
+            $pythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
+            & $pythonCmd scripts/release_licenses.py attach "dist/${{ matrix.artifact }}.tar.gz" "dist/licenses"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
@@ -399,18 +415,16 @@ jobs:
           path: |
             dist/${{ matrix.artifact }}.exe
             dist/${{ matrix.artifact }}.tar.gz
+          if-no-files-found: error
 
   publish-public-release:
-    name: Publish binaries to public releases repo
+    name: Publish GitHub Release & checksums
     needs: [prepare-release, build-unix, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.tag_sha }}
-          path: source
-
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -447,66 +461,58 @@ jobs:
           (cd staging && sha256sum rayu-* > SHA256SUMS)
           cat staging/SHA256SUMS
 
-      - name: Checkout public releases repo (binaries & installers only — ZERO source code)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.PUBLIC_RELEASE_REPO }}
-          token: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
-          path: public-repo
-          fetch-depth: 0
-
-      - name: Sync installers & static release metadata to public repo
+      - name: Publish static release metadata to release-metadata branch
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Strict allowlist: NEVER copy Rust source code into the public releases repo.
-          cp source/scripts/install.sh public-repo/install.sh
-          cp source/scripts/install.ps1 public-repo/install.ps1
-          cp source/scripts/uninstall.sh public-repo/uninstall.sh
-          cp source/scripts/uninstall.ps1 public-repo/uninstall.ps1
-          chmod +x public-repo/install.sh public-repo/uninstall.sh
-          [ -f source/LICENSE ] && cp source/LICENSE public-repo/LICENSE || true
-
-          mkdir -p "public-repo/releases/latest" "public-repo/releases/${RELEASE_TAG}"
-          printf '%s\n' "${RELEASE_TAG}" > "public-repo/releases/latest/version"
-          cp staging/SHA256SUMS "public-repo/releases/${RELEASE_TAG}/SHA256SUMS"
-          printf 'https://github.com/%s/releases/download/%s\n' \
-            "${PUBLIC_RELEASE_REPO}" "${RELEASE_TAG}" > "public-repo/releases/${RELEASE_TAG}/download-bases"
-
-          cd public-repo
-          git config user.name "rayu-release-bot"
-          git config user.email "release-bot@rayucode.com"
-          git add install.sh install.ps1 uninstall.sh uninstall.ps1 releases/
-          [ -f LICENSE ] && git add LICENSE || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Release ${RELEASE_TAG}"
-            git push origin HEAD:main
+          git init metadata-repo
+          cd metadata-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git fetch --depth 1 origin release-metadata 2>/dev/null; then
+            git checkout -B release-metadata FETCH_HEAD
+          else
+            git checkout --orphan release-metadata
           fi
-          git tag -f "${RELEASE_TAG}" HEAD
-          git push origin "refs/tags/${RELEASE_TAG}" --force
+
+          mkdir -p "releases/latest" "releases/${RELEASE_TAG}"
+          printf '%s\n' "${RELEASE_TAG}" > "releases/latest/version"
+          cp ../staging/SHA256SUMS "releases/${RELEASE_TAG}/SHA256SUMS"
+          printf 'https://github.com/%s/releases/download/%s\n' \
+            "${GITHUB_REPOSITORY}" "${RELEASE_TAG}" > "releases/${RELEASE_TAG}/download-bases"
+
+          git add releases/
+          if ! git diff --cached --quiet; then
+            git commit -m "Release metadata ${RELEASE_TAG}"
+            git push origin HEAD:refs/heads/release-metadata
+          fi
 
       - name: Create or update public GitHub Release with all assets
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.PUBLIC_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "${RELEASE_TAG}" --repo "${PUBLIC_RELEASE_REPO}" >/dev/null 2>&1; then
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release edit "${RELEASE_TAG}" \
-              --repo "${PUBLIC_RELEASE_REPO}" \
+              --repo "${GITHUB_REPOSITORY}" \
               --title "RayuCode ${RELEASE_TAG}" \
               --notes-file notes/release_notes.md \
               --draft=false \
               --latest
           else
             gh release create "${RELEASE_TAG}" \
-              --repo "${PUBLIC_RELEASE_REPO}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
               --title "RayuCode ${RELEASE_TAG}" \
               --notes-file notes/release_notes.md \
               --latest
           fi
           gh release upload "${RELEASE_TAG}" \
-            --repo "${PUBLIC_RELEASE_REPO}" \
+            --repo "${GITHUB_REPOSITORY}" \
             staging/rayu-* staging/SHA256SUMS \
             --clobber
 
@@ -523,13 +529,21 @@ jobs:
           # Explicitly run with NO GitHub token to prove public anonymous access.
           unset GITHUB_TOKEN GH_TOKEN || true
 
-          meta_ver=$(curl -fsSL "https://raw.githubusercontent.com/${PUBLIC_RELEASE_REPO}/main/releases/latest/version" | tr -d '\r\n')
+          meta_ver=""
+          for attempt in 1 2 3 4 5 6; do
+            meta_ver=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/release-metadata/releases/latest/version" 2>/dev/null | tr -d '\r\n' || true)
+            if [ "$meta_ver" = "$RELEASE_TAG" ]; then
+              break
+            fi
+            echo "Waiting for release-metadata CDN propagation (attempt $attempt/6, got '${meta_ver}')..."
+            sleep 5
+          done
           [ "$meta_ver" = "$RELEASE_TAG" ] || {
             echo "::error::releases/latest/version is '$meta_ver', expected '$RELEASE_TAG'"
             exit 1
           }
 
-          latest_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${PUBLIC_RELEASE_REPO}/releases/latest")
+          latest_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${GITHUB_REPOSITORY}/releases/latest")
           [[ "$latest_url" == *"/releases/tag/${RELEASE_TAG}" ]] || {
             echo "::error::releases/latest resolved to '$latest_url', expected '${RELEASE_TAG}'"
             exit 1
@@ -537,7 +551,7 @@ jobs:
 
           verify_dir=$(mktemp -d)
           trap 'rm -rf "$verify_dir"' EXIT
-          base="https://github.com/${PUBLIC_RELEASE_REPO}/releases/download/${RELEASE_TAG}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
           curl -fsSL "${base}/SHA256SUMS" -o "$verify_dir/SHA256SUMS"
           while read -r _sum filename; do
             [ -n "${filename:-}" ] || continue
@@ -553,7 +567,7 @@ jobs:
             RAYU_HOME="$install_home/.rayu" RAYU_INSTALL_DIR="$install_home/.local/bin" \
             RAYU_VERSION="$RELEASE_TAG" RAYU_SKIP_SERVER_RELOAD=1 RAYU_NO_TELEMETRY=1 \
             RAYU_SKIP_NPM_CHECK=1 \
-            bash -c "curl -fsSL 'https://raw.githubusercontent.com/${PUBLIC_RELEASE_REPO}/main/install.sh' | bash"
+            bash -c "curl -fsSL 'https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${RELEASE_TAG}/scripts/install.sh' | bash"
           reported=$("$install_home/.local/bin/rayu" --version)
           echo "Installed binary reports: $reported"
           [[ "$reported" == "rayu ${RELEASE_TAG}"* ]] || {
