@@ -296,7 +296,8 @@ impl App {
         {
             return false;
         }
-        if let Some(index) = self.pending_tool_row(&progress.call_id)
+        if self.transcript_view.is_some()
+            && let Some(index) = self.pending_tool_row(&progress.call_id)
             && !progress.tail.is_empty()
         {
             // The pending row's shape and content change on output only. The

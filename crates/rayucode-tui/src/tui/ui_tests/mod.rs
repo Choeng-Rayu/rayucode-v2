@@ -172,6 +172,12 @@ struct TestState {
     swarm_panel_full_page: bool,
 }
 
+fn transcript_details() -> Option<std::rc::Rc<crate::tui::transcript_view::TranscriptView>> {
+    Some(std::rc::Rc::new(
+        crate::tui::transcript_view::TranscriptView::new(0, false, None),
+    ))
+}
+
 impl crate::tui::TuiState for TestState {
     fn client_focused(&self) -> bool {
         !self.unfocused

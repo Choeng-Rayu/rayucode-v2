@@ -7,6 +7,7 @@ fn expanded_diff_full_terminal_preserves_indentation_gutters_and_long_source() {
     for centered_mode in [false, true] {
         for width in [40, 80, 120] {
             let state = TestState {
+                transcript_view: transcript_details(),
                 display_messages: vec![DisplayMessage::tool(
                     format!(
                         "9-     old_value();\n9+ {long_source}\n10+         nested();\n11+     done();"
@@ -36,7 +37,11 @@ fn expanded_diff_full_terminal_preserves_indentation_gutters_and_long_source() {
                 .collect();
             let diff_rows: Vec<&str> = rows
                 .iter()
-                .filter_map(|row| row.split_once("│ ").map(|(_, rest)| rest.trim_end()))
+                .filter_map(|row| {
+                    let (_, source) = row.split_once("│ ")?;
+                    let source = source.split_once(" [Alt").map_or(source, |(code, _)| code);
+                    Some(source.trim_end())
+                })
                 .collect();
             assert!(rows.iter().any(|row| row.contains("╭─ diff")), "{rows:#?}");
             assert!(rows.iter().any(|row| row.contains("╰─")), "{rows:#?}");

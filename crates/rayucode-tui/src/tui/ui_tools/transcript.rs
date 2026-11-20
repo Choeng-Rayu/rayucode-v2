@@ -2,9 +2,6 @@ use super::*;
 use crate::tui::DisplayMessage;
 use rayucode_tui_style::theme;
 use std::borrow::Cow;
-use std::collections::VecDeque;
-
-const BASH_PREVIEW_ROWS: usize = 3;
 
 fn tool_label(tool: &ToolCall) -> &str {
     match canonical_tool_name(&tool.name) {
@@ -104,24 +101,45 @@ pub(in crate::tui::ui) fn tool_response(text: impl Into<String>, width: usize) -
     )
 }
 
-pub(in crate::tui::ui) fn bash_metrics_on_header(tool: &ToolCall, width: usize) -> bool {
-    is_shell_tool(tool) && width >= 40
-}
-
-fn pending_tool_subject(tool: &ToolCall, cells: usize) -> Cow<'_, str> {
-    if !is_edit_tool_name(&tool.name)
-        && tool_label(tool) != "Read"
-        && let Some(intent) = tool
-            .intent
-            .as_deref()
-            .filter(|intent| !intent.trim().is_empty())
-    {
-        return Cow::Borrowed(intent);
+pub(in crate::tui::ui) fn compact_batch_subcall_lines(
+    tool: &ToolCall,
+    color: Color,
+    width: usize,
+    usage: Vec<Span<'static>>,
+) -> Vec<Line<'static>> {
+    let cells = width.saturating_sub(4);
+    let mut rows =
+        tool_header_with_metrics(tool, &tool_description(tool, cells), color, cells, usage);
+    for row in &mut rows {
+        row.spans.insert(0, Span::raw("    "));
     }
-    Cow::Owned(get_tool_summary_with_budget(tool, 50, Some(cells)))
+    rows
 }
 
-pub(in crate::tui::ui) fn running_bash_header(
+pub(in crate::tui::ui) fn running_metrics_on_header(width: usize) -> bool {
+    width >= 40
+}
+
+pub(in crate::tui::ui) fn tool_description(tool: &ToolCall, cells: usize) -> Cow<'_, str> {
+    if let Some(intent) = tool
+        .intent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Cow::Borrowed(intent)
+    } else if is_shell_tool(tool) || tool.input.get("command").is_some() {
+        Cow::Borrowed("Run command")
+    } else if is_memory_store_tool(tool) {
+        Cow::Borrowed("Save memory")
+    } else if tool.name.starts_with("mcp__") {
+        Cow::Borrowed("")
+    } else {
+        Cow::Owned(get_tool_summary_with_budget(tool, 50, Some(cells)))
+    }
+}
+
+pub(in crate::tui::ui) fn running_tool_header(
     tool: &ToolCall,
     metrics: Line<'static>,
     width: usize,
@@ -129,7 +147,7 @@ pub(in crate::tui::ui) fn running_bash_header(
     let suffix = width.saturating_sub(metrics.width() + 3);
     let mut header = tool_header(
         tool,
-        &pending_tool_subject(tool, width),
+        &tool_description(tool, width),
         super::super::accent_color(),
         suffix,
     );
@@ -140,32 +158,21 @@ pub(in crate::tui::ui) fn running_bash_header(
     super::super::truncate_line_with_ellipsis_to_width(&header, width)
 }
 
-/// Show the first command line in full context, with an end ellipsis for
-/// longer commands. The result marker is reserved for output and status.
-pub(in crate::tui::ui) fn inline_bash_command(
-    tool: &ToolCall,
-    width: usize,
-) -> Option<Line<'static>> {
-    if width < 26 || !is_shell_tool(tool) || !show_tool_call_details() {
-        return None;
+pub(in crate::tui::ui) fn tool_command_rows(tool: &ToolCall, width: usize) -> Vec<Line<'static>> {
+    let Some(command) = tool
+        .input
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Vec::new();
+    };
+    let rows = output_rows(command, width, None);
+    if rows.is_empty() {
+        return rows;
     }
-    let command = tool.input.get("command")?.as_str()?;
-    let command = crate::message::strip_ansi_escape_sequences(command);
-    let mut source = command.trim().lines();
-    let first: String = source
-        .next()?
-        .chars()
-        .map(|c| if c == '\t' { ' ' } else { c })
-        .filter(|c| !c.is_control())
-        .collect();
-    let continuation = if source.next().is_some() { " …" } else { "" };
-    Some(super::super::truncate_line_with_ellipsis_to_width(
-        &Line::styled(
-            format!("    Command  {first}{continuation}"),
-            Style::default().fg(dim_color()),
-        ),
-        width,
-    ))
+    let mut lines = vec![tool_response("Command", width)];
+    lines.extend(rows);
+    lines
 }
 
 pub(in crate::tui::ui) fn pending_tool_lines(
@@ -192,96 +199,35 @@ pub(in crate::tui::ui) fn pending_tool_lines(
     };
     let mut lines = vec![tool_header(
         tool,
-        &pending_tool_subject(tool, cells),
-        dim_color(),
+        &tool_description(tool, cells),
+        if running {
+            super::super::accent_color()
+        } else {
+            dim_color()
+        },
         cells,
     )];
-    let preview = progress.map_or_else(Vec::new, |progress| {
-        if expanded {
-            output_rows(&progress.tail, cells, None)
-        } else {
-            live_bash_output_rows(progress, cells)
-        }
-    });
-    let inline_metrics = running && bash_metrics_on_header(tool, cells);
-    if !inline_metrics {
+    let metrics_below_header = running && !running_metrics_on_header(cells);
+    if expanded || metrics_below_header {
         lines.push(tool_response(activity, cells));
     }
     if expanded {
-        lines.extend(full_tool_argument_rows(tool, cells));
-    } else {
-        lines.extend(inline_bash_command(tool, cells));
+        lines.extend(tool_command_rows(tool, cells));
+        if let Some(progress) = progress {
+            lines.extend(live_tool_output_rows(&progress.tail, cells));
+        }
     }
-    if inline_metrics && preview.is_empty() {
-        lines.push(tool_response(activity, cells));
-    }
-    lines.extend(preview);
     if centered {
         super::super::left_pad_lines_to_block_width(&mut lines, width, block);
     }
     lines
 }
 
-pub(in crate::tui::ui) fn full_tool_argument_rows(
-    tool: &ToolCall,
-    width: usize,
-) -> Vec<Line<'static>> {
-    if tool.input.is_null() || tool.input.as_object().is_some_and(|input| input.is_empty()) {
-        return Vec::new();
-    }
-    let mut rows = vec![tool_response("Arguments", width)];
-    if is_shell_tool(tool)
-        && let Some(command) = tool
-            .input
-            .get("command")
-            .and_then(serde_json::Value::as_str)
-    {
-        rows.extend(output_rows(command, width, None));
-        let mut options = tool.input.clone();
-        if let Some(options) = options.as_object_mut() {
-            options.remove("command");
-        }
-        if options
-            .as_object()
-            .is_some_and(|options| options.is_empty())
-        {
-            return rows;
-        }
-        rows.extend(output_rows(&options.to_string(), width, None));
-    } else if let Ok(arguments) = serde_json::to_string_pretty(&tool.input) {
-        rows.extend(output_rows(&arguments, width, None));
-    }
-    rows
-}
-
-pub(in crate::tui::ui) fn live_bash_output_rows(
-    progress: &crate::protocol::BashProgress,
-    width: usize,
-) -> Vec<Line<'static>> {
-    if width < 22 || !show_bash_output() {
-        return Vec::new();
-    }
-    bash_preview_rows(&progress.tail, width, false)
-}
-
-fn bash_preview_rows(output: &str, width: usize, show_overflow: bool) -> Vec<Line<'static>> {
-    let mut tail = VecDeque::with_capacity(BASH_PREVIEW_ROWS);
-    let mut hidden = 0usize;
+pub(in crate::tui::ui) fn live_tool_output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
     for_each_output_row(output, width, true, |row| {
-        if tail.len() == BASH_PREVIEW_ROWS {
-            tail.pop_front();
-            hidden += 1;
-        }
-        tail.push_back(row);
+        rows.push(output_row(row, width, rows.is_empty()));
     });
-    let mut rows: Vec<_> = tail
-        .into_iter()
-        .enumerate()
-        .map(|(index, row)| output_row(row, width, index == 0))
-        .collect();
-    if show_overflow && hidden > 0 {
-        rows.push(overflow_row(hidden, width));
-    }
     rows
 }
 
@@ -412,109 +358,62 @@ pub(in crate::tui::ui) fn bash_result_output<'a>(tool: &ToolCall, output: &'a st
     output
 }
 
-pub(in crate::tui::ui) fn compact_tool_result_rows(
-    tool: &ToolCall,
-    output: &str,
-    width: usize,
-) -> Vec<Line<'static>> {
-    if is_shell_tool(tool) && show_bash_output() {
-        let rows = bash_preview_rows(bash_result_output(tool, output), width, true);
-        if rows.is_empty() {
-            return vec![tool_response("(No output)", width)];
-        }
-        return rows;
-    }
-    read_search_result_summary(tool, output)
-        .map(|summary| vec![tool_response(summary, width)])
-        .unwrap_or_default()
-}
-
-pub(in crate::tui::ui) fn read_search_result_summary(
-    tool: &ToolCall,
-    output: &str,
-) -> Option<String> {
-    let output = retained_tool_output(tool, output);
-    let count_label = |count, single, plural| if count == 1 { single } else { plural };
-    match tool_label(tool) {
-        "Read" => {
-            let lines = output
-                .lines()
-                .filter(|line| {
-                    line.split_once('\t')
-                        .is_some_and(|(number, _)| number.trim().parse::<usize>().is_ok())
-                })
-                .count();
-            if lines > 0 {
-                Some(format!(
-                    "Read {lines} {}",
-                    count_label(lines, "line", "lines")
-                ))
-            } else if output.trim() == "(empty file)" {
-                Some("Empty file".into())
-            } else {
-                None
-            }
-        }
-        "Grep" | "Glob" | "List" | "AgentGrep" => output.lines().map(str::trim).find_map(|line| {
-            if let Some(count) = line.strip_prefix("matches: ") {
-                if let Some((matches, files)) = count.split_once(" in ") {
-                    let matches = matches.parse::<usize>().ok()?;
-                    let files = files.split_whitespace().next()?.parse::<usize>().ok()?;
-                    return Some(format!(
-                        "Found {matches} {} in {files} {}",
-                        count_label(matches, "match", "matches"),
-                        count_label(files, "file", "files"),
-                    ));
-                }
-                return Some(format!("Matches: {count}"));
-            }
-            (line.starts_with("Found ")
-                || line.starts_with("No ")
-                || line.starts_with("Listed ")
-                || line
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|count| count.parse::<usize>().is_ok())
-                    && (line.contains("match") || line.contains("file")))
-            .then(|| line.to_owned())
-        }),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn bash_preview_uses_same_tail_while_running_and_finished() {
-        let output = "old row\nsecond old row\n  indented 界\n10%\r\x1b[31m90%\x1b[0m\r\nfinished";
-        let live = bash_preview_rows(output, 50, false);
-        let finished = bash_preview_rows(output, 50, true);
-        let live: Vec<_> = live.iter().map(ToString::to_string).collect();
-        let finished: Vec<_> = finished.iter().map(ToString::to_string).collect();
-        assert_eq!(live, ["  ⎿   indented 界", "    90%", "    finished"]);
-        assert_eq!(&finished[..3], &live);
-        assert_eq!(finished[3], "    … +2 lines");
+    fn pending_bash_stream_is_visible_only_in_details() {
+        let tool = ToolCall {
+            id: "shell".into(),
+            name: "bash".into(),
+            intent: Some("Check the fixture".into()),
+            input: serde_json::json!({"command": "printf example", "timeout": 90000}),
+            ..Default::default()
+        };
+        let mut message = DisplayMessage::tool("Running…", tool);
+        message.role = crate::tui::core::PENDING_TOOL_ROLE.into();
+        let progress = crate::protocol::BashProgress {
+            call_id: "shell".into(),
+            elapsed_ms: 800,
+            output_bytes: 13,
+            tail: "fixture output".into(),
+        };
+        let compact = pending_tool_lines(&message, 80, Some(&progress), false);
+        assert_eq!(compact.len(), 1);
+        assert!(compact[0].to_string().contains("Bash(Check the fixture)"));
+        let details = pending_tool_lines(&message, 80, Some(&progress), true)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            details.contains("printf example") && details.contains("fixture output"),
+            "{details}"
+        );
+        assert!(
+            !details.contains("Arguments") && !details.contains("90000"),
+            "{details}"
+        );
     }
 
     #[test]
-    fn inline_bash_command_keeps_command_start_and_distinct_label() {
-        let tool = ToolCall {
-            name: "bash".into(),
-            input: serde_json::json!({ "command":
-                "printf\t'coherent command context that exceeds width'; printf trailing_code\nnext command"
-            }),
-            ..ToolCall::default()
-        };
-        let configured = tests_tool_call_details_override::get();
-        tests_tool_call_details_override::set(true);
-        let line = inline_bash_command(&tool, 40).unwrap();
-        tests_tool_call_details_override::set(configured);
-        let text = line.to_string();
-        assert!(text.starts_with("    Command  printf 'coherent"), "{text}");
-        assert!(text.ends_with('…'), "{text}");
-        assert!(line.width() <= 40);
+    fn live_tool_output_keeps_full_tail_and_replaces_carriage_return_updates() {
+        let output = "old row\nsecond old row\n  indented 界\n10%\r\x1b[31m90%\x1b[0m\r\nfinished";
+        let rows: Vec<_> = live_tool_output_rows(output, 50)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "  ⎿ old row",
+                "    second old row",
+                "      indented 界",
+                "    90%",
+                "    finished"
+            ]
+        );
     }
 
     #[test]

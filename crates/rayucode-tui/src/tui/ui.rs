@@ -1047,18 +1047,12 @@ fn update_prompt_entry_animation(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct ToolRowsKey {
     expanded: bool,
-    show_bash_output: bool,
-    show_agentgrep_output: bool,
-    show_arguments: bool,
 }
 
 impl ToolRowsKey {
     fn new(app: &dyn TuiState) -> Self {
         Self {
             expanded: app.transcript_view().is_some(),
-            show_bash_output: tools_ui::show_bash_output(),
-            show_agentgrep_output: crate::config::config().display.show_agentgrep_output,
-            show_arguments: tools_ui::show_tool_call_details(),
         }
     }
 }
@@ -3495,7 +3489,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             height: chat_area.height.saturating_sub(bar_height + status_height),
             ..chat_area
         };
-        let bar = Rect::new(chat_area.x, viewport.bottom(), chat_area.width, bar_height);
+        let status = Rect::new(
+            chat_area.x,
+            viewport.bottom(),
+            chat_area.width,
+            status_height,
+        );
+        let bar = Rect::new(chat_area.x, status.bottom(), chat_area.width, bar_height);
         let show_scrollbar = app.chat_native_scrollbar() && chat_area.width > 1;
         let prepared = prepare_at(if show_scrollbar {
             narrow_prepare_width
@@ -3505,10 +3505,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         record_layout_snapshot(viewport, None, None, None);
         draw_messages(frame, app, viewport, prepared, show_scrollbar);
         view.draw_bar(frame, bar);
-        let footer = Rect::new(chat_area.x, bar.bottom(), chat_area.width, status_height);
-        record_status_area(footer);
+        record_status_area(status);
         if status_height > 0 {
-            input_ui::draw_status(frame, app, footer, pending_count);
+            input_ui::draw_status(frame, app, status, pending_count);
         }
         finalize_frame_metrics(
             app,
@@ -3541,6 +3540,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
     let picker_floor = reserve_rows(u16::from(theme_picker.is_some() || focused_picker));
     let status_height = reserve_rows(u16::from(available_height >= 3));
+    let turn_status_height = if app.turn_footer().is_some() {
+        status_height
+    } else {
+        0
+    };
+    let footer_height = status_height - turn_status_height;
     let overscroll_height = reserve_rows(u16::from(available_height >= 3));
     let inline_requested = if theme_picker.is_some() {
         rayucode_tui_style::ALL_THEME_PRESETS.len() as u16 + 1
@@ -3712,7 +3717,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
 
     // Explicit clear puts the prompt at the top. The normal fullscreen
-    // layout gives unused rows to the transcript and keeps the footer pinned.
+    // layout gives unused rows to the transcript and pins turn status above the composer.
     let use_packed = terminal_clear_collapsed;
     let transcript_height = if terminal_clear_collapsed {
         Constraint::Length(0)
@@ -3721,9 +3726,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
     let footer = Rect::new(
         chat_area.x,
-        chat_area.bottom().saturating_sub(status_height),
+        chat_area.bottom().saturating_sub(footer_height),
         chat_area.width,
-        status_height,
+        footer_height,
     );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -3735,14 +3740,21 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             Constraint::Length(inline_block_height),
             Constraint::Length(inline_ui_gap_height),
             Constraint::Length(donut_height),
+            Constraint::Length(turn_status_height),
             Constraint::Length(composer_height),
             Constraint::Length(overscroll_height),
         ])
         .split(Rect {
-            height: chat_area.height.saturating_sub(status_height),
+            height: chat_area.height.saturating_sub(footer_height),
             ..chat_area
         });
-    let composer_area = chunks[7];
+    let composer_area = chunks[8];
+    let turn_status = chunks[7];
+    let status_area = if turn_status_height > 0 {
+        turn_status
+    } else {
+        footer
+    };
     let has_composer_rules = composer_rules_height > 0 && composer_area.height >= 3;
     let input_area = input_ui::composer_input_area(composer_area, has_composer_rules);
 
@@ -3760,7 +3772,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         if queued_height > 0 {
             capture.layout.queued_area = Some(chunks[1].into());
         }
-        capture.layout.status_area = Some(footer.into());
+        capture.layout.status_area = Some(status_area.into());
         capture.layout.input_area = Some(input_area.into());
         capture.layout.input_lines_raw = app.input().lines().count().max(1);
         capture.layout.input_lines_wrapped = base_input_height as usize;
@@ -3977,7 +3989,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());
     }
-    let status = draw_jump_to_latest(frame, app, footer);
+    let status = draw_jump_to_latest(frame, app, status_area);
     record_status_area(status);
     input_ui::draw_status(frame, app, status, pending_count);
     if notification_height > 0 {
@@ -4006,7 +4018,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[8], model_in_composer);
+        input_ui::draw_overscroll_status(frame, app, chunks[9], model_in_composer);
     }
 
     if donut_height > 0 {
@@ -4109,15 +4121,19 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     // Command-suggestion popover: a late overlay pass so the palette floats
-    // over existing rows (blank space, pinned footer, or the transcript tail)
-    // instead of reserving layout height and shoving everything around.
+    // over existing rows above the pinned turn status and composer.
+    let popover_anchor = Rect {
+        y: composer_area.y.saturating_sub(turn_status_height),
+        height: composer_area.height.saturating_add(turn_status_height),
+        ..composer_area
+    };
     if theme_picker.is_none() {
-        input_ui::draw_command_suggestions_overlay(frame, app, composer_area);
+        input_ui::draw_command_suggestions_overlay(frame, app, popover_anchor);
     }
 
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
-    input_ui::draw_prompt_history_search_overlay(frame, app, composer_area);
+    input_ui::draw_prompt_history_search_overlay(frame, app, popover_anchor);
 
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.

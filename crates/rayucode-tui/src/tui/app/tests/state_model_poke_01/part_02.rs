@@ -246,8 +246,8 @@ fn test_removed_pinned_diff_config_shows_compact_edit_without_side_pane() {
         "removed pinned mode must not allocate a side pane"
     );
     assert!(
-        text.contains("+1 -0"),
-        "compact edit counts must remain visible: {text}"
+        text.contains("Write(src/demo.rs)") && text.contains("tok") && !text.contains("+1 -0"),
+        "compact edit row must show the operation and metrics: {text}"
     );
     assert!(
         !text.contains("fn demo() {}"),

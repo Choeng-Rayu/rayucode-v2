@@ -77,6 +77,7 @@ fn nested_chat_swarm_member(
 fn test_prepare_messages_places_live_swarm_card_beneath_matching_spawn_tool_call() {
     let session_id = "spawned-session-123";
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage {
             role: "tool".to_string(),
             content: format!("Spawned new agent: {session_id}"),
@@ -114,12 +115,17 @@ fn test_prepare_messages_places_live_swarm_card_beneath_matching_spawn_tool_call
         .iter()
         .position(|line| line.contains("🐄 ● API reviewer"))
         .expect("missing live member card");
+    let output_row = rendered
+        .iter()
+        .position(|line| line.contains("Spawned new agent:"))
+        .expect("missing tool output");
     let all = rendered.join("\n");
 
+    assert!(tool_row < output_row, "tool must precede output: {all}");
     assert_eq!(
         card_row,
-        tool_row + 1,
-        "card must directly follow tool: {all}"
+        output_row + 1,
+        "card must directly follow its tool output: {all}"
     );
     // Transcript cards are deliberately stable one-liners: no elapsed time,
     // todos, or tool progress (those live on the dedicated swarm page), so
@@ -174,6 +180,7 @@ fn test_prepare_messages_keeps_transcript_card_stable_with_nested_descendants() 
         "Must not appear here",
     );
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage {
             role: "tool".to_string(),
             content: format!("Spawned new agent: {root_id}"),
@@ -232,6 +239,7 @@ fn test_prepare_messages_keeps_transcript_card_stable_with_nested_descendants() 
 fn test_prepare_messages_uses_exact_spawn_member_outside_gallery_subtree() {
     let session_id = "spawned-session-outside-filter";
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage {
             role: "tool".to_string(),
             content: format!("Spawned new agent: {session_id}"),
@@ -269,6 +277,7 @@ fn test_prepare_messages_uses_exact_spawn_member_outside_gallery_subtree() {
 fn test_prepare_messages_matches_real_prefixed_spawn_result_without_input_metadata() {
     let session_id = "spawned-session-123";
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage {
             role: "tool".to_string(),
             content: format!("[swarm] Spawned new agent: {session_id}"),
@@ -337,6 +346,7 @@ fn test_prepare_messages_matches_spawn_member_by_unique_label_when_result_is_ref
     let mut member = chat_swarm_member("spawned-session-123");
     member.task_label = Some("API reviewer".to_string());
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage {
             role: "tool".to_string(),
             content: "Agent created successfully".to_string(),
@@ -456,7 +466,7 @@ fn test_prepare_messages_live_batch_rows_do_not_soft_wrap_on_narrow_width() {
 
     let batch_rows: Vec<&String> = rendered
         .iter()
-        .filter(|line| line.contains("batch") || line.contains("bash $ cargo"))
+        .filter(|line| line.contains("batch") || line.contains("● Bash"))
         .collect();
     assert!(batch_rows.len() >= 2, "rendered={rendered:?}");
     assert!(
@@ -464,7 +474,10 @@ fn test_prepare_messages_live_batch_rows_do_not_soft_wrap_on_narrow_width() {
         "rendered={rendered:?}"
     );
     assert!(
-        batch_rows.iter().any(|line| line.contains('…')),
+        batch_rows
+            .iter()
+            .any(|line| line.contains("Bash(Run command)"))
+            && !rendered.iter().any(|line| line.contains("cargo test")),
         "rendered={rendered:?}"
     );
 }
@@ -517,7 +530,7 @@ fn test_prepare_messages_centered_live_batch_rows_keep_dedicated_padding_span() 
         .iter()
         .filter(|line| {
             let text = extract_line_text(line);
-            text.contains("batch") || text.contains("bash")
+            text.contains("batch") || text.contains("● Bash")
         })
         .collect();
     let rendered: Vec<String> = batch_rows
@@ -608,25 +621,43 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
         .collect();
 
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains("⠋ batch · 1/2 done")),
+        rendered.iter().any(|line| line.trim() == "⠋ batch"),
         "missing live batch header in {:?}",
         rendered
     );
     assert!(
-        rendered.iter().any(|line| line.contains("✓")
-            && line.contains("read")
-            && line.contains("73ms, ~3 tok")),
+        rendered
+            .iter()
+            .any(|line| line.contains("● Read(Cargo.toml)") && line.contains("73ms, ~3 tok")),
         "missing completed subcall summary in {:?}",
         rendered
     );
     assert!(
         rendered
             .iter()
-            .any(|line| line.contains("⠋ bash $ cargo build --release --workspace")),
+            .any(|line| line.contains("● Bash(Run command)")),
         "missing running batch subcall in {:?}",
         rendered
+    );
+    assert!(
+        !rendered
+            .iter()
+            .any(|line| line.contains("cargo build") || line.contains("1/2 done"))
+    );
+    let details_state = TestState {
+        transcript_view: transcript_details(),
+        ..state
+    };
+    let details = prepare::prepare_messages(&details_state, 100, 30).materialize_all_lines();
+    assert!(
+        details
+            .iter()
+            .any(|line| extract_line_text(line).contains("1/2 done"))
+    );
+    assert!(
+        details
+            .iter()
+            .any(|line| extract_line_text(line).contains("cargo build --release --workspace"))
     );
     assert!(
         rendered
@@ -690,7 +721,7 @@ fn test_prepare_messages_places_live_batch_after_committed_assistant_text() {
         .expect("missing assistant text");
     let batch_idx = rendered
         .iter()
-        .position(|line| line.contains("batch · 0/1 done"))
+        .position(|line| line.contains("● Read(src/main.rs)"))
         .expect("missing live batch progress");
 
     assert!(
@@ -730,12 +761,14 @@ fn test_prepare_messages_live_batch_spinner_advances_between_frames() {
     };
 
     let first = TestState {
+        transcript_view: transcript_details(),
         status: ProcessingStatus::RunningTool("batch".to_string()),
         anim_elapsed: 0.0,
         batch_progress: Some(batch_progress.clone()),
         ..Default::default()
     };
     let second = TestState {
+        transcript_view: transcript_details(),
         status: ProcessingStatus::RunningTool("batch".to_string()),
         anim_elapsed: 0.1,
         batch_progress: Some(batch_progress),
@@ -922,7 +955,7 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
         role: "tool".to_string(),
         content: "1\tFirst line".to_string(),
         tool_calls: vec![],
-        duration_secs: None,
+        duration_secs: Some(0.25),
         title: None,
         tool_data: Some(tool_call.clone()),
     };
@@ -930,7 +963,7 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
         role: "tool".to_string(),
         content: "1\tFirst line\n2\tSecond line".into(),
         tool_calls: vec![],
-        duration_secs: None,
+        duration_secs: Some(0.75),
         title: None,
         tool_data: Some(tool_call),
     };
@@ -960,13 +993,13 @@ fn test_prepare_messages_tool_row_refreshes_after_message_version_bump() {
     assert!(
         first_rendered
             .iter()
-            .any(|line| line.contains("⎿ Read 1 line")),
+            .any(|line| line.contains("● Read(src/main.rs) · 250ms, ~")),
         "{first_rendered:?}"
     );
     assert!(
         refreshed_rendered
             .iter()
-            .any(|line| line.contains("⎿ Read 2 lines")),
+            .any(|line| line.contains("● Read(src/main.rs) · 750ms, ~")),
         "{refreshed_rendered:?}"
     );
     assert!(
@@ -1408,11 +1441,9 @@ fn consecutive_tool_metrics_stay_visible_on_append_and_prepend() {
         text.contains("● Read(src/測試.rs) · 2.4s, ~2 tok"),
         "{text}"
     );
-    assert!(
-        text.contains("● AgentGrep") && text.contains("Found 2 matches"),
-        "{text}"
-    );
-    assert!(text.contains("path not found"), "{text}");
+    assert!(text.contains("● AgentGrep"), "{text}");
+    assert!(!text.contains("Found 2 matches"), "{text}");
+    assert!(!text.contains("path not found"), "{text}");
     assert!(actual.message_boundaries[1].wrapped_len < actual.message_boundaries[2].wrapped_len);
 
     let old = TestState {
@@ -1443,23 +1474,20 @@ fn consecutive_tool_metrics_stay_visible_on_append_and_prepend() {
 }
 
 #[test]
-fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
-    let msg = DisplayMessage::tool(
+fn expanded_tool_output_shows_command_and_result_without_arguments() {
+    let mut msg = DisplayMessage::tool(
         "one\ntwo\nthree\nfour\nfive",
         ToolCall {
             id: "bash".into(),
             name: "bash".into(),
-            input: serde_json::json!({"command": "printf '測試 🐈'"}),
+            input: serde_json::json!({"command": "printf '測試 🐈'", "timeout": 12345, "workdir": "private-workdir"}),
             intent: Some("Fixture output".into()),
             thought_signature: None,
         },
     );
-    tools_ui::tests_show_bash_output_override::set(true);
+    msg.duration_secs = Some(1.8);
     let compact =
-        messages::render_compact_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
-    tools_ui::tests_show_bash_output_override::set(false);
-    let hidden =
-        messages::render_compact_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off);
+        messages::render_compact_tool_message(&msg, 80, crate::config::DiffDisplayMode::Off);
     let expanded =
         messages::render_expanded_tool_message(&msg, 34, crate::config::DiffDisplayMode::Off, None);
     let plain = |lines: Vec<Line<'static>>| {
@@ -1470,27 +1498,26 @@ fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
             .join("\n")
     };
     let compact = plain(compact);
-    assert!(compact.contains("● Bash(Fixture output)"), "{compact}");
-    assert!(
-        compact.contains("⎿ three") && compact.contains("five") && compact.contains("… +2 lines"),
-        "{compact}"
-    );
-    assert!(
-        !compact.contains("one") && !compact.contains("two"),
-        "{compact}"
-    );
-    let hidden = plain(hidden);
-    assert!(
-        !hidden.contains("three") && !hidden.contains("five"),
-        "{hidden}"
-    );
     let expanded = plain(expanded);
     assert!(
-        expanded.contains("Arguments") && expanded.contains("printf '測試 🐈'"),
+        compact.starts_with("● Bash(Fixture output) · 1.8s, ~"),
+        "{compact}"
+    );
+    assert_eq!(compact.lines().count(), 1);
+    assert!(
+        expanded.contains("Command") && expanded.contains("printf '測試 🐈'"),
         "{expanded}"
     );
     assert!(
         expanded.contains("⎿ one") && expanded.contains("five"),
         "{expanded}"
     );
+    for text in [&compact, &expanded] {
+        assert!(
+            !text.contains("Arguments")
+                && !text.contains("12345")
+                && !text.contains("private-workdir"),
+            "{text}"
+        );
+    }
 }

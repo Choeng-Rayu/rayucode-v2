@@ -438,6 +438,7 @@ fn prepare_active_batch_progress(
     width: u16,
     prefix_blank: bool,
 ) -> PreparedMessages {
+    let expanded = app.transcript_view().is_some();
     if let Some(tool) = active_codemode(app) {
         let block_width = if app.centered_mode() {
             super::centered_content_block_width(width, 96)
@@ -445,34 +446,23 @@ fn prepare_active_batch_progress(
             width as usize
         };
         let row_width = block_width.saturating_sub(1);
-        let spinner = super::activity_indicator(app.animation_elapsed(), 12.5);
         let mut lines = Vec::new();
         if prefix_blank {
             lines.push(Line::from(""));
         }
-        let mut header = vec![
-            Span::styled(
-                format!("  {spinner} "),
-                Style::default().fg(rgb(255, 193, 94)),
-            ),
-            Span::styled("codemode", Style::default().fg(tool_color())),
-        ];
-        if let Some(intent) = tool
-            .intent
-            .as_deref()
-            .filter(|intent| !intent.trim().is_empty())
-        {
-            header.push(Span::styled(" · ", Style::default().fg(dim_color())));
-            header.push(Span::styled(
-                intent.to_owned(),
-                Style::default().fg(tool_color()),
-            ));
-        }
-        lines.push(super::truncate_line_with_ellipsis_to_width(
-            &Line::from(header),
+        let usage = app
+            .tool_elapsed(&tool.id)
+            .map_or_else(Vec::new, |elapsed| tools_ui::live_tool_usage(elapsed, None));
+        lines.extend(tools_ui::tool_header_with_metrics(
+            &tool,
+            &tools_ui::tool_description(&tool, row_width),
+            super::accent_color(),
             row_width,
+            usage,
         ));
-        lines.extend(tools_ui::codemode_preview(&tool, row_width));
+        if expanded {
+            lines.extend(tools_ui::codemode_preview(&tool, row_width));
+        }
         if app.centered_mode() {
             super::left_pad_lines_to_block_width(&mut lines, width, block_width);
         }
@@ -503,84 +493,74 @@ fn prepare_active_batch_progress(
     if prefix_blank && !attached {
         lines.push(Line::from(""));
     }
-    let mut header = if attached {
-        vec![Span::styled(
-            format!("  ⎿ {spinner} "),
-            Style::default().fg(accent),
-        )]
-    } else {
-        vec![
-            Span::styled(format!("  {spinner} "), Style::default().fg(accent)),
-            Span::styled("batch · ", Style::default().fg(tool_color())),
-        ]
-    };
-    header.push(Span::styled(
-        format!("{}/{} done", progress.completed, progress.total),
-        Style::default().fg(dim_color()),
-    ));
-    if let Some(last) = progress
-        .last_completed
-        .as_ref()
-        .filter(|_| progress.completed < progress.total)
-    {
-        header.push(Span::styled(
-            format!(" · last done: {}", last),
-            Style::default().fg(dim_color()),
+    if expanded || !attached {
+        let mut header = if attached {
+            vec![Span::styled(
+                format!("  ⎿ {spinner} "),
+                Style::default().fg(accent),
+            )]
+        } else {
+            vec![
+                Span::styled(format!("  {spinner} "), Style::default().fg(accent)),
+                Span::styled(
+                    if expanded { "batch · " } else { "batch" },
+                    Style::default().fg(tool_color()),
+                ),
+            ]
+        };
+        if expanded {
+            header.push(Span::styled(
+                format!("{}/{} done", progress.completed, progress.total),
+                Style::default().fg(dim_color()),
+            ));
+            if let Some(last) = progress
+                .last_completed
+                .as_ref()
+                .filter(|_| progress.completed < progress.total)
+            {
+                header.push(Span::styled(
+                    format!(" · last done: {}", last),
+                    Style::default().fg(dim_color()),
+                ));
+            }
+        }
+        lines.push(super::truncate_line_with_ellipsis_to_width(
+            &Line::from(header),
+            width.saturating_sub(1) as usize,
         ));
     }
-    lines.push(super::truncate_line_with_ellipsis_to_width(
-        &Line::from(header),
-        width.saturating_sub(1) as usize,
-    ));
 
     for subcall in &progress.subcalls {
-        let (icon, icon_color) = match subcall.state {
-            crate::bus::BatchSubcallState::Running => (spinner, accent),
-            crate::bus::BatchSubcallState::Succeeded => {
-                ("✓", rayucode_tui_style::theme::success_color())
-            }
-            crate::bus::BatchSubcallState::Failed => {
-                ("✗", rayucode_tui_style::theme::error_color())
-            }
+        let color = match subcall.state {
+            crate::bus::BatchSubcallState::Running => accent,
+            crate::bus::BatchSubcallState::Succeeded => rayucode_tui_style::theme::success_color(),
+            crate::bus::BatchSubcallState::Failed => rayucode_tui_style::theme::error_color(),
         };
         let key =
             crate::tui::core::batch_child_call_id(&progress.tool_call_id, &subcall.tool_call.id);
         let progress = app.bash_progress(&key);
-        let mut line = tools_ui::render_batch_subcall_line(
-            &subcall.tool_call,
-            icon,
-            icon_color,
-            50,
-            Some(row_width),
-            None,
-            subcall.metrics,
+        let usage = app.tool_elapsed(&key).map_or_else(
+            || tools_ui::batch_subcall_usage(None, subcall.metrics),
+            |elapsed| {
+                tools_ui::live_tool_usage(elapsed, progress.map(|output| output.output_bytes))
+            },
         );
-        if let Some(elapsed) = app.tool_elapsed(&key) {
-            let mut usage = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
-            usage.extend(tools_ui::live_tool_usage(
-                elapsed,
-                progress.map(|output| output.output_bytes),
-            ));
-            line = tools_ui::fit_batch_subcall_metrics(line, Line::from(usage), row_width);
-        }
-        lines.push(line);
-        if app.transcript_view().is_some() {
-            lines.extend(tools_ui::full_tool_argument_rows(
-                &subcall.tool_call,
-                row_width,
-            ));
-        }
-        if let Some(progress) = progress {
+        lines.extend(tools_ui::compact_batch_subcall_lines(
+            &subcall.tool_call,
+            color,
+            row_width,
+            usage,
+        ));
+        if expanded {
             let cells = row_width.saturating_sub(4);
-            let mut output = if app.transcript_view().is_some() {
-                tools_ui::output_rows(&progress.tail, cells, None)
-            } else {
-                tools_ui::live_bash_output_rows(progress, cells)
-            };
-            for row in &mut output {
+            let mut details = tools_ui::tool_command_rows(&subcall.tool_call, cells);
+            if let Some(progress) = progress {
+                details.extend(tools_ui::live_tool_output_rows(&progress.tail, cells));
+            }
+            for row in &mut details {
                 row.spans.insert(0, Span::raw("    "));
             }
-            lines.extend(output);
+            lines.extend(details);
         }
     }
 
@@ -1515,23 +1495,6 @@ fn render_message_into(
     let centered = ctx.centered;
     let diff_mode = ctx.diff_mode;
     let role = msg.effective_role();
-    // The live task panel owns the expanded card. The transcript still
-    // carries the original completed call and its metrics.
-    if role == "tool"
-        && crate::config::config().display.pin_todos
-        && ctx.app.is_none_or(|app| app.transcript_view().is_none())
-        && msg
-            .tool_data
-            .as_ref()
-            .is_some_and(|tool| tools_ui::canonical_tool_name(&tool.name) == "todo")
-        && !tools_ui::tool_output_looks_failed(&msg.content)
-    {
-        for line in messages::compact_tool_card_header(msg, width) {
-            acc.push_auto(line);
-        }
-        record_message_boundary(acc, msg);
-        return;
-    }
     let align = default_message_alignment(role, centered);
     let expanded_tools = ctx.app.is_some_and(|app| app.transcript_view().is_some());
     if msg.is_turn_metrics() && !expanded_tools {
@@ -1708,12 +1671,12 @@ fn render_message_into(
                     raw,
                 )
             } else {
-                let compact_diff = if diff_mode.is_full_inline() {
-                    diff_mode
-                } else {
-                    crate::config::DiffDisplayMode::Off
-                };
-                get_cached_message_lines(msg, width, compact_diff, render_compact_tool_message)
+                get_cached_message_lines(
+                    msg,
+                    width,
+                    crate::config::DiffDisplayMode::Off,
+                    render_compact_tool_message,
+                )
             };
             let copy_target = tool_message_copy_target(msg, cached.len()).or_else(|| {
                 if expanded_tools {
@@ -1734,7 +1697,8 @@ fn render_message_into(
             for line in cached {
                 acc.push_auto(align_if_unset(line, align));
             }
-            if let Some(member) = spawned_member_for_tool(msg, &ctx.swarm_members) {
+            if expanded_tools && let Some(member) = spawned_member_for_tool(msg, &ctx.swarm_members)
+            {
                 for line in crate::tui::info_widget::swarm_gallery::render_swarm_chat_card_lines(
                     std::slice::from_ref(member),
                     width.saturating_sub(1) as usize,
@@ -1742,8 +1706,10 @@ fn render_message_into(
                     acc.push_auto(line.alignment(ratatui::layout::Alignment::Left));
                 }
             }
-            for line in todo_change_lines(ctx.messages, msg_global_idx, msg, width) {
-                acc.push_auto(align_if_unset(line, align));
+            if expanded_tools {
+                for line in todo_change_lines(ctx.messages, msg_global_idx, msg, width) {
+                    acc.push_auto(align_if_unset(line, align));
+                }
             }
             if let Some(ref tc) = msg.tool_data {
                 let is_edit_tool = tools_ui::is_edit_tool_name(&tc.name);
@@ -1770,13 +1736,8 @@ fn render_message_into(
                                 })
                         })
                         .unwrap_or_else(|| "unknown".to_string());
-                    // Outside the inline modes the diff body is hidden entirely,
-                    // so any edit with a diff can be expanded into full inline.
-                    let expandable = if diff_mode.is_full_inline() || expanded_tools {
-                        messages::edit_tool_inline_diff_is_expandable(tc, &msg.content, width)
-                    } else {
-                        messages::edit_tool_has_inline_diff(tc, &msg.content)
-                    };
+                    let expandable =
+                        !expanded_tools && messages::edit_tool_has_inline_diff(tc, &msg.content);
                     acc.edit_tool_line_ranges.push((
                         msg_global_idx,
                         file_path,
@@ -1785,7 +1746,9 @@ fn render_message_into(
                         expandable,
                     ));
                 }
-                if let (Some(app), Some(items)) = (ctx.app, ctx.anchored_images.by_tool.get(&tc.id))
+                if expanded_tools
+                    && let (Some(app), Some(items)) =
+                        (ctx.app, ctx.anchored_images.by_tool.get(&tc.id))
                 {
                     for line in super::inline_image_ui::anchored_image_lines(
                         items,

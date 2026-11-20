@@ -2698,27 +2698,20 @@ pub(super) fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> boo
                 .unwrap_or(false)
         });
 
-    // The inline edit badge is rendered from the inline diff mode itself, while
-    // opening it from other diff modes requires at least one edit tool message.
-    // Keep this predicate in one place so the [Alt] [⇧] [E] badge uses the same
-    // shortcut path as visible copy badges without falling through to copy key E.
-    if !visible_expand_badge && !app.diff_mode.is_inline() && !has_edit_tool_message {
+    if !visible_expand_badge && !has_edit_tool_message {
         return false;
     }
 
-    if app.diff_mode.is_full_inline() {
+    if app.transcript_view.is_some() {
         return false;
     }
 
-    app.diff_mode = crate::config::DiffDisplayMode::FullInline;
+    let target = crate::tui::ui::visible_expand_edit_badge_line();
+    app.open_transcript_view_at(target);
     app.record_copy_badge_key_press('e');
     app.copy_badge_ui.expand_feedback_until =
         Some(std::time::Instant::now() + std::time::Duration::from_millis(1100));
-    app.copy_badge_ui.expand_feedback_line = crate::tui::ui::visible_expand_edit_badge_line();
-    app.set_status_notice(format!(
-        "Expanded edit diffs · Diffs: {}",
-        app.diff_mode.label()
-    ));
+    app.copy_badge_ui.expand_feedback_line = target;
     true
 }
 

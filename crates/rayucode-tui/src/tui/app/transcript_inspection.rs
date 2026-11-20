@@ -38,6 +38,10 @@ impl App {
     }
 
     pub(super) fn open_transcript_view(&mut self) {
+        self.open_transcript_view_at(None);
+    }
+
+    pub(super) fn open_transcript_view_at(&mut self, row: Option<usize>) {
         if self.transcript_view.is_some() {
             return;
         }
@@ -48,22 +52,29 @@ impl App {
         let position = frame
             .as_ref()
             .and_then(|frame| rayucode_tui_messages::content_pos_at_row(frame, scroll));
+        let target =
+            row.and_then(|row| rayucode_tui_messages::content_pos_at_row(frame.as_ref()?, row));
         self.transcript_view = Some(TranscriptView::new(
             scroll,
             self.auto_scroll_paused,
             position,
         ));
         self.exit_copy_selection_mode();
+        if target.is_some() {
+            self.auto_scroll_paused = true;
+        }
+        let viewer_scroll = row.filter(|_| target.is_some()).unwrap_or(scroll);
         self.pending_resize_anchor =
-            position
+            target
+                .or(position)
                 .filter(|_| self.auto_scroll_paused)
                 .map(|target| PendingResizeAnchor {
                     target,
                     captured_width: 0,
-                    captured_scroll: scroll,
+                    captured_scroll: viewer_scroll,
                 });
         if self.auto_scroll_paused {
-            self.scroll_offset = scroll;
+            self.scroll_offset = viewer_scroll;
         } else {
             self.follow_chat_bottom();
         }

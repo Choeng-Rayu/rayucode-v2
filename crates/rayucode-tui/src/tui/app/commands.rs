@@ -1031,6 +1031,10 @@ pub(super) fn handle_diff_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     match parse_diff_mode_name(arg) {
+        Some(mode) if mode.is_full_inline() => {
+            apply_diff_mode(app, mode);
+            app.open_transcript_view();
+        }
         Some(mode) => apply_diff_mode(app, mode),
         None => app.push_display_message(DisplayMessage::error(
             "Usage: /diff [off|inline|full|file|cycle|status]".to_string(),
@@ -2967,7 +2971,7 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     if rest.is_empty() || matches!(rest, "show" | "status") {
         let current = crate::config::config().display.tool_call_details;
         app.push_display_message(DisplayMessage::system(format!(
-            "Tool call details are currently {}.\n\nWhen on, tool rows show the dimmed technical detail (command, path, args) next to the model-provided intent. When off, rows with an intent show only the intent; rows without an intent still show the technical detail.\n\nUse /tool-call-details on or /tool-call-details off to change it.",
+            "The technical tool-label preference is {}. Chat tool rows show the description, duration, and output token estimate. Open /transcript view for commands and output.",
             if current { "on" } else { "off" }
         )));
         return true;
@@ -2987,7 +2991,7 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     ));
     match crate::config::Config::set_tool_call_details(enabled) {
         Ok(()) => app.push_display_message(DisplayMessage::system(format!(
-            "Saved tool call details: {}. Applied to this session immediately.",
+            "Saved the technical tool-label preference as {}. Open /transcript view for commands and output.",
             if enabled { "on" } else { "off" }
         ))),
         Err(error) => app.push_display_message(DisplayMessage::error(format!(

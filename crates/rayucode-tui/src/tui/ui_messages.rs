@@ -4024,27 +4024,6 @@ pub(super) fn edit_tool_has_inline_diff(tc: &ToolCall, content: &str) -> bool {
     edit_tool_inline_diff_lines(tc, content).is_some()
 }
 
-pub(super) fn edit_tool_inline_diff_is_expandable(
-    tc: &ToolCall,
-    content: &str,
-    width: u16,
-) -> bool {
-    let Some(change_lines) = edit_tool_inline_diff_lines(tc, content) else {
-        return false;
-    };
-    if change_lines.len() > MAX_INLINE_DIFF_LINES {
-        return true;
-    }
-
-    change_lines.iter().any(|line| {
-        let border_prefix_width = unicode_width::UnicodeWidthStr::width("│ ")
-            + unicode_width::UnicodeWidthStr::width(line.prefix.as_str());
-        let max_content_width = (width as usize).saturating_sub(border_prefix_width + 1);
-        max_content_width > 1
-            && unicode_width::UnicodeWidthStr::width(line.content.as_str()) > max_content_width
-    })
-}
-
 #[path = "ui_messages/discovery.rs"]
 mod discovery;
 use discovery::render_discovery_card;
@@ -4194,15 +4173,76 @@ pub(crate) fn render_tool_message(
     width: u16,
     diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
-    render_tool_message_mode(msg, width, diff_mode, false, false)
+    render_tool_message_mode(msg, width, diff_mode, false)
 }
 
 pub(super) fn render_compact_tool_message(
     msg: &DisplayMessage,
     width: u16,
-    diff_mode: crate::config::DiffDisplayMode,
+    _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
-    render_tool_message_mode(msg, width, diff_mode, true, false)
+    let centered = markdown::center_code_blocks();
+    let block = if centered {
+        super::centered_content_block_width(width, 96)
+    } else {
+        usize::from(width)
+    };
+    let cells = block.saturating_sub(1);
+    let unnamed = ToolCall {
+        name: "Tool".into(),
+        ..Default::default()
+    };
+    let tool = msg.tool_data.as_ref().unwrap_or(&unnamed);
+    let interrupted = is_interrupted_batch(msg);
+    let batch_counts = (tool.name == "batch")
+        .then(|| tools_ui::parse_batch_completion_counts(&msg.content))
+        .flatten();
+    let (failed, partial) = batch_counts.map_or_else(
+        || (tools_ui::tool_output_looks_failed(&msg.content), false),
+        |counts| {
+            (
+                counts.failed > 0 && counts.succeeded == 0,
+                counts.failed > 0 && counts.succeeded > 0,
+            )
+        },
+    );
+    let badge = tool_message_output_badge(msg, interrupted);
+    let tokens = if badge.label.is_empty() {
+        badge.label
+    } else {
+        format!("~{}", badge.label)
+    };
+    let usage = tools_ui::tool_usage_label(&tokens, msg.duration_secs, &msg.content);
+    let mut lines = tools_ui::tool_header_with_metrics(
+        tool,
+        &tools_ui::tool_description(tool, cells),
+        tools_ui::outcome_color(interrupted || failed, partial),
+        cells,
+        tools_ui::tool_usage_spans(usage, badge.color, msg.duration_secs, &msg.content),
+    );
+    if tool.name == "batch" {
+        let results = tools_ui::parse_batch_sub_outputs_by_index(&msg.content);
+        for (i, child) in batch_child_tools(tool).enumerate() {
+            let result = results.get(&(i + 1));
+            let child_failed = result.map_or(failed || interrupted, |result| result.errored);
+            let usage = tools_ui::batch_subcall_usage(
+                result
+                    .filter(|_| !interrupted)
+                    .map(|result| result.content.as_str()),
+                result.and_then(|result| result.metrics),
+            );
+            lines.extend(tools_ui::compact_batch_subcall_lines(
+                &child,
+                tools_ui::outcome_color(child_failed, false),
+                cells,
+                usage,
+            ));
+        }
+    }
+    if centered {
+        super::left_pad_lines_to_block_width(&mut lines, width, block);
+    }
+    lines
 }
 
 pub(super) fn render_expanded_tool_message(
@@ -4211,7 +4251,7 @@ pub(super) fn render_expanded_tool_message(
     diff_mode: crate::config::DiffDisplayMode,
     raw_result: Option<&str>,
 ) -> Vec<Line<'static>> {
-    let mut lines = render_tool_message_mode(msg, width, diff_mode, false, true);
+    let mut lines = render_tool_message_mode(msg, width, diff_mode, true);
     let Some(tool) = &msg.tool_data else {
         return lines;
     };
@@ -4222,7 +4262,7 @@ pub(super) fn render_expanded_tool_message(
         usize::from(width)
     };
     let cells = block.saturating_sub(1);
-    let mut details = tools_ui::full_tool_argument_rows(tool, cells);
+    let mut details = tools_ui::tool_command_rows(tool, cells);
     let mut output =
         raw_result.unwrap_or_else(|| tools_ui::retained_tool_output(tool, &msg.content));
     if diff_mode.is_inline()
@@ -4246,58 +4286,42 @@ pub(super) fn render_expanded_tool_message(
     lines
 }
 
-pub(super) fn compact_tool_card_header(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
-    let Some(tool) = &msg.tool_data else {
-        return Vec::new();
-    };
-    let centered = markdown::center_code_blocks();
-    let block = if centered {
-        super::centered_content_block_width(width, 96)
-    } else {
-        usize::from(width)
-    };
-    let fallback = tools_ui::get_tool_summary_with_budget(tool, 50, Some(block));
-    let subject = tool.intent.as_deref().unwrap_or(&fallback);
-    let badge = tool_output_token_badge(&msg.content);
-    let usage = tools_ui::tool_usage_label(
-        &format!("~{}", badge.label),
-        msg.duration_secs,
-        &msg.content,
-    );
-    let mut lines = tools_ui::tool_header_with_metrics(
-        tool,
-        subject,
-        tools_ui::outcome_color(tools_ui::tool_output_looks_failed(&msg.content), false),
-        block.saturating_sub(1),
-        tools_ui::tool_usage_spans(usage, badge.color, msg.duration_secs, &msg.content),
-    );
-    if centered {
-        super::left_pad_lines_to_block_width(&mut lines, width, block);
-    }
-    lines
+fn batch_child_tools(tool: &ToolCall) -> impl Iterator<Item = ToolCall> + '_ {
+    tool.input
+        .get("tool_calls")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .map(|call| {
+            let name = call
+                .get("tool")
+                .or_else(|| call.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            let input = tools_ui::batch_subcall_params(call);
+            let intent = tools_ui::batch_subcall_intent(call, &input);
+            ToolCall {
+                name: tools_ui::resolve_display_tool_name(name).into(),
+                input,
+                intent,
+                ..Default::default()
+            }
+        })
 }
 
-fn render_tool_message_mode(
-    msg: &DisplayMessage,
-    width: u16,
-    diff_mode: crate::config::DiffDisplayMode,
-    compact: bool,
-    expanded: bool,
-) -> Vec<Line<'static>> {
-    let with_header = |card| {
-        if compact {
-            let mut lines = compact_tool_card_header(msg, width);
-            lines.extend(card);
-            lines
-        } else {
-            card
-        }
-    };
-    if let Some(lines) = render_scheduled_tool_message(msg, width) {
-        return with_header(lines);
-    }
+fn is_interrupted_batch(msg: &DisplayMessage) -> bool {
+    msg.tool_data
+        .as_ref()
+        .is_some_and(|tool| tool.name == "batch")
+        && msg
+            .content
+            .starts_with(crate::tui::core::INTERRUPTED_BATCH_RESULT)
+}
 
-    let centered = markdown::center_code_blocks();
+fn tool_message_output_badge(
+    msg: &DisplayMessage,
+    interrupted_batch: bool,
+) -> ToolOutputTokenBadge {
     let output_for_badge = msg
         .tool_data
         .as_ref()
@@ -4305,14 +4329,7 @@ fn render_tool_message_mode(
         .map_or(msg.content.as_str(), |tool| {
             tools_ui::bash_result_output(tool, &msg.content)
         });
-    let interrupted_batch = msg
-        .tool_data
-        .as_ref()
-        .is_some_and(|tool| tool.name == "batch")
-        && msg
-            .content
-            .starts_with(crate::tui::core::INTERRUPTED_BATCH_RESULT);
-    let mut token_badge = if interrupted_batch {
+    if interrupted_batch {
         tools_ui::parse_batch_sub_outputs_by_index(&msg.content)
             .into_values()
             .filter_map(|result| result.metrics?.output_bytes)
@@ -4330,8 +4347,22 @@ fn render_tool_message_mode(
             )
     } else {
         tool_output_token_badge(output_for_badge)
-    };
-    let token_label = if (compact || expanded) && !token_badge.label.is_empty() {
+    }
+}
+
+fn render_tool_message_mode(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    if let Some(lines) = render_scheduled_tool_message(msg, width) {
+        return lines;
+    }
+    let centered = markdown::center_code_blocks();
+    let interrupted_batch = is_interrupted_batch(msg);
+    let mut token_badge = tool_message_output_badge(msg, interrupted_batch);
+    let token_label = if expanded && !token_badge.label.is_empty() {
         format!("~{}", token_badge.label)
     } else {
         token_badge.label.clone()
@@ -4351,21 +4382,21 @@ fn render_tool_message_mode(
         && let Some(parsed) = parse_todo_tool_output(&msg.content)
     {
         if !parsed.goal_updates.is_empty() || parsed.plan_update.is_some() {
-            return with_header(render_todo_assessment_updates(
+            return render_todo_assessment_updates(
                 parsed.plan_update.as_ref(),
                 &parsed.goal_updates,
                 width,
-            ));
+            );
         }
         // An empty todo read (the model probing the list before planning) has
         // nothing to show. Rendering the "No tasks yet" placeholder card there
         // just adds transcript noise, so collapse it to a compact line.
         if parsed.todos.is_empty() && parsed.goals.is_empty() {
-            return with_header(vec![Line::from(vec![
+            return vec![Line::from(vec![
                 Span::raw("  "),
                 Span::styled("todo", Style::default().fg(todo_meta_color())),
                 Span::styled("  no tasks", Style::default().fg(dim_color())),
-            ])]);
+            ])];
         }
         let payload = serde_json::json!({
             "todos": parsed.todos,
@@ -4373,11 +4404,11 @@ fn render_tool_message_mode(
             "goals": parsed.goals,
         })
         .to_string();
-        return with_header(render_todos_message(
+        return render_todos_message(
             &DisplayMessage::todos(payload),
             width,
             crate::config::DiffDisplayMode::Off,
-        ));
+        );
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -4390,13 +4421,16 @@ fn render_tool_message_mode(
             lines.extend(tools_ui::output_rows(
                 &msg.content,
                 width.saturating_sub(1) as usize,
-                compact.then_some(3),
+                None,
             ));
         }
         return lines;
     };
 
-    if tools_ui::is_memory_store_tool(tc) && !tools_ui::tool_output_looks_failed(&msg.content) {
+    if !expanded
+        && tools_ui::is_memory_store_tool(tc)
+        && !tools_ui::tool_output_looks_failed(&msg.content)
+    {
         let content = tc
             .input
             .get("content")
@@ -4431,7 +4465,7 @@ fn render_tool_message_mode(
         if centered {
             left_pad_lines_for_centered_mode(&mut lines, width);
         }
-        return with_header(lines);
+        return lines;
     }
 
     if tools_ui::is_memory_recall_tool(tc) && !tools_ui::tool_output_looks_failed(&msg.content) {
@@ -4475,7 +4509,7 @@ fn render_tool_message_mode(
             if centered {
                 left_pad_lines_for_centered_mode(&mut lines, width);
             }
-            return with_header(lines);
+            return lines;
         }
     }
 
@@ -4531,7 +4565,7 @@ fn render_tool_message_mode(
     };
     let reserved_summary_width = row_width
         .saturating_sub(UnicodeWidthStr::width(base_prefix.as_str()))
-        .saturating_sub(if compact { 0 } else { token_suffix_width })
+        .saturating_sub(token_suffix_width)
         .saturating_sub(edit_suffix_width);
 
     let intent = tc
@@ -4572,6 +4606,8 @@ fn render_tool_message_mode(
             .unwrap_or_else(|| {
                 tools_ui::get_tool_summary_with_budget(tc, 50, Some(technical_summary_width))
             })
+    } else if expanded {
+        tools_ui::tool_description(tc, technical_summary_width).into_owned()
     } else {
         tools_ui::get_tool_summary_with_budget(tc, 50, Some(technical_summary_width))
     };
@@ -4588,34 +4624,7 @@ fn render_tool_message_mode(
         summary
     };
 
-    let file_tool = is_edit_tool
-        || matches!(
-            tools_ui::canonical_tool_name(&tc.name),
-            "read" | "Read" | "file_read"
-        );
-    let rendered_tool_lines = if compact {
-        // File operations need an identifiable target even when the model
-        // supplies a generic intent or the diff is in a separate pane.
-        let path_summary = file_tool.then(|| {
-            tools_ui::get_tool_summary_with_budget(tc, 50, Some(row_width.saturating_sub(8)))
-        });
-        let subject = path_summary
-            .as_deref()
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| intent.unwrap_or(&summary));
-        tools_ui::tool_header_with_metrics(
-            tc,
-            subject,
-            tools_ui::outcome_color(is_error, is_partial_batch),
-            row_width,
-            tools_ui::tool_usage_spans(
-                token_badge.label,
-                token_badge.color,
-                msg.duration_secs,
-                &msg.content,
-            ),
-        )
-    } else {
+    let rendered_tool_line = {
         let tool_category_fg = tools_ui::tool_category_color(&tc.name);
         let mut tool_line = vec![
             Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
@@ -4670,88 +4679,19 @@ fn render_tool_message_mode(
         }
         let token_suffix = Line::from(usage_spans);
 
-        vec![super::truncate_line_preserving_suffix_to_width(
+        super::truncate_line_preserving_suffix_to_width(
             &Line::from(tool_line),
             &token_suffix,
             row_width,
-        )]
+        )
     };
-    let rendered_tool_line_text = super::line_plain_text(&rendered_tool_lines[0]);
-    lines.extend(rendered_tool_lines);
-    if compact {
-        if tools_ui::is_shell_tool(tc) {
-            if intent.is_some() {
-                lines.extend(tools_ui::inline_bash_command(tc, row_width));
-            }
-        } else if intent.is_some_and(|intent| intent != summary)
-            && !summary.is_empty()
-            && tools_ui::show_tool_call_details()
-        {
-            lines.push(tools_ui::tool_response(summary.clone(), row_width));
-        }
-    }
-    if compact && batch_counts.is_some() && intent.is_some() && !tools_ui::show_tool_call_details()
-    {
-        lines.push(tools_ui::tool_response(summary, row_width));
-    }
-    if compact && show_header_diff_counts {
-        let files = if tc
-            .input
-            .get("file_path")
-            .and_then(|value| value.as_str())
-            .is_some()
-        {
-            Some(1)
-        } else {
-            edit_tool_inline_diff_lines(tc, &msg.content).and_then(|lines| {
-                let files = lines
-                    .iter()
-                    .filter_map(|line| line.file_path.as_deref())
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
-                (files > 0).then_some(files)
-            })
-        };
-        let stats = files.map_or_else(
-            || format!("+{additions} -{deletions}"),
-            |files| {
-                format!(
-                    "{files} {} · +{additions} -{deletions}",
-                    if files == 1 { "file" } else { "files" }
-                )
-            },
-        );
-        lines.push(tools_ui::tool_response(stats, row_width));
-    }
-    if !compact && !expanded {
+    let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
+    lines.push(rendered_tool_line);
+    if !expanded {
         lines.extend(tools_ui::codemode_preview(tc, row_width));
     }
     if is_error && (tc.name != "batch" || batch_counts.is_none()) {
-        if compact {
-            let failure = tools_ui::parse_tool_failure(&msg.content);
-            let reason = failure
-                .as_ref()
-                .map_or("Tool call failed", |failure| failure.reason.as_str());
-            lines.push(tools_ui::tool_response(
-                reason.split_whitespace().collect::<Vec<_>>().join(" "),
-                row_width,
-            ));
-            if tools_ui::is_shell_tool(tc)
-                && tools_ui::show_bash_output()
-                && failure
-                    .as_ref()
-                    .is_some_and(|failure| failure.exit_code.is_some())
-                && !tools_ui::bash_result_output(tc, &msg.content).is_empty()
-            {
-                lines.extend(tools_ui::compact_tool_result_rows(
-                    tc,
-                    &msg.content,
-                    row_width,
-                ));
-            }
-        } else {
-            lines.push(render_tool_failure_reason(&msg.content, row_width, 2));
-        }
+        lines.push(render_tool_failure_reason(&msg.content, row_width, 2));
         if centered {
             super::left_pad_lines_to_block_width(&mut lines, width, block_width);
         }
@@ -4767,8 +4707,7 @@ fn render_tool_message_mode(
     // Optionally render the full agentgrep search output inline in the
     // transcript. Gated behind `display.show_agentgrep_output` (default false)
     // so most users keep the compact one-line summary.
-    if !compact
-        && !expanded
+    if !expanded
         && tools_ui::canonical_tool_name(&tc.name) == "agentgrep"
         && crate::config::config().display.show_agentgrep_output
         && !msg.content.trim().is_empty()
@@ -4782,8 +4721,7 @@ fn render_tool_message_mode(
     // intent. With an intent present, the command summary is inline-only: it
     // shows on the tool row when it fits and is dropped otherwise, never
     // spilling onto a second line.
-    if !compact
-        && !expanded
+    if !expanded
         && tools_ui::canonical_tool_name(&tc.name) == "bash"
         && intent.is_none()
         && !rendered_tool_line_text.contains('$')
@@ -4813,16 +4751,7 @@ fn render_tool_message_mode(
         }
     }
 
-    if compact {
-        lines.extend(tools_ui::compact_tool_result_rows(
-            tc,
-            &msg.content,
-            row_width,
-        ));
-    }
-
-    if !compact
-        && !expanded
+    if !expanded
         && tools_ui::canonical_tool_name(&tc.name) == "bash"
         && tools_ui::show_bash_output()
         && msg.content.trim() != "Command completed successfully (no output)"
@@ -4842,33 +4771,14 @@ fn render_tool_message_mode(
         }
     }
 
-    if tc.name == "batch"
-        && let Some(calls) = tc.input.get("tool_calls").and_then(|v| v.as_array())
-    {
+    if tc.name == "batch" {
+        let calls = batch_child_tools(tc);
         let sub_results = tools_ui::parse_batch_sub_outputs_by_index(&msg.content);
 
-        for (i, call) in calls.iter().enumerate() {
-            let raw_name = call
-                .get("tool")
-                .or_else(|| call.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let params = tools_ui::batch_subcall_params(call);
-            let intent = tools_ui::batch_subcall_intent(call, &params);
-
-            let sub_tc = ToolCall {
-                id: String::new(),
-                name: tools_ui::resolve_display_tool_name(raw_name).to_string(),
-                input: params,
-                intent,
-                thought_signature: None,
-            };
-
+        for (i, sub_tc) in calls.enumerate() {
             let sub_result = sub_results.get(&(i + 1));
             let sub_errored = sub_result.map(|result| result.errored).unwrap_or_else(|| {
-                batch_counts.is_some_and(|counts| {
-                    counts.failed > 0 && counts.succeeded == 0 && counts.total() == calls.len()
-                })
+                batch_counts.is_some_and(|counts| counts.failed > 0 && counts.succeeded == 0)
             });
             let (sub_icon, sub_icon_color) = if sub_errored {
                 ("✗", rgb(220, 100, 100))
@@ -4876,17 +4786,37 @@ fn render_tool_message_mode(
                 ("✓", rgb(100, 180, 100))
             };
 
-            lines.push(tools_ui::render_batch_subcall_line(
-                &sub_tc,
-                sub_icon,
-                sub_icon_color,
-                50,
-                Some(row_width),
-                sub_result
-                    .filter(|_| !interrupted_batch)
-                    .map(|result| result.content.as_str()),
-                sub_result.and_then(|result| result.metrics),
-            ));
+            if expanded {
+                let usage = tools_ui::batch_subcall_usage(
+                    sub_result
+                        .filter(|_| !interrupted_batch)
+                        .map(|result| result.content.as_str()),
+                    sub_result.and_then(|result| result.metrics),
+                );
+                lines.extend(tools_ui::compact_batch_subcall_lines(
+                    &sub_tc,
+                    sub_icon_color,
+                    row_width,
+                    usage,
+                ));
+                let mut command = tools_ui::tool_command_rows(&sub_tc, row_width.saturating_sub(4));
+                for row in &mut command {
+                    row.spans.insert(0, Span::raw("    "));
+                }
+                lines.extend(command);
+            } else {
+                lines.push(tools_ui::render_batch_subcall_line(
+                    &sub_tc,
+                    sub_icon,
+                    sub_icon_color,
+                    50,
+                    Some(row_width),
+                    sub_result
+                        .filter(|_| !interrupted_batch)
+                        .map(|result| result.content.as_str()),
+                    sub_result.and_then(|result| result.metrics),
+                ));
+            }
 
             if sub_errored {
                 lines.push(render_tool_failure_reason(
@@ -4897,25 +4827,6 @@ fn render_tool_message_mode(
                     4,
                 ));
                 continue;
-            }
-
-            if compact && let Some(result) = sub_result {
-                if interrupted_batch {
-                    let mut line =
-                        tools_ui::tool_response(&result.content, row_width.saturating_sub(4));
-                    line.spans.insert(0, Span::raw("    "));
-                    lines.push(line);
-                    continue;
-                }
-                let mut details = tools_ui::compact_tool_result_rows(
-                    &sub_tc,
-                    &result.content,
-                    row_width.saturating_sub(4),
-                );
-                for row in &mut details {
-                    row.spans.insert(0, Span::raw("    "));
-                }
-                lines.extend(details);
             }
 
             if let Some(result) = sub_result

@@ -1660,16 +1660,10 @@ pub(super) fn compact_tool_usage(mut metrics: Line<'static>, width: usize) -> Li
     metrics
 }
 
-pub(super) fn render_batch_subcall_line(
-    tool: &ToolCall,
-    icon: &str,
-    icon_color: Color,
-    bash_max_chars: usize,
-    max_width: Option<usize>,
+pub(super) fn batch_subcall_usage(
     output_content: Option<&str>,
     metrics: Option<crate::bus::BatchSubcallMetrics>,
-) -> Line<'static> {
-    let display_name = resolve_display_tool_name(&tool.name).to_string();
+) -> Vec<Span<'static>> {
     let output = output_content.unwrap_or_default();
     let seconds = metrics.map(|metrics| metrics.duration_ms as f32 / 1000.0);
     let bytes = match metrics {
@@ -1692,6 +1686,20 @@ pub(super) fn render_batch_subcall_line(
             Style::default().fg(tool_duration_color(metrics.duration_ms as f32 / 1000.0)),
         ));
     }
+    usage
+}
+
+pub(super) fn render_batch_subcall_line(
+    tool: &ToolCall,
+    icon: &str,
+    icon_color: Color,
+    bash_max_chars: usize,
+    max_width: Option<usize>,
+    output_content: Option<&str>,
+    metrics: Option<crate::bus::BatchSubcallMetrics>,
+) -> Line<'static> {
+    let display_name = resolve_display_tool_name(&tool.name).to_string();
+    let mut usage = batch_subcall_usage(output_content, metrics);
     if !usage.is_empty() {
         usage.insert(0, Span::styled(" · ", Style::default().fg(dim_color())));
     }

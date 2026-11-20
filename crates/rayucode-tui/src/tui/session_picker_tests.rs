@@ -1935,21 +1935,7 @@ fn test_preview_is_left_aligned_independently_of_chat_markdown_context() {
 
 #[test]
 fn test_preview_structured_messages_stay_left_aligned() {
-    // The todo tool card is only shown inline when todos are not pinned.
-    let _env_lock = crate::storage::lock_test_env();
-    crate::env::set_var("RAYU_PIN_TODOS", "0");
-    crate::config::invalidate_config_cache();
-    struct RestorePin;
-    impl Drop for RestorePin {
-        fn drop(&mut self) {
-            crate::env::remove_var("RAYU_PIN_TODOS");
-            crate::config::invalidate_config_cache();
-        }
-    }
-    let _restore = RestorePin;
     let todos = serde_json::json!([{
-        // Finished lists intentionally collapse to status dots. Keep an active
-        // item so this test exercises alignment of the structured card body.
         "id": "alignment", "content": "Verify structured preview alignment",
         "status": "in_progress", "priority": "high", "confidence": "verified"
     }]);
@@ -1991,14 +1977,12 @@ fn test_preview_structured_messages_stay_left_aligned() {
             );
             let cache = picker.preview_cache.as_ref().unwrap();
             assert!(
-                cache
-                    .wrapped_lines
-                    .iter()
-                    .all(|line| !line_text(line).contains("tool:")),
-                "preview must not show a tool-name summary line"
+                cache.wrapped_lines.iter().all(|line| !line_text(line)
+                    .contains("Verify structured preview alignment")
+                    && !line_text(line).contains("echo alignment")),
+                "preview keeps tool output and commands in details"
             );
             for needle in [
-                "Verify structured preview alignment",
                 "Reviewing the weak points",
                 "Check structured preview alignment",
                 // Successful background notices render as one compact line.

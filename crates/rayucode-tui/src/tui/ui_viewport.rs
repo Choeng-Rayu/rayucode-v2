@@ -364,7 +364,7 @@ fn apply_running_tool_details(
             continue;
         };
         if let Some(elapsed) = app.tool_elapsed(&tool.id) {
-            let inline = super::tools_ui::bash_metrics_on_header(tool, cells);
+            let inline = super::tools_ui::running_metrics_on_header(cells);
             let row_offset = usize::from(!inline);
             let row = header_row + row_offset;
             if row < top
@@ -388,11 +388,13 @@ fn apply_running_tool_details(
                 "Running · "
             };
             let detail = if inline {
-                super::tools_ui::running_bash_header(tool, usage, cells)
+                super::tools_ui::running_tool_header(tool, usage, cells)
             } else {
                 let mut spans = vec![Span::styled("  ⎿ ", Style::default().fg(dim_color()))];
                 let metric_cells = cells.saturating_sub(4);
-                if activity.width() + usage.width() <= metric_cells {
+                if app.transcript_view().is_some()
+                    && activity.width() + usage.width() <= metric_cells
+                {
                     spans.push(Span::styled(activity, Style::default().fg(dim_color())));
                 }
                 let usage = if usage.width() > metric_cells {
@@ -568,8 +570,7 @@ pub(super) fn draw_messages(
     } else {
         None
     };
-    // The expand badge applies in every diff mode: from Off/File it opens the
-    // hidden diff in full inline, so resolve the visible edit regardless.
+    // The expand badge opens the visible edit in the details viewer.
     let active_inline_edit_context =
         active_file_diff_context(prepared.as_ref(), scroll, visible_height);
 
@@ -905,8 +906,8 @@ pub(super) fn draw_messages(
     } else {
         active_inline_edit_context
             .as_ref()
-            .filter(|active| active.expandable && !app.diff_mode().is_full_inline())
-            .map(|active| expand_badge_target_line(active, app.diff_mode().is_inline()))
+            .filter(|active| active.expandable)
+            .map(|active| active.start_line)
     };
 
     let badge_text = if expand_feedback_active {

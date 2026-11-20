@@ -75,6 +75,7 @@ fn codemode_preview_live_updates_and_disappears_when_idle() {
     let _guard = viewport_snapshot_test_lock();
     for centered in [false, true] {
         let mut state = TestState {
+            transcript_view: transcript_details(),
             status: ProcessingStatus::RunningTool("codemode".into()),
             streaming_tools: vec![tool("return 1")],
             centered_mode: centered,

@@ -154,9 +154,6 @@ fn test_token_badges_survive_full_terminal_draw() {
                             }),
                         }],
                         messages_version: version,
-                        transcript_view: Some(std::rc::Rc::new(
-                            crate::tui::transcript_view::TranscriptView::new(0, false, None),
-                        )),
                         centered_mode,
                         suppress_info_widgets: true,
                         ..Default::default()
@@ -172,13 +169,10 @@ fn test_token_badges_survive_full_terminal_draw() {
                         .collect();
                     let y = rows
                         .iter()
-                        .position(|row| row.contains("apply_patch"))
+                        .position(|row| row.contains("● Patch"))
                         .unwrap_or_else(|| panic!("missing tool row: {rows:#?}"))
                         as u16;
                     let row = &rows[y as usize];
-                    // A standalone patch's summary lives on the inline diff
-                    // header, so only batch subcall rows still carry it.
-                    assert_eq!(row.contains("(6 lines)"), batch, "{row}");
                     let tool_row = row.split_once(" [").map_or(row.as_str(), |(text, _)| text);
                     assert!(tool_row.trim_end().ends_with(&label), "{row}");
                     let x = (0..width)

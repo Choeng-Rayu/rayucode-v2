@@ -66,10 +66,9 @@ fn test_copy_badge_requires_prior_combo_progress() {
 }
 
 #[test]
-fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
+fn test_expand_badge_shortcut_opens_details_and_pulses_key() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, _terminal) = create_copy_test_app();
-    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    let (mut app, _terminal) = make_edit_badge_test_app(2);
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     app.handle_key_event(KeyEvent::new(
@@ -77,7 +76,8 @@ fn test_expand_badge_shortcut_toggles_inline_diff_and_pulses_key() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
     ));
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
+    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::Inline);
     assert!(app.copy_badge_ui().key_active.is_some());
 }
 
@@ -243,10 +243,7 @@ fn test_expand_badge_shortcut_does_not_collapse_full_inline_diff() {
     ));
 
     assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
-    assert!(
-        app.status_notice().is_none(),
-        "full-inline E shortcut should not run expand/collapse action"
-    );
+    assert!(app.transcript_view.is_none());
 }
 
 fn make_edit_badge_test_app(
@@ -304,8 +301,8 @@ fn assert_rendered_expand_badge_shortcut_expands_to_full_diff(
 
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(
-        rendered.contains("+20 -20"),
-        "expected compact edit counts:
+        !rendered.contains("+20 -20"),
+        "compact tool rows show no diff counts:
 {rendered}"
     );
     assert!(
@@ -328,7 +325,7 @@ fn assert_rendered_expand_badge_shortcut_expands_to_full_diff(
     );
 
     app.handle_key_event(crossterm::event::KeyEvent::new(key_code, modifiers));
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
     assert!(
         app.copy_badge_ui().expand_feedback_line.is_some(),
         "activating a visible expand badge should persist the rendered badge line"
@@ -446,11 +443,9 @@ fn test_clicking_expand_edit_badge_expands_to_full_diff() {
         });
     }
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
-    assert_eq!(
-        app.status_notice(),
-        Some("Expanded edit diffs · Diffs: Inline Full".to_string())
-    );
+    assert!(app.transcript_view.is_some());
+    let rendered = render_and_snap(&app, &mut terminal);
+    assert!(rendered.contains("new line 19"), "{rendered}");
 }
 
 #[test]
@@ -472,9 +467,8 @@ fn test_expand_badge_shortcut_works_while_diff_pane_focused() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
     ));
 
-    assert_eq!(
-        app.diff_mode,
-        crate::config::DiffDisplayMode::FullInline,
+    assert!(
+        app.transcript_view.is_some(),
         "diff pane focus should not swallow the visible expand badge shortcut"
     );
 }
@@ -497,7 +491,7 @@ fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_uppercase_event()
     rt.block_on(app.handle_remote_key(KeyCode::Char('E'), KeyModifiers::ALT, &mut remote))
         .unwrap();
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(
         rendered.contains("new line 19"),
@@ -523,7 +517,7 @@ fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_lowercase_event()
     rt.block_on(app.handle_remote_key(KeyCode::Char('e'), KeyModifiers::ALT, &mut remote))
         .unwrap();
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(
         rendered.contains("new line 19"),
@@ -532,15 +526,15 @@ fn test_remote_expand_badge_rendered_shortcut_expands_with_alt_lowercase_event()
 }
 
 #[test]
-fn test_expand_badge_does_not_render_when_short_diff_is_explicitly_expanded() {
+fn test_expand_badge_is_available_for_hidden_diff_in_full_inline_mode() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, mut terminal) = make_edit_badge_test_app(2);
     app.diff_mode = crate::config::DiffDisplayMode::FullInline;
 
     let rendered = render_and_snap(&app, &mut terminal);
     assert!(
-        !rendered.contains("⇧E] expand"),
-        "short full-visible edit diff should not show expand badge:\n{rendered}"
+        rendered.contains("⇧E] expand") && !rendered.contains("new line 0"),
+        "the compact row opens the diff in details:\n{rendered}"
     );
 }
 
@@ -564,7 +558,7 @@ fn test_expand_badge_renders_when_diffs_are_hidden() {
 }
 
 #[test]
-fn test_expand_badge_shortcut_opens_full_inline_from_non_inline_mode() {
+fn test_expand_badge_shortcut_opens_details_from_non_inline_mode() {
     let _render_lock = scroll_render_test_lock();
     let (mut app, _terminal) = create_copy_test_app();
     app.display_messages.push(DisplayMessage::tool(
@@ -590,7 +584,7 @@ fn test_expand_badge_shortcut_opens_full_inline_from_non_inline_mode() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
     ));
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
     assert!(app.copy_badge_ui().key_active.is_some());
 }
 
@@ -622,7 +616,7 @@ fn test_expand_badge_shortcut_uses_display_messages_when_edit_count_is_stale() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
     ));
 
-    assert_eq!(app.diff_mode, crate::config::DiffDisplayMode::FullInline);
+    assert!(app.transcript_view.is_some());
     assert!(app.input.is_empty(), "shortcut should not insert text");
 }
 
@@ -1407,6 +1401,10 @@ fn test_real_draw_click_on_body_anchored_image_label_cycles_level() {
 
     let backend = ratatui::backend::TestBackend::new(80, 40);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
+
+    let compact = render_and_snap(&app, &mut terminal);
+    assert!(!compact.contains("1×1"), "{compact}");
+    app.open_transcript_view();
 
     // REAL draw: this records the live copy-viewport snapshot used by clicks.
     let rendered = render_and_snap(&app, &mut terminal);

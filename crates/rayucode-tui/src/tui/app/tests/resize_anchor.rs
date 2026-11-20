@@ -127,7 +127,7 @@ fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact
 }
 
 #[test]
-fn completed_turn_credit_bar_stays_at_bottom_on_short_screens() {
+fn turn_credit_bar_stays_above_composer_on_short_screens() {
     use crate::tui::TurnFooterOutcome;
     let _lock = scroll_render_test_lock();
     let mut app = anchored_scroll_test_app();
@@ -142,11 +142,13 @@ fn completed_turn_credit_bar_stays_at_bottom_on_short_screens() {
         let frame = crate::tui::ui::last_layout_snapshot().unwrap();
         let status = crate::tui::ui::last_status_area().unwrap();
         assert!(frame.messages_area.height > 0);
-        assert_eq!(status.y, height - 1);
+        let input = frame.input_area.expect("editable input");
+        assert_eq!(status.height, 1);
+        assert!(status.y < input.y && input.y - status.y <= 2);
         assert!(
             buffer_to_text(&terminal)
                 .lines()
-                .last()
+                .nth(usize::from(status.y))
                 .unwrap()
                 .contains("3.75")
         );
@@ -158,7 +160,21 @@ fn completed_turn_credit_bar_stays_at_bottom_on_short_screens() {
     render_and_snap(&app, &mut terminal);
     let text = buffer_to_text(&terminal);
     assert_eq!(text.matches("Credits: 3.75").count(), 1, "{text}");
-    assert!(text.lines().last().unwrap().contains("Credits: 3.75"));
+    let status = crate::tui::ui::last_status_area().unwrap();
+    assert!(
+        status.y
+            < crate::tui::ui::last_layout_snapshot()
+                .unwrap()
+                .input_area
+                .unwrap()
+                .y
+    );
+    assert!(
+        text.lines()
+            .nth(usize::from(status.y))
+            .unwrap()
+            .contains("Credits: 3.75")
+    );
 }
 
 #[test]

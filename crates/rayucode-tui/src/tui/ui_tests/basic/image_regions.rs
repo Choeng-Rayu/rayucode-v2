@@ -126,6 +126,7 @@ fn test_incremental_append_offsets_new_image_region_and_keeps_old() {
         anchored_tool_image_with("region-tool-b", BODY_ANCHOR_TINY_PNG_B64, "b.png"),
     ];
     let base_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("read the first screenshot"),
             DisplayMessage::tool("read a.png", read_tool_call("region-tool-a")),
@@ -137,6 +138,7 @@ fn test_incremental_append_offsets_new_image_region_and_keeps_old() {
         ..Default::default()
     };
     let grown_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("read the first screenshot"),
             DisplayMessage::tool("read a.png", read_tool_call("region-tool-a")),
@@ -192,6 +194,7 @@ fn test_prefix_reuse_mid_edit_reoffsets_region_below_boundary() {
         "below.png",
     )];
     let base_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("start"),
             DisplayMessage::swarm("Plan graph · test-swarm", "short plan"),
@@ -207,6 +210,7 @@ fn test_prefix_reuse_mid_edit_reoffsets_region_below_boundary() {
     // The plan-graph message is upserted in place with taller content, moving
     // every line below it. The tool message's image region must move with it.
     let edited_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("start"),
             DisplayMessage::swarm(
@@ -264,6 +268,7 @@ fn test_prepend_shifts_suffix_image_regions_and_matches_full_build() {
         anchored_tool_image_with("prepend-tool-new", IMG_REGION_WIDE_PNG_B64, "new.png"),
     ];
     let base_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("recent question"),
             DisplayMessage::tool("read new.png", read_tool_call("prepend-tool-new")),
@@ -278,6 +283,7 @@ fn test_prepend_shifts_suffix_image_regions_and_matches_full_build() {
     // Older compacted history revealed above the unchanged tail; the revealed
     // head itself contains an image-bearing tool message.
     let prepended_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::system("─ older history loaded ─"),
             DisplayMessage::tool("read old.png", read_tool_call("prepend-tool-old")),
@@ -344,6 +350,7 @@ fn test_prepend_shifts_suffix_image_regions_and_matches_full_build() {
 fn test_prefix_reuse_edit_recomputes_region_height_not_stale() {
     let width = 80;
     let base_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("show the diagram"),
             DisplayMessage::tool("read graph.png", read_tool_call("region-tool-grow")),
@@ -365,6 +372,7 @@ fn test_prefix_reuse_edit_recomputes_region_height_not_stale() {
     // The producing message is edited in place and its image is replaced by a
     // much taller render (same anchor id, new payload => new geometry).
     let edited_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("show the diagram"),
             DisplayMessage::tool("read graph-v2.png", read_tool_call("region-tool-grow")),

@@ -927,6 +927,7 @@ fn read_tool_call(tool_id: &str) -> crate::message::ToolCall {
 #[test]
 fn test_prepare_body_anchors_tool_image_after_tool_message() {
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("read the screenshot"),
             DisplayMessage::tool("read shot.png", read_tool_call("tool-img-1")),
@@ -975,6 +976,7 @@ fn test_prepare_body_anchors_tool_image_after_tool_message() {
 #[test]
 fn test_prepare_body_incremental_anchors_image_on_new_tool_message() {
     let base_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![DisplayMessage::user("read the screenshot")],
         messages_version: 1,
         pin_images: true,
@@ -982,6 +984,7 @@ fn test_prepare_body_incremental_anchors_image_on_new_tool_message() {
         ..Default::default()
     };
     let grown_state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("read the screenshot"),
             DisplayMessage::tool("read shot.png", read_tool_call("tool-img-2")),
@@ -1039,6 +1042,7 @@ fn test_prepare_body_skips_anchored_images_when_pin_images_off() {
 #[test]
 fn test_prepare_body_collapses_anchored_images_when_inline_images_hidden() {
     let state = TestState {
+        transcript_view: transcript_details(),
         display_messages: vec![
             DisplayMessage::user("read the screenshot"),
             DisplayMessage::tool("read shot.png", read_tool_call("tool-img-4")),

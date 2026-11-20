@@ -1460,6 +1460,23 @@ impl App {
                 finish_mouse_event!(scroll_only, "transcript_copy_selection");
             }
             if !editing {
+                if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+                    && (self.try_cycle_image_expand_at(mouse.column, mouse.row)
+                        || self.try_toggle_swarm_expand_at(mouse.column, mouse.row)
+                        || self.try_open_link_at(mouse.column, mouse.row))
+                {
+                    finish_mouse_event!(false, "transcript_detail_click");
+                }
+                if mouse.modifiers.contains(KeyModifiers::CONTROL)
+                    && let Some(direction) = match mouse.kind {
+                        MouseEventKind::ScrollUp => Some(1),
+                        MouseEventKind::ScrollDown => Some(-1),
+                        _ => None,
+                    }
+                    && self.try_zoom_inline_image_at(mouse.column, mouse.row, direction)
+                {
+                    finish_mouse_event!(false, "transcript_image_zoom");
+                }
                 match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         self.scroll_up(3);
