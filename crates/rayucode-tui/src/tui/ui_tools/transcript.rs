@@ -208,20 +208,29 @@ pub(in crate::tui::ui) fn read_search_result_summary(
                 None
             }
         }
-        "Grep" | "Glob" | "List" | "AgentGrep" => output
-            .lines()
-            .map(str::trim)
-            .find(|line| {
-                line.starts_with("Found ")
-                    || line.starts_with("No ")
-                    || line.starts_with("Listed ")
-                    || line
-                        .split_whitespace()
-                        .next()
-                        .is_some_and(|count| count.parse::<usize>().is_ok())
-                        && (line.contains("match") || line.contains("file"))
-            })
-            .map(str::to_owned),
+        "Grep" | "Glob" | "List" | "AgentGrep" => output.lines().map(str::trim).find_map(|line| {
+            if let Some(count) = line.strip_prefix("matches: ") {
+                if let Some((matches, files)) = count.split_once(" in ") {
+                    let matches = matches.parse::<usize>().ok()?;
+                    let files = files.split_whitespace().next()?.parse::<usize>().ok()?;
+                    return Some(format!(
+                        "Found {matches} {} in {files} {}",
+                        count_label(matches, "match", "matches"),
+                        count_label(files, "file", "files"),
+                    ));
+                }
+                return Some(format!("Matches: {count}"));
+            }
+            (line.starts_with("Found ")
+                || line.starts_with("No ")
+                || line.starts_with("Listed ")
+                || line
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|count| count.parse::<usize>().is_ok())
+                    && (line.contains("match") || line.contains("file")))
+            .then(|| line.to_owned())
+        }),
         _ => None,
     }
 }
