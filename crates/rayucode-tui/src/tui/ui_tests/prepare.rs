@@ -1469,14 +1469,25 @@ fn expanded_tool_output_preserves_unicode_arguments_and_full_result() {
     let compact = plain(compact);
     assert!(compact.contains("● Bash(Fixture output)"), "{compact}");
     assert!(
-        compact.contains("⎿ one") && compact.contains("… +2 lines"),
+        compact.contains("⎿ three") && compact.contains("five") && compact.contains("… +2 lines"),
         "{compact}"
     );
-    assert!(!plain(hidden).contains("one"));
+    assert!(
+        !compact.contains("one") && !compact.contains("two"),
+        "{compact}"
+    );
+    let hidden = plain(hidden);
+    assert!(
+        !hidden.contains("three") && !hidden.contains("five"),
+        "{hidden}"
+    );
     let expanded = plain(expanded);
     assert!(
         expanded.contains("Arguments: printf '測試 🐈'"),
         "{expanded}"
     );
-    assert!(expanded.contains("five"), "{expanded}");
+    assert!(
+        expanded.contains("⎿ one") && expanded.contains("five"),
+        "{expanded}"
+    );
 }

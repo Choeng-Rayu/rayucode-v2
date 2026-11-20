@@ -336,18 +336,21 @@ fn apply_running_tool_details(
         return;
     };
     let boundaries = &body.prepared.message_boundaries;
+    let block = if app.centered_mode() {
+        super::centered_content_block_width(width, 96)
+    } else {
+        usize::from(width)
+    };
+    let cells = block.saturating_sub(1);
     let first =
         boundaries.partition_point(|boundary| body.line_start + boundary.wrapped_len <= top);
     for idx in first..boundaries.len() {
         let start = idx
             .checked_sub(1)
             .map_or(0, |prev| boundaries[prev].wrapped_len);
-        let row = body.line_start + start + 1;
-        if row >= top + lines.len() {
+        let header_row = body.line_start + start;
+        if header_row >= top + lines.len() {
             break;
-        }
-        if row < top || boundaries[idx].wrapped_len <= start + 1 {
-            continue;
         }
         let Some(message) = app.display_messages().get(idx) else {
             break;
@@ -361,12 +364,15 @@ fn apply_running_tool_details(
             continue;
         };
         if let Some(elapsed) = app.tool_elapsed(&tool.id) {
-            let block = if app.centered_mode() {
-                super::centered_content_block_width(width, 96)
-            } else {
-                usize::from(width)
-            };
-            let cells = block.saturating_sub(1);
+            let inline = super::tools_ui::bash_metrics_on_header(tool, cells);
+            let row_offset = usize::from(!inline);
+            let row = header_row + row_offset;
+            if row < top
+                || row >= top + lines.len()
+                || boundaries[idx].wrapped_len <= start + row_offset
+            {
+                continue;
+            }
             let output_bytes = app
                 .bash_progress(&tool.id)
                 .map(|progress| progress.output_bytes);
@@ -381,15 +387,23 @@ fn apply_running_tool_details(
             } else {
                 "Running · "
             };
-            let mut spans = vec![Span::styled("  ⎿ ", Style::default().fg(dim_color()))];
-            if activity.width() + usage.width() + 4 <= cells {
-                spans.push(Span::styled(activity, Style::default().fg(dim_color())));
-            }
-            spans.extend(usage.spans);
-            let mut rendered = [super::truncate_line_with_ellipsis_to_width(
-                &Line::from(spans),
-                cells,
-            )];
+            let detail = if inline {
+                super::tools_ui::running_bash_header(tool, usage, cells)
+            } else {
+                let mut spans = vec![Span::styled("  ⎿ ", Style::default().fg(dim_color()))];
+                let metric_cells = cells.saturating_sub(4);
+                if activity.width() + usage.width() <= metric_cells {
+                    spans.push(Span::styled(activity, Style::default().fg(dim_color())));
+                }
+                let usage = if usage.width() > metric_cells {
+                    super::tools_ui::compact_tool_usage(usage, metric_cells)
+                } else {
+                    usage
+                };
+                spans.extend(usage.spans);
+                super::truncate_line_with_ellipsis_to_width(&Line::from(spans), cells)
+            };
+            let mut rendered = [detail];
             if app.centered_mode() {
                 super::left_pad_lines_to_block_width(&mut rendered, width, block);
             }

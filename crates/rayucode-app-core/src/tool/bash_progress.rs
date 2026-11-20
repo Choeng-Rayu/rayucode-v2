@@ -60,10 +60,7 @@ impl Capture {
             .position(|byte| byte & 0xc0 != 0x80)
             .unwrap_or(bytes.len());
         let bytes = &bytes[first..];
-        let bytes = match std::str::from_utf8(bytes) {
-            Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
-            _ => bytes,
-        };
+        let bytes = complete_utf8_tail(bytes);
         let text = String::from_utf8_lossy(bytes);
         let mut start = text.len().saturating_sub(TAIL_BYTES);
         while !text.is_char_boundary(start) {
@@ -85,6 +82,17 @@ impl Capture {
             });
         }
     }
+}
+
+/// Drop only an incomplete final code point. Earlier invalid bytes are
+/// rendered lossily and must not make the partial suffix visible.
+fn complete_utf8_tail(bytes: &[u8]) -> &[u8] {
+    if let Some(last) = bytes.iter().rposition(|byte| byte & 0xc0 != 0x80)
+        && std::str::from_utf8(&bytes[last..]).is_err_and(|error| error.error_len().is_none())
+    {
+        return &bytes[..last];
+    }
+    bytes
 }
 
 /// The foreground invocation owns the scope. Its readers may survive a
@@ -215,6 +223,14 @@ impl<R: AsyncRead + Unpin> AsyncRead for PreviewReader<R> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn incomplete_bash_utf8_suffix_stays_hidden_after_invalid_bytes() {
+        let partial = b"\xffok\xe7\x95";
+        assert_eq!(complete_utf8_tail(partial), b"\xffok");
+        let complete = b"\xffok\xe7\x95\x8c";
+        assert_eq!(complete_utf8_tail(complete), complete);
+    }
 
     #[tokio::test]
     async fn bounded_bash_progress_coalesces_without_changing_pipe_output() {

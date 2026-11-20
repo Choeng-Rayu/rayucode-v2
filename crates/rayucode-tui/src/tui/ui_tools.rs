@@ -1598,13 +1598,12 @@ pub(super) fn live_tool_usage(
     elapsed: std::time::Duration,
     output_bytes: Option<u64>,
 ) -> Vec<Span<'static>> {
-    let elapsed_ms = elapsed.as_secs().saturating_mul(1000);
-    let duration = if elapsed_ms == 0 {
-        "0s".into()
+    let elapsed_ms = if elapsed.as_secs() == 0 {
+        u64::from(elapsed.subsec_millis() / 100) * 100
     } else {
-        let duration = crate::message::Message::format_duration(elapsed_ms);
-        duration.replace(".0s", "s")
+        elapsed.as_secs().saturating_mul(1000)
     };
+    let duration = crate::message::Message::format_duration(elapsed_ms).replace(".0s", "s");
     let mut spans = vec![Span::styled(
         duration,
         Style::default().fg(tool_duration_color(elapsed.as_secs_f32())),
@@ -1622,7 +1621,7 @@ pub(super) fn live_tool_usage(
 
 pub(super) fn fit_batch_subcall_metrics(
     mut line: Line<'static>,
-    mut suffix: Line<'static>,
+    suffix: Line<'static>,
     width: usize,
 ) -> Line<'static> {
     let label_width: usize = line.spans.iter().take(2).map(Span::width).sum();
@@ -1634,19 +1633,24 @@ pub(super) fn fit_batch_subcall_metrics(
     if let Some(icon) = line.spans.first_mut() {
         icon.content = icon.content.trim_start().to_owned().into();
     }
-    for span in &mut suffix.spans {
+    let metrics = compact_tool_usage(suffix, width.saturating_sub(line.width()));
+    line.spans.extend(metrics.spans);
+    super::truncate_line_with_ellipsis_to_width(&line, width)
+}
+
+pub(super) fn compact_tool_usage(mut metrics: Line<'static>, width: usize) -> Line<'static> {
+    for span in &mut metrics.spans {
         if matches!(span.content.as_ref(), " · " | ", ") {
             span.content = " ".into();
         }
     }
-    if line.width() + suffix.width() > width
-        && let Some(tokens) = suffix.spans.last_mut()
+    if metrics.width() > width
+        && let Some(tokens) = metrics.spans.last_mut()
         && let Some(count) = tokens.content.strip_suffix(" tok")
     {
         tokens.content = format!("{count}t").into();
     }
-    line.spans.extend(suffix.spans);
-    super::truncate_line_with_ellipsis_to_width(&line, width)
+    metrics
 }
 
 pub(super) fn render_batch_subcall_line(

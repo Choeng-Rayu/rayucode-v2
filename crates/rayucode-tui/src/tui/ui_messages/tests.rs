@@ -70,7 +70,7 @@ fn expanded_diff_rows_fit_narrow_widths_and_expand_tabs() {
 #[test]
 fn inline_diff_header_compacts_directories_before_filename() {
     let path = "/home/user/project/crates/very_long_directory/src/important_file.rs";
-    let line = inline_diff_header("╭─", Some((23, 4)), Some(path), 48);
+    let line = inline_diff_header("╭─", Some((23, 4)), Some(path), None, 48);
     let text = extract_line_text(&line);
     assert!(text.starts_with("╭─ diff · +23 -4 · "), "{text}");
     assert!(text.ends_with("important_file.rs"), "{text}");
@@ -93,7 +93,7 @@ fn inline_diff_headers_fit_all_cell_budgets() {
     ] {
         for width in 0..100 {
             for (prefix, counts) in [("╭─", Some((123, 45))), ("├─", None)] {
-                let line = inline_diff_header(prefix, counts, Some(path), width);
+                let line = inline_diff_header(prefix, counts, Some(path), None, width);
                 assert!(line.width() <= width, "width={width}, line={line:?}");
                 if width >= 64 {
                     assert!(extract_line_text(&line).ends_with(".rs"), "{line:?}");
@@ -138,9 +138,12 @@ fn render_tool_message_compacts_every_multi_file_diff_header() {
                 })
                 .collect();
             assert_eq!(headers.len(), 2, "{lines:?}");
+            assert!(extract_line_text(headers[0]).ends_with(" · 2 files"));
             for (header, filename) in headers.iter().zip(["first.rs", "second.rs"]) {
                 assert!(header.width() <= width as usize, "{header:?}");
-                assert!(extract_line_text(header).ends_with(filename), "{header:?}");
+                let text = extract_line_text(header);
+                let path = text.strip_suffix(" · 2 files").unwrap_or(&text);
+                assert!(path.ends_with(filename), "{header:?}");
             }
         }
     }

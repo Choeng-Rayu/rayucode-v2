@@ -4036,6 +4036,7 @@ fn inline_diff_header(
     prefix: &str,
     counts: Option<(usize, usize)>,
     file_path: Option<&str>,
+    changed_files: Option<usize>,
     width: usize,
 ) -> Line<'static> {
     let dim = Style::default().fg(dim_color());
@@ -4057,14 +4058,25 @@ fn inline_diff_header(
         ]);
     }
     let mut header = Line::from(header);
+    let file_count = changed_files
+        .map(|count| format!(" · {count} {}", if count == 1 { "file" } else { "files" }))
+        .filter(|label| {
+            // Reserve enough cells to identify the filename when both fit.
+            header.width() + label.width() + if file_path.is_some() { 11 } else { 0 } <= width
+        });
     if let Some(path) = file_path {
-        let path_width = width.saturating_sub(header.width().saturating_add(3));
+        let path_width = width.saturating_sub(
+            header.width() + 3 + file_count.as_deref().map_or(0, UnicodeWidthStr::width),
+        );
         if path_width > 0 {
             header.spans.push(Span::styled(
                 format!(" · {}", tools_ui::truncate_path_display(path, path_width)),
                 dim,
             ));
         }
+    }
+    if let Some(label) = file_count {
+        header.spans.push(Span::styled(label, dim));
     }
     super::truncate_line_with_ellipsis_to_width(&header, width)
         .alignment(ratatui::layout::Alignment::Left)
@@ -4192,13 +4204,15 @@ pub(super) fn render_expanded_tool_message(
     };
     let cells = block.saturating_sub(1);
     let mut details = Vec::new();
-    // Reuse the tool summary so structured arguments follow their native display
-    // rules. Bash commands need the complete value to inspect multiline input.
+    // Bash and batch expose their retained arguments here. In compact chat,
+    // one command or a list of children is enough to identify the call.
     let arguments = if tools_ui::is_shell_tool(tool) {
         tool.input
             .get("command")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
+    } else if tools_ui::canonical_tool_name(&tool.name) == "batch" {
+        serde_json::to_string_pretty(&tool.input).ok()
     } else {
         Some(tools_ui::get_tool_summary_with_budget(tool, 200, None))
     };
@@ -4273,7 +4287,14 @@ fn render_tool_message_mode(
     }
 
     let centered = markdown::center_code_blocks();
-    let mut token_badge = tool_output_token_badge(&msg.content);
+    let output_for_badge = msg
+        .tool_data
+        .as_ref()
+        .filter(|tool| tools_ui::is_shell_tool(tool))
+        .map_or(msg.content.as_str(), |tool| {
+            tools_ui::bash_result_output(tool, &msg.content)
+        });
+    let mut token_badge = tool_output_token_badge(output_for_badge);
     let token_label = if compact || expanded {
         format!("~{}", token_badge.label)
     } else {
@@ -4445,7 +4466,7 @@ fn render_tool_message_mode(
     };
 
     let is_edit_tool = tools_ui::is_edit_tool_name(&tc.name);
-    let (additions, deletions) = if is_edit_tool {
+    let (additions, deletions) = if is_edit_tool && !is_error {
         diff_change_counts_for_tool(tc, &msg.content)
     } else {
         (0, 0)
@@ -4615,33 +4636,75 @@ fn render_tool_message_mode(
     };
     let rendered_tool_line_text = super::line_plain_text(&rendered_tool_lines[0]);
     lines.extend(rendered_tool_lines);
-    if compact
-        && intent.is_some_and(|intent| intent != summary)
-        && !summary.is_empty()
-        && tools_ui::show_tool_call_details()
-    {
-        lines.push(tools_ui::tool_response(summary.clone(), row_width));
+    if compact {
+        if tools_ui::is_shell_tool(tc) {
+            if intent.is_some() {
+                lines.extend(tools_ui::inline_bash_command(tc, row_width));
+            }
+        } else if intent.is_some_and(|intent| intent != summary)
+            && !summary.is_empty()
+            && tools_ui::show_tool_call_details()
+        {
+            lines.push(tools_ui::tool_response(summary.clone(), row_width));
+        }
     }
     if compact && batch_counts.is_some() && intent.is_some() && !tools_ui::show_tool_call_details()
     {
         lines.push(tools_ui::tool_response(summary, row_width));
     }
     if compact && show_header_diff_counts {
-        lines.push(tools_ui::tool_response(
-            format!("+{additions} -{deletions}"),
-            row_width,
-        ));
+        let files = if tc
+            .input
+            .get("file_path")
+            .and_then(|value| value.as_str())
+            .is_some()
+        {
+            Some(1)
+        } else {
+            edit_tool_inline_diff_lines(tc, &msg.content).and_then(|lines| {
+                let files = lines
+                    .iter()
+                    .filter_map(|line| line.file_path.as_deref())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                (files > 0).then_some(files)
+            })
+        };
+        let stats = files.map_or_else(
+            || format!("+{additions} -{deletions}"),
+            |files| {
+                format!(
+                    "{files} {} · +{additions} -{deletions}",
+                    if files == 1 { "file" } else { "files" }
+                )
+            },
+        );
+        lines.push(tools_ui::tool_response(stats, row_width));
     }
     lines.extend(tools_ui::codemode_preview(tc, row_width));
     if is_error && (tc.name != "batch" || batch_counts.is_none()) {
         if compact {
-            let reason = tools_ui::parse_tool_failure(&msg.content)
-                .map(|failure| failure.reason)
-                .unwrap_or_else(|| "Tool call failed".into());
+            let failure = tools_ui::parse_tool_failure(&msg.content);
+            let reason = failure
+                .as_ref()
+                .map_or("Tool call failed", |failure| failure.reason.as_str());
             lines.push(tools_ui::tool_response(
                 reason.split_whitespace().collect::<Vec<_>>().join(" "),
                 row_width,
             ));
+            if tools_ui::is_shell_tool(tc)
+                && tools_ui::show_bash_output()
+                && failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.exit_code.is_some())
+                && !tools_ui::bash_result_output(tc, &msg.content).is_empty()
+            {
+                lines.extend(tools_ui::compact_tool_result_rows(
+                    tc,
+                    &msg.content,
+                    row_width,
+                ));
+            }
         } else {
             lines.push(render_tool_failure_reason(&msg.content, row_width, 2));
         }
@@ -4910,10 +4973,16 @@ fn render_tool_message_mode(
         let diff_file_path =
             |line: &ParsedDiffLine| line.file_path.clone().or_else(|| file_path_for_ext.clone());
         let first_file_path = display_lines.first().and_then(|line| diff_file_path(line));
+        let changed_files = change_lines
+            .iter()
+            .filter_map(|line| line.file_path.as_deref().or(file_path_for_ext.as_deref()))
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         lines.push(inline_diff_header(
             "╭─",
             Some((additions, deletions)),
             first_file_path.as_deref(),
+            (changed_files > 0).then_some(changed_files),
             row_width,
         ));
 
@@ -4944,6 +5013,7 @@ fn render_tool_message_mode(
                     "├─",
                     None,
                     current_file_path.as_deref(),
+                    None,
                     row_width,
                 ));
             }

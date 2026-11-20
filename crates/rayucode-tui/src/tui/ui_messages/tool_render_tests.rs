@@ -309,7 +309,7 @@ fn render_tool_message_preserves_multi_file_apply_patch_boundaries() {
         .join("\n");
 
     let a_header = plain
-        .find("╭─ diff · +2 -2 · a.txt")
+        .find("╭─ diff · +2 -2 · a.txt · 2 files")
         .expect("missing a.txt header");
     let old_a = plain.find("old a").expect("missing a.txt deletion");
     let new_a = plain.find("new a").expect("missing a.txt addition");

@@ -994,7 +994,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 } else {
                     app.streaming_tool_calls()
                         .last()
-                        .map(get_tool_activity_detail)
+                        .map(|tool| {
+                            if super::tools_ui::is_shell_tool(tool) {
+                                tool.intent.clone().unwrap_or_default()
+                            } else {
+                                get_tool_activity_detail(tool)
+                            }
+                        })
                         .filter(|s| !s.is_empty())
                 };
                 let experimental_notice = app.active_experimental_feature_notice();
