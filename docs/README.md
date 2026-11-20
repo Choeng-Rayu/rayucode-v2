@@ -12,11 +12,17 @@ Reference documentation for the rayucode codebase.
 
 ## Key entry points
 
-- Architecture: `SERVER_ARCHITECTURE.md`, `MODULAR_ARCHITECTURE_RFC.md`, `CRATE_OWNERSHIP_BOUNDARIES.md`
+- **Multi-Product Ecosystem Overview**: [`MULTI_PRODUCT_ARCHITECTURE.md`](./MULTI_PRODUCT_ARCHITECTURE.md)
+- **Per-Product Developer Guides**:
+  - CLI & TUI (Rust + Ratatui): [`PRODUCT_CLI_DEV.md`](./PRODUCT_CLI_DEV.md)
+  - Desktop App (Rust + Slint): [`PRODUCT_DESKTOP_DEV.md`](./PRODUCT_DESKTOP_DEV.md) & [`DESKTOP_AUTH_SDK.md`](./DESKTOP_AUTH_SDK.md)
+  - VS Code Extension (React Webview + Host): [`PRODUCT_VSCODE_DEV.md`](./PRODUCT_VSCODE_DEV.md)
+  - RayuCode Web (Next.js + React): [`PRODUCT_WEB_DEV.md`](./PRODUCT_WEB_DEV.md)
+  - Shared Packages (`rayucode-sdk`, `@rayu-dev/rayucode-sdk`, `@rayu-dev/rayucode-ui`): [`SHARED_PACKAGES_DEV.md`](./SHARED_PACKAGES_DEV.md)
+- Architecture: `SERVER_ARCHITECTURE.md`, `MODULAR_ARCHITECTURE_RFC.md`, `CRATE_OWNERSHIP_BOUNDARIES.md`, `CODEBASE_MAP.md`
 - Swarm: `SWARM_ARCHITECTURE.md`
 - Memory: `MEMORY_ARCHITECTURE.md`, `MEMORY_BUDGET.md`, `MEMORY_INCIDENT_RUNBOOK.md`
 - Refactoring and quality: `REFACTORING.md`, `plans/CODE_QUALITY_10_10_PLAN.md`
-- Desktop app: `DESKTOP_APP_ARCHITECTURE.md`, `DESKTOP_CODEBASE_ARCHITECTURE.md`
 - Providers: `PROVIDER_DOCTOR.md`, `AWS_BEDROCK_PROVIDER.md`
 - MCP servers: `MCP_REMOTE.md`
 - Platform: `WINDOWS.md`, `TERMINAL_CAPABILITIES.md`

@@ -6,7 +6,7 @@ cd /home/rayu/rayu/rayucode-v2
 
 ## 1. Build & Install (Recommended)
 
-Fast release build (updates `~/.local/bin/rayu` & `rayucode`, and reloads any running `rayu` daemon):
+Fast release build (updates `~/.local/bin/rayu`, `rayucode`, and `rayucode-harness-api-bridge`, and reloads any running `rayu` daemon):
 
 ```bash
 umask 022 && bash scripts/install_release.sh --fast
@@ -63,4 +63,17 @@ rayu server reload
 cargo test --offline -p rayucode-message-types -- rayu_credits
 cargo test --offline -p rayucode-provider-rayu-runtime
 cargo test --offline -p rayucode-harness-api
+
+# Build & test shared TypeScript SDK + shared React UI
+npm install
+npm run check:ts
 ```
+
+## 5. Multi-Product Developer Docs
+
+- Overview & Architecture: [docs/MULTI_PRODUCT_ARCHITECTURE.md](docs/MULTI_PRODUCT_ARCHITECTURE.md)
+- Shared Packages (`rayucode-sdk`, `@rayu-dev/rayucode-sdk`, `@rayu-dev/rayucode-ui`): [docs/SHARED_PACKAGES_DEV.md](docs/SHARED_PACKAGES_DEV.md)
+- CLI & TUI (Ratatui): [docs/PRODUCT_CLI_DEV.md](docs/PRODUCT_CLI_DEV.md)
+- Desktop App (Slint + Rust): [docs/PRODUCT_DESKTOP_DEV.md](docs/PRODUCT_DESKTOP_DEV.md)
+- VS Code Extension: [docs/PRODUCT_VSCODE_DEV.md](docs/PRODUCT_VSCODE_DEV.md)
+- RayuCode Web (Next.js): [docs/PRODUCT_WEB_DEV.md](docs/PRODUCT_WEB_DEV.md)
