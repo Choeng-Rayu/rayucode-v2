@@ -29,6 +29,7 @@ use unicode_width::UnicodeWidthStr;
 const MAX_INLINE_DIFF_LINES: usize = 12;
 const MAX_DISCOVERY_DETAIL_LINES: usize = 2;
 const MAX_DISCOVERY_SETUP_LINES: usize = 3;
+const TELEGRAM_PAIRING_TITLE: &str = "Telegram pairing";
 
 fn prefer_width_stable_system_glyphs() -> bool {
     std::env::var("TERM_PROGRAM")
@@ -421,11 +422,69 @@ pub(super) fn starts_with_reasoning(content: &str) -> bool {
     content.trim_start().starts_with("*\u{2063}")
 }
 
+pub(crate) fn telegram_pairing_message(url: impl Into<String>) -> DisplayMessage {
+    let mut message = DisplayMessage::system(url);
+    message.title = Some(TELEGRAM_PAIRING_TITLE.into());
+    message
+}
+
+fn render_telegram_pairing(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let centered = markdown::center_code_blocks();
+    let wrap_width = centered_wrap_width(width.saturating_sub(4), centered, 96);
+    let system_color = system_message_color();
+    let mut lines = render_plaintext_lines(
+        "Open this link in Telegram and tap Start. Treat this link as a password.",
+        wrap_width,
+    );
+    // Transcript preparation wraps this line while keeping a single source URL
+    // for link hit testing and selection.
+    lines.push(Line::from(Span::styled(
+        msg.content.clone(),
+        Style::default().fg(super::accent_color()).underlined(),
+    )));
+
+    if let Ok(qr) = rayucode_terminal_prompt::qr::render_unicode_qr(&msg.content) {
+        if qr.lines().all(|row| row.width() <= wrap_width) {
+            let qr_style = Style::default().fg(Color::Black).bg(Color::White);
+            // Left alignment also preserves the whitespace-only border rows
+            // when the transcript applies its normal wrapping pass.
+            lines.extend(qr.lines().map(|row| {
+                Line::from(Span::styled(row.to_string(), qr_style)).alignment(Alignment::Left)
+            }));
+        } else {
+            lines.extend(render_plaintext_lines(
+                "Widen the terminal to show the QR code.",
+                wrap_width,
+            ));
+        }
+    }
+    lines.extend(render_plaintext_lines(
+        "Use /telegram-bot status to check pairing.",
+        wrap_width,
+    ));
+    for line in &mut lines {
+        for span in &mut line.spans {
+            span.style.fg = span.style.fg.or(Some(system_color));
+        }
+    }
+    if centered {
+        left_pad_lines_for_centered_mode(&mut lines, width);
+    }
+    lines
+}
+
 pub(crate) fn render_system_message(
     msg: &DisplayMessage,
     width: u16,
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
+    if msg.title.as_deref() == Some(TELEGRAM_PAIRING_TITLE) {
+        return render_telegram_pairing(msg, width);
+    }
     if let Some(lines) = todo_completion::render(msg, width, _diff_mode) {
         return lines;
     }

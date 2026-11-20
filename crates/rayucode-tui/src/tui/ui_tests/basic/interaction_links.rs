@@ -9,6 +9,113 @@ fn test_link_target_from_screen_detects_chat_url() {
     );
 }
 
+const TELEGRAM_TEST_URL: &str = "https://t.me/fixture_bot?start=fixture_code";
+
+#[test]
+fn telegram_pairing_transcript_keeps_all_qr_rows_when_they_fit() {
+    let expected = rayucode_terminal_prompt::qr::render_unicode_qr(TELEGRAM_TEST_URL).unwrap();
+    let rows: Vec<_> = expected.lines().collect();
+    let qr_width = line_display_width(rows[0]) as u16;
+    // The system-message layout reserves four cells in each of its two stages.
+    let fit_width = qr_width + 8;
+
+    for centered_mode in [false, true] {
+        let state = TestState {
+            display_messages: vec![telegram_pairing_message(TELEGRAM_TEST_URL)],
+            centered_mode,
+            ..Default::default()
+        };
+        for width in [fit_width - 1, fit_width, 120] {
+            let prepared = prepare::prepare_body(&state, width, false);
+            let qr_rows: Vec<String> = prepared
+                .wrapped_lines
+                .iter()
+                .filter_map(|line| {
+                    let row: String = line
+                        .spans
+                        .iter()
+                        .filter(|span| {
+                            span.style.fg == Some(Color::Black)
+                                && span.style.bg == Some(Color::White)
+                        })
+                        .map(|span| span.content.as_ref())
+                        .collect();
+                    (!row.is_empty()).then_some(row)
+                })
+                .collect();
+            if width < fit_width {
+                assert!(qr_rows.is_empty());
+                assert!(
+                    prepared
+                        .wrapped_plain_lines
+                        .join(" ")
+                        .contains("Widen the terminal")
+                );
+            } else {
+                assert_eq!(qr_rows, rows, "width={width}, centered={centered_mode}");
+            }
+        }
+    }
+}
+
+#[test]
+fn telegram_pairing_wrapped_url_can_be_opened_and_copied() {
+    use crate::tui::{CopySelectionPane, CopySelectionPoint, CopySelectionRange};
+
+    let _lock = viewport_snapshot_test_lock();
+    let width = 27;
+    let state = TestState {
+        display_messages: vec![telegram_pairing_message(TELEGRAM_TEST_URL)],
+        ..Default::default()
+    };
+    let prepared = prepare::prepare_body(&state, width, false);
+    let url_row = prepared
+        .raw_plain_lines
+        .iter()
+        .position(|line| line == TELEGRAM_TEST_URL)
+        .unwrap();
+    let mut wrapped_rows = prepared
+        .wrapped_line_map
+        .iter()
+        .enumerate()
+        .filter(|(_, map)| map.raw_line == url_row);
+    let (first, _) = wrapped_rows.next().unwrap();
+    let (last, tail) = wrapped_rows.last().expect("URL should span multiple rows");
+    let last_column = tail.end_col - tail.start_col;
+    let height = prepared.wrapped_lines.len() as u16;
+
+    record_copy_viewport_snapshot(
+        prepared.wrapped_plain_lines,
+        prepared.wrapped_copy_offsets,
+        prepared.raw_plain_lines,
+        prepared.wrapped_line_map,
+        0,
+        height as usize,
+        Rect::new(0, 0, width, height),
+        &vec![0; height as usize],
+    );
+    assert_eq!(
+        link_target_from_screen(1, last as u16).as_deref(),
+        Some(TELEGRAM_TEST_URL)
+    );
+    let range = CopySelectionRange {
+        start: CopySelectionPoint {
+            pane: CopySelectionPane::Chat,
+            abs_line: first,
+            column: 0,
+        },
+        end: CopySelectionPoint {
+            pane: CopySelectionPane::Chat,
+            abs_line: last,
+            column: last_column,
+        },
+    };
+    assert_eq!(
+        copy_selection_text(range).as_deref(),
+        Some(TELEGRAM_TEST_URL)
+    );
+}
+
 #[test]
 fn test_link_target_from_screen_detects_side_pane_url() {
     let _lock = viewport_snapshot_test_lock();

@@ -1,5 +1,6 @@
 use super::{App, DisplayMessage};
 use crate::telegram_remote;
+use crate::tui::ui::telegram_pairing_message;
 
 pub(super) fn handle(app: &mut App, input: &str) -> bool {
     let Some(command) = input.split_whitespace().next() else {
@@ -54,7 +55,7 @@ pub(super) fn handle(app: &mut App, input: &str) -> bool {
 
 fn start_operation(
     app: &mut App,
-    operation: impl Future<Output = anyhow::Result<String>> + Send + 'static,
+    operation: impl Future<Output = anyhow::Result<DisplayMessage>> + Send + 'static,
     notice: &str,
 ) -> bool {
     if app.pending_telegram.is_some() {
@@ -70,20 +71,19 @@ fn start_operation(
     true
 }
 
-async fn link() -> anyhow::Result<String> {
+async fn link() -> anyhow::Result<DisplayMessage> {
     telegram_remote::require_daemon().await?;
     let (_, url) = telegram_remote::hosted_pairing(false).await?;
-    let qr = rayucode_terminal_prompt::qr::render_unicode_qr(&url).unwrap_or_default();
-    Ok(format!(
-        "Open this link in Telegram and tap Start. Treat this link as a password.\n{url}\n\n{qr}\n\nUse /telegram-bot status to check pairing."
-    ))
+    Ok(telegram_pairing_message(url))
 }
 
-async fn disconnect_link() -> anyhow::Result<String> {
+async fn disconnect_link() -> anyhow::Result<DisplayMessage> {
     if let Some(link) = telegram_remote::load()? {
         telegram_remote::disconnect(&link).await?;
     }
-    Ok("Telegram disconnected on this host.".into())
+    Ok(DisplayMessage::system(
+        "Telegram disconnected on this host.",
+    ))
 }
 
 pub(super) fn poll(app: &mut App) -> bool {
@@ -92,7 +92,7 @@ pub(super) fn poll(app: &mut App) -> bool {
     };
     let result = receiver.try_recv();
     let message = match result {
-        Ok(Ok(message)) => DisplayMessage::system(message),
+        Ok(Ok(message)) => message,
         Ok(Err(error)) => DisplayMessage::error(error.to_string()),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
         Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {

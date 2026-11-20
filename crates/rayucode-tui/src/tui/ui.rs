@@ -144,6 +144,7 @@ use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
 #[cfg(test)]
 pub(crate) use messages::render_tool_message;
+pub(super) use messages::telegram_pairing_message;
 #[cfg_attr(test, allow(unused_imports))]
 pub(crate) use messages::{
     SWARM_AGENT_SNAPSHOT_TITLE, TodoCardAgent, TodoCardBackgroundTask, compact_swarm_await_summary,
