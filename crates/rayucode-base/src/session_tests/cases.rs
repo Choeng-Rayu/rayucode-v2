@@ -85,6 +85,7 @@ fn token_usage_totals_counts_cache_reported_inputs_only_when_cache_fields_exist(
             cache_read_input_tokens: None,
             cache_creation_input_tokens: None,
             rayu_credits: None,
+            ..Default::default()
         }),
     );
     session.add_message_ext(
@@ -101,6 +102,7 @@ fn token_usage_totals_counts_cache_reported_inputs_only_when_cache_fields_exist(
             cache_read_input_tokens: Some(150),
             cache_creation_input_tokens: Some(25),
             rayu_credits: None,
+            ..Default::default()
         }),
     );
 
@@ -2759,6 +2761,7 @@ fn cache_prompt_totals_preserve_mixed_provider_accounting_and_legacy_unknown() {
             cache_read_input_tokens: Some(6_000),
             cache_creation_input_tokens: Some(2_000),
             rayu_credits: None,
+            ..Default::default()
         },
         // Anthropic uncached input: read and write are disjoint.
         StoredTokenUsage {
@@ -2768,6 +2771,7 @@ fn cache_prompt_totals_preserve_mixed_provider_accounting_and_legacy_unknown() {
             cache_read_input_tokens: Some(7_000),
             cache_creation_input_tokens: Some(2_000),
             rayu_credits: None,
+            ..Default::default()
         },
     ] {
         let json = serde_json::to_string(&usage).unwrap();

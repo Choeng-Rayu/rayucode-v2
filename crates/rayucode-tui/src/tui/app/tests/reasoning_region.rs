@@ -650,6 +650,50 @@ fn current_thoughts_remain_available_for_the_turn() {
 }
 
 #[test]
+fn retry_rollback_removes_committed_reasoning_and_text_from_the_discarded_attempt() {
+    with_reasoning_current_home(|| {
+        let mut app = create_test_app();
+        app.open_reasoning_region();
+        app.append_reasoning_text("completed round thought");
+        app.close_reasoning_region(None);
+        app.push_display_message(DisplayMessage::tool(
+            "completed tool result",
+            crate::message::ToolCall {
+                id: "prior_tool".into(),
+                name: "read".into(),
+                input: serde_json::json!({}),
+                intent: None,
+                thought_signature: None,
+            },
+        ));
+        let baseline = app.display_messages.len();
+
+        app.append_streaming_text("discarded partial prose");
+        app.commit_pending_streaming_assistant_message();
+        app.open_reasoning_region();
+        app.append_reasoning_text("discarded thought");
+        app.close_reasoning_region(None);
+        assert_eq!(trace_count(&app), 2);
+        app.rollback_streaming_attempt();
+
+        assert_eq!(app.display_messages.len(), baseline);
+        assert_eq!(trace_count(&app), 1);
+        assert_eq!(app.turn_reasoning_traces.len(), 1);
+        app.open_reasoning_region();
+        app.append_reasoning_text("replacement thought");
+        app.close_reasoning_region(None);
+        assert_eq!(trace_count(&app), 2);
+        app.clear_turn_reasoning_traces();
+        assert_eq!(trace_count(&app), 0);
+        assert!(
+            app.display_messages
+                .iter()
+                .any(|msg| msg.content == "completed tool result")
+        );
+    });
+}
+
+#[test]
 fn repro_reasoning_rendered_then_removed_when_turn_ends_open() {
     // These assertions describe `current` (live-then-anchored) reasoning, so
     // pin that mode: the global default became `Off` when show_thinking was

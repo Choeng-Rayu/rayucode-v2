@@ -2,6 +2,45 @@
 use super::*;
 
 #[test]
+fn transcript_edit_output_keeps_confirmation_and_diagnostics_with_the_diff() {
+    let tool = crate::message::ToolCall {
+        id: "write".into(),
+        name: "write".into(),
+        input: serde_json::json!({"file_path":"fixture.txt", "content":"changed code\n"}),
+        intent: None,
+        thought_signature: None,
+    };
+    let body = "Created fixture.txt\nConfig reload queued";
+    let diff = "--- /dev/null\n+++ b/fixture.txt\n@@ -0,0 +1 @@\n+changed code\n";
+    let saved = format!("{body}\n\nFile diff:\n```diff\n{diff}```\n");
+    let mode = crate::config::DiffDisplayMode::FullInline;
+    for (content, raw) in [
+        (saved.as_str(), None),
+        (saved.as_str(), Some(saved.as_str())),
+        (body, None),
+    ] {
+        let message = DisplayMessage::tool(content, tool.clone());
+        let rendered = render_expanded_tool_message(&message, 100, mode, raw)
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("Created fixture.txt"), "{rendered}");
+        assert!(rendered.contains("Config reload queued"), "{rendered}");
+        assert!(!rendered.contains("File diff:"), "{rendered}");
+        assert!(rendered.contains("changed code"), "{rendered}");
+    }
+
+    let failure = DisplayMessage::tool("Error: write failed\nWorkspace was read-only", tool);
+    let rendered = render_expanded_tool_message(&failure, 100, mode, None)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Workspace was read-only"), "{rendered}");
+}
+
+#[test]
 fn render_tool_message_groups_duration_and_tokens() {
     for name in [
         "bash",

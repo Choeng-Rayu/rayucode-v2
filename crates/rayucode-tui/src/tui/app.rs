@@ -1118,11 +1118,8 @@ pub struct App {
     streaming_tool_calls: Vec<ToolCall>,
     tool_execution_starts: std::collections::HashMap<String, Instant>,
     bash_progress: std::collections::HashMap<String, crate::protocol::BashProgress>,
-    // Assistant transcript messages committed during the current provider
-    // attempt (at ToolStart boundaries). A RetryRollback removes exactly this
-    // many trailing assistant messages; reset whenever a new API attempt's
-    // output starts cleanly or the turn ends.
-    attempt_committed_assistant_messages: usize,
+    // Trailing transcript rows committed during the current provider attempt.
+    attempt_committed_rows: usize,
     // Provider-specific session ID for conversation resume
     provider_session_id: Option<String>,
     // One-step undo snapshot captured before the most recent local rewind.

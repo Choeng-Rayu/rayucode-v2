@@ -172,7 +172,7 @@ impl App {
                 self.scroll_down(page);
             }
             (KeyCode::Home, _) => {
-                self.scroll_up(self.scroll_offset.saturating_add(1));
+                self.scroll_transcript_to_row(0);
             }
             (KeyCode::End, _) => {
                 self.follow_chat_bottom();
@@ -190,13 +190,17 @@ impl App {
             return;
         };
         if let Some(row) = view.next_match(&frame, ui::last_resolved_chat_scroll(), backward) {
-            self.pending_history_anchor = None;
-            self.pending_resize_anchor = None;
-            self.scroll_offset = row.min(ui::last_max_scroll());
-            self.auto_scroll_paused = true;
-            self.maybe_queue_compacted_history_load();
-            self.request_full_repaint();
+            self.scroll_transcript_to_row(row);
         }
+    }
+
+    fn scroll_transcript_to_row(&mut self, row: usize) {
+        self.pending_history_anchor = None;
+        self.pending_resize_anchor = None;
+        self.scroll_offset = row.min(ui::last_max_scroll());
+        self.auto_scroll_paused = true;
+        self.maybe_queue_compacted_history_load();
+        self.request_full_repaint();
     }
 
     pub(super) fn handle_transcript_view_paste(&mut self, text: &str) -> bool {

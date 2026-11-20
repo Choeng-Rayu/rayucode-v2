@@ -1290,30 +1290,19 @@ impl App {
                     timestamp: Some(chrono::Utc::now()),
                     tool_duration_ms: None,
                 });
-                let token_usage = if call_usage.input_tokens.is_some()
-                    || call_usage.output_tokens.is_some()
-                    || call_usage.cache_read_input_tokens.is_some()
-                    || call_usage.cache_creation_input_tokens.is_some()
-                    || call_rayu_charge.is_some()
-                {
-                    let input_tokens = call_usage.input_tokens.unwrap_or(0);
-                    let output_tokens = call_usage.output_tokens.unwrap_or(0);
-                    Some(crate::session::StoredTokenUsage {
-                        prompt_tokens: Some(crate::tui::info_widget::effective_prompt_tokens(
-                            &self.kv_cache_provider_name(),
-                            input_tokens,
-                            call_usage.cache_read_input_tokens.unwrap_or(0),
-                            call_usage.cache_creation_input_tokens.unwrap_or(0),
-                        )),
-                        input_tokens,
-                        output_tokens,
-                        cache_read_input_tokens: call_usage.cache_read_input_tokens,
-                        cache_creation_input_tokens: call_usage.cache_creation_input_tokens,
-                        rayu_credits: call_rayu_charge.map(|charge| charge.credits),
-                    })
-                } else {
-                    None
-                };
+                let token_usage = crate::session::StoredTokenUsage::from_report(
+                    crate::tui::info_widget::effective_prompt_tokens(
+                        &self.kv_cache_provider_name(),
+                        call_usage.input_tokens.unwrap_or(0),
+                        call_usage.cache_read_input_tokens.unwrap_or(0),
+                        call_usage.cache_creation_input_tokens.unwrap_or(0),
+                    ),
+                    call_usage.input_tokens,
+                    call_usage.output_tokens,
+                    call_usage.cache_read_input_tokens,
+                    call_usage.cache_creation_input_tokens,
+                    call_rayu_charge.map(|charge| charge.credits),
+                );
                 let message_id =
                     self.session
                         .add_message_ext(Role::Assistant, content_clone, None, token_usage);

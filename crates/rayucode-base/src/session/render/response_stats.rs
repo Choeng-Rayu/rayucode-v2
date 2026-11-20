@@ -80,8 +80,8 @@ fn attach_turn(
     }
     let stats = ResponseStats {
         duration_secs: None,
-        input_tokens: sum(|usage| Some(usage.input_tokens)),
-        output_tokens: sum(|usage| Some(usage.output_tokens)),
+        input_tokens: sum(rayucode_session_types::StoredTokenUsage::reported_input_tokens),
+        output_tokens: sum(rayucode_session_types::StoredTokenUsage::reported_output_tokens),
         cache_read_tokens: sum(|usage| usage.cache_read_input_tokens),
         cache_creation_tokens: sum(|usage| usage.cache_creation_input_tokens),
         rayu_credits: rayu_credits.total_credits(),
@@ -123,6 +123,7 @@ mod tests {
             cache_read_input_tokens: Some(3),
             cache_creation_input_tokens: Some(4),
             rayu_credits: None,
+            ..Default::default()
         })
     }
     fn row(index: usize) -> RenderedMessage {
@@ -206,6 +207,33 @@ mod tests {
         let mut rows = vec![row(1)];
         attach(&messages, &mut rows);
         assert!(rows[0].response_stats.is_none());
+    }
+
+    #[test]
+    fn response_stats_distinguish_unreported_counts_from_a_reported_zero() {
+        let no_usage = StoredTokenUsage::from_report(0, None, None, None, None, None);
+        assert!(no_usage.is_none());
+        let usage = StoredTokenUsage::from_report(0, None, Some(0), None, None, Some(2.5));
+        let serialized = serde_json::to_string(&usage).unwrap();
+        let restored = serde_json::from_str::<Option<StoredTokenUsage>>(&serialized).unwrap();
+        let messages = vec![
+            text(Role::User, "first", None),
+            text(Role::Assistant, "partially metered", restored),
+            text(Role::User, "next", None),
+            text(Role::Assistant, "unmetered", no_usage),
+        ];
+        let mut rows = vec![row(1), row(3)];
+        attach(&messages, &mut rows);
+        let partial = rows[0].response_stats.as_ref().unwrap();
+        assert_eq!(partial.input_tokens, None);
+        assert_eq!(partial.output_tokens, Some(0));
+        assert_eq!(partial.rayu_credits, Some(2.5));
+        assert!(rows[1].response_stats.is_none());
+
+        let legacy: StoredTokenUsage =
+            serde_json::from_str(r#"{"input_tokens":0,"output_tokens":4}"#).unwrap();
+        assert_eq!(legacy.reported_input_tokens(), Some(0));
+        assert_eq!(legacy.reported_output_tokens(), Some(4));
     }
 
     #[test]

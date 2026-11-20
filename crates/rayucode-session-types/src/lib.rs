@@ -300,7 +300,7 @@ pub enum StoredDisplayRole {
     BackgroundTask,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StoredTokenUsage {
     /// Full prompt size resolved per request, before provider identity can change.
     /// Older records lack this and cannot safely reconstruct mixed-provider totals.
@@ -308,6 +308,12 @@ pub struct StoredTokenUsage {
     pub prompt_tokens: Option<u64>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    // Keep the numeric fields readable by earlier clients. Older records
+    // without these flags retain their recorded counts, including zero.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub input_tokens_unreported: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub output_tokens_unreported: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -315,6 +321,37 @@ pub struct StoredTokenUsage {
     /// Settled Rayu gateway credits charged for this provider request, when reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rayu_credits: Option<f64>,
+}
+
+impl StoredTokenUsage {
+    pub fn from_report(
+        prompt_tokens: u64,
+        input: Option<u64>,
+        output: Option<u64>,
+        cache_read: Option<u64>,
+        cache_creation: Option<u64>,
+        credits: Option<f64>,
+    ) -> Option<Self> {
+        let has_prompt_usage = input.is_some() || cache_read.is_some() || cache_creation.is_some();
+        (has_prompt_usage || output.is_some() || credits.is_some()).then_some(Self {
+            prompt_tokens: has_prompt_usage.then_some(prompt_tokens),
+            input_tokens: input.unwrap_or(0),
+            output_tokens: output.unwrap_or(0),
+            input_tokens_unreported: input.is_none(),
+            output_tokens_unreported: output.is_none(),
+            cache_read_input_tokens: cache_read,
+            cache_creation_input_tokens: cache_creation,
+            rayu_credits: credits,
+        })
+    }
+
+    pub fn reported_input_tokens(&self) -> Option<u64> {
+        (!self.input_tokens_unreported).then_some(self.input_tokens)
+    }
+
+    pub fn reported_output_tokens(&self) -> Option<u64> {
+        (!self.output_tokens_unreported).then_some(self.output_tokens)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

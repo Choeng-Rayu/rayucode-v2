@@ -3993,13 +3993,31 @@ pub(crate) fn render_swarm_message(
 }
 
 fn edit_tool_inline_diff_lines(tc: &ToolCall, content: &str) -> Option<Vec<ParsedDiffLine>> {
-    let from_content = collect_diff_lines(content);
+    let diff = split_attached_file_diff(content).map_or(content, |(_, diff)| diff);
+    let from_content = collect_diff_lines(diff);
     let change_lines = if !from_content.is_empty() {
         from_content
     } else {
         generate_diff_lines_from_tool_input(tc)
     };
     (!change_lines.is_empty()).then_some(change_lines)
+}
+
+fn split_attached_file_diff(output: &str) -> Option<(&str, &str)> {
+    // File tools append an authoritative diff after the human-readable result.
+    let (body, diff) = output.rsplit_once("\n\nFile diff:\n```diff\n")?;
+    let diff = diff.trim_end().strip_suffix("\n```")?;
+    diff.starts_with("--- ").then_some((body, diff))
+}
+
+fn is_synthetic_edit_diff(output: &str) -> bool {
+    // The remote fallback stores only a path followed by a generated diff.
+    let mut lines = output.lines();
+    let Some(path) = lines.next() else {
+        return false;
+    };
+    lines.next().and_then(|line| line.strip_prefix("--- a/")) == Some(path)
+        && lines.next().and_then(|line| line.strip_prefix("+++ b/")) == Some(path)
 }
 
 pub(super) fn edit_tool_has_inline_diff(tc: &ToolCall, content: &str) -> bool {
@@ -4205,11 +4223,19 @@ pub(super) fn render_expanded_tool_message(
     };
     let cells = block.saturating_sub(1);
     let mut details = tools_ui::full_tool_argument_rows(tool, cells);
-    let output = raw_result.unwrap_or_else(|| tools_ui::retained_tool_output(tool, &msg.content));
-    let output_is_diff = raw_result.is_none()
+    let mut output =
+        raw_result.unwrap_or_else(|| tools_ui::retained_tool_output(tool, &msg.content));
+    if diff_mode.is_inline()
         && tools_ui::is_edit_tool_name(&tool.name)
-        && edit_tool_has_inline_diff(tool, &msg.content);
-    if !output_is_diff && !output.trim().is_empty() {
+        && !tools_ui::tool_output_looks_failed(&msg.content)
+    {
+        if let Some((body, _)) = split_attached_file_diff(output) {
+            output = body;
+        } else if raw_result.is_none() && is_synthetic_edit_diff(output) {
+            output = "";
+        }
+    }
+    if !output.trim().is_empty() {
         details.push(tools_ui::tool_response("Output", cells));
         details.extend(tools_ui::output_rows(output, cells, None));
     }

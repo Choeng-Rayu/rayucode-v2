@@ -963,18 +963,18 @@ impl Agent {
 
             let assistant_message_id = if !content_blocks.is_empty() {
                 crate::telemetry::record_assistant_response();
-                let token_usage = Some(crate::session::StoredTokenUsage {
-                    prompt_tokens: Some(self.effective_context_tokens_from_usage(
+                let token_usage = crate::session::StoredTokenUsage::from_report(
+                    self.effective_context_tokens_from_usage(
                         self.last_usage.input_tokens,
                         self.last_usage.cache_read_input_tokens,
                         self.last_usage.cache_creation_input_tokens,
-                    )),
-                    input_tokens: self.last_usage.input_tokens,
-                    output_tokens: self.last_usage.output_tokens,
-                    cache_read_input_tokens: self.last_usage.cache_read_input_tokens,
-                    cache_creation_input_tokens: self.last_usage.cache_creation_input_tokens,
-                    rayu_credits: call_rayu_charge.map(|charge| charge.credits),
-                });
+                    ),
+                    usage_input,
+                    usage_output,
+                    usage_cache_read,
+                    usage_cache_creation,
+                    call_rayu_charge.map(|charge| charge.credits),
+                );
                 let message_id =
                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
                 self.push_embedding_snapshot_if_semantic(&text_content);

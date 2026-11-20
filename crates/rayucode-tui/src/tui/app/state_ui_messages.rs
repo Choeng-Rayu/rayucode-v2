@@ -62,13 +62,14 @@ fn is_background_task_lifecycle_message(content: &str) -> bool {
         || content.starts_with("**Background task stalled**")
 }
 
-/// A tool row for a provider-executed tool (hosted web search), which streams
-/// mid-response as part of the current attempt rather than after it.
-pub(super) fn is_attempt_provider_native_row(message: &DisplayMessage) -> bool {
-    message.role == "tool"
-        && message.tool_data.as_ref().is_some_and(|tool| {
-            crate::message::provider_native::is_provider_native_tool_id(&tool.id)
-        })
+/// Transcript output belonging to the current provider attempt. Provider-native
+/// tools such as hosted web search also stream as part of the response.
+pub(super) fn is_streaming_attempt_output(message: &DisplayMessage) -> bool {
+    matches!(message.role.as_str(), "assistant" | "reasoning")
+        || (message.role == "tool"
+            && message.tool_data.as_ref().is_some_and(|tool| {
+                crate::message::provider_native::is_provider_native_tool_id(&tool.id)
+            }))
 }
 
 fn stored_message_visible_text(message: &crate::session::StoredMessage) -> String {
@@ -429,16 +430,11 @@ impl App {
             return;
         }
         let is_tool = message.role == "tool";
-        // Track the trailing run of assistant messages so a provider
-        // RetryRollback can remove exactly the current attempt's committed
-        // output. Any non-assistant message (user/tool/system) is a fence: it
-        // proves earlier assistant messages belong to completed work.
-        // Provider-native tool rows (hosted web search) are emitted mid-stream
-        // by the same attempt, so they count as attempt output, not a fence.
-        if message.role == "assistant" || is_attempt_provider_native_row(&message) {
-            self.attempt_committed_assistant_messages += 1;
+        // User messages and completed local tool results fence off prior work.
+        if is_streaming_attempt_output(&message) {
+            self.attempt_committed_rows += 1;
         } else {
-            self.attempt_committed_assistant_messages = 0;
+            self.attempt_committed_rows = 0;
         }
         // Maintain the cached display-message counters incrementally for this
         // single append, then bump the version without a full O(M) rescan.
@@ -479,7 +475,7 @@ impl App {
         self.display_messages = messages;
         self.unseen_chat_messages = 0;
         self.transcript_view = None;
-        self.attempt_committed_assistant_messages = 0;
+        self.attempt_committed_rows = 0;
         self.sync_compacted_history_lazy_from_display_messages();
         self.bump_display_messages_version();
         self.note_runtime_memory_event_force("display_messages_replaced", "display_history_reset");
@@ -851,6 +847,13 @@ impl App {
     pub(super) fn remove_display_message(&mut self, idx: usize) -> Option<DisplayMessage> {
         if idx < self.display_messages.len() {
             let removed = self.display_messages.remove(idx);
+            self.turn_reasoning_traces.retain_mut(|trace| {
+                if *trace == idx {
+                    return false;
+                }
+                *trace -= usize::from(*trace > idx);
+                true
+            });
             self.bump_display_messages_version();
             Some(removed)
         } else {

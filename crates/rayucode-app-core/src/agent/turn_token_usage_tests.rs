@@ -23,6 +23,7 @@ fn assistant_message(
             cache_read_input_tokens,
             cache_creation_input_tokens,
             rayu_credits: None,
+            ..Default::default()
         }),
     }
 }

@@ -32,6 +32,7 @@ pub(super) struct TurnFooterState {
     round: Usage,
     last: Option<TurnFooterSnapshot>,
     finished_for: Option<Instant>,
+    failed_metrics: Option<String>,
     round_start_tps: (u64, Duration),
 }
 
@@ -80,6 +81,18 @@ impl App {
         let Some(started) = self.turn_footer.started else {
             return false;
         };
+        if self.turn_footer.finished_for == Some(started) {
+            self.turn_footer.finished_for = None;
+            self.turn_footer.last = None;
+            if let Some(metrics) = self.turn_footer.failed_metrics.take()
+                && let Some(index) = self
+                    .display_messages
+                    .iter()
+                    .rposition(|message| message.is_turn_metrics() && message.content == metrics)
+            {
+                self.remove_display_message(index);
+            }
+        }
         self.visible_turn_started = Some(started);
         self.streaming.response_output.reset();
         self.rollback_turn_footer_round();
@@ -117,11 +130,13 @@ impl App {
     }
 
     pub(super) fn finish_turn_footer(&mut self, outcome: TurnFooterOutcome) {
+        self.sync_turn_footer_round();
         let started = self.turn_footer_started();
         if started.is_some() && self.turn_footer.finished_for == started {
             return;
         }
         self.turn_footer.finished_for = started;
+        self.turn_footer.failed_metrics = None;
         let mut snapshot = self.current_turn_footer();
         snapshot.outcome = outcome;
         self.turn_footer.last = Some(snapshot);
@@ -132,15 +147,22 @@ impl App {
             self.streaming.streaming_cache_creation_tokens,
         ));
         if !fields.is_empty() {
-            self.push_display_message(DisplayMessage::turn_metrics(fields.join(" · ")));
+            let metrics = fields.join(" · ");
+            if outcome == TurnFooterOutcome::Failed {
+                self.turn_footer.failed_metrics = Some(metrics.clone());
+            }
+            self.push_display_message(DisplayMessage::turn_metrics(metrics));
         }
     }
 
     pub(super) fn restore_turn_footer(&mut self, messages: &[DisplayMessage]) {
+        self.turn_footer.failed_metrics = None;
         self.turn_footer.last = messages
             .iter()
             .rev()
-            .find_map(DisplayMessage::response_stats)
+            .take_while(|message| message.role != "user")
+            .find(|message| message.role == "assistant")
+            .and_then(DisplayMessage::response_stats)
             .map(|stats| TurnFooterSnapshot::from_response_stats(&stats));
     }
 }
@@ -207,5 +229,70 @@ mod tests {
         assert_eq!(snapshot.input_tokens, Some(4_000));
         assert!(snapshot.elapsed.is_none());
         assert!(snapshot.output_tps.is_none());
+    }
+
+    #[test]
+    fn turn_footer_replaces_failed_attempt_after_successful_retry() {
+        let mut app = super::super::tests::create_test_app();
+        let started = Instant::now() - Duration::from_secs(30);
+        app.visible_turn_started = Some(started);
+        app.record_turn_footer_usage(Some(600), Some(70));
+        app.advance_turn_footer_round();
+        app.record_turn_footer_usage(Some(900), Some(80));
+        app.finish_turn_footer(TurnFooterOutcome::Failed);
+        assert_eq!(
+            app.pinned_turn_footer().unwrap().outcome,
+            TurnFooterOutcome::Failed
+        );
+        app.push_display_message(DisplayMessage::system("Retrying"));
+        app.visible_turn_started = None;
+
+        assert!(app.resume_turn_footer_retry());
+        assert_eq!(app.visible_turn_started, Some(started));
+        app.record_turn_footer_usage(Some(400), Some(30));
+        app.streaming.streaming_rayu_credits.sync_turn_total(3.75);
+        app.push_display_message(DisplayMessage::assistant("Recovered"));
+        app.finish_turn_footer(TurnFooterOutcome::Completed);
+        app.finish_turn_footer(TurnFooterOutcome::Completed);
+
+        let completed = app.pinned_turn_footer().unwrap();
+        assert_eq!(completed.outcome, TurnFooterOutcome::Completed);
+        assert_eq!(completed.input_tokens, Some(1_000));
+        assert_eq!(completed.output_tokens, Some(100));
+        assert_eq!(completed.credits, Some(3.75));
+        assert_eq!(
+            app.display_messages
+                .iter()
+                .filter(|msg| msg.is_turn_metrics())
+                .count(),
+            1
+        );
+        assert!(app.display_messages.last().unwrap().is_turn_metrics());
+    }
+
+    #[test]
+    fn turn_footer_does_not_restore_an_earlier_turns_usage_for_an_unmetered_reply() {
+        let mut app = super::super::tests::create_test_app();
+        let charged = DisplayMessage::assistant("charged").with_response_stats(Some(
+            rayucode_session_types::ResponseStats {
+                rayu_credits: Some(2.5),
+                input_tokens: Some(100),
+                ..Default::default()
+            },
+        ));
+        app.replace_display_messages(vec![
+            DisplayMessage::user("first"),
+            charged,
+            DisplayMessage::user("next"),
+            DisplayMessage::assistant("unmetered"),
+        ]);
+        assert!(app.pinned_turn_footer().is_none());
+        assert_eq!(
+            app.display_messages[1]
+                .response_stats()
+                .unwrap()
+                .rayu_credits,
+            Some(2.5)
+        );
     }
 }

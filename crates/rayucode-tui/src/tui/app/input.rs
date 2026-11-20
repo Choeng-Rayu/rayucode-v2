@@ -3826,8 +3826,7 @@ impl App {
 
     /// Discard all client-side render state for the current streaming attempt:
     /// the live streaming buffer, in-progress tool calls, thinking-line state,
-    /// and any assistant transcript messages that were already committed
-    /// mid-attempt at tool-call boundaries.
+    /// and any output or reasoning committed to the transcript mid-attempt.
     ///
     /// Used when the provider reports a `RetryRollback`: a transient transport
     /// fault interrupted the response mid-stream and the request is being
@@ -3844,24 +3843,20 @@ impl App {
         self.thinking_prefix_emitted = false;
         self.thinking_buffer.clear();
         self.thinking_start = None;
-        // Assistant text committed to the transcript during this attempt (a
-        // ToolStart boundary commits the pending streamed text) must also go;
-        // the retry re-streams the entire response. `push_display_message`
-        // counts the trailing run of assistant messages and resets on any
-        // user/tool/system fence, so this removes exactly the current
-        // attempt's committed segments and never touches earlier turns.
-        let to_remove = self.attempt_committed_assistant_messages;
+        let to_remove = self.attempt_committed_rows;
         for _ in 0..to_remove {
-            if self.display_messages.last().is_some_and(|m| {
-                m.role == "assistant" || super::state_ui_messages::is_attempt_provider_native_row(m)
-            }) {
+            if self
+                .display_messages
+                .last()
+                .is_some_and(super::state_ui_messages::is_streaming_attempt_output)
+            {
                 let idx = self.display_messages.len() - 1;
                 self.remove_display_message(idx);
             } else {
                 break;
             }
         }
-        self.attempt_committed_assistant_messages = 0;
+        self.attempt_committed_rows = 0;
     }
 
     pub(super) fn take_streaming_text(&mut self) -> String {

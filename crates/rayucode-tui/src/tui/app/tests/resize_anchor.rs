@@ -46,6 +46,37 @@ fn top_token(chat: &str) -> Option<String> {
 }
 
 #[test]
+fn transcript_view_home_jumps_from_the_followed_tail_to_the_first_row() {
+    let _lock = scroll_render_test_lock();
+    let mut app = anchored_scroll_test_app();
+    app.set_input_for_test("draft");
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(34, 16)).unwrap();
+    render_and_snap(&app, &mut terminal);
+    app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    render_and_snap(&app, &mut terminal);
+    let tail = crate::tui::ui::last_resolved_chat_scroll();
+    assert!(tail > 1);
+    assert!(!app.auto_scroll_paused);
+
+    app.handle_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(crate::tui::ui::last_resolved_chat_scroll(), 0);
+    assert_eq!(
+        top_token(&anchored_chat_area(&terminal)).as_deref(),
+        Some("TOKEN000")
+    );
+    assert!(app.auto_scroll_paused);
+
+    app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+    render_and_snap(&app, &mut terminal);
+    assert_eq!(crate::tui::ui::last_resolved_chat_scroll(), tail);
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.input, "draft");
+    assert!(!app.auto_scroll_paused);
+}
+
+#[test]
 fn transcript_view_search_is_literal_and_leaves_draft_and_reader_position_intact() {
     let _lock = scroll_render_test_lock();
     let mut app = anchored_scroll_test_app();
