@@ -31,6 +31,8 @@ impl App {
             }
         }
         self.reasoning_streaming = true;
+        self.reasoning_region_started =
+            Some(self.thinking_start.unwrap_or_else(std::time::Instant::now));
         self.reasoning_pending_line.clear();
         self.reasoning_partial_len = 0;
         // Remember where this reasoning block starts in the stream so `current`
@@ -110,6 +112,12 @@ impl App {
                 .push_str(&rayucode_tui_markdown::reasoning_line_markup(&pending));
         }
         self.reasoning_streaming = false;
+        let duration = self.reasoning_region_duration.take().or_else(|| {
+            self.reasoning_region_started
+                .take()
+                .map(|start| start.elapsed().as_secs_f32())
+        });
+        self.reasoning_region_started = None;
 
         // In `current` mode, reasoning is ephemeral: it is never written to the
         // persistent transcript. The closed block is sliced out of the live
@@ -117,8 +125,11 @@ impl App {
         // the transcript flow: it never moves again (no bottom-following, no
         // hoisting), stays readable for the rest of the turn, and is removed
         // when the next user prompt starts a new turn.
-        if self.reasoning_current_mode() {
-            self.anchor_current_reasoning_block();
+        if self.reasoning_current_mode()
+            || crate::config::config().display.reasoning_display()
+                == crate::config::ReasoningDisplayMode::Compact
+        {
+            self.anchor_current_reasoning_block(duration);
             return;
         }
 
@@ -149,7 +160,7 @@ impl App {
     /// (content below it can only be appended, never inserted above), so the
     /// thought stays readable and anchored until the next user prompt removes
     /// the turn's traces.
-    pub(in crate::tui::app) fn anchor_current_reasoning_block(&mut self) {
+    pub(in crate::tui::app) fn anchor_current_reasoning_block(&mut self, duration: Option<f32>) {
         // Same hazard as `strip_reasoning_partial_tail`: this is a byte offset
         // recorded against an earlier state of the buffer, so clamping to the
         // length is not enough. `split_off` panics on a non-boundary offset, so
@@ -178,16 +189,20 @@ impl App {
                 self.push_display_message(DisplayMessage::assistant(preceding));
             }
         }
-        self.turn_reasoning_traces
-            .push(crate::tui::app::TurnReasoningTrace {
-                display_index: self.display_messages.len(),
-                // Snapshot the transcript height when this trace anchors. The trace
-                // begins life at the viewport tail; once the transcript grows a
-                // full viewport beyond this point the trace is provably off-screen
-                // (while tail-following) and can be GC'd without visible motion.
-                wrapped_lines_at_anchor: crate::tui::ui::last_total_wrapped_lines(),
-            });
-        self.push_display_message(DisplayMessage::reasoning(block));
+        if self.reasoning_current_mode() {
+            self.turn_reasoning_traces
+                .push(crate::tui::app::TurnReasoningTrace {
+                    display_index: self.display_messages.len(),
+                    // Snapshot the transcript height when this trace anchors. The trace
+                    // begins life at the viewport tail; once the transcript grows a
+                    // full viewport beyond this point the trace is provably off-screen
+                    // (while tail-following) and can be GC'd without visible motion.
+                    wrapped_lines_at_anchor: crate::tui::ui::last_total_wrapped_lines(),
+                });
+        }
+        let mut message = DisplayMessage::reasoning(block);
+        message.duration_secs = duration;
+        self.push_display_message(message);
         self.refresh_split_view_if_needed();
     }
 

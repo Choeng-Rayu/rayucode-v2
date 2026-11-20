@@ -960,8 +960,16 @@ impl BashTool {
         let mut child = command.spawn()?;
 
         let stdin_handle = child.stdin.take();
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
+        use super::bash_progress::{BashPreview, PreviewReader};
+        let preview = BashPreview::new(&ctx.tool_call_id);
+        let stdout_handle = child
+            .stdout
+            .take()
+            .map(|reader| PreviewReader::new(reader, preview.as_ref()));
+        let stderr_handle = child
+            .stderr
+            .take()
+            .map(|reader| PreviewReader::new(reader, preview.as_ref()));
 
         // Owned copies so the work can outlive this call if it is promoted to a
         // background task on timeout.
@@ -1112,6 +1120,7 @@ impl BashTool {
         let mut child = crate::platform::spawn_detached(&mut cmd)?;
         let pid = child.id();
         let shutdown_signal = ctx.graceful_shutdown_signal.clone();
+        let preview = super::bash_progress::BashPreview::new(&ctx.tool_call_id);
 
         loop {
             if let Some(status) = child.try_wait()? {
@@ -1226,6 +1235,10 @@ impl BashTool {
                     })));
             }
 
+            if let Some(preview) = &preview {
+                // This advisory read never changes the command's final output.
+                let _ = preview.sample_file(&info.output_file).await;
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }

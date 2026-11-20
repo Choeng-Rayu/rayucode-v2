@@ -347,6 +347,14 @@ pub(super) fn active_batch_progress_hash(app: &dyn TuiState) -> u64 {
     progress.completed.hash(&mut hasher);
     progress.last_completed.hash(&mut hasher);
     for subcall in &progress.subcalls {
+        let key =
+            crate::tui::core::batch_child_call_id(&progress.tool_call_id, &subcall.tool_call.id);
+        app.bash_progress(&key)
+            .map(|item| item.output_bytes)
+            .hash(&mut hasher);
+        app.tool_elapsed(&key)
+            .map(|time| time.as_secs())
+            .hash(&mut hasher);
         subcall.index.hash(&mut hasher);
         subcall.tool_call.id.hash(&mut hasher);
         subcall.tool_call.name.hash(&mut hasher);
@@ -521,32 +529,42 @@ fn prepare_active_batch_progress(
         width.saturating_sub(1) as usize,
     ));
 
-    let mut hidden_completed = 0usize;
     for subcall in &progress.subcalls {
         let (icon, icon_color) = match subcall.state {
             crate::bus::BatchSubcallState::Running => (spinner, accent),
             crate::bus::BatchSubcallState::Succeeded => {
-                hidden_completed += 1;
-                continue;
+                ("✓", rayucode_tui_style::theme::success_color())
             }
-            crate::bus::BatchSubcallState::Failed => ("✗", rgb(220, 100, 100)),
+            crate::bus::BatchSubcallState::Failed => {
+                ("✗", rayucode_tui_style::theme::error_color())
+            }
         };
-
-        lines.push(tools_ui::render_batch_subcall_line(
+        let key =
+            crate::tui::core::batch_child_call_id(&progress.tool_call_id, &subcall.tool_call.id);
+        let mut line = tools_ui::render_batch_subcall_line(
             &subcall.tool_call,
             icon,
             icon_color,
             50,
             Some(row_width),
             None,
-        ));
-    }
-
-    if hidden_completed > 0 && progress.completed < progress.total {
-        lines.push(Line::from(Span::styled(
-            format!("    … {} completed", hidden_completed),
-            Style::default().fg(dim_color()),
-        )));
+        );
+        if let Some(elapsed) = app.tool_elapsed(&key) {
+            let mut usage = format!(" · {}s", elapsed.as_secs());
+            if let Some(output) = app.bash_progress(&key) {
+                let tokens = crate::util::estimate_tokens_for_bytes(output.output_bytes as usize);
+                usage.push_str(&format!(
+                    " · ~{}",
+                    crate::util::format_approx_token_count(tokens)
+                ));
+            }
+            line = super::truncate_line_preserving_suffix_to_width(
+                &line,
+                &Line::styled(usage, Style::default().fg(dim_color())),
+                row_width,
+            );
+        }
+        lines.push(line);
     }
 
     if centered {
@@ -579,6 +597,7 @@ pub(super) fn prepare_messages(
         compact_header,
         compact_thinking: crate::config::config().display.compact_thinking,
         tool_rows: ToolRowsKey::new(app),
+        reasoning_display: crate::config::config().display.reasoning_display(),
         width,
         height,
         diff_mode: app.diff_mode(),
@@ -754,18 +773,32 @@ fn prepare_messages_inner(
     let batch_ms = batch_start.elapsed().as_secs_f64() * 1000.0;
 
     let streaming_start = Instant::now();
-    // Reasoning traces in `current` mode are anchored display messages inside
-    // the body now; no separate retained/collapsing trace section exists.
-    let reasoning_prepared = Arc::new(empty_prepared_messages());
-    let has_streaming = app.is_processing() && !app.streaming_text().is_empty();
-    let stream_prefix_blank = has_streaming
-        && !(crate::config::config().display.compact_thinking
-            && super::messages::starts_with_reasoning(app.streaming_text()))
+    let reasoning_mode = crate::config::config().display.reasoning_display();
+    let stream = app.streaming_text();
+    let live_start = app
+        .live_reasoning()
+        .map(|(start, _)| start)
+        .filter(|start| stream.is_char_boundary(*start));
+    let (answer, thinking) = live_start.map_or((stream, ""), |start| stream.split_at(start));
+    let reasoning_prepared =
+        if !thinking.is_empty() && reasoning_mode != crate::config::ReasoningDisplayMode::Off {
+            let compact = reasoning_mode == crate::config::ReasoningDisplayMode::Compact
+                && app.transcript_view().is_none();
+            Arc::new(prepare_live_reasoning(thinking, width, compact))
+        } else {
+            Arc::new(empty_prepared_messages())
+        };
+    let stream_prefix_blank = !(crate::config::config().display.compact_thinking
+        && super::messages::starts_with_reasoning(answer))
         && (!body_prepared.wrapped_lines.is_empty()
-            || !batch_progress_prepared.wrapped_lines.is_empty()
-            || !reasoning_prepared.wrapped_lines.is_empty());
-    let streaming_prepared = if has_streaming {
-        Arc::new(prepare_streaming_cached(app, width, stream_prefix_blank))
+            || !batch_progress_prepared.wrapped_lines.is_empty());
+    let streaming_prepared = if app.is_processing() && !answer.is_empty() {
+        Arc::new(prepare_streaming_cached(
+            app,
+            answer,
+            width,
+            stream_prefix_blank,
+        ))
     } else {
         Arc::new(empty_prepared_messages())
     };
@@ -899,8 +932,8 @@ fn prepare_messages_inner(
         (PreparedSectionKind::Body, body_prepared),
         (PreparedSectionKind::InlineImages, inline_images_prepared),
         (PreparedSectionKind::BatchProgress, batch_progress_prepared),
-        (PreparedSectionKind::Reasoning, reasoning_prepared),
         (PreparedSectionKind::Streaming, streaming_prepared),
+        (PreparedSectionKind::Reasoning, reasoning_prepared),
         (
             PreparedSectionKind::TodoBlockers,
             Arc::new(prepare_todo_blockers(app, width)),
@@ -1084,6 +1117,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
     let key = BodyCacheKey {
         compact_thinking: crate::config::config().display.compact_thinking,
         tool_rows: ToolRowsKey::new(app),
+        reasoning_display: crate::config::config().display.reasoning_display(),
         width,
         diff_mode: app.diff_mode(),
         // Pinning changes which tool messages participate in the transcript.
@@ -1465,24 +1499,44 @@ fn render_message_into(
     let centered = ctx.centered;
     let diff_mode = ctx.diff_mode;
     let role = msg.effective_role();
-    // The pinned band is the canonical todo presentation while enabled. Keep
-    // todo tool messages in display_messages for history/session fidelity, but
-    // omit their duplicate cards from the prepared transcript.
+    // The live task panel owns the expanded card. The transcript still
+    // carries the original completed call and its metrics.
     if role == "tool"
         && crate::config::config().display.pin_todos
+        && ctx.app.is_none_or(|app| app.transcript_view().is_none())
         && msg
             .tool_data
             .as_ref()
             .is_some_and(|tool| tools_ui::canonical_tool_name(&tool.name) == "todo")
+        && !tools_ui::tool_output_looks_failed(&msg.content)
     {
-        // Hidden messages still occupy a position in the transcript cache.
-        // Without this zero-length boundary, incremental updates compare later
-        // messages against the wrong indices and can truncate earlier content.
+        for line in messages::compact_tool_card_header(msg, width) {
+            acc.push_auto(line);
+        }
         record_message_boundary(acc, msg);
         return;
     }
     let align = default_message_alignment(role, centered);
     let expanded_tools = ctx.app.is_some_and(|app| app.transcript_view().is_some());
+    let reasoning_mode = crate::config::config().display.reasoning_display();
+    let hide_reasoning = reasoning_mode == crate::config::ReasoningDisplayMode::Off;
+    let summarize_reasoning =
+        reasoning_mode == crate::config::ReasoningDisplayMode::Compact && !expanded_tools;
+    if role == "reasoning" && hide_reasoning {
+        record_message_boundary(acc, msg);
+        return;
+    }
+    let original = msg;
+    let projected = (role == "assistant" && (hide_reasoning || summarize_reasoning))
+        .then(|| messages::project_reasoning_markdown(&msg.content, summarize_reasoning))
+        .flatten()
+        .map(|content| {
+            let mut displayed = msg.clone();
+            displayed.content = content;
+            displayed
+        });
+    let msg = projected.as_ref().unwrap_or(original);
+
     if (acc.body_has_content || !acc.lines.is_empty())
         && super::messages::needs_message_separator(msg)
     {
@@ -1593,7 +1647,11 @@ fn render_message_into(
             acc.line_copy_offsets.push(prefix_width);
         }
         crate::tui::core::PENDING_TOOL_ROLE => {
-            for line in tools_ui::pending_tool_lines(msg, width) {
+            let preview = msg
+                .tool_data
+                .as_ref()
+                .and_then(|tool| ctx.app?.bash_progress(&tool.id));
+            for line in tools_ui::pending_tool_lines(msg, width, preview) {
                 acc.push_auto(align_if_unset(line, align));
             }
         }
@@ -1701,11 +1759,21 @@ fn render_message_into(
             }
         }
         "reasoning" => {
-            let content_width = width.saturating_sub(4);
-            let cached =
-                get_cached_message_lines(msg, content_width, diff_mode, render_reasoning_message);
-            for line in cached {
-                acc.push_auto(align_if_unset(line, align));
+            acc.push_auto(align_if_unset(
+                messages::thought_header(msg.duration_secs),
+                align,
+            ));
+            if !summarize_reasoning {
+                let content_width = width.saturating_sub(4);
+                let cached = get_cached_message_lines(
+                    msg,
+                    content_width,
+                    diff_mode,
+                    render_reasoning_message,
+                );
+                for line in cached {
+                    acc.push_auto(align_if_unset(line, align));
+                }
             }
         }
         "background_task" => {
@@ -1836,7 +1904,7 @@ fn render_message_into(
         _ => {}
     }
 
-    record_message_boundary(acc, msg);
+    record_message_boundary(acc, original);
 }
 
 fn record_message_boundary(acc: &mut BodyAcc, msg: &DisplayMessage) {
@@ -2410,12 +2478,33 @@ pub(super) fn prepare_body_prepended(
     Ok(prev)
 }
 
+fn prepare_live_reasoning(text: &str, width: u16, compact: bool) -> PreparedMessages {
+    let cells = width.saturating_sub(4) as usize;
+    let rendered = markdown::render_markdown_with_width(text, Some(cells.max(1)));
+    let prepared = wrap_lines(rendered, &[], &[], &[], width.saturating_sub(3).max(1));
+    let skip = if compact {
+        prepared.wrapped_lines.len().saturating_sub(3)
+    } else {
+        0
+    };
+    let mut lines = vec![Line::styled(
+        "⣿ Thinking…",
+        Style::default().fg(dim_color()).italic(),
+    )];
+    for mut line in prepared.wrapped_lines.into_iter().skip(skip) {
+        line.alignment = Some(ratatui::layout::Alignment::Left);
+        line.spans.insert(0, Span::raw("  "));
+        lines.push(line);
+    }
+    wrap_lines(lines, &[], &[], &[], width)
+}
+
 fn prepare_streaming_cached(
     app: &dyn TuiState,
+    streaming: &str,
     width: u16,
     prefix_blank: bool,
 ) -> PreparedMessages {
-    let streaming = app.streaming_text();
     if streaming.is_empty() {
         return empty_prepared_messages();
     }
@@ -2431,7 +2520,11 @@ fn prepare_streaming_cached(
     } else {
         display_width
     };
-    let mut md_lines = app.render_streaming_markdown(content_width);
+    let mut md_lines = if streaming.len() == app.streaming_text().len() {
+        app.render_streaming_markdown(content_width)
+    } else {
+        markdown::render_markdown_with_width(streaming, Some(content_width))
+    };
     if centered {
         markdown::recenter_structured_blocks_for_display(&mut md_lines, display_width);
     }

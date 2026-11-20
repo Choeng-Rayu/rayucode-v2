@@ -331,6 +331,9 @@ pub(crate) trait RemoteEventState {
     fn get_tool_input(&self, id: &str) -> serde_json::Value;
     fn handle_tool_exec(&mut self, id: &str, name: &str);
     fn handle_tool_done(&mut self, id: &str, name: &str, output: &str) -> String;
+    fn measure_execution_clock(&self) -> bool {
+        true
+    }
     // Replays deliberately do not use wall-clock time: playback speed is arbitrary.
     fn take_tool_duration(&mut self, _id: &str) -> Option<f32> {
         None
@@ -482,6 +485,7 @@ impl RemoteConnection {
             supports_user_response: false,
             supports_server_failover: false,
             supports_turn_identity: true,
+            supports_bash_progress: true,
             id: conn.next_request_id,
             working_dir,
             selfdev,

@@ -58,6 +58,8 @@ pub enum TimelineEventKind {
         output: String,
         #[serde(default)]
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_duration_ms: Option<u64>,
     },
 
     /// Token usage update (drives context bar)
@@ -207,6 +209,7 @@ pub fn export_timeline(session: &Session) -> Vec<TimelineEvent> {
                                 name: tool_name,
                                 output: truncate_for_timeline(content),
                                 is_error: is_error.unwrap_or(false),
+                                tool_duration_ms: msg.tool_duration_ms,
                             },
                         });
                         t += duration_ms.min(100); // Small gap after tool result
@@ -477,6 +480,7 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
                 name,
                 output,
                 is_error,
+                tool_duration_ms,
             } => {
                 let id = pending_tool_ids.pop().unwrap_or_else(|| {
                     tool_id_counter += 1;
@@ -485,6 +489,7 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
                 out.push((
                     delay,
                     ReplayEvent::Server(ServerEvent::ToolDone {
+                        tool_duration_ms: *tool_duration_ms,
                         id,
                         name: name.clone(),
                         output: output.clone(),

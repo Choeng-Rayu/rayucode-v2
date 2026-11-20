@@ -958,8 +958,10 @@ impl App {
                                         self.thinking_buffer.clear();
                                         self.broadcast_debug(crate::tui::backend::DebugEvent::ThinkingEnd);
                                     }
-                                    StreamEvent::ThinkingDone { duration_secs: _ } => {
+                                    StreamEvent::ThinkingDone { duration_secs } => {
                                         if config().display.reasoning_enabled() {
+                                            self.reasoning_region_duration = (duration_secs.is_finite() && duration_secs >= 0.0)
+                                                .then_some(duration_secs as f32);
                                             // Queue the region close behind any still-buffered
                                             // reasoning so it lands exactly after the final
                                             // reasoning character reveals.
@@ -1511,7 +1513,12 @@ impl App {
                 let tool_start = Instant::now();
                 let _tool_work = crate::logging::watchdog::begin_work("turn.tool");
                 crate::logging::watchdog::set_detail(format!("tool={tool_name}"));
-                let mut tool_future = std::pin::pin!(registry.execute(&tool_name, tool_input, ctx));
+                let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+                let mut tool_future =
+                    std::pin::pin!(crate::tool::bash_progress::with_bash_progress(
+                        progress_tx,
+                        registry.execute(&tool_name, tool_input, ctx),
+                    ));
 
                 // Subscribe to bus for subagent status updates
                 let mut bus_receiver = Bus::global().subscribe();
@@ -1613,6 +1620,11 @@ impl App {
                                 _ => {}
                             }
                         }
+                        Some(crate::protocol::ServerEvent::BashProgress { update }) = progress_rx.recv() => {
+                            if self.apply_bash_progress(update.snapshot()) {
+                                status_spinner_renderer.draw_full(self, terminal)?;
+                            }
+                        }
                         // Listen for subagent/batch status updates
                         bus_event = bus_receiver.recv() => {
                             let mut needs_redraw = false;
@@ -1630,7 +1642,7 @@ impl App {
                                 }
                                 Ok(BusEvent::BatchProgress(progress)) => {
                                     if progress.session_id == self.session.id {
-                                        self.batch_progress = Some(progress);
+                                        self.update_batch_tool_activity(progress);
                                         needs_redraw = true;
                                     }
                                 }

@@ -22,6 +22,9 @@ fn recent_history_bootstrap_renders_latest_frame_without_older_transcript() {
             DisplayMessage::assistant(format!("RECENT{i:03} {}", "bounded history ".repeat(128)))
         }))
         .map(|message| crate::protocol::HistoryMessage {
+            tool_duration_ms: message
+                .duration_secs
+                .map(|secs| (secs * 1000.0).round() as u64),
             role: message.role,
             content: message.content,
             tool_calls: None,

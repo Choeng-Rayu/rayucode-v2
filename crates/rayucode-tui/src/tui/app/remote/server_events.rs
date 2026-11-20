@@ -585,7 +585,10 @@ fn handle_server_event_inner(
             app.last_stream_activity = Some(Instant::now());
             eager_stream_redraw
         }
-        ServerEvent::ReasoningDone { .. } => {
+        ServerEvent::ReasoningDone { duration_secs } => {
+            app.reasoning_region_duration = duration_secs
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .map(|value| value as f32);
             app.thinking_start = None;
             // Queue the region close behind any still-buffered reasoning so it
             // lands exactly after the final reasoning character reveals.
@@ -670,6 +673,9 @@ fn handle_server_event_inner(
                 app.streaming_tool_calls.push(tool_call.clone());
             }
             app.show_tool_activity(&tool_call, crate::tui::core::ToolActivity::Running);
+            if !remote.measure_execution_clock() {
+                app.tool_execution_starts.remove(&id);
+            }
             remote.handle_tool_exec(&id, &name);
             app.observe_tool_call(&tool_call);
             eager_stream_redraw
@@ -681,7 +687,17 @@ fn handle_server_event_inner(
             name,
             output,
             error,
-        } => super::server_event_handlers::handle_tool_done(app, remote, id, name, output, error),
+            tool_duration_ms,
+        } => super::server_event_handlers::handle_tool_done(
+            app,
+            remote,
+            id,
+            name,
+            output,
+            error,
+            tool_duration_ms,
+        ),
+        ServerEvent::BashProgress { update } => app.apply_bash_progress(update.snapshot()),
         ServerEvent::GeneratedImage {
             id,
             path,
@@ -697,7 +713,7 @@ fn handle_server_event_inner(
             revised_prompt,
         ),
         ServerEvent::BatchProgress { progress } => {
-            app.batch_progress = Some(progress);
+            app.update_batch_tool_activity(progress);
             false
         }
         ServerEvent::KvCacheMiss {
@@ -1806,6 +1822,9 @@ fn handle_server_event_inner(
                     prefix
                         .into_iter()
                         .map(|msg| crate::protocol::HistoryMessage {
+                            tool_duration_ms: msg
+                                .duration_secs
+                                .map(|secs| (secs * 1000.0).round() as u64),
                             response_stats: None,
                             role: msg.role,
                             content: msg.content,
@@ -2288,7 +2307,7 @@ fn handle_server_event_inner(
                                 role: msg.role,
                                 content: msg.content,
                                 tool_calls: msg.tool_calls.unwrap_or_default(),
-                                duration_secs: None,
+                                duration_secs: msg.tool_duration_ms.map(|ms| ms as f32 / 1000.0),
                                 title: None,
                                 tool_data: msg.tool_data,
                             })
@@ -2493,7 +2512,7 @@ fn handle_server_event_inner(
                     role: msg.role,
                     content: msg.content,
                     tool_calls: msg.tool_calls.unwrap_or_default(),
-                    duration_secs: None,
+                    duration_secs: msg.tool_duration_ms.map(|ms| ms as f32 / 1000.0),
                     title: None,
                     tool_data: msg.tool_data,
                 })

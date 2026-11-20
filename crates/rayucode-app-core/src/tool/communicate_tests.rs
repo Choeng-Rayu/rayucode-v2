@@ -220,6 +220,7 @@ fn in_flight_count_excludes_foreign_queued_session() {
 fn latest_assistant_report_uses_last_non_empty_assistant_message() {
     let messages = vec![
         HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: " earlier ".to_string(),
@@ -227,6 +228,7 @@ fn latest_assistant_report_uses_last_non_empty_assistant_message() {
             tool_data: None,
         },
         HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "user".to_string(),
             content: "ignored".to_string(),
@@ -234,6 +236,7 @@ fn latest_assistant_report_uses_last_non_empty_assistant_message() {
             tool_data: None,
         },
         HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: " final report ".to_string(),
@@ -413,6 +416,7 @@ impl RawClient {
             supports_user_response: false,
             supports_server_failover: false,
             supports_turn_identity: false,
+            supports_bash_progress: false,
             id,
             working_dir: Some(working_dir.display().to_string()),
             selfdev: None,

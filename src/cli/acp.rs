@@ -925,6 +925,7 @@ impl AcpRuntime {
                 supports_user_response: false,
                 supports_server_failover: true,
                 supports_turn_identity: false,
+                supports_bash_progress: false,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: subscribe_id,
@@ -1004,6 +1005,7 @@ impl AcpRuntime {
                 supports_user_response: false,
                 supports_server_failover: true,
                 supports_turn_identity: false,
+                supports_bash_progress: false,
                 crash_on_disconnect: false,
                 continue_on_disconnect: false,
                 id: resume_id,
@@ -1686,6 +1688,7 @@ impl EventMapper {
                 name,
                 output,
                 error,
+                ..
             } => vec![json!({
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": id,

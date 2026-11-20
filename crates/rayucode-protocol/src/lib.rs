@@ -265,11 +265,57 @@ impl<'a> From<&'a HistoryMessage> for HistoryMessageRef<'a> {
     }
 }
 
+/// Latest observed foreground Bash output, scoped by the enclosing turn event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BashProgress {
+    pub call_id: String,
+    pub elapsed_ms: u64,
+    pub output_bytes: u64,
+    pub tail: String,
+}
+
+/// A queued progress event shares its latest sample with the producer. Slow
+/// transport drains therefore retain one event and one bounded tail per call.
+#[derive(Clone)]
+pub struct BashProgressUpdate(pub std::sync::Arc<std::sync::Mutex<BashProgress>>);
+
+impl std::fmt::Debug for BashProgressUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let update = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        f.debug_struct("BashProgressUpdate")
+            .field("call_id", &update.call_id)
+            .field("elapsed_ms", &update.elapsed_ms)
+            .field("output_bytes", &update.output_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BashProgressUpdate {
+    pub fn snapshot(&self) -> BashProgress {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Serialize for BashProgressUpdate {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.snapshot().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BashProgressUpdate {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        BashProgress::deserialize(deserializer)
+            .map(|progress| Self(std::sync::Arc::new(std::sync::Mutex::new(progress))))
+    }
+}
+
 /// A message in conversation history (for sync)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_stats: Option<rayucode_session_types::ResponseStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
     pub role: String,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -86,6 +86,7 @@ impl Client {
             supports_user_response: false,
             supports_server_failover: false,
             supports_turn_identity: false,
+            supports_bash_progress: false,
             id,
             working_dir: Some(working_dir),
             selfdev,

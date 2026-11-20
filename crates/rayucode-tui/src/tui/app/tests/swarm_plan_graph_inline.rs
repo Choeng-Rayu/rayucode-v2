@@ -522,6 +522,7 @@ fn history_event_for_session_with_messages(
 
 fn user_history_message(content: &str) -> crate::protocol::HistoryMessage {
     crate::protocol::HistoryMessage {
+        tool_duration_ms: None,
         response_stats: None,
         role: "user".to_string(),
         content: content.to_string(),

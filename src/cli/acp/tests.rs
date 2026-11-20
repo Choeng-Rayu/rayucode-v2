@@ -202,6 +202,7 @@ fn event_mapper_maps_tool_lifecycle() {
     assert_eq!(input[0]["rawInput"]["command"], "true");
 
     let done = mapper.map_event(ServerEvent::ToolDone {
+        tool_duration_ms: None,
         id: "tool1".to_string(),
         name: "bash".to_string(),
         output: "ok".to_string(),

@@ -157,7 +157,6 @@ fn preview_renders_pinned_todos_global_prompt_numbers_and_hides_todo_tool_cards(
     assert!(!text.contains("DUPLICATE_TODO_TOOL_CARD"), "{text}");
     // 60 visible prompts after 100 hidden ones: the last is numbered 160.
     assert!(text.contains("160›"), "{text}");
-    // Pinned todos sit at the top of the preview content, under the sticky prompt.
     let rows: Vec<String> = text
         .chars()
         .collect::<Vec<_>>()
@@ -167,14 +166,10 @@ fn preview_renders_pinned_todos_global_prompt_numbers_and_hides_todo_tool_cards(
     let todo_row = rows
         .iter()
         .position(|row| row.contains("PINNED_PREVIEW_TASK"))
-        .expect("todo row");
-    let header_height = crate::tui::ui::header::build_preview_header(
-        picker.selected_session().expect("selected session"),
-        70,
-    )
-    .len();
+        .unwrap();
+    let last_prompt = rows.iter().position(|row| row.contains("160›")).unwrap();
     assert!(
-        todo_row <= header_height + 4,
-        "todo band should be pinned at top, row {todo_row}:\n{text}"
+        todo_row > last_prompt,
+        "task panel belongs below the transcript:\n{text}"
     );
 }

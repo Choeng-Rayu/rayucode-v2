@@ -371,6 +371,7 @@ impl WsTestClient {
             supports_user_response: false,
             supports_server_failover: false,
             supports_turn_identity: false,
+            supports_bash_progress: false,
             crash_on_disconnect: false,
             continue_on_disconnect: false,
             id,

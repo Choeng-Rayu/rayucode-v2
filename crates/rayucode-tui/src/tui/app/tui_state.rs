@@ -745,6 +745,20 @@ impl crate::tui::TuiState for App {
             .map(|_| self.idle_hibernation.notice.as_str())
     }
 
+    fn live_reasoning(&self) -> Option<(usize, std::time::Duration)> {
+        if !self.reasoning_streaming {
+            return None;
+        }
+        Some((
+            self.reasoning_block_start?,
+            self.reasoning_region_started?.elapsed(),
+        ))
+    }
+
+    fn bash_progress(&self, id: &str) -> Option<&crate::protocol::BashProgress> {
+        self.bash_progress.get(id)
+    }
+
     fn tool_elapsed(&self, id: &str) -> Option<std::time::Duration> {
         self.tool_execution_starts
             .get(id)

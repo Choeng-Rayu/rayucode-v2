@@ -713,6 +713,15 @@ pub trait TuiState {
         None
     }
     // ---- Transcript ----
+    /// Byte offset and elapsed time for the currently visible reasoning block.
+    fn live_reasoning(&self) -> Option<(usize, std::time::Duration)> {
+        None
+    }
+
+    fn bash_progress(&self, _id: &str) -> Option<&crate::protocol::BashProgress> {
+        None
+    }
+
     fn tool_elapsed(&self, _id: &str) -> Option<std::time::Duration> {
         None
     }

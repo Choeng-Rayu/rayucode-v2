@@ -158,6 +158,7 @@ fn test_tool_events() {
         TimelineEvent {
             t: 500,
             kind: TimelineEventKind::ToolDone {
+                tool_duration_ms: None,
                 name: "file_read".to_string(),
                 output: "fn main() {}".to_string(),
                 is_error: false,
@@ -451,6 +452,7 @@ fn test_tool_ids_match_between_start_and_done() {
         TimelineEvent {
             t: 500,
             kind: TimelineEventKind::ToolDone {
+                tool_duration_ms: None,
                 name: "file_read".to_string(),
                 output: "fn main() {}".to_string(),
                 is_error: false,
@@ -499,6 +501,7 @@ fn test_batch_tool_input_preserved() {
             TimelineEvent {
                 t: 1000,
                 kind: TimelineEventKind::ToolDone {
+                    tool_duration_ms: None,
                     name: "batch".to_string(),
                     output: "--- [1] file_read ---\nok\n--- [2] file_read ---\nok\n--- [3] file_grep ---\nok".to_string(),
                     is_error: false,
@@ -568,6 +571,7 @@ fn test_auto_edit_compresses_tool_spans() {
         TimelineEvent {
             t: 12000,
             kind: TimelineEventKind::ToolDone {
+                tool_duration_ms: None,
                 name: "file_read".into(),
                 output: "ok".into(),
                 is_error: false,
@@ -631,6 +635,7 @@ fn test_auto_edit_compresses_post_tool_idle_gap() {
         TimelineEvent {
             t: 2500,
             kind: TimelineEventKind::ToolDone {
+                tool_duration_ms: None,
                 name: "selfdev".into(),
                 output: "Reload initiated. Process restarting...".into(),
                 is_error: false,

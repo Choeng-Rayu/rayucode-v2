@@ -500,6 +500,7 @@ fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming
             id: 2,
             session_id: "session_rewind_preview".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "user".to_string(),
                 content: "first message kept by the rewind".to_string(),
@@ -617,6 +618,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
             id: 3,
             session_id: "session_midstream_dup".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "user".to_string(),
                 content: "truncated payload from another client's rewind".to_string(),
@@ -706,6 +708,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
                 id: 3,
                 session_id: "session_midstream_dup".to_string(),
                 messages: vec![crate::protocol::HistoryMessage {
+                    tool_duration_ms: None,
                     response_stats: None,
                     role: "user".to_string(),
                     content: "truncated payload from another client's rewind".to_string(),
@@ -815,6 +818,7 @@ fn test_handle_server_event_history_same_session_rewind_then_late_done_does_not_
             id: 2,
             session_id: "session_rewind_done_race".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "user".to_string(),
                 content: "first message kept by the rewind".to_string(),
@@ -1723,7 +1727,10 @@ fn test_reload_recovery_turn_runs_before_user_queued_followups() {
     ));
 
     rt.block_on(remote::process_remote_followups(&mut app, &mut remote));
-    assert!(app.is_processing, "recovery continuation should start a turn");
+    assert!(
+        app.is_processing,
+        "recovery continuation should start a turn"
+    );
     assert!(app.hidden_queued_system_messages.is_empty());
     assert_eq!(
         app.queued_messages(),

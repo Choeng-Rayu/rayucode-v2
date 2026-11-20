@@ -608,7 +608,9 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
         rendered
     );
     assert!(
-        rendered.iter().any(|line| line.contains("… 1 completed")),
+        rendered
+            .iter()
+            .any(|line| line.contains("✓") && line.contains("read")),
         "missing completed subcall summary in {:?}",
         rendered
     );
@@ -1219,9 +1221,9 @@ fn with_compact_thinking_config(compact: bool, f: impl FnOnce()) {
     std::fs::write(
         home.path().join("config.toml"),
         if compact {
-            "[display]\ncompact_thinking = true\n"
+            "[display]\nreasoning_display = \"full\"\ncompact_thinking = true\n"
         } else {
-            "[display]\n"
+            "[display]\nreasoning_display = \"full\"\n"
         },
     )
     .unwrap();
@@ -1278,7 +1280,11 @@ fn assert_thinking_tool_adjacency(embedded_assistant: bool, compact: bool) {
         .iter()
         .position(|row| row.contains("Before thinking"))
         .unwrap();
-    assert_eq!(thinking - before, if compact { 1 } else { 2 }, "{rows:?}");
+    assert_eq!(
+        thinking - before,
+        if compact { 1 } else { 2 } + usize::from(!embedded_assistant),
+        "{rows:?}"
+    );
     assert!(rows[thinking + 1].contains("After thinking"), "{rows:?}");
     let answer = rows
         .iter()

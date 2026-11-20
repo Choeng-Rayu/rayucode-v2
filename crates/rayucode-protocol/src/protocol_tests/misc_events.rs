@@ -403,6 +403,7 @@ fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result
         supports_user_response: true,
         supports_server_failover: false,
         supports_turn_identity: false,
+        supports_bash_progress: false,
         id: 89,
         working_dir: Some("/tmp/project".to_string()),
         selfdev: Some(true),
@@ -425,6 +426,7 @@ fn test_subscribe_request_roundtrip_preserves_session_takeover_flags() -> Result
         supports_user_response,
         supports_server_failover: _,
         supports_turn_identity: _,
+        supports_bash_progress: _,
         id,
         working_dir,
         selfdev,
@@ -469,6 +471,7 @@ fn test_subscribe_request_defaults_optional_flags() -> Result<()> {
         supports_user_response,
         supports_server_failover: _,
         supports_turn_identity: _,
+        supports_bash_progress: _,
         id,
         working_dir,
         selfdev,
@@ -761,7 +764,13 @@ fn context_cap_wire_roundtrip() -> Result<()> {
 #[test]
 fn subscribe_and_resume_client_name_is_optional_and_compatible() {
     let old: Request = serde_json::from_str(r#"{"type":"subscribe","id":1}"#).unwrap();
-    assert!(matches!(old, Request::Subscribe { client_name: None, .. }));
+    assert!(matches!(
+        old,
+        Request::Subscribe {
+            client_name: None,
+            ..
+        }
+    ));
     let new: Request =
         serde_json::from_str(r#"{"type":"subscribe","id":1,"client_name":"rayu-ios/1.0"}"#)
             .unwrap();
@@ -772,7 +781,13 @@ fn subscribe_and_resume_client_name_is_optional_and_compatible() {
         r#"{"type":"resume_session","id":2,"session_id":"s","client_name":"rayu-ios/1.0"}"#,
     )
     .unwrap();
-    assert!(matches!(resume, Request::ResumeSession { client_name: Some(_), .. }));
+    assert!(matches!(
+        resume,
+        Request::ResumeSession {
+            client_name: Some(_),
+            ..
+        }
+    ));
     let json = serde_json::to_string(&old).unwrap();
     assert!(!json.contains("client_name"));
 }

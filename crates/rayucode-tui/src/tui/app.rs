@@ -1125,6 +1125,7 @@ pub struct App {
     // Tool calls detected during streaming (shown in real-time with details)
     streaming_tool_calls: Vec<ToolCall>,
     tool_execution_starts: std::collections::HashMap<String, Instant>,
+    bash_progress: std::collections::HashMap<String, crate::protocol::BashProgress>,
     // Assistant transcript messages committed during the current provider
     // attempt (at ToolStart boundaries). A RetryRollback removes exactly this
     // many trailing assistant messages; reset whenever a new API attempt's
@@ -1175,6 +1176,8 @@ pub struct App {
     // closed reasoning block back out of the stream in place, keeping any answer
     // text that preceded it in order.
     reasoning_block_start: Option<usize>,
+    reasoning_region_started: Option<Instant>,
+    reasoning_region_duration: Option<f32>,
     // Reasoning traces anchored during the current turn (`current`
     // reasoning-display mode). Each entry tracks the display index plus the
     // transcript's wrapped-line total when it anchored, so stale traces can be
@@ -1537,6 +1540,8 @@ pub struct App {
     /// re-serializing when nothing changed between ticks.
     #[allow(dead_code)]
     pinned_todos_rendered_hash: u64,
+    pinned_todo_session: Option<String>,
+    pinned_todo_completions: std::collections::HashMap<String, (bool, Option<Instant>)>,
     /// Last time the pinned todo band re-read todos from disk (1s throttle).
     #[allow(dead_code)]
     pinned_todos_checked_at: Option<Instant>,

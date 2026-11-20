@@ -18,17 +18,17 @@ fn identity_transport_negotiation_preserves_legacy_payload_shape() {
         event: Box::new(ServerEvent::Done { id: 99 }),
     };
     assert!(matches!(
-        event_for_transport(wrapped.clone(), false),
+        event_for_transport(wrapped.clone(), false, false),
         Some(ServerEvent::Done { id: 99 })
     ));
     assert!(matches!(
-        event_for_transport(wrapped, true),
+        event_for_transport(wrapped, true, false),
         Some(ServerEvent::TurnEvent { .. })
     ));
     let started = ServerEvent::TurnStarted { identity };
-    assert!(event_for_transport(started.clone(), false).is_none());
+    assert!(event_for_transport(started.clone(), false, false).is_none());
     assert!(matches!(
-        event_for_transport(started, true),
+        event_for_transport(started, true, false),
         Some(ServerEvent::TurnStarted { .. })
     ));
     assert!(
@@ -39,6 +39,7 @@ fn identity_transport_negotiation_preserves_legacy_payload_shape() {
                 turn_id: None,
                 latest_turn_id: 7
             },
+            false,
             false
         )
         .is_none()
@@ -457,6 +458,7 @@ fn subscribe_request(working_dir: Option<&str>) -> Request {
         supports_user_response: false,
         supports_server_failover: false,
         supports_turn_identity: false,
+        supports_bash_progress: false,
         id: 1,
         working_dir: working_dir.map(str::to_string),
         selfdev: None,

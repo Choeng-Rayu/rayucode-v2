@@ -167,9 +167,77 @@ impl App {
         true
     }
 
+    pub(super) fn update_batch_tool_activity(&mut self, progress: crate::bus::BatchProgress) {
+        for child in &progress.subcalls {
+            let id =
+                crate::tui::core::batch_child_call_id(&progress.tool_call_id, &child.tool_call.id);
+            if matches!(child.state, crate::bus::BatchSubcallState::Running) {
+                self.tool_execution_starts
+                    .entry(id)
+                    .or_insert_with(std::time::Instant::now);
+            } else {
+                self.tool_execution_starts.remove(&id);
+                self.bash_progress.remove(&id);
+            }
+        }
+        self.batch_progress = Some(progress);
+    }
+
+    pub(super) fn apply_bash_progress(&mut self, progress: crate::protocol::BashProgress) -> bool {
+        if !self.tool_execution_starts.contains_key(&progress.call_id)
+            && self.is_processing
+            && self
+                .remote_resume_activity
+                .as_ref()
+                .is_some_and(|activity| activity.current_tool_name.as_deref() == Some("bash"))
+            && self.streaming_tool_calls.is_empty()
+            && !self.display_messages.iter().rev().any(|row| {
+                row.tool_data
+                    .as_ref()
+                    .is_some_and(|tool| tool.id == progress.call_id)
+            })
+        {
+            let tool = ToolCall {
+                id: progress.call_id.clone(),
+                name: "bash".into(),
+                ..Default::default()
+            };
+            self.show_tool_activity(&tool, ToolActivity::Running);
+            let now = std::time::Instant::now();
+            let started = now
+                .checked_sub(std::time::Duration::from_millis(progress.elapsed_ms))
+                .unwrap_or(now);
+            self.tool_execution_starts.insert(tool.id.clone(), started);
+            self.streaming_tool_calls.push(tool);
+        }
+        if !self.tool_execution_starts.contains_key(&progress.call_id)
+            || self
+                .bash_progress
+                .get(&progress.call_id)
+                .is_some_and(|last| {
+                    progress.elapsed_ms < last.elapsed_ms
+                        || progress.output_bytes <= last.output_bytes
+                })
+        {
+            return false;
+        }
+        if let Some(index) = self.pending_tool_row(&progress.call_id)
+            && !progress.tail.is_empty()
+        {
+            // The pending row's shape and content change on output only. The
+            // viewport layers the elapsed clock over these prepared rows.
+            self.display_messages[index].title = Some(progress.output_bytes.to_string());
+            self.bump_display_messages_version_no_stats();
+        }
+        self.bash_progress
+            .insert(progress.call_id.clone(), progress);
+        true
+    }
+
     pub(super) fn clear_pending_tool_calls(&mut self) {
         self.streaming_tool_calls.clear();
         self.tool_execution_starts.clear();
+        self.bash_progress.clear();
         let len = self.display_messages.len();
         self.display_messages
             .retain(|message| message.role != PENDING_TOOL_ROLE);
@@ -204,6 +272,13 @@ impl App {
             && let Some(tool) = message.tool_data.as_ref()
         {
             let observed = self.tool_execution_starts.remove(&tool.id);
+            self.bash_progress.remove(&tool.id);
+            if tool.name == "batch" {
+                let prefix = crate::tui::core::batch_child_call_id(&tool.id, "");
+                self.tool_execution_starts
+                    .retain(|id, _| !id.starts_with(&prefix));
+                self.bash_progress.retain(|id, _| !id.starts_with(&prefix));
+            }
             if message.duration_secs.is_none() {
                 message.duration_secs = DisplayMessage::tool_duration_from_output(&message.content)
                     .or_else(|| observed.map(|start| start.elapsed().as_secs_f32()));
@@ -340,6 +415,7 @@ impl App {
         // transcript representation.
         if is_background_task_lifecycle_message(&content) {
             self.tool_execution_starts.remove(tool_call_id);
+            self.bash_progress.remove(tool_call_id);
             self.remove_display_message(idx);
             return true;
         }
@@ -1198,14 +1274,7 @@ impl App {
         };
         let display_messages = rendered_messages
             .into_iter()
-            .map(|msg| DisplayMessage {
-                role: msg.role,
-                content: msg.content,
-                tool_calls: msg.tool_calls,
-                duration_secs: None,
-                title: None,
-                tool_data: msg.tool_data,
-            })
+            .map(DisplayMessage::from_rendered_message)
             .collect();
         self.apply_compacted_history_window(
             display_messages,
@@ -1218,12 +1287,9 @@ impl App {
     }
 }
 
-/// History pages do not carry tool durations, but the already-loaded tail
-/// often learned them from live tool-finish events. Tool durations are part of
-/// the message cache hash, so dropping them made every reloaded tool row look
-/// changed: the prepend could not reuse the prepared tail and re-rendered the
-/// whole transcript on the scroll frame (hundreds of ms on long sessions), and
-/// the visible duration badges vanished. Restore them by tool call id.
+/// Older history pages can omit tool durations that the loaded tail observed
+/// live. Retain those values by call ID so the badges and prepared rows survive
+/// a prepend.
 fn carry_over_tool_durations(previous: &[DisplayMessage], incoming: &mut [DisplayMessage]) {
     let known: std::collections::HashMap<&str, f32> = previous
         .iter()
@@ -1297,6 +1363,7 @@ mod tool_activity_tests {
             );
             app.handle_server_event(
                 ServerEvent::ToolDone {
+                    tool_duration_ms: None,
                     id: "second".into(),
                     name: "bash".into(),
                     output: "completed second".into(),

@@ -25,6 +25,10 @@ impl ToolActivity {
     }
 }
 
+pub(super) fn batch_child_call_id(parent: &str, child: &str) -> String {
+    format!("{}:{parent}:{child}", parent.len())
+}
+
 /// Find the byte offset of the previous character boundary before `pos`.
 /// Returns 0 if `pos` is 0 or at the start.
 pub fn prev_char_boundary(s: &str, pos: usize) -> usize {

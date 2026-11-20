@@ -15,6 +15,9 @@ fn test_prepare_messages_renders_reasoning_role_dim_italic_without_sentinel() {
     ));
 
     let state = TestState {
+        transcript_view: Some(std::rc::Rc::new(
+            crate::tui::transcript_view::TranscriptView::new(0, false, None),
+        )),
         display_messages: vec![
             DisplayMessage::user("hi"),
             DisplayMessage::reasoning(content),
@@ -74,6 +77,9 @@ fn test_prepare_messages_renders_anchored_reasoning_message_in_flow() {
     ));
 
     let state = TestState {
+        transcript_view: Some(std::rc::Rc::new(
+            crate::tui::transcript_view::TranscriptView::new(0, false, None),
+        )),
         display_messages: vec![
             DisplayMessage::user("hi"),
             DisplayMessage::reasoning(trace),

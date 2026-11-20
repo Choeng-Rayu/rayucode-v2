@@ -1346,6 +1346,7 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
             id: 1,
             session_id: "session_from_stale_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "stale answer".to_string(),
@@ -1444,6 +1445,7 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
             id: 1,
             session_id: "session_real_server_owned".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "stale answer".to_string(),
@@ -1534,6 +1536,7 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
             id: 1,
             session_id: "session_from_ancient_server".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "ancient answer".to_string(),

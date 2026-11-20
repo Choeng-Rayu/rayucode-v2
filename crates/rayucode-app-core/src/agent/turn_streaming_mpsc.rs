@@ -580,6 +580,7 @@ impl Agent {
                                     });
                                 }
                                 let _ = event_tx.send(ServerEvent::ToolDone {
+                                    tool_duration_ms: None,
                                     id,
                                     name,
                                     output,
@@ -721,6 +722,7 @@ impl Agent {
                             .cloned()
                             .unwrap_or_default();
                         let _ = event_tx.send(ServerEvent::ToolDone {
+                            tool_duration_ms: None,
                             id: tool_use_id.clone(),
                             name: tool_name,
                             output: content.clone(),
@@ -1511,6 +1513,7 @@ impl Agent {
                     });
                     logging::warn(&error_msg);
                     let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: None,
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: error_msg.clone(),
@@ -1586,11 +1589,14 @@ impl Agent {
                 let registry_clone = self.registry.clone();
                 let tool_name_for_spawn = tc.name.clone();
                 let tool_input_for_spawn = tc.input.clone();
+                let tool_progress_tx = event_tx.clone();
                 let tool_handle =
                     crate::runtime_activity::spawn_session(&self.session.id, async move {
-                        registry_clone
-                            .execute(&tool_name_for_spawn, tool_input_for_spawn, ctx)
-                            .await
+                        crate::tool::bash_progress::with_bash_progress(
+                            tool_progress_tx,
+                            registry_clone.execute(&tool_name_for_spawn, tool_input_for_spawn, ctx),
+                        )
+                        .await
                     })
                     .ok_or_else(|| {
                         anyhow::anyhow!("Session transfer in progress; tool not accepted")
@@ -1662,6 +1668,7 @@ impl Agent {
                         Ok(output) => {
                             let output = cap_tool_output_for_history(&tc.name, output);
                             let _ = event_tx.send(ServerEvent::ToolDone {
+                                tool_duration_ms: Some(tool_start.elapsed().as_millis() as u64),
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 output: output.output.clone(),
@@ -1694,6 +1701,7 @@ impl Agent {
                         Err(e) => {
                             let error_msg = format!("Error: {}", e);
                             let _ = event_tx.send(ServerEvent::ToolDone {
+                                tool_duration_ms: Some(tool_start.elapsed().as_millis() as u64),
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 output: error_msg.clone(),
@@ -1728,6 +1736,7 @@ impl Agent {
                         reload_interrupted_tool_result(tc, tool_elapsed.as_secs_f64());
 
                     let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: Some(tool_start.elapsed().as_millis() as u64),
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: interrupted_msg.clone(),
@@ -1795,6 +1804,7 @@ impl Agent {
                     );
 
                     let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: Some(tool_start.elapsed().as_millis() as u64),
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: bg_msg.clone(),

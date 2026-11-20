@@ -163,6 +163,9 @@ pub enum Request {
         /// Accept runtime-generation and turn-scoped events. Legacy readers get flat events.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_turn_identity: bool,
+        /// Receive bounded foreground Bash progress snapshots.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_bash_progress: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         working_dir: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

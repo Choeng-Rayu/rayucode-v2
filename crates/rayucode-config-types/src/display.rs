@@ -33,8 +33,8 @@ pub struct DisplayConfig {
     /// Remove blank rows before thinking activity (default: false).
     /// Applies to retained, embedded assistant, and live-streaming reasoning.
     pub compact_thinking: bool,
-    /// How to display reasoning/thinking content (off/full/current).
-    /// When unset, falls back to `show_thinking` (true => full, false => off).
+    /// How to display reasoning/thinking content (off/compact/full/current).
+    /// When unset, falls back to `show_thinking` (true => compact, false => off).
     #[serde(
         default,
         deserialize_with = "crate::serde_lenient::lenient_optional_enum"
@@ -222,7 +222,7 @@ impl Default for DisplayConfig {
             centered: false,
             show_thinking: true,
             compact_thinking: false,
-            reasoning_display: Some(ReasoningDisplayMode::Full),
+            reasoning_display: Some(ReasoningDisplayMode::Compact),
             diagram_mode: DiagramDisplayMode::default(),
             markdown_spacing: MarkdownSpacingMode::default(),
             show_link_urls: false,
@@ -266,10 +266,10 @@ impl DisplayConfig {
 
     /// Resolve the effective reasoning display mode. Prefers the explicit
     /// `reasoning_display` field, falling back to the legacy `show_thinking`
-    /// boolean (true => Full, false => Off) when unset.
+    /// boolean (true => Compact, false => Off) when unset.
     pub fn reasoning_display(&self) -> ReasoningDisplayMode {
         self.reasoning_display.unwrap_or(if self.show_thinking {
-            ReasoningDisplayMode::Full
+            ReasoningDisplayMode::Compact
         } else {
             ReasoningDisplayMode::Off
         })
@@ -382,11 +382,11 @@ mod tests {
     fn thinking_is_shown_in_full_by_default() {
         let default = DisplayConfig::default();
         assert!(default.show_thinking);
-        assert_eq!(default.reasoning_display(), ReasoningDisplayMode::Full);
+        assert_eq!(default.reasoning_display(), ReasoningDisplayMode::Compact);
 
         let missing: DisplayConfig = serde_json::from_str("{}").expect("display config");
         assert!(missing.show_thinking);
-        assert_eq!(missing.reasoning_display(), ReasoningDisplayMode::Full);
+        assert_eq!(missing.reasoning_display(), ReasoningDisplayMode::Compact);
     }
 
     #[test]

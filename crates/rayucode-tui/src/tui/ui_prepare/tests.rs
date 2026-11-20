@@ -15,6 +15,7 @@ fn header_invalidation_discards_composed_account_quota_frames() {
         centered: false,
         compact_thinking: false,
         tool_rows: ToolRowsKey::default(),
+        reasoning_display: crate::config::ReasoningDisplayMode::Compact,
         mermaid_aspect_bucket: None,
         is_processing: false,
         streaming_text_len: 0,

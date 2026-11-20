@@ -607,6 +607,10 @@ impl StatusSpinnerRenderer {
         app: &App,
         terminal: &mut DefaultTerminal,
     ) -> Result<bool> {
+        if !app.tool_execution_starts.is_empty() || app.reasoning_streaming {
+            // Their visible transcript rows also need the activity tick.
+            return Ok(false);
+        }
         let status_symbol = status_spinner_only_symbol(app);
         if status_symbol.is_none() {
             return Ok(false);

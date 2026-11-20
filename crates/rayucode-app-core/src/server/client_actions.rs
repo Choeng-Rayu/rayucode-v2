@@ -395,6 +395,7 @@ pub(super) fn handle_run_subagent(
             Ok(output) => {
                 let output_text = output.output.clone();
                 let _ = tx.send(ServerEvent::ToolDone {
+                    tool_duration_ms: Some(duration_ms),
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: output_text,
@@ -417,6 +418,7 @@ pub(super) fn handle_run_subagent(
             Err(error) => {
                 let error_msg = format!("Error: {}", error);
                 let _ = tx.send(ServerEvent::ToolDone {
+                    tool_duration_ms: Some(duration_ms),
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: error_msg.clone(),

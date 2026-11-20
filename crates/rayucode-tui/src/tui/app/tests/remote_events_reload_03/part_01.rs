@@ -17,7 +17,10 @@ fn test_handle_server_event_service_tier_changed_mentions_next_request_when_stre
         &mut remote,
     );
 
-    assert!(redraw, "tier configuration acknowledgement must redraw immediately");
+    assert!(
+        redraw,
+        "tier configuration acknowledgement must redraw immediately"
+    );
     assert_eq!(app.remote_service_tier, Some("priority".to_string()));
     assert_eq!(
         app.status_notice(),
@@ -204,6 +207,7 @@ fn test_handle_server_event_history_with_interruption_queues_continuation() {
             id: 1,
             session_id: "ses_test_123".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "I was working on something".to_string(),
@@ -285,6 +289,7 @@ fn test_handle_server_event_history_uses_server_owned_reload_recovery_directive(
         id: 1,
         session_id: "ses_server_owned_reload".to_string(),
         messages: vec![crate::protocol::HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: "Reconnect me from server history".to_string(),
@@ -374,6 +379,7 @@ fn test_handle_server_event_history_without_interruption_does_not_queue() {
             id: 1,
             session_id: "ses_test_456".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "Normal response".to_string(),
@@ -445,6 +451,7 @@ fn test_handle_server_event_history_after_reload_reports_no_continuation_needed(
             id: 1,
             session_id: "ses_reload_done".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "assistant".to_string(),
                 content: "Finished before reload".to_string(),

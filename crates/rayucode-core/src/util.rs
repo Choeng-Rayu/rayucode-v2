@@ -25,7 +25,11 @@ pub enum ApproxTokenSeverity {
 
 /// Estimate token count using RayuCode's existing chars-per-token heuristic.
 pub fn estimate_tokens(s: &str) -> usize {
-    s.len() / APPROX_CHARS_PER_TOKEN
+    estimate_tokens_for_bytes(s.len())
+}
+
+pub fn estimate_tokens_for_bytes(bytes: usize) -> usize {
+    bytes / APPROX_CHARS_PER_TOKEN
 }
 
 /// Format a number with ASCII thousands separators.

@@ -32,6 +32,7 @@ fn old_subscribe_defaults_to_legacy_transport() {
         request,
         Request::Subscribe {
             supports_turn_identity: false,
+            supports_bash_progress: false,
             ..
         }
     ));
@@ -42,6 +43,7 @@ fn old_subscribe_defaults_to_legacy_transport() {
         request,
         Request::Subscribe {
             supports_turn_identity: true,
+            supports_bash_progress: false,
             ..
         }
     ));

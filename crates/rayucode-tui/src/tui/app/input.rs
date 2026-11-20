@@ -3837,6 +3837,8 @@ impl App {
         self.reasoning_pending_line.clear();
         self.reasoning_streaming = false;
         self.reasoning_block_start = None;
+        self.reasoning_region_started = None;
+        self.reasoning_region_duration = None;
         self.refresh_split_view_if_needed();
     }
 
@@ -3849,6 +3851,8 @@ impl App {
         self.reasoning_partial_len = 0;
         // The stream (and any block offset into it) is gone.
         self.reasoning_block_start = None;
+        self.reasoning_region_started = None;
+        self.reasoning_region_duration = None;
         self.refresh_split_view_if_needed();
         self.streaming_md_renderer.borrow_mut().reset();
         crate::tui::mermaid::clear_streaming_preview_diagram();
@@ -3915,6 +3919,8 @@ impl App {
         self.reasoning_pending_line.clear();
         self.reasoning_partial_len = 0;
         self.reasoning_block_start = None;
+        self.reasoning_region_started = None;
+        self.reasoning_region_duration = None;
         self.refresh_split_view_if_needed();
         self.streaming_md_renderer.borrow_mut().reset();
         crate::tui::mermaid::clear_streaming_preview_diagram();

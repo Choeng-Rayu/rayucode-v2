@@ -100,6 +100,7 @@ pub(in crate::tui::ui) fn tool_response(text: impl Into<String>, width: usize) -
 pub(in crate::tui::ui) fn pending_tool_lines(
     message: &DisplayMessage,
     width: u16,
+    progress: Option<&crate::protocol::BashProgress>,
 ) -> Vec<Line<'static>> {
     let Some(tool) = &message.tool_data else {
         return Vec::new();
@@ -112,11 +113,15 @@ pub(in crate::tui::ui) fn pending_tool_lines(
     };
     let cells = block.saturating_sub(1);
     let fallback = get_tool_summary_with_budget(tool, 50, Some(cells));
-    let subject = tool
-        .intent
-        .as_deref()
-        .filter(|intent| !intent.trim().is_empty())
-        .unwrap_or(&fallback);
+    let subject =
+        if (is_edit_tool_name(&tool.name) || tool_label(tool) == "Read") && !fallback.is_empty() {
+            &fallback
+        } else {
+            tool.intent
+                .as_deref()
+                .filter(|intent| !intent.trim().is_empty())
+                .unwrap_or(&fallback)
+        };
     let activity = if runs_in_background(tool) && message.content == "Running…" {
         "Starting in background…"
     } else {
@@ -126,6 +131,20 @@ pub(in crate::tui::ui) fn pending_tool_lines(
         tool_header(tool, subject, dim_color(), cells),
         tool_response(activity, cells),
     ];
+    if cells >= 22
+        && show_bash_output()
+        && let Some(progress) = progress
+    {
+        let mut tail = output_rows(&progress.tail, cells, None);
+        if tail.len() > 3 {
+            tail.drain(..tail.len() - 3);
+            if let Some(first) = tail.first_mut() {
+                let plain = super::super::line_plain_text(first);
+                *first = tool_response(plain.trim_start(), cells);
+            }
+        }
+        lines.extend(tail);
+    }
     lines.extend(codemode_preview(tool, cells));
     if centered {
         super::super::left_pad_lines_to_block_width(&mut lines, width, block);

@@ -196,6 +196,46 @@ use plan_card::{render_assistant_segments, split_plan_segments};
 /// Render a collapsed/collapsing reasoning trace ("current" mode). The content is
 /// sentinel-wrapped dim+italic markup (reasoning lines and/or a `▸ thought for Xs`
 /// summary), so it reuses the standard markdown path that styles those runs dim.
+pub(super) fn thought_header(duration_secs: Option<f32>) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        "✓ Thought",
+        Style::default().fg(rayucode_tui_style::theme::success_color()),
+    )];
+    if let Some(seconds) = duration_secs.filter(|s| s.is_finite() && *s >= 0.0) {
+        let elapsed = crate::message::Message::format_duration((seconds * 1000.0).round() as u64);
+        spans.push(Span::styled(
+            format!(" · {elapsed}"),
+            Style::default().fg(dim_color()),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// History from older sessions embeds reasoning inside assistant Markdown.
+/// Project only the marked runs and leave ordinary emphasis and prose intact.
+pub(super) fn project_reasoning_markdown(content: &str, show_header: bool) -> Option<String> {
+    if !content.contains("*\u{2063}") {
+        return None;
+    }
+    let mut projected = String::new();
+    let mut in_thought = false;
+    let mut changed = false;
+    for line in content.lines() {
+        if starts_with_reasoning(line) {
+            if !in_thought && show_header {
+                projected.push_str("✓ Thought\n");
+            }
+            in_thought = true;
+            changed = true;
+            continue;
+        }
+        in_thought &= line.trim().is_empty();
+        projected.push_str(line);
+        projected.push('\n');
+    }
+    changed.then_some(projected)
+}
+
 pub(crate) fn render_reasoning_message(
     msg: &DisplayMessage,
     width: u16,
@@ -1101,6 +1141,125 @@ pub(crate) fn render_pinned_todos_message(
     render_todos_message_with_cap(msg, width, diff_mode, false)
         .into_iter()
         .map(|line| super::truncate_line_with_ellipsis_to_width(&line, usize::from(width)))
+        .collect()
+}
+
+pub(super) fn render_compact_pinned_tasks(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: crate::config::DiffDisplayMode,
+) -> Vec<Line<'static>> {
+    let Ok(payload) = serde_json::from_str::<TodoCardPayload>(&msg.content) else {
+        return render_system_message(msg, width, diff_mode);
+    };
+    let (todos, _plan, _goals, agents, _background) = payload.into_parts();
+    if todos.is_empty() {
+        return render_pinned_todos_message(msg, width, diff_mode);
+    }
+    let completed = todos
+        .iter()
+        .filter(|todo| !crate::todo::is_incomplete_todo(todo))
+        .count();
+    let blocked = |todo: &crate::todo::TodoItem| {
+        crate::todo::todo_completely_blocked(todo)
+            || crate::todo::todo_has_external_blocker(todo)
+            || todo.blocked_by.iter().any(|id| {
+                todos
+                    .iter()
+                    .any(|other| &other.id == id && crate::todo::is_incomplete_todo(other))
+            })
+    };
+    #[derive(serde::Deserialize)]
+    struct Recency {
+        #[serde(default)]
+        recent_completed: Vec<String>,
+    }
+    let recent = serde_json::from_str::<Recency>(&msg.content)
+        .map(|payload| payload.recent_completed)
+        .unwrap_or_default();
+    let mut ordered = todos.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|todo| match todo.status.as_str() {
+        "in_progress" => 0,
+        "completed" if recent.contains(&todo.id) => 1,
+        "completed" => 4,
+        _ if blocked(todo) => 3,
+        _ => 2,
+    });
+    let cells = width.saturating_sub(1) as usize;
+    let mut lines = vec![Line::styled(
+        format!("  Tasks · {completed}/{} complete", todos.len()),
+        Style::default().fg(todo_meta_color()),
+    )];
+    let mut shown_workers = std::collections::HashSet::new();
+    for todo in ordered {
+        if todo.assigned_to.is_some() && !agents.is_empty() {
+            lines.push(render_todo_item_line(
+                todo,
+                &agents,
+                "  ",
+                cells.saturating_sub(2),
+            ));
+            if todo.status == "in_progress"
+                && !crate::todo::todo_completely_blocked(todo)
+                && let Some(worker) = todo
+                    .assigned_to
+                    .as_deref()
+                    .and_then(|owner| agents.iter().find(|worker| worker.matches(owner)))
+                && shown_workers.insert(&worker.session_id)
+            {
+                let name = worker
+                    .name
+                    .as_deref()
+                    .or_else(|| crate::id::extract_session_name(&worker.session_id))
+                    .unwrap_or("Agent");
+                let indent = format!("    {name}");
+                todo_stages::push_lane_status_lines(
+                    &mut lines,
+                    &[todo],
+                    std::slice::from_ref(worker),
+                    &indent,
+                    cells.saturating_sub(indent.width()),
+                );
+            }
+            continue;
+        }
+        let (symbol, style) = match todo.status.as_str() {
+            "completed" => (
+                "✓",
+                Style::default().fg(rayucode_tui_style::theme::success_color()),
+            ),
+            "in_progress" => ("▪", Style::default().fg(accent_color()).bold()),
+            _ if blocked(todo) => ("!", Style::default().fg(todo_warning_color())),
+            _ => ("▫", Style::default().fg(dim_color())),
+        };
+        let title = if todo.status == "completed" {
+            Style::default()
+                .fg(dim_color())
+                .add_modifier(Modifier::CROSSED_OUT)
+        } else {
+            style
+        };
+        let mut row = Line::from(vec![
+            Span::styled(format!("  {symbol} "), style),
+            Span::styled(
+                todo.content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                title,
+            ),
+        ]);
+        if blocked(todo) && crate::todo::is_incomplete_todo(todo) {
+            row.spans.push(Span::styled(
+                " · blocked",
+                Style::default().fg(todo_warning_color()),
+            ));
+        }
+        lines.push(row);
+    }
+    lines
+        .into_iter()
+        .map(|line| super::truncate_line_with_ellipsis_to_width(&line, cells))
         .collect()
 }
 
@@ -4003,6 +4162,37 @@ pub(super) fn render_expanded_tool_message(
     lines
 }
 
+pub(super) fn compact_tool_card_header(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
+    let Some(tool) = &msg.tool_data else {
+        return Vec::new();
+    };
+    let centered = markdown::center_code_blocks();
+    let block = if centered {
+        super::centered_content_block_width(width, 96)
+    } else {
+        usize::from(width)
+    };
+    let fallback = tools_ui::get_tool_summary_with_budget(tool, 50, Some(block));
+    let subject = tool.intent.as_deref().unwrap_or(&fallback);
+    let badge = tool_output_token_badge(&msg.content);
+    let usage = tools_ui::tool_usage_label(
+        &format!("~{}", badge.label),
+        msg.duration_secs,
+        &msg.content,
+    );
+    let mut lines = tools_ui::tool_header_with_metrics(
+        tool,
+        subject,
+        tools_ui::outcome_color(tools_ui::tool_output_looks_failed(&msg.content), false),
+        block.saturating_sub(1),
+        tools_ui::tool_usage_spans(usage, badge.color, msg.duration_secs, &msg.content),
+    );
+    if centered {
+        super::left_pad_lines_to_block_width(&mut lines, width, block);
+    }
+    lines
+}
+
 fn render_tool_message_mode(
     msg: &DisplayMessage,
     width: u16,
@@ -4010,13 +4200,22 @@ fn render_tool_message_mode(
     compact: bool,
     expanded: bool,
 ) -> Vec<Line<'static>> {
+    let with_header = |card| {
+        if compact {
+            let mut lines = compact_tool_card_header(msg, width);
+            lines.extend(card);
+            lines
+        } else {
+            card
+        }
+    };
     if let Some(lines) = render_scheduled_tool_message(msg, width) {
-        return lines;
+        return with_header(lines);
     }
 
     let centered = markdown::center_code_blocks();
     let mut token_badge = tool_output_token_badge(&msg.content);
-    let token_label = if compact {
+    let token_label = if compact || expanded {
         format!("~{}", token_badge.label)
     } else {
         token_badge.label.clone()
@@ -4036,21 +4235,21 @@ fn render_tool_message_mode(
         && let Some(parsed) = parse_todo_tool_output(&msg.content)
     {
         if !parsed.goal_updates.is_empty() || parsed.plan_update.is_some() {
-            return render_todo_assessment_updates(
+            return with_header(render_todo_assessment_updates(
                 parsed.plan_update.as_ref(),
                 &parsed.goal_updates,
                 width,
-            );
+            ));
         }
         // An empty todo read (the model probing the list before planning) has
         // nothing to show. Rendering the "No tasks yet" placeholder card there
         // just adds transcript noise, so collapse it to a compact line.
         if parsed.todos.is_empty() && parsed.goals.is_empty() {
-            return vec![Line::from(vec![
+            return with_header(vec![Line::from(vec![
                 Span::raw("  "),
                 Span::styled("todo", Style::default().fg(todo_meta_color())),
                 Span::styled("  no tasks", Style::default().fg(dim_color())),
-            ])];
+            ])]);
         }
         let payload = serde_json::json!({
             "todos": parsed.todos,
@@ -4058,11 +4257,11 @@ fn render_tool_message_mode(
             "goals": parsed.goals,
         })
         .to_string();
-        return render_todos_message(
+        return with_header(render_todos_message(
             &DisplayMessage::todos(payload),
             width,
             crate::config::DiffDisplayMode::Off,
-        );
+        ));
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -4116,7 +4315,7 @@ fn render_tool_message_mode(
         if centered {
             left_pad_lines_for_centered_mode(&mut lines, width);
         }
-        return lines;
+        return with_header(lines);
     }
 
     if tools_ui::is_memory_recall_tool(tc) && !tools_ui::tool_output_looks_failed(&msg.content) {
@@ -4160,7 +4359,7 @@ fn render_tool_message_mode(
             if centered {
                 left_pad_lines_for_centered_mode(&mut lines, width);
             }
-            return lines;
+            return with_header(lines);
         }
     }
 

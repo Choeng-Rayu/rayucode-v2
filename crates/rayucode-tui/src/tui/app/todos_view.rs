@@ -200,6 +200,28 @@ impl App {
         self.pinned_todos_checked_at = Some(Instant::now());
         let session_id = self.active_client_session_id().map(str::to_string);
         let (todos, plan, goals) = self.current_todo_state();
+        if self.pinned_todo_session != session_id {
+            self.pinned_todo_session = session_id.clone();
+            self.pinned_todo_completions.clear();
+        }
+        let now = Instant::now();
+        let mut last = std::mem::take(&mut self.pinned_todo_completions);
+        let mut recent = Vec::new();
+        for todo in &todos {
+            let complete = !crate::todo::is_incomplete_todo(todo);
+            let observed = match (complete, last.remove(&todo.id)) {
+                (true, Some((false, _))) => Some(now),
+                (true, Some((true, at))) => {
+                    at.filter(|at| now.duration_since(*at) < std::time::Duration::from_secs(30))
+                }
+                _ => None,
+            };
+            if observed.is_some() {
+                recent.push(todo.id.as_str());
+            }
+            self.pinned_todo_completions
+                .insert(todo.id.clone(), (complete, observed));
+        }
         if todos.is_empty() {
             if self.pinned_todos_payload.is_some() {
                 self.pinned_todos_payload = None;
@@ -210,17 +232,28 @@ impl App {
         }
         let agents = self.todo_card_agents(&todos);
         let tasks = self.todo_card_background_tasks(&todos);
+        let mut recent_hash = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&recent, &mut recent_hash);
         let next_hash = hash_todos_payload(session_id.as_deref(), &todos, &plan, &goals)
             ^ hash_todo_card_agents(&agents)
-            ^ hash_background_tasks(&tasks);
+            ^ hash_background_tasks(&tasks)
+            ^ std::hash::Hasher::finish(&recent_hash);
         if next_hash == self.pinned_todos_rendered_hash && self.pinned_todos_payload.is_some() {
             return false;
         }
         self.pinned_todos_rendered_hash = next_hash;
-        self.pinned_todos_payload = Some(with_background_tasks(
+        let payload = with_background_tasks(
             todo_card_payload_json_with_agents(&todos, &plan, &goals, &agents),
             &tasks,
-        ));
+        );
+        self.pinned_todos_payload = Some(if recent.is_empty() {
+            payload
+        } else if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&payload) {
+            value["recent_completed"] = serde_json::json!(recent);
+            value.to_string()
+        } else {
+            payload
+        });
         true
     }
 

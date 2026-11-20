@@ -112,7 +112,7 @@ impl TodoCardAgent {
         }
     }
 
-    fn matches(&self, key: &str) -> bool {
+    pub(super) fn matches(&self, key: &str) -> bool {
         let key = key.trim();
         !key.is_empty()
             && (self.session_id == key

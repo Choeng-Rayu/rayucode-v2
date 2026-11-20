@@ -45,6 +45,7 @@ fn test_remote_done_shows_footer_after_final_tool_result_without_trailing_text()
     );
     app.handle_server_event(
         crate::protocol::ServerEvent::ToolDone {
+            tool_duration_ms: None,
             id: "tool_read".to_string(),
             name: "read".to_string(),
             output: "1 fn main() {}".to_string(),
@@ -411,6 +412,7 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
             id: 1,
             session_id: "session_rewind_remote".to_string(),
             messages: vec![crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: "user".to_string(),
                 content: "hello".to_string(),

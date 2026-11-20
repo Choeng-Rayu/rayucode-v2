@@ -85,7 +85,15 @@ use subscribe_context::*;
 fn event_for_transport(
     mut event: ServerEvent,
     supports_turn_identity: bool,
+    supports_bash_progress: bool,
 ) -> Option<ServerEvent> {
+    let mut payload = &event;
+    while let ServerEvent::TurnEvent { event, .. } = payload {
+        payload = event;
+    }
+    if matches!(payload, ServerEvent::BashProgress { .. }) && !supports_bash_progress {
+        return None;
+    }
     if supports_turn_identity {
         return Some(event);
     }
@@ -346,6 +354,13 @@ pub(super) async fn handle_client(
         }
     };
 
+    let supports_bash_progress = matches!(
+        &initial_request,
+        Request::Subscribe {
+            supports_bash_progress: true,
+            ..
+        }
+    );
     let supports_turn_identity = matches!(
         &initial_request,
         Request::Subscribe {
@@ -566,7 +581,9 @@ pub(super) async fn handle_client(
                     }
                 }
             }
-            let Some(event) = event_for_transport(event, supports_turn_identity) else {
+            let Some(event) =
+                event_for_transport(event, supports_turn_identity, supports_bash_progress)
+            else {
                 continue;
             };
             let json = encode_event(&event);
@@ -1555,6 +1572,7 @@ pub(super) async fn handle_client(
                 supports_user_response: requested_user_response,
                 supports_server_failover: requested_server_failover,
                 supports_turn_identity: _,
+                supports_bash_progress: _,
                 working_dir: subscribe_working_dir,
                 selfdev,
                 target_session_id,

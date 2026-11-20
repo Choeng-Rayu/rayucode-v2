@@ -1070,6 +1070,7 @@ struct BodyCacheKey {
     centered: bool,
     compact_thinking: bool,
     tool_rows: ToolRowsKey,
+    reasoning_display: crate::config::ReasoningDisplayMode,
     /// Mermaid render geometry depends on the scoped transcript/pane aspect
     /// profile as well as width. A vertical terminal resize can change this
     /// bucket without changing `width`, so it must invalidate the prepared body.
@@ -1178,6 +1179,7 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
                     && entry.key.tool_rows == key.tool_rows
+                    && entry.key.reasoning_display == key.reasoning_display
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1203,6 +1205,7 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
                     && entry.key.tool_rows == key.tool_rows
+                    && entry.key.reasoning_display == key.reasoning_display
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1247,6 +1250,7 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
                     && entry.key.tool_rows == key.tool_rows
+                    && entry.key.reasoning_display == key.reasoning_display
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1273,6 +1277,7 @@ impl BodyCacheState {
                     && entry.key.centered == key.centered
                     && entry.key.compact_thinking == key.compact_thinking
                     && entry.key.tool_rows == key.tool_rows
+                    && entry.key.reasoning_display == key.reasoning_display
                     && entry.key.mermaid_aspect_bucket == key.mermaid_aspect_bucket
                     // Anchored inline images render inside the body, and a
                     // late-arriving image may target an already-prepared
@@ -1401,6 +1406,7 @@ struct FullPrepCacheKey {
     centered: bool,
     compact_thinking: bool,
     tool_rows: ToolRowsKey,
+    reasoning_display: crate::config::ReasoningDisplayMode,
     /// The scoped Mermaid profile can also change when pane geometry changes
     /// while the transcript rectangle stays the same.
     mermaid_aspect_bucket: Option<u16>,

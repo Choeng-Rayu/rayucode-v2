@@ -55,6 +55,10 @@ impl RemoteEventState for RemoteConnection {
 }
 
 impl RemoteEventState for ReplayRemoteState {
+    fn measure_execution_clock(&self) -> bool {
+        false
+    }
+
     fn handle_tool_start(&mut self, id: &str, name: &str) {
         self.tool_diff.handle_tool_start(id, name);
     }

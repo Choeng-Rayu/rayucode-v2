@@ -135,6 +135,7 @@ fn history_restore_renders_swarm_deliveries_as_one_row() {
             ("assistant", format!("DM from fox: {long}")),
         ] {
             messages.push(crate::protocol::HistoryMessage {
+                tool_duration_ms: None,
                 response_stats: None,
                 role: role.to_string(),
                 content,

@@ -746,6 +746,7 @@ fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
         id: 101,
         session_id: "ses_test_456".to_string(),
         messages: vec![HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: "hello".to_string(),
@@ -846,6 +847,7 @@ fn test_compacted_history_event_roundtrip() -> Result<()> {
         id: 77,
         session_id: "ses_compact_123".to_string(),
         messages: vec![HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: "older response".to_string(),
@@ -1005,6 +1007,7 @@ fn test_agent_models_session_setter_and_response_roundtrip() -> Result<()> {
 #[test]
 fn history_prefix_fingerprint_is_stable_and_streaming_consistent() {
     let message = |role: &str, content: &str| HistoryMessage {
+        tool_duration_ms: None,
         response_stats: None,
         role: role.to_string(),
         content: content.to_string(),
@@ -1034,10 +1037,9 @@ fn history_prefix_fingerprint_is_stable_and_streaming_consistent() {
 
 #[test]
 fn history_delta_fields_are_backward_compatible() {
-    let event: ServerEvent = serde_json::from_str(
-        r#"{"type":"history","id":1,"session_id":"s","messages":[]}"#,
-    )
-    .expect("legacy History without messages_base_count");
+    let event: ServerEvent =
+        serde_json::from_str(r#"{"type":"history","id":1,"session_id":"s","messages":[]}"#)
+            .expect("legacy History without messages_base_count");
     let ServerEvent::History {
         messages_base_count,
         ..
@@ -1046,4 +1048,33 @@ fn history_delta_fields_are_backward_compatible() {
         panic!("expected history");
     };
     assert_eq!(messages_base_count, None);
+}
+
+#[test]
+fn live_bash_progress_roundtrips_and_legacy_tool_done_omits_duration() {
+    let old = r#"{"type":"tool_done","id":"fixture","name":"bash","output":"done"}"#;
+    let event = serde_json::from_str::<crate::ServerEvent>(old).unwrap();
+    let crate::ServerEvent::ToolDone {
+        tool_duration_ms, ..
+    } = event
+    else {
+        panic!("expected tool_done");
+    };
+    assert_eq!(tool_duration_ms, None);
+    let progress = crate::BashProgress {
+        call_id: "fixture".into(),
+        elapsed_ms: 1_000,
+        output_bytes: 27,
+        tail: "partial 界".into(),
+    };
+    let event = crate::ServerEvent::BashProgress {
+        update: crate::BashProgressUpdate(std::sync::Arc::new(std::sync::Mutex::new(
+            progress.clone(),
+        ))),
+    };
+    let wire = serde_json::to_string(&event).unwrap();
+    let crate::ServerEvent::BashProgress { update } = serde_json::from_str(&wire).unwrap() else {
+        panic!("expected Bash progress");
+    };
+    assert_eq!(update.snapshot(), progress);
 }

@@ -6,6 +6,7 @@ fn reload_replay_history(
         id: 1,
         session_id: session_id.to_string(),
         messages: vec![crate::protocol::HistoryMessage {
+            tool_duration_ms: None,
             response_stats: None,
             role: "assistant".to_string(),
             content: "Work interrupted by reload".to_string(),
@@ -165,9 +166,7 @@ fn reload_recovery_delayed_history_after_completion_does_not_restart_turn() {
         &mut remote,
     );
     app.handle_server_event(
-        crate::protocol::ServerEvent::MessageEnd {
-            stop_reason: None,
-        },
+        crate::protocol::ServerEvent::MessageEnd { stop_reason: None },
         &mut remote,
     );
     app.handle_server_event(crate::protocol::ServerEvent::Done { id }, &mut remote);

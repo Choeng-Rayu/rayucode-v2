@@ -203,7 +203,7 @@ show_thinking = true
 #   current - show only the live reasoning; collapse it once the model commits
 #             an assistant message or runs a tool, then show the next one
 # When unset, falls back to show_thinking (true => full, false => off).
-reasoning_display = "full"
+reasoning_display = "compact"
 
 # Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
 # markdown_spacing = "compact"

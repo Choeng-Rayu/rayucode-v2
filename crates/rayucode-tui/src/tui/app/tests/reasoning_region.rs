@@ -204,8 +204,12 @@ fn strip_reasoning_lines_removes_reasoning_keeps_answer() {
     // Build content the way the streaming buffer would: reasoning lines wrapped
     // with the sentinel, then a normal answer paragraph.
     let mut content = String::new();
-    content.push_str(&rayucode_tui_markdown::reasoning_line_markup("thinking one"));
-    content.push_str(&rayucode_tui_markdown::reasoning_line_markup("thinking two"));
+    content.push_str(&rayucode_tui_markdown::reasoning_line_markup(
+        "thinking one",
+    ));
+    content.push_str(&rayucode_tui_markdown::reasoning_line_markup(
+        "thinking two",
+    ));
     content.push('\n');
     content.push_str("Here is the answer.\n");
 
@@ -219,7 +223,9 @@ fn strip_reasoning_lines_reasoning_only_becomes_empty() {
     use crate::tui::app::input::strip_reasoning_lines;
 
     let mut content = String::new();
-    content.push_str(&rayucode_tui_markdown::reasoning_line_markup("only thinking"));
+    content.push_str(&rayucode_tui_markdown::reasoning_line_markup(
+        "only thinking",
+    ));
     let stripped = strip_reasoning_lines(&content);
     assert!(stripped.trim().is_empty(), "got: {stripped:?}");
 }
@@ -497,7 +503,6 @@ fn remote_reasoning_delta_burst_is_paced_not_dumped() {
     // nothing is ever buffered, so this must pin `Current` like its sibling
     // tests do.
     with_reasoning_current_home(|| {
-
         // A large provider reasoning burst must reveal over multiple paced frames
         // (via the segment-aware StreamBuffer), not pop in all at once. This is the
         // regression test for "reasoning mode feels choppy".
@@ -598,7 +603,11 @@ fn anchored_trace_survives_tool_commit_and_answer_commit() {
 
         // Tool-only commit (no streamed answer text).
         app.commit_pending_streaming_assistant_message();
-        assert_eq!(trace_count(&app), 1, "tool commit leaves the trace anchored");
+        assert_eq!(
+            trace_count(&app),
+            1,
+            "tool commit leaves the trace anchored"
+        );
 
         // Answer commit.
         app.append_streaming_text("the final answer");
@@ -609,8 +618,7 @@ fn anchored_trace_survives_tool_commit_and_answer_commit() {
             "answer commit leaves the trace anchored"
         );
         assert!(
-            !app
-                .display_messages
+            !app.display_messages
                 .iter()
                 .any(|m| m.role == "assistant" && m.content.contains("thought")),
             "no thought-summary residue may be committed"
@@ -748,7 +756,10 @@ fn repro_reasoning_rendered_then_removed_when_turn_ends_open() {
                 .contains(rayucode_tui_markdown::REASONING_SENTINEL),
             "precondition: reasoning rendered live in the stream"
         );
-        assert!(app.reasoning_streaming, "region open: no ReasoningDone sent");
+        assert!(
+            app.reasoning_streaming,
+            "region open: no ReasoningDone sent"
+        );
 
         // Turn ends with the region still open (no ReasoningDone, no answer text).
         app.handle_server_event(crate::protocol::ServerEvent::Done { id: 1 }, &mut remote);
@@ -912,8 +923,7 @@ fn replace_streaming_text_resets_reasoning_tail_and_never_panics_on_multibyte() 
     // characters, shorter than the recorded tail length.
     app.replace_streaming_text("\u{6f22}\u{5b57}\u{1f600}".to_string());
     assert_eq!(
-        app.reasoning_partial_len,
-        0,
+        app.reasoning_partial_len, 0,
         "replacing the stream must drop the stale reasoning tail length"
     );
 
@@ -953,9 +963,12 @@ fn anchor_current_reasoning_block_snaps_block_start_to_char_boundary() {
         app.reasoning_block_start = Some(4);
         app.reasoning_streaming = true;
         // Used to panic inside `split_off`.
-        app.anchor_current_reasoning_block();
+        app.anchor_current_reasoning_block(None);
         // Buffer is still valid UTF-8 and no character was cut in half.
-        assert!(app.streaming_text().is_char_boundary(app.streaming_text().len()));
+        assert!(
+            app.streaming_text()
+                .is_char_boundary(app.streaming_text().len())
+        );
     });
 }
 
@@ -979,13 +992,13 @@ fn anchor_current_reasoning_block_snaps_block_start_to_char_boundary() {
 fn reasoning_streaming_state_space_never_panics_or_desyncs() {
     // Multi-byte payloads: any off-by-one byte offset lands inside a character.
     const PAYLOADS: &[&str] = &[
-        "\u{6f22}\u{5b57}",             // 3-byte CJK
-        "\u{1f600}\u{1f601}",           // 4-byte emoji
-        "caf\u{e9} na\u{ef}ve",         // 2-byte accents
-        "a\u{6f22}b\u{1f600}c",         // mixed widths
-        "line one\nline two",           // newline commits a reasoning line
-        "",                             // empty delta
-        "   ",                          // whitespace-only
+        "\u{6f22}\u{5b57}",     // 3-byte CJK
+        "\u{1f600}\u{1f601}",   // 4-byte emoji
+        "caf\u{e9} na\u{ef}ve", // 2-byte accents
+        "a\u{6f22}b\u{1f600}c", // mixed widths
+        "line one\nline two",   // newline commits a reasoning line
+        "",                     // empty delta
+        "   ",                  // whitespace-only
     ];
 
     let mut app = create_test_app();

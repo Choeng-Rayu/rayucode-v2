@@ -253,7 +253,9 @@ pub enum ReasoningDisplayMode {
     /// Never display reasoning content.
     #[default]
     Off,
-    /// Keep every reasoning trace in the transcript (classic behavior).
+    /// Preview live reasoning and retain the full trace for transcript inspection.
+    Compact,
+    /// Keep every reasoning trace in the transcript.
     Full,
     /// Show only the *current* reasoning live; collapse it once the model
     /// commits an assistant message or tool call, then show the next one.
@@ -264,6 +266,7 @@ impl ReasoningDisplayMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",
+            Self::Compact => "Compact",
             Self::Full => "Full",
             Self::Current => "Current",
         }
@@ -272,7 +275,8 @@ impl ReasoningDisplayMode {
     pub fn cycle(self) -> Self {
         match self {
             Self::Off => Self::Current,
-            Self::Current => Self::Full,
+            Self::Current => Self::Compact,
+            Self::Compact => Self::Full,
             Self::Full => Self::Off,
         }
     }
@@ -280,6 +284,7 @@ impl ReasoningDisplayMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_lowercase().as_str() {
             "off" | "none" | "false" | "0" | "no" => Some(Self::Off),
+            "compact" => Some(Self::Compact),
             "full" | "all" | "true" | "1" | "yes" | "on" => Some(Self::Full),
             "current" | "live" | "ephemeral" | "collapse" => Some(Self::Current),
             _ => None,

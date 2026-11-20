@@ -7,11 +7,15 @@ pub(super) fn handle_tool_done(
     name: String,
     output: String,
     error: Option<String>,
+    tool_duration_ms: Option<u64>,
 ) -> bool {
     // Read the raw output before client-side diff rendering replaces it.
     let observed_duration = remote.take_tool_duration(&id);
     let input = remote.get_tool_input(&id);
-    let duration_secs = DisplayMessage::tool_duration_from_output(&output).or(observed_duration);
+    let duration_secs = tool_duration_ms
+        .map(|ms| ms as f32 / 1000.0)
+        .or_else(|| DisplayMessage::tool_duration_from_output(&output))
+        .or(observed_duration);
     let display_output = remote.handle_tool_done(&id, &name, &output);
     let display_output = if error.is_some()
         && !display_output.starts_with("Error:")

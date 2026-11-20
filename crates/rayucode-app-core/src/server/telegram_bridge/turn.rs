@@ -66,6 +66,7 @@ pub(super) async fn run(
             supports_user_response: false,
             supports_server_failover: false,
             supports_turn_identity: false,
+            supports_bash_progress: false,
             working_dir: None,
             selfdev: None,
             target_session_id: Some(session.clone()),

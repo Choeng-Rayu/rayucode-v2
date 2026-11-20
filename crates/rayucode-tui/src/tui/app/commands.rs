@@ -3496,9 +3496,11 @@ fn handle_reasoning_display_command(app: &mut App, trimmed: &str) -> bool {
             "Thinking display is currently {}.\n\n\
              Modes:\n\
              • off - never show thinking text\n\
-             • full - keep every thinking trace in the transcript\n\
+             • compact - preview thinking live and keep the full trace in /transcript view
+\
+             • full - keep every thinking trace visible inline\n\
              • current - show only the live thinking, then collapse it once a tool runs or the answer commits\n\n\
-             Use /thinking-display <off|full|current> to change it. To change how hard the model thinks, use /effort.",
+             Use /thinking-display <off|compact|full|current> to change it. To change how hard the model thinks, use /effort.",
             current.label()
         )));
         return true;

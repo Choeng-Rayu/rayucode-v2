@@ -41,7 +41,7 @@ fn format_reasoning_markup(text: &str) -> String {
         // `Current` only ever shows the live block, which is discarded once the
         // model answers, so reloaded history shows no past reasoning.
         ReasoningDisplayMode::Off | ReasoningDisplayMode::Current => return String::new(),
-        ReasoningDisplayMode::Full => {}
+        ReasoningDisplayMode::Full | ReasoningDisplayMode::Compact => {}
     }
     let mut out = String::new();
     for line in text.split('\n') {

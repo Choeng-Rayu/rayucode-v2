@@ -180,7 +180,7 @@ fn justrust_status_is_below_todos_and_never_wraps() {
 }
 
 #[test]
-fn pinned_todos_do_not_duplicate_passive_swarm_gallery_at_any_width() {
+fn pinned_tasks_show_active_worker_once_at_any_width() {
     with_pinned_todos_config(|| {
         let member = crate::protocol::SwarmMemberStatus {
             session_id: "test-worker".into(),
@@ -210,7 +210,11 @@ fn pinned_todos_do_not_duplicate_passive_swarm_gallery_at_any_width() {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n");
-            assert!(!text.contains("placement-worker"), "{width}: {text}");
+            assert_eq!(
+                text.matches("placement-worker").count(),
+                1,
+                "{width}: {text}"
+            );
             assert!(lines.iter().all(|line| line.width() <= width as usize));
             assert!(text.contains("Pinned regression task"), "{width}: {text}");
         }
@@ -220,7 +224,7 @@ fn pinned_todos_do_not_duplicate_passive_swarm_gallery_at_any_width() {
             .draw(|frame| crate::tui::ui::draw(frame, &state))
             .unwrap();
         let text = terminal_text(&terminal);
-        assert!(!text.contains("placement-worker"), "{text}");
+        assert_eq!(text.matches("placement-worker").count(), 1, "{text}");
         assert_eq!(text.matches("Pinned regression task").count(), 1, "{text}");
     });
 }
@@ -315,7 +319,7 @@ fn pinned_todo_regression_pinned_composer_keeps_prompt_when_band_appears() {
 }
 
 #[test]
-fn pinned_todo_regression_hidden_message_has_zero_length_cache_boundary() {
+fn pinned_task_results_keep_individual_rows_and_cache_boundaries() {
     with_pinned_todos_config(|| {
         let mut state = TestState {
             display_messages: vec![
@@ -336,8 +340,8 @@ fn pinned_todo_regression_hidden_message_has_zero_length_cache_boundary() {
                 boundary.msg_hash,
                 state.display_messages[index].stable_cache_hash()
             );
-            assert_eq!(boundary.wrapped_len, previous.wrapped_len);
-            assert_eq!(boundary.raw_len, previous.raw_len);
+            assert!(boundary.wrapped_len > previous.wrapped_len);
+            assert!(boundary.raw_len > previous.raw_len);
             assert_eq!(boundary.user_prompt_len, previous.user_prompt_len);
         }
         assert!(
@@ -347,8 +351,7 @@ fn pinned_todo_regression_hidden_message_has_zero_length_cache_boundary() {
                 .any(|line| line.contains("Pinned regression task"))
         );
 
-        // Editing the visible tail must retain all three preceding message
-        // positions, even though two of them contributed zero transcript rows.
+        // Editing the visible tail retains both metric-bearing task calls.
         state.display_messages[3] =
             DisplayMessage::assistant("Visible completed answer after tail edit");
         state.messages_version += 1;

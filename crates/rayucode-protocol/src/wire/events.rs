@@ -235,8 +235,17 @@ pub enum ServerEvent {
         id: String,
         name: String,
         output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_duration_ms: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+
+    /// Advisory, live-only output from an executing foreground Bash call.
+    #[serde(rename = "bash_progress")]
+    BashProgress {
+        #[serde(flatten)]
+        update: crate::BashProgressUpdate,
     },
 
     /// Rendered images produced during the live turn, including image-bearing

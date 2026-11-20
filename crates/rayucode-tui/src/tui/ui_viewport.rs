@@ -361,13 +361,36 @@ fn apply_running_tool_details(
             continue;
         };
         if let Some(elapsed) = app.tool_elapsed(&tool.id) {
-            let value = crate::message::Message::format_duration(
-                (elapsed.as_millis().min(u64::MAX as u128) as u64 / 1000) * 1000,
-            );
+            let value = format!("{}s", elapsed.as_secs());
             let cells = usize::from(width).saturating_sub(1);
-            let mut line = super::tools_ui::tool_response(format!("Running · {value}"), cells);
-            line.alignment = lines[row - top].alignment;
-            lines[row - top] = line;
+            let tokens = app.bash_progress(&tool.id).map(|progress| {
+                crate::util::format_approx_token_count(crate::util::estimate_tokens_for_bytes(
+                    progress.output_bytes as usize,
+                ))
+            });
+            let background = tool
+                .input
+                .get("run_in_background")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            let activity = if background { "Background" } else { "Running" };
+            let details = match tokens {
+                Some(tokens) => {
+                    let detailed = format!("{activity} · {value} · ~{tokens}");
+                    if detailed.width() + 4 <= cells {
+                        detailed
+                    } else {
+                        format!("{value} · ~{tokens}")
+                    }
+                }
+                None => format!("{activity} · {value}"),
+            };
+            let mut rendered = vec![super::tools_ui::tool_response(details, cells)];
+            if app.centered_mode() {
+                let block = super::centered_content_block_width(width, 96);
+                super::left_pad_lines_to_block_width(&mut rendered, width, block);
+            }
+            lines[row - top] = rendered.remove(0);
         }
     }
 }
@@ -401,8 +424,7 @@ pub(super) fn draw_messages(
 
     let total_lines = prepared.total_wrapped_lines();
     let viewport_height = render_area.height as usize;
-    // Pinned todo band (display.pin_todos): the full todo card rendered beneath
-    // the sticky previous-prompt preview, including at the top of the transcript.
+    // The todo band stays above the composer while conversation scrolls.
     let transcript_view = app.transcript_view();
     let (pinned_todo_band, pinned_todo_more_line) = if transcript_view.is_some() {
         (Vec::new(), None)
@@ -410,8 +432,9 @@ pub(super) fn draw_messages(
         pinned_todo_band_lines(app, text_render_area.width, render_area.height)
     };
     let pinned_todo_band_rows = pinned_todo_band.len() as u16;
-    let max_scroll = if transcript_view.is_some() {
-        total_lines.saturating_sub(viewport_height)
+    let short_live_view = app.is_processing() && render_area.height <= 4;
+    let max_scroll = if transcript_view.is_some() || short_live_view {
+        total_lines.saturating_sub(viewport_height.saturating_sub(pinned_todo_band_rows as usize))
     } else {
         compute_max_scroll_with_prompt_preview(
             total_lines,
@@ -479,6 +502,7 @@ pub(super) fn draw_messages(
     super::set_last_chat_frame(prepared.clone());
 
     let prompt_preview_lines = if transcript_view.is_none()
+        && !short_live_view
         && crate::config::config().display.prompt_preview
         && scroll > 0
     {
@@ -489,36 +513,32 @@ pub(super) fn draw_messages(
             text_render_area.width,
             preview_start + app.compacted_hidden_user_prompts(),
         )
+        .min(render_area.height.saturating_sub(pinned_todo_band_rows + 1))
     } else {
         0u16
     };
     let pinned_todo_lines = pinned_todo_band.len() as u16;
+    let band_y = render_area.bottom().saturating_sub(pinned_todo_lines);
     publish_pinned_todo_scroll((pinned_todo_band_rows > 0).then(|| Rect {
         x: text_render_area.x,
-        y: render_area.y.saturating_add(prompt_preview_lines),
+        y: band_y,
         width: text_render_area.width,
         height: pinned_todo_band_rows,
     }));
-    set_pinned_todo_more_area(pinned_todo_more_line.map(|line| {
-        Rect {
-            x: text_render_area.x,
-            y: render_area
-                .y
-                .saturating_add(prompt_preview_lines)
-                .saturating_add(line as u16),
-            width: text_render_area.width,
-            height: 1,
-        }
+    set_pinned_todo_more_area(pinned_todo_more_line.map(|line| Rect {
+        x: text_render_area.x,
+        y: band_y.saturating_add(line as u16),
+        width: text_render_area.width,
+        height: 1,
     }));
-    // Total synthetic rows reserved at the top of the viewport (previous-prompt
-    // preview first, then the todo band, then transcript content).
-    let top_band_lines = pinned_todo_lines + prompt_preview_lines;
+    let reserved_rows = pinned_todo_lines + prompt_preview_lines;
+    let top_band_lines = prompt_preview_lines;
 
     let content_area = Rect {
         x: text_render_area.x,
         y: render_area.y.saturating_add(top_band_lines),
         width: text_render_area.width,
-        height: render_area.height.saturating_sub(top_band_lines),
+        height: render_area.height.saturating_sub(reserved_rows),
     };
     let visible_height = content_area.height as usize;
     let copy_badge_ui = app.copy_badge_ui();
@@ -552,6 +572,32 @@ pub(super) fn draw_messages(
         &mut visible_lines,
         content_area.width,
     );
+    if let Some((_, elapsed)) = app.live_reasoning()
+        && let Some(section) = prepared
+            .sections
+            .iter()
+            .find(|section| section.kind == PreparedSectionKind::Reasoning)
+        && let Some(row) = section
+            .line_start
+            .checked_sub(scroll)
+            .and_then(|idx| visible_lines.get_mut(idx))
+    {
+        const PULSE: [&str; 10] = ["⠁", "⠇", "⠷", "⡿", "⣿", "⣿", "⡿", "⠷", "⠇", "⠁"];
+        let glyph = if crate::perf::tui_policy().enable_decorative_animations {
+            PULSE[(elapsed.as_millis() / 120) as usize % PULSE.len()]
+        } else {
+            "⣿"
+        };
+        let duration = format!("{}s", elapsed.as_secs());
+        let line = Line::styled(
+            format!("{glyph} Thinking… · {duration}"),
+            Style::default().fg(dim_color()).italic(),
+        );
+        *row = super::truncate_line_with_ellipsis_to_width(
+            &line,
+            content_area.width.saturating_sub(1) as usize,
+        );
+    }
     let stability_hash = super::viewport_stability_hash(
         &visible_lines,
         &visible_user_indices,
@@ -1314,7 +1360,7 @@ pub(super) fn draw_messages(
     if pinned_todo_lines > 0 {
         let band_area = Rect {
             x: content_area.x,
-            y: render_area.y.saturating_add(prompt_preview_lines),
+            y: band_y,
             width: content_area.width,
             height: pinned_todo_lines.min(render_area.height),
         };
@@ -1478,6 +1524,91 @@ pub(crate) fn pinned_todo_band_lines(
         width,
         viewport_height,
     );
+    let mut more = more;
+    if !app.pinned_todos_expanded() && !lines.is_empty() && viewport_height >= 8 {
+        let payload = app
+            .pinned_todos_payload()
+            .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok());
+        let represented = payload
+            .as_ref()
+            .and_then(|payload| payload["agents"].as_array());
+        let members = app.inline_swarm_members();
+        let workers = members.iter().filter(|member| {
+            let already_rendered = represented.is_some_and(|agents| {
+                agents
+                    .iter()
+                    .any(|agent| agent["session_id"].as_str() == Some(member.session_id.as_str()))
+            });
+            !already_rendered
+                && (matches!(
+                    member.status.as_str(),
+                    "running" | "thinking" | "streaming" | "busy"
+                ) || member.runtime.live_status.is_some())
+        });
+        let workers = workers.take(2);
+        let insertion = 1.min(lines.len());
+        let available = viewport_height.saturating_sub(3) as usize;
+        for (index, member) in workers
+            .take(available.saturating_sub(lines.len()))
+            .enumerate()
+        {
+            let name = member.friendly_name.as_deref().unwrap_or("Agent");
+            let live = member.runtime.live_status.as_ref();
+            let current = live
+                .and_then(|status| {
+                    status
+                        .tool_intent
+                        .as_deref()
+                        .or(status.tool_name.as_deref())
+                })
+                .or(member.detail.as_deref())
+                .or(member.task_label.as_deref())
+                .unwrap_or(&member.status);
+            let mut metrics = String::new();
+            if let Some(ms) = live.map(|status| status.elapsed_ms).or_else(|| {
+                member
+                    .runtime
+                    .elapsed_secs
+                    .map(|secs| secs.saturating_mul(1000))
+            }) {
+                metrics.push_str(&format!(
+                    " · {}",
+                    crate::message::Message::format_duration(ms)
+                ));
+            }
+            let short = |count: u64| {
+                crate::util::format_approx_token_count(count as usize)
+                    .trim_end_matches(" tok")
+                    .to_owned()
+            };
+            if let Some(input) = live.and_then(|status| status.input_tokens) {
+                metrics.push_str(&format!(" · ↑{}", short(input)));
+            }
+            if let Some(output) = live
+                .and_then(|status| status.output_tokens)
+                .or(member.runtime.output_tokens)
+            {
+                let sep = if live.is_some_and(|status| status.input_tokens.is_some()) {
+                    " "
+                } else {
+                    " · "
+                };
+                metrics.push_str(&format!("{sep}↓{}", short(output)));
+            }
+            let line = super::truncate_line_preserving_suffix_to_width(
+                &Line::styled(
+                    format!("    └─ {name} · {current}"),
+                    Style::default().fg(dim_color()),
+                ),
+                &Line::styled(metrics, Style::default().fg(dim_color())),
+                width.saturating_sub(1) as usize,
+            );
+            lines.insert(insertion + index, line);
+            if let Some(position) = &mut more {
+                *position += 1;
+            }
+        }
+    }
     if width > 0
         && viewport_height >= 3
         && let Some(status) = app.justrust_status()
@@ -1524,12 +1655,23 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
             // Distinct title keeps the line cache from sharing entries with
             // the width-capped inline transcript card.
             let mut msg = crate::tui::DisplayMessage::todos(payload.to_string());
-            msg.title = Some("Pinned todos".to_string());
+            msg.title = Some(
+                if expanded {
+                    "Pinned todos"
+                } else {
+                    "Compact pinned tasks"
+                }
+                .into(),
+            );
             super::messages::get_cached_message_lines(
                 &msg,
                 width,
                 diff_mode,
-                super::messages::render_pinned_todos_message,
+                if expanded {
+                    super::messages::render_pinned_todos_message
+                } else {
+                    super::messages::render_compact_pinned_tasks
+                },
             )
         })
     } else {
@@ -1551,7 +1693,12 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
     if has_more {
         let shown = content_budget.saturating_sub(1);
         let hidden = card_lines.len() - shown;
-        lines.extend(card_lines.into_iter().take(shown));
+        if shown == 1 && card_lines.len() > 1 {
+            // A two-row band keeps the active task ahead of the overflow control.
+            lines.push(card_lines[1].clone());
+        } else {
+            lines.extend(card_lines.into_iter().take(shown));
+        }
         more_line = Some(lines.len());
         lines.push(Line::from(Span::styled(
             format!("  … +{} more (todo)", hidden),
@@ -1586,6 +1733,13 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
             return (lines, more_line);
         }
         lines.extend(card_lines);
+        if !lines.is_empty() && lines.len() < content_budget {
+            more_line = Some(lines.len());
+            lines.push(Line::styled(
+                "  ▾ Task details",
+                Style::default().fg(dim_color()),
+            ));
+        }
     }
     (lines, more_line)
 }

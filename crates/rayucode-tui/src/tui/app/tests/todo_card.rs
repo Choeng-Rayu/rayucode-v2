@@ -696,7 +696,7 @@ fn pinned_todos_hide_todo_tool_messages_from_the_transcript() {
 }
 
 #[test]
-fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
+fn pinned_task_panel_stays_below_transcript_when_scrolling() {
     let _env_lock = crate::storage::lock_test_env();
     let _render_lock = crate::tui::ui::render_state_test_lock();
     let _pin = PinTodosEnvGuard::enable();
@@ -742,11 +742,8 @@ fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
     app.auto_scroll_paused = true;
     let top_text = render_and_snap(&app, &mut terminal);
     assert!(
-        top_text
-            .lines()
-            .take(6)
-            .any(|row| row.contains("pinned band item")),
-        "pinned todo should remain visible at the top of scrollback, got:\n{}",
+        top_text.lines().any(|row| row.contains("pinned band item")),
+        "pinned todo should remain visible at the bottom while reading scrollback, got:\n{}",
         top_text
     );
 
@@ -758,8 +755,8 @@ fn pinned_todo_band_renders_below_sticky_prompt_without_separator() {
         .iter()
         .position(|row| row.contains("kick off the work"))
         .expect("sticky prompt should be visible");
-    let todo_row = first_rows
-        .iter()
+    let todo_row = text
+        .lines()
         .position(|row| row.contains("pinned band item"))
         .expect("pinned todo should be visible");
     assert!(
@@ -958,7 +955,7 @@ fn clicking_pinned_todo_more_row_expands_the_band() {
     });
     assert!(!app.pinned_todos_expanded);
     let (lines, control) = crate::tui::ui::viewport::pinned_todo_band_lines(&app, 80, 30);
-    assert!(control.is_none());
+    assert!(lines[control.unwrap()].to_string().contains("Task details"));
     assert!(
         !lines
             .iter()
@@ -990,9 +987,9 @@ fn pinned_todo_card_shows_tasks_without_expanding() {
         }
         assert!(!rendered.contains("▸ todo"), "{rendered}");
         assert!(!rendered.contains("▾ todo"), "{rendered}");
-        assert!(crate::tui::ui::viewport::pinned_todo_more_area().is_none());
+        assert!(crate::tui::ui::viewport::pinned_todo_more_area().is_some());
         println!(
-            "{width}x40: all 3 todo states visible on first render, no expansion required or summary toggle"
+            "{width}x40: all 3 todo states visible on first render, details remain expandable"
         );
     }
 }
@@ -1003,6 +1000,7 @@ fn pinned_band_shows_stage_grid_and_live_swarm_agents_end_to_end() {
     let _render_lock = crate::tui::ui::render_state_test_lock();
     let _pin = PinTodosEnvGuard::enable();
     let mut app = create_test_app();
+    app.pinned_todos_expanded = true;
     let session_id = app.session.id.clone();
     let mut a = pinned_band_todo("a", "stage one alpha", "in_progress");
     a.stage = Some(1);
@@ -1047,7 +1045,7 @@ fn pinned_band_shows_stage_grid_and_live_swarm_agents_end_to_end() {
         let backend = ratatui::backend::TestBackend::new(width, 20);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let text = render_and_snap(&app, &mut terminal);
-        let band: Vec<&str> = text.lines().take(8).collect();
+        let band: Vec<&str> = text.lines().collect();
         let joined = band.join("\n");
         assert!(
             joined.contains("1 ●●") && joined.contains("2 ○"),
@@ -1179,7 +1177,11 @@ fn expanded_pinned_todo_band_scrolls_when_taller_than_budget() {
     crate::tui::ui::viewport::reset_pinned_todo_scroll();
 
     let (lines, _) = crate::tui::ui::viewport::pinned_todo_band_lines(&app, 80, 30);
-    assert!(lines.len() <= 21, "expanded band is bounded: {}", lines.len());
+    assert!(
+        lines.len() <= 21,
+        "expanded band is bounded: {}",
+        lines.len()
+    );
     assert!(lines[0].to_string().contains("scroll"));
     crate::tui::ui::viewport::publish_pinned_todo_scroll_for_test();
     assert!(crate::tui::ui::viewport::scroll_pinned_todos(3));
