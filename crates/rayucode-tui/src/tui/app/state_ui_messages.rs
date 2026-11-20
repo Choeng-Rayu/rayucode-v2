@@ -167,10 +167,72 @@ impl App {
         true
     }
 
+    pub(super) fn restore_remote_tool_activity(
+        &mut self,
+        snapshot: crate::protocol::ActiveToolSnapshot,
+    ) {
+        let crate::protocol::ActiveToolSnapshot {
+            tool,
+            elapsed_ms,
+            batch,
+            ..
+        } = snapshot;
+        if self.display_messages.iter().rev().any(|row| {
+            row.role == "tool"
+                && row
+                    .tool_data
+                    .as_ref()
+                    .is_some_and(|result| result.id == tool.id)
+        }) {
+            return;
+        }
+        if !self
+            .streaming_tool_calls
+            .iter()
+            .any(|call| call.id == tool.id)
+        {
+            self.streaming_tool_calls.push(tool.clone());
+        }
+        self.show_tool_activity(&tool, ToolActivity::Running);
+        let batch = batch.filter(|batch| {
+            self.batch_progress.as_ref().is_none_or(|current| {
+                current.tool_call_id != batch.tool_call_id || current.completed <= batch.completed
+            })
+        });
+        let now = Instant::now();
+        if let Some(start) = now.checked_sub(Duration::from_millis(elapsed_ms)) {
+            self.tool_execution_starts
+                .entry(tool.id.clone())
+                .and_modify(|observed| *observed = (*observed).min(start));
+            if let Some(batch) = &batch {
+                for child in &batch.subcalls {
+                    if matches!(child.state, crate::bus::BatchSubcallState::Running) {
+                        let id = crate::tui::core::batch_child_call_id(
+                            &batch.tool_call_id,
+                            &child.tool_call.id,
+                        );
+                        self.tool_execution_starts
+                            .entry(id)
+                            .and_modify(|observed| *observed = (*observed).min(start))
+                            .or_insert(start);
+                    }
+                }
+            }
+        }
+        if let Some(batch) = batch {
+            self.update_batch_tool_activity(batch);
+        }
+    }
+
     pub(super) fn update_batch_tool_activity(
         &mut self,
         progress: crate::bus::BatchProgress,
     ) -> bool {
+        if self.batch_progress.as_ref().is_some_and(|current| {
+            current.tool_call_id == progress.tool_call_id && current.completed > progress.completed
+        }) {
+            return false;
+        }
         if self.pending_tool_row(&progress.tool_call_id).is_none()
             && (!matches!(&self.status, ProcessingStatus::RunningTool(name) if name == "batch")
                 || self.display_messages.iter().rev().any(|row| {
@@ -252,6 +314,7 @@ impl App {
         self.streaming_tool_calls.clear();
         self.tool_execution_starts.clear();
         self.bash_progress.clear();
+        self.batch_progress = None;
         let len = self.display_messages.len();
         self.display_messages
             .retain(|message| message.role != PENDING_TOOL_ROLE);
@@ -268,9 +331,65 @@ impl App {
             .filter_map(|message| message.tool_data.clone())
             .collect();
         for tool in pending {
-            self.push_display_message(DisplayMessage::tool("Error: Interrupted by user", tool));
+            let result = self
+                .interrupted_batch_result(&tool.id, "Interrupted by user", None)
+                .unwrap_or_else(|| "Error: Interrupted by user".into());
+            self.push_display_message(DisplayMessage::tool(result, tool));
         }
         self.clear_pending_tool_calls();
+    }
+
+    pub(super) fn interrupted_batch_result(
+        &self,
+        id: &str,
+        diagnostic: &str,
+        tool_duration_ms: Option<u64>,
+    ) -> Option<String> {
+        use std::fmt::Write as _;
+        let batch = self
+            .batch_progress
+            .as_ref()
+            .filter(|batch| batch.tool_call_id == id && !batch.subcalls.is_empty())?;
+        let mut result = String::from(crate::tui::core::INTERRUPTED_BATCH_RESULT);
+        let _ = write!(result, "{}\n\n", diagnostic.trim_end());
+        let mut succeeded = 0;
+        for child in &batch.subcalls {
+            let key = crate::tui::core::batch_child_call_id(id, &child.tool_call.id);
+            let metrics = child.metrics.or_else(|| {
+                let elapsed = self.tool_execution_starts.get(&key)?.elapsed();
+                let measured_ms = elapsed.as_millis() as u64;
+                Some(crate::bus::BatchSubcallMetrics {
+                    duration_ms: tool_duration_ms
+                        .map_or(measured_ms, |bound| measured_ms.min(bound)),
+                    output_bytes: self
+                        .bash_progress
+                        .get(&key)
+                        .map(|sample| sample.output_bytes),
+                })
+            });
+            if let Some(metrics) = metrics {
+                result.push_str(&metrics.section_prefix());
+            }
+            let status = match child.state {
+                crate::bus::BatchSubcallState::Succeeded => {
+                    succeeded += 1;
+                    "Completed"
+                }
+                crate::bus::BatchSubcallState::Failed => "Error: Tool call failed",
+                crate::bus::BatchSubcallState::Running => "Error: Cancelled",
+            };
+            let _ = write!(
+                result,
+                "--- [{}] {} ---\n{status}\n\n",
+                child.index, child.tool_call.name,
+            );
+        }
+        let _ = write!(
+            result,
+            "Completed: {succeeded} succeeded, {} failed",
+            batch.subcalls.len() - succeeded,
+        );
+        Some(result)
     }
 
     pub fn push_display_message(&mut self, mut message: DisplayMessage) {
@@ -1335,6 +1454,52 @@ fn carry_over_tool_durations(previous: &[DisplayMessage], incoming: &mut [Displa
 mod tool_activity_tests {
     use super::*;
     use crate::protocol::ServerEvent;
+
+    #[test]
+    fn reattached_batch_keeps_finished_and_cancelled_child_metrics() {
+        let mut app = crate::tui::app::tests::create_test_app();
+        let snapshot = serde_json::from_value(serde_json::json!({
+            "identity": {"runtime_generation": "fixture", "turn_id": 7},
+            "tool": {"id": "parent", "name": "batch", "input": {"tool_calls": [
+                {"tool": "bash", "intent": "Long child"},
+                {"tool": "read", "intent": "Finished child"}
+            ]}},
+            "elapsed_ms": 1250,
+            "batch": {
+                "session_id": "session", "tool_call_id": "parent", "total": 2, "completed": 1,
+                "subcalls": [
+                    {"index": 1, "tool_call": {"id": "batch-1-bash", "name": "bash"}, "state": "running"},
+                    {"index": 2, "tool_call": {"id": "batch-2-read", "name": "read"}, "state": "succeeded",
+                     "metrics": {"duration_ms": 414, "output_bytes": 80}}
+                ]
+            }
+        })).unwrap();
+        app.restore_remote_tool_activity(snapshot);
+        let child_id = crate::tui::core::batch_child_call_id("parent", "batch-1-bash");
+        assert!(app.tool_execution_starts[&child_id].elapsed() >= Duration::from_millis(1250));
+        assert!(app.apply_bash_progress(crate::protocol::BashProgress {
+            call_id: child_id,
+            elapsed_ms: 1280,
+            output_bytes: 36,
+            tail: "before interruption".into(),
+        }));
+        app.interrupt_pending_tools();
+        let result = app.display_messages.last().unwrap();
+        assert_eq!(result.role, "tool");
+        assert!(
+            result
+                .content
+                .contains("output_bytes=36] --- [1] bash ---\nError: Cancelled")
+        );
+        assert!(
+            result
+                .content
+                .contains("duration_ms=414 output_bytes=80] --- [2] read ---\nCompleted")
+        );
+        assert!(result.duration_secs.unwrap() >= 1.25);
+        assert!(app.bash_progress.is_empty());
+        assert!(app.batch_progress.is_none());
+    }
 
     #[test]
     fn sibling_tool_results_replace_live_rows_in_start_order() {

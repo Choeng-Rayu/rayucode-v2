@@ -72,6 +72,9 @@ pub(in crate::tui::ui) fn tool_header_with_metrics(
     width: usize,
     metrics: Vec<Span<'static>>,
 ) -> Vec<Line<'static>> {
+    if metrics.is_empty() {
+        return vec![tool_header(tool, subject, color, width)];
+    }
     let metrics = Line::from(metrics);
     let minimum_header = tool_label(tool).width() + 2 + if subject.is_empty() { 0 } else { 5 };
     if minimum_header + 3 + metrics.width() <= width {

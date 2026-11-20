@@ -324,11 +324,23 @@ pub struct HistoryMessage {
     pub tool_data: Option<ToolCall>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionActivitySnapshot {
     pub is_processing: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_tool_name: Option<String>,
+    /// The call that is executing when the server responds to a history request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_tool: Option<ActiveToolSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveToolSnapshot {
+    pub identity: TurnIdentity,
+    pub tool: ToolCall,
+    pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchProgress>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

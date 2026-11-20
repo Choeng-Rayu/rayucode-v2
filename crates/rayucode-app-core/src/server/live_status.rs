@@ -1,7 +1,8 @@
 //! Lock-independent projection of the events consumed by an opened worker.
 //! This does not read Agent while its turn mutex is held, or invent transport
 //! information from a provider name.
-use crate::protocol::{ServerEvent, SwarmLiveStatus};
+use crate::message::ToolCall;
+use crate::protocol::{ActiveToolSnapshot, ServerEvent, SwarmLiveStatus};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ struct Projection {
     new_call: bool,
     tool_inputs: HashMap<String, String>,
     last_tool_id: Option<String>,
+    active_tool: Option<(Instant, ActiveToolSnapshot)>,
     interruption_reason: Option<String>,
 }
 
@@ -44,6 +46,7 @@ impl Projection {
             new_call: true,
             tool_inputs: HashMap::new(),
             last_tool_id: None,
+            active_tool: None,
             interruption_reason: None,
         }
     }
@@ -55,9 +58,9 @@ impl Projection {
     }
 
     fn observe(&mut self, event: &ServerEvent, now: Instant) {
-        let event = match event {
-            ServerEvent::TurnEvent { event, .. } => event.as_ref(),
-            event => event,
+        let (event, identity) = match event {
+            ServerEvent::TurnEvent { event, identity } => (event.as_ref(), Some(identity)),
+            event => (event, None),
         };
         match event {
             ServerEvent::ConnectionType { connection } => {
@@ -131,7 +134,7 @@ impl Projection {
                 self.pause(now);
                 self.value.phase = "running_tool".into();
                 self.value.tool_name = Some(name.clone());
-                self.value.tool_intent = self
+                let input = self
                     .tool_inputs
                     .remove(id)
                     .and_then(|s| match serde_json::from_str::<serde_json::Value>(&s) {
@@ -143,9 +146,43 @@ impl Projection {
                             None
                         }
                     })
-                    .and_then(|v| v.get("intent").and_then(|s| s.as_str()).map(str::to_owned));
+                    .unwrap_or_default();
+                let intent = ToolCall::intent_from_input(&input);
+                self.value.tool_intent = intent.clone();
+                self.active_tool = identity.map(|identity| {
+                    (
+                        now,
+                        ActiveToolSnapshot {
+                            identity: identity.clone(),
+                            tool: ToolCall {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input,
+                                intent,
+                                thought_signature: None,
+                            },
+                            elapsed_ms: 0,
+                            batch: None,
+                        },
+                    )
+                });
             }
-            ServerEvent::ToolDone { .. } => {
+            ServerEvent::BatchProgress { progress } => {
+                if let Some((_, tool)) = &mut self.active_tool
+                    && identity == Some(&tool.identity)
+                    && progress.tool_call_id == tool.tool.id
+                {
+                    tool.batch = Some(progress.clone());
+                }
+            }
+            ServerEvent::ToolDone { id, .. } => {
+                if self
+                    .active_tool
+                    .as_ref()
+                    .is_some_and(|(_, tool)| tool.tool.id == *id)
+                {
+                    self.active_tool = None;
+                }
                 self.value.tool_name = None;
                 self.value.tool_intent = None;
                 self.value.phase = "sending".into();
@@ -164,14 +201,21 @@ impl Projection {
                 self.value.input_tokens = None;
                 self.value.output_tokens = None;
                 self.new_call = true;
+                self.active_tool = None;
             }
             ServerEvent::TurnStopped { message, .. } => {
                 self.interruption_reason = Some(message.clone());
                 self.value.stop_reason = Some(message.clone());
             }
             ServerEvent::Interrupted => {
+                self.active_tool = None;
                 self.interruption_reason = Some("Interrupted by user".into());
                 self.value.stop_reason = self.interruption_reason.clone();
+            }
+            ServerEvent::TurnStarted { .. }
+            | ServerEvent::Done { .. }
+            | ServerEvent::Error { .. } => {
+                self.active_tool = None;
             }
             _ => {}
         }
@@ -209,6 +253,7 @@ pub(super) fn observe(session_id: &str, event: &ServerEvent) {
         if let Some((ended, phase)) = final_phase {
             p.pause(ended);
             p.value.phase = phase;
+            p.active_tool = None;
         }
         if previous != p.value {
             CHANGED.send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -228,6 +273,7 @@ pub(super) fn finish(session_id: &str, status: &str, reason: Option<&str>) {
         p.value.phase = status.into();
         p.value.tool_name = None;
         p.value.tool_intent = None;
+        p.active_tool = None;
         if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
             p.value.stop_reason = Some(reason.into());
         } else {
@@ -254,6 +300,14 @@ pub(super) fn snapshot(session_id: &str) -> Option<SwarmLiveStatus> {
         .map(|p| p.snapshot(Instant::now()))
 }
 
+pub(super) fn active_tool(session_id: &str) -> Option<ActiveToolSnapshot> {
+    let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+    let (started, tool) = live.get(session_id)?.active_tool.as_ref()?;
+    let mut tool = tool.clone();
+    tool.elapsed_ms = started.elapsed().as_millis() as u64;
+    Some(tool)
+}
+
 pub(super) fn forget(session_id: &str) {
     LIVE.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -263,6 +317,50 @@ pub(super) fn forget(session_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_tool_snapshot_retains_arguments_for_a_live_turn_and_clears_on_retry() {
+        let now = Instant::now();
+        let mut projection = Projection::new(now);
+        let identity = crate::protocol::TurnIdentity {
+            runtime_generation: "fixture-generation".into(),
+            turn_id: 2,
+        };
+        let scoped = |event| ServerEvent::TurnEvent {
+            identity: identity.clone(),
+            event: Box::new(event),
+        };
+        projection.observe(
+            &scoped(ServerEvent::ToolStart {
+                id: "call".into(),
+                name: "bash".into(),
+            }),
+            now,
+        );
+        projection.observe(
+            &scoped(ServerEvent::ToolInput {
+                id: Some("call".into()),
+                delta: r#"{"intent":"Show status","command":"true"}"#.into(),
+            }),
+            now,
+        );
+        projection.observe(
+            &scoped(ServerEvent::ToolExec {
+                id: "call".into(),
+                name: "bash".into(),
+            }),
+            now,
+        );
+        let (_, tool) = projection.active_tool.as_ref().unwrap();
+        assert_eq!(tool.identity, identity);
+        assert_eq!(tool.tool.intent.as_deref(), Some("Show status"));
+        assert_eq!(tool.tool.input["command"], "true");
+        projection.observe(
+            &scoped(ServerEvent::RetryRollback { attempt: 1, max: 2 }),
+            now,
+        );
+        assert!(projection.active_tool.is_none());
+    }
 
     fn request() -> ServerEvent {
         serde_json::from_value(serde_json::json!({

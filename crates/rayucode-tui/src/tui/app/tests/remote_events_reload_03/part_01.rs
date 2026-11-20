@@ -867,6 +867,7 @@ fn test_handle_server_event_history_restores_active_resume_processing_state() {
             activity: Some(crate::protocol::SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: Some("batch".to_string()),
+                active_tool: None,
             }),
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),

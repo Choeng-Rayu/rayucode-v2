@@ -1545,6 +1545,7 @@ pub(super) fn tool_usage_label(tokens: &str, seconds: Option<f32>, output: &str)
             crate::message::Message::format_duration((seconds as f64 * 1000.0).round() as u64)
         });
     match duration {
+        Some(duration) if tokens.is_empty() => duration,
         Some(duration) => format!("{duration}, {tokens}"),
         None => tokens.to_owned(),
     }
@@ -1557,6 +1558,9 @@ pub(super) fn tool_usage_spans(
     seconds: Option<f32>,
     output: &str,
 ) -> Vec<Span<'static>> {
+    if label.is_empty() {
+        return Vec::new();
+    }
     let duration = seconds
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
         .or_else(|| rayucode_tui_messages::DisplayMessage::tool_duration_from_output(output));
@@ -1564,7 +1568,10 @@ pub(super) fn tool_usage_spans(
         return vec![Span::styled(label, Style::default().fg(token_color))];
     };
     let Some((duration_label, tokens)) = label.split_once(", ") else {
-        return vec![Span::styled(label, Style::default().fg(token_color))];
+        return vec![Span::styled(
+            label,
+            Style::default().fg(tool_duration_color(seconds)),
+        )];
     };
     vec![
         Span::styled(
@@ -1665,17 +1672,30 @@ pub(super) fn render_batch_subcall_line(
     let display_name = resolve_display_tool_name(&tool.name).to_string();
     let output = output_content.unwrap_or_default();
     let seconds = metrics.map(|metrics| metrics.duration_ms as f32 / 1000.0);
-    let token_badge = (output_content.is_some() || metrics.is_some()).then(|| {
-        let bytes = metrics.map_or(output.len(), |metrics| {
-            metrics.output_bytes.try_into().unwrap_or(usize::MAX)
-        });
-        let tokens = crate::util::estimate_tokens_for_bytes(bytes);
+    let bytes = match metrics {
+        Some(metrics) => metrics.output_bytes,
+        None => output_content.map(|text| text.len() as u64),
+    };
+    let mut usage = Vec::new();
+    if let Some(bytes) = bytes {
+        let tokens = crate::util::estimate_tokens_for_bytes(bytes.try_into().unwrap_or(usize::MAX));
         let label = format!("~{}", crate::util::format_approx_token_count(tokens));
-        (
+        usage = tool_usage_spans(
             tool_usage_label(&label, seconds, output),
             tool_output_token_color(tokens),
-        )
-    });
+            seconds,
+            output,
+        );
+    } else if let Some(metrics) = metrics {
+        usage.push(Span::styled(
+            crate::message::Message::format_duration(metrics.duration_ms),
+            Style::default().fg(tool_duration_color(metrics.duration_ms as f32 / 1000.0)),
+        ));
+    }
+    if !usage.is_empty() {
+        usage.insert(0, Span::styled(" · ", Style::default().fg(dim_color())));
+    }
+    let usage = Line::from(usage);
     let intent = tool
         .intent
         .as_deref()
@@ -1692,9 +1712,7 @@ pub(super) fn render_batch_subcall_line(
     let reserved = UnicodeWidthStr::width(format!("    {} {}", icon, display_name).as_str())
         + 1
         + intent_width
-        + token_badge.as_ref().map_or(0, |(label, _)| {
-            UnicodeWidthStr::width(format!(" · {label}").as_str())
-        });
+        + usage.width();
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
     let summary = get_tool_summary_with_budget(tool, bash_max_chars, summary_budget);
 
@@ -1747,17 +1765,11 @@ pub(super) fn render_batch_subcall_line(
             Style::default().fg(dim_color()),
         ));
     }
-    let token_suffix = token_badge.map(|(label, color)| {
-        let mut spans = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
-        spans.extend(tool_usage_spans(label, color, seconds, output));
-        Line::from(spans)
-    });
-
-    if let Some(token_suffix) = token_suffix {
+    if !usage.spans.is_empty() {
         if let Some(width) = max_width {
-            return fit_batch_subcall_metrics(Line::from(spans), token_suffix, width);
+            return fit_batch_subcall_metrics(Line::from(spans), usage, width);
         }
-        spans.extend(token_suffix.spans);
+        spans.extend(usage.spans);
     }
 
     Line::from(spans)

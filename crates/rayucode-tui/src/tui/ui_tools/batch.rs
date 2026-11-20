@@ -211,7 +211,7 @@ mod tests {
     fn recorded_batch_metrics_stay_with_their_child_after_reload() {
         let metrics = crate::bus::BatchSubcallMetrics {
             duration_ms: 73,
-            output_bytes: 120,
+            output_bytes: Some(120),
         };
         let content = format!(
             "[batch] {}--- [1] bash ---\nfixture 界\n\n--- [2] bash ---\nError: second\n\nCompleted: 1 succeeded, 1 failed",

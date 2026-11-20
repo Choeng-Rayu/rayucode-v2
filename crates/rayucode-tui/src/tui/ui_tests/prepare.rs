@@ -577,7 +577,7 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
                     state: crate::bus::BatchSubcallState::Succeeded,
                     metrics: Some(crate::bus::BatchSubcallMetrics {
                         duration_ms: 73,
-                        output_bytes: 12,
+                        output_bytes: Some(12),
                     }),
                 },
                 crate::bus::BatchSubcallProgress {

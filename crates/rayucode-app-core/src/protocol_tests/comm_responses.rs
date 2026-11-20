@@ -225,6 +225,7 @@ fn test_comm_status_response_roundtrip() -> Result<()> {
             activity: Some(SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: Some("bash".to_string()),
+                active_tool: None,
             }),
             provider_name: None,
             provider_model: None,

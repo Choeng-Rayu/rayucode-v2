@@ -295,7 +295,7 @@ impl Tool for BatchTool {
                         result,
                         BatchSubcallMetrics {
                             duration_ms,
-                            output_bytes,
+                            output_bytes: Some(output_bytes),
                         },
                     )
                 }

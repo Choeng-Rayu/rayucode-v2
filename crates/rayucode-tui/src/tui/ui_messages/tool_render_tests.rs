@@ -68,7 +68,7 @@ fn batch_subcall_groups_duration_and_tokens() {
         None,
         Some(crate::bus::BatchSubcallMetrics {
             duration_ms: 427,
-            output_bytes: 20,
+            output_bytes: Some(20),
         }),
     );
     let text = extract_line_text(&short);

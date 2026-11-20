@@ -2208,21 +2208,26 @@ fn handle_server_event_inner(
             }
 
             let should_apply_history_payload = session_changed || !remote.has_loaded_history();
+            let mut resumed_tool = None;
             if should_apply_history_payload {
                 let activity = if app.remote_turn_fence.scoped() {
                     app.remote_turn_fence.active.as_ref().map(|_| {
-                        crate::protocol::SessionActivitySnapshot {
-                            is_processing: true,
-                            current_tool_name: activity
-                                .as_ref()
-                                .and_then(|activity| activity.current_tool_name.clone()),
-                        }
+                        let mut activity = activity.unwrap_or_default();
+                        activity.is_processing = true;
+                        activity
                     })
                 } else {
                     activity
                 };
                 if let Some(activity) = activity.filter(|activity| activity.is_processing) {
-                    let current_tool_name = activity.current_tool_name.clone();
+                    resumed_tool = activity.active_tool.filter(|tool| {
+                        !app.remote_turn_fence.scoped()
+                            || app.remote_turn_fence.accepts(&tool.identity)
+                    });
+                    let current_tool_name = resumed_tool
+                        .as_ref()
+                        .map(|tool| tool.tool.name.clone())
+                        .or(activity.current_tool_name);
                     app.is_processing = true;
                     if app.processing_started.is_none() {
                         app.processing_started = Some(Instant::now());
@@ -2371,6 +2376,9 @@ fn handle_server_event_inner(
                     }
                 }
 
+                if let Some(tool) = resumed_tool {
+                    app.restore_remote_tool_activity(tool);
+                }
                 if history_matches_pending_startup_prompt(app) {
                     crate::logging::info(
                         "Reload-restored startup prompt already present in server history; skipping client resubmit",

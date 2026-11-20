@@ -4294,8 +4294,33 @@ fn render_tool_message_mode(
         .map_or(msg.content.as_str(), |tool| {
             tools_ui::bash_result_output(tool, &msg.content)
         });
-    let mut token_badge = tool_output_token_badge(output_for_badge);
-    let token_label = if compact || expanded {
+    let interrupted_batch = msg
+        .tool_data
+        .as_ref()
+        .is_some_and(|tool| tool.name == "batch")
+        && msg
+            .content
+            .starts_with(crate::tui::core::INTERRUPTED_BATCH_RESULT);
+    let mut token_badge = if interrupted_batch {
+        tools_ui::parse_batch_sub_outputs_by_index(&msg.content)
+            .into_values()
+            .filter_map(|result| result.metrics?.output_bytes)
+            .reduce(u64::saturating_add)
+            .map_or_else(
+                || ToolOutputTokenBadge {
+                    label: String::new(),
+                    color: dim_color(),
+                },
+                |bytes| {
+                    output_token_badge(crate::util::estimate_tokens_for_bytes(
+                        bytes.try_into().unwrap_or(usize::MAX),
+                    ))
+                },
+            )
+    } else {
+        tool_output_token_badge(output_for_badge)
+    };
+    let token_label = if (compact || expanded) && !token_badge.label.is_empty() {
         format!("~{}", token_badge.label)
     } else {
         token_badge.label.clone()
@@ -4448,14 +4473,16 @@ fn render_tool_message_mode(
     } else {
         None
     };
-    let is_error = if let Some(counts) = batch_counts {
-        counts.failed > 0 && counts.succeeded == 0
-    } else {
-        tools_ui::tool_output_looks_failed(&msg.content)
-    };
-    let is_partial_batch = batch_counts
-        .map(|counts| counts.failed > 0 && counts.succeeded > 0)
-        .unwrap_or(false);
+    let is_error = interrupted_batch
+        || if let Some(counts) = batch_counts {
+            counts.failed > 0 && counts.succeeded == 0
+        } else {
+            tools_ui::tool_output_looks_failed(&msg.content)
+        };
+    let is_partial_batch = !interrupted_batch
+        && batch_counts
+            .map(|counts| counts.failed > 0 && counts.succeeded > 0)
+            .unwrap_or(false);
 
     let (icon, icon_color) = if is_partial_batch {
         ("⚠", rgb(214, 184, 92))
@@ -4507,7 +4534,9 @@ fn render_tool_message_mode(
         .min(reserved_summary_width.saturating_sub(8));
     let technical_summary_width = reserved_summary_width.saturating_sub(intent_reserved_width);
 
-    let summary = if let Some(counts) = batch_counts {
+    let summary = if interrupted_batch {
+        "Cancelled".into()
+    } else if let Some(counts) = batch_counts {
         if counts.failed > 0 {
             if counts.succeeded == 0 {
                 format!("{}/{} failed", counts.failed, counts.total())
@@ -4619,13 +4648,15 @@ fn render_tool_message_mode(
             ));
             tool_line.push(Span::styled(")", Style::default().fg(dim_color())));
         }
-        let mut usage_spans = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
-        usage_spans.extend(tools_ui::tool_usage_spans(
+        let mut usage_spans = tools_ui::tool_usage_spans(
             token_badge.label,
             token_badge.color,
             msg.duration_secs,
             &msg.content,
-        ));
+        );
+        if !usage_spans.is_empty() {
+            usage_spans.insert(0, Span::styled(" · ", Style::default().fg(dim_color())));
+        }
         let token_suffix = Line::from(usage_spans);
 
         vec![super::truncate_line_preserving_suffix_to_width(
@@ -4836,7 +4867,9 @@ fn render_tool_message_mode(
                 sub_icon_color,
                 50,
                 Some(row_width),
-                sub_result.map(|result| result.content.as_str()),
+                sub_result
+                    .filter(|_| !interrupted_batch)
+                    .map(|result| result.content.as_str()),
                 sub_result.and_then(|result| result.metrics),
             ));
 
@@ -4852,6 +4885,13 @@ fn render_tool_message_mode(
             }
 
             if compact && let Some(result) = sub_result {
+                if interrupted_batch {
+                    let mut line =
+                        tools_ui::tool_response(&result.content, row_width.saturating_sub(4));
+                    line.spans.insert(0, Span::raw("    "));
+                    lines.push(line);
+                    continue;
+                }
                 let mut details = tools_ui::compact_tool_result_rows(
                     &sub_tc,
                     &result.content,
@@ -5103,7 +5143,10 @@ struct ToolOutputTokenBadge {
 }
 
 fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
-    let tokens = crate::util::estimate_tokens(content);
+    output_token_badge(crate::util::estimate_tokens(content))
+}
+
+fn output_token_badge(tokens: usize) -> ToolOutputTokenBadge {
     ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
         color: tools_ui::tool_output_token_color(tokens),

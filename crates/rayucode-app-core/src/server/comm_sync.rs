@@ -44,17 +44,20 @@ fn live_activity_snapshot(
         .map(|current_tool_name| SessionActivitySnapshot {
             is_processing: true,
             current_tool_name: Some(current_tool_name),
+            active_tool: None,
         })
         .or_else(|| {
             processing_without_tool.then_some(SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: None,
+                active_tool: None,
             })
         })
         .or_else(|| {
             fallback_processing.then_some(SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: None,
+                active_tool: None,
             })
         })
 }

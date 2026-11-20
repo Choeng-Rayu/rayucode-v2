@@ -261,6 +261,7 @@ fn format_members_renders_activity_progress_churn_and_turns() {
             activity: Some(SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: Some("edit".to_string()),
+                active_tool: None,
             }),
             provider_name: Some("anthropic".to_string()),
             provider_model: Some("claude-sonnet".to_string()),
@@ -436,6 +437,7 @@ fn format_status_snapshot_includes_activity_and_metadata() {
         activity: Some(SessionActivitySnapshot {
             is_processing: true,
             current_tool_name: Some("bash".to_string()),
+            active_tool: None,
         }),
         provider_name: None,
         provider_model: None,
@@ -454,9 +456,9 @@ fn format_status_snapshot_includes_activity_and_metadata() {
     assert!(output.output.contains("Activity: busy (bash)"));
     assert!(output.output.contains("Swarm: swarm-test"));
     assert!(
-        output
-            .output
-            .contains("Meta: headless · attachments=0 · active=3s ago · status_age=7s · joined=42s")
+        output.output.contains(
+            "Meta: headless · attachments=0 · active=3s ago · status_age=7s · joined=42s"
+        )
     );
     assert!(output.output.contains("Files: src/server/comm_sync.rs"));
 }

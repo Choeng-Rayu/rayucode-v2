@@ -53,6 +53,16 @@ pub(super) fn handle_tool_done(
     app.commit_pending_streaming_assistant_message();
     crate::tui::mermaid::clear_streaming_preview_diagram();
     let is_batch = tool_call.name == "batch";
+    let display_output = if is_batch
+        && matches!(
+            error.as_deref(),
+            Some("interrupted by reload" | "interrupted by user")
+        ) {
+        app.interrupted_batch_result(&tool_call.id, &display_output, tool_duration_ms)
+            .unwrap_or(display_output)
+    } else {
+        display_output
+    };
     app.observe_tool_result(&tool_call, &output, error.is_some(), None);
     app.note_tool_completed(&tool_call, error.is_some());
     app.push_display_message(DisplayMessage {

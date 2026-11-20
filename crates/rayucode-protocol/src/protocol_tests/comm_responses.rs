@@ -229,6 +229,7 @@ fn test_comm_status_response_roundtrip() -> Result<()> {
             activity: Some(SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: Some("bash".to_string()),
+                active_tool: None,
             }),
             provider_name: None,
             provider_model: None,
@@ -251,4 +252,26 @@ fn test_comm_status_response_roundtrip() -> Result<()> {
         Some("bash".to_string())
     );
     Ok(())
+}
+#[test]
+fn active_tool_in_session_activity_accepts_older_history() {
+    let old = serde_json::json!({"is_processing": true, "current_tool_name": "bash"});
+    let activity: crate::SessionActivitySnapshot = serde_json::from_value(old.clone()).unwrap();
+    assert!(activity.active_tool.is_none());
+    assert_eq!(serde_json::to_value(activity).unwrap(), old);
+
+    let active = serde_json::json!({
+        "is_processing": true,
+        "current_tool_name": "bash",
+        "active_tool": {
+            "identity": {"runtime_generation": "fixture", "turn_id": 2},
+            "tool": {"id": "call", "name": "bash", "input": {"command": "true"}},
+            "elapsed_ms": 1530
+        }
+    });
+    let activity: crate::SessionActivitySnapshot = serde_json::from_value(active.clone()).unwrap();
+    let snapshot = activity.active_tool.as_ref().unwrap();
+    assert_eq!(snapshot.elapsed_ms, 1530);
+    assert_eq!(snapshot.tool.input["command"], "true");
+    assert_eq!(serde_json::to_value(activity).unwrap(), active);
 }

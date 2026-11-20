@@ -1298,6 +1298,13 @@ pub(super) async fn session_activity_snapshot(
     session_id: &str,
     fallback_processing: bool,
 ) -> Option<SessionActivitySnapshot> {
+    if let Some(active_tool) = super::live_status::active_tool(session_id) {
+        return Some(SessionActivitySnapshot {
+            is_processing: true,
+            current_tool_name: Some(active_tool.tool.name.clone()),
+            active_tool: Some(active_tool),
+        });
+    }
     let snapshot = {
         let connections = client_connections.read().await;
         let mut processing_without_tool = false;
@@ -1317,11 +1324,13 @@ pub(super) async fn session_activity_snapshot(
             .map(|current_tool_name| SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: Some(current_tool_name),
+                active_tool: None,
             })
             .or_else(|| {
                 processing_without_tool.then_some(SessionActivitySnapshot {
                     is_processing: true,
                     current_tool_name: None,
+                    active_tool: None,
                 })
             })
     };
@@ -1331,6 +1340,7 @@ pub(super) async fn session_activity_snapshot(
             SessionActivitySnapshot {
                 is_processing: true,
                 current_tool_name: None,
+                active_tool: None,
             },
         )
     })
