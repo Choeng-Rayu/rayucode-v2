@@ -355,6 +355,10 @@ pub(super) fn active_batch_progress_hash(app: &dyn TuiState) -> u64 {
         app.tool_elapsed(&key)
             .map(|time| time.as_secs())
             .hash(&mut hasher);
+        if let Some(metrics) = subcall.metrics {
+            metrics.duration_ms.hash(&mut hasher);
+            metrics.output_bytes.hash(&mut hasher);
+        }
         subcall.index.hash(&mut hasher);
         subcall.tool_call.id.hash(&mut hasher);
         subcall.tool_call.name.hash(&mut hasher);
@@ -541,6 +545,7 @@ fn prepare_active_batch_progress(
         };
         let key =
             crate::tui::core::batch_child_call_id(&progress.tool_call_id, &subcall.tool_call.id);
+        let progress = app.bash_progress(&key);
         let mut line = tools_ui::render_batch_subcall_line(
             &subcall.tool_call,
             icon,
@@ -548,23 +553,24 @@ fn prepare_active_batch_progress(
             50,
             Some(row_width),
             None,
+            subcall.metrics,
         );
         if let Some(elapsed) = app.tool_elapsed(&key) {
-            let mut usage = format!(" · {}s", elapsed.as_secs());
-            if let Some(output) = app.bash_progress(&key) {
-                let tokens = crate::util::estimate_tokens_for_bytes(output.output_bytes as usize);
-                usage.push_str(&format!(
-                    " · ~{}",
-                    crate::util::format_approx_token_count(tokens)
-                ));
-            }
-            line = super::truncate_line_preserving_suffix_to_width(
-                &line,
-                &Line::styled(usage, Style::default().fg(dim_color())),
-                row_width,
-            );
+            let mut usage = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
+            usage.extend(tools_ui::live_tool_usage(
+                elapsed,
+                progress.map(|output| output.output_bytes),
+            ));
+            line = tools_ui::fit_batch_subcall_metrics(line, Line::from(usage), row_width);
         }
         lines.push(line);
+        if let Some(progress) = progress {
+            let mut output = tools_ui::live_bash_output_rows(progress, row_width.saturating_sub(4));
+            for row in &mut output {
+                row.spans.insert(0, Span::raw("    "));
+            }
+            lines.extend(output);
+        }
     }
 
     if centered {

@@ -1,11 +1,12 @@
 use super::{Registry, Tool, ToolContext, ToolOutput, WeakRegistry};
-use crate::bus::{BatchSubcallProgress, BatchSubcallState};
+use crate::bus::{BatchProgress, BatchSubcallMetrics, BatchSubcallProgress, BatchSubcallState};
 use crate::message::ToolCall;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::time::Instant;
 
 const MAX_PARALLEL: usize = 10;
 
@@ -41,7 +42,7 @@ pub(crate) fn generic_batch_schema() -> Value {
 fn ordered_batch_subcalls(
     subcalls: &[(usize, String, Value)],
     running: &HashMap<usize, ToolCall>,
-    failures: &HashMap<usize, bool>,
+    completed: &HashMap<usize, (BatchSubcallState, BatchSubcallMetrics)>,
 ) -> Vec<BatchSubcallProgress> {
     let mut ordered: Vec<BatchSubcallProgress> = subcalls
         .iter()
@@ -53,23 +54,28 @@ fn ordered_batch_subcalls(
                 intent: ToolCall::intent_from_input(parameters),
                 thought_signature: None,
             });
-            let state = if running.contains_key(i) {
-                BatchSubcallState::Running
-            } else if failures.get(i).copied().unwrap_or(false) {
-                BatchSubcallState::Failed
-            } else {
-                BatchSubcallState::Succeeded
-            };
+            let (state, metrics) = completed
+                .get(i)
+                .map(|(state, metrics)| (state.clone(), Some(*metrics)))
+                .unwrap_or((BatchSubcallState::Running, None));
 
             BatchSubcallProgress {
                 index: i + 1,
                 tool_call,
                 state,
+                metrics,
             }
         })
         .collect();
     ordered.sort_by_key(|entry| entry.index);
     ordered
+}
+
+fn publish_progress(progress: BatchProgress) {
+    // Use the same queue as Bash output for clients following this turn.
+    // The bus also feeds the coordinator's worker status and legacy clients.
+    super::bash_progress::publish_batch_progress(&progress);
+    crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(progress));
 }
 
 pub struct BatchTool {
@@ -257,17 +263,15 @@ impl Tool for BatchTool {
             })
             .collect();
 
-        crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
-            crate::bus::BatchProgress {
-                session_id: ctx.session_id.clone(),
-                tool_call_id: ctx.tool_call_id.clone(),
-                total: num_tools,
-                completed: 0,
-                last_completed: None,
-                running: running.values().cloned().collect(),
-                subcalls: ordered_batch_subcalls(&subcalls, &running, &HashMap::new()),
-            },
-        ));
+        publish_progress(BatchProgress {
+            session_id: ctx.session_id.clone(),
+            tool_call_id: ctx.tool_call_id.clone(),
+            total: num_tools,
+            completed: 0,
+            last_completed: None,
+            running: running.values().cloned().collect(),
+            subcalls: ordered_batch_subcalls(&subcalls, &running, &HashMap::new()),
+        });
 
         let mut stream: futures::stream::FuturesUnordered<_> = subcalls
             .iter()
@@ -278,35 +282,51 @@ impl Tool for BatchTool {
                 let parameters = parameters.clone();
                 let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, tool_name.clone()));
                 async move {
+                    let started = Instant::now();
                     let result = registry.execute(&tool_name, parameters, sub_ctx).await;
-                    (i, tool_name, result)
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    let output_bytes = match &result {
+                        Ok(output) => output.output.len(),
+                        Err(error) => format!("Error: {error}").len(),
+                    } as u64;
+                    (
+                        i,
+                        tool_name,
+                        result,
+                        BatchSubcallMetrics {
+                            duration_ms,
+                            output_bytes,
+                        },
+                    )
                 }
             })
             .collect();
 
-        let mut results: Vec<(usize, String, Result<ToolOutput>)> = Vec::with_capacity(num_tools);
-        let mut failures: HashMap<usize, bool> = HashMap::new();
+        let mut results = Vec::with_capacity(num_tools);
+        let mut completed = HashMap::new();
         let mut completed_count = 0usize;
-        while let Some((i, tool_name, result)) = stream.next().await {
+        while let Some((i, tool_name, result, metrics)) = stream.next().await {
             completed_count += 1;
-            let failed = result.is_err();
+            let state = if result.is_err() {
+                BatchSubcallState::Failed
+            } else {
+                BatchSubcallState::Succeeded
+            };
             running.remove(&i);
-            failures.insert(i, failed);
-            crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
-                crate::bus::BatchProgress {
-                    session_id: ctx.session_id.clone(),
-                    tool_call_id: ctx.tool_call_id.clone(),
-                    total: num_tools,
-                    completed: completed_count,
-                    last_completed: Some(tool_name.clone()),
-                    running: running.values().cloned().collect(),
-                    subcalls: ordered_batch_subcalls(&subcalls, &running, &failures),
-                },
-            ));
-            results.push((i, tool_name, result));
+            completed.insert(i, (state, metrics));
+            publish_progress(BatchProgress {
+                session_id: ctx.session_id.clone(),
+                tool_call_id: ctx.tool_call_id.clone(),
+                total: num_tools,
+                completed: completed_count,
+                last_completed: Some(tool_name.clone()),
+                running: running.values().cloned().collect(),
+                subcalls: ordered_batch_subcalls(&subcalls, &running, &completed),
+            });
+            results.push((i, tool_name, result, metrics));
         }
         // Restore original order
-        results.sort_by_key(|(i, _, _)| *i);
+        results.sort_by_key(|(i, _, _, _)| *i);
 
         // Format results
         let mut output = String::new();
@@ -315,7 +335,8 @@ impl Tool for BatchTool {
         let mut error_count = 0;
         let mut failed_tools = Vec::new();
 
-        for (i, tool_name, result) in results {
+        for (i, tool_name, result, metrics) in results {
+            output.push_str(&metrics.section_prefix());
             output.push_str(&format!("--- [{}] {} ---\n", i + 1, tool_name));
             match result {
                 Ok(out) => {

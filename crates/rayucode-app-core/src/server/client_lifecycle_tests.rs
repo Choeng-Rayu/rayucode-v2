@@ -46,6 +46,32 @@ fn identity_transport_negotiation_preserves_legacy_payload_shape() {
     );
 }
 
+#[test]
+fn batch_progress_uses_one_delivery_path_per_client() {
+    let progress = ServerEvent::BatchProgress {
+        progress: crate::bus::BatchProgress {
+            session_id: "session".into(),
+            tool_call_id: "batch".into(),
+            total: 1,
+            completed: 0,
+            last_completed: None,
+            running: Vec::new(),
+            subcalls: Vec::new(),
+        },
+    };
+    let scoped = ServerEvent::TurnEvent {
+        identity: crate::protocol::TurnIdentity {
+            runtime_generation: "runtime".into(),
+            turn_id: 7,
+        },
+        event: Box::new(progress.clone()),
+    };
+    assert!(event_for_transport(progress.clone(), false, false).is_some());
+    assert!(event_for_transport(scoped.clone(), false, false).is_none());
+    assert!(event_for_transport(progress, true, true).is_none());
+    assert!(event_for_transport(scoped, true, true).is_some());
+}
+
 fn turn_payload(event: ServerEvent) -> ServerEvent {
     match event {
         ServerEvent::TurnEvent { event, .. } => *event,

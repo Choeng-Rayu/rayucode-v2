@@ -52,11 +52,28 @@ fn batch_subcall_groups_duration_and_tokens() {
         50,
         Some(80),
         Some("[tool timing: duration=73ms] config content"),
+        None,
     );
     let text = extract_line_text(&line);
     assert!(text.contains(" · 73ms, "), "{text}");
     assert!(text.ends_with(" tok"), "{text}");
     assert!(line.width() <= 80);
+
+    let short = crate::tui::ui::tools_ui::render_batch_subcall_line(
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        50,
+        Some(18),
+        None,
+        Some(crate::bus::BatchSubcallMetrics {
+            duration_ms: 427,
+            output_bytes: 20,
+        }),
+    );
+    let text = extract_line_text(&short);
+    assert!(text.contains("read 427ms ~5t"), "{text}");
+    assert!(short.width() <= 18);
 }
 
 #[test]
@@ -151,6 +168,7 @@ fn batch_subcall_colors_duration_independently_from_tokens() {
             50,
             Some(60),
             Some(&content),
+            None,
         );
         let duration = line
             .spans

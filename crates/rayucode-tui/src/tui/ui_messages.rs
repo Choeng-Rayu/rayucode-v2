@@ -4705,16 +4705,11 @@ fn render_tool_message_mode(
     }
 
     if compact {
-        if tools_ui::is_shell_tool(tc) && tools_ui::show_bash_output() {
-            let output = tools_ui::retained_tool_output(tc, &msg.content).trim_end();
-            if output.is_empty() || output == "Command completed successfully (no output)" {
-                lines.push(tools_ui::tool_response("(No output)", row_width));
-            } else {
-                lines.extend(tools_ui::output_rows(output, row_width, Some(3)));
-            }
-        } else if let Some(summary) = tools_ui::read_search_result_summary(tc, &msg.content) {
-            lines.push(tools_ui::tool_response(summary, row_width));
-        }
+        lines.extend(tools_ui::compact_tool_result_rows(
+            tc,
+            &msg.content,
+            row_width,
+        ));
     }
 
     if !compact
@@ -4779,6 +4774,7 @@ fn render_tool_message_mode(
                 50,
                 Some(row_width),
                 sub_result.map(|result| result.content.as_str()),
+                sub_result.and_then(|result| result.metrics),
             ));
 
             if sub_errored {
@@ -4790,6 +4786,18 @@ fn render_tool_message_mode(
                     4,
                 ));
                 continue;
+            }
+
+            if compact && let Some(result) = sub_result {
+                let mut details = tools_ui::compact_tool_result_rows(
+                    &sub_tc,
+                    &result.content,
+                    row_width.saturating_sub(4),
+                );
+                for row in &mut details {
+                    row.spans.insert(0, Span::raw("    "));
+                }
+                lines.extend(details);
             }
 
             if let Some(result) = sub_result
@@ -5026,14 +5034,9 @@ struct ToolOutputTokenBadge {
 
 fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
     let tokens = crate::util::estimate_tokens(content);
-    let color = match crate::util::approx_tool_output_token_severity(tokens) {
-        crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
-        crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
-        crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
-    };
     ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
-        color,
+        color: tools_ui::tool_output_token_color(tokens),
     }
 }
 

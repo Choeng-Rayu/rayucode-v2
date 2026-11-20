@@ -23,6 +23,14 @@ pub async fn with_bash_progress<T>(
     TURN_EVENTS.scope(sender, work).await
 }
 
+pub(super) fn publish_batch_progress(progress: &crate::bus::BatchProgress) {
+    let _ = TURN_EVENTS.try_with(|sender| {
+        sender.send(ServerEvent::BatchProgress {
+            progress: progress.clone(),
+        })
+    });
+}
+
 struct Capture {
     call_id: String,
     started: Instant,

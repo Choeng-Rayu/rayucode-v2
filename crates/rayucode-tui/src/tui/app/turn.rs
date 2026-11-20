@@ -1620,12 +1620,21 @@ impl App {
                                 _ => {}
                             }
                         }
-                        Some(crate::protocol::ServerEvent::BashProgress { update }) = progress_rx.recv() => {
-                            if self.apply_bash_progress(update.snapshot()) {
+                        Some(progress) = progress_rx.recv() => {
+                            let needs_redraw = match progress {
+                                crate::protocol::ServerEvent::BashProgress { update } => {
+                                    self.apply_bash_progress(update.snapshot())
+                                }
+                                crate::protocol::ServerEvent::BatchProgress { progress } => {
+                                    self.update_batch_tool_activity(progress)
+                                }
+                                _ => false,
+                            };
+                            if needs_redraw {
                                 status_spinner_renderer.draw_full(self, terminal)?;
                             }
                         }
-                        // Listen for subagent/batch status updates
+                        // Observe subagents and other session updates from the bus.
                         bus_event = bus_receiver.recv() => {
                             let mut needs_redraw = false;
                             match bus_event {
@@ -1640,12 +1649,7 @@ impl App {
                                         needs_redraw = true;
                                     }
                                 }
-                                Ok(BusEvent::BatchProgress(progress)) => {
-                                    if progress.session_id == self.session.id {
-                                        self.update_batch_tool_activity(progress);
-                                        needs_redraw = true;
-                                    }
-                                }
+                                Ok(BusEvent::BatchProgress(_)) => {}
                                 Ok(BusEvent::SidePanelUpdated(update)) => {
                                     if update.session_id == self.session.id {
                                         self.set_side_panel_snapshot(update.snapshot);

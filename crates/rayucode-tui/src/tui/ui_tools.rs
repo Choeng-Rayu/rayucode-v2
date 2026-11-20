@@ -1566,21 +1566,87 @@ pub(super) fn tool_usage_spans(
     let Some((duration_label, tokens)) = label.split_once(", ") else {
         return vec![Span::styled(label, Style::default().fg(token_color))];
     };
-    let duration_color = if seconds >= 60.0 {
+    vec![
+        Span::styled(
+            duration_label.to_owned(),
+            Style::default().fg(tool_duration_color(seconds)),
+        ),
+        Span::styled(", ", Style::default().fg(dim_color())),
+        Span::styled(tokens.to_owned(), Style::default().fg(token_color)),
+    ]
+}
+
+fn tool_duration_color(seconds: f32) -> Color {
+    if seconds >= 60.0 {
         rgb(224, 118, 118)
     } else if seconds >= 10.0 {
         rgb(214, 184, 92)
     } else {
         rgb(118, 118, 118)
+    }
+}
+
+pub(super) fn tool_output_token_color(tokens: usize) -> Color {
+    match crate::util::approx_tool_output_token_severity(tokens) {
+        crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
+        crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
+        crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
+    }
+}
+
+pub(super) fn live_tool_usage(
+    elapsed: std::time::Duration,
+    output_bytes: Option<u64>,
+) -> Vec<Span<'static>> {
+    let elapsed_ms = elapsed.as_secs().saturating_mul(1000);
+    let duration = if elapsed_ms == 0 {
+        "0s".into()
+    } else {
+        let duration = crate::message::Message::format_duration(elapsed_ms);
+        duration.replace(".0s", "s")
     };
-    vec![
-        Span::styled(
-            duration_label.to_owned(),
-            Style::default().fg(duration_color),
-        ),
-        Span::styled(", ", Style::default().fg(dim_color())),
-        Span::styled(tokens.to_owned(), Style::default().fg(token_color)),
-    ]
+    let mut spans = vec![Span::styled(
+        duration,
+        Style::default().fg(tool_duration_color(elapsed.as_secs_f32())),
+    )];
+    if let Some(bytes) = output_bytes {
+        let tokens = crate::util::estimate_tokens_for_bytes(bytes.try_into().unwrap_or(usize::MAX));
+        spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
+        spans.push(Span::styled(
+            format!("~{}", crate::util::format_approx_token_count(tokens)),
+            Style::default().fg(tool_output_token_color(tokens)),
+        ));
+    }
+    spans
+}
+
+pub(super) fn fit_batch_subcall_metrics(
+    mut line: Line<'static>,
+    mut suffix: Line<'static>,
+    width: usize,
+) -> Line<'static> {
+    let label_width: usize = line.spans.iter().take(2).map(Span::width).sum();
+    if label_width + suffix.width() <= width {
+        return truncate_line_preserving_suffix_to_width(&line, &suffix, width);
+    }
+
+    line.spans.truncate(2);
+    if let Some(icon) = line.spans.first_mut() {
+        icon.content = icon.content.trim_start().to_owned().into();
+    }
+    for span in &mut suffix.spans {
+        if matches!(span.content.as_ref(), " · " | ", ") {
+            span.content = " ".into();
+        }
+    }
+    if line.width() + suffix.width() > width
+        && let Some(tokens) = suffix.spans.last_mut()
+        && let Some(count) = tokens.content.strip_suffix(" tok")
+    {
+        tokens.content = format!("{count}t").into();
+    }
+    line.spans.extend(suffix.spans);
+    super::truncate_line_with_ellipsis_to_width(&line, width)
 }
 
 pub(super) fn render_batch_subcall_line(
@@ -1590,22 +1656,20 @@ pub(super) fn render_batch_subcall_line(
     bash_max_chars: usize,
     max_width: Option<usize>,
     output_content: Option<&str>,
+    metrics: Option<crate::bus::BatchSubcallMetrics>,
 ) -> Line<'static> {
     let display_name = resolve_display_tool_name(&tool.name).to_string();
-    let token_badge = output_content.map(|content| {
-        let tokens = crate::util::estimate_tokens(content);
-        let color = match crate::util::approx_tool_output_token_severity(tokens) {
-            crate::util::ApproxTokenSeverity::Normal => rgb(118, 118, 118),
-            crate::util::ApproxTokenSeverity::Warning => rgb(214, 184, 92),
-            crate::util::ApproxTokenSeverity::Danger => rgb(224, 118, 118),
-        };
+    let output = output_content.unwrap_or_default();
+    let seconds = metrics.map(|metrics| metrics.duration_ms as f32 / 1000.0);
+    let token_badge = (output_content.is_some() || metrics.is_some()).then(|| {
+        let bytes = metrics.map_or(output.len(), |metrics| {
+            metrics.output_bytes.try_into().unwrap_or(usize::MAX)
+        });
+        let tokens = crate::util::estimate_tokens_for_bytes(bytes);
+        let label = format!("~{}", crate::util::format_approx_token_count(tokens));
         (
-            tool_usage_label(
-                &crate::util::format_approx_token_count(tokens),
-                None,
-                content,
-            ),
-            color,
+            tool_usage_label(&label, seconds, output),
+            tool_output_token_color(tokens),
         )
     });
     let intent = tool
@@ -1681,24 +1745,14 @@ pub(super) fn render_batch_subcall_line(
     }
     let token_suffix = token_badge.map(|(label, color)| {
         let mut spans = vec![Span::styled(" · ", Style::default().fg(dim_color()))];
-        spans.extend(tool_usage_spans(
-            label,
-            color,
-            None,
-            output_content.unwrap_or_default(),
-        ));
+        spans.extend(tool_usage_spans(label, color, seconds, output));
         Line::from(spans)
     });
 
-    if let (Some(max_width), Some(token_suffix)) = (max_width, token_suffix.as_ref()) {
-        return truncate_line_preserving_suffix_to_width(
-            &Line::from(spans),
-            token_suffix,
-            max_width,
-        );
-    }
-
     if let Some(token_suffix) = token_suffix {
+        if let Some(width) = max_width {
+            return fit_batch_subcall_metrics(Line::from(spans), token_suffix, width);
+        }
         spans.extend(token_suffix.spans);
     }
 

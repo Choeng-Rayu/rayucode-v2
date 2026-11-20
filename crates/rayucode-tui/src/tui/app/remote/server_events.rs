@@ -260,6 +260,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 | ServerEvent::ToolInput { .. }
                 | ServerEvent::ToolExec { .. }
                 | ServerEvent::ToolDone { .. }
+                | ServerEvent::BashProgress { .. }
                 | ServerEvent::BatchProgress { .. }
                 | ServerEvent::ConnectionPhase { .. }
                 | ServerEvent::StatusDetail { .. }
@@ -712,10 +713,7 @@ fn handle_server_event_inner(
             output_format,
             revised_prompt,
         ),
-        ServerEvent::BatchProgress { progress } => {
-            app.update_batch_tool_activity(progress);
-            false
-        }
+        ServerEvent::BatchProgress { progress } => app.update_batch_tool_activity(progress),
         ServerEvent::KvCacheMiss {
             reason,
             missed_tokens,

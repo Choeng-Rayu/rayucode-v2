@@ -11,6 +11,7 @@ use super::tool_output_looks_failed;
 pub(crate) struct BatchSubResult {
     pub errored: bool,
     pub content: String,
+    pub metrics: Option<crate::bus::BatchSubcallMetrics>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +94,11 @@ pub(crate) fn finalize_batch_section(raw: &str) -> BatchSubResult {
 
     let errored = tool_output_looks_failed(&content);
 
-    BatchSubResult { errored, content }
+    BatchSubResult {
+        errored,
+        content,
+        metrics: None,
+    }
 }
 
 #[cfg(test)]
@@ -107,9 +112,13 @@ pub(crate) fn parse_batch_sub_outputs_by_index(
     content: &str,
 ) -> std::collections::BTreeMap<usize, BatchSubResult> {
     let mut results = std::collections::BTreeMap::new();
-    let mut current_index: Option<usize> = None;
-    let mut current_content_start: Option<usize> = None;
+    let mut current_section = None;
     let mut current_pos = 0usize;
+    let mut finish_section = |(index, start, metrics), end| {
+        let mut result = finalize_batch_section(&content[start..end]);
+        result.metrics = metrics;
+        results.insert(index, result);
+    };
 
     while current_pos < content.len() {
         let line_start = current_pos;
@@ -124,19 +133,18 @@ pub(crate) fn parse_batch_sub_outputs_by_index(
         let trimmed = line.trim_end_matches(['\n', '\r']);
 
         if let Some(index) = batch_section_index(trimmed) {
-            if let (Some(prev_index), Some(start)) = (current_index, current_content_start) {
-                results.insert(
-                    prev_index,
-                    finalize_batch_section(&content[start..line_start]),
-                );
+            if let Some(section) = current_section.take() {
+                finish_section(section, line_start);
             }
-            current_index = Some(index);
-            current_content_start = Some(current_pos);
+            let metrics = trimmed.split_once("--- [").and_then(|(prefix, _)| {
+                crate::bus::BatchSubcallMetrics::from_section_prefix(prefix)
+            });
+            current_section = Some((index, current_pos, metrics));
         }
     }
 
-    if let (Some(index), Some(start)) = (current_index, current_content_start) {
-        results.insert(index, finalize_batch_section(&content[start..]));
+    if let Some(section) = current_section {
+        finish_section(section, content.len());
     }
 
     results
@@ -196,6 +204,24 @@ mod tests {
             parsed.get(&2).map(|result| result.content.as_str()),
             Some("second output")
         );
+        assert!(parsed.values().all(|result| result.metrics.is_none()));
+    }
+
+    #[test]
+    fn recorded_batch_metrics_stay_with_their_child_after_reload() {
+        let metrics = crate::bus::BatchSubcallMetrics {
+            duration_ms: 73,
+            output_bytes: 120,
+        };
+        let content = format!(
+            "[batch] {}--- [1] bash ---\nfixture 界\n\n--- [2] bash ---\nError: second\n\nCompleted: 1 succeeded, 1 failed",
+            metrics.section_prefix(),
+        );
+        let parsed = parse_batch_sub_outputs_by_index(&content);
+        assert_eq!(parsed[&1].metrics, Some(metrics));
+        assert_eq!(parsed[&1].content, "fixture 界");
+        assert!(parsed[&2].metrics.is_none());
+        assert!(parsed[&2].errored);
     }
 
     #[test]

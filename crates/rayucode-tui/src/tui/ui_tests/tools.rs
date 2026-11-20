@@ -85,6 +85,7 @@ fn test_patch_headers_preserve_line_counts_and_token_severity() {
                 50,
                 Some(120),
                 Some(&output),
+                None,
             );
             let label = crate::util::format_approx_token_count(tokens);
             for line in [&standalone[0], &batch] {
@@ -97,7 +98,7 @@ fn test_patch_headers_preserve_line_counts_and_token_severity() {
                 let badge = line
                     .spans
                     .iter()
-                    .find(|span| span.content == label)
+                    .find(|span| span.content.trim_start_matches('~') == label)
                     .expect("missing token badge");
                 assert_eq!(badge.style.fg, Some(color), "{name}: {tokens}");
             }
@@ -898,8 +899,15 @@ fn test_render_batch_subcall_line_keeps_full_bash_summary_when_row_fits() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 32, Some(160), None);
+    let line = tools_ui::render_batch_subcall_line(
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        32,
+        Some(160),
+        None,
+        None,
+    );
     let rendered = extract_line_text(&line);
 
     assert!(
@@ -921,8 +929,15 @@ fn test_render_batch_subcall_line_shows_model_provided_intent() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 50, Some(120), None);
+    let line = tools_ui::render_batch_subcall_line(
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        50,
+        Some(120),
+        None,
+        None,
+    );
     let rendered = extract_line_text(&line);
 
     assert!(
@@ -945,8 +960,15 @@ fn test_render_batch_subcall_line_hides_technical_detail_by_default() {
         thought_signature: None,
     };
 
-    let line =
-        tools_ui::render_batch_subcall_line(&tool, "✓", rgb(100, 180, 100), 50, Some(120), None);
+    let line = tools_ui::render_batch_subcall_line(
+        &tool,
+        "✓",
+        rgb(100, 180, 100),
+        50,
+        Some(120),
+        None,
+        None,
+    );
     let rendered = extract_line_text(&line);
 
     assert!(
@@ -997,6 +1019,7 @@ fn test_render_batch_subcall_line_shows_first_subcall_token_badge() {
         50,
         Some(120),
         Some("query: pending_soft_interrupt\nmatches: 1 in 1 files\n"),
+        None,
     );
     let rendered = extract_line_text(&line);
 

@@ -131,25 +131,32 @@ pub(in crate::tui::ui) fn pending_tool_lines(
         tool_header(tool, subject, dim_color(), cells),
         tool_response(activity, cells),
     ];
-    if cells >= 22
-        && show_bash_output()
-        && let Some(progress) = progress
-    {
-        let mut tail = output_rows(&progress.tail, cells, None);
-        if tail.len() > 3 {
-            tail.drain(..tail.len() - 3);
-            if let Some(first) = tail.first_mut() {
-                let plain = super::super::line_plain_text(first);
-                *first = tool_response(plain.trim_start(), cells);
-            }
-        }
-        lines.extend(tail);
+    if let Some(progress) = progress {
+        lines.extend(live_bash_output_rows(progress, cells));
     }
     lines.extend(codemode_preview(tool, cells));
     if centered {
         super::super::left_pad_lines_to_block_width(&mut lines, width, block);
     }
     lines
+}
+
+pub(in crate::tui::ui) fn live_bash_output_rows(
+    progress: &crate::protocol::BashProgress,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if width < 22 || !show_bash_output() {
+        return Vec::new();
+    }
+    let mut tail = output_rows(&progress.tail, width, None);
+    if tail.len() > 3 {
+        tail.drain(..tail.len() - 3);
+        if let Some(first) = tail.first_mut() {
+            let plain = super::super::line_plain_text(first);
+            *first = tool_response(plain.trim_start(), width);
+        }
+    }
+    tail
 }
 
 pub(in crate::tui::ui) fn output_rows(
@@ -243,6 +250,23 @@ pub(in crate::tui::ui) fn retained_tool_output<'a>(tool: &ToolCall, output: &'a 
         .and_then(|text| text.strip_prefix(&tool.name))
         .and_then(|text| text.strip_prefix("] "))
         .unwrap_or(output)
+}
+
+pub(in crate::tui::ui) fn compact_tool_result_rows(
+    tool: &ToolCall,
+    output: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if is_shell_tool(tool) && show_bash_output() {
+        let output = retained_tool_output(tool, output).trim_end();
+        if output.is_empty() || output == "Command completed successfully (no output)" {
+            return vec![tool_response("(No output)", width)];
+        }
+        return output_rows(output, width, Some(3));
+    }
+    read_search_result_summary(tool, output)
+        .map(|summary| vec![tool_response(summary, width)])
+        .unwrap_or_default()
 }
 
 pub(in crate::tui::ui) fn read_search_result_summary(

@@ -94,6 +94,12 @@ fn event_for_transport(
     if matches!(payload, ServerEvent::BashProgress { .. }) && !supports_bash_progress {
         return None;
     }
+    // The bus remains the compatibility path for clients without turn identity.
+    if matches!(payload, ServerEvent::BatchProgress { .. })
+        && matches!(event, ServerEvent::TurnEvent { .. }) != supports_turn_identity
+    {
+        return None;
+    }
     if supports_turn_identity {
         return Some(event);
     }

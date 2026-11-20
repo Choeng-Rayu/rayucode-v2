@@ -6,7 +6,9 @@ pub use rayucode_background_types::{
     BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStalled,
     BackgroundTaskStatus,
 };
-pub use rayucode_batch_types::{BatchProgress, BatchSubcallProgress, BatchSubcallState};
+pub use rayucode_batch_types::{
+    BatchProgress, BatchSubcallMetrics, BatchSubcallProgress, BatchSubcallState,
+};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};

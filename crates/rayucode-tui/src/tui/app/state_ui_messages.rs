@@ -167,7 +167,20 @@ impl App {
         true
     }
 
-    pub(super) fn update_batch_tool_activity(&mut self, progress: crate::bus::BatchProgress) {
+    pub(super) fn update_batch_tool_activity(
+        &mut self,
+        progress: crate::bus::BatchProgress,
+    ) -> bool {
+        if self.pending_tool_row(&progress.tool_call_id).is_none()
+            && (!matches!(&self.status, ProcessingStatus::RunningTool(name) if name == "batch")
+                || self.display_messages.iter().rev().any(|row| {
+                    row.tool_data
+                        .as_ref()
+                        .is_some_and(|tool| tool.id == progress.tool_call_id)
+                }))
+        {
+            return false;
+        }
         for child in &progress.subcalls {
             let id =
                 crate::tui::core::batch_child_call_id(&progress.tool_call_id, &child.tool_call.id);
@@ -181,6 +194,7 @@ impl App {
             }
         }
         self.batch_progress = Some(progress);
+        true
     }
 
     pub(super) fn apply_bash_progress(&mut self, progress: crate::protocol::BashProgress) -> bool {

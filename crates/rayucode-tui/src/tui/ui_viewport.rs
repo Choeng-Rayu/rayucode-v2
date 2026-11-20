@@ -361,36 +361,40 @@ fn apply_running_tool_details(
             continue;
         };
         if let Some(elapsed) = app.tool_elapsed(&tool.id) {
-            let value = format!("{}s", elapsed.as_secs());
-            let cells = usize::from(width).saturating_sub(1);
-            let tokens = app.bash_progress(&tool.id).map(|progress| {
-                crate::util::format_approx_token_count(crate::util::estimate_tokens_for_bytes(
-                    progress.output_bytes as usize,
-                ))
-            });
+            let block = if app.centered_mode() {
+                super::centered_content_block_width(width, 96)
+            } else {
+                usize::from(width)
+            };
+            let cells = block.saturating_sub(1);
+            let output_bytes = app
+                .bash_progress(&tool.id)
+                .map(|progress| progress.output_bytes);
+            let usage = Line::from(super::tools_ui::live_tool_usage(elapsed, output_bytes));
             let background = tool
                 .input
                 .get("run_in_background")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true);
-            let activity = if background { "Background" } else { "Running" };
-            let details = match tokens {
-                Some(tokens) => {
-                    let detailed = format!("{activity} · {value} · ~{tokens}");
-                    if detailed.width() + 4 <= cells {
-                        detailed
-                    } else {
-                        format!("{value} · ~{tokens}")
-                    }
-                }
-                None => format!("{activity} · {value}"),
+            let activity = if background {
+                "Background · "
+            } else {
+                "Running · "
             };
-            let mut rendered = vec![super::tools_ui::tool_response(details, cells)];
+            let mut spans = vec![Span::styled("  ⎿ ", Style::default().fg(dim_color()))];
+            if activity.width() + usage.width() + 4 <= cells {
+                spans.push(Span::styled(activity, Style::default().fg(dim_color())));
+            }
+            spans.extend(usage.spans);
+            let mut rendered = [super::truncate_line_with_ellipsis_to_width(
+                &Line::from(spans),
+                cells,
+            )];
             if app.centered_mode() {
-                let block = super::centered_content_block_width(width, 96);
                 super::left_pad_lines_to_block_width(&mut rendered, width, block);
             }
-            lines[row - top] = rendered.remove(0);
+            let [detail] = rendered;
+            lines[row - top] = detail;
         }
     }
 }

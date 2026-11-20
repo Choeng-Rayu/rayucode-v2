@@ -441,6 +441,7 @@ fn test_prepare_messages_live_batch_rows_do_not_soft_wrap_on_narrow_width() {
                     thought_signature: None,
                 },
                 state: crate::bus::BatchSubcallState::Running,
+                metrics: None,
             }],
         }),
         ..Default::default()
@@ -504,6 +505,7 @@ fn test_prepare_messages_centered_live_batch_rows_keep_dedicated_padding_span() 
                     thought_signature: None,
                 },
                 state: crate::bus::BatchSubcallState::Running,
+                metrics: None,
             }],
         }),
         ..Default::default()
@@ -573,6 +575,10 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
                         thought_signature: None,
                     },
                     state: crate::bus::BatchSubcallState::Succeeded,
+                    metrics: Some(crate::bus::BatchSubcallMetrics {
+                        duration_ms: 73,
+                        output_bytes: 12,
+                    }),
                 },
                 crate::bus::BatchSubcallProgress {
                     index: 2,
@@ -584,6 +590,7 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
                         thought_signature: None,
                     },
                     state: crate::bus::BatchSubcallState::Running,
+                    metrics: None,
                 },
             ],
         }),
@@ -608,9 +615,9 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
         rendered
     );
     assert!(
-        rendered
-            .iter()
-            .any(|line| line.contains("✓") && line.contains("read")),
+        rendered.iter().any(|line| line.contains("✓")
+            && line.contains("read")
+            && line.contains("73ms, ~3 tok")),
         "missing completed subcall summary in {:?}",
         rendered
     );
@@ -664,6 +671,7 @@ fn test_prepare_messages_places_live_batch_after_committed_assistant_text() {
                     thought_signature: None,
                 },
                 state: crate::bus::BatchSubcallState::Running,
+                metrics: None,
             }],
         }),
         ..Default::default()
@@ -717,6 +725,7 @@ fn test_prepare_messages_live_batch_spinner_advances_between_frames() {
                 thought_signature: None,
             },
             state: crate::bus::BatchSubcallState::Running,
+            metrics: None,
         }],
     };
 
@@ -793,6 +802,7 @@ fn test_prepare_messages_live_batch_centered_mode_uses_left_aligned_padding() {
                     thought_signature: None,
                 },
                 state: crate::bus::BatchSubcallState::Running,
+                metrics: None,
             }],
         }),
         ..Default::default()

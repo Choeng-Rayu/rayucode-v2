@@ -10,11 +10,38 @@ pub enum BatchSubcallState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchSubcallMetrics {
+    pub duration_ms: u64,
+    pub output_bytes: u64,
+}
+
+impl BatchSubcallMetrics {
+    pub fn section_prefix(self) -> String {
+        format!(
+            "[batch timing: duration_ms={} output_bytes={}] ",
+            self.duration_ms, self.output_bytes,
+        )
+    }
+
+    pub fn from_section_prefix(prefix: &str) -> Option<Self> {
+        let (_, timing) = prefix.rsplit_once("[batch timing: duration_ms=")?;
+        let (duration_ms, output_bytes) =
+            timing.strip_suffix("] ")?.split_once(" output_bytes=")?;
+        Some(Self {
+            duration_ms: duration_ms.parse().ok()?,
+            output_bytes: output_bytes.parse().ok()?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BatchSubcallProgress {
     pub index: usize,
     pub tool_call: ToolCall,
     pub state: BatchSubcallState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<BatchSubcallMetrics>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
