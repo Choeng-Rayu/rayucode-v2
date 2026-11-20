@@ -444,24 +444,16 @@ pub(super) fn draw_messages(
 
     let total_lines = prepared.total_wrapped_lines();
     let viewport_height = render_area.height as usize;
-    // The todo band stays above the composer while conversation scrolls.
     let transcript_view = app.transcript_view();
-    let (pinned_todo_band, pinned_todo_more_line) = if transcript_view.is_some() {
-        (Vec::new(), None)
-    } else {
-        pinned_todo_band_lines(app, text_render_area.width, render_area.height)
-    };
-    let pinned_todo_band_rows = pinned_todo_band.len() as u16;
     let short_live_view = app.is_processing() && render_area.height <= 4;
     let max_scroll = if transcript_view.is_some() || short_live_view {
-        total_lines.saturating_sub(viewport_height.saturating_sub(pinned_todo_band_rows as usize))
+        total_lines.saturating_sub(viewport_height)
     } else {
         compute_max_scroll_with_prompt_preview(
             total_lines,
             wrapped_user_prompt_starts,
             user_prompt_texts,
             text_render_area,
-            pinned_todo_band.len() as u16,
             preview_start + app.compacted_hidden_user_prompts(),
         )
     };
@@ -533,32 +525,17 @@ pub(super) fn draw_messages(
             text_render_area.width,
             preview_start + app.compacted_hidden_user_prompts(),
         )
-        .min(render_area.height.saturating_sub(pinned_todo_band_rows + 1))
+        .min(render_area.height.saturating_sub(1))
     } else {
         0u16
     };
-    let pinned_todo_lines = pinned_todo_band.len() as u16;
-    let band_y = render_area.bottom().saturating_sub(pinned_todo_lines);
-    publish_pinned_todo_scroll((pinned_todo_band_rows > 0).then(|| Rect {
-        x: text_render_area.x,
-        y: band_y,
-        width: text_render_area.width,
-        height: pinned_todo_band_rows,
-    }));
-    set_pinned_todo_more_area(pinned_todo_more_line.map(|line| Rect {
-        x: text_render_area.x,
-        y: band_y.saturating_add(line as u16),
-        width: text_render_area.width,
-        height: 1,
-    }));
-    let reserved_rows = pinned_todo_lines + prompt_preview_lines;
     let top_band_lines = prompt_preview_lines;
 
     let content_area = Rect {
         x: text_render_area.x,
         y: render_area.y.saturating_add(top_band_lines),
         width: text_render_area.width,
-        height: render_area.height.saturating_sub(reserved_rows),
+        height: render_area.height.saturating_sub(prompt_preview_lines),
     };
     let visible_height = content_area.height as usize;
     let copy_badge_ui = app.copy_badge_ui();
@@ -1376,17 +1353,6 @@ pub(super) fn draw_messages(
         );
     }
 
-    if pinned_todo_lines > 0 {
-        let band_area = Rect {
-            x: content_area.x,
-            y: band_y,
-            width: content_area.width,
-            height: pinned_todo_lines.min(render_area.height),
-        };
-        clear_area(frame, band_area);
-        frame.render_widget(Paragraph::new(pinned_todo_band), band_area);
-    }
-
     if transcript_view.is_none()
         && crate::config::config().display.prompt_preview
         && scroll > 0
@@ -1531,17 +1497,28 @@ pub(crate) fn pinned_todos_show_workers(app: &dyn TuiState, width: u16) -> bool 
         .is_empty()
 }
 
+#[cfg(test)]
 pub(crate) fn pinned_todo_band_lines(
     app: &dyn TuiState,
     width: u16,
     viewport_height: u16,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let (mut lines, more) = pinned_todo_band_lines_for_payload(
+    prepare_pinned_todo_band(app, width, viewport_height, usize::MAX)
+}
+
+pub(super) fn prepare_pinned_todo_band(
+    app: &dyn TuiState,
+    width: u16,
+    viewport_height: u16,
+    max_rows: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    let (mut lines, more) = pinned_todo_band_with_capacity(
         app.pinned_todos_payload(),
         app.pinned_todos_expanded(),
         app.diff_mode(),
         width,
         viewport_height,
+        max_rows,
     );
     let mut more = more;
     if !app.pinned_todos_expanded() && !lines.is_empty() && viewport_height >= 8 {
@@ -1566,7 +1543,7 @@ pub(crate) fn pinned_todo_band_lines(
         });
         let workers = workers.take(2);
         let insertion = 1.min(lines.len());
-        let available = viewport_height.saturating_sub(3) as usize;
+        let available = (viewport_height.saturating_sub(3) as usize).min(max_rows);
         for (index, member) in workers
             .take(available.saturating_sub(lines.len()))
             .enumerate()
@@ -1628,7 +1605,8 @@ pub(crate) fn pinned_todo_band_lines(
             }
         }
     }
-    if width > 0
+    if lines.len() < max_rows
+        && width > 0
         && viewport_height >= 3
         && let Some(status) = app.justrust_status()
     {
@@ -1665,9 +1643,29 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
     width: u16,
     viewport_height: u16,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    if width < 16 || viewport_height < 3 {
+    pinned_todo_band_with_capacity(
+        payload,
+        expanded,
+        diff_mode,
+        width,
+        viewport_height,
+        usize::MAX,
+    )
+}
+
+fn pinned_todo_band_with_capacity(
+    payload: Option<&str>,
+    expanded: bool,
+    diff_mode: crate::config::DiffDisplayMode,
+    width: u16,
+    viewport_height: u16,
+    max_rows: usize,
+) -> (Vec<Line<'static>>, Option<usize>) {
+    PINNED_TODO_LAST_MAX.store(0, std::sync::atomic::Ordering::Relaxed);
+    if width < 16 || viewport_height < 3 || max_rows == 0 {
         return (Vec::new(), None);
     }
+    let expanded = expanded && max_rows > 1;
 
     let card_lines = if crate::config::config().display.pin_todos {
         payload.map_or_else(Vec::new, |payload| {
@@ -1696,7 +1694,6 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
     } else {
         Vec::new()
     };
-    PINNED_TODO_LAST_MAX.store(0, std::sync::atomic::Ordering::Relaxed);
     if card_lines.is_empty() {
         return (Vec::new(), None);
     }
@@ -1704,8 +1701,14 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
     super::messages::animate_lane_spinners(&mut card_lines);
 
     // Band budget: about a third of the viewport.
-    let budget = ((viewport_height as usize) / 3).clamp(2, 12);
-    let content_budget = budget.max(2);
+    let content_budget = ((viewport_height as usize) / 3).clamp(2, 12).min(max_rows);
+    if content_budget == 1 {
+        // The first line is the title when a task row is also available.
+        return (
+            vec![card_lines.swap_remove(usize::from(card_lines.len() > 1))],
+            None,
+        );
+    }
     let mut lines: Vec<Line<'static>> = Vec::new();
     let has_more = card_lines.len() > content_budget && !expanded;
     let mut more_line = None;
@@ -1727,7 +1730,9 @@ pub(crate) fn pinned_todo_band_lines_for_payload(
         if expanded {
             // Expanded bands get a larger budget but stay bounded so a long plan
             // cannot swallow the transcript. Overflow scrolls with the wheel.
-            let expanded_budget = ((viewport_height as usize) * 2 / 3).max(content_budget);
+            let expanded_budget = ((viewport_height as usize) * 2 / 3)
+                .max(content_budget)
+                .min(max_rows);
             let window = expanded_budget.saturating_sub(1).max(1);
             let total = card_lines.len();
             let max_offset = total.saturating_sub(window);
@@ -1786,6 +1791,29 @@ fn publish_pinned_todo_scroll(band_area: Option<Rect>) {
         PINNED_TODO_SCROLL.store(max, std::sync::atomic::Ordering::Relaxed);
     }
     set_pinned_todo_band_area(band_area);
+}
+
+pub(super) fn draw_pinned_todo_band(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    more_line: Option<usize>,
+) {
+    if area.is_empty() {
+        clear_pinned_todo_layout();
+        return;
+    }
+    publish_pinned_todo_scroll(Some(area));
+    set_pinned_todo_more_area(
+        more_line.map(|line| Rect::new(area.x, area.y + line as u16, area.width, 1)),
+    );
+    clear_area(frame, area);
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+pub(super) fn clear_pinned_todo_layout() {
+    set_pinned_todo_band_area(None);
+    set_pinned_todo_more_area(None);
 }
 
 #[cfg(test)]

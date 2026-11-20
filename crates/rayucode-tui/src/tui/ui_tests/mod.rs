@@ -168,6 +168,7 @@ struct TestState {
     swarm_panel_selected: usize,
     swarm_panel_focused: bool,
     pinned_todos_payload: Option<String>,
+    turn_footer: Option<crate::tui::TurnFooterSnapshot>,
     justrust_status: Option<crate::tui::justrust_status::StatusRow>,
     swarm_panel_full_page: bool,
 }
@@ -187,6 +188,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn pinned_todos_payload(&self) -> Option<&str> {
         self.pinned_todos_payload.as_deref()
+    }
+    fn turn_footer(&self) -> Option<crate::tui::TurnFooterSnapshot> {
+        self.turn_footer
     }
     fn transcript_view(&self) -> Option<&crate::tui::transcript_view::TranscriptView> {
         self.transcript_view.as_deref()

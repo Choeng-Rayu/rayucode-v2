@@ -1,17 +1,12 @@
 #[test]
-fn pinned_todos_scroll_when_only_the_band_causes_overflow() {
-    let area = ratatui::layout::Rect::new(0, 0, 80, 10);
-    // The transcript alone fits, but the pinned band leaves only seven rows.
+fn max_scroll_uses_the_transcript_height() {
+    let area = ratatui::layout::Rect::new(0, 0, 80, 7);
     assert_eq!(
-        super::compute_max_scroll_with_prompt_preview(9, &[], &[], area, 3, 0),
+        super::compute_max_scroll_with_prompt_preview(9, &[], &[], area, 0),
         2
     );
     assert_eq!(
-        super::compute_max_scroll_with_prompt_preview(7, &[], &[], area, 3, 0),
-        0
-    );
-    assert_eq!(
-        super::compute_max_scroll_with_prompt_preview(9, &[], &[], area, 0, 0),
+        super::compute_max_scroll_with_prompt_preview(7, &[], &[], area, 0),
         0
     );
 }

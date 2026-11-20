@@ -3471,6 +3471,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             crate::tui::OnboardingWelcomeKind::Suggestions
         );
     if onboarding_takes_over {
+        viewport::clear_pinned_todo_layout();
         onboarding::draw_onboarding_welcome(frame, app, chat_area);
         finalize_frame_metrics(
             app,
@@ -3483,6 +3484,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if let Some(view) = app.transcript_view() {
+        viewport::clear_pinned_todo_layout();
         let status_height = u16::from(chat_area.height >= 3 && app.turn_footer().is_some());
         let bar_height = 1;
         let viewport = Rect {
@@ -3540,12 +3542,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
     let picker_floor = reserve_rows(u16::from(theme_picker.is_some() || focused_picker));
     let status_height = reserve_rows(u16::from(available_height >= 3));
-    let turn_status_height = if app.turn_footer().is_some() {
-        status_height
-    } else {
-        0
-    };
-    let footer_height = status_height - turn_status_height;
     let overscroll_height = reserve_rows(u16::from(available_height >= 3));
     let inline_requested = if theme_picker.is_some() {
         rayucode_tui_style::ALL_THEME_PRESETS.len() as u16 + 1
@@ -3558,6 +3554,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         editable_height + reserve_rows((base_input_height + hint_line_height).saturating_sub(1));
     let inline_ui_gap_height =
         reserve_rows((blocker_lines.len() as u16).max(u16::from(inline_block_height > 0)));
+    let blocker_height = inline_ui_gap_height.min(blocker_lines.len() as u16);
+    let inline_ui_gap_height = inline_ui_gap_height - blocker_height;
     let queued_height = reserve_rows(pending_count.min(3) as u16);
     let swarm_strip_height = reserve_rows(swarm_strip_lines.len() as u16);
     let notification_height = reserve_rows(input_ui::notification_height(app, chat_area.width));
@@ -3572,20 +3570,50 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let donut_height = idle_donut_reserved_height(show_donut, input_height)
         .min(chrome_rows.saturating_sub(composer_rules_height));
     let composer_height = input_height + composer_rules_height;
-    let fixed_height = status_height
+    let fixed_chrome_height = status_height
         + queued_height
         + swarm_strip_height
         + notification_height
         + inline_block_height
         + inline_ui_gap_height
+        + blocker_height
         + composer_height
-        + overscroll_height
         + donut_height;
-    let stable_fixed_height = fixed_height;
+    let terminal_clear_collapsed = !swarm_page_active && app.terminal_clear_collapsed();
+    let task_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
+    let height_without_chrome = available_height.saturating_sub(fixed_chrome_height);
+    let task_capacity = height_without_chrome.saturating_sub(min_messages_height);
+    let (todo_lines, todo_more_line) = if onboarding_welcome
+        || swarm_page_active
+        || side_panel_fullscreen
+        || terminal_clear_collapsed
+    {
+        (Vec::new(), None)
+    } else {
+        viewport::prepare_pinned_todo_band(
+            app,
+            chat_area.width.saturating_sub(task_inset),
+            height_without_chrome
+                .saturating_sub(overscroll_height)
+                .max(3),
+            usize::from(task_capacity),
+        )
+    };
+    let todo_height = todo_lines.len() as u16;
+    // On short screens a task can use the optional shortcut row, leaving the
+    // input, status and transcript visible.
+    let overscroll_height = overscroll_height.min(task_capacity.saturating_sub(todo_height));
+    let turn_status_height = if app.turn_footer().is_some() || todo_height > 0 {
+        status_height
+    } else {
+        0
+    };
+    let footer_height = status_height - turn_status_height;
+    let fixed_height = fixed_chrome_height + overscroll_height + todo_height;
     let overflows = |prepared: &PreparedChatFrame| {
         let started = Instant::now();
         let result = prepared.total_wrapped_lines().max(1)
-            > usize::from(available_height.saturating_sub(stable_fixed_height));
+            > usize::from(available_height.saturating_sub(fixed_height));
         note_prep_overflow(started.elapsed());
         result
     };
@@ -3607,7 +3635,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else if last_chat_scrollbar_visible()
         || transcript_definitely_overflows(
             app.display_messages(),
-            available_height.saturating_sub(stable_fixed_height) as usize,
+            available_height.saturating_sub(fixed_height) as usize,
         )
     {
         // Prior visibility or the source-row lower bound suggests starting
@@ -3655,18 +3683,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     let prep_elapsed = prep_start.elapsed();
     let clear_start = terminal_clear_start(app, &prepared);
-    // The pinned todo band consumes transcript rows too, including in a fresh
-    // session. Reserve it before packing the view so the first todo update
-    // cannot squeeze the user prompt out of the messages area.
-    let pinned_band_height = {
-        let width = chat_area
-            .width
-            .saturating_sub(u16::from(chat_scrollbar_visible));
-        let width = width.saturating_sub(left_aligned_content_inset(width, app.centered_mode()));
-        viewport::pinned_todo_band_lines(app, width, available_height.saturating_sub(fixed_height))
-            .0
-            .len()
-    };
     // A fresh cloud transcript is short even on a tall terminal. Keep enough
     // packed rows for the cloud card stack instead of hiding directory counts
     // above an otherwise unused lower half of the screen.
@@ -3697,7 +3713,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let content_height = prepared
         .total_wrapped_lines()
         .saturating_sub(clear_start.unwrap_or(0))
-        .saturating_add(pinned_band_height)
+        .saturating_add(usize::from(todo_height))
         .max(1)
         .min(u16::MAX as usize) as u16;
     let content_height = content_height.max(cloud_card_height);
@@ -3709,7 +3725,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // after `clear`: the prompt sits at the top and the history is one scroll
     // away. New output expands only the post-clear content. Scrolling up
     // restores the full transcript layout.
-    let terminal_clear_collapsed = !swarm_page_active && app.terminal_clear_collapsed();
     let content_height = if terminal_clear_collapsed {
         0
     } else {
@@ -3741,6 +3756,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             Constraint::Length(inline_ui_gap_height),
             Constraint::Length(donut_height),
             Constraint::Length(turn_status_height),
+            Constraint::Length(todo_height),
+            Constraint::Length(blocker_height),
             Constraint::Length(composer_height),
             Constraint::Length(overscroll_height),
         ])
@@ -3748,7 +3765,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             height: chat_area.height.saturating_sub(footer_height),
             ..chat_area
         });
-    let composer_area = chunks[8];
+    let composer_area = chunks[10];
     let turn_status = chunks[7];
     let status_area = if turn_status_height > 0 {
         turn_status
@@ -3758,7 +3775,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let has_composer_rules = composer_rules_height > 0 && composer_area.height >= 3;
     let input_area = input_ui::composer_input_area(composer_area, has_composer_rules);
 
-    // Draw the inline swarm strip directly above the status line if present.
+    // Draw the focused swarm strip above the composer chrome.
     if swarm_strip_height > 0 {
         clear_area(frame, chunks[2]);
         frame.render_widget(Paragraph::new(swarm_strip_lines.clone()), chunks[2]);
@@ -3992,6 +4009,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let status = draw_jump_to_latest(frame, app, status_area);
     record_status_area(status);
     input_ui::draw_status(frame, app, status, pending_count);
+    let todo_area = Rect {
+        x: chunks[8].x.saturating_add(task_inset),
+        width: chunks[8].width.saturating_sub(task_inset),
+        ..chunks[8]
+    };
+    viewport::draw_pinned_todo_band(frame, todo_area, todo_lines, todo_more_line);
     if notification_height > 0 {
         input_ui::draw_notification(frame, app, chunks[3]);
     }
@@ -4005,8 +4028,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         draw_inline_ui(frame, app, chunks[4]);
     }
 
-    if !blocker_lines.is_empty() && inline_ui_gap_height > 0 {
-        frame.render_widget(Paragraph::new(blocker_lines), chunks[5]);
+    if blocker_height > 0 {
+        frame.render_widget(Paragraph::new(blocker_lines), chunks[9]);
     }
 
     let model_in_composer =
@@ -4018,7 +4041,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[9], model_in_composer);
+        input_ui::draw_overscroll_status(frame, app, chunks[11], model_in_composer);
     }
 
     if donut_height > 0 {
@@ -4121,10 +4144,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     // Command-suggestion popover: a late overlay pass so the palette floats
-    // over existing rows above the pinned turn status and composer.
+    // over existing rows above the pinned turn status, tasks and composer.
+    let pinned_rows = turn_status_height + todo_height + blocker_height;
     let popover_anchor = Rect {
-        y: composer_area.y.saturating_sub(turn_status_height),
-        height: composer_area.height.saturating_add(turn_status_height),
+        y: composer_area.y.saturating_sub(pinned_rows),
+        height: composer_area.height.saturating_add(pinned_rows),
         ..composer_area
     };
     if theme_picker.is_none() {

@@ -259,6 +259,51 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
+fn pinned_tasks_stay_between_turn_status_and_composer() {
+    use crate::tui::{TurnFooterOutcome, TurnFooterSnapshot};
+
+    with_pinned_todos_config(|| {
+        for (width, height) in [(20, 6), (34, 16), (80, 24), (100, 48)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for outcome in [TurnFooterOutcome::Running, TurnFooterOutcome::Completed] {
+                let state = TestState {
+                    input: "draft".into(),
+                    display_messages: vec![DisplayMessage::assistant("Transcript row")],
+                    pinned_todos_payload: Some(todo_payload()),
+                    status: if outcome == TurnFooterOutcome::Running {
+                        ProcessingStatus::Streaming
+                    } else {
+                        ProcessingStatus::Idle
+                    },
+                    turn_footer: Some(TurnFooterSnapshot {
+                        outcome,
+                        elapsed: Some(Duration::from_secs(30)),
+                        credits: Some(3.75),
+                        ..Default::default()
+                    }),
+                    suppress_info_widgets: true,
+                    ..Default::default()
+                };
+                terminal.draw(|frame| draw(frame, &state)).unwrap();
+                let text = terminal_text(&terminal);
+                let status = last_status_area().unwrap().y as usize;
+                let task = text
+                    .lines()
+                    .position(|line| line.contains("Pinned"))
+                    .expect(&text);
+                let input = text
+                    .lines()
+                    .position(|line| line.contains("draft"))
+                    .expect(&text);
+                assert!(status < task && task < input, "{text}");
+                assert!(text.lines().nth(status).unwrap().contains("3.75"), "{text}");
+                assert!(last_layout_snapshot().unwrap().messages_area.height > 0);
+            }
+        }
+    });
+}
+
+#[test]
 fn pinned_todo_regression_pinned_composer_keeps_prompt_when_band_appears() {
     with_pinned_todos_config(|| {
         let _changelog = header::scoped_unseen_changelog_entries_override_for_tests(Vec::new());
@@ -275,6 +320,7 @@ fn pinned_todo_regression_pinned_composer_keeps_prompt_when_band_appears() {
         visual_debug::enable();
         let mut state = TestState {
             display_messages: vec![DisplayMessage::user("Fresh session prompt remains visible")],
+            turn_footer: Some(crate::tui::TurnFooterSnapshot::default()),
             messages_version: 1,
             suppress_info_widgets: true,
             ..Default::default()
@@ -311,9 +357,9 @@ fn pinned_todo_regression_pinned_composer_keeps_prompt_when_band_appears() {
             after.layout.input_area.unwrap().y,
             before.layout.input_area.unwrap().y
         );
-        assert_eq!(
-            after.layout.messages_area.unwrap().height,
-            before.layout.messages_area.unwrap().height
+        assert!(
+            after.layout.messages_area.unwrap().height
+                < before.layout.messages_area.unwrap().height
         );
     });
 }

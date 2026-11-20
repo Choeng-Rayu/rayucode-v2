@@ -207,31 +207,22 @@ pub(super) fn compute_max_scroll_with_prompt_preview(
     wrapped_user_prompt_starts: &[usize],
     user_prompt_texts: &[String],
     area: Rect,
-    pinned_todo_lines: u16,
     prompt_number_offset: usize,
 ) -> usize {
-    let mut max_scroll =
-        total_lines.saturating_sub(area.height.saturating_sub(pinned_todo_lines) as usize);
-    let preview_enabled = crate::config::config().display.prompt_preview;
-    if max_scroll == 0 || (!preview_enabled && pinned_todo_lines == 0) {
+    let mut max_scroll = total_lines.saturating_sub(usize::from(area.height));
+    if max_scroll == 0 || !crate::config::config().display.prompt_preview {
         return max_scroll;
     }
 
     for _ in 0..4 {
-        let prompt_preview_lines = if preview_enabled {
-            compute_prompt_preview_line_count(
-                wrapped_user_prompt_starts,
-                user_prompt_texts,
-                max_scroll,
-                area.width,
-                prompt_number_offset,
-            )
-        } else {
-            0
-        };
-        let content_height =
-            area.height
-                .saturating_sub(prompt_preview_lines + pinned_todo_lines) as usize;
+        let prompt_preview_lines = compute_prompt_preview_line_count(
+            wrapped_user_prompt_starts,
+            user_prompt_texts,
+            max_scroll,
+            area.width,
+            prompt_number_offset,
+        );
+        let content_height = usize::from(area.height.saturating_sub(prompt_preview_lines));
         let adjusted = total_lines.saturating_sub(content_height);
         if adjusted == max_scroll {
             break;
