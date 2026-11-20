@@ -267,6 +267,9 @@ pub(super) fn cleanup_held_daemon_lock() {
     }
 }
 
+#[cfg(not(unix))]
+pub(super) fn cleanup_held_daemon_lock() {}
+
 #[cfg(unix)]
 pub(super) struct DaemonLockGuard {
     _file: std::fs::File,

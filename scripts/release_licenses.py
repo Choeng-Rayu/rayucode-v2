@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -14,30 +15,34 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ("LICENSE", "THIRD_PARTY_NOTICES", "dependency-inventory.json")
 NOTICE_NAME = re.compile(r"^(licen[cs]e|copying|copyright|notice|unlicense)([-_.]|$)", re.I)
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 SUPPLEMENTS = ROOT / "packaging/dependency-licenses"
 
 
 def read_cargo_graph(args):
-    cargo_args = ["--locked"]
+    cargo_args = ["--locked", "--color=never"]
     if args.offline:
         cargo_args.append("--offline")
     if args.no_default_features:
         cargo_args.append("--no-default-features")
     if args.features:
         cargo_args.extend(["--features", args.features])
+    env = {**os.environ, "CARGO_TERM_COLOR": "never"}
     metadata = json.loads(subprocess.check_output([
         "cargo", "metadata", "--format-version", "1", "--filter-platform",
         args.target, *cargo_args,
-    ], cwd=ROOT))
+    ], cwd=ROOT, env=env))
     # Use the root package's actual normal/build graph. Workspace-wide metadata
     # also contains packages enabled solely by other members or dev targets.
     tree = subprocess.check_output([
         "cargo", "tree", "-p", "rayucode", "--target", args.target,
         "--edges", "normal,build", "--prefix", "none", "--format", "{p}",
         *cargo_args,
-    ], cwd=ROOT, text=True)
+    ], cwd=ROOT, env=env, text=True)
     return metadata["packages"], {
-        line.removesuffix(" (*)") for line in tree.splitlines() if line
+        ANSI_ESCAPE.sub("", line).strip().removesuffix(" (*)")
+        for line in tree.splitlines()
+        if line.strip()
     }
 
 
