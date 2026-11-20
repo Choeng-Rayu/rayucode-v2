@@ -306,14 +306,19 @@ mod catalog_rayu {
             };
             let provider = MultiProvider::from_auth_status(auth);
 
-            assert_eq!(provider.display_name(), crate::rayu::RAYU_PROVIDER_DISPLAY_NAME);
+            assert_eq!(
+                provider.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+            );
             assert_eq!(
                 provider.runtime_provider_label(ActiveProvider::OpenRouter),
                 crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
             );
 
             // Prefetch hits the mock Rayu gateway and populates live routes at the front.
-            runtime.block_on(provider.prefetch_models()).expect("prefetch");
+            runtime
+                .block_on(provider.prefetch_models())
+                .expect("prefetch");
             assert!(
                 matches!(
                     provider.model().as_str(),
@@ -325,7 +330,9 @@ mod catalog_rayu {
 
             let routes = provider.model_routes();
             assert_eq!(
-                routes.first().map(|r| (r.model.as_str(), r.api_method.as_str())),
+                routes
+                    .first()
+                    .map(|r| (r.model.as_str(), r.api_method.as_str())),
                 Some((
                     "rayu:deepseek-v4.1-flash-1017-cloud",
                     crate::rayu::RAYU_ROUTE_API_METHOD
@@ -347,7 +354,10 @@ mod catalog_rayu {
             provider
                 .set_model("deepseek-v4.1-flash-1017-cloud")
                 .expect("bare Rayu switch");
-            assert_eq!(provider.display_name(), crate::rayu::RAYU_PROVIDER_DISPLAY_NAME);
+            assert_eq!(
+                provider.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+            );
             assert_eq!(provider.model(), "deepseek-v4.1-flash-1017-cloud");
 
             // Explicit OpenRouter prefix cleanly leaves Rayu for OpenRouter.
@@ -355,6 +365,251 @@ mod catalog_rayu {
                 .set_model("openrouter:deepseek/deepseek-v4.1-flash")
                 .expect("explicit openrouter switch");
             assert_eq!(provider.display_name(), "OpenRouter");
+
+            server.join().expect("mock gateway thread");
+        });
+    }
+
+    #[test]
+    fn multiprovider_stays_on_rayu_after_login_activation_and_fork_with_openrouter_configured() {
+        with_clean_provider_test_env(|| {
+            let runtime = enter_test_runtime();
+            let _enter = runtime.enter();
+            register_rayu_runtime();
+            external::register_openrouter_factory(|spec| {
+                use external::OpenRouterRuntimeSpec;
+                use rayucode_provider_openrouter_runtime::OpenRouterProvider;
+                let provider: Arc<dyn Provider> = match spec {
+                    OpenRouterRuntimeSpec::OpenRouterApiKey | OpenRouterRuntimeSpec::Default => {
+                        Arc::new(OpenRouterProvider::new()?)
+                    }
+                    OpenRouterRuntimeSpec::CompatibleProfile(profile) => Arc::new(
+                        OpenRouterProvider::new_openai_compatible_profile_runtime(profile)?,
+                    ),
+                    OpenRouterRuntimeSpec::NamedProfile { name, config } => Arc::new(
+                        OpenRouterProvider::new_named_openai_compatible(&name, &config)?,
+                    ),
+                };
+                Ok(provider)
+            });
+
+            // Serve 3 requests: initial prefetch + fork_for_new_session prefetch +
+            // auth-session prefetch.
+            let (addr, _paths, server) = spawn_mock_gateway(vec![(
+                "200 OK",
+                gateway_models_body(&[
+                    ("deepseek-v4.1-flash-1017-cloud", 1_000_000),
+                    ("qwen4-max-preview", 256_000),
+                ]),
+            )]);
+            configure_rayu_api_key_route(addr);
+            crate::env::set_var("OPENROUTER_API_KEY", "sk-or-v1-test-openrouter-key");
+
+            // Simulate `/login rayu` activating process env (`RAYU_RUNTIME_PROVIDER=rayu`,
+            // `RAYU_ACTIVE_PROVIDER=openrouter`, `RAYU_INITIAL_PROVIDER_EXPLICIT=1`).
+            let activation = crate::auth::lifecycle::activate_auth_change(
+                &crate::auth::lifecycle::AuthActivationRequest::new(Some("rayu".to_string()), None),
+            );
+            assert_eq!(activation.provider_id.as_deref(), Some("rayu"));
+
+            let auth = crate::auth::AuthStatus {
+                openrouter: crate::auth::AuthState::Available,
+                ..crate::auth::AuthStatus::default()
+            };
+            let provider = MultiProvider::from_auth_status(auth);
+            assert_eq!(
+                provider.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME,
+                "RAYU_RUNTIME_PROVIDER=rayu + RAYU_ACTIVE_PROVIDER=openrouter must activate Rayu, not OpenRouter"
+            );
+
+            runtime
+                .block_on(provider.prefetch_models())
+                .expect("prefetch");
+            provider
+                .set_model("rayu:qwen4-max-preview")
+                .expect("select Rayu model");
+
+            // Ordinary fork() (resumed sessions, subagents) must preserve Rayu
+            // and keep Rayu routes at the front of model_routes().
+            let forked = provider.fork();
+            assert_eq!(
+                forked.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME,
+                "MultiProvider::fork() must preserve Rayu instead of reverting to OpenRouter"
+            );
+            assert_eq!(forked.model(), "qwen4-max-preview");
+            let forked_routes = forked.model_routes();
+            assert_eq!(
+                forked_routes
+                    .first()
+                    .map(|r| (r.model.as_str(), r.api_method.as_str())),
+                Some((
+                    "rayu:deepseek-v4.1-flash-1017-cloud",
+                    crate::rayu::RAYU_ROUTE_API_METHOD
+                )),
+                "forked provider must keep Rayu routes first in model_routes()"
+            );
+
+            // fork_for_new_session() (new TUI windows connecting to a shared daemon
+            // after `/login rayu`) must also stay on Rayu.
+            let new_session = provider.fork_for_new_session();
+            assert_eq!(
+                new_session.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME,
+                "fork_for_new_session() after /login rayu must default to Rayu"
+            );
+
+            // Rayu account-session auth (without RAYU_API_KEY) also defaults to Rayu
+            // over OpenRouter even after `/login rayu` env activation.
+            crate::env::remove_var("RAYU_API_KEY");
+            let session = crate::rayu::RayuSession {
+                access_token:
+                    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyXzEiLCJleHAiOjQxMDI0NDQ4MDB9.sig"
+                        .to_string(),
+                refresh_token: "rt_test_token".to_string(),
+                expires_at: 4_102_444_800_000,
+                user: crate::rayu::RayuSessionUser {
+                    id: 1,
+                    email: Some("test@rayu.local".to_string()),
+                    display_name: Some("Test User".to_string()),
+                    avatar_url: None,
+                    role: "user".to_string(),
+                },
+            };
+            crate::rayu::write_session(&session).expect("write test Rayu session");
+            let auth_session_provider = MultiProvider::from_auth_status(crate::auth::AuthStatus {
+                openrouter: crate::auth::AuthState::Available,
+                ..crate::auth::AuthStatus::default()
+            });
+            assert_eq!(
+                auth_session_provider.display_name(),
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME,
+                "Rayu account auth must default to Rayu over OpenRouter"
+            );
+
+            // Simplified and lightweight fallback route builders must keep `rayu:`
+            // routes tagged as Rayu even when the ambient provider label is OpenRouter,
+            // and never mislabel OpenRouter slash-IDs as Rayu.
+            let simplified = crate::provider::simplified_model_routes_for_picker(
+                "OpenRouter",
+                "deepseek/deepseek-v4.1-flash",
+                vec![
+                    "rayu:qwen4-max-preview".to_string(),
+                    "deepseek/deepseek-v4.1-flash".to_string(),
+                ],
+            );
+            assert_eq!(simplified[0].model, "rayu:qwen4-max-preview");
+            assert_eq!(
+                simplified[0].provider,
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+            );
+            assert_eq!(simplified[0].api_method, crate::rayu::RAYU_ROUTE_API_METHOD);
+            assert_eq!(simplified[1].api_method, "openrouter");
+
+            let lightweight_or = crate::provider::remote_model_routes_lightweight_fallback(
+                Some("OpenRouter"),
+                &[
+                    "rayu:qwen4-max-preview".to_string(),
+                    "deepseek/deepseek-v4.1-flash".to_string(),
+                ],
+                "deepseek/deepseek-v4.1-flash",
+            );
+            assert_eq!(
+                lightweight_or[0].provider,
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+            );
+            assert_eq!(
+                lightweight_or[0].api_method,
+                crate::rayu::RAYU_ROUTE_API_METHOD
+            );
+            assert_eq!(lightweight_or[1].api_method, "remote-catalog");
+
+            let lightweight_rayu = crate::provider::remote_model_routes_lightweight_fallback(
+                Some("Rayu"),
+                &[
+                    "rayu:qwen4-max-preview".to_string(),
+                    "deepseek/deepseek-v4.1-flash".to_string(),
+                ],
+                "qwen4-max-preview",
+            );
+            assert_eq!(
+                lightweight_rayu[0].api_method,
+                crate::rayu::RAYU_ROUTE_API_METHOD
+            );
+            assert_eq!(lightweight_rayu[1].api_method, "remote-catalog");
+
+            // Ctrl+O default selection must never double-prefix `rayu:rayu:...`.
+            let default_sel = MultiProvider::default_model_selection_from_route(
+                "rayu:qwen4-max-preview",
+                crate::rayu::RAYU_ROUTE_API_METHOD,
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME,
+            );
+            assert_eq!(default_sel.model_spec, "rayu:qwen4-max-preview");
+            assert_eq!(default_sel.provider_key.as_deref(), Some("rayu"));
+
+            // Onboarding global route selection must prefer Rayu ahead of OpenRouter.
+            let mixed_routes = vec![
+                ModelRoute {
+                    model: "openai/gpt-6.1-sol".to_string(),
+                    provider: "auto".to_string(),
+                    api_method: "openrouter".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                    cheapness: None,
+                },
+                ModelRoute {
+                    model: "rayu:deepseek-v4.1-flash-1017-cloud".to_string(),
+                    provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                    api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                    cheapness: None,
+                },
+                ModelRoute {
+                    model: "rayu:qwen4-max-preview".to_string(),
+                    provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                    api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                    available: true,
+                    detail: String::new(),
+                    usage: None,
+                    cheapness: None,
+                },
+            ];
+            let preferred = crate::auth::lifecycle::globally_preferred_default_route(&mixed_routes)
+                .expect("preferred route");
+            assert_eq!(preferred.model, "rayu:deepseek-v4.1-flash-1017-cloud");
+            assert_eq!(preferred.api_method, crate::rayu::RAYU_ROUTE_API_METHOD);
+
+            // Lifecycle invariants & post-auth selection must match bare Rayu ids
+            // against `rayu:`-prefixed routes.
+            let report = crate::auth::lifecycle::validate_catalog_invariants(
+                &activation,
+                Some("qwen4-max-preview"),
+                &mixed_routes,
+            );
+            assert!(report.selected_model_matches_provider_route);
+            assert_eq!(
+                crate::auth::lifecycle::provider_model_to_select_after_auth(
+                    &activation,
+                    Some("qwen4-max-preview"),
+                    &mixed_routes,
+                ),
+                None,
+                "already-selected Rayu bare model matches prefixed route"
+            );
+            assert_eq!(
+                crate::auth::lifecycle::provider_model_to_select_after_auth_with_configured_default(
+                    &activation,
+                    Some("rayu:qwen4-max-preview"),
+                    Some("deepseek-v4.1-flash-1017-cloud"),
+                    &mixed_routes,
+                )
+                .as_deref(),
+                Some("rayu:qwen4-max-preview")
+            );
 
             server.join().expect("mock gateway thread");
         });

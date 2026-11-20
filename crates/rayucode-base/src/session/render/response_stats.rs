@@ -68,17 +68,29 @@ fn attach_turn(
             total.checked_add(field(messages[i].token_usage.as_ref()?)?)
         })
     };
+    let mut rayu_credits = rayucode_session_types::RayuCreditsAccumulator::new();
+    for &i in &assistants {
+        if let Some(credits) = messages[i]
+            .token_usage
+            .as_ref()
+            .and_then(|usage| usage.rayu_credits)
+        {
+            rayu_credits.record_credits(credits);
+        }
+    }
     let stats = ResponseStats {
         duration_secs: None,
         input_tokens: sum(|usage| Some(usage.input_tokens)),
         output_tokens: sum(|usage| Some(usage.output_tokens)),
         cache_read_tokens: sum(|usage| usage.cache_read_input_tokens),
         cache_creation_tokens: sum(|usage| usage.cache_creation_input_tokens),
+        rayu_credits: rayu_credits.total_credits(),
     };
     if stats.input_tokens.is_some()
         || stats.output_tokens.is_some()
         || stats.cache_read_tokens.is_some()
         || stats.cache_creation_tokens.is_some()
+        || stats.rayu_credits.is_some()
     {
         row.response_stats = Some(stats);
     }
@@ -110,6 +122,7 @@ mod tests {
             output_tokens: 2,
             cache_read_input_tokens: Some(3),
             cache_creation_input_tokens: Some(4),
+            rayu_credits: None,
         })
     }
     fn row(index: usize) -> RenderedMessage {
@@ -239,5 +252,33 @@ mod tests {
         let stats = rows[1].response_stats.as_ref().unwrap();
         assert_eq!(stats.input_tokens, None);
         assert_eq!(stats.output_tokens, Some(4));
+    }
+
+    #[test]
+    fn response_stats_sum_rayu_credits_across_multi_round_turns() {
+        let mut first_round = text(Role::Assistant, "", usage(10));
+        tool_call(&mut first_round);
+        first_round.token_usage.as_mut().unwrap().rayu_credits = Some(1.25);
+
+        let mut tool_result = text(Role::User, "", None);
+        tool_result.content = vec![ContentBlock::ToolResult {
+            tool_use_id: "tool".into(),
+            content: "ok".into(),
+            is_error: None,
+        }];
+
+        let mut final_round = text(Role::Assistant, "done", usage(20));
+        final_round.token_usage.as_mut().unwrap().rayu_credits = Some(2.50);
+
+        let messages = vec![
+            text(Role::User, "go", None),
+            first_round,
+            tool_result,
+            final_round,
+        ];
+        let mut rows = vec![row(3)];
+        attach(&messages, &mut rows);
+        let stats = rows[0].response_stats.as_ref().unwrap();
+        assert_eq!(stats.rayu_credits, Some(3.75));
     }
 }

@@ -861,6 +861,8 @@ struct StreamingProgress {
     streaming_output_tokens: u64,
     streaming_cache_read_tokens: Option<u64>,
     streaming_cache_creation_tokens: Option<u64>,
+    /// Accumulated Rayu gateway credits charged for the active turn, if any.
+    streaming_rayu_credits: rayucode_session_types::RayuCreditsAccumulator,
     /// Set at the start of each API call; cleared when the call's first usage
     /// report (with input tokens) arrives. The first report of a call replaces
     /// the cache counters wholesale (even with `None`) instead of merging, so

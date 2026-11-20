@@ -12,7 +12,7 @@ pub fn remote_model_routes_fallback(
     if provider_is_rayu && !has_prefixed_rayu {
         return remote_available_entries
             .iter()
-            .filter(|model| !model.contains('/') && is_listable_model_name(model))
+            .filter(|model| !model.contains('/') && !model.trim().is_empty())
             .map(|model| ModelRoute {
                 model: model.clone(),
                 provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
@@ -227,24 +227,33 @@ pub fn remote_model_routes_lightweight_fallback(
 ) -> Vec<ModelRoute> {
     let is_rayu = remote_provider_name
         .is_some_and(|name| name.eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME));
+    let has_prefixed_rayu = remote_available_entries
+        .iter()
+        .any(|model| model.starts_with("rayu:"));
     let provider = remote_provider_name
         .map(str::to_string)
         .unwrap_or_else(|| "remote".to_string());
     let mut routes = Vec::new();
     for model in remote_available_entries {
-        if !is_listable_model_name(model) {
+        let model_is_rayu =
+            model.starts_with("rayu:") || (is_rayu && !has_prefixed_rayu && !model.contains('/'));
+        if !model_is_rayu && !is_listable_model_name(model) {
             continue;
         }
         routes.push(ModelRoute {
             model: model.clone(),
-            provider: provider.clone(),
-            api_method: if is_rayu {
+            provider: if model_is_rayu {
+                crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string()
+            } else {
+                provider.clone()
+            },
+            api_method: if model_is_rayu {
                 crate::rayu::RAYU_ROUTE_API_METHOD.to_string()
             } else {
                 "remote-catalog".to_string()
             },
             available: true,
-            detail: if is_rayu {
+            detail: if model_is_rayu {
                 "Rayu hosted models · live catalog".to_string()
             } else {
                 "refreshing route details…".to_string()

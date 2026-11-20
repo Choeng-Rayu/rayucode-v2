@@ -8,7 +8,7 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 11;
+export const API_VERSION_MINOR = 12;
 
 export type RuntimeCommand = "skills" | "context" | "info" | "cache" | "memory" | "swarm" | "agents" | "subagent_model" | "autoreview" | "autojudge" | "transport" | "fast" | "telemetry" | "subscription" | "overnight" | "productivity" | "initiatives" | "premium" | "provider_test_coverage" | "refresh_model_list" | "continue" | "resume_all" | "remote" | "server_reload" | "review" | "judge" | "subagent" | "auth" | "logout";
 
@@ -109,6 +109,7 @@ export interface ResponseStats {
   output_tokens?: number;
   cache_read_tokens?: number;
   cache_creation_tokens?: number;
+  rayu_credits?: number;
 }
 
 export interface HistoryMessage {
@@ -322,6 +323,14 @@ export type ApiEvent =
       cache_creation_input?: number;
       effective_budget?: number;
     }
+  | {
+      ev: "rayu_credits";
+      session_id: string;
+      credits: number;
+      turn_credits: number;
+      billable_tokens?: number;
+      tokens_per_credit?: number;
+    }
   | { ev: "context_cap_changed"; session_id: string; max_context_tokens: number | null; effective_budget: number }
   | {
       ev: "kv_cache_miss";
@@ -489,6 +498,7 @@ export const KNOWN_EVENT_KINDS = [
   "tool_exec",
   "tool_done",
   "token_usage",
+  "rayu_credits",
   "context_cap_changed",
   "kv_cache_miss",
   "turn_done",

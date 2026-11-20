@@ -37,6 +37,8 @@ impl Agent {
         let mut empty_post_tool_continuations = 0u32;
         let mut fable_guardrail_reconsiderations = 0u32;
         let mut consecutive_malformed_tool_rounds = 0u32;
+        let mut turn_rayu_credits = rayucode_message_types::RayuCreditsAccumulator::new();
+        self.last_turn_rayu_credits = None;
 
         loop {
             // Never open a new provider request after a cancel. Several paths
@@ -315,6 +317,7 @@ impl Agent {
             let mut usage_output: Option<u64> = None;
             let mut usage_cache_read: Option<u64> = None;
             let mut usage_cache_creation: Option<u64> = None;
+            let mut call_rayu_charge: Option<rayucode_message_types::RayuRequestCharge> = None;
             let mut usage_recorder = StreamUsageRecorder::new(&self.session.id);
             let mut saw_message_end = false;
             let mut stop_reason: Option<String> = None;
@@ -820,6 +823,9 @@ impl Agent {
                             );
                         }
                     }
+                    StreamEvent::RayuCharge(charge) => {
+                        call_rayu_charge = Some(charge);
+                    }
                     StreamEvent::ConnectionType { connection } => {
                         crate::telemetry::record_connection_type(&connection);
                         self.last_connection_type = Some(connection.clone());
@@ -884,6 +890,7 @@ impl Agent {
                         openai_native_compaction = None;
                         saw_message_end = false;
                         stop_reason = None;
+                        call_rayu_charge = None;
                         let _ = event_tx.send(ServerEvent::RetryRollback { attempt, max });
                         let _ = event_tx.send(ServerEvent::ConnectionPhase {
                             phase: crate::message::ConnectionPhase::Retrying { attempt, max }
@@ -1173,6 +1180,17 @@ impl Agent {
                 cache_read_input_tokens: usage_cache_read,
                 cache_creation_input_tokens: usage_cache_creation,
             };
+            if let Some(charge) = call_rayu_charge {
+                turn_rayu_credits.record_charge(charge);
+                let turn_total = turn_rayu_credits.total_credits().unwrap_or(charge.credits);
+                self.last_turn_rayu_credits = Some(turn_total);
+                let _ = event_tx.send(ServerEvent::RayuCredits {
+                    credits: charge.credits,
+                    turn_credits: turn_total,
+                    billable_tokens: charge.billable_tokens,
+                    tokens_per_credit: charge.tokens_per_credit,
+                });
+            }
 
             // Detect a transparent mid-request model switch (e.g. Anthropic's
             // retired `claude-fable-5` falling back to `claude-opus-4-8`). The
@@ -1255,6 +1273,7 @@ impl Agent {
                     output_tokens: self.last_usage.output_tokens,
                     cache_read_input_tokens: self.last_usage.cache_read_input_tokens,
                     cache_creation_input_tokens: self.last_usage.cache_creation_input_tokens,
+                    rayu_credits: call_rayu_charge.map(|charge| charge.credits),
                 });
                 let message_id =
                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);

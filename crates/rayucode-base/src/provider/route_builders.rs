@@ -110,7 +110,11 @@ pub fn listable_model_names_from_routes(routes: &[ModelRoute]) -> Vec<String> {
     let mut models = Vec::new();
     let mut seen = BTreeSet::new();
     for route in routes {
-        if is_listable_model_name(&route.model) && seen.insert(route.model.clone()) {
+        let keep = route
+            .api_method
+            .eq_ignore_ascii_case(crate::rayu::RAYU_ROUTE_API_METHOD)
+            || is_listable_model_name(&route.model);
+        if keep && seen.insert(route.model.clone()) {
             models.push(route.model.clone());
         }
     }

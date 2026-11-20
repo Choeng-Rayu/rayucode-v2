@@ -598,6 +598,7 @@ fn model_picker_route_is_default(
 
     let model_matches_bare_or_exact = default_model == selection.model_spec
         || default_model == model_name
+        || helpers::model_names_match_for_route(model_name, default_model, &route.api_method)
         || model_picker_provider_hint_from_model_spec(default_model)
             .map(|(_, bare_model)| bare_model == model_name)
             .unwrap_or(false);
@@ -1041,8 +1042,9 @@ impl App {
         &self,
         current_model: &str,
     ) -> Vec<crate::provider::ModelRoute> {
+        let provider_name = self.provider.display_name();
         crate::provider::simplified_model_routes_for_picker(
-            self.provider.name(),
+            &provider_name,
             current_model,
             self.provider.available_models_display(),
         )
@@ -1342,7 +1344,13 @@ impl App {
             entries: vec![PickerEntry {
                 name: model_label,
                 options: vec![PickerOption {
-                    provider: self.provider.name().to_string(),
+                    provider: if self.is_remote {
+                        self.remote_provider_name
+                            .clone()
+                            .unwrap_or_else(|| self.provider.display_name())
+                    } else {
+                        self.provider.display_name()
+                    },
                     api_method: "current".to_string(),
                     available: true,
                     detail: "updating model list…".to_string(),
@@ -1962,14 +1970,16 @@ impl App {
                     .iter()
                     .any(|option| option.detail.contains("recently added"));
                 let avail = entry.options.first().map(|r| r.available).unwrap_or(false);
-                // Keep Rayu gateway models in their exact server-supplied
-                // `display_order` (`idx`), never scrambled by alphabetical sort,
-                // usage counts, or OpenRouter recommendation heuristics.
-                let tier = if !is_rayu && entry.is_current {
+                // Always pin Rayu gateway models to the top of `/model` in
+                // their exact server-supplied `display_order` (`idx`), even if
+                // the current session is temporarily on OpenRouter or another
+                // provider, so Rayu Auth / API-key routes are never buried
+                // below OpenRouter.
+                let tier = if is_rayu && avail {
                     0
-                } else if is_rayu && avail {
-                    1
                 } else if is_rayu {
+                    1
+                } else if entry.is_current {
                     2
                 } else {
                     3
@@ -4135,29 +4145,40 @@ impl App {
             picker.filtered = (0..picker.entries.len()).collect();
         } else {
             let query = picker.filter.trim();
+            let query_bare = query.strip_prefix("rayu:").unwrap_or(query);
             // Prepare the query once per keystroke instead of re-parsing and
             // re-lowercasing it for every entry.
             let prepared = rayucode_fuzzy::PreparedTokenQuery::new(&picker.filter);
-            let mut scored: Vec<(usize, bool, i32)> = picker
+            let mut scored: Vec<(usize, bool, i32, bool)> = picker
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(i, m)| {
                     let filter_text = picker.filter_text(m);
                     prepared.score(&filter_text).map(|s| {
+                        let is_rayu = m.active_option().is_some_and(|route| {
+                            route.available
+                                && route
+                                    .api_method
+                                    .eq_ignore_ascii_case(crate::rayu::RAYU_ROUTE_API_METHOD)
+                        });
+                        let exact = m.name.eq_ignore_ascii_case(query)
+                            || (is_rayu
+                                && m.name
+                                    .strip_prefix("rayu:")
+                                    .is_some_and(|bare| bare.eq_ignore_ascii_case(query_bare)));
                         let usage_bonus = m.usage_score.min(i32::MAX as u32) as i32;
-                        let bonus = usage_bonus + if m.recommended { 5 } else { 0 };
-                        (
-                            i,
-                            m.name.eq_ignore_ascii_case(query),
-                            s.saturating_add(bonus),
-                        )
+                        let bonus = usage_bonus
+                            + if m.recommended { 5 } else { 0 }
+                            + if is_rayu { 10 } else { 0 };
+                        (i, exact, s.saturating_add(bonus), is_rayu)
                     })
                 })
                 .collect();
             scored.sort_by(|a, b| {
                 b.1.cmp(&a.1)
                     .then(b.2.cmp(&a.2))
+                    .then(b.3.cmp(&a.3))
                     .then(
                         picker.entries[a.0]
                             .recommendation_rank
@@ -4165,7 +4186,7 @@ impl App {
                     )
                     .then(picker.entries[a.0].name.cmp(&picker.entries[b.0].name))
             });
-            picker.filtered = scored.into_iter().map(|(i, _, _)| i).collect();
+            picker.filtered = scored.into_iter().map(|(i, _, _, _)| i).collect();
         }
         if picker.filtered.is_empty() {
             picker.selected = 0;

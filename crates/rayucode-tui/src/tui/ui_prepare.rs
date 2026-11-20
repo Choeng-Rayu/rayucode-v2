@@ -539,7 +539,7 @@ pub(super) fn prepare_messages(
 ) -> Arc<PreparedChatFrame> {
     // Choose from terminal geometry so the welcome header does not jump
     // when the first message arrives.
-    let compact_header = height < 44 || app.login_input_hint().is_some();
+    let compact_header = height < 18 || app.login_input_hint().is_some();
     // A cached prepared frame intentionally owns only image ids. Recover any
     // staged source evicted by the byte budget or a visibility toggle before an
     // exact frame-cache hit can bypass the normal anchored-image resolver.
@@ -679,6 +679,14 @@ fn prepare_messages_inner(
 ) -> PreparedChatFrame {
     let header_start = Instant::now();
     let header_prepared = prepare_header_cached(app, width, compact_header);
+    let pad_top = if app.centered_mode() {
+        initial_header_pad_top(height, header_prepared.wrapped_lines.len())
+    } else {
+        // The fullscreen welcome stays at the top. Only actual release notes
+        // occupy rows before it.
+        let updates = header::build_updates_box_lines(width, 10);
+        updates.len() + usize::from(!updates.is_empty())
+    };
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
     let body_start = Instant::now();
@@ -801,13 +809,8 @@ fn prepare_messages_inner(
             }
         }
 
-        // Vertically center the initial empty screen, but compute the padding
-        // from the header height alone so the exact same padding can be
-        // re-applied above the header once the conversation starts. That keeps
-        // the header at the same screen position when the first prompt
-        // arrives; the padding then simply scrolls away as the transcript
-        // grows instead of vanishing in one jump.
-        let pad_top = initial_header_pad_top(height, header_prepared.wrapped_lines.len());
+        // Share the welcome's top rows with the first committed turn so the
+        // header can scroll away without jumping on prompt submission.
         let mut centered = build_top_pad_lines(width, pad_top);
         centered.reserve(wrapped_lines.len());
         centered.extend(wrapped_lines);
@@ -842,10 +845,7 @@ fn prepare_messages_inner(
     }
 
     let compose_start = Instant::now();
-    // Re-apply the initial-screen centering pad above the header so the
-    // transition from the empty screen to the first message does not shift
-    // anything. The pad scrolls off naturally as the transcript grows.
-    let pad_top = initial_header_pad_top(height, header_prepared.wrapped_lines.len());
+    // Preserve the same welcome placement when the first prompt arrives.
     let padded_header = if pad_top > 0 {
         let mut lines = build_top_pad_lines(width, pad_top);
         lines.reserve(header_prepared.wrapped_lines.len());

@@ -169,6 +169,21 @@ pub enum ApiEvent {
         effective_budget: Option<usize>,
     },
 
+    /// Settled Rayu gateway credits charged for the latest provider call and
+    /// cumulative total for the active turn so far. Omitted for BYOK providers
+    /// and older gateways that do not publish request charges.
+    RayuCredits {
+        session_id: String,
+        /// Credits charged for the latest provider request.
+        credits: f64,
+        /// Exact accumulated credits charged across the current turn so far.
+        turn_credits: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        billable_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_per_credit: Option<u64>,
+    },
+
     /// A session context override changed, including its resolved budget.
     ContextCapChanged {
         session_id: String,
@@ -577,6 +592,10 @@ pub struct ResponseStats {
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u64>,
+    /// Total Rayu gateway credits charged across all requests of this turn.
+    /// Absent for non-Rayu providers and older gateways/sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rayu_credits: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -672,6 +691,16 @@ mod response_stats_tests {
             "response_stats":{"input_tokens":0,"output_tokens":12,"cache_read_tokens":0}});
         let message: HistoryMessage = serde_json::from_value(new.clone()).unwrap();
         assert_eq!(message.response_stats.as_ref().unwrap().duration_secs, None);
+        assert_eq!(message.response_stats.as_ref().unwrap().rayu_credits, None);
         assert_eq!(serde_json::to_value(message).unwrap(), new);
+
+        let with_credits = serde_json::json!({"role":"assistant","content":"answer",
+            "response_stats":{"input_tokens":10,"output_tokens":12,"rayu_credits":443.76}});
+        let message: HistoryMessage = serde_json::from_value(with_credits.clone()).unwrap();
+        assert_eq!(
+            message.response_stats.as_ref().unwrap().rayu_credits,
+            Some(443.76)
+        );
+        assert_eq!(serde_json::to_value(message).unwrap(), with_credits);
     }
 }

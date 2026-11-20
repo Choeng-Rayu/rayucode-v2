@@ -2067,6 +2067,25 @@ impl BridgeState {
                     .as_u64()
                     .and_then(|n| usize::try_from(n).ok()),
             })],
+            "rayu_credits" => {
+                let Some(credits) = event["credits"]
+                    .as_f64()
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                else {
+                    return vec![];
+                };
+                let turn_credits = event["turn_credits"]
+                    .as_f64()
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .unwrap_or(credits);
+                vec![ServerFrame::event(ApiEvent::RayuCredits {
+                    session_id: session(self),
+                    credits,
+                    turn_credits,
+                    billable_tokens: event["billable_tokens"].as_u64(),
+                    tokens_per_credit: event["tokens_per_credit"].as_u64(),
+                })]
+            }
             "kv_cache_miss" => vec![ServerFrame::event(ApiEvent::KvCacheMiss {
                 session_id: session(self),
                 reason: event["reason"].as_str().unwrap_or("unknown").to_string(),

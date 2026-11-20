@@ -285,10 +285,19 @@ impl Agent {
     ) -> Result<()> {
         crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model)?;
         let resolved_model = self.provider.model();
+        let provider_name = if self
+            .provider
+            .display_name()
+            .eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME)
+        {
+            crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+        } else {
+            self.provider.name()
+        };
         self.session.provider_key =
             crate::provider::MultiProvider::session_provider_key_after_model_switch(
                 model,
-                self.provider.name(),
+                provider_name,
                 self.session.provider_key.as_deref(),
             );
         if let Some(label) = self.provider.oauth_account_label() {

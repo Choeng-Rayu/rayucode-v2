@@ -490,6 +490,7 @@ fn handle_server_event_inner(
             | ServerEvent::GeneratedImage { .. }
             | ServerEvent::BatchProgress { .. }
             | ServerEvent::TokenUsage { .. }
+            | ServerEvent::RayuCredits { .. }
             | ServerEvent::KvCacheRequest { .. }
             | ServerEvent::ConnectionType { .. }
             | ServerEvent::ConnectionPhase { .. }
@@ -696,6 +697,12 @@ fn handle_server_event_inner(
             message,
             crate::config::config().features.kv_cache_miss_notices,
         ),
+        ServerEvent::RayuCredits { turn_credits, .. } => {
+            app.streaming
+                .streaming_rayu_credits
+                .sync_turn_total(turn_credits);
+            false
+        }
         ServerEvent::TokenUsage {
             input,
             output,
@@ -1041,6 +1048,7 @@ fn handle_server_event_inner(
             not_queued,
         } => app.finish_soft_interrupt_recovery(id, &cancelled, &not_queued),
         ServerEvent::Interrupted => {
+            app.streaming.streaming_rayu_credits.reset();
             crate::logging::info(&format!(
                 "REMOTE_INTERRUPT_EVENT_RECEIVED kind=interrupted session={:?} current_message_id={:?} is_processing={} status={:?} streaming_text_bytes={} pending_soft_interrupts={} queued_messages={}",
                 app.remote_session_id,
@@ -1214,6 +1222,7 @@ fn handle_server_event_inner(
                     let duration = app.display_turn_duration_secs();
                     app.push_turn_footer(duration);
                 }
+                app.streaming.streaming_rayu_credits.reset();
                 crate::tui::mermaid::clear_streaming_preview_diagram();
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;

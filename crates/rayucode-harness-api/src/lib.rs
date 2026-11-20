@@ -31,7 +31,11 @@ mod swarm_metadata;
 pub use client::{FrameError, HarnessClient, read_frame, write_frame};
 pub use events::*;
 pub use rayucode_applet_types;
-pub use rayucode_session_types::TurnStopReason;
+pub use rayucode_session_types::{
+    MICRO_CREDITS_PER_CREDIT, RayuCreditsAccumulator, RayuRequestCharge, TurnStopReason,
+    format_rayu_credits, format_rayu_credits_exact, rayu_credits, rayu_credits_label,
+    rayu_credits_tooltip,
+};
 pub use rayucode_side_panel_types::{
     SidePanelPage, SidePanelPageFormat, SidePanelPageSource, SidePanelSnapshot,
 };
@@ -53,7 +57,7 @@ mod capability_coverage_tests;
 /// Protocol major version. Breaking changes only.
 pub const API_VERSION_MAJOR: u32 = 1;
 /// Protocol minor version. Additive changes.
-pub const API_VERSION_MINOR: u32 = 11;
+pub const API_VERSION_MINOR: u32 = 12;
 
 /// Envelope wrapping every client-to-server frame.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

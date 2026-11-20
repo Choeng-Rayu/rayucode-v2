@@ -23,7 +23,7 @@ impl App {
                     .clone()
                     .unwrap_or_else(|| "remote".to_string())
             } else {
-                self.provider.name().to_string()
+                self.provider.display_name()
             },
             current_model: current_model.to_string(),
             config_default_model,

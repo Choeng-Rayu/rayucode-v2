@@ -183,6 +183,13 @@ impl SseParser {
                 if let Some(usage) = parsed.usage {
                     self.emit_usage(usage);
                 }
+                if let Some(charge) = parsed
+                    .rayu
+                    .as_ref()
+                    .and_then(rayucode_message_types::RayuRequestCharge::from_json_value)
+                {
+                    self.queue.push_back(Ok(StreamEvent::RayuCharge(charge)));
+                }
                 if let Some(stop_reason) = parsed.delta.stop_reason {
                     self.message_ended = true;
                     self.queue.push_back(Ok(StreamEvent::MessageEnd {
@@ -283,6 +290,8 @@ struct MessageDelta {
     delta: StopDelta,
     #[serde(default)]
     usage: Option<Usage>,
+    #[serde(default)]
+    rayu: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -560,6 +569,39 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0].as_ref().unwrap(),
+            StreamEvent::MessageEnd {
+                stop_reason: Some(reason)
+            } if reason == "end_turn"
+        ));
+    }
+
+    #[test]
+    fn message_delta_parses_gateway_rayu_credit_charge() {
+        let stream = concat!(
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":42},\"rayu\":{\"billableTokens\":443760,\"tokensPerCredit\":1000,\"credits\":443.76}}\n\n",
+        );
+        let events: Vec<StreamEvent> = parse_all(&[stream.as_bytes()])
+            .into_iter()
+            .map(|item| item.unwrap())
+            .collect();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(
+            events[0],
+            StreamEvent::TokenUsage {
+                output_tokens: Some(42),
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            StreamEvent::RayuCharge(charge)
+                if (charge.credits - 443.76).abs() < 1e-9
+                    && charge.billable_tokens == Some(443_760)
+                    && charge.tokens_per_credit == Some(1_000)
+        ));
+        assert!(matches!(
+            &events[2],
             StreamEvent::MessageEnd {
                 stop_reason: Some(reason)
             } if reason == "end_turn"

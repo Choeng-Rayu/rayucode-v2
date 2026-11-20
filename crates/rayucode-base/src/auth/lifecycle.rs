@@ -99,6 +99,21 @@ impl AuthCatalogInvariantReport {
     }
 }
 
+fn route_model_matches(route: &ModelRoute, candidate: &str) -> bool {
+    if route.model == candidate {
+        return true;
+    }
+    if matches!(
+        route.api_method_kind(),
+        crate::provider::ModelRouteApiMethod::Rayu
+    ) {
+        let route_bare = route.model.strip_prefix("rayu:").unwrap_or(&route.model);
+        let candidate_bare = candidate.strip_prefix("rayu:").unwrap_or(candidate);
+        return route_bare == candidate_bare;
+    }
+    false
+}
+
 pub fn validate_catalog_invariants(
     activation: &AuthActivationResult,
     selected_model: Option<&str>,
@@ -116,9 +131,11 @@ pub fn validate_catalog_invariants(
         .iter()
         .filter(|route| route.available && route_matches_activation(route, activation))
         .collect::<Vec<_>>();
-    let selected_model_matches_provider_route = selected_model
-        .as_ref()
-        .is_some_and(|selected| matching_routes.iter().any(|route| route.model == *selected));
+    let selected_model_matches_provider_route = selected_model.as_ref().is_some_and(|selected| {
+        matching_routes
+            .iter()
+            .any(|route| route_model_matches(route, selected))
+    });
     let route_sample = matching_routes
         .iter()
         .take(5)
@@ -153,15 +170,17 @@ pub fn provider_model_to_select_after_auth(
         .map(str::trim)
         .filter(|model| !model.is_empty());
     if let Some(selected) = selected_model
-        && matching_routes.iter().any(|route| route.model == selected)
+        && let Some(matched_route) = matching_routes
+            .iter()
+            .find(|route| route_model_matches(route, selected))
     {
         let same_model_wrong_route_exists = routes.iter().any(|route| {
             route.available
-                && route.model == selected
+                && route_model_matches(route, selected)
                 && !route_matches_activation(route, activation)
         });
         if same_model_wrong_route_exists {
-            return Some(selected.to_string());
+            return Some(matched_route.model.clone());
         }
         return None;
     }
@@ -171,11 +190,11 @@ pub fn provider_model_to_select_after_auth(
         .as_deref()
         .map(str::trim)
         .filter(|model| !model.is_empty())
-        && matching_routes
+        && let Some(matched_route) = matching_routes
             .iter()
-            .any(|route| route.model == activated_model)
+            .find(|route| route_model_matches(route, activated_model))
     {
-        return Some(activated_model.to_string());
+        return Some(matched_route.model.clone());
     }
 
     // No usable current model and no activation-supplied model: fall back to the
@@ -241,14 +260,16 @@ pub fn provider_model_to_select_after_auth_with_configured_default(
             .unwrap_or(model)
     });
     if let Some(configured) = configured_bare
-        && routes.iter().any(|route| {
+        && let Some(matched_route) = routes.iter().find(|route| {
             route.available
-                && route.model == configured
+                && route_model_matches(route, configured)
                 && route_matches_activation(route, activation)
         })
-        && selected_model.map(str::trim) != Some(configured)
+        && !selected_model
+            .map(str::trim)
+            .is_some_and(|selected| route_model_matches(matched_route, selected))
     {
-        return Some(configured.to_string());
+        return Some(matched_route.model.clone());
     }
 
     provider_model_to_select_after_auth(activation, selected_model, routes)
@@ -360,6 +381,15 @@ pub fn onboarding_default_selection(provider_ids: &[&str]) -> Option<(String, St
 /// accounts. Returning the complete route preserves OAuth/API-key/profile
 /// identity when the caller applies the selection.
 pub fn globally_preferred_default_route(routes: &[ModelRoute]) -> Option<ModelRoute> {
+    if let Some(rayu_route) = routes.iter().find(|route| {
+        route.available
+            && matches!(
+                route.api_method_kind(),
+                crate::provider::ModelRouteApiMethod::Rayu
+            )
+    }) {
+        return Some(rayu_route.clone());
+    }
     routes
         .iter()
         .enumerate()

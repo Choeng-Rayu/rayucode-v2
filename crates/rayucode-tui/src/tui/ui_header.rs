@@ -856,28 +856,39 @@ fn build_persistent_header_with_auth(
     } else {
         app.upstream_provider()
     };
-    if !nice_model.is_empty() {
-        detail_lines.push(model_header_line(
+    let model_line = (!nice_model.is_empty()).then(|| {
+        model_header_line(
             &nice_model,
             &provider_label,
             upstream.as_deref(),
             detail_budget,
             model_is_placeholder,
-        ));
-    }
-
-    if client_version_label.is_none() {
-        detail_lines.push(standalone_version_line());
-    }
+        )
+    });
 
     if compact || w < 44 {
+        detail_lines.extend(model_line);
+        if let Some(dir) = app.working_dir() {
+            detail_lines.push(Line::styled(
+                abbreviate_home(&dir),
+                Style::default().fg(dim_color()),
+            ));
+        }
+        if client_version_label.is_none() {
+            detail_lines.push(standalone_version_line());
+        }
         return detail_lines;
+    }
+    if client_version_label.is_none() {
+        detail_lines.push(standalone_version_line());
     }
 
     let border_color = rayucode_tui_style::theme::header_border_color();
     let brand = rayucode_tui_style::theme::brand_color();
     let border_style = Style::default().fg(border_color);
-    let dim_border_style = Style::default().fg(border_color).add_modifier(Modifier::DIM);
+    let dim_border_style = Style::default()
+        .fg(border_color)
+        .add_modifier(Modifier::DIM);
     let box_width = w.saturating_sub(1);
     let inner_width = box_width.saturating_sub(4); // "│ " + content + " │"
 
@@ -931,17 +942,22 @@ fn build_persistent_header_with_auth(
         "Welcome back!",
         Style::default().fg(Color::White).bold(),
     )));
-    for banner_line in crate::tui::brand_banner::banner_lines(
-        crate::tui::brand_banner::BannerVariant::Clawd,
-        36,
-    ) {
+    for banner_line in
+        crate::tui::brand_banner::banner_lines(crate::tui::brand_banner::BannerVariant::Clawd, 36)
+    {
         left_rows.push(banner_line);
     }
+    if model_line.is_some() {
+        let label = if provider_label.is_empty() {
+            nice_model
+        } else {
+            format!("{nice_model} · {provider_label}")
+        };
+        left_rows.push(Line::styled(label, Style::default().fg(dim_color())));
+    }
     if let Some(dir) = app.working_dir() {
-        let display_dir = rayucode_tui_tool_display::truncate_middle_display(
-            &abbreviate_home(&dir),
-            36,
-        );
+        let display_dir =
+            rayucode_tui_tool_display::truncate_middle_display(&abbreviate_home(&dir), 36);
         left_rows.push(Line::from(Span::styled(
             display_dir,
             Style::default().fg(dim_color()),

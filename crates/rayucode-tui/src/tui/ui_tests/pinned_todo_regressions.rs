@@ -255,7 +255,7 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
-fn pinned_todo_regression_packed_fresh_session_keeps_prompt_when_band_appears() {
+fn pinned_todo_regression_pinned_composer_keeps_prompt_when_band_appears() {
     with_pinned_todos_config(|| {
         let _changelog = header::scoped_unseen_changelog_entries_override_for_tests(Vec::new());
         reset_prompt_viewport_state_for_test();
@@ -280,7 +280,7 @@ fn pinned_todo_regression_packed_fresh_session_keeps_prompt_when_band_appears() 
             .draw(|frame| draw(frame, &state))
             .expect("initial draw");
         let before = visual_debug::latest_frame().expect("initial capture");
-        assert!(before.layout.use_packed);
+        assert!(!before.layout.use_packed);
         assert!(terminal_text(&terminal).contains("Fresh session prompt remains visible"));
         assert!(!terminal_text(&terminal).contains("Pinned regression task"));
 
@@ -293,10 +293,7 @@ fn pinned_todo_regression_packed_fresh_session_keeps_prompt_when_band_appears() 
             .expect("first todo update draw");
         let after = visual_debug::latest_frame().expect("todo update capture");
         let text = terminal_text(&terminal);
-        assert!(
-            after.layout.use_packed,
-            "fresh session must exercise packed layout"
-        );
+        assert!(!after.layout.use_packed);
         assert!(
             text.contains("Pinned regression task"),
             "band missing:\n{text}"
@@ -305,12 +302,14 @@ fn pinned_todo_regression_packed_fresh_session_keeps_prompt_when_band_appears() 
             text.contains("Fresh session prompt remains visible"),
             "prompt lost:\n{text}"
         );
-        // The old fresh-session sizing reserved no band rows, leaving the same
-        // message area as before and allowing the band to consume the prompt.
         assert!(after.layout.estimated_content_height > before.layout.estimated_content_height);
-        assert!(
-            after.layout.messages_area.as_ref().unwrap().height
-                > before.layout.messages_area.as_ref().unwrap().height
+        assert_eq!(
+            after.layout.input_area.unwrap().y,
+            before.layout.input_area.unwrap().y
+        );
+        assert_eq!(
+            after.layout.messages_area.unwrap().height,
+            before.layout.messages_area.unwrap().height
         );
     });
 }

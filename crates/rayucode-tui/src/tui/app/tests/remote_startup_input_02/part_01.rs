@@ -667,8 +667,7 @@ fn test_remote_active_rayu_mixed_catalog_does_not_rebrand_openrouter_models() {
 
         assert!(
             !app.remote_model_options.iter().any(|route| {
-                route.model.contains('/')
-                    && route.api_method == crate::rayu::RAYU_ROUTE_API_METHOD
+                route.model.contains('/') && route.api_method == crate::rayu::RAYU_ROUTE_API_METHOD
             }),
             "OpenRouter vendor/model IDs must never be rebranded as Rayu routes: {:?}",
             app.remote_model_options
@@ -700,6 +699,102 @@ fn test_remote_active_rayu_mixed_catalog_does_not_rebrand_openrouter_models() {
         assert!(
             picker.entries[2].is_current,
             "bare active Rayu model must match prefixed rayu: route as current in its gateway slot"
+        );
+    });
+}
+
+#[test]
+fn test_remote_model_picker_pins_rayu_above_current_openrouter_and_filters_rayu_first() {
+    with_temp_rayu_home(|| {
+        crate::auth::AuthStatus::invalidate_cache();
+        clear_persisted_test_ui_state();
+        crate::tui::ui::clear_test_render_state_for_tests();
+
+        let mut app = create_test_app();
+        app.is_remote = true;
+        // Even if the session is currently on OpenRouter, `/model` must still
+        // pin Rayu gateway models to the very top in exact gateway order.
+        app.remote_provider_name = Some("OpenRouter".to_string());
+        app.remote_provider_model = Some("anthropic/claude-opus-5.5".to_string());
+        app.remote_reasoning_effort = Some("high".to_string());
+        app.remote_available_entries = vec![
+            "rayu:deepseek-v4.1-flash-1017-cloud".to_string(),
+            "rayu:qwen4-max-preview".to_string(),
+            "anthropic/claude-opus-5.5".to_string(),
+            "qwen/qwen4-max-preview".to_string(),
+        ];
+        app.remote_model_options = vec![
+            crate::provider::ModelRoute {
+                model: "rayu:deepseek-v4.1-flash-1017-cloud".to_string(),
+                provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "DeepSeek-V4.1 · Credits x0.5".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "rayu:qwen4-max-preview".to_string(),
+                provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                available: true,
+                detail: "Qwen4 Max · Credits x1.0".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "anthropic/claude-opus-5.5".to_string(),
+                provider: "OpenRouter".to_string(),
+                api_method: "openrouter".to_string(),
+                available: true,
+                detail: "OpenRouter flagship".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+            crate::provider::ModelRoute {
+                model: "qwen/qwen4-max-preview".to_string(),
+                provider: "OpenRouter".to_string(),
+                api_method: "openrouter".to_string(),
+                available: true,
+                detail: "OpenRouter mirror".to_string(),
+                usage: None,
+                cheapness: None,
+            },
+        ];
+
+        app.open_model_picker();
+
+        let picker = app
+            .inline_interactive_state
+            .as_mut()
+            .expect("model picker must open");
+        let top_three: Vec<&str> = picker
+            .entries
+            .iter()
+            .take(3)
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            top_three,
+            vec![
+                "rayu:deepseek-v4.1-flash-1017-cloud",
+                "rayu:qwen4-max-preview",
+                "anthropic/claude-opus-5.5 (high)",
+            ],
+            "Rayu models must appear above the current OpenRouter model in exact gateway order"
+        );
+        assert!(picker.entries[2].is_current);
+
+        // Filtering by bare Rayu model id should rank the Rayu route #1.
+        picker.filter = "qwen4-max-preview".to_string();
+        App::apply_inline_interactive_filter(picker);
+        assert_eq!(
+            picker
+                .filtered
+                .first()
+                .map(|&idx| picker.entries[idx].name.as_str()),
+            Some("rayu:qwen4-max-preview"),
+            "bare model search should rank the matching Rayu route first"
         );
     });
 }

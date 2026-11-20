@@ -2135,6 +2135,8 @@ struct RunCommandReport {
     model: String,
     text: String,
     usage: crate::agent::TokenUsage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rayu_credits: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -2148,6 +2150,7 @@ struct NdjsonRunState {
     requested_service_tier: Option<String>,
     served_service_tier: Option<String>,
     usage: crate::agent::TokenUsage,
+    rayu_credits: Option<f64>,
 }
 
 impl NdjsonRunState {
@@ -2719,6 +2722,7 @@ async fn run_single_message_with_agent(
                 model: provider.model(),
                 text,
                 usage: agent.last_usage().clone(),
+                rayu_credits: agent.last_turn_rayu_credits(),
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else if emit_ndjson {
@@ -3317,27 +3321,9 @@ async fn run_single_message_command_ndjson(
 
     match result {
         Ok(()) => {
-            write_json_line(
-                &mut stdout,
-                &serde_json::json!({
-                    "type": "done",
-                    "session_id": session_id,
-                    "provider": provider_name,
-                    "model": provider.model(),
-                    "text": state.text,
-                    "usage": state.usage,
-                    "upstream_provider": state.upstream_provider,
-                    "connection_type": state.connection_type,
-                    "connection_phase": state.connection_phase,
-                    "status_detail": state.status_detail,
-                    "requested_service_tier": state.requested_service_tier,
-                    "reported_service_tier": state.served_service_tier,
-                    "service_tier_report_status": state.service_tier_report_status(),
-                    // Retained for compatibility; this is provider-reported
-                    // metadata, not independently verified serving evidence.
-                    "served_service_tier": state.served_service_tier,
-                }),
-            )?;
+            let done_payload =
+                ndjson_done_payload(&state, &session_id, &provider_name, &provider.model());
+            write_json_line(&mut stdout, &done_payload)?;
             Ok(())
         }
         Err(err) => {
@@ -3365,6 +3351,41 @@ pub(super) fn unwrap_turn_event(
         event = *inner;
     }
     event
+}
+
+/// Builds the terminal `done` line for `rayu run --ndjson`.
+///
+/// `rayu_credits` is present only when the turn actually reported gateway
+/// credits. BYOK providers and older gateways leave it absent so consumers can
+/// distinguish "no credits reported" from a genuine zero charge.
+fn ndjson_done_payload(
+    state: &NdjsonRunState,
+    session_id: &str,
+    provider_name: &str,
+    model: &str,
+) -> serde_json::Value {
+    let mut done_payload = serde_json::json!({
+        "type": "done",
+        "session_id": session_id,
+        "provider": provider_name,
+        "model": model,
+        "text": state.text,
+        "usage": state.usage,
+        "upstream_provider": state.upstream_provider,
+        "connection_type": state.connection_type,
+        "connection_phase": state.connection_phase,
+        "status_detail": state.status_detail,
+        "requested_service_tier": state.requested_service_tier,
+        "reported_service_tier": state.served_service_tier,
+        "service_tier_report_status": state.service_tier_report_status(),
+        // Retained for compatibility; this is provider-reported
+        // metadata, not independently verified serving evidence.
+        "served_service_tier": state.served_service_tier,
+    });
+    if let Some(rayu_credits) = state.rayu_credits {
+        done_payload["rayu_credits"] = serde_json::json!(rayu_credits);
+    }
+    done_payload
 }
 
 fn emit_ndjson_event(
@@ -3446,6 +3467,24 @@ fn emit_ndjson_event(
                     "output": output,
                     "cache_read_input": cache_read_input,
                     "cache_creation_input": cache_creation_input,
+                }),
+            )
+        }
+        ServerEvent::RayuCredits {
+            credits,
+            turn_credits,
+            billable_tokens,
+            tokens_per_credit,
+        } => {
+            state.rayu_credits = Some(turn_credits);
+            write_json_line(
+                stdout,
+                &serde_json::json!({
+                    "type": "rayu_credits",
+                    "credits": credits,
+                    "turn_credits": turn_credits,
+                    "billable_tokens": billable_tokens,
+                    "tokens_per_credit": tokens_per_credit,
                 }),
             )
         }

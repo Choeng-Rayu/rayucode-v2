@@ -257,7 +257,16 @@ impl Agent {
             );
         }
 
-        crate::session::derive_session_provider_key(self.provider.name())
+        let provider_name = if self
+            .provider
+            .display_name()
+            .eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME)
+        {
+            crate::rayu::RAYU_PROVIDER_DISPLAY_NAME
+        } else {
+            self.provider.name()
+        };
+        crate::session::derive_session_provider_key(provider_name)
     }
 
     /// Re-apply the persisted session model on resume (or attach). A stale

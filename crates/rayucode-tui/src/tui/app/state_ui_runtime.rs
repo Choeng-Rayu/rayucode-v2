@@ -102,10 +102,30 @@ impl App {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn build_turn_footer(&self, duration: Option<f32>) -> Option<String> {
+        self.build_turn_footer_with_credits_mode(duration, false)
+    }
+
+    pub(super) fn build_turn_footer_with_credits_mode(
+        &self,
+        duration: Option<f32>,
+        credits_so_far: bool,
+    ) -> Option<String> {
+        let credits_label = self
+            .streaming
+            .streaming_rayu_credits
+            .formatted_label(credits_so_far);
         if self.streaming.streaming_usage_call_reset_pending {
-            return duration
-                .map(|secs| Message::format_duration((secs.max(0.0) * 1000.0).round() as u64));
+            let mut parts = Vec::new();
+            if let Some(secs) = duration {
+                let duration_ms = (secs.max(0.0) * 1000.0).round() as u64;
+                parts.push(Message::format_duration(duration_ms));
+            }
+            if let Some(credits) = credits_label {
+                parts.push(credits);
+            }
+            return (!parts.is_empty()).then(|| parts.join(" · "));
         }
         let mut parts = Vec::new();
         if let Some(secs) = duration {
@@ -128,6 +148,9 @@ impl App {
         ) {
             parts.push(cache);
         }
+        if let Some(credits) = credits_label {
+            parts.push(credits);
+        }
 
         if parts.is_empty() {
             None
@@ -137,6 +160,9 @@ impl App {
     }
 
     pub(super) fn has_streaming_footer_stats(&self) -> bool {
+        if !self.streaming.streaming_rayu_credits.is_empty() {
+            return true;
+        }
         if self.streaming.streaming_usage_call_reset_pending {
             return false;
         }
@@ -148,6 +174,14 @@ impl App {
     }
 
     pub(super) fn push_turn_footer(&mut self, duration: Option<f32>) {
+        self.push_turn_footer_with_credits_mode(duration, false);
+    }
+
+    pub(super) fn push_turn_footer_with_credits_mode(
+        &mut self,
+        duration: Option<f32>,
+        credits_so_far: bool,
+    ) {
         self.log_cache_miss_if_unexpected();
         self.record_completed_stream_cache_usage();
 
@@ -170,7 +204,7 @@ impl App {
             };
         }
 
-        if let Some(footer) = self.build_turn_footer(duration) {
+        if let Some(footer) = self.build_turn_footer_with_credits_mode(duration, credits_so_far) {
             self.push_display_message(DisplayMessage {
                 role: "meta".to_string(),
                 content: footer,

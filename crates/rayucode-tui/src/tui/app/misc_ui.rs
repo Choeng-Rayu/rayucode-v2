@@ -139,6 +139,7 @@ impl App {
         self.streaming.streaming_total_output_tokens = 0;
         self.streaming.streaming_tps_observed_output_tokens = 0;
         self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.streaming.streaming_rayu_credits.reset();
     }
 
     pub(super) fn open_usage_inline_loading(&mut self) {

@@ -27,9 +27,30 @@ pub fn simplified_model_routes_for_picker(
     display_models: impl IntoIterator<Item = String>,
 ) -> Vec<ModelRoute> {
     let auth = AuthStatus::check_fast();
+    let display_models: Vec<String> = display_models.into_iter().collect();
+    let provider_is_rayu = current_provider_name
+        .trim()
+        .eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME);
+    let has_prefixed_rayu = display_models
+        .iter()
+        .any(|model| model.starts_with("rayu:"));
     let mut routes: Vec<ModelRoute> = Vec::new();
 
     for model in display_models {
+        if model.starts_with("rayu:")
+            || (provider_is_rayu && !has_prefixed_rayu && !model.contains('/'))
+        {
+            routes.push(ModelRoute {
+                model,
+                provider: crate::rayu::RAYU_PROVIDER_DISPLAY_NAME.to_string(),
+                api_method: crate::rayu::RAYU_ROUTE_API_METHOD.to_string(),
+                available: crate::rayu::has_credentials(),
+                detail: "Rayu hosted models · live catalog".to_string(),
+                usage: None,
+                cheapness: None,
+            });
+            continue;
+        }
         if model == CHATGPT_WEB_MODEL {
             routes.push(build_chatgpt_web_route());
             continue;

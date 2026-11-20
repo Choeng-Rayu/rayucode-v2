@@ -33,8 +33,12 @@ pub(super) fn api_key_env_bindings_for_provider(provider_id: &str) -> Vec<(Strin
             "OPENROUTER_API_KEY".to_string(),
             "openrouter.env".to_string(),
         )],
-        // Rayu credentials live in the shared session file (~/.rayu/rayu-auth.json)
-        // or the RAYU_API_KEY process env — there is no env file to sync.
+        // Rayu API keys are saved in `rayu.env` (account logins use
+        // `~/.rayu/rayu-auth.json` and skip env-file sync via OAuthBrowser).
+        "rayu" => vec![(
+            crate::rayu::RAYU_API_KEY_ENV.to_string(),
+            "rayu.env".to_string(),
+        )],
         "bedrock" => vec![
             (
                 crate::provider::bedrock::API_KEY_ENV.to_string(),

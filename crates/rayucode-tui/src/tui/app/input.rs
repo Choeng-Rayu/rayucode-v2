@@ -3862,6 +3862,7 @@ impl App {
         self.streaming.streaming_output_tokens = 0;
         self.streaming.streaming_cache_read_tokens = None;
         self.streaming.streaming_cache_creation_tokens = None;
+        self.streaming.streaming_rayu_credits.reset();
         self.streaming.streaming_context_stale = false;
         self.streaming.streaming_usage_call_reset_pending = false;
         self.kv_cache.current_api_usage_recorded = false;
@@ -4247,6 +4248,7 @@ impl App {
         self.streaming.streaming_output_tokens = 0;
         self.streaming.streaming_cache_read_tokens = None;
         self.streaming.streaming_cache_creation_tokens = None;
+        self.streaming.streaming_rayu_credits.reset();
         self.kv_cache.current_api_usage_recorded = false;
         self.upstream_provider = None;
         self.status_detail = None;
@@ -4322,6 +4324,7 @@ impl App {
             self.streaming.streaming_output_tokens = 0;
             self.streaming.streaming_cache_read_tokens = None;
             self.streaming.streaming_cache_creation_tokens = None;
+            self.streaming.streaming_rayu_credits.reset();
             self.kv_cache.current_api_usage_recorded = false;
             self.upstream_provider = None;
             self.status_detail = None;

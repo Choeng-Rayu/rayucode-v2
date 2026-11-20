@@ -24,6 +24,73 @@ fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
 }
 
 #[test]
+fn test_build_turn_footer_includes_rayu_credits_and_remote_done_resets() {
+    let mut app = create_test_app();
+    app.streaming.streaming_input_tokens = 1_200;
+    app.streaming.streaming_output_tokens = 300;
+    app.streaming.streaming_rayu_credits.record_credits(443.76);
+
+    let footer = app
+        .build_turn_footer(Some(5.0))
+        .expect("footer with credits");
+    assert!(
+        footer.ends_with("Credits: 443.76"),
+        "expected Credits suffix in footer: {footer}"
+    );
+
+    let in_progress = app
+        .build_turn_footer_with_credits_mode(Some(5.0), true)
+        .expect("so-far footer");
+    assert!(
+        in_progress.ends_with("Credits so far: 443.76"),
+        "expected Credits so far suffix: {in_progress}"
+    );
+
+    // Compact k formatting and sub-cent display reuse the canonical formatter.
+    app.streaming
+        .streaming_rayu_credits
+        .sync_turn_total(2_500.0);
+    let compact = app.build_turn_footer(None).expect("credits-only footer");
+    assert_eq!(compact, "↑1k ↓300 · Credits: 2.5k");
+
+    // Remote ServerEvent::RayuCredits flows into the final Done meta row and
+    // resets cleanly before the next turn.
+    let mut remote_app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote_app.is_remote = true;
+    remote_app.is_processing = true;
+    remote_app.current_message_id = Some(99);
+    remote_app.streaming.streaming_text = "Hello from Rayu".to_string();
+    remote_app.handle_server_event(
+        crate::protocol::ServerEvent::RayuCredits {
+            credits: 1.25,
+            turn_credits: 3.75,
+            billable_tokens: Some(1250),
+            tokens_per_credit: Some(1000),
+        },
+        &mut remote,
+    );
+    remote_app.handle_server_event(crate::protocol::ServerEvent::Done { id: 99 }, &mut remote);
+
+    let meta_footer = remote_app
+        .display_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "meta")
+        .map(|m| m.content.as_str());
+    assert!(
+        meta_footer.is_some_and(|text| text.contains("Credits: 3.75")),
+        "expected Done meta footer to display Rayu credits, got: {meta_footer:?}"
+    );
+    assert!(
+        remote_app.streaming.streaming_rayu_credits.is_empty(),
+        "credits accumulator must reset after Done so next turn starts fresh"
+    );
+}
+
+#[test]
 fn test_processing_status_display() {
     let status = ProcessingStatus::Sending;
     assert!(matches!(status, ProcessingStatus::Sending));

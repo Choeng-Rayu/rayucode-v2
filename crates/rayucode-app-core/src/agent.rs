@@ -305,6 +305,8 @@ pub struct Agent {
     kv_cache_monitor: crate::kv_cache_monitor::KvCacheMonitor,
     /// Last token usage from API request (for debug socket queries)
     last_usage: TokenUsage,
+    /// Total Rayu gateway credits charged across the most recent turn, when reported.
+    last_turn_rayu_credits: Option<f64>,
     /// Locked tool list: once the first API request is sent, freeze the tool list
     /// to avoid cache invalidation when MCP tools arrive asynchronously.
     /// Cleared on compaction/reset.
@@ -483,6 +485,7 @@ impl Agent {
             cache_tracker: CacheTracker::new(),
             kv_cache_monitor: Default::default(),
             last_usage: TokenUsage::default(),
+            last_turn_rayu_credits: None,
             locked_tools: None,
             mcp_late_register_resolved: false,
             last_recovery_compaction: None,
@@ -817,6 +820,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.kv_cache_monitor.reset();
         self.last_usage = TokenUsage::default();
+        self.last_turn_rayu_credits = None;
         self.locked_tools = None;
         self.mcp_late_register_resolved = false;
         self.rewind_undo_snapshot = None;
@@ -1363,6 +1367,11 @@ impl Agent {
     /// Get the last token usage from the most recent API request
     pub fn last_usage(&self) -> &TokenUsage {
         &self.last_usage
+    }
+
+    /// Total Rayu gateway credits charged for the most recent turn, when reported.
+    pub fn last_turn_rayu_credits(&self) -> Option<f64> {
+        self.last_turn_rayu_credits
     }
 
     pub fn token_usage_totals(&self) -> crate::protocol::TokenUsageTotals {

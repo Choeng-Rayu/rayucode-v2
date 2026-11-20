@@ -54,6 +54,7 @@ fn stream_event_is_replay_visible(event: &StreamEvent) -> bool {
         | StreamEvent::ThinkingDone { .. }
         | StreamEvent::RetryRollback { .. }
         | StreamEvent::TokenUsage { .. }
+        | StreamEvent::RayuCharge(_)
         | StreamEvent::ConnectionType { .. }
         | StreamEvent::ConnectionPhase { .. }
         | StreamEvent::StatusDetail { .. }

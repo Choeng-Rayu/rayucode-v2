@@ -44,6 +44,32 @@ impl<'a> ProviderRegistry<'a> {
             .insert(profile_id.into(), runtime);
     }
 
+    pub(super) fn remove_compatible_profile(&self, profile_id: &str) {
+        self.provider
+            .openai_compatible_profiles
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(profile_id);
+        let mut active = self
+            .provider
+            .active_openai_compatible_profile
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.as_deref() == Some(profile_id) {
+            *active = None;
+        }
+    }
+
+    pub(super) fn fork_compatible_profiles(&self) -> HashMap<String, Arc<dyn Provider>> {
+        self.provider
+            .openai_compatible_profiles
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .map(|(id, runtime)| (id.clone(), runtime.fork()))
+            .collect()
+    }
+
     pub(super) fn active_compatible_profile_id(&self) -> Option<String> {
         self.provider
             .active_openai_compatible_profile

@@ -343,6 +343,7 @@ pub(super) fn activate_auto_poke_local(app: &mut App) {
             app.streaming.streaming_output_tokens = 0;
             app.streaming.streaming_cache_read_tokens = None;
             app.streaming.streaming_cache_creation_tokens = None;
+            app.streaming.streaming_rayu_credits.reset();
             app.kv_cache.current_api_usage_recorded = false;
             app.upstream_provider = None;
             app.status_detail = None;

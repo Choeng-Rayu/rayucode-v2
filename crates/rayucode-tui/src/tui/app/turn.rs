@@ -196,6 +196,7 @@ impl App {
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
                                         self.streaming_tool_calls.clear();
+                                        self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
                                         return Ok(());
@@ -317,6 +318,7 @@ impl App {
             let mut call_output_tokens_seen: u64 = 0;
             // Latest provider-reported usage for this API call, for usage_report.
             let mut call_usage = rayucode_provider_core::SimpleCompletionUsage::default();
+            let mut call_rayu_charge: Option<rayucode_session_types::RayuRequestCharge> = None;
             let model_at_request_start = self.provider.model();
             let mut interleaved = false; // Track if we interleaved a message mid-stream
             // Track tool results from provider (already executed by Claude Code CLI)
@@ -444,6 +446,7 @@ impl App {
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
                                         self.streaming_tool_calls.clear();
+                                        self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
                                         return Ok(());
@@ -788,6 +791,9 @@ impl App {
                                                 .streaming.streaming_cache_creation_tokens,
                                         });
                                     }
+                                    StreamEvent::RayuCharge(charge) => {
+                                        call_rayu_charge = Some(charge);
+                                    }
                                     StreamEvent::ConnectionType { connection } => {
                                         self.connection_type = Some(connection);
                                         self.update_terminal_title();
@@ -857,6 +863,7 @@ impl App {
                                         provider_native_items.clear();
                                         openai_native_compaction = None;
                                         saw_message_end = false;
+                                        call_rayu_charge = None;
                                         self.rollback_streaming_attempt();
                                         self.connection_phase_started = Some(Instant::now());
                                         self.status = ProcessingStatus::Connecting(
@@ -1241,6 +1248,9 @@ impl App {
                 crate::telemetry::UsageSource::Agent,
                 call_usage,
             );
+            if let Some(charge) = call_rayu_charge {
+                self.streaming.streaming_rayu_credits.record_charge(charge);
+            }
 
             // If we interleaved a message, skip post-processing and go straight to new API call
             if interleaved {
@@ -1280,7 +1290,33 @@ impl App {
                     timestamp: Some(chrono::Utc::now()),
                     tool_duration_ms: None,
                 });
-                let message_id = self.session.add_message(Role::Assistant, content_clone);
+                let token_usage = if call_usage.input_tokens.is_some()
+                    || call_usage.output_tokens.is_some()
+                    || call_usage.cache_read_input_tokens.is_some()
+                    || call_usage.cache_creation_input_tokens.is_some()
+                    || call_rayu_charge.is_some()
+                {
+                    let input_tokens = call_usage.input_tokens.unwrap_or(0);
+                    let output_tokens = call_usage.output_tokens.unwrap_or(0);
+                    Some(crate::session::StoredTokenUsage {
+                        prompt_tokens: Some(crate::tui::info_widget::effective_prompt_tokens(
+                            &self.kv_cache_provider_name(),
+                            input_tokens,
+                            call_usage.cache_read_input_tokens.unwrap_or(0),
+                            call_usage.cache_creation_input_tokens.unwrap_or(0),
+                        )),
+                        input_tokens,
+                        output_tokens,
+                        cache_read_input_tokens: call_usage.cache_read_input_tokens,
+                        cache_creation_input_tokens: call_usage.cache_creation_input_tokens,
+                        rayu_credits: call_rayu_charge.map(|charge| charge.credits),
+                    })
+                } else {
+                    None
+                };
+                let message_id = self
+                    .session
+                    .add_message_ext(Role::Assistant, content_clone, None, token_usage);
                 let _ = self.session.save();
                 for tc in &tool_calls {
                     self.tool_result_ids.insert(tc.id.clone());
@@ -1321,6 +1357,10 @@ impl App {
                         tool_data: None,
                     });
                     self.push_turn_footer(duration);
+                    self.streaming.streaming_rayu_credits.reset();
+                } else if self.has_streaming_footer_stats() {
+                    self.push_turn_footer(duration);
+                    self.streaming.streaming_rayu_credits.reset();
                 }
             } else {
                 // Had tool calls - only display text that came AFTER the last tool
@@ -1340,7 +1380,7 @@ impl App {
                     }
                 }
                 if self.has_streaming_footer_stats() {
-                    self.push_turn_footer(duration);
+                    self.push_turn_footer_with_credits_mode(duration, true);
                 }
             }
             self.clear_streaming_render_state();

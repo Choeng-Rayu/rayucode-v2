@@ -278,6 +278,20 @@ pub enum ServerEvent {
         effective_budget: Option<usize>,
     },
 
+    /// Settled Rayu gateway credit charge for the latest API request and the
+    /// cumulative total charged across all requests of the active turn so far.
+    #[serde(rename = "rayu_credits")]
+    RayuCredits {
+        /// Credits charged for the latest API request.
+        credits: f64,
+        /// Exact accumulated credits charged across the current turn so far.
+        turn_credits: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        billable_tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_per_credit: Option<u64>,
+    },
+
     /// Prompt-shape signature for the API request that will later report token
     /// usage. Remote clients use this to diagnose KV-cache misses.
     #[serde(rename = "kv_cache_request")]

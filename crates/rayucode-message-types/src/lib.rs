@@ -1,4 +1,10 @@
 pub mod provider_native;
+pub mod rayu_credits;
+
+pub use rayu_credits::{
+    MICRO_CREDITS_PER_CREDIT, RayuCreditsAccumulator, RayuRequestCharge, format_rayu_credits,
+    format_rayu_credits_exact, rayu_credits_label, rayu_credits_tooltip,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCall {
@@ -819,6 +825,8 @@ pub enum StreamEvent {
         cache_read_input_tokens: Option<u64>,
         cache_creation_input_tokens: Option<u64>,
     },
+    /// Settled Rayu credit charge reported by the Rayu gateway for this request.
+    RayuCharge(RayuRequestCharge),
     /// Active transport/connection type for this stream
     ConnectionType { connection: String },
     /// Connection phase update (for status bar transparency)

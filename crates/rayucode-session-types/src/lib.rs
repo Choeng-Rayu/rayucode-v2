@@ -5,6 +5,10 @@ use std::collections::HashSet;
 
 mod title;
 mod transcription;
+pub use rayucode_message_types::rayu_credits::{
+    self, MICRO_CREDITS_PER_CREDIT, RayuCreditsAccumulator, RayuRequestCharge, format_rayu_credits,
+    format_rayu_credits_exact, rayu_credits_label, rayu_credits_tooltip,
+};
 pub use title::prompt_title;
 pub use transcription::{
     TRANSCRIPTION_CLOSE, TRANSCRIPTION_OPEN, strip_transcription, wrap_transcription,
@@ -72,6 +76,10 @@ pub struct ResponseStats {
     pub cache_read_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_tokens: Option<u64>,
+    /// Total Rayu gateway credits charged across all requests of this turn.
+    /// Absent for non-Rayu providers and older gateways/sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rayu_credits: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,6 +312,9 @@ pub struct StoredTokenUsage {
     pub cache_read_input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
+    /// Settled Rayu gateway credits charged for this provider request, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rayu_credits: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

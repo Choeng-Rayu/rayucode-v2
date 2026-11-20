@@ -1542,13 +1542,37 @@ impl MultiProvider {
             registry.install_compatible_profile(GROK_BUILD_PROFILE_ID, grok);
         }
 
-        if crate::rayu::has_credentials()
-            && registry.compatible_profile(RAYU_PROFILE_ID).is_none()
-            && let Some(rayu) =
+        if crate::rayu::has_credentials() {
+            let mut just_installed_rayu = false;
+            if let Some(existing) = registry.compatible_profile(RAYU_PROFILE_ID) {
+                existing.on_auth_changed();
+            } else if let Some(rayu) =
                 external::instantiate_expected_external_provider(external::RAYU_RUNTIME)
-        {
-            crate::logging::info("Hot-initialized Rayu provider after login");
-            registry.install_compatible_profile(RAYU_PROFILE_ID, rayu);
+            {
+                crate::logging::info("Hot-initialized Rayu provider after login");
+                registry.install_compatible_profile(RAYU_PROFILE_ID, rayu);
+                just_installed_rayu = true;
+            }
+            if !preserve_existing_openrouter_profile
+                && registry.compatible_profile(RAYU_PROFILE_ID).is_some()
+            {
+                let runtime_provider_is_rayu = std::env::var("RAYU_RUNTIME_PROVIDER")
+                    .ok()
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID));
+                let explicit_non_rayu_default = crate::config::config()
+                    .provider
+                    .default_provider
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some_and(|value| !value.eq_ignore_ascii_case(RAYU_PROFILE_ID));
+                if runtime_provider_is_rayu || (just_installed_rayu && !explicit_non_rayu_default) {
+                    registry.set_active_compatible_profile(RAYU_PROFILE_ID);
+                    self.set_active_provider(ActiveProvider::OpenRouter);
+                }
+            }
+        } else {
+            registry.remove_compatible_profile(RAYU_PROFILE_ID);
         }
 
         if let Some(anthropic) = self.anthropic_provider() {
@@ -1730,6 +1754,16 @@ impl MultiProvider {
             ActiveProvider::Cursor => "cursor",
             ActiveProvider::Bedrock => "bedrock",
             ActiveProvider::OpenRouter => {
+                if let Some(profile_id) = ProviderRegistry::new(self).active_compatible_profile_id()
+                {
+                    if profile_id == RAYU_PROFILE_ID {
+                        let bare = current_model.strip_prefix("rayu:").unwrap_or(current_model);
+                        return format!("rayu:{bare}");
+                    }
+                    if profile_id == GROK_BUILD_PROFILE_ID {
+                        return grok_build_model_spec(current_model);
+                    }
+                }
                 if let Some(openrouter) = self.active_openrouter_execution_provider()
                     && let Some((_provider, api_method, _detail)) =
                         openrouter.direct_openai_compatible_route_parts()
@@ -2936,6 +2970,7 @@ impl Provider for MultiProvider {
         };
 
         mark("openrouter", &mut laps);
+        let registry = ProviderRegistry::new(self);
         let provider = Self {
             anthropic: RwLock::new(anthropic),
             openai: RwLock::new(openai),
@@ -2945,8 +2980,8 @@ impl Provider for MultiProvider {
             cursor: RwLock::new(cursor_provider),
             bedrock: RwLock::new(bedrock_provider),
             openrouter: RwLock::new(openrouter),
-            openai_compatible_profiles: RwLock::new(HashMap::new()),
-            active_openai_compatible_profile: RwLock::new(None),
+            openai_compatible_profiles: RwLock::new(registry.fork_compatible_profiles()),
+            active_openai_compatible_profile: RwLock::new(registry.active_compatible_profile_id()),
             session_id: RwLock::new(self.bound_session_id()),
             active: RwLock::new(active),
             startup_notices: RwLock::new(Vec::new()),
@@ -2962,8 +2997,10 @@ impl Provider for MultiProvider {
         provider.spawn_openai_catalog_refresh_if_needed();
         let catalog_ms = catalog_start.elapsed().as_millis();
         let set_model_start = std::time::Instant::now();
-        let switch_request = self.fork_model_switch_request(active, &current_model);
-        let _ = provider.set_model(&switch_request);
+        if !current_model.trim().is_empty() {
+            let switch_request = self.fork_model_switch_request(active, &current_model);
+            let _ = provider.set_model(&switch_request);
+        }
         crate::logging::info(&format!(
             "[TIMING] provider fork: runtimes={}ms ({}), catalog_spawn={}ms, set_model={}ms, total={}ms",
             runtimes_ms,
@@ -2995,12 +3032,14 @@ impl Provider for MultiProvider {
         if self.initial_provider.is_some() {
             let active = self.active_provider();
             let current_model = self.model();
-            let switch_request = self.fork_model_switch_request(active, &current_model);
-            if let Err(error) = provider.set_model(&switch_request) {
-                crate::logging::warn(&format!(
-                    "Failed to preserve initial provider model '{}' for new session: {}",
-                    switch_request, error
-                ));
+            if !current_model.trim().is_empty() {
+                let switch_request = self.fork_model_switch_request(active, &current_model);
+                if let Err(error) = provider.set_model(&switch_request) {
+                    crate::logging::warn(&format!(
+                        "Failed to preserve initial provider model '{}' for new session: {}",
+                        switch_request, error
+                    ));
+                }
             }
         }
 
@@ -3028,6 +3067,15 @@ impl Provider for MultiProvider {
     }
 
     fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+        if provider.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID) {
+            let registry = ProviderRegistry::new(self);
+            if registry.compatible_profile(RAYU_PROFILE_ID).is_none() {
+                anyhow::bail!("Provider `rayu` is not configured in this session");
+            }
+            registry.set_active_compatible_profile(RAYU_PROFILE_ID);
+            self.set_active_provider(ActiveProvider::OpenRouter);
+            return Ok(());
+        }
         let target = Self::parse_provider_hint(provider)
             .ok_or_else(|| anyhow::anyhow!("Unknown provider `{}`", provider))?;
         if !self.provider_is_configured(target) {

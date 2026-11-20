@@ -492,6 +492,10 @@ impl Provider for RayuProvider {
         self.catalog.clear_memory();
     }
 
+    async fn invalidate_credentials(&self) {
+        self.catalog.clear_memory();
+    }
+
     fn active_auth_method_label(&self) -> Option<&'static str> {
         if rayucode_base::rayu::has_usable_session() {
             Some("Rayu account login")

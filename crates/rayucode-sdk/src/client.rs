@@ -1641,6 +1641,9 @@ impl RayucodeClient {
                         effective_budget,
                     })
                 }
+                ApiEvent::RayuCredits { turn_credits, .. } => {
+                    result.rayu_credits = Some(turn_credits);
+                }
                 ApiEvent::PermissionRequest { request_id, .. } if options.auto_approve => {
                     self.respond_to_permission(session_id, &request_id, PermissionDecision::Allow)?;
                 }
@@ -1803,6 +1806,7 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | Tools { session_id, .. }
         | SidePanelState { session_id, .. }
         | TokenUsage { session_id, .. }
+        | RayuCredits { session_id, .. }
         | ContextCapChanged { session_id, .. }
         | KvCacheMiss { session_id, .. }
         | TurnDone { session_id, .. }

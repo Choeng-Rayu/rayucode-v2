@@ -3514,7 +3514,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let queued_height = reserve_rows(pending_count.min(3) as u16);
     let swarm_strip_height = reserve_rows(swarm_strip_lines.len() as u16);
     let notification_height = reserve_rows(input_ui::notification_height(app, chat_area.width));
-    let donut_height = reserve_rows(idle_donut_reserved_height(show_donut, input_height));
     let composer_rules_height = if available_height >= 10
         && app.login_input_hint().is_none()
         && !app.terminal_clear_collapsed()
@@ -3523,6 +3522,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         0
     };
+    let donut_height = idle_donut_reserved_height(show_donut, input_height)
+        .min(chrome_rows.saturating_sub(composer_rules_height));
     let composer_height = input_height + composer_rules_height;
     let fixed_height = status_height
         + queued_height
@@ -3536,8 +3537,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let stable_fixed_height = fixed_height;
     let overflows = |prepared: &PreparedChatFrame| {
         let started = Instant::now();
-        let result =
-            (prepared.total_wrapped_lines().max(1) as u16) + stable_fixed_height > available_height;
+        let result = prepared.total_wrapped_lines().max(1)
+            > usize::from(available_height.saturating_sub(stable_fixed_height));
         note_prep_overflow(started.elapsed());
         result
     };
@@ -3668,51 +3669,30 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         content_height
     };
 
-    // Keep the read-only composer's position stable behind the resume card
-    // while the selection moves between long and short transcripts.
-    let use_packed = terminal_clear_collapsed
-        || (!secondary_render_active()
-            && !swarm_page_active
-            && !side_panel_fullscreen
-            && content_height.saturating_add(fixed_height) <= available_height);
-
-    // Layout: messages (includes header), queued, status, notification, inline UI, gap, input, donut
-    // All vertical chunks are within the chat_area (left column).
+    // Explicit clear puts the prompt at the top. The normal fullscreen
+    // layout gives unused rows to the transcript and keeps the footer pinned.
+    let use_packed = terminal_clear_collapsed;
+    let transcript_height = if terminal_clear_collapsed {
+        Constraint::Length(0)
+    } else {
+        Constraint::Min(min_messages_height)
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(if use_packed {
-            vec![
-                Constraint::Length(if terminal_clear_collapsed {
-                    0
-                } else {
-                    content_height.max(1)
-                }), // 0 Messages (exact height; 0 when terminal-cleared)
-                Constraint::Length(queued_height), // 1 Queued messages (above status)
-                Constraint::Length(swarm_strip_height), // 2 Swarm strip (above status)
-                Constraint::Length(status_height), // 3 Status line
-                Constraint::Length(notification_height), // 4 Notification line
-                Constraint::Length(inline_block_height), // 5 Inline UI
-                Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
-                Constraint::Length(composer_height), // 7 Composer
-                Constraint::Length(overscroll_height), // 8 Overscroll status line
-                Constraint::Length(donut_height),  // 9 Donut animation
-            ]
-        } else {
-            vec![
-                Constraint::Min(min_messages_height), // 0 Messages (scrollable)
-                Constraint::Length(queued_height),    // 1 Queued messages (above status)
-                Constraint::Length(swarm_strip_height), // 2 Swarm strip (above status)
-                Constraint::Length(status_height),    // 3 Status line
-                Constraint::Length(notification_height), // 4 Notification line
-                Constraint::Length(inline_block_height), // 5 Inline UI
-                Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
-                Constraint::Length(composer_height),  // 7 Composer
-                Constraint::Length(overscroll_height), // 8 Overscroll status line
-                Constraint::Length(donut_height),     // 9 Donut animation
-            ]
-        })
+        .constraints([
+            transcript_height,
+            Constraint::Length(queued_height),
+            Constraint::Length(swarm_strip_height),
+            Constraint::Length(status_height),
+            Constraint::Length(notification_height),
+            Constraint::Length(inline_block_height),
+            Constraint::Length(inline_ui_gap_height),
+            Constraint::Length(donut_height),
+            Constraint::Length(composer_height),
+            Constraint::Length(overscroll_height),
+        ])
         .split(chat_area);
-    let composer_area = chunks[7];
+    let composer_area = chunks[8];
     let has_composer_rules = composer_rules_height > 0 && composer_area.height >= 3;
     let input_area = input_ui::composer_input_area(composer_area, has_composer_rules);
 
@@ -3976,11 +3956,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[8], model_in_composer);
+        input_ui::draw_overscroll_status(frame, app, chunks[9], model_in_composer);
     }
 
     if donut_height > 0 {
-        animations::draw_idle_animation(frame, app, chunks[9]);
+        animations::draw_idle_animation(frame, app, chunks[7]);
     }
     let chrome_elapsed = chrome_start.elapsed();
 

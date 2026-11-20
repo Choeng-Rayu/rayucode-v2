@@ -3377,6 +3377,74 @@ fn history_response_stats_cross_real_render_protocol_and_sdk_boundary() {
     assert_eq!(stats.duration_secs, None);
 }
 
+#[test]
+fn rayu_credits_cross_live_event_and_history_sdk_boundary() {
+    let mut state = state_with_session();
+    let live = state.legacy_event_to_api(&json!({
+        "type": "rayu_credits",
+        "credits": 1.25,
+        "turn_credits": 3.75,
+        "billable_tokens": 1250,
+        "tokens_per_credit": 1000
+    }));
+    assert_eq!(live.len(), 1);
+    assert!(matches!(
+        &live[0].event,
+        ApiEvent::RayuCredits {
+            credits,
+            turn_credits,
+            billable_tokens: Some(1250),
+            tokens_per_credit: Some(1000),
+            ..
+        } if (*credits - 1.25).abs() < 1e-9 && (*turn_credits - 3.75).abs() < 1e-9
+    ));
+
+    let mut session = rayucode_base::session::Session::create(None, None);
+    session.messages = serde_json::from_value(json!([
+        {"id":"u","role":"user","content":[{"type":"text","text":"question"}]},
+        {"id":"a1","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{}}],
+            "token_usage":{"input_tokens":100,"output_tokens":20,"rayu_credits":1.25}},
+        {"id":"tr","role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},
+        {"id":"a2","role":"assistant","content":[{"type":"text","text":"answer"}],
+            "token_usage":{"input_tokens":150,"output_tokens":30,"rayu_credits":2.50}}
+    ]))
+    .unwrap();
+    let legacy: Vec<_> = rayucode_base::session::render_messages(&session)
+        .into_iter()
+        .map(|row| rayucode_base::protocol::HistoryMessage {
+            role: row.role,
+            content: row.content,
+            tool_calls: None,
+            tool_data: row.tool_data,
+            response_stats: row.response_stats,
+        })
+        .collect();
+    let out = state.api_request_to_legacy(&json!({"req":"get_history", "id":47}));
+    let Outbound::Legacy(request) = &out[0] else {
+        panic!("expected history request")
+    };
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": request["id"],
+        "messages": legacy,
+        "activity": {"is_processing": false}
+    }));
+    let ApiEvent::History { messages, .. } = &frames[0].event else {
+        panic!("expected history")
+    };
+    let final_msg = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "assistant")
+        .expect("final assistant row");
+    let stats = final_msg.response_stats.as_ref().expect("response stats");
+    assert_eq!(stats.rayu_credits, Some(3.75));
+    assert_eq!(
+        rayucode_harness_api::rayu_credits_label(stats.rayu_credits.unwrap(), false),
+        "Credits: 3.75"
+    );
+}
+
 fn recovery_attach(state: &mut BridgeState, target: Option<&str>) -> (Value, Value) {
     let request = match target {
         Some(target) => json!({"req":"attach_session", "id":71, "session_id":target}),
@@ -4099,4 +4167,120 @@ fn account_label_follows_the_daemons_routed_account() {
 
     state.note_models(&json!({"provider_oauth_account_label": null}));
     assert!(state.current_account.is_none());
+}
+
+#[test]
+fn rayu_credits_translation_drops_missing_non_finite_and_negative_credits() {
+    let mut state = state_with_session();
+    for invalid in [
+        json!({"type": "rayu_credits", "turn_credits": 1.0}),
+        json!({"type": "rayu_credits", "credits": null, "turn_credits": 1.0}),
+        json!({"type": "rayu_credits", "credits": "1.25", "turn_credits": 1.0}),
+        json!({"type": "rayu_credits"}),
+    ] {
+        let frames = state.legacy_event_to_api(&invalid);
+        assert!(frames.is_empty(), "expected no frame for {invalid}");
+    }
+    // serde_json cannot carry NaN/inf, but a raw wire value can arrive as
+    // `null` or a string; both are rejected above. Negative charges are
+    // rejected explicitly.
+    let negative = json!({"type": "rayu_credits", "credits": -0.5, "turn_credits": 1.0});
+    assert!(state.legacy_event_to_api(&negative).is_empty());
+}
+
+#[test]
+fn rayu_credits_translation_falls_back_to_credits_when_turn_credits_absent_or_invalid() {
+    let mut state = state_with_session();
+    for event in [
+        json!({"type": "rayu_credits", "credits": 1.25}),
+        json!({"type": "rayu_credits", "credits": 1.25, "turn_credits": null}),
+        json!({"type": "rayu_credits", "credits": 1.25, "turn_credits": -2.0}),
+        json!({"type": "rayu_credits", "credits": 1.25, "turn_credits": "3.75"}),
+    ] {
+        let frames = state.legacy_event_to_api(&event);
+        assert_eq!(frames.len(), 1, "expected one frame for {event}");
+        assert!(matches!(
+            &frames[0].event,
+            ApiEvent::RayuCredits {
+                session_id,
+                credits,
+                turn_credits,
+                billable_tokens: None,
+                tokens_per_credit: None,
+            } if session_id == "s1"
+                && (*credits - 1.25).abs() < 1e-9
+                && (*turn_credits - 1.25).abs() < 1e-9
+        ), "unexpected frame for {event}: {:?}", frames[0].event);
+    }
+}
+
+#[test]
+fn rayu_credits_translation_forwards_full_payload_and_serializes_to_api_wire() {
+    let mut state = state_with_session();
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "rayu_credits",
+        "credits": 1.25,
+        "turn_credits": 3.75,
+        "billable_tokens": 1250,
+        "tokens_per_credit": 1000,
+    }));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].reply_to, None);
+    assert_eq!(
+        frames[0].event,
+        ApiEvent::RayuCredits {
+            session_id: "s1".into(),
+            credits: 1.25,
+            turn_credits: 3.75,
+            billable_tokens: Some(1250),
+            tokens_per_credit: Some(1000),
+        }
+    );
+    let wire = serde_json::to_value(&frames[0]).unwrap();
+    assert_eq!(wire["ev"], "rayu_credits");
+    assert_eq!(wire["credits"], serde_json::json!(1.25));
+    assert_eq!(wire["turn_credits"], serde_json::json!(3.75));
+    assert_eq!(wire["billable_tokens"], 1250);
+    let decoded: rayucode_harness_api::ServerFrame = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded.event, frames[0].event);
+
+    let minimal = state.legacy_event_to_api(&json!({
+        "type": "rayu_credits",
+        "credits": 0.5,
+        "turn_credits": 0.5,
+    }));
+    let wire = serde_json::to_value(&minimal[0]).unwrap();
+    assert!(
+        !wire.as_object().unwrap().contains_key("billable_tokens"),
+        "absent billable_tokens must be omitted: {wire}"
+    );
+    assert!(!wire.as_object().unwrap().contains_key("tokens_per_credit"));
+}
+
+#[test]
+fn response_stats_rayu_credits_roundtrips_and_old_payloads_still_parse() {
+    let legacy = json!({"role":"assistant","content":"answer",
+        "response_stats":{"input_tokens":10,"output_tokens":12}});
+    let message: HistoryMessage = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(message.response_stats.as_ref().unwrap().rayu_credits, None);
+    assert_eq!(serde_json::to_value(&message).unwrap(), legacy);
+
+    let with_credits = json!({"role":"assistant","content":"answer",
+        "response_stats":{"input_tokens":10,"output_tokens":12,"rayu_credits":443.76}});
+    let message: HistoryMessage = serde_json::from_value(with_credits.clone()).unwrap();
+    assert_eq!(
+        message.response_stats.as_ref().unwrap().rayu_credits,
+        Some(443.76)
+    );
+    assert_eq!(serde_json::to_value(&message).unwrap(), with_credits);
+
+    let legacy_event = json!({"type":"history","id":5,"session_id":"s1",
+        "messages":[{"role":"assistant","content":"answer",
+            "response_stats":{"input_tokens":1,"output_tokens":2}}]});
+    let mut state = state_with_session();
+    let frames = state.legacy_event_to_api(&legacy_event);
+    let ApiEvent::History { messages, .. } = &frames[0].event else {
+        panic!("expected history");
+    };
+    assert_eq!(messages[0].response_stats.as_ref().unwrap().rayu_credits, None);
 }

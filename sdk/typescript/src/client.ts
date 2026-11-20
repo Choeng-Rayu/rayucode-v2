@@ -1426,6 +1426,9 @@ export class RayucodeClient extends EventEmitter {
             effectiveBudget: event.effective_budget,
           };
           break;
+        case "rayu_credits":
+          result.rayuCredits = event.turn_credits;
+          break;
         case "permission_request":
           if (options.autoApprove) {
             await this.respondToPermission(sessionId, event.request_id, "allow");
@@ -1509,6 +1512,8 @@ export interface TurnResult {
   reasoning: string;
   toolCalls: Array<{ callId: string; name: string; output: string; error?: string }>;
   usage?: { input: number; output: number; cacheReadInput?: number; effectiveBudget?: number };
+  /** Total Rayu gateway credits charged across all requests in this turn. */
+  rayuCredits?: number;
 }
 
 export interface AssistantTextMessage {

@@ -164,7 +164,12 @@ impl MultiProvider {
         let model_spec = match &api_method_kind {
             ModelRouteApiMethod::Copilot => format!("copilot:{}", bare_name),
             ModelRouteApiMethod::GrokBuild => crate::provider::grok_build_model_spec(bare_name),
-            ModelRouteApiMethod::Rayu => format!("rayu:{}", bare_name),
+            ModelRouteApiMethod::Rayu => {
+                format!(
+                    "rayu:{}",
+                    bare_name.strip_prefix("rayu:").unwrap_or(bare_name)
+                )
+            }
             ModelRouteApiMethod::ClaudeOAuth => format!("claude-oauth:{}", bare_name),
             ModelRouteApiMethod::AnthropicApiKey if provider_display == "Anthropic" => {
                 format!("claude-api:{}", bare_name)

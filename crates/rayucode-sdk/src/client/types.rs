@@ -79,6 +79,9 @@ pub struct TurnResult {
     pub tool_calls: Vec<ToolCall>,
     /// Usage from the latest provider call in this turn, not a sum of calls.
     pub usage: Option<Usage>,
+    /// Total Rayu gateway credits charged across all provider calls in this turn.
+    /// Absent for non-Rayu providers and older gateways.
+    pub rayu_credits: Option<f64>,
 }
 
 /// One assistant text message, excluding interleaved reasoning.

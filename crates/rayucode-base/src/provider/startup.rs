@@ -261,11 +261,20 @@ impl MultiProvider {
             );
         }
 
+        let runtime_provider_is_rayu = std::env::var("RAYU_RUNTIME_PROVIDER")
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case(RAYU_PROFILE_ID));
+
         if let Some(initial) = initial_provider {
             active = initial;
-            let is_configured = availability.is_configured(initial);
+            let explicit_rayu_initial = matches!(initial, ActiveProvider::OpenRouter)
+                && runtime_provider_is_rayu
+                && crate::rayu::has_credentials();
+            let is_configured = availability.is_configured(initial) || explicit_rayu_initial;
             if is_configured {
-                let display = if matches!(initial, ActiveProvider::OpenRouter) {
+                let display = if explicit_rayu_initial {
+                    RAYU_PROFILE_ID.to_string()
+                } else if matches!(initial, ActiveProvider::OpenRouter) {
                     crate::provider_catalog::active_openai_compatible_display_name()
                         .unwrap_or_else(|| Self::provider_key(initial).to_string())
                 } else {
@@ -344,7 +353,10 @@ impl MultiProvider {
         {
             let registry = ProviderRegistry::new(&result);
             registry.install_compatible_profile(RAYU_PROFILE_ID, Arc::clone(&rayu));
-            let no_explicit_override = result.initial_provider.is_none()
+            let explicit_rayu_initial =
+                matches!(result.initial_provider, Some(ActiveProvider::OpenRouter))
+                    && runtime_provider_is_rayu;
+            let no_explicit_override = (result.initial_provider.is_none() || explicit_rayu_initial)
                 && std::env::var_os("RAYU_PROVIDER_PROFILE_ACTIVE").is_none()
                 && std::env::var_os("RAYU_NAMED_PROVIDER_PROFILE").is_none()
                 && !explicit_non_rayu_default;

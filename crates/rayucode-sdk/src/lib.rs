@@ -201,5 +201,7 @@ pub use rayucode_harness_api::{
     SidePanelSnapshot, TextMatch, ToolConfiguration, TurnStopReason, api_socket_path,
 };
 pub use rayucode_harness_api::{
-    ModelUsage, RuntimeCommand, RuntimeCommandOutput, compare_model_usage,
+    MICRO_CREDITS_PER_CREDIT, ModelUsage, RayuCreditsAccumulator, RayuRequestCharge,
+    RuntimeCommand, RuntimeCommandOutput, compare_model_usage, format_rayu_credits,
+    format_rayu_credits_exact, rayu_credits, rayu_credits_label, rayu_credits_tooltip,
 };

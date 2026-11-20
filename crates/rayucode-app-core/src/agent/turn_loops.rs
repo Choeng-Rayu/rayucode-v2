@@ -61,6 +61,8 @@ impl Agent {
         let mut turn_tool_calls = 0usize;
         let mut todo_nudge_sent = false;
         let mut consecutive_malformed_tool_rounds = 0u32;
+        let mut turn_rayu_credits = rayucode_message_types::RayuCreditsAccumulator::new();
+        self.last_turn_rayu_credits = None;
 
         loop {
             // Do not start another provider request once a cancel has been
@@ -254,6 +256,7 @@ impl Agent {
             let mut usage_output: Option<u64> = None;
             let mut usage_cache_read: Option<u64> = None;
             let mut usage_cache_creation: Option<u64> = None;
+            let mut call_rayu_charge: Option<rayucode_message_types::RayuRequestCharge> = None;
             let mut usage_recorder = StreamUsageRecorder::new(&self.session.id);
             let mut saw_message_end = false;
             let mut stop_reason: Option<String> = None;
@@ -575,6 +578,9 @@ impl Agent {
                             );
                         }
                     }
+                    StreamEvent::RayuCharge(charge) => {
+                        call_rayu_charge = Some(charge);
+                    }
                     StreamEvent::ConnectionType { connection } => {
                         if trace {
                             eprintln!("[trace] connection_type={}", connection);
@@ -628,6 +634,7 @@ impl Agent {
                         openai_native_compaction = None;
                         saw_message_end = false;
                         stop_reason = None;
+                        call_rayu_charge = None;
                     }
                     StreamEvent::ProviderNative { provider, item } => {
                         if print_output
@@ -878,6 +885,15 @@ impl Agent {
                 }
             }
 
+            if let Some(charge) = call_rayu_charge {
+                turn_rayu_credits.record_charge(charge);
+                self.last_turn_rayu_credits = turn_rayu_credits.total_credits();
+            }
+            let credits_suffix = turn_rayu_credits
+                .formatted_label(!tool_calls.is_empty())
+                .map(|label| format!(" · {label}"))
+                .unwrap_or_default();
+
             if print_output
                 && (usage_input.is_some()
                     || usage_output.is_some()
@@ -897,9 +913,14 @@ impl Agent {
                     String::new()
                 };
                 print!(
-                    "\n[Tokens] upload: {} download: {}{}\n",
-                    input, output, cache_str
+                    "\n[Tokens] upload: {} download: {}{}{}\n",
+                    input, output, cache_str, credits_suffix
                 );
+                io::stdout().flush()?;
+            } else if print_output
+                && let Some(label) = turn_rayu_credits.formatted_label(!tool_calls.is_empty())
+            {
+                print!("\n{label}\n");
                 io::stdout().flush()?;
             }
 
@@ -952,6 +973,7 @@ impl Agent {
                     output_tokens: self.last_usage.output_tokens,
                     cache_read_input_tokens: self.last_usage.cache_read_input_tokens,
                     cache_creation_input_tokens: self.last_usage.cache_creation_input_tokens,
+                    rayu_credits: call_rayu_charge.map(|charge| charge.credits),
                 });
                 let message_id =
                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);

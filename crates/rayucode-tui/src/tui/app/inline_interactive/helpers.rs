@@ -189,6 +189,12 @@ pub(super) fn picker_route_model_spec(entry: &PickerEntry, route: &PickerOption)
         crate::provider::ModelRouteApiMethod::GrokBuild => {
             crate::provider::grok_build_model_spec(&bare_name)
         }
+        crate::provider::ModelRouteApiMethod::Rayu => {
+            format!(
+                "rayu:{}",
+                bare_name.strip_prefix("rayu:").unwrap_or(&bare_name)
+            )
+        }
         crate::provider::ModelRouteApiMethod::ClaudeOAuth => {
             format!("claude-oauth:{}", bare_name)
         }
