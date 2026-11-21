@@ -18,6 +18,7 @@
 //! static array in `catalog` is an offline fallback only, never an allowlist.
 
 mod catalog;
+mod retry;
 mod sse;
 
 pub use catalog::{CatalogRoute, RayuCatalogModel, small_fast_model_for};
@@ -43,6 +44,18 @@ use std::time::Duration;
 pub const RAYU_ROUTE_PREFIX: &str = "rayu";
 
 const ROUTE_PREFIX_COLON: &str = "rayu:";
+
+/// Per-attempt id for one physical HTTP request (Node client parity).
+const REQUEST_ID_HEADER: &str = "x-rayu-request-id";
+/// Stable id shared by every attempt of one logical request.
+const LOGICAL_REQUEST_ID_HEADER: &str = "x-rayu-logical-request-id";
+/// Logical origin of the request, logged by the gateway as `source=`.
+const QUERY_SOURCE_HEADER: &str = "x-rayu-query-source";
+const QUERY_SOURCE: &str = "rayucode_v2_agent";
+
+fn new_request_id() -> String {
+    format!("rv2_{}", uuid::Uuid::new_v4().simple())
+}
 
 /// Rayu hosted-model runtime. Rides a registry profile like grok-build; there
 /// is no dedicated `ActiveProvider` variant.
@@ -97,6 +110,7 @@ impl RayuProvider {
         messages: &[Message],
         tools: &[ToolDefinition],
         system: &str,
+        logical_request_id: &str,
     ) -> Result<EventStream> {
         let model = self.model();
         let url = format!(
@@ -117,6 +131,9 @@ impl RayuProvider {
             service_tier: None,
             stream: true,
         };
+        // A fresh id per physical attempt; the logical id stays fixed across
+        // 401 refreshes and transport replays so gateway logs group them.
+        let request_id = new_request_id();
         let response = http_client()
             .post(&url)
             .bearer_auth(credential)
@@ -125,20 +142,81 @@ impl RayuProvider {
                 rayucode_base::provider_catalog::ANTHROPIC_VERSION_HEADER_VALUE,
             )
             .header("x-rayu-client", "cli")
+            .header(REQUEST_ID_HEADER, &request_id)
+            .header(LOGICAL_REQUEST_ID_HEADER, logical_request_id)
+            .header(QUERY_SOURCE_HEADER, QUERY_SOURCE)
             .json(&request)
             .send()
             .await
-            .with_context(|| format!("Failed to send Rayu gateway request\n  endpoint: {url}"))?;
+            .with_context(|| {
+                format!(
+                    "Failed to send Rayu gateway request\n  endpoint: {url}\n  request_id: {request_id}"
+                )
+            })?;
         let status = response.status();
         if !status.is_success() {
             let body = rayucode_provider_core::http_error_body(response, "Rayu gateway").await;
             let brief = extract_gateway_error_summary(&body);
             bail!(
-                "Rayu gateway request failed (HTTP {status}): {brief}\n  endpoint: {url}\n  status: {status}\n  response: {}",
+                "Rayu gateway request failed (HTTP {status}): {brief}\n  endpoint: {url}\n  request_id: {request_id}\n  status: {status}\n  response: {}",
                 rayucode_base::util::truncate_str(body.trim(), 600)
             );
         }
-        Ok(sse::stream_events(response))
+        let trace = sse::ResponseTrace::from_response(&response, request_id);
+        rayucode_base::logging::debug(&format!("Rayu gateway stream opened: {}", trace.describe()));
+        Ok(sse::stream_events(response, trace))
+    }
+
+    /// One full attempt: send, and on a 401 before output refresh the JWT and
+    /// replay once.
+    async fn open_attempt(
+        &self,
+        messages: Arc<Vec<Message>>,
+        tools: Arc<Vec<ToolDefinition>>,
+        system: Arc<String>,
+        logical_request_id: Arc<String>,
+    ) -> Result<EventStream> {
+        let credential = rayucode_base::rayu::gateway_credential()
+            .await
+            .context("No Rayu credentials available: sign in with /login or set RAYU_API_KEY")?;
+        let first = self
+            .complete_once(&credential, &messages, &tools, &system, &logical_request_id)
+            .await;
+        // Only a JWT session can be refreshed; an API-key 401 surfaces as-is.
+        if !rayucode_base::rayu::has_usable_session() {
+            return first;
+        }
+        let provider = self.clone();
+        let retry = move || -> RetryFuture {
+            Box::pin(async move {
+                if rayucode_base::rayu::refresh_access_token(Some(&credential))
+                    .await
+                    .is_none()
+                {
+                    bail!(
+                        "Rayu session expired and could not be refreshed; sign in again with /login"
+                    );
+                }
+                let fresh = rayucode_base::rayu::gateway_credential()
+                    .await
+                    .context("No Rayu credentials available after refresh")?;
+                provider
+                    .complete_once(&fresh, &messages, &tools, &system, &logical_request_id)
+                    .await
+            })
+        };
+        let inner = match first {
+            Ok(stream) => stream,
+            // Already retried once: return the replayed stream as-is.
+            Err(error) if is_unauthorized_text(&format!("{error:#}")) => return retry().await,
+            Err(error) => return Err(error),
+        };
+        Ok(Box::pin(AuthRetryStream {
+            inner,
+            retry: Some(Box::new(retry)),
+            pending: None,
+            saw_output: false,
+        }))
     }
 }
 
@@ -357,50 +435,27 @@ impl Provider for RayuProvider {
                 );
             }
         }
-        let credential = rayucode_base::rayu::gateway_credential()
-            .await
-            .context("No Rayu credentials available: sign in with /login or set RAYU_API_KEY")?;
-        let first = self
-            .complete_once(&credential, messages, tools, system)
-            .await;
-        // Only a JWT session can be refreshed; an API-key 401 surfaces as-is.
-        if !rayucode_base::rayu::has_usable_session() {
-            return first;
-        }
         let provider = self.clone();
-        let messages = messages.to_vec();
-        let tools = tools.to_vec();
-        let system = system.to_string();
-        let retry = move || -> RetryFuture {
+        let messages = Arc::new(messages.to_vec());
+        let tools = Arc::new(tools.to_vec());
+        let system = Arc::new(system.to_string());
+        let logical_request_id = Arc::new(new_request_id());
+        let open: retry::OpenFn = Arc::new(move || -> RetryFuture {
+            let provider = provider.clone();
+            let (messages, tools, system, logical_request_id) = (
+                Arc::clone(&messages),
+                Arc::clone(&tools),
+                Arc::clone(&system),
+                Arc::clone(&logical_request_id),
+            );
             Box::pin(async move {
-                if rayucode_base::rayu::refresh_access_token(Some(&credential))
-                    .await
-                    .is_none()
-                {
-                    bail!(
-                        "Rayu session expired and could not be refreshed; sign in again with /login"
-                    );
-                }
-                let fresh = rayucode_base::rayu::gateway_credential()
-                    .await
-                    .context("No Rayu credentials available after refresh")?;
                 provider
-                    .complete_once(&fresh, &messages, &tools, &system)
+                    .open_attempt(messages, tools, system, logical_request_id)
                     .await
             })
-        };
-        let inner = match first {
-            Ok(stream) => stream,
-            // Already retried once: return the replayed stream as-is.
-            Err(error) if is_unauthorized_text(&format!("{error:#}")) => return retry().await,
-            Err(error) => return Err(error),
-        };
-        Ok(Box::pin(AuthRetryStream {
-            inner,
-            retry: Some(Box::new(retry)),
-            pending: None,
-            saw_output: false,
-        }))
+        });
+        let (inner, attempt) = retry::open_with_retry(&open).await?;
+        Ok(retry::transport_retry_stream(inner, open, attempt))
     }
 
     fn name(&self) -> &str {

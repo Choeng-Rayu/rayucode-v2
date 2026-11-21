@@ -324,34 +324,105 @@ struct ErrorBody {
     message: Option<String>,
 }
 
+/// Correlation facts about one gateway response, attached to transport
+/// errors so a client failure can be matched to gateway and edge logs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ResponseTrace {
+    pub(crate) request_id: String,
+    http_version: String,
+    /// Edge/proxy identifiers, e.g. `cf-ray`, in header order.
+    edge: Vec<(&'static str, String)>,
+}
+
+/// Response headers worth recording. All are non-secret routing metadata.
+const TRACE_HEADERS: &[&str] = &["cf-ray", "server", "via", "x-request-id"];
+
+impl ResponseTrace {
+    pub(crate) fn from_response(response: &reqwest::Response, request_id: String) -> Self {
+        let edge = TRACE_HEADERS
+            .iter()
+            .filter_map(|name| {
+                let value = response.headers().get(*name)?.to_str().ok()?;
+                Some((
+                    *name,
+                    rayucode_base::util::truncate_str(value, 120).to_string(),
+                ))
+            })
+            .collect();
+        Self {
+            request_id,
+            http_version: format!("{:?}", response.version()),
+            edge,
+        }
+    }
+
+    pub(crate) fn describe(&self) -> String {
+        let mut out = format!("request_id={} http={}", self.request_id, self.http_version);
+        for (name, value) in &self.edge {
+            out.push_str(&format!(" {name}={value}"));
+        }
+        out
+    }
+}
+
+/// Renders an error with every `source()` cause. reqwest labels any body-read
+/// failure "error decoding response body"; the real reason (unexpected EOF,
+/// connection reset, HTTP/2 RST_STREAM, TLS close) lives in the chain.
+pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut out = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !out.ends_with(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        source = cause.source();
+    }
+    out
+}
+
 /// Wrap a gateway HTTP response as a provider [`EventStream`].
-pub(crate) fn stream_events(response: reqwest::Response) -> EventStream {
+pub(crate) fn stream_events(response: reqwest::Response, trace: ResponseTrace) -> EventStream {
     let inner = response.bytes_stream();
     let parser = SseParser::default();
+    let started = std::time::Instant::now();
     Box::pin(futures::stream::unfold(
-        (inner, parser, false),
-        |(mut inner, mut parser, mut finished)| async move {
-            loop {
-                if let Some(item) = parser.next_item() {
-                    return Some((item, (inner, parser, finished)));
-                }
-                if finished {
-                    return None;
-                }
-                match inner.next().await {
-                    Some(Ok(bytes)) => parser.push_bytes(&bytes),
-                    Some(Err(error)) => {
-                        finished = true;
-                        return Some((
-                            Err(anyhow::anyhow!(
-                                "Rayu gateway stream transport error: {error}"
-                            )),
-                            (inner, parser, finished),
-                        ));
+        (inner, parser, false, 0usize),
+        move |(mut inner, mut parser, mut finished, mut bytes_read)| {
+            let trace = trace.clone();
+            async move {
+                loop {
+                    if let Some(item) = parser.next_item() {
+                        return Some((item, (inner, parser, finished, bytes_read)));
                     }
-                    None => {
-                        finished = true;
-                        parser.finish();
+                    if finished {
+                        return None;
+                    }
+                    match inner.next().await {
+                        Some(Ok(bytes)) => {
+                            bytes_read += bytes.len();
+                            parser.push_bytes(&bytes);
+                        }
+                        Some(Err(error)) => {
+                            finished = true;
+                            let message = format!(
+                                "Rayu gateway stream transport error: {} ({}, bytes_read={bytes_read}, elapsed_ms={}, message_ended={})",
+                                error_chain(&error),
+                                trace.describe(),
+                                started.elapsed().as_millis(),
+                                parser.message_ended,
+                            );
+                            rayucode_base::logging::warn(&message);
+                            return Some((
+                                Err(anyhow::anyhow!(message)),
+                                (inner, parser, finished, bytes_read),
+                            ));
+                        }
+                        None => {
+                            finished = true;
+                            parser.finish();
+                        }
                     }
                 }
             }

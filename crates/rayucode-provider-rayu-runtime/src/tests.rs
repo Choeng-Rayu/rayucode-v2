@@ -185,6 +185,19 @@ fn spawn_mock(
                 headers,
                 body: request_body,
             });
+            if status == TRUNCATED_CHUNKED {
+                // One chunk, then close WITHOUT the terminating `0\r\n\r\n`:
+                // the shape of a connection cut mid-stream by an
+                // intermediary or a restarting gateway.
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{body}\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.flush().unwrap();
+                continue;
+            }
             write!(
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
@@ -196,6 +209,10 @@ fn spawn_mock(
     });
     (address, handle)
 }
+
+/// Pseudo-status for [`spawn_mock`]: answer 200 with a chunked SSE body that is
+/// cut off before its final chunk.
+const TRUNCATED_CHUNKED: &str = "truncated-chunked";
 
 fn user_message(text: &str) -> Vec<Message> {
     vec![Message {
@@ -684,6 +701,235 @@ fn bearer_endpoints_are_validated_before_send() {
 
 fn stream_of(items: Vec<Result<StreamEvent>>) -> EventStream {
     Box::pin(futures::stream::iter(items))
+}
+
+fn complete_sse(text: &str) -> String {
+    format!(
+        concat!(
+            "event: message_start\n",
+            "data: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":10,\"output_tokens\":1}}}}}}\n\n",
+            "event: content_block_start\n",
+            "data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{}\"}}}}\n\n",
+            "event: content_block_stop\n",
+            "data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n",
+            "event: message_delta\n",
+            "data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":7}}}}\n\n",
+            "event: message_stop\n",
+            "data: {{\"type\":\"message_stop\"}}\n\n",
+        ),
+        text
+    )
+}
+
+/// The start of a response, cut before any model output.
+const PREFIX_NO_OUTPUT: &str = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n";
+
+/// The start of a response, cut after partial text.
+const PREFIX_PARTIAL_TEXT: &str = concat!(
+    "event: content_block_start\n",
+    "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\n",
+    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial \"}}\n\n",
+);
+
+fn joined_text(events: &[StreamEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            StreamEvent::TextDelta(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Mirrors how the turn handler consumes `RetryRollback`: drop everything
+/// accumulated so far.
+fn text_after_rollback(events: &[StreamEvent]) -> String {
+    let start = events
+        .iter()
+        .rposition(|event| matches!(event, StreamEvent::RetryRollback { .. }))
+        .map_or(0, |index| index + 1);
+    joined_text(&events[start..])
+}
+
+fn api_key_provider(test: &TestEnv, address: std::net::SocketAddr) -> RayuProvider {
+    test.env.set("RAYU_API_KEY", "rayu_sk_live_test_key_123");
+    test.env
+        .set("RAYU_GATEWAY_URL", format!("http://{address}"));
+    let provider = RayuProvider::new();
+    provider.set_model("rayu:deepseek-test").unwrap();
+    provider
+}
+
+#[tokio::test]
+async fn truncated_body_before_output_is_replayed_with_correlation_headers() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![
+        (TRUNCATED_CHUNKED, PREFIX_NO_OUTPUT.to_string()),
+        ("200 OK", complete_sse("recovered")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    let events: Vec<StreamEvent> = items.into_iter().map(|item| item.unwrap()).collect();
+    assert_eq!(text_after_rollback(&events), "recovered");
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::RetryRollback { .. })),
+        "a pre-output replay needs no rollback"
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        StreamEvent::ConnectionPhase {
+            phase: rayucode_message_types::ConnectionPhase::Retrying { attempt: 2, max: 3 }
+        }
+    )));
+
+    let captured = server.join().unwrap();
+    assert_eq!(captured.len(), 2);
+    let first_id = captured[0].header("x-rayu-request-id").unwrap();
+    let second_id = captured[1].header("x-rayu-request-id").unwrap();
+    assert!(first_id.starts_with("rv2_"));
+    assert_ne!(first_id, second_id, "each physical attempt gets its own id");
+    let logical = captured[0].header("x-rayu-logical-request-id").unwrap();
+    assert_eq!(
+        captured[1].header("x-rayu-logical-request-id"),
+        Some(logical),
+        "the logical id is stable across replays"
+    );
+    assert_eq!(
+        captured[0].header("x-rayu-query-source"),
+        Some("rayucode_v2_agent")
+    );
+}
+
+#[tokio::test]
+async fn truncated_body_after_output_rolls_back_then_replays() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![
+        (TRUNCATED_CHUNKED, PREFIX_PARTIAL_TEXT.to_string()),
+        ("200 OK", complete_sse("full answer")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    let events: Vec<StreamEvent> = items.into_iter().map(|item| item.unwrap()).collect();
+    let rollback = events
+        .iter()
+        .position(|event| matches!(event, StreamEvent::RetryRollback { attempt: 2, max: 3 }))
+        .expect("partial output must be rolled back before the replay");
+    assert_eq!(joined_text(&events[..rollback]), "partial ");
+    assert_eq!(text_after_rollback(&events), "full answer");
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn persistent_truncation_surfaces_the_full_error_chain_after_bounded_attempts() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![
+        (TRUNCATED_CHUNKED, PREFIX_NO_OUTPUT.to_string()),
+        (TRUNCATED_CHUNKED, PREFIX_NO_OUTPUT.to_string()),
+        (TRUNCATED_CHUNKED, PREFIX_NO_OUTPUT.to_string()),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    let error = items
+        .iter()
+        .find_map(|item| item.as_ref().err())
+        .expect("the last failure must surface");
+    // `to_string()` is what the turn handler logs: it must carry the cause.
+    let shown = error.to_string();
+    eprintln!("surfaced error: {shown}");
+    assert!(
+        shown.to_ascii_lowercase().contains("eof")
+            || shown.to_ascii_lowercase().contains("incomplete")
+            || shown.to_ascii_lowercase().contains("closed"),
+        "the underlying cause must be visible: {shown}"
+    );
+    assert!(shown.contains("error decoding response body"), "{shown}");
+    assert!(shown.contains("request_id=rv2_"), "{shown}");
+    assert!(shown.contains("bytes_read="), "{shown}");
+    assert_eq!(server.join().unwrap().len(), retry::MAX_ATTEMPTS as usize);
+}
+
+#[tokio::test]
+async fn gateway_upstream_ended_event_is_replayed() {
+    let test = test_env();
+    let broken = format!(
+        "{PREFIX_NO_OUTPUT}event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":\"The model provider ended the response unexpectedly.\"}}}}\n\n"
+    );
+    let (address, server) = spawn_mock(vec![
+        ("200 OK", broken),
+        ("200 OK", complete_sse("second try")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    let events: Vec<StreamEvent> = items.into_iter().map(|item| item.unwrap()).collect();
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::Error { .. })),
+        "a replayed gateway error must not reach the turn"
+    );
+    assert_eq!(text_after_rollback(&events), "second try");
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn http_status_errors_are_not_transport_retried() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![(
+        "504 Gateway Timeout",
+        r#"{"error":{"message":"upstream timeout"}}"#.to_string(),
+    )]);
+    let provider = api_key_provider(&test, address);
+    let error = match provider.complete(&user_message("hi"), &[], "", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("a 504 must surface"),
+    };
+    let shown = format!("{error:#}");
+    assert!(shown.contains("HTTP 504"), "{shown}");
+    assert!(shown.contains("request_id: rv2_"), "{shown}");
+    assert_eq!(server.join().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn transport_error_after_message_end_does_not_replay() {
+    let open: retry::OpenFn =
+        Arc::new(|| -> RetryFuture { panic!("a finished message must not be replayed") });
+    let stream = retry::transport_retry_stream(
+        stream_of(vec![
+            Ok(StreamEvent::TextDelta("done".into())),
+            Ok(StreamEvent::MessageEnd {
+                stop_reason: Some("end_turn".into()),
+            }),
+            Err(anyhow::anyhow!(
+                "Rayu gateway stream transport error: error decoding response body: unexpected EOF"
+            )),
+        ]),
+        open,
+        1,
+    );
+    let items: Vec<_> = stream.collect().await;
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().all(|item| item.is_ok()));
 }
 
 #[tokio::test]
