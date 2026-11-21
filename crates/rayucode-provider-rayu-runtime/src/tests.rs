@@ -1039,3 +1039,69 @@ async fn does_not_retry_after_output_or_twice() {
     assert_eq!(items.len(), 1);
     assert!(items[0].is_err());
 }
+
+#[test]
+fn only_short_capacity_denials_are_waited_out() {
+    use retry::is_transient_capacity as t;
+    let short = Some(Duration::from_secs(3));
+    // The gateway's "every slot busy" answers and a 503 with no usable route.
+    assert!(t(429, r#"{"error":{"type":"rate_limit_exceeded"}}"#, short));
+    assert!(t(
+        503,
+        r#"{"error":{"message":"model temporarily unavailable: x"}}"#,
+        Some(Duration::from_secs(30))
+    ));
+    assert!(t(
+        429,
+        r#"{"reason":"concurrency","transient":true}"#,
+        short
+    ));
+    assert!(t(429, r#"{"reason":"account_rate_limit"}"#, short));
+    // Balance and quota states a short wait cannot clear.
+    assert!(!t(
+        429,
+        r#"{"reason":"daily_turn_limit","resetSeconds":40000}"#,
+        Some(Duration::from_secs(60))
+    ));
+    assert!(!t(429, r#"{"reason":"daily_turn_limit"}"#, None));
+    assert!(!t(
+        429,
+        r#"{"reason":"weekly_limit","transient":false}"#,
+        short
+    ));
+    assert!(!t(429, r#"{"reason":"api_key_credit_limit"}"#, None));
+    assert!(!t(
+        429,
+        r#"{"reason":"api_key_rpm_limit"}"#,
+        Some(Duration::from_secs(60))
+    ));
+    // A long Retry-After is a quota window even without a reason.
+    assert!(!t(429, "{}", Some(Duration::from_secs(45))));
+    // Never for other statuses.
+    assert!(!t(500, "{}", short));
+    assert!(!t(400, "{}", short));
+}
+
+#[tokio::test]
+async fn a_daily_turn_limit_429_is_surfaced_immediately() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![(
+        "429 Too Many Requests",
+        r#"{"error":{"message":"daily turn limit reached","type":"rate_limit_exceeded"},"reason":"daily_turn_limit","resetSeconds":40000}"#.to_string(),
+    )]);
+    let provider = api_key_provider(&test, address);
+    let started = std::time::Instant::now();
+    let error = match provider.complete(&user_message("hi"), &[], "", None).await {
+        Err(error) => error,
+        Ok(_) => panic!("a daily-turn limit must surface"),
+    };
+    assert!(
+        format!("{error:#}").contains("daily turn limit"),
+        "{error:#}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(900),
+        "no wait for a quota state"
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+}

@@ -29,10 +29,60 @@ pub(crate) const CAPACITY_BUDGET: Duration = Duration::from_secs(60);
 /// Wait used when a capacity answer carries no `Retry-After`.
 const CAPACITY_DEFAULT_WAIT: Duration = Duration::from_secs(3);
 
-/// Statuses meaning "the gateway has no free provider slot right now": 429 (a
-/// rate or concurrency limit) and 503 (no usable route at the moment).
-pub(crate) fn is_capacity_status(status: u16) -> bool {
+/// Statuses that MAY mean "the gateway has no free provider slot right now".
+/// Whether one is worth waiting out is decided by [`is_transient_capacity`],
+/// because the gateway also answers 429 for limits a short wait cannot clear
+/// (daily turns, credit allowances).
+fn is_capacity_status(status: u16) -> bool {
     matches!(status, 429 | 503)
+}
+
+/// The longest `Retry-After` still treated as a short capacity wait. Anything
+/// longer is a real quota window, surfaced at once rather than holding the turn.
+const CAPACITY_MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+
+/// Gateway denial reasons a short wait CAN clear. Every other `reason` (daily
+/// turns, weekly/session/period credit limits, API-key caps) is a balance or
+/// quota state and is surfaced immediately.
+const TRANSIENT_REASONS: &[&str] = &[
+    "concurrency",
+    "requests",
+    "account_rate_limit",
+    "api_key_rate_limit",
+    "metadata_rate_limit",
+    "control_capacity",
+    "priority_capacity",
+    "limiter_unavailable",
+    "body_capacity",
+];
+
+/// Whether a gateway 429/503 is a short capacity wait worth retrying.
+///
+/// * A `Retry-After` above [`CAPACITY_MAX_RETRY_AFTER`] is never transient.
+/// * `"transient": true` in the body (the gateway's own flag) is transient.
+/// * A body naming a `reason` is transient only for [`TRANSIENT_REASONS`].
+/// * Otherwise (a 503 "no usable route right now", or a provider rate limit
+///   relayed without a reason) it is transient, bounded by the wait budget.
+pub(crate) fn is_transient_capacity(
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> bool {
+    if !is_capacity_status(status) {
+        return false;
+    }
+    if retry_after.is_some_and(|d| d > CAPACITY_MAX_RETRY_AFTER) {
+        return false;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) {
+        if value.get("transient").and_then(|v| v.as_bool()) == Some(true) {
+            return true;
+        }
+        if let Some(reason) = value.get("reason").and_then(|v| v.as_str()) {
+            return TRANSIENT_REASONS.contains(&reason);
+        }
+    }
+    true
 }
 
 /// A 429/503 the gateway marked retryable, with its requested wait.

@@ -170,7 +170,13 @@ impl RayuProvider {
                 "Rayu gateway request failed (HTTP {status}): {brief}\n  endpoint: {url}\n  request_id: {request_id}\n  status: {status}\n  response: {}",
                 rayucode_base::util::truncate_str(body.trim(), 600)
             );
-            if should_retry && retry::is_capacity_status(status.as_u16()) {
+            if should_retry
+                && retry::is_transient_capacity(
+                    status.as_u16(),
+                    &body,
+                    retry_after.map(|r| r.remaining()),
+                )
+            {
                 return Err(retry::CapacityError::new(message, retry_after).into());
             }
             bail!(message);
