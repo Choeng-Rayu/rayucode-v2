@@ -155,12 +155,25 @@ impl RayuProvider {
             })?;
         let status = response.status();
         if !status.is_success() {
+            // Captured before the body is consumed: the gateway queues a burst
+            // and only answers 429/503 once capacity did not free in time, with
+            // the wait it expects in `Retry-After`.
+            let retry_after = rayucode_provider_core::retry_after::retry_after(response.headers());
+            let should_retry = response
+                .headers()
+                .get("x-should-retry")
+                .and_then(|v| v.to_str().ok())
+                .is_none_or(|v| !v.eq_ignore_ascii_case("false"));
             let body = rayucode_provider_core::http_error_body(response, "Rayu gateway").await;
             let brief = extract_gateway_error_summary(&body);
-            bail!(
+            let message = format!(
                 "Rayu gateway request failed (HTTP {status}): {brief}\n  endpoint: {url}\n  request_id: {request_id}\n  status: {status}\n  response: {}",
                 rayucode_base::util::truncate_str(body.trim(), 600)
             );
+            if should_retry && retry::is_capacity_status(status.as_u16()) {
+                return Err(retry::CapacityError::new(message, retry_after).into());
+            }
+            bail!(message);
         }
         let trace = sse::ResponseTrace::from_response(&response, request_id);
         rayucode_base::logging::debug(&format!("Rayu gateway stream opened: {}", trace.describe()));

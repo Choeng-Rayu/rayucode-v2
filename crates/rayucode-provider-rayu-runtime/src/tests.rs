@@ -198,9 +198,15 @@ fn spawn_mock(
                 stream.flush().unwrap();
                 continue;
             }
+            // Capacity answers carry a short Retry-After, as the gateway sends.
+            let retry_after = if status.starts_with("429") || status.starts_with("503") {
+                "Retry-After: 1\r\n"
+            } else {
+                ""
+            };
             write!(
                 stream,
-                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\n{retry_after}Connection: close\r\n\r\n"
             )
             .unwrap();
             stream.write_all(body.as_bytes()).unwrap();
@@ -889,6 +895,61 @@ async fn gateway_upstream_ended_event_is_replayed() {
         "a replayed gateway error must not reach the turn"
     );
     assert_eq!(text_after_rollback(&events), "second try");
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+/// A 503 "model temporarily unavailable" (all of a provider's keys busy) before
+/// any output is waited out using the gateway's Retry-After, and the same turn
+/// completes on the next attempt instead of failing the swarm worker.
+#[tokio::test]
+async fn a_capacity_503_before_output_is_waited_out_and_the_turn_completes() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![
+        (
+            "503 Service Unavailable",
+            r#"{"error":{"message":"model temporarily unavailable: deepseek-test"}}"#.to_string(),
+        ),
+        ("200 OK", complete_sse("after the wait")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let started = std::time::Instant::now();
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    let events: Vec<StreamEvent> = items.into_iter().map(|item| item.unwrap()).collect();
+    assert_eq!(text_after_rollback(&events), "after the wait");
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "the gateway's Retry-After is honoured"
+    );
+    let captured = server.join().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(
+        captured[0].header("x-rayu-logical-request-id"),
+        captured[1].header("x-rayu-logical-request-id"),
+        "the retry is the same logical request"
+    );
+}
+
+#[tokio::test]
+async fn a_429_before_output_is_retried() {
+    let test = test_env();
+    let (address, server) = spawn_mock(vec![
+        (
+            "429 Too Many Requests",
+            r#"{"error":{"message":"rate limited"}}"#.to_string(),
+        ),
+        ("200 OK", complete_sse("ok")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let items: Vec<_> = stream.collect().await;
+    assert!(items.iter().all(|i| i.is_ok()));
     assert_eq!(server.join().unwrap().len(), 2);
 }
 

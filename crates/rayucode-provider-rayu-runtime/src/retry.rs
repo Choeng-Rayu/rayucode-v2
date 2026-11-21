@@ -22,6 +22,61 @@ use std::time::Duration;
 /// Total attempts per logical request, including the first.
 pub(crate) const MAX_ATTEMPTS: u32 = 3;
 
+/// Longest total time spent waiting out gateway capacity answers (429/503)
+/// before any output, across all of their retries.
+pub(crate) const CAPACITY_BUDGET: Duration = Duration::from_secs(60);
+
+/// Wait used when a capacity answer carries no `Retry-After`.
+const CAPACITY_DEFAULT_WAIT: Duration = Duration::from_secs(3);
+
+/// Statuses meaning "the gateway has no free provider slot right now": 429 (a
+/// rate or concurrency limit) and 503 (no usable route at the moment).
+pub(crate) fn is_capacity_status(status: u16) -> bool {
+    matches!(status, 429 | 503)
+}
+
+/// A 429/503 the gateway marked retryable, with its requested wait.
+#[derive(Debug)]
+pub(crate) struct CapacityError {
+    message: String,
+    retry_after: Option<rayucode_provider_core::retry_after::RetryAfter>,
+}
+
+impl CapacityError {
+    pub(crate) fn new(
+        message: String,
+        retry_after: Option<rayucode_provider_core::retry_after::RetryAfter>,
+    ) -> Self {
+        Self {
+            message,
+            retry_after,
+        }
+    }
+
+    fn wait(&self) -> Duration {
+        self.retry_after
+            .map(|r| r.remaining())
+            .filter(|d| !d.is_zero())
+            .unwrap_or(CAPACITY_DEFAULT_WAIT)
+    }
+}
+
+impl std::fmt::Display for CapacityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CapacityError {}
+
+/// The wait a capacity error asks for, or `None` for any other error.
+fn capacity_wait(error: &anyhow::Error) -> Option<Duration> {
+    error
+        .chain()
+        .find_map(|e| e.downcast_ref::<CapacityError>())
+        .map(CapacityError::wait)
+}
+
 /// Opens one full attempt (credential lookup, send, 401 refresh).
 pub(crate) type OpenFn = Arc<dyn Fn() -> RetryFuture + Send + Sync>;
 
@@ -50,12 +105,29 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(500 * u64::from(attempt))
 }
 
-/// Opens the first attempt, replaying transient send failures.
+/// Opens the first attempt, replaying transient send failures and waiting out
+/// gateway capacity answers (bounded by [`CAPACITY_BUDGET`]).
 pub(crate) async fn open_with_retry(open: &OpenFn) -> Result<(EventStream, u32)> {
     let mut attempt = 1;
+    let started = std::time::Instant::now();
     loop {
         match open().await {
             Ok(stream) => return Ok((stream, attempt)),
+            Err(error) if capacity_wait(&error).is_some() => {
+                let wait = capacity_wait(&error).unwrap_or(CAPACITY_DEFAULT_WAIT);
+                let spent = started.elapsed();
+                if spent + wait > CAPACITY_BUDGET {
+                    return Err(error);
+                }
+                rayucode_base::logging::warn(&format!(
+                    "Rayu gateway at capacity; retrying in {:.1}s (waited {:.1}s of {}s): {}",
+                    wait.as_secs_f64(),
+                    spent.as_secs_f64(),
+                    CAPACITY_BUDGET.as_secs(),
+                    error.to_string().lines().next().unwrap_or_default()
+                ));
+                tokio::time::sleep(wait).await;
+            }
             Err(error) if attempt < MAX_ATTEMPTS && is_retryable_error(&error) => {
                 rayucode_base::logging::warn(&format!(
                     "Rayu gateway send failed (attempt {attempt}/{MAX_ATTEMPTS}); retrying: {error:#}"
@@ -78,6 +150,8 @@ struct State {
     saw_output: bool,
     ended: bool,
     done: bool,
+    /// Time spent waiting out gateway capacity during replays.
+    capacity_spent: Duration,
     /// Events to yield before polling `inner` again (rollback/phase notices).
     queued: std::collections::VecDeque<Result<StreamEvent>>,
 }
@@ -118,6 +192,19 @@ impl State {
                 Err(error) if self.attempt < MAX_ATTEMPTS && is_retryable_error(&error) => {
                     cause = format!("{error:#}");
                 }
+                // The replay landed on a full gateway: wait out capacity (its
+                // own budget) without spending a transport attempt.
+                Err(error) if capacity_wait(&error).is_some() => {
+                    let wait = capacity_wait(&error).unwrap_or(CAPACITY_DEFAULT_WAIT);
+                    if self.capacity_spent + wait > CAPACITY_BUDGET {
+                        return Some(error);
+                    }
+                    self.capacity_spent += wait;
+                    tokio::time::sleep(wait).await;
+                    // Retry the same attempt number after the wait.
+                    self.attempt -= 1;
+                    cause = format!("{error:#}");
+                }
                 Err(error) => return Some(error),
             }
         }
@@ -137,6 +224,7 @@ pub(crate) fn transport_retry_stream(
         saw_output: false,
         ended: false,
         done: false,
+        capacity_spent: Duration::ZERO,
         queued: Default::default(),
     };
     Box::pin(futures::stream::unfold(state, |mut state| async move {
