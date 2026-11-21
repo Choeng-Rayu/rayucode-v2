@@ -834,13 +834,32 @@ impl App {
                 return true;
             }
         }
-        // No approved automatic target: preserve unrestricted manual choice,
-        // still ordered by the shared ranking.
-        let Some(&index) = ranked.first() else {
+        // A body-read failure can be retried on the active preferred Rayu model
+        // with explicit consent. The shared ranking still excludes the failed route.
+        let retry_route = if is_rayu_route
+            && error.starts_with("Rayu gateway stream transport error:")
+            && (!self.is_remote || remote_resend.is_some())
+        {
+            preferred_fallback_model.as_deref().and_then(|preferred| {
+                routes.iter().find(|route| {
+                    route.available
+                        && crate::provider::ModelRouteApiMethod::parse(&route.api_method)
+                            == crate::provider::ModelRouteApiMethod::Rayu
+                        && rayucode_provider_core::fallback_model_matches(route, &current_model)
+                        && rayucode_provider_core::fallback_model_matches(route, preferred)
+                })
+            })
+        } else {
+            None
+        };
+        let (route, retry_same_route) = if let Some(route) = retry_route {
+            (route, true)
+        } else if let Some(&index) = ranked.first() {
+            (&routes[index], false)
+        } else {
             return false;
         };
-        let route = routes[index].clone();
-        let target_label = Self::describe_route(&route);
+        let target_label = Self::describe_route(route);
         let from_method = crate::provider::ModelRouteApiMethod::parse(&current_api_method);
         let from_label = if current_api_method.is_empty() {
             current_provider.clone()
@@ -854,13 +873,18 @@ impl App {
         // so only name the failed route here instead of echoing the error text
         // a second time.
         let key_label = crate::tui::keybind::fallback_switch_key_label();
+        let (action, suffix) = if retry_same_route {
+            ("retry on", "")
+        } else {
+            ("switch to", " and resend")
+        };
         self.push_display_message(DisplayMessage::system(format!(
-            "↪ Press {} to switch to {} and resend.",
-            key_label, target_label,
+            "↪ Press {key_label} to {action} {target_label}{suffix}."
         )));
-        self.set_status_notice(format!("Press {} to switch to {}", key_label, route.model));
+        self.set_status_notice(format!("Press {key_label} to {action} {}", route.model));
         self.pending_fallback_offer = Some(super::PendingFallbackOffer {
-            selection: crate::provider::RouteSelection::from_model_route(&route),
+            selection: crate::provider::RouteSelection::from_model_route(route),
+            retry_same_route,
             target_label,
             from_label,
             remote_resend,
@@ -967,6 +991,7 @@ impl App {
         self.set_status_notice(format!("Press {} to reroute to {}", key_label, route.model));
         self.pending_fallback_offer = Some(super::PendingFallbackOffer {
             selection: crate::provider::RouteSelection::from_model_route(&route),
+            retry_same_route: false,
             target_label,
             from_label,
             remote_resend,
@@ -997,11 +1022,15 @@ impl App {
                 payload.retry_attempts = 0;
                 payload
             });
-            self.push_display_message(DisplayMessage::system(format!(
-                "↪ Switching to {} and resending (was {}).",
-                offer.target_label, offer.from_label,
-            )));
-            self.set_status_notice(format!("Switching → {} (will retry)", offer.target_label));
+            if offer.retry_same_route {
+                self.set_status_notice(format!("Retrying on {}", offer.target_label));
+            } else {
+                self.push_display_message(DisplayMessage::system(format!(
+                    "↪ Switching to {} and resending (was {}).",
+                    offer.target_label, offer.from_label,
+                )));
+                self.set_status_notice(format!("Switching → {} (will retry)", offer.target_label));
+            }
             return true;
         }
 
@@ -1028,11 +1057,15 @@ impl App {
                 "Model switched for this session, but the saved route could not be persisted: {error}"
             )));
                 }
-                self.push_display_message(DisplayMessage::system(format!(
-                    "↪ Switched to {} and resending (was {}).",
-                    offer.target_label, offer.from_label,
-                )));
-                self.set_status_notice(format!("Switched → {} (retrying)", active_model));
+                if offer.retry_same_route {
+                    self.set_status_notice(format!("Retrying on {}", offer.target_label));
+                } else {
+                    self.push_display_message(DisplayMessage::system(format!(
+                        "↪ Switched to {} and resending (was {}).",
+                        offer.target_label, offer.from_label,
+                    )));
+                    self.set_status_notice(format!("Switched → {} (retrying)", active_model));
+                }
                 self.pending_turn = true;
                 true
             }

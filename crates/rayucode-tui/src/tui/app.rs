@@ -396,8 +396,7 @@ struct PendingProviderFailover {
     remote_resend: Option<FallbackResendPayload>,
 }
 
-/// An interactive "switch to the next best model/method and resend" offer shown
-/// after a provider turn error (auth failure, broken API key, rate limit, etc.).
+/// An interactive resend offer shown after a provider turn error.
 ///
 /// Unlike [`PendingProviderFailover`], this is a manual, keypress-activated
 /// affordance and can switch between *auth methods on the same provider* (e.g.
@@ -407,6 +406,8 @@ struct PendingProviderFailover {
 struct PendingFallbackOffer {
     /// The route selection to apply when the user accepts the offer.
     selection: crate::provider::RouteSelection,
+    /// A Rayu transport failure can be retried on the active preferred route.
+    retry_same_route: bool,
     /// Short human label for the target (e.g. "claude-sonnet-4 via OAuth").
     target_label: String,
     /// Short label for what just failed (e.g. "Claude via API key").

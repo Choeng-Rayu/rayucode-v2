@@ -1239,7 +1239,36 @@ fn test_ctrl_y_fallback_prefers_configured_rayu_fallback_model_over_gpt_generati
             .expect("expected staged route selection after Ctrl+Y");
         assert_eq!(selected.model, "deepseek-v4.1-flash-1017-cloud");
         assert_eq!(selected.api_method, "rayu");
-        assert!(app.pending_fallback_resend.is_some());
+        let payload = app.pending_fallback_resend.take().expect("resend payload");
+        app.pending_route_selection = None;
+        app.remote_provider_model = Some("deepseek-v4.1-flash-1017-cloud".to_string());
+
+        assert!(app.offer_fallback_after_error_with_payload(
+            "429 Too Many Requests",
+            Some(payload.clone()),
+        ));
+        assert_ne!(
+            app.pending_fallback_offer.as_ref().unwrap().selection.model,
+            "deepseek-v4.1-flash-1017-cloud"
+        );
+        app.clear_pending_fallback_offer();
+
+        assert!(app.offer_fallback_after_error_with_payload(
+            "Rayu gateway stream transport error: error decoding response body",
+            Some(payload),
+        ));
+        assert!(app.display_messages.iter().any(|msg| {
+            msg.content.contains(
+                "Press Ctrl+Y to retry on deepseek-v4.1-flash-1017-cloud via rayu (Rayu).",
+            )
+        }));
+        assert!(app.apply_pending_fallback_offer());
+        let selected = app.pending_route_selection.as_ref().unwrap();
+        assert_eq!(selected.model, "deepseek-v4.1-flash-1017-cloud");
+        assert_eq!(
+            app.pending_fallback_resend.as_ref().unwrap().content,
+            "hello"
+        );
     });
 }
 
