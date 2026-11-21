@@ -1385,7 +1385,7 @@ impl BridgeState {
                     return Self::error_reply(api_id, ErrorCode::InvalidRequest, "Question belongs to another session");
                 }
                 let id = self.legacy_id();
-                self.pending_simple.push((id, api_id, SimpleKind::Ok));
+                self.pending_simple.push((id, api_id, SimpleKind::ToolControl));
                 vec![Outbound::Legacy(json!({
                     "type": "question_response", "id": id,
                     "session_id": session_id, "request_id": request_id, "response": response,

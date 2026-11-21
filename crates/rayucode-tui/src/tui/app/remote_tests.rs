@@ -86,6 +86,47 @@ fn reload_handoff_active_when_server_flag_is_set() {
 }
 
 #[test]
+fn pending_question_excludes_human_wait_time_from_stream_stall_detection() {
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.status = super::ProcessingStatus::Streaming;
+    let timeout = std::time::Duration::from_secs(120);
+    app.last_stream_activity = Some(std::time::Instant::now() - timeout * 2);
+    assert!(super::stream_watchdog_active(&app));
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    let questions = serde_json::from_value(serde_json::json!([{
+        "question":"Which format?", "header":"Format",
+        "options":[{"label":"JSON","description":"Structured"}, {"label":"Text","description":"Readable"}]
+    }])).unwrap();
+    handle_server_event(
+        &mut app,
+        ServerEvent::QuestionRequest {
+            session_id: "s1".into(),
+            request_id: "q1".into(),
+            tool_call_id: "call".into(),
+            questions,
+        },
+        &mut remote,
+    );
+    assert!(!super::stream_watchdog_active(&app));
+    handle_server_event(
+        &mut app,
+        ServerEvent::QuestionClosed {
+            session_id: "s1".into(),
+            request_id: "q1".into(),
+            reason: rayucode_tool_types::questions::QuestionCloseReason::Declined,
+        },
+        &mut remote,
+    );
+    assert!(app.question_dialog.is_none());
+    assert!(super::stream_watchdog_active(&app));
+    assert!(app.last_stream_activity.unwrap().elapsed() < timeout);
+}
+
+#[test]
 fn client_focus_defaults_to_true() {
     let app = create_test_app();
     assert!(

@@ -94,7 +94,8 @@ impl QuestionDialog {
             KeyCode::Enter => {
                 let field = *field;
                 let text = text.trim().to_owned();
-                if matches!(field, TextField::Other) && text.is_empty() {
+                let multi_select = self.form.questions[self.form.index].multi_select;
+                if matches!(field, TextField::Other) && text.is_empty() && !multi_select {
                     return None;
                 }
                 self.editor = None;
@@ -102,10 +103,10 @@ impl QuestionDialog {
                 match field {
                     TextField::Note => answer.notes = (!text.is_empty()).then_some(text),
                     TextField::Other => {
-                        answer.custom = vec![text];
+                        answer.custom = (!text.is_empty()).then_some(text).into_iter().collect();
                         let choices = self.form.questions[self.form.index].options.len();
                         self.cursor = self.cursor.min(choices.saturating_sub(1));
-                        if !self.form.questions[self.form.index].multi_select {
+                        if !multi_select {
                             answer.selected.clear();
                             return self.advance();
                         }
@@ -391,6 +392,29 @@ mod tests {
             answers["Pick a format?"].notes.as_deref(),
             Some("keep it short")
         );
+    }
+
+    #[test]
+    fn question_dialog_can_remove_a_custom_multi_select_answer() {
+        let mut questions = questions();
+        questions[0].multi_select = true;
+        let mut dialog = QuestionDialog::new("session".into(), "question".into(), questions);
+        press(&mut dialog, KeyCode::Char(' '));
+        dialog.paste("X");
+        press(&mut dialog, KeyCode::Enter);
+        press(&mut dialog, KeyCode::Down);
+        press(&mut dialog, KeyCode::Down);
+        press(&mut dialog, KeyCode::Enter);
+        press(&mut dialog, KeyCode::Backspace);
+        press(&mut dialog, KeyCode::Enter);
+        assert!(dialog.editor.is_none());
+        press(&mut dialog, KeyCode::Enter);
+        let Some(QuestionResponse::Answered { answers }) = press(&mut dialog, KeyCode::Enter)
+        else {
+            panic!("expected reviewed answers")
+        };
+        assert_eq!(answers["Pick a format?"].selected, vec![0]);
+        assert!(answers["Pick a format?"].custom.is_empty());
     }
 
     #[test]

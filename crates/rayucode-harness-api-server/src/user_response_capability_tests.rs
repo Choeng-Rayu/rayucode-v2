@@ -80,6 +80,17 @@ fn question_round_trip_uses_attached_session_and_explicit_capability() {
     assert_eq!(payload["session_id"], "s1");
     assert_eq!(payload["request_id"], "q1");
     assert_eq!(payload["response"], reply["response"]);
+    state.observed_turn_active = true;
+    let rejected = state.legacy_event_to_api(&json!({
+        "type":"error", "id":payload["id"], "message":"Invalid option"
+    }));
+    assert!(matches!(rejected.first(), Some(frame)
+        if frame.reply_to == Some(9) && matches!(frame.event, ApiEvent::Error { .. })));
+    assert!(state.observed_turn_active);
+    let output = state.api_request_to_legacy(&reply);
+    let [Outbound::Legacy(payload)] = &output[..] else {
+        panic!("expected corrected reply request")
+    };
     let frames = state.legacy_event_to_api(&json!({"type":"ack","id":payload["id"]}));
     assert!(
         matches!(frames.first(), Some(frame) if frame.reply_to == Some(9) && matches!(frame.event, ApiEvent::Ok))

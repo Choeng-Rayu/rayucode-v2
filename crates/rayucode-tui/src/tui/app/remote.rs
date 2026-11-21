@@ -1938,10 +1938,15 @@ fn format_stall_duration(timeout: Duration) -> String {
     }
 }
 
+fn stream_watchdog_active(app: &App) -> bool {
+    app.is_processing
+        && app.question_dialog.is_none()
+        && !matches!(app.status, ProcessingStatus::RunningTool(_))
+}
+
 async fn detect_and_cancel_stall(app: &mut App, remote: &mut RemoteConnection) {
     let stall_timeout = stall_timeout();
-    let is_running_tool = matches!(app.status, ProcessingStatus::RunningTool(_));
-    if app.is_processing && !is_running_tool {
+    if stream_watchdog_active(app) {
         let stalled = app
             .last_stream_activity
             .map(|t| t.elapsed() > stall_timeout)

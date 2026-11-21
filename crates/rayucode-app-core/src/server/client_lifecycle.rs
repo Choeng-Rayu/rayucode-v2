@@ -1057,6 +1057,21 @@ pub(super) async fn handle_client(
             continue;
         }
 
+        // Keep the owning connection attached through the turn. Attachment
+        // changes can wait for the Agent lock while the turn is waiting for a
+        // reply on this same connection.
+        if client_is_processing && supports_user_questions && matches!(
+            &request,
+            Request::ResumeSession { .. } | Request::Subscribe { .. }
+        ) {
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id: request_id,
+                message: "Session is busy. Retry after the current turn.".into(),
+                retry_after_secs: None,
+            });
+            continue;
+        }
+
         // Send ack
         let ack = ServerEvent::Ack { id: request.id() };
         let json = encode_event(&ack);
@@ -2182,17 +2197,40 @@ pub(super) async fn handle_client(
             }
 
             Request::PersistSession { id } => {
-                // Wait for the lock instead of rejecting: this runs at an idle
-                // turn boundary and must not fail spuriously.
-                let result = agent.lock().await.persist_session_now();
-                let _ = client_event_tx.send(match result {
-                    Ok(()) => ServerEvent::Done { id },
-                    Err(error) => ServerEvent::Error {
-                        id,
-                        message: crate::util::format_error_chain(&error),
-                        retry_after_secs: None,
-                    },
-                });
+                let persist = {
+                    let agent = Arc::clone(&agent);
+                    let response_tx = client_event_tx.clone();
+                    let session_id = client_session_id.clone();
+                    async move {
+                        let mut guard = agent.lock().await;
+                        let result = if guard.session_id() == session_id {
+                            guard.persist_session_now()
+                        } else {
+                            Err(anyhow::anyhow!("Session changed before it could be saved"))
+                        };
+                        let _ = response_tx.send(match result {
+                            Ok(()) => ServerEvent::Done { id },
+                            Err(error) => ServerEvent::Error {
+                                id,
+                                message: crate::util::format_error_chain(&error),
+                                retry_after_secs: None,
+                            },
+                        });
+                    }
+                };
+                // A save still waits for the turn boundary, but the owning
+                // connection must keep reading replies while the model waits.
+                if client_is_processing && supports_user_questions {
+                    if crate::runtime_activity::spawn_session(&client_session_id, persist).is_none() {
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: "Session transfer in progress. Retry saving after it finishes.".into(),
+                            retry_after_secs: None,
+                        });
+                    }
+                } else {
+                    persist.await;
+                }
             }
 
             Request::RenameSession { id, title } => {

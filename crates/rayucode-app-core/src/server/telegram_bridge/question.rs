@@ -79,6 +79,10 @@ impl Card {
         match action {
             "other" => self.text_target = Some(TextTarget::Other),
             "note" => self.text_target = Some(TextTarget::Note),
+            "remove_other" if !answer.custom.is_empty() => {
+                answer.custom.clear();
+                self.text_target = None;
+            }
             "next" if question.multi_select && answer.has_answer() => return self.advance(),
             "next" => return Action::Ignore,
             index => {
@@ -201,7 +205,11 @@ impl Card {
             if let Some(notes) = &answer.notes {
                 lines.push(format!("Note: {}", clip(notes, 170)));
             }
-            rows.push(vec![button("Other…", "other"), button("Add note", "note")]);
+            let mut extras = vec![button("Other…", "other"), button("Add note", "note")];
+            if !answer.custom.is_empty() {
+                extras.push(button("Remove custom", "remove_other"));
+            }
+            rows.push(extras);
             lines.push(String::new());
             lines.push(
                 match self.text_target {
@@ -275,6 +283,12 @@ mod tests {
         assert!(matches!(card.callback("question:1:0"), Action::Redraw));
         assert!(matches!(card.text("Three"), Action::Redraw));
         assert!(matches!(card.callback("question:1:next"), Action::Redraw));
+        assert!(matches!(card.callback("question:2:back"), Action::Redraw));
+        assert!(matches!(
+            card.callback("question:1:remove_other"),
+            Action::Redraw
+        ));
+        assert!(matches!(card.callback("question:1:next"), Action::Redraw));
         assert!(matches!(card.text("unrelated"), Action::Ignore));
         let Action::Submit(QuestionResponse::Answered { answers }) =
             card.callback("question:2:submit")
@@ -283,7 +297,7 @@ mod tests {
         };
         assert_eq!(answers["Format?"].notes.as_deref(), Some("keep it simple"));
         assert_eq!(answers["Extras?"].selected, vec![0]);
-        assert_eq!(answers["Extras?"].custom, vec!["Three"]);
+        assert!(answers["Extras?"].custom.is_empty());
         assert!(matches!(
             card.callback("question:2:decline"),
             Action::Submit(QuestionResponse::Declined)

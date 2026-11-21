@@ -174,9 +174,13 @@ pub(in crate::tui::app) fn handle_server_event(
         ServerEvent::QuestionClosed { session_id, request_id, reason } => {
             if app.question_dialog.as_ref().is_some_and(|dialog| dialog.session_id == *session_id && dialog.request_id == *request_id)
                 && let Some(dialog) = app.question_dialog.take()
-                && *reason == rayucode_tool_types::questions::QuestionCloseReason::Answered
             {
-                app.push_display_message(DisplayMessage::system(dialog.summary()));
+                // Resume the stream watchdog with a fresh budget after the
+                // human wait, even if the next provider call starts slowly.
+                app.last_stream_activity = Some(Instant::now());
+                if *reason == rayucode_tool_types::questions::QuestionCloseReason::Answered {
+                    app.push_display_message(DisplayMessage::system(dialog.summary()));
+                }
             }
             return true;
         }

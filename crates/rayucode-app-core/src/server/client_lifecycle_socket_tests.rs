@@ -349,6 +349,33 @@ async fn sdk_socket_cancel_workflow(
         })
         .await;
 
+        send(
+            &mut client_writer,
+            json!({"type":"persist_session","id":23}),
+        )
+        .await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Ack { id: 23 })
+        })
+        .await;
+        for (id, request) in [
+            (
+                24,
+                json!({"type":"resume_session","id":24,"session_id":session_id}),
+            ),
+            (
+                25,
+                json!({"type":"subscribe","id":25,"target_session_id":session_id}),
+            ),
+        ] {
+            send(&mut client_writer, request).await;
+            until(
+                &mut client_reader,
+                |event| matches!(event, ServerEvent::Error { id: rejected, .. } if *rejected == id),
+            )
+            .await;
+        }
+
         send(&mut client_writer, question_response(5, &session_id, 8)).await;
         until(&mut client_reader, |event| {
             matches!(event, ServerEvent::Error { id: 5, .. })
@@ -357,6 +384,8 @@ async fn sdk_socket_cancel_workflow(
         assert_eq!(question_provider.calls.load(Ordering::SeqCst), 1);
         send(&mut client_writer, question_response(6, &session_id, 0)).await;
         let answer_count = std::cell::Cell::new(0);
+        let saved = std::cell::Cell::new(false);
+        let turn_done = std::cell::Cell::new(false);
         until(&mut client_reader, |event| {
             if matches!(
                 event,
@@ -367,7 +396,15 @@ async fn sdk_socket_cancel_workflow(
             ) {
                 answer_count.set(answer_count.get() + 1);
             }
-            matches!(event, ServerEvent::Done { id: 2 })
+            match event {
+                ServerEvent::Done { id: 2 } => turn_done.set(true),
+                ServerEvent::Done { id: 23 } => saved.set(true),
+                ServerEvent::Error {
+                    id: 23, message, ..
+                } => panic!("save failed: {message}"),
+                _ => {}
+            }
+            turn_done.get() && saved.get()
         })
         .await;
         assert_eq!(answer_count.get(), 1);
