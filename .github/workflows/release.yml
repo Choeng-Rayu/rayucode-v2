@@ -250,6 +250,7 @@ jobs:
           if [ "${{ matrix.native_linux_arm64 }}" = "true" ]; then
             export CARGO_BUILD_JOBS=3
             export OPENSSL_STATIC=1
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:--C link-arg=-static-libgcc}"
             cargo build --locked --release --target "${{ matrix.target }}" \
               -p rayucode --bin rayu --features linux-compat-vendored-openssl
           else

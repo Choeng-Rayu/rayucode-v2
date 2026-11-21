@@ -1161,12 +1161,15 @@ fn patch_termux_interpreter_if_needed(binary: &Path) -> Result<()> {
     };
     if !Path::new(&interpreter).exists() {
         anyhow::bail!(
-            "Termux detected but glibc loader {interpreter} is missing; run 'pkg install glibc' and retry the update"
+            "Termux detected but glibc loader {interpreter} is missing; run 'pkg install -y glibc-repo && pkg install -y glibc gcc-libs-glibc patchelf' and retry the update"
         );
     }
+    let glibc_lib_dir = format!("{TERMUX_PREFIX}/glibc/lib");
     let status = std::process::Command::new("patchelf")
         .arg("--set-interpreter")
         .arg(&interpreter)
+        .arg("--set-rpath")
+        .arg(&glibc_lib_dir)
         .arg(binary)
         .status();
     match status {
