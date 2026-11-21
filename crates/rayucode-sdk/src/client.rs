@@ -42,6 +42,8 @@ pub struct ConnectOptions {
     pub ensure_runtime: bool,
     /// Desktop inline Markdown response renderer. Other clients leave false.
     pub supports_user_response: bool,
+    /// Enable questions when this client is ready to present them and collect replies.
+    pub supports_user_questions: bool,
 }
 
 impl Default for ConnectOptions {
@@ -52,6 +54,7 @@ impl Default for ConnectOptions {
             request_timeout: Some(Duration::from_secs(30)),
             ensure_runtime: true,
             supports_user_response: false,
+            supports_user_questions: false,
         }
     }
 }
@@ -416,6 +419,7 @@ impl RayucodeClient {
             socket_path: None,
             client_name: options.client_name.clone(),
             supports_user_response: options.supports_user_response,
+            supports_user_questions: options.supports_user_questions,
             request_timeout: options.request_timeout,
             ensure_runtime: false,
         };
@@ -465,6 +469,7 @@ impl RayucodeClient {
         let connect = ConnectOptions {
             socket_path: Some(instance.socket_path.clone()),
             supports_user_response: false,
+            supports_user_questions: false,
             client_name: options.client_name.clone(),
             request_timeout: options.request_timeout,
             ensure_runtime: false,
@@ -548,6 +553,7 @@ impl RayucodeClient {
                 max_version: API_VERSION_MAJOR,
                 client: options.client_name.clone(),
                 supports_user_response: options.supports_user_response,
+                supports_user_questions: options.supports_user_questions,
             },
             hello_timeout,
         )?;
@@ -1025,6 +1031,21 @@ impl RayucodeClient {
             message_index,
         })
         .map(drop)
+    }
+
+    /// Submit the human's response on the client that received the question.
+    pub fn respond_to_question(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        response: crate::QuestionResponse,
+    ) -> Result<()> {
+        self.request_ok(ApiRequest::QuestionResponse {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            response,
+        })?;
+        Ok(())
     }
 
     pub fn respond_to_permission(
@@ -1815,6 +1836,8 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | BackgroundProgress { session_id, .. }
         | MessageAccepted { session_id, .. }
         | PermissionRequest { session_id, .. }
+        | QuestionRequest { session_id, .. }
+        | QuestionClosed { session_id, .. }
         | SessionStatus { session_id, .. }
         | SessionRecovery { session_id, .. }
         | ModelInfo { session_id, .. }

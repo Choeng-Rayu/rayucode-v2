@@ -483,6 +483,7 @@ impl RemoteConnection {
             system_prompt: None,
             supports_pdf_panels: false,
             supports_user_response: false,
+            supports_user_questions: true,
             supports_server_failover: false,
             supports_turn_identity: true,
             supports_bash_progress: true,
@@ -1244,6 +1245,20 @@ impl RemoteConnection {
         let request = Request::InputShell { id, command };
         self.next_request_id += 1;
         self.send_request(request).await?;
+        Ok(id)
+    }
+
+    pub async fn send_question_response(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        response: rayucode_tool_types::questions::QuestionResponse,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::QuestionResponse {
+            id, session_id: session_id.into(), request_id: request_id.into(), response,
+        }).await?;
         Ok(id)
     }
 

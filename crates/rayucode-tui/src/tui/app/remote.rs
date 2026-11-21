@@ -564,6 +564,28 @@ async fn apply_terminal_event<B: Backend>(
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
+    if let Some(dialog) = &mut app.question_dialog {
+        match &event {
+            Some(Ok(Event::Key(key))) if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') => {}
+            Some(Ok(Event::Key(key))) => {
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                    && let Some(response) = dialog.key(rayucode_tui_core::korean_input::normalize_key_event(*key))
+                {
+                    match remote.send_question_response(&dialog.session_id, &dialog.request_id, response).await {
+                        Ok(id) => dialog.submitted = Some(id),
+                        Err(error) => dialog.error = Some(format!("Could not send reply: {error}")),
+                    }
+                }
+                return Ok(true);
+            }
+            Some(Ok(Event::Paste(text))) => {
+                dialog.paste(text);
+                return Ok(true);
+            }
+            Some(Ok(Event::Mouse(_))) => return Ok(false),
+            _ => {}
+        }
+    }
     let mut needs_redraw = false;
     let mut input_attribution = crate::tui::ui::FrameInputAttribution {
         event: None,
@@ -1148,6 +1170,7 @@ pub(super) fn handle_disconnect(
     state: &mut RemoteRunState,
     reason: Option<RemoteDisconnectReason>,
 ) {
+    app.question_dialog = None;
     // The daemon may have applied the switch, but the acknowledgement was
     // lost. Never wait on an old connection's request ID or blindly resend.
     if app.pending_automatic_failover_request_id.is_some() {

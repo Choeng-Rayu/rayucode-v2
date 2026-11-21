@@ -1099,6 +1099,21 @@ pub enum ServerEvent {
         message: String,
     },
 
+    #[serde(rename = "question_request")]
+    QuestionRequest {
+        session_id: String,
+        request_id: String,
+        tool_call_id: String,
+        questions: Vec<rayucode_tool_types::questions::Question>,
+    },
+
+    #[serde(rename = "question_closed")]
+    QuestionClosed {
+        session_id: String,
+        request_id: String,
+        reason: rayucode_tool_types::questions::QuestionCloseReason,
+    },
+
     /// A running command is waiting for stdin input from the user
     #[serde(rename = "stdin_request")]
     StdinRequest {

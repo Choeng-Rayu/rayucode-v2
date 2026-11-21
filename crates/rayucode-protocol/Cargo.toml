@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+rayucode-tool-types = { path = "../rayucode-tool-types" }
 rayucode-batch-types = { path = "../rayucode-batch-types" }
 rayucode-config-types = { path = "../rayucode-config-types" }
 rayucode-message-types = { path = "../rayucode-message-types" }

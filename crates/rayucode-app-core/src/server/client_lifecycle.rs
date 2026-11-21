@@ -120,6 +120,7 @@ struct ProcessingMessage {
     active_skill: Option<String>,
     /// Retry on the next pool account after a usage limit (API clients).
     server_failover: bool,
+    question_client: Option<Arc<crate::tool::ask_user_question::QuestionConnection>>,
 }
 
 // A client request ID is not a turn identity: clients can reuse it after cancel.
@@ -410,6 +411,7 @@ pub(super) async fn handle_client(
     // Keep only the window preference, never a session-specific prefix fingerprint.
     let mut recent_history_messages = None;
     let mut supports_user_response = false;
+    let mut supports_user_questions = false;
     let mut supports_server_failover = false;
     // Client selfdev status is determined by Subscribe request, not server's env
     let mut client_selfdev = false;
@@ -627,6 +629,7 @@ pub(super) async fn handle_client(
         }
     }
 
+    let mut question_client = Arc::new(crate::tool::ask_user_question::QuestionConnection::new(client_event_tx.clone()));
     let stdin_responses: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -1006,9 +1009,17 @@ pub(super) async fn handle_client(
 
         // SDK controls reply only after validation. Callback results must never
         // wait for the Agent mutex held by the turn awaiting that callback.
-        if matches!(&request, Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. }) {
+        if matches!(&request, Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. } | Request::QuestionResponse { .. }) {
             let id = request.id();
             let response: anyhow::Result<ServerEvent> = match request {
+                Request::QuestionResponse { session_id, request_id, response, .. } => {
+                    if session_id != client_session_id {
+                        Err(anyhow::anyhow!("Question belongs to another session"))
+                    } else {
+                        question_client.respond(&session_id, &request_id, response)
+                            .map(|()| ServerEvent::Ack { id })
+                    }
+                }
                 Request::ToolResult { call_id, output, error, .. } => {
                     crate::tool::sdk::complete(&client_connection_id, &client_session_id, &call_id, output, error)
                         .map(|()| ServerEvent::Ack { id })
@@ -1029,7 +1040,12 @@ pub(super) async fn handle_client(
                 }
                 Request::ListTools { .. } => {
                     if let Ok(locked) = agent.try_lock() {
-                        Ok(ServerEvent::Tools { id, tools: crate::tool::sdk::wire_definitions(locked.tool_definitions_for_debug().await) })
+                        Ok(ServerEvent::Tools { id, tools: crate::tool::sdk::wire_definitions(
+                            crate::tool::ask_user_question::scope(
+                                &client_session_id, supports_user_questions.then(|| question_client.clone()),
+                                locked.tool_definitions_for_debug(),
+                            ).await
+                        ) })
                     } else { Err(anyhow::anyhow!("Session is busy")) }
                 }
                 _ => unreachable!(),
@@ -1119,7 +1135,7 @@ pub(super) async fn handle_client(
         }
         let sdk_session_before_request = client_session_id.clone();
         match request {
-            Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. } => unreachable!("SDK controls dispatched before acknowledgment"),
+            Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. } | Request::QuestionResponse { .. } => unreachable!("SDK controls dispatched before acknowledgment"),
             Request::Message {
                 id,
                 content,
@@ -1170,6 +1186,7 @@ pub(super) async fn handle_client(
                         system_reminder,
                         active_skill,
                         server_failover: supports_server_failover,
+                        question_client: supports_user_questions.then(|| question_client.clone()),
                     },
                     &client_session_id,
                     &mut ProcessingState {
@@ -1280,6 +1297,7 @@ pub(super) async fn handle_client(
                             system_reminder: None,
                             active_skill: None,
                             server_failover: supports_server_failover,
+                            question_client: supports_user_questions.then(|| question_client.clone()),
                         },
                         &client_session_id,
                         &mut ProcessingState {
@@ -1532,6 +1550,10 @@ pub(super) async fn handle_client(
             }
 
             Request::PrepareDisconnect { id } => {
+                question_client.close();
+                // The SDK can attach again on this socket. Rebind only future turns.
+                supports_user_questions = false;
+                question_client = Arc::new(crate::tool::ask_user_question::QuestionConnection::new(client_event_tx.clone()));
                 drop(crate::tool::sdk::ConnectionGuard(client_connection_id.clone()));
                 let json = encode_event(&ServerEvent::Done { id });
                 let mut w = writer.lock().await;
@@ -1576,6 +1598,7 @@ pub(super) async fn handle_client(
                 system_prompt,
                 supports_pdf_panels: requested_pdf_panels,
                 supports_user_response: requested_user_response,
+                supports_user_questions: requested_user_questions,
                 supports_server_failover: requested_server_failover,
                 supports_turn_identity: _,
                 supports_bash_progress: _,
@@ -1619,6 +1642,7 @@ pub(super) async fn handle_client(
                 supports_pdf_panels = requested_pdf_panels;
                 recent_history_messages = history_base.and_then(|base| base.recent_messages);
                 supports_user_response = requested_user_response;
+                supports_user_questions = requested_user_questions;
                 supports_server_failover = requested_server_failover;
                 active_terminal_env = terminal_env;
                 current_client_instance_id = client_instance_id.clone();
@@ -2460,6 +2484,7 @@ pub(super) async fn handle_client(
                                 ProcessingMessage {
                                     id, content, images: Vec::new(), system_reminder: None,
                                     active_skill: None, server_failover: true,
+                                    question_client: supports_user_questions.then(|| question_client.clone()),
                                 },
                                 &client_session_id,
                                 &mut ProcessingState {
@@ -3300,6 +3325,7 @@ pub(super) async fn handle_client(
     }.await;
 
     drop(_sdk_connection_guard);
+    question_client.close();
 
     super::client_disconnect_cleanup::record_transport_closed(
         &client_session_id,

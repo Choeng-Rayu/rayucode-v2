@@ -45,6 +45,7 @@ const REQUIRES_ATTACH: &[&str] = &[
     "configure_tools",
     "list_tools",
     "tool_result",
+    "question_response",
     "send_message",
     "cancel",
     "soft_interrupt",
@@ -138,6 +139,7 @@ pub struct BridgeState {
     pub crash_on_disconnect: bool,
     /// Client-side inline response renderer, negotiated in Hello.
     pub supports_user_response: bool,
+    pub supports_user_questions: bool,
     /// Client name from Hello, forwarded on subscribe (e.g. `rayu-ios/0.3.0`).
     pub client_name: Option<String>,
     /// Session id assigned by the daemon for this connection.
@@ -593,6 +595,7 @@ impl BridgeState {
                     "id": id,
                     "supports_pdf_panels": true,
                     "supports_user_response": self.supports_user_response,
+                    "supports_user_questions": self.supports_user_questions,
                     // API clients have no account-router countdown of their
                     // own, so the daemon switches pool accounts and retries
                     // usage-limited turns for them, like the TUI does.
@@ -1369,6 +1372,25 @@ impl BridgeState {
                     json!({"type": "prepare_disconnect", "id": id}),
                 )]
             }
+            "question_response" => {
+                if !self.supports_user_questions {
+                    return Self::error_reply(api_id, ErrorCode::InvalidRequest, "User questions are not enabled on this connection");
+                }
+                let Ok(rayucode_harness_api::ApiRequest::QuestionResponse { session_id, request_id, response }) =
+                    serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(api_id, ErrorCode::InvalidRequest, "Invalid question response");
+                };
+                if self.session_id.as_deref() != Some(&session_id) {
+                    return Self::error_reply(api_id, ErrorCode::InvalidRequest, "Question belongs to another session");
+                }
+                let id = self.legacy_id();
+                self.pending_simple.push((id, api_id, SimpleKind::Ok));
+                vec![Outbound::Legacy(json!({
+                    "type": "question_response", "id": id,
+                    "session_id": session_id, "request_id": request_id, "response": response,
+                }))]
+            }
             "permission_response" => {
                 // The legacy protocol does not surface permission prompts on
                 // this path, so the bridge never emits `permission_request`
@@ -1778,6 +1800,17 @@ impl BridgeState {
                     },
                 };
                 vec![ServerFrame::reply(api_id, reply)]
+            }
+            "question_request" | "question_closed" => {
+                if !self.supports_user_questions
+                    || event["session_id"].as_str() != self.session_id.as_deref()
+                {
+                    return vec![];
+                }
+                let mut payload = event.clone();
+                payload["ev"] = json!(kind);
+                serde_json::from_value::<ApiEvent>(payload).ok()
+                    .map(ServerFrame::event).into_iter().collect()
             }
             "tool_call" => {
                 // A custom call is an execution request, not a tool-start update.

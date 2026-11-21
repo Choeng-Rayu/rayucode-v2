@@ -127,17 +127,17 @@ async fn scoped_and_legacy_socket_subscribers_receive_compatible_turn_streams() 
 
 #[tokio::test]
 async fn scoped_cancel_socket_immediately_dispatches_next_prompt() {
-    sdk_socket_cancel_workflow(false, true, true, true, false, false).await;
+    sdk_socket_cancel_workflow(false, true, true, true, false, false, false).await;
 }
 
 #[tokio::test]
 async fn idle_soft_interrupt_without_client_id_is_picked_up_before_cancel() {
-    sdk_socket_cancel_workflow(false, true, true, true, true, false).await;
+    sdk_socket_cancel_workflow(false, true, true, true, true, false, false).await;
 }
 
 #[tokio::test]
 async fn catalog_failure_preserves_remote_socket_owner_and_next_turn() {
-    sdk_socket_cancel_workflow(false, true, true, false, false, true).await;
+    sdk_socket_cancel_workflow(false, true, true, false, false, true, false).await;
 }
 
 async fn sdk_socket_workflow(response_only: bool, terminal_race: bool, identity_capability: bool) {
@@ -145,6 +145,7 @@ async fn sdk_socket_workflow(response_only: bool, terminal_race: bool, identity_
         response_only,
         terminal_race,
         identity_capability,
+        false,
         false,
         false,
         false,
@@ -159,11 +160,15 @@ async fn sdk_socket_cancel_workflow(
     cancel_first: bool,
     idle_soft_interrupt: bool,
     catalog_failure: bool,
+    questions: bool,
 ) {
     let _lock = crate::storage::lock_test_env();
     let home = IsolatedReloadRecoveryEnv::new();
     let terminal_provider = TerminalSocketProvider::default();
-    let provider_template: Arc<dyn Provider> = if terminal_race {
+    let question_provider = QuestionSocketProvider::default();
+    let provider_template: Arc<dyn Provider> = if questions {
+        Arc::new(question_provider.clone())
+    } else if terminal_race {
         Arc::new(terminal_provider.clone())
     } else {
         Arc::new(SdkCallbackProvider::default())
@@ -258,7 +263,7 @@ async fn sdk_socket_cancel_workflow(
     use serde_json::json;
     send(
         &mut client_writer,
-        json!({"type":"subscribe","id":1,"working_dir":home._home.path(),"supports_turn_identity":identity_capability}),
+        json!({"type":"subscribe","id":1,"working_dir":home._home.path(),"supports_turn_identity":identity_capability,"supports_user_questions":questions}),
     )
     .await;
     until(&mut client_reader, |e| {
@@ -279,6 +284,161 @@ async fn sdk_socket_cancel_workflow(
         identity_capability,
         "bootstrap must be negotiated"
     );
+    if questions {
+        let send_prompt = |id, content| json!({"type":"message","id":id,"content":content});
+        send(
+            &mut client_writer,
+            send_prompt(2, "Choose a storage format"),
+        )
+        .await;
+        let ServerEvent::QuestionRequest {
+            session_id,
+            request_id,
+            tool_call_id,
+            questions,
+        } = until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::QuestionRequest { .. })
+        })
+        .await
+        else {
+            unreachable!()
+        };
+        assert_eq!(tool_call_id, "question-call");
+        assert_eq!(questions[0].header, "Format");
+        assert_eq!(question_provider.calls.load(Ordering::SeqCst), 1);
+
+        send(&mut client_writer, json!({"type":"background_tool","id":3})).await;
+        assert!(matches!(
+            until(&mut client_reader, |event| matches!(
+                event,
+                ServerEvent::BackgroundToolResult { id: 3, .. }
+            ))
+            .await,
+            ServerEvent::BackgroundToolResult { moved: false, .. }
+        ));
+
+        let question_response = |id, session_id: &str, index| {
+            json!({
+                "type": "question_response", "id": id, "session_id": session_id, "request_id": request_id,
+                "response": {"kind":"answered","answers":{"Which format?":{"selected":[index],"notes":"human note"}}},
+            })
+        };
+        send(&mut client_writer, question_response(4, "other-session", 0)).await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Error { id: 4, .. })
+        })
+        .await;
+        let (observer_task, observer) = connect();
+        let (observer_reader, mut observer_writer) = observer.into_split();
+        let mut observer_reader = BufReader::new(observer_reader);
+        send(
+            &mut observer_writer,
+            json!({
+                "type":"subscribe", "id":21, "working_dir":home._home.path(),
+                "target_session_id":session_id, "supports_user_questions":true,
+            }),
+        )
+        .await;
+        until(&mut observer_reader, |event| {
+            matches!(event, ServerEvent::Done { id: 21 })
+        })
+        .await;
+        send(&mut observer_writer, question_response(22, &session_id, 0)).await;
+        until(&mut observer_reader, |event| {
+            matches!(event, ServerEvent::Error { id: 22, .. })
+        })
+        .await;
+
+        send(&mut client_writer, question_response(5, &session_id, 8)).await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Error { id: 5, .. })
+        })
+        .await;
+        assert_eq!(question_provider.calls.load(Ordering::SeqCst), 1);
+        send(&mut client_writer, question_response(6, &session_id, 0)).await;
+        let answer_count = std::cell::Cell::new(0);
+        until(&mut client_reader, |event| {
+            if matches!(
+                event,
+                ServerEvent::QuestionClosed {
+                    reason: rayucode_tool_types::questions::QuestionCloseReason::Answered,
+                    ..
+                }
+            ) {
+                answer_count.set(answer_count.get() + 1);
+            }
+            matches!(event, ServerEvent::Done { id: 2 })
+        })
+        .await;
+        assert_eq!(answer_count.get(), 1);
+        assert_eq!(question_provider.calls.load(Ordering::SeqCst), 2);
+        send(&mut client_writer, question_response(7, &session_id, 0)).await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Error { id: 7, .. })
+        })
+        .await;
+
+        // The same persisted agent accepts another turn with the capability absent.
+        send(
+            &mut client_writer,
+            json!({"type":"subscribe","id":8,"working_dir":home._home.path()}),
+        )
+        .await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Done { id: 8 })
+        })
+        .await;
+        send(&mut client_writer, send_prompt(9, "The format is JSON")).await;
+        let terminal = until(&mut client_reader, |event| {
+            matches!(
+                event,
+                ServerEvent::Done { id: 9 } | ServerEvent::Error { id: 9, .. }
+            )
+        })
+        .await;
+        assert!(
+            matches!(terminal, ServerEvent::Done { id: 9 }),
+            "{terminal:?}"
+        );
+
+        send(&mut client_writer, json!({
+            "type":"subscribe","id":10,"working_dir":home._home.path(),"supports_user_questions":true,
+        })).await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::Done { id: 10 })
+        })
+        .await;
+        send(&mut client_writer, send_prompt(11, "Choose a format again")).await;
+        until(&mut client_reader, |event| {
+            matches!(event, ServerEvent::QuestionRequest { .. })
+        })
+        .await;
+        send(&mut client_writer, json!({"type":"cancel","id":12})).await;
+        until(&mut client_reader, |event| {
+            matches!(
+                event,
+                ServerEvent::QuestionClosed {
+                    reason: rayucode_tool_types::questions::QuestionCloseReason::Cancelled,
+                    ..
+                }
+            )
+        })
+        .await;
+        sessions.clear_for_test().await;
+        drop(client_writer);
+        drop(client_reader);
+        drop(observer_writer);
+        drop(observer_reader);
+        for task in [server_task, observer_task] {
+            tokio::time::timeout(Duration::from_secs(8), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        return;
+    }
+
     if catalog_failure {
         let session_id = sessions.read().await.keys().next().unwrap().clone();
         terminal_provider
@@ -876,4 +1036,69 @@ async fn sdk_socket_cancel_workflow(
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[derive(Clone, Default)]
+struct QuestionSocketProvider {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for QuestionSocketProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<EventStream> {
+        use rayucode_tool_types::questions::ASK_USER_QUESTION;
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            tools.iter().any(|tool| tool.name == ASK_USER_QUESTION),
+            call != 2
+        );
+        let events = match call {
+            0 | 3 => vec![
+                StreamEvent::ToolUseStart { id: "question-call".into(), name: ASK_USER_QUESTION.into() },
+                StreamEvent::ToolInputDelta(serde_json::json!({
+                    "intent":"Resolve format",
+                    "questions":[{
+                        "question":"Which format?", "header":"Format", "options":[
+                            {"label":"JSON","description":"Machine-readable","preview":r#"{"value":1}"#},
+                            {"label":"Markdown","description":"Readable document"}
+                        ]
+                    }]
+                }).to_string()),
+                StreamEvent::ToolUseEnd,
+                StreamEvent::MessageEnd { stop_reason: Some("tool_use".into()) },
+            ],
+            _ => {
+                if call == 1 {
+                    assert!(messages.iter().flat_map(|message| &message.content).any(|block| {
+                        matches!(block, crate::message::ContentBlock::ToolResult { tool_use_id, content, .. }
+                            if tool_use_id == "question-call" && content.contains("human note")
+                            && content.contains("JSON") && content.contains("preview"))
+                    }));
+                }
+                vec![
+                    StreamEvent::TextDelta("format ready".into()),
+                    StreamEvent::MessageEnd { stop_reason: Some("end_turn".into()) },
+                ]
+            }
+        };
+        Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+    }
+
+    fn name(&self) -> &str {
+        "question-socket-test"
+    }
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+#[tokio::test]
+async fn question_socket_round_trip_reaches_the_model_and_enforces_ownership() {
+    sdk_socket_cancel_workflow(false, false, false, false, false, false, true).await;
 }

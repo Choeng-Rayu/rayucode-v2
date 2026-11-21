@@ -155,6 +155,9 @@ pub enum Request {
         /// Desktop can render user_response tool calls as inline answers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_response: bool,
+        /// This connection can render a questionnaire and submit a human reply.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_user_questions: bool,
         /// The client has no account-router countdown of its own (Desktop,
         /// SDK). On a usage/rate-limit failure the server switches to the next
         /// pool-approved account and retries the turn itself.
@@ -564,6 +567,14 @@ pub enum Request {
         request_id: String,
         /// The user's input (line of text)
         input: String,
+    },
+
+    #[serde(rename = "question_response")]
+    QuestionResponse {
+        id: u64,
+        session_id: String,
+        request_id: String,
+        response: rayucode_tool_types::questions::QuestionResponse,
     },
 
     // === Agent-to-agent communication ===

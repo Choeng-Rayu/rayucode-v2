@@ -18,6 +18,7 @@ name = "rayucode_tui"
 path = "src/lib.rs"
 
 [dependencies]
+rayucode-tool-types = { path = "../rayucode-tool-types" }
 # Application core (server, agent, provider, auth, session, tool, config, ...).
 # Re-exported via `pub use rayucode_app_core::*` in lib.rs. default-features=false
 # so this crate (and ultimately the root crate) controls app-core's features.

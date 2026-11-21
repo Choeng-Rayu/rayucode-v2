@@ -8,6 +8,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::protocol::{Request, ServerEvent};
+use super::question;
+use rayucode_tool_types::questions::QuestionResponse;
 use crate::transport::{ReadHalf, WriteHalf};
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(1800);
@@ -16,6 +18,7 @@ const MESSAGE_LIMIT: usize = 3800;
 pub(super) enum Control {
     Cancel,
     Answer(String),
+    Question { request_id: String, response: QuestionResponse },
 }
 
 struct Socket {
@@ -51,6 +54,7 @@ pub(super) async fn run(
     content: String,
     images: Vec<(String, String)>,
     mut control: mpsc::Receiver<Control>,
+    questions: mpsc::UnboundedSender<question::Event>,
 ) -> Result<()> {
     let stream = super::super::connect_socket(socket).await?;
     let (reader, writer) = stream.into_split();
@@ -64,6 +68,7 @@ pub(super) async fn run(
             system_prompt: None,
             supports_pdf_panels: false,
             supports_user_response: false,
+            supports_user_questions: true,
             supports_server_failover: false,
             supports_turn_identity: false,
             supports_bash_progress: false,
@@ -100,6 +105,7 @@ pub(super) async fn run(
     };
     let mut next_id = 3;
     let mut prompt = None;
+    let mut question_reply = None;
     let mut accepted = false;
     let mut cancel_requested = false;
     let mut timer = tokio::time::interval(Duration::from_millis(1400));
@@ -132,6 +138,12 @@ pub(super) async fn run(
                         } else {
                             transport.send(chat, "No Rayu question is waiting for an answer.", None).await?;
                         }
+                    }
+                    Some(Control::Question { request_id, response }) => {
+                        client.call(Request::QuestionResponse {
+                            id: next_id, session_id: session.clone(), request_id: request_id.clone(), response,
+                        }).await?;
+                        question_reply = Some((next_id, request_id));
                     }
                     None => bail!("Telegram disconnected"),
                 }
@@ -180,6 +192,20 @@ pub(super) async fn run(
                             transport.send(chat, "Turn finished.", None).await?;
                         }
                         return Ok(());
+                    }
+                    ServerEvent::QuestionRequest { session_id, request_id, questions: items, .. }
+                        if session_id == session => {
+                        let _ = questions.send(question::Event::Open { request_id, questions: items });
+                    }
+                    ServerEvent::QuestionClosed { session_id, request_id, reason }
+                        if session_id == session => {
+                        let _ = questions.send(question::Event::Close { request_id, reason });
+                    }
+                    ServerEvent::Error { id, message, .. }
+                        if question_reply.as_ref().is_some_and(|(reply, _)| *reply == id) => {
+                        if let Some((_, request_id)) = question_reply.take() {
+                            let _ = questions.send(question::Event::Rejected { request_id, message });
+                        }
                     }
                     ServerEvent::StdinRequest { request_id, prompt: question, is_password, .. } => {
                         if is_password {

@@ -1,5 +1,6 @@
 //! Runs one interactive Telegram poller for the profile's shared daemon.
 
+mod question;
 mod turn;
 
 use std::collections::{HashMap, HashSet};
@@ -47,6 +48,8 @@ struct Bridge {
     transport: Transport,
     outbound: JoinSet<Result<()>>,
     control: Option<mpsc::Sender<Control>>,
+    question_events: Option<mpsc::UnboundedReceiver<question::Event>>,
+    question: Option<question::Card>,
     shown: HashMap<String, Option<ApprovalCard>>,
     album: Vec<Message>,
     album_at: Option<tokio::time::Instant>,
@@ -116,6 +119,8 @@ impl Bridge {
             transport,
             outbound: JoinSet::new(),
             control: None,
+            question_events: None,
+            question: None,
             shown: HashMap::new(),
             album: Vec::new(),
             album_at: None,
@@ -178,8 +183,31 @@ impl Bridge {
                     }
                     let _ = ack.send(self.cursor.clone());
                 }
+                Some(event) = async {
+                    match &mut self.question_events {
+                        Some(events) => events.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(chat) = self.link.owner
+                        && let Err(error) = self.render_question_event(chat, event).await
+                    {
+                        crate::logging::warn(&format!("Telegram question card: {error}"));
+                    }
+                }
                 Some(result) = self.outbound.join_next(), if !self.outbound.is_empty() => {
                     self.control = None;
+                    // Read any final disposition before clearing the card.
+                    if let Some(mut events) = self.question_events.take() {
+                        while let Ok(event) = events.try_recv() {
+                            if let Some(chat) = self.link.owner {
+                                let _ = self.render_question_event(chat, event).await;
+                            }
+                        }
+                    }
+                    if let Some(chat) = self.link.owner {
+                        self.close_question(chat, rayucode_tool_types::questions::QuestionCloseReason::Cancelled).await;
+                    }
                     if let Some(chat) = self.link.owner {
                         match result {
                             Ok(Ok(())) => {}
@@ -268,14 +296,21 @@ impl Bridge {
                 "/stop" | "/disconnect" | "/disconnect-telegram" | "/disconnect_telegram" => {
                     self.outbound.abort_all();
                     self.control = None;
+                    self.close_question(chat, rayucode_tool_types::questions::QuestionCloseReason::Cancelled).await;
                     self.say(chat, "Telegram is disconnecting from this Rayu host.").await?;
                     telegram_remote::disconnect(&self.link).await
                 }
                 "/cancel" | "/interrupt" => self.control(chat, Control::Cancel).await,
+                "/answer" if !arg.is_empty() && self.question_text(chat, arg).await? => Ok(()),
                 "/answer" if !arg.is_empty() => self.answer(chat, arg).await,
                 "/answer" => self.say(chat, "Usage: /answer followed by your answer.").await,
                 _ => self.say(chat, "Unknown command. Use /help to see Telegram controls.").await,
             };
+        }
+        if let Some(text) = &message.text
+            && self.question_text(chat, text).await?
+        {
+            return Ok(());
         }
         if let Some(group) = &message.media_group_id {
             if self
@@ -299,6 +334,15 @@ impl Bridge {
         let Some(data) = callback.data.as_deref() else {
             return Ok(());
         };
+        if data.starts_with("question:") {
+            if let Some(card) = &mut self.question
+                && callback.message.as_ref().is_some_and(|message| message.message_id == card.message_id)
+            {
+                let action = card.callback(data);
+                self.question_action(chat, action).await?;
+            }
+            return Ok(());
+        }
         if let Some(session) = data.strip_prefix("session:") {
             return self.select(chat, session).await;
         }
@@ -850,17 +894,97 @@ impl Bridge {
             content = "Please look at the attached images.".into();
         }
         let (tx, rx) = mpsc::channel(8);
+        let (question_tx, question_rx) = mpsc::unbounded_channel();
+        self.question_events = Some(question_rx);
         let transport = Transport::new(self.link.mode.clone())?;
         let generation = self.link.generation;
         let socket = self.socket.clone();
         self.outbound.spawn(async move {
             turn::run(
-                &socket, &transport, chat, generation, session, content, images, rx,
+                &socket, &transport, chat, generation, session, content, images, rx, question_tx,
             )
             .await
         });
         self.control = Some(tx);
         Ok(())
+    }
+
+    async fn question_text(&mut self, chat: i64, text: &str) -> Result<bool> {
+        let Some(card) = &mut self.question else { return Ok(false) };
+        let action = card.text(text);
+        if matches!(action, question::Action::Ignore) {
+            return Ok(false);
+        }
+        self.question_action(chat, action).await?;
+        Ok(true)
+    }
+
+    async fn question_action(&mut self, chat: i64, action: question::Action) -> Result<()> {
+        let Some(card) = &mut self.question else { return Ok(()) };
+        match action {
+            question::Action::Ignore => {}
+            question::Action::Redraw => {
+                let (text, buttons) = card.render();
+                self.transport.edit_with_buttons(chat, card.message_id, &text, buttons).await?;
+            }
+            question::Action::Submit(response) => {
+                let Some(control) = &self.control else { return Ok(()) };
+                control.try_send(Control::Question { request_id: card.request_id.clone(), response })?;
+                card.submitting = true;
+            }
+        }
+        Ok(())
+    }
+
+    async fn render_question_event(&mut self, chat: i64, event: question::Event) -> Result<()> {
+        use question::Event;
+        match event {
+            Event::Open { request_id, questions } => {
+                let mut card = question::Card::new(request_id, questions);
+                let (text, buttons) = card.render();
+                match self.transport.send(chat, &text, Some(buttons)).await {
+                    Ok(message_id) => {
+                        card.message_id = message_id;
+                        self.question = Some(card);
+                    }
+                    Err(error) => {
+                        // Release the waiting turn if Telegram cannot present the form.
+                        if let Some(control) = &self.control {
+                            let _ = control.try_send(Control::Cancel);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Event::Close { request_id, reason } => {
+                if self.question.as_ref().is_some_and(|card| card.request_id == request_id) {
+                    self.close_question(chat, reason).await;
+                }
+            }
+            Event::Rejected { request_id, message } => {
+                if let Some(card) = &mut self.question
+                    && card.request_id == request_id
+                {
+                    card.submitting = false;
+                    self.say(chat, &message).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn close_question(&mut self, chat: i64, reason: rayucode_tool_types::questions::QuestionCloseReason) {
+        use rayucode_tool_types::questions::QuestionCloseReason;
+        if let Some(card) = self.question.take() {
+            let text = match reason {
+                QuestionCloseReason::Answered => format!("Answers sent\n\n{}", card.summary()),
+                QuestionCloseReason::Declined => "Question declined.".into(),
+                QuestionCloseReason::Cancelled => "Question closed.".into(),
+            };
+            if let Err(error) = self.transport.edit(chat, card.message_id, &text).await {
+                crate::logging::warn(&format!("Telegram question close: {error}"));
+            }
+        }
     }
 
     async fn session_rows(&self) -> Result<Vec<SessionRow>> {

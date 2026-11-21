@@ -957,7 +957,7 @@ impl Request {
             Request::AccountUsage { id } => *id,
             Request::InvalidateOpenAiUsage { id, .. } => *id,
             Request::InvalidateAnthropicUsage { id, .. } => *id,
-            Request::StdinResponse { id, .. } => *id,
+            Request::StdinResponse { id, .. } | Request::QuestionResponse { id, .. } => *id,
             Request::AgentRegister { id, .. } => *id,
             Request::AgentTask { id, .. } => *id,
             Request::AgentCapabilities { id } => *id,

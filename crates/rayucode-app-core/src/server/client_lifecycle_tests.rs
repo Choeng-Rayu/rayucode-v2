@@ -482,6 +482,7 @@ fn subscribe_request(working_dir: Option<&str>) -> Request {
         system_prompt: None,
         supports_pdf_panels: false,
         supports_user_response: false,
+        supports_user_questions: false,
         supports_server_failover: false,
         supports_turn_identity: false,
         supports_bash_progress: false,
@@ -638,6 +639,7 @@ fn reload_starting_rejects_new_turn_without_spawning_processing_task() {
                 system_reminder: None,
                 active_skill: None,
                 server_failover: false,
+                question_client: None,
             },
             "session_guard",
             &mut ProcessingState {
@@ -740,6 +742,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
             system_reminder: None,
             active_skill: None,
             server_failover: false,
+            question_client: None,
         },
         session_id,
         &mut ProcessingState {
@@ -965,6 +968,7 @@ async fn terminal_done_then_immediate_message_reconciles_finished_turn() {
             system_reminder: None,
             active_skill: None,
             server_failover: false,
+            question_client: None,
         },
         session_id,
         &mut state,
@@ -992,6 +996,7 @@ async fn terminal_done_then_immediate_message_reconciles_finished_turn() {
                 system_reminder: None,
                 active_skill: None,
                 server_failover: false,
+                question_client: None,
             })
             .unwrap();
         // Force the real actor's worst-case ordering: after Done, both input
@@ -1269,6 +1274,7 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
                 system_reminder: Some(continuation.to_string()),
                 active_skill: None,
                 server_failover: false,
+                question_client: None,
             },
             session_id,
             &mut ProcessingState {
@@ -1327,6 +1333,7 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
                 system_reminder: Some(continuation.to_string()),
                 active_skill: Some("nonexistent-replay-skill".to_string()),
                 server_failover: false,
+                question_client: None,
             },
             session_id,
             &mut ProcessingState {
@@ -1391,6 +1398,7 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
                     system_reminder: reminder.map(str::to_string),
                     active_skill: None,
                     server_failover: false,
+                    question_client: None,
                 },
                 session_id,
                 &mut ProcessingState {
@@ -1485,6 +1493,7 @@ fn reload_starting_rejects_new_turns_for_multiple_sessions() {
                     system_reminder: None,
                     active_skill: None,
                     server_failover: false,
+                    question_client: None,
                 },
                 session_id,
                 &mut ProcessingState {

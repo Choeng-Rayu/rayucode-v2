@@ -37,6 +37,7 @@ pub(super) async fn connection_presence_pong(
         native_ssh_protocol: Some(1),
         capabilities: vec![
             "session_tools".into(),
+            rayucode_tool_types::questions::QUESTION_CAPABILITY.into(),
             "soft_interrupt_ids".into(),
             "runtime_commands".into(),
             "session_connections".into(),

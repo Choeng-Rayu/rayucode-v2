@@ -316,6 +316,19 @@ pub enum ApiEvent {
     /// minutes away.
     MessageAccepted { session_id: String },
 
+    QuestionRequest {
+        session_id: String,
+        request_id: String,
+        tool_call_id: String,
+        questions: Vec<crate::Question>,
+    },
+
+    QuestionClosed {
+        session_id: String,
+        request_id: String,
+        reason: crate::QuestionCloseReason,
+    },
+
     /// The harness needs a permission decision from the user.
     PermissionRequest {
         session_id: String,

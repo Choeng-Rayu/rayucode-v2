@@ -59,6 +59,9 @@ impl Host for RegistryHost {
         let registry = self.registry.clone();
         let sub_ctx = self.ctx.for_subcall(format!("codemode-{n}-{name}"));
         Box::pin(async move {
+            if super::ask_user_question::is_question(&name) {
+                return Err("Call ask_user_question directly so it can wait for the user".into());
+            }
             let args = match args {
                 Value::Object(map) => Value::Object(map),
                 other => return Err(format!("arguments must be an object, got {other}")),

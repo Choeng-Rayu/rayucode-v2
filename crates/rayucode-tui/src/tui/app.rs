@@ -99,6 +99,7 @@ mod onboarding_repair;
 mod onboarding_sim;
 mod productivity;
 mod prompt_history;
+mod question;
 mod remote;
 mod remote_header_hint;
 mod remote_notifications;
@@ -1197,6 +1198,7 @@ pub struct App {
     pasted_contents: Vec<String>,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
+    question_dialog: Option<question::QuestionDialog>,
     // One-shot flag: the next submitted prompt is routed to a new headed session.
     route_next_prompt_to_new_session: bool,
     // Restore-time flag: auto-submit restored input after startup.

@@ -510,6 +510,22 @@ impl Agent {
     }
 
     pub(super) async fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
+        let mut tools = self.turn_tool_definitions().await;
+        self.add_question_definition(&mut tools);
+        tools
+    }
+
+    fn add_question_definition(&self, tools: &mut Vec<ToolDefinition>) {
+        use rayucode_tool_types::questions::ASK_USER_QUESTION;
+        if crate::tool::ask_user_question::available(self.session_id())
+            && self.validate_tool_allowed(ASK_USER_QUESTION).is_ok()
+        {
+            tools.retain(|tool| tool.name != "ask_user");
+            tools.push(crate::tool::ask_user_question::definition());
+        }
+    }
+
+    async fn turn_tool_definitions(&mut self) -> Vec<ToolDefinition> {
         if crate::telegram_remote::is_remote(self.session_id()) {
             return self
                 .build_filtered_tool_definitions()
@@ -1051,7 +1067,9 @@ impl Agent {
         if self.session.is_canary {
             self.registry.register_selfdev_tools().await;
         }
-        self.build_filtered_tool_definitions().await
+        let mut tools = self.build_filtered_tool_definitions().await;
+        self.add_question_definition(&mut tools);
+        tools
     }
 
     pub async fn execute_tool(

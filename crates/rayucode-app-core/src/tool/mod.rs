@@ -3,6 +3,7 @@ pub(crate) const BACKGROUND_WAIT_GUIDANCE: &str = "While this task runs, try to 
 mod agentgrep;
 pub mod ambient;
 mod apply_patch;
+pub(crate) mod ask_user_question;
 mod bash;
 pub mod bash_progress;
 mod batch;
@@ -471,6 +472,12 @@ impl Registry {
                 &mut timings,
                 "rayu_docs",
                 rayu_docs::RayuDocsTool::new,
+            );
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                rayucode_tool_types::questions::ASK_USER_QUESTION,
+                || ask_user_question::AskUserQuestionTool,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
@@ -1091,7 +1098,7 @@ impl Registry {
             .working_dir
             .as_ref()
             .map(|dir| dir.display().to_string());
-        let approved_input = if telegram {
+        let approved_input = if telegram && resolved_name != rayucode_tool_types::questions::ASK_USER_QUESTION {
             crate::telegram_remote::authorize_tool(resolved_name, &input, &ctx.session_id).await?;
             Some(input.clone())
         } else {

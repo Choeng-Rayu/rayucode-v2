@@ -8,9 +8,31 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 12;
+export const API_VERSION_MINOR = 13;
 
 export type RuntimeCommand = "skills" | "context" | "info" | "cache" | "memory" | "swarm" | "agents" | "subagent_model" | "autoreview" | "autojudge" | "transport" | "fast" | "telemetry" | "subscription" | "overnight" | "productivity" | "initiatives" | "premium" | "provider_test_coverage" | "refresh_model_list" | "continue" | "resume_all" | "remote" | "server_reload" | "review" | "judge" | "subagent" | "auth" | "logout";
+
+export interface QuestionOption { label: string; description: string; preview?: string }
+
+export interface Question {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+export interface QuestionAnswer {
+  /** Zero-based indices of choices from the corresponding question. */
+  selected?: number[];
+  custom?: string[];
+  notes?: string;
+}
+
+export type QuestionResponse =
+  | { kind: "answered"; answers: Record<string, QuestionAnswer> }
+  | { kind: "declined" };
+
+export type QuestionCloseReason = "answered" | "declined" | "cancelled";
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -157,7 +179,7 @@ export interface ToolConfiguration {
 }
 
 export type ApiRequest =
-  | { req: "hello"; min_version: number; max_version: number; client: string; supports_user_response?: boolean }
+  | { req: "hello"; min_version: number; max_version: number; client: string; supports_user_response?: boolean; supports_user_questions?: boolean }
   | { req: "list_sessions"; include_archived?: boolean; limit?: number }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
@@ -169,6 +191,7 @@ export type ApiRequest =
   | { req: "detach_session"; session_id: string }
   | { req: "configure_tools"; session_id: string; tools: ToolConfiguration }
   | { req: "list_tools"; session_id: string }
+  | { req: "question_response"; session_id: string; request_id: string; response: QuestionResponse }
   | { req: "tool_result"; session_id: string; call_id: string; output: string; error?: string }
   | {
       req: "send_message";
@@ -302,6 +325,8 @@ export type ApiEvent =
   | { ev: "tool_input_delta"; session_id: string; call_id: string; delta: string }
   | { ev: "tool_exec"; session_id: string; call_id: string; name: string }
   | { ev: "tools"; session_id: string; tools: SessionToolDefinition[] }
+  | { ev: "question_request"; session_id: string; request_id: string; tool_call_id: string; questions: Question[] }
+  | { ev: "question_closed"; session_id: string; request_id: string; reason: QuestionCloseReason }
   | { ev: "tool_call"; session_id: string; call_id: string; name: string; input: unknown }
   | {
       ev: "tool_done";
@@ -493,6 +518,8 @@ export const KNOWN_EVENT_KINDS = [
   "reasoning_done",
   "tool_start",
   "tools",
+  "question_request",
+  "question_closed",
   "tool_call",
   "tool_input_delta",
   "tool_exec",
@@ -550,6 +577,7 @@ export const KNOWN_REQUEST_KINDS = [
   "clear",
   "rewind",
   "permission_response",
+  "question_response",
   "list_models",
   "get_runtime_info",
   "set_api_key",

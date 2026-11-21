@@ -11,6 +11,7 @@ pub(super) fn automatic_handoff_reason(budget: Duration) -> String {
 pub(super) fn auto_background_allowed(name: &str, input: &serde_json::Value) -> bool {
     // Human decisions belong to the live turn that owns the response channel.
     name != "ask_user"
+        && !crate::tool::ask_user_question::is_question(name)
         && !(name == "bg" && input.get("action").and_then(|value| value.as_str()) == Some("wait"))
 }
 
@@ -39,12 +40,14 @@ async fn execute_with_background_budget(
     ctx: ToolContext,
     budget: Duration,
 ) -> Result<crate::tool::ToolOutput> {
-    if crate::telegram_remote::is_remote(&ctx.session_id) {
+    if crate::telegram_remote::is_remote(&ctx.session_id)
+        || crate::tool::ask_user_question::is_question(&name)
+    {
         let shutdown = ctx.graceful_shutdown_signal.clone();
         return tokio::select! {
             biased;
             _ = async { if let Some(signal) = shutdown { signal.notified().await } }, if ctx.graceful_shutdown_signal.is_some() => {
-                Err(anyhow::anyhow!("Telegram tool call interrupted"))
+                Err(anyhow::anyhow!("Tool call interrupted"))
             }
             result = registry.execute(&name, input, ctx) => result,
         };

@@ -804,3 +804,46 @@ test("setContextCap returns effective budget and supports zero/null clearing", a
     await server.close();
   }
 });
+
+test("question replies require an explicit human answer even with autoApprove", async (t) => {
+  let replyCount = 0;
+  const server = await startMockHarness({
+    capabilities: ["user_questions"],
+    onRequest(request, send) {
+      if (request.req === "send_message") {
+        send({ v: 1, reply_to: request.id, ev: "ok" });
+        send({ v: 1, ev: "message_accepted", session_id: "s1" });
+        send({ v: 1, ev: "question_request", session_id: "s1", request_id: "q1", tool_call_id: "tool1", questions: [
+          { question: "Which?", header: "Choice", multiSelect: false, options: [
+            { label: "A", description: "First" },
+            { label: "B", description: "Second" },
+          ] },
+        ] });
+      } else if (request.req === "question_response") {
+        replyCount++;
+        assert.equal(request.request_id, "q1");
+        assert.deepEqual(request.response, { kind: "answered", answers: { "Which?": { selected: [1] } } });
+        send({ v: 1, reply_to: request.id, ev: "ok" });
+        send({ v: 1, ev: "question_closed", session_id: "s1", request_id: "q1", reason: "answered" });
+        send({ v: 1, ev: "turn_done", session_id: "s1" });
+      } else {
+        assert.fail(`unexpected request ${request.req}`);
+      }
+    },
+  });
+  const client = await RayucodeClient.connect({ socketPath: server.socketPath, supportsUserQuestions: true });
+  t.after(async () => { client.close(); await server.close(); });
+  assert.deepEqual(client.capabilities, ["user_questions"]);
+  let requestId: string | undefined;
+  let closed = false;
+  const turn = client.run("s1", "Choose", { autoApprove: true, onEvent(event) {
+    if (event.ev === "question_request") requestId = event.request_id;
+    if (event.ev === "question_closed") closed = true;
+  } });
+  await waitFor(() => requestId !== undefined);
+  assert.equal(replyCount, 0);
+  await client.respondToQuestion("s1", requestId!, { kind: "answered", answers: { "Which?": { selected: [1] } } });
+  await turn;
+  assert.equal(replyCount, 1);
+  assert.equal(closed, true);
+});

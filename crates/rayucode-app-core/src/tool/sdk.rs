@@ -69,6 +69,10 @@ pub(crate) fn configure(
     let mut names = HashSet::new();
     for tool in &config.custom {
         anyhow::ensure!(
+            !super::ask_user_question::is_question(&tool.name),
+            "This tool name is reserved for user questions"
+        );
+        anyhow::ensure!(
             valid_name(&tool.name),
             "Invalid custom tool name: {}",
             tool.name

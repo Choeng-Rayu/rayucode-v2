@@ -380,6 +380,7 @@ where
     let user_connections_supported = daemon_caps.iter().any(|cap| cap == "session_connections");
     let runtime_commands_supported = daemon_caps.iter().any(|cap| cap == "runtime_commands");
     let session_tools_supported = daemon_caps.iter().any(|cap| cap == "session_tools");
+    let user_questions_supported = daemon_caps.iter().any(|cap| cap == rayucode_harness_api::QUESTION_CAPABILITY);
     let soft_interrupt_ids_supported = daemon_caps.iter().any(|cap| cap == "soft_interrupt_ids");
     let hello_ok = ServerFrame::reply(
         reply_to,
@@ -408,6 +409,7 @@ where
             .chain(user_connections_supported.then(|| "session_connections".to_string()))
             .chain(runtime_commands_supported.then(|| "runtime_commands".to_string()))
             .chain(session_tools_supported.then(|| "session_tools".to_string()))
+            .chain(user_questions_supported.then(|| rayucode_harness_api::QUESTION_CAPABILITY.to_string()))
             .chain(
                 ["soft_interrupt_ids", "background_tool_result"]
                     .into_iter()
@@ -428,6 +430,7 @@ where
     );
     state.session_tools_supported = session_tools_supported;
     state.supports_user_response = hello["supports_user_response"].as_bool().unwrap_or(false);
+    state.supports_user_questions = user_questions_supported && hello["supports_user_questions"] == true;
     state.client_name = Some(client_name.to_string()).filter(|n| !n.is_empty());
     state.runtime_commands_supported = runtime_commands_supported;
     state.soft_interrupt_ids_supported = soft_interrupt_ids_supported;

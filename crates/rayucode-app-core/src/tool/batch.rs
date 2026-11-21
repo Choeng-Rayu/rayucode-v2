@@ -227,6 +227,10 @@ impl Tool for BatchTool {
             if Registry::resolve_tool_name(&tc.tool) == "batch" {
                 return Err(anyhow::anyhow!("Cannot batch the 'batch' tool"));
             }
+            anyhow::ensure!(
+                !super::ask_user_question::is_question(&tc.tool),
+                "Call ask_user_question directly so it can wait for the user"
+            );
         }
 
         // Execute all tools in parallel, emitting progress events as each completes

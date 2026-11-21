@@ -216,6 +216,7 @@ pub(super) async fn start_processing_message(
         mut system_reminder,
         active_skill,
         server_failover,
+        question_client,
     } = message;
     if server_reload_starting() {
         crate::logging::info(&format!(
@@ -405,10 +406,13 @@ pub(super) async fn start_processing_message(
     let done_tx = processing_done_tx.clone();
     crate::logging::info(&format!("Processing message id={} spawning task", id));
     let telegram_session = client_session_id.to_owned();
-    *state.task = crate::runtime_activity::spawn_session(client_session_id, async move {
+    // Pin the turn before passing it through the runtime's ownership and spawn
+    // wrappers. The provider loop keeps large futures live across awaits.
+    let task = Box::pin(async move {
         let event_tx = tx.clone();
         let mut stop_reason = crate::protocol::TurnStopReason::Failure;
-        let result = match std::panic::AssertUnwindSafe(crate::telegram_remote::scope(
+        let question_session = telegram_session.clone();
+        let turn = crate::telegram_remote::scope(
             telegram_session,
             telegram_generation,
             crate::hooks::with_client_terminal_env(client_terminal_env, async {
@@ -436,6 +440,11 @@ pub(super) async fn start_processing_message(
                     .await
                 }
             }),
+        );
+        let result = match std::panic::AssertUnwindSafe(crate::tool::ask_user_question::scope(
+            &question_session,
+            question_client,
+            turn,
         ))
         .catch_unwind()
         .await
@@ -519,6 +528,7 @@ pub(super) async fn start_processing_message(
         events.finish().await;
         drop(turn_lease);
     });
+    *state.task = crate::runtime_activity::spawn_session(client_session_id, task);
 }
 
 pub(super) async fn cancel_processing_message(

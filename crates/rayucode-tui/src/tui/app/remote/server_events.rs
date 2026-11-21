@@ -164,6 +164,31 @@ pub(in crate::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    match &event {
+        ServerEvent::QuestionRequest { session_id, request_id, questions, .. } if !questions.is_empty() => {
+            app.question_dialog = Some(super::super::question::QuestionDialog::new(
+                session_id.clone(), request_id.clone(), questions.clone(),
+            ));
+            return true;
+        }
+        ServerEvent::QuestionClosed { session_id, request_id, reason } => {
+            if app.question_dialog.as_ref().is_some_and(|dialog| dialog.session_id == *session_id && dialog.request_id == *request_id)
+                && let Some(dialog) = app.question_dialog.take()
+                && *reason == rayucode_tool_types::questions::QuestionCloseReason::Answered
+            {
+                app.push_display_message(DisplayMessage::system(dialog.summary()));
+            }
+            return true;
+        }
+        ServerEvent::Error { id, message, .. } if app.question_dialog.as_ref().is_some_and(|dialog| dialog.submitted == Some(*id)) => {
+            if let Some(dialog) = &mut app.question_dialog {
+                dialog.submitted = None;
+                dialog.error = Some(message.clone());
+            }
+            return true;
+        }
+        _ => {}
+    }
     // Route mutation errors are control responses, not failed conversation
     // turns. Handle them before the scoped-turn terminal fence.
     if let ServerEvent::Error { id, message, .. } = &event

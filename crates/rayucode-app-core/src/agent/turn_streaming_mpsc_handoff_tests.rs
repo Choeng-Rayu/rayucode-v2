@@ -132,6 +132,7 @@ async fn streaming_ask_user_wait_is_not_automatically_backgrounded() {
         serde_json::json!({"action": "choose"}),
     ] {
         assert!(!auto_background_allowed("ask_user", &input));
+        assert!(!auto_background_allowed("functions.ask_user_question", &input));
         let bg = InterruptSignal::new();
         let shutdown = InterruptSignal::new();
         tokio::select! {

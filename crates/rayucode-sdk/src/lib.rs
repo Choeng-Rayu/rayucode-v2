@@ -174,6 +174,10 @@ pub use launch::{
 pub use native_ssh::{NativeSshKey, NativeSshOptions, NativeSshTarget, NativeSshTransport};
 pub use rayucode_applet_types as applet;
 pub use rayucode_harness_api::{
+    QUESTION_CAPABILITY, Question, QuestionAnswer, QuestionCloseReason, QuestionOption,
+    QuestionResponse,
+};
+pub use rayucode_harness_api::{
     SessionEditStats, enrich_sessions_from_edit_stats, enrich_sessions_from_local_edit_stats,
     enrich_sessions_from_local_swarm_state, enrich_sessions_from_swarm_state,
 };

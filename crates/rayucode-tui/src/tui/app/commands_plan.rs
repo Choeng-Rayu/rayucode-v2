@@ -27,7 +27,7 @@ pub(super) fn parse_plan_command(trimmed: &str) -> Option<PlanCommand> {
 pub(super) fn build_plan_prompt(goal: Option<&str>) -> String {
     let goal_line = match goal.map(str::trim).filter(|goal| !goal.is_empty()) {
         Some(goal) => format!("Goal: {}\n\n", goal),
-        None => "Goal: produce a plan for the task or request currently in focus in this session. If the goal is ambiguous, infer the most useful interpretation from the recent conversation and repo state, and state your assumption.\n\n".to_string(),
+        None => "Goal: produce a plan for the task or request currently in focus in this session. Use the recent conversation and repo state to resolve ambiguities where you can.\n\n".to_string(),
     };
 
     format!(
@@ -35,6 +35,8 @@ pub(super) fn build_plan_prompt(goal: Option<&str>) -> String {
 \n\
 {}\
 Your job is to produce a clear, concrete, actionable plan. Do NOT implement anything yet: do not edit files, write patches, or change git state. You may freely read, search, run read-only commands, and analyze the codebase so the plan is grounded in how things actually work.\n\
+\n\
+If a remaining ambiguity or decision would materially change the plan, ask with ask_user_question when available. Ask in chat when the tool is unavailable.\n\
 \n\
 When the plan is ready, present it directly in your reply inside a fenced code block whose language is `plan` (```plan ... ```). The UI renders that block as a dedicated plan card. Structure the plan inside the block with these sections: a top-level `# <short plan title>` heading, then Goal, Scope / affected areas, Approach (concrete ordered steps), Validation (how each part will be verified), and Open questions / decisions.\n\
 \n\

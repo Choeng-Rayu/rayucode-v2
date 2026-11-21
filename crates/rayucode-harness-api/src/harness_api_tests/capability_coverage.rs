@@ -67,6 +67,7 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("PersistSession", ClientInternal),
     // SDK ping/pong also supports the TUI's transport readiness probe.
     ("Ping", Covered),
+    ("QuestionResponse", Covered),
     ("RefreshModels", ClientInternal),
     ("Reload", ClientInternal),
     ("RenameSession", Covered),

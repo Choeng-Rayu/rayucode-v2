@@ -6251,6 +6251,7 @@ dependencies = [
  "rayucode-session-types",
  "rayucode-side-panel-types",
  "rayucode-todo-policy",
+ "rayucode-tool-types",
  "rayucode-usage-types",
  "serde",
  "serde_json",
@@ -6384,6 +6385,7 @@ dependencies = [
  "rayucode-selfdev-types",
  "rayucode-session-types",
  "rayucode-side-panel-types",
+ "rayucode-tool-types",
  "serde",
  "serde_json",
 ]
@@ -6958,6 +6960,7 @@ dependencies = [
 name = "rayucode-tool-types"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
 ]
 
@@ -7002,6 +7005,7 @@ dependencies = [
  "rayucode-session-types",
  "rayucode-terminal-image",
  "rayucode-terminal-prompt",
+ "rayucode-tool-types",
  "rayucode-tui-account-picker",
  "rayucode-tui-anim",
  "rayucode-tui-core",

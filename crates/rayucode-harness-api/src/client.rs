@@ -180,6 +180,7 @@ impl<R: BufRead, W: Write> HarnessClient<R, W> {
             max_version: API_VERSION_MAJOR,
             client: client_name.to_string(),
             supports_user_response: false,
+            supports_user_questions: false,
         })?;
         self.recv()
     }

@@ -1,3 +1,5 @@
+pub mod questions;
+
 #[derive(Debug, Clone)]
 pub struct ToolOutput {
     pub output: String,

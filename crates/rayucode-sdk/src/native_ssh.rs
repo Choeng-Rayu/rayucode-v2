@@ -437,6 +437,7 @@ impl RayucodeClient {
                 request_timeout: options.request_timeout.or(Some(options.connect_timeout)),
                 ensure_runtime: false,
                 supports_user_response: false,
+                supports_user_questions: false,
             },
         )
     }

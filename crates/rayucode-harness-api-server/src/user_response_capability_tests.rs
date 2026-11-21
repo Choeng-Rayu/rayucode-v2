@@ -6,6 +6,7 @@ fn user_response_capability_is_explicit_and_independent_of_pdf_support() {
         for req in ["create_session", "attach_session"] {
             let mut state = BridgeState {
                 supports_user_response: enabled,
+                supports_user_questions: false,
                 ..Default::default()
             };
             let output = state.api_request_to_legacy(&json!({
@@ -42,4 +43,45 @@ fn user_response_hello_defaults_off_for_older_clients() {
         };
         assert_eq!(supports_user_response, enabled);
     }
+}
+
+#[test]
+fn question_round_trip_uses_attached_session_and_explicit_capability() {
+    use rayucode_harness_api::ApiEvent;
+    let question = json!({
+        "type":"question_request", "session_id":"s1", "request_id":"q1", "tool_call_id":"call",
+        "questions":[{"question":"Which?","header":"Choice","options":[
+            {"label":"A","description":"First"}, {"label":"B","description":"Second"}
+        ]}]
+    });
+    let reply = json!({
+        "req":"question_response", "id":9, "session_id":"s1", "request_id":"q1",
+        "response":{"kind":"answered","answers":{"Which?":{"selected":[1]}}}
+    });
+    let mut state = BridgeState {
+        session_id: Some("s1".into()),
+        ..Default::default()
+    };
+    assert!(state.legacy_event_to_api(&question).is_empty());
+    assert!(matches!(
+        &state.api_request_to_legacy(&reply)[..],
+        [Outbound::Reply(_)]
+    ));
+
+    state.supports_user_questions = true;
+    let events = state.legacy_event_to_api(&question);
+    assert!(
+        matches!(&events[0].event, ApiEvent::QuestionRequest { request_id, .. } if request_id == "q1")
+    );
+    let output = state.api_request_to_legacy(&reply);
+    let [Outbound::Legacy(payload)] = &output[..] else {
+        panic!("expected daemon reply request")
+    };
+    assert_eq!(payload["session_id"], "s1");
+    assert_eq!(payload["request_id"], "q1");
+    assert_eq!(payload["response"], reply["response"]);
+    let frames = state.legacy_event_to_api(&json!({"type":"ack","id":payload["id"]}));
+    assert!(
+        matches!(frames.first(), Some(frame) if frame.reply_to == Some(9) && matches!(frame.event, ApiEvent::Ok))
+    );
 }

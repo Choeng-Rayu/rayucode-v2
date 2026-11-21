@@ -739,6 +739,10 @@ impl TurnFooterSnapshot {
 }
 
 pub trait TuiState {
+    fn draw_question_dialog(&self, _frame: &mut ratatui::Frame<'_>, _area: ratatui::layout::Rect) -> bool {
+        false
+    }
+
     /// Bounded last frame while derived caches are released. Source transcripts
     /// remain resident, but the renderer must not re-materialize them at idle.
     fn hibernation_frame(&self) -> Option<&ratatui::buffer::Buffer> {

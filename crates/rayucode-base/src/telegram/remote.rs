@@ -419,13 +419,17 @@ impl Transport {
     }
 
     pub async fn edit(&self, chat: i64, message: i64, text: &str) -> Result<()> {
+        self.edit_with_buttons(chat, message, text, json!([])).await
+    }
+
+    pub async fn edit_with_buttons(&self, chat: i64, message: i64, text: &str, buttons: Value) -> Result<()> {
         self.relay(
             "editMessageText",
             json!({
                 "chat_id": chat.to_string(),
                 "message_id": message,
                 "text": text,
-                "reply_markup": {"inline_keyboard": []},
+                "reply_markup": {"inline_keyboard": buttons},
             }),
         )
         .await?;

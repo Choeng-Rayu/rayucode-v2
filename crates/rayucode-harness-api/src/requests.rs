@@ -39,6 +39,9 @@ pub enum ApiRequest {
         /// Opt in only when this client renders user_response tool calls.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_response: bool,
+        /// Opt in only when the client can collect live human answers.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_user_questions: bool,
     },
 
     /// List sessions visible to this client.
@@ -164,6 +167,13 @@ pub enum ApiRequest {
     Rewind {
         session_id: String,
         message_index: usize,
+    },
+
+    /// Reply to a question on its owning session and connection.
+    QuestionResponse {
+        session_id: String,
+        request_id: String,
+        response: crate::QuestionResponse,
     },
 
     /// Reply to a `PermissionRequest` event.

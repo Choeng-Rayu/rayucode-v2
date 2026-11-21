@@ -29,6 +29,7 @@ import {
   type ImageAttachment,
   type ModelRouteInfo,
   type PermissionDecision,
+  type QuestionResponse,
   type RenderedImage,
   type RuntimeCommand,
   type ServerFrame,
@@ -148,6 +149,8 @@ export interface ConnectOptions {
   clientName?: string;
   /** Enable only when this client renders user_response tool calls inline. */
   supportsUserResponse?: boolean;
+  /** Enable when this client renders questionnaires and collects live responses. */
+  supportsUserQuestions?: boolean;
   /** Supply a custom transport instead of dialing a Unix socket. */
   transport?: Transport;
   /** Milliseconds before a request without a reply rejects. 0 disables. */
@@ -330,6 +333,7 @@ export class RayucodeClient extends EventEmitter {
       max_version: API_VERSION_MAJOR,
       client: clientName,
       supports_user_response: options.supportsUserResponse ?? false,
+      supports_user_questions: options.supportsUserQuestions ?? false,
     });
     if (frame.ev !== "hello_ok") {
       client.close();
@@ -757,6 +761,20 @@ export class RayucodeClient extends EventEmitter {
 
   async rewind(sessionId: string, messageIndex: number): Promise<void> {
     await this.requestOk({ req: "rewind", session_id: sessionId, message_index: messageIndex });
+  }
+
+  /** Submit the human's response to the connection that received the question. */
+  async respondToQuestion(
+    sessionId: string,
+    requestId: string,
+    response: QuestionResponse,
+  ): Promise<void> {
+    await this.requestOk({
+      req: "question_response",
+      session_id: sessionId,
+      request_id: requestId,
+      response,
+    });
   }
 
   async respondToPermission(

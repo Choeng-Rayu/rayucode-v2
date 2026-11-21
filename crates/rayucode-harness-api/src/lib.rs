@@ -13,6 +13,11 @@
 //! - Additive changes bump `API_VERSION_MINOR`; breaking changes bump
 //!   `API_VERSION_MAJOR` and must be negotiated in the handshake.
 
+pub use rayucode_tool_types::questions::{
+    QUESTION_CAPABILITY, Question, QuestionAnswer, QuestionCloseReason, QuestionOption,
+    QuestionResponse,
+};
+
 use serde::{Deserialize, Serialize};
 
 mod client;
@@ -57,7 +62,7 @@ mod capability_coverage_tests;
 /// Protocol major version. Breaking changes only.
 pub const API_VERSION_MAJOR: u32 = 1;
 /// Protocol minor version. Additive changes.
-pub const API_VERSION_MINOR: u32 = 12;
+pub const API_VERSION_MINOR: u32 = 13;
 
 /// Envelope wrapping every client-to-server frame.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

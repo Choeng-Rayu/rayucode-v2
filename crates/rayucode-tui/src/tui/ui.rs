@@ -3095,6 +3095,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // natively in all terminal emulators.
     clear_area(frame, area);
 
+    if app.draw_question_dialog(frame, area) {
+        finalize_frame_metrics(app, total_start, Duration::ZERO, total_start.elapsed(), None);
+        return;
+    }
+
     if let Some(hash) = app.panel_image_preview() {
         panel_image_preview::draw_preview(frame, area, hash);
         finalize_frame_metrics(

@@ -1618,12 +1618,12 @@ impl Agent {
                 let foreground_budget = tool_handoff::foreground_budget();
                 let mut automatic_background = false;
                 let mut background_handle = None;
-                let tool_result = if telegram_turn {
-                    // A permission wait belongs to the turn. Cancel it with the
-                    // turn and keep it out of the normal tool handoff paths.
+                let tool_result = if telegram_turn || crate::tool::ask_user_question::is_question(&tc.name) {
+                    // A human reply belongs to the foreground turn.
+                    // Neither a timer nor Alt+B may detach it.
                     tokio::select! {
                         biased;
-                        _ = shutdown_signal.notified() => Some(Err(anyhow::anyhow!("Telegram tool call interrupted"))),
+                        _ = shutdown_signal.notified() => Some(Err(anyhow::anyhow!("Tool call interrupted"))),
                         result = run_tool => Some(result),
                     }
                 } else {

@@ -734,6 +734,12 @@ impl App {
 }
 
 impl crate::tui::TuiState for App {
+    fn draw_question_dialog(&self, frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) -> bool {
+        let Some(dialog) = &self.question_dialog else { return false };
+        dialog.draw(frame, area);
+        true
+    }
+
     fn hibernation_frame(&self) -> Option<&ratatui::buffer::Buffer> {
         self.idle_hibernation.frame.as_ref()
     }
