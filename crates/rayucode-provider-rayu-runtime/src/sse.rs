@@ -387,10 +387,11 @@ pub(crate) fn stream_events(response: reqwest::Response, trace: ResponseTrace) -
     let inner = response.bytes_stream();
     let parser = SseParser::default();
     let started = std::time::Instant::now();
+    let trace = std::sync::Arc::new(trace);
     Box::pin(futures::stream::unfold(
         (inner, parser, false, 0usize),
         move |(mut inner, mut parser, mut finished, mut bytes_read)| {
-            let trace = trace.clone();
+            let trace = std::sync::Arc::clone(&trace);
             async move {
                 loop {
                     if let Some(item) = parser.next_item() {
