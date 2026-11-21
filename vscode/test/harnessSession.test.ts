@@ -9,6 +9,7 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
   const events: ServerFrame[] = [];
   let denyConfiguration = false;
   const fixture = { session_id: "editor", status: "idle", working_dir: "/fixture" };
+  const nextFixture = { ...fixture, session_id: "second" };
   const harness = await startMockHarness({
     capabilities: ["session_tools"],
     onRequest(request, send) {
@@ -17,6 +18,10 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
       switch (request.req) {
         case "create_session":
           assert.equal(request.working_dir, fixture.working_dir);
+          send({ ...reply, ev: "attached", session: harness.clientCount() === 2 ? nextFixture : fixture });
+          break;
+        case "attach_session":
+          assert.equal(request.session_id, fixture.session_id);
           send({ ...reply, ev: "attached", session: fixture });
           break;
         case "list_sessions":
@@ -68,4 +73,6 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
   await assert.rejects(session.request(prompt), /current turn/);
   assert.deepEqual(await session.request({ req: "cancel", session_id: "editor" }), { ev: "ok" });
   assert.deepEqual(events.map((frame) => frame.ev), ["message_accepted", "turn_done"]);
+  assert.deepEqual(await session.request({ req: "create_session" }), { ev: "attached", session: nextFixture });
+  assert.deepEqual(await session.request({ req: "attach_session", session_id: "editor" }), { ev: "attached", session: fixture });
 });

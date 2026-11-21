@@ -2,7 +2,7 @@
   "name": "rayucode",
   "displayName": "Rayucode",
   "description": "Chat with the RayuCode Rust runtime from VS Code.",
-  "version": "3.0.0-preview.1",
+  "version": "3.0.0-preview.2",
   "publisher": "RayuCode",
   "icon": "media/icon.png",
   "repository": {

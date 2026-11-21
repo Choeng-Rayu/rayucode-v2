@@ -98,20 +98,28 @@ export class HarnessSession {
       throw new HarnessError("busy", "Stop or finish the current turn before changing sessions.");
     }
     this.changingSession = true;
+    let replacement: RayucodeClient | undefined;
     try {
-      const client = await this.connect();
       const created = frame.req === "create_session";
-      if (!created && (typeof frame.session_id !== "string" || !this.options.sessions().includes(frame.session_id))) {
+      const target = typeof frame.session_id === "string" ? frame.session_id : "";
+      if (!created && !this.options.sessions().includes(target)) {
         throw new HarnessError("unknown_session", "Choose a session created by this VS Code workspace.");
       }
+      const workingDir = created ? await this.options.chooseWorkspace() : undefined;
+      // Attaching without a target on a used daemon connection can keep the
+      // current session. Open a fresh connection to create a distinct one.
+      if (created && this.sessionId) replacement = await this.openConnection();
+      const client = replacement ?? await this.connect();
       const session = created
-        ? await client.createSession({ workingDir: await this.options.chooseWorkspace(), tools: { enabled: [] } })
-        : await client.attachSession(frame.session_id as string);
+        ? await client.createSession({ workingDir, tools: { enabled: [] } })
+        : await client.attachSession(target);
+      if (replacement) this.useClient(replacement);
       if (this.client !== client) throw new HarnessError("disconnected", "The Rayu connection closed.");
       this.sessionId = session.session_id;
       await this.options.remember(session.session_id, created);
       return { ev: "attached", session };
     } finally {
+      if (replacement && replacement !== this.client) void replacement.close();
       this.changingSession = false;
     }
   }
@@ -129,33 +137,40 @@ export class HarnessSession {
   private connect(): Promise<RayucodeClient> {
     if (this.client) return Promise.resolve(this.client);
     if (this.connecting) return this.connecting;
-    this.connecting = Promise.resolve()
-      .then(() => RayucodeClient.connect({
-        socketPath: this.options.socketPath(),
-        clientName: "rayucode-vscode-preview",
-        requestTimeoutMs: 15_000,
-      }))
-      .then((client) => {
-        if (this.disposed) {
-          void client.close();
-          throw new HarnessError("disconnected", "The Rayucode view closed.");
-        }
-        this.client = client;
-        client.on("event", (frame: ServerFrame) => {
-          if (this.client !== client || this.changingSession || !this.sessionId) return;
-          if ("session_id" in frame && frame.session_id !== this.sessionId) return;
-          if (frame.ev === "turn_done") this.turnActive = false;
-          this.options.emit(frame);
-        });
-        const lostConnection = () => {
-          if (this.client === client) this.disconnect(true);
-        };
-        client.once("close", lostConnection);
-        client.on("error", lostConnection);
-        return client;
-      })
+    this.connecting = this.openConnection()
+      .then((client) => this.useClient(client))
       .finally(() => { this.connecting = undefined; });
     return this.connecting;
+  }
+
+  private async openConnection(): Promise<RayucodeClient> {
+    return RayucodeClient.connect({
+      socketPath: this.options.socketPath(),
+      clientName: "rayucode-vscode-preview",
+      requestTimeoutMs: 15_000,
+    });
+  }
+
+  private useClient(client: RayucodeClient): RayucodeClient {
+    if (this.disposed) {
+      void client.close();
+      throw new HarnessError("disconnected", "The Rayucode view closed.");
+    }
+    const previous = this.client;
+    this.client = client;
+    void previous?.close();
+    client.on("event", (frame: ServerFrame) => {
+      if (this.client !== client || this.changingSession || !this.sessionId) return;
+      if ("session_id" in frame && frame.session_id !== this.sessionId) return;
+      if (frame.ev === "turn_done") this.turnActive = false;
+      this.options.emit(frame);
+    });
+    const lostConnection = () => {
+      if (this.client === client) this.disconnect(true);
+    };
+    client.once("close", lostConnection);
+    client.on("error", lostConnection);
+    return client;
   }
 
   private disconnect(notify = false) {
