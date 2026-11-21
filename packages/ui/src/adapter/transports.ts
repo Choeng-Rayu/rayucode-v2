@@ -254,7 +254,13 @@ export function createPostMessageAdapter(
     },
   });
 
-  return { adapter, dispose };
+  return {
+    adapter,
+    dispose() {
+      dispose();
+      rpc.rejectAll(new Error("Rayucode Webview disposed"));
+    },
+  };
 }
 
 export interface WebSocketLike {

@@ -3,6 +3,7 @@
 node_modules/
 sdk/typescript/dist/
 packages/*/dist/
+/vscode/dist/
 *.vsix
 .turbo/
 __pycache__/

@@ -19,7 +19,7 @@ export interface ComposerProps {
   disabled?: boolean;
   placeholder?: string;
   slashCommands?: readonly SlashCommandItem[];
-  onSubmit: (text: string) => void;
+  onSubmit: (text: string) => void | Promise<boolean>;
   onCancel: () => void;
   onSlashCommand?: (command: string) => void;
 }
@@ -34,6 +34,7 @@ export function Composer({
   onSlashCommand,
 }: ComposerProps) {
   const [value, setValue] = useState("");
+  const showCommands = slashCommands.length > 0;
 
   const matchingCommands = useMemo(() => {
     const trimmed = value.trimStart();
@@ -53,8 +54,13 @@ export function Composer({
         return;
       }
     }
-    onSubmit(trimmed);
+    const submission = onSubmit(trimmed);
     setValue("");
+    if (submission) {
+      void submission.then((accepted) => {
+        if (!accepted) setValue((current) => current || value);
+      }, () => setValue((current) => current || value));
+    }
   };
 
   const handleKeyDown = (ev: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -110,7 +116,7 @@ export function Composer({
       />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
         <span style={{ fontSize: "var(--rc-font-size-xs)", color: "var(--rc-muted)" }}>
-          Type <code>/</code> for commands
+          {showCommands ? <>Type <code>/</code> for commands</> : null}
         </span>
         <div style={{ display: "flex", gap: "8px" }}>
           {isStreaming ? (

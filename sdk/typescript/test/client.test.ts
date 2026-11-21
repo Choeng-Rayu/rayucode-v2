@@ -37,6 +37,20 @@ test("handshake records server identity and capabilities", async () => {
   await server.close();
 });
 
+test("a timed-out handshake closes the editor's connection", async () => {
+  let closed = false;
+  await assert.rejects(RayucodeClient.connect({
+    requestTimeoutMs: 20,
+    transport: {
+      write() {},
+      onData() {},
+      onClose() {},
+      close() { closed = true; },
+    },
+  }), (error) => error instanceof HarnessError && error.code === "timeout");
+  assert.equal(closed, true);
+});
+
 test("replies are correlated by id even when out of order", async () => {
   const server = await startMockHarness({
     onRequest(request, send) {

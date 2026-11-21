@@ -7,6 +7,7 @@ export interface SessionHeaderProps {
   routes: ModelRouteInfo[];
   currentModel?: string;
   currentProvider?: string;
+  modelDisabled?: boolean;
   editStats?: SessionEditStats;
   onSelectModel: (model: string) => void;
   onNewSession?: () => void;
@@ -18,6 +19,7 @@ export function SessionHeader({
   routes,
   currentModel,
   currentProvider,
+  modelDisabled,
   editStats,
   onSelectModel,
   onNewSession,
@@ -41,6 +43,7 @@ export function SessionHeader({
           routes={routes}
           currentModel={currentModel}
           currentProvider={currentProvider}
+          disabled={modelDisabled}
           onSelectModel={onSelectModel}
         />
         {onNewSession ? (

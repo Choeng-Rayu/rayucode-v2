@@ -692,6 +692,26 @@ jobs:
       - name: Published tarball installs and imports
         run: bash scripts/test_sdk_package.sh
 
+  vscode-extension:
+    name: VS Code preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run package:vscode
+      - run: npm test --workspace @rayu-dev/rayucode-vscode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rayucode-vscode-preview
+          path: vscode/dist/rayucode-vscode-preview.vsix
+          if-no-files-found: error
+
   setup-friction:
     name: Setup Friction Eval (Linux installer)
     runs-on: ubuntu-latest

@@ -52,7 +52,9 @@ export function ModelSelector({
         onClick={() => setOpen((prev) => !prev)}
       >
         <SparklesIcon size={14} />
-        <span>{activeLabel}</span>
+        <span title={activeLabel} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {activeLabel}
+        </span>
       </button>
       {open ? (
         <div
@@ -63,7 +65,7 @@ export function ModelSelector({
             insetInlineEnd: 0,
             insetBlockStart: "calc(100% + 6px)",
             zIndex: 30,
-            width: "320px",
+            width: "min(320px, 85cqi)",
             maxHeight: "340px",
             display: "flex",
             flexDirection: "column",

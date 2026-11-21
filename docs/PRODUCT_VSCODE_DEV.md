@@ -1,121 +1,34 @@
-# Product 3: VS Code Extension Developer Guide (React + Webview + Host)
+# VS Code extension developer guide
 
-The VS Code Extension delivers RayuCode inside Visual Studio Code while sharing its entire React chat UI, Markdown/code renderer, diff viewer, settings views, and Harness `v1.12` state logic with RayuCode Web via **`@rayu-dev/rayucode-ui`** and **`@rayu-dev/rayucode-sdk`**.
+The preview lives in [vscode/](../vscode). The [extension README](../vscode/README.md) covers starting the Rust bridge, configuring the socket, and installing the VSIX.
 
----
+## Entry points
 
-## Source Locations
+| Surface | Entry point | Responsibility |
+|---|---|---|
+| Extension Host | [harnessExtension.ts](../vscode/host/harnessExtension.ts) | VS Code commands, Webview lifecycle, workspace directory selection, clipboard, and typed replies |
+| Session service | [harnessSession.ts](../vscode/host/harnessSession.ts) | SDK connection, workspace-owned session IDs, prompt acceptance, streaming and cancellation |
+| Webview | [harnessApp.tsx](../vscode/webview/harnessApp.tsx) | Shared React components, the shared session reducer, and the postMessage adapter |
+| Packaging | [build.mjs](../vscode/build.mjs) | Stage a CommonJS host, browser bundle, icons, and the extension manifest |
 
-- **Imported Baseline inside `rayucode-v2`**: [`vscode/`](../vscode) (copied from `rayu-cli/rayu/src/vscode`)
-  - [`vscode/extension.manifest.json`](../vscode/extension.manifest.json) — extension manifest, commands, views (`rayucode.chat`, `rayucode.contextDrop`), and Rayu auth provider contribution
-  - [`vscode/host/`](../vscode/host) — VS Code Extension Host modules (CommonJS Node + `vscode` API)
-  - [`vscode/webview/`](../vscode/webview) — React Webview entrypoint and styles
-  - [`vscode/assets/`](../vscode/assets) — Extension icons and assets
-- **Shared Packages**:
-  - [`packages/ui`](../packages/ui) (`@rayu-dev/rayucode-ui`)
-  - [`sdk/typescript`](../sdk/typescript) (`@rayu-dev/rayucode-sdk` + `@rayu-dev/rayucode-sdk/browser`)
+The original extension source from the TypeScript CLI remains in the repository as a reference for future editor features. Only the entry points above are built into this preview.
 
----
+## Runtime contract
 
-## Two-Process Architecture (Host vs. Webview)
+The Extension Host connects to the existing versioned Harness API through the Node SDK. The preview uses Harness v1.13 and negotiates the wire major and capabilities at connection time. The Webview uses browser-only SDK types and sends messages through the shared UI postMessage adapter. The host handles an explicit set of requests and supplies the working directory from the VS Code workspace.
 
-VS Code splits every extension into two isolated processes. Keeping this boundary strict prevents Node bundling errors and security CSP violations:
+A normal Harness prompt is acknowledged by the unsolicited `message_accepted` event. The host uses `RayucodeClient.sendMessage()` to await acceptance before acknowledging the Webview RPC. Streaming frames travel separately. The host checks the attached session for each operation and awaits a tool policy with an empty allowlist before each prompt. A failed or ambiguous send is surfaced to the user without an automatic retry. Reconnect fetches persisted history from Rust.
 
-```text
-┌─────────────────────────────────────────────┐
-│ VS Code Extension Host (Node, CommonJS)     │
-│                                             │
-│ • imports `vscode` API                      │
-│ • imports `@rayu-dev/rayucode-sdk`          │
-│   (`RayucodeClient.connect` / `launch`)     │
-│ • Rayu AuthenticationProvider (Accounts menu│
-│ • StatusBar credits, Context Drop, Diffs    │
-└──────────────────────┬──────────────────────┘
-                       │
-      webview.postMessage / onDidReceiveMessage
-   { type: "rayucode.harness.request" | ".frame" }
-                       │
-┌──────────────────────▼──────────────────────┐
-│ VS Code Webview (Browser Sandbox)           │
-│                                             │
-│ • calls `acquireVsCodeApi()` ONCE in shell  │
-│ • wraps it in `createPostMessageAdapter()`  │
-│ • mounts `<RayucodeWorkspace />`            │
-│   from `@rayu-dev/rayucode-ui`              │
-│ • imports `@rayu-dev/rayucode-ui/           │
-│   styles/themes/vscode.css` (--vscode-*)    │
-└─────────────────────────────────────────────┘
-```
+The preview leaves the Harness and daemon running when the editor closes. It uses the same credentials as the CLI. Tool approvals and structured user questions require additional runtime integration before their controls can be enabled in VS Code.
 
-### 1. Extension Host Rules (`dist/extension.js`)
-- **Format must be CommonJS** (`"type": "commonjs"` in packaged `package.json`, `"main": "./extension.js"`), with `vscode` marked `--external:vscode`.
-- **Replace the legacy `host/engine/*` Node/Bun process spawner** with `@rayu-dev/rayucode-sdk`:
-  - **Shared mode (default for editor workflows)**: `RayucodeClient.connect()` talks to `~/.rayu/rayu-api.sock` (or starts `rayu api-bridge` automatically if needed) so terminal `rayu` and VS Code share the same sessions.
-  - **Embedded mode**: `RayucodeClient.launch({ workingDir })` starts an isolated daemon instance.
-- **Forward Harness frames safely**: Forward each incoming `ApiEvent` / reply from `RayucodeClient` to the mounted Webview via `{ type: "rayucode.harness.frame", frame }`, and translate Webview host actions:
-  - `rayucode.host.openFile` -> `vscode.window.showTextDocument(...)`
-  - `rayucode.host.openDiff` -> `vscode.commands.executeCommand("vscode.diff", ...)`
-  - `rayucode.host.copyToClipboard` -> `vscode.env.clipboard.writeText(...)`
-  - `rayucode.host.openExternal` -> `vscode.env.openExternal(vscode.Uri.parse(url))`
+## Verification
 
-### 2. Webview Shell Integration (Using Shared Packages)
-Never duplicate chat components inside the VS Code webview. Mount `@rayu-dev/rayucode-ui` like this:
-
-```tsx
-import "@rayu-dev/rayucode-ui/styles/tokens.css";
-import "@rayu-dev/rayucode-ui/styles/themes/vscode.css";
-import "@rayu-dev/rayucode-ui/styles/components.css";
-
-import { useEffect, useMemo } from "react";
-import { createRoot } from "react-dom/client";
-import { createPostMessageAdapter, RayucodeWorkspace } from "@rayu-dev/rayucode-ui";
-
-const vscode = acquireVsCodeApi();
-
-function App() {
-  const { adapter, dispose } = useMemo(
-    () =>
-      createPostMessageAdapter({
-        bridge: {
-          postMessage: (msg) => vscode.postMessage(msg),
-          onMessage: (handler) => {
-            const listener = (ev: MessageEvent) => handler(ev.data);
-            window.addEventListener("message", listener);
-            return () => window.removeEventListener("message", listener);
-          },
-        },
-      }),
-    [],
-  );
-
-  useEffect(() => dispose, [dispose]);
-  return <RayucodeWorkspace adapter={adapter} showSidebar={false} />;
-}
-
-createRoot(document.getElementById("root")!).render(<App />);
-```
-
----
-
-## Mandatory Security & Theme Rules
-
-1. **Zero Hardcoded Hex Colors in VS Code CSS**:
-   - Always load `@rayu-dev/rayucode-ui/styles/themes/vscode.css`, which maps every `--rc-*` token exclusively to VS Code's `--vscode-*` CSS variables.
-   - Automated test `packages/ui/test/boundary.test.ts` fails if any `#rgb`/`#rrggbb` hex literal enters `themes/vscode.css` or `components.css`, ensuring Light, Dark, High Contrast Dark, and High Contrast Light themes all work cleanly.
-2. **Untrusted Workspaces**:
-   - `capabilities.untrustedWorkspaces.supported` must remain `false` in `extension.manifest.json` because Rayu executes shell/file tools and loads project MCP servers.
-3. **Zero Node Builtins in Webview Bundle**:
-   - Build the webview with `platform: "browser"` / `target: "browser"`. `@rayu-dev/rayucode-ui` and `@rayu-dev/rayucode-sdk/browser` are guaranteed free of `node:*` imports.
-4. **Sanitized Markdown**:
-   - Keep VS Code Webview CSP strict (`script-src 'nonce-...'`); assistant/tool HTML passes through `renderSafeMarkdown()` (`xss` allowlist).
-
----
-
-## Developing & Verifying Shared UI Changes for VS Code
-
-```bash
-cd /home/rayu/rayu/rayucode-v2
+```sh
 npm run check:ts
+npm run package:vscode
+npm test --workspace @rayu-dev/rayucode-vscode
 ```
 
-When packaging the sibling `../rayucode-vscode` (or staging `vscode/`), link `@rayu-dev/rayucode-sdk` and `@rayu-dev/rayucode-ui` via workspace/file protocol and verify `dist/webview.js` bundles cleanly for `browser` with zero Node polyfills.
+For editor smoke testing, install the VSIX in a dedicated VS Code profile and use a Rust daemon and bridge on temporary sockets and a temporary Rayu home. Exercise session creation, prompt acceptance, streamed text, stopping a live turn, and restoring the same session after a window reload. The extension must activate through its installed manifest.
+
+Preserve the nonce-based Webview CSP, browser-only imports in the Webview bundle, and the Restricted Mode declaration in the manifest. Use shared styles with VS Code theme variables.

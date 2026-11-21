@@ -324,20 +324,24 @@ export class RayucodeClient extends EventEmitter {
       socketPath,
       clientName,
     );
-    const frame = await client.request({
-      req: "hello",
-      min_version: API_VERSION_MAJOR,
-      max_version: API_VERSION_MAJOR,
-      client: clientName,
-      supports_user_response: options.supportsUserResponse ?? false,
-    });
-    if (frame.ev !== "hello_ok") {
-      client.close();
-      throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
+    try {
+      const frame = await client.request({
+        req: "hello",
+        min_version: API_VERSION_MAJOR,
+        max_version: API_VERSION_MAJOR,
+        client: clientName,
+        supports_user_response: options.supportsUserResponse ?? false,
+      });
+      if (frame.ev !== "hello_ok") {
+        throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
+      }
+      client.server = String(frame.server ?? "");
+      client.capabilities = (frame.capabilities as string[] | undefined) ?? [];
+      return client;
+    } catch (error) {
+      await client.close();
+      throw error;
     }
-    client.server = String(frame.server ?? "");
-    client.capabilities = (frame.capabilities as string[] | undefined) ?? [];
-    return client;
   }
 
   private ingest(chunk: Buffer | string): void {
