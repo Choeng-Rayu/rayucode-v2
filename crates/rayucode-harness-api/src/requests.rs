@@ -39,7 +39,7 @@ pub enum ApiRequest {
         /// Opt in only when this client renders user_response tool calls.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_response: bool,
-        /// Opt in only when the client can collect live human answers.
+        /// Rust SDK opt-in for clients that can collect live human answers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_questions: bool,
     },

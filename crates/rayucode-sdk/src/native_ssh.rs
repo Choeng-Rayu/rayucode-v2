@@ -124,6 +124,8 @@ pub struct NativeSshOptions {
     pub connect_timeout: Duration,
     pub request_timeout: Option<Duration>,
     pub client_name: String,
+    /// Advertise that the client can collect human answers during SSH turns.
+    pub supports_user_questions: bool,
     pub keepalive_interval: Option<Duration>,
 }
 
@@ -140,6 +142,7 @@ impl NativeSshOptions {
             connect_timeout: Duration::from_secs(45),
             request_timeout: defaults.request_timeout,
             client_name: defaults.client_name,
+            supports_user_questions: defaults.supports_user_questions,
             keepalive_interval: Some(Duration::from_secs(20)),
         }
     }
@@ -437,7 +440,7 @@ impl RayucodeClient {
                 request_timeout: options.request_timeout.or(Some(options.connect_timeout)),
                 ensure_runtime: false,
                 supports_user_response: false,
-                supports_user_questions: false,
+                supports_user_questions: options.supports_user_questions,
             },
         )
     }

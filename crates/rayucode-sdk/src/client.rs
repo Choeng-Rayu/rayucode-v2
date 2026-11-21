@@ -469,7 +469,7 @@ impl RayucodeClient {
         let connect = ConnectOptions {
             socket_path: Some(instance.socket_path.clone()),
             supports_user_response: false,
-            supports_user_questions: false,
+            supports_user_questions: options.supports_user_questions,
             client_name: options.client_name.clone(),
             request_timeout: options.request_timeout,
             ensure_runtime: false,

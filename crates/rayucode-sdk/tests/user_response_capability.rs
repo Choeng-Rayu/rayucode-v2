@@ -66,8 +66,16 @@ fn user_response_capability_is_sent_only_when_client_opts_in() {
 }
 
 #[test]
-fn user_question_sdk_event_and_response_round_trip() {
-    use rayucode_sdk::{QUESTION_CAPABILITY, Question, QuestionOption, QuestionResponse};
+fn user_question_waits_for_human_even_when_sdk_auto_approves() {
+    use rayucode_sdk::{
+        LaunchOptions, QUESTION_CAPABILITY, Question, QuestionOption, QuestionResponse, RunOptions,
+    };
+    use std::io::ErrorKind;
+    use std::sync::mpsc;
+
+    assert!(!LaunchOptions::default().supports_user_questions);
+    assert!(!SshConnectOptions::new("test-host").supports_user_questions);
+    let (ready_tx, ready_rx) = mpsc::channel();
 
     let (ours, theirs) = UnixStream::pair().unwrap();
     let server = std::thread::spawn(move || {
@@ -94,8 +102,14 @@ fn user_question_sdk_event_and_response_round_trip() {
         )
         .unwrap();
         let frame: ClientFrame = read_frame(&mut reader).unwrap();
-        assert!(matches!(frame.request, ApiRequest::Ping));
-        write_frame(&mut writer, &ServerFrame::reply(frame.id, ApiEvent::Pong)).unwrap();
+        assert!(matches!(frame.request, ApiRequest::SendMessage { .. }));
+        write_frame(
+            &mut writer,
+            &ServerFrame::event(ApiEvent::MessageAccepted {
+                session_id: "s1".into(),
+            }),
+        )
+        .unwrap();
         write_frame(
             &mut writer,
             &ServerFrame::event(ApiEvent::QuestionRequest {
@@ -122,11 +136,32 @@ fn user_question_sdk_event_and_response_round_trip() {
             }),
         )
         .unwrap();
+        // Give the client's auto-approval loop time to react before the
+        // test supplies a human reply. The socket must stay silent.
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(80)))
+            .unwrap();
+        assert!(matches!(reader.fill_buf(), Err(error)
+            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)));
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        ready_tx.send(()).unwrap();
         let response: ClientFrame = read_frame(&mut reader).unwrap();
         assert!(matches!(response.request, ApiRequest::QuestionResponse {
             session_id, request_id, response: QuestionResponse::Declined,
         } if session_id == "s1" && request_id == "q1"));
         write_frame(&mut writer, &ServerFrame::reply(response.id, ApiEvent::Ok)).unwrap();
+        write_frame(
+            &mut writer,
+            &ServerFrame::event(ApiEvent::TurnDone {
+                session_id: "s1".into(),
+                pending_soft_interrupts: None,
+            }),
+        )
+        .unwrap();
     });
     let client = RayucodeClient::connect_with(
         Box::new(PairTransport(ours)),
@@ -137,20 +172,42 @@ fn user_question_sdk_event_and_response_round_trip() {
         },
     )
     .unwrap();
-    let events = client.events(Some("s1"));
-    client.ping().unwrap();
-    let Some(ApiEvent::QuestionRequest {
-        session_id,
-        request_id,
-        questions,
-        ..
-    }) = events.next_timeout(Duration::from_secs(5))
-    else {
-        panic!("expected question event")
-    };
-    assert_eq!(questions[0].header, "Choice");
+    let (question_tx, question_rx) = mpsc::channel();
+    let turn_client = client.clone();
+    let turn = std::thread::spawn(move || {
+        turn_client.run(
+            "s1",
+            "Choose",
+            RunOptions {
+                auto_approve: true,
+                on_event: Some(Box::new(move |event| {
+                    if let ApiEvent::QuestionRequest {
+                        session_id,
+                        request_id,
+                        questions,
+                        ..
+                    } = event
+                    {
+                        question_tx
+                            .send((
+                                session_id.clone(),
+                                request_id.clone(),
+                                questions[0].header.clone(),
+                            ))
+                            .unwrap();
+                    }
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let (session_id, request_id, header) =
+        question_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(header, "Choice");
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
     client
         .respond_to_question(&session_id, &request_id, QuestionResponse::Declined)
         .unwrap();
+    turn.join().unwrap().unwrap();
     server.join().unwrap();
 }

@@ -101,6 +101,8 @@ pub struct LaunchOptions {
     pub cleanup_timeout: Duration,
     /// Client identity used by [`crate::RayucodeClient::launch`].
     pub client_name: String,
+    /// Advertise that the client can collect human answers during private turns.
+    pub supports_user_questions: bool,
     /// Request timeout used by [`crate::RayucodeClient::launch`].
     pub request_timeout: Option<Duration>,
     /// Socket override used only by [`ensure_runtime`]. Kept here for backwards
@@ -127,6 +129,7 @@ impl Default for LaunchOptions {
             inherit_stderr: false,
             cleanup_timeout: Duration::from_secs(30),
             client_name: concat!("rayucode-sdk-rs/", env!("CARGO_PKG_VERSION")).to_string(),
+            supports_user_questions: false,
             request_timeout: Some(Duration::from_secs(30)),
             api_socket: None,
             start_timeout: Duration::from_secs(30),

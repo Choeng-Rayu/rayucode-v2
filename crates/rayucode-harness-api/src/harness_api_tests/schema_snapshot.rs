@@ -366,7 +366,16 @@ fn client_handshake_over_in_memory_pipe() {
     assert!(sent.contains(r#""req":"hello""#), "sent: {sent}");
 }
 
-/// The TypeScript SDK mirrors these enums by hand, so a variant added here
+// The questionnaire is opt-in and only exposed by the Rust SDK. Other
+// protocol variants must still be mirrored and checked across both SDKs.
+fn rust_sdk_only_frame(variant: &str) -> bool {
+    matches!(
+        variant,
+        "question_response" | "question_request" | "question_closed"
+    )
+}
+
+/// The TypeScript SDK mirrors the shared enums by hand, so a variant added here
 /// without a matching entry in `sdk/typescript/src/protocol.ts` silently
 /// leaves every JS client unable to name the new frame. Checking from the
 /// Rust side means the guard runs in the normal `cargo test` suite, where
@@ -380,6 +389,9 @@ fn typescript_sdk_lists_every_variant() {
     };
     for (file, enum_name) in [("requests.rs", "ApiRequest"), ("events.rs", "ApiEvent")] {
         for variant in enum_variants(file, enum_name) {
+            if rust_sdk_only_frame(&variant) {
+                continue;
+            }
             assert!(
                 sdk.contains(&format!("\"{variant}\"")),
                 "{enum_name}::{variant} is missing from sdk/typescript/src/protocol.ts; \
@@ -410,6 +422,9 @@ fn typescript_sdk_lists_every_field() {
         ("events.rs", "ApiEvent", "ev"),
     ] {
         for (variant, fields) in enum_variant_fields(file, enum_name) {
+            if rust_sdk_only_frame(&variant) {
+                continue;
+            }
             let Some(block) = sdk_variant_block(&sdk, tag, &variant) else {
                 panic!(
                     "{enum_name}::{variant} has no `{tag}: \"{variant}\"` member in \
@@ -417,6 +432,9 @@ fn typescript_sdk_lists_every_field() {
                 );
             };
             for field in fields {
+                if variant == "hello" && field == "supports_user_questions" {
+                    continue;
+                }
                 assert!(
                     block.contains(&format!("{field}:")) || block.contains(&format!("{field}?:")),
                     "{enum_name}::{variant}.{field} is missing from its TypeScript member \

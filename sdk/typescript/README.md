@@ -341,28 +341,6 @@ Protocol `error` frames arrive on the `harness_error` channel, not `error`.
 Node treats an unlistened `error` event as a fatal throw, so the plain channel
 is reserved for transport faults.
 
-### User questions
-
-Set `supportsUserQuestions: true` when connecting a client that can show a
-questionnaire and collect a human reply. A compatible server advertises
-`user_questions`. Handle `question_request` on the connection that started
-the turn, and dismiss the form on the matching `question_closed` event.
-
-Call `respondToQuestion(sessionId, requestId, response)` with `{ kind: "declined" }`
-or an answer for each exact question string. This reply selects the second
-option for “Which format?”
-
-```ts
-await client.respondToQuestion(sessionId, requestId, {
-  kind: "answered",
-  answers: { "Which format?": { selected: [1], notes: "Keep it readable" } },
-});
-```
-
-Use zero-based option indices in `selected` and a string array in `custom`
-for an **Other** answer. The model resumes the same turn after submission.
-The SDK's `autoApprove` option applies to permission prompts.
-
 ### All-session events
 
 `globalEvents()` is the process-wide stream for dashboards and integrations. The
