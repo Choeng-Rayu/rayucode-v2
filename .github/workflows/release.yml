@@ -209,6 +209,16 @@ jobs:
         with:
           key: release-${{ matrix.target }}
           cache-all-crates: "true"
+          cache-on-failure: "true"
+
+      - name: Cache Linux compat Docker Cargo registry & rustup
+        if: matrix.compat_container == true
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rayu-linux-compat
+          key: release-linux-compat-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            release-linux-compat-
 
       - name: Install native Linux ARM64 build prerequisites
         if: matrix.native_linux_arm64 == true
@@ -271,12 +281,12 @@ jobs:
           }
           tar czf "dist/${{ matrix.artifact }}.tar.gz" -C dist "${{ matrix.artifact }}"
           if [ -f scripts/release_licenses.py ]; then
-            extra_args=()
-            if [ "${{ matrix.native_linux_arm64 }}" = "true" ]; then
-              extra_args+=(--features linux-compat-vendored-openssl)
-            fi
             license_dir="$RUNNER_TEMP/licenses"
-            python3 scripts/release_licenses.py generate "${{ matrix.target }}" "$license_dir" "${extra_args[@]}"
+            if [ "${{ matrix.native_linux_arm64 }}" = "true" ]; then
+              python3 scripts/release_licenses.py generate "${{ matrix.target }}" "$license_dir" --features linux-compat-vendored-openssl
+            else
+              python3 scripts/release_licenses.py generate "${{ matrix.target }}" "$license_dir"
+            fi
             python3 scripts/release_licenses.py attach "dist/${{ matrix.artifact }}.tar.gz" "$license_dir"
           fi
 
@@ -339,6 +349,7 @@ jobs:
         with:
           key: release-${{ matrix.target }}
           cache-all-crates: "true"
+          cache-on-failure: "true"
 
       - name: Build Windows release binary
         shell: pwsh
@@ -388,9 +399,11 @@ jobs:
               exit 1
             }
           }
-          $reported = (& "target/${{ matrix.target }}/release/rayu.exe" --no-update --no-selfdev --version | Select-Object -First 1).Trim()
-          Write-Host "Native Windows smoke test: $reported"
-          if ($LASTEXITCODE -ne 0) { throw "Built Windows binary failed --version" }
+          $versionLines = @(& "target/${{ matrix.target }}/release/rayu.exe" --no-update --no-selfdev --version)
+          $exitCode = $LASTEXITCODE
+          $reported = ($versionLines | Select-Object -First 1).ToString().Trim()
+          Write-Host "Native Windows smoke test: $reported (exit=$exitCode)"
+          if ($exitCode -ne 0) { throw "Built Windows binary failed --version (exit $exitCode)" }
           if (-not $reported.StartsWith("rayu ${{ env.RELEASE_TAG }}")) {
             throw "Expected version starting with 'rayu ${{ env.RELEASE_TAG }}', got '$reported'"
           }

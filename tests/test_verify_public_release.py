@@ -224,6 +224,38 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertEqual(found, draft)
         self.assertEqual(len(calls), 2)
 
+    def test_release_licenses_attach_uses_string_paths_for_python_312_stream_mode(self):
+        spec = importlib.util.spec_from_file_location("release_licenses", ROOT / "scripts/release_licenses.py")
+        licenses = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(licenses)
+        archive_path = self.directory / "sample.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            info = tarfile.TarInfo("rayu-linux-aarch64")
+            payload = b"binary-payload"
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        notice_dir = self.directory / "notices"
+        notice_dir.mkdir()
+        for filename in licenses.FILES:
+            (notice_dir / filename).write_text(f"content-{filename}\n", encoding="utf-8")
+
+        real_open = licenses.tarfile.open
+        seen_names = []
+
+        def checking_open(name, mode="r", *args, **kwargs):
+            seen_names.append((name, mode))
+            self.assertIsInstance(name, str, "tarfile stream mode requires str paths on Python <= 3.12")
+            return real_open(name, mode, *args, **kwargs)
+
+        licenses.tarfile.open = checking_open
+        try:
+            licenses.attach(archive_path, notice_dir)
+        finally:
+            licenses.tarfile.open = real_open
+        self.assertEqual(len(seen_names), 2)
+        with tarfile.open(archive_path, "r:gz") as result:
+            self.assertEqual(set(result.getnames()), {"rayu-linux-aarch64", *licenses.FILES})
+
     def test_draft_lookup_rejects_missing_or_duplicate_tag(self):
         original = verifier.subprocess.check_output
         self.addCleanup(setattr, verifier.subprocess, "check_output", original)

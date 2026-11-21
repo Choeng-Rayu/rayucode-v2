@@ -154,15 +154,19 @@ def generate(args):
 
 def attach(archive, directory):
     """Add package notices atomically while preserving original archive members."""
+    archive = Path(archive)
+    directory = Path(directory)
     with tempfile.TemporaryDirectory(dir=archive.parent) as temp:
         staged = Path(temp) / archive.name
-        with tarfile.open(archive, "r|gz") as source, tarfile.open(staged, "w|gz") as dest:
+        # Python <= 3.12 tarfile._Stream._init_write_gz calls name.endswith(".gz"),
+        # which raises AttributeError when given a Path instead of str.
+        with tarfile.open(os.fspath(archive), "r|gz") as source, tarfile.open(os.fspath(staged), "w|gz") as dest:
             for member in source:
                 if member.name.removeprefix("./") in FILES:
                     continue
                 dest.addfile(member, source.extractfile(member) if member.isfile() else None)
             for filename in FILES:
-                dest.add(directory / filename, arcname=filename)
+                dest.add(os.fspath(directory / filename), arcname=filename)
         staged.replace(archive)
 
 
