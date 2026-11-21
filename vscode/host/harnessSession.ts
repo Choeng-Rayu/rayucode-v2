@@ -11,7 +11,7 @@ interface SessionOptions {
 
 export class HarnessSession {
   private client?: RayucodeClient;
-  private connecting?: Promise<RayucodeClient>;
+  private connectionGeneration = 0;
   private sessionId?: string;
   private changingSession = false;
   private submitting = false;
@@ -23,13 +23,21 @@ export class HarnessSession {
   async request(frame: Record<string, unknown>): Promise<ApiEvent> {
     switch (frame.req) {
       case "list_sessions": {
-        const client = await this.connect();
-        const owned = new Set(this.options.sessions());
-        const sessions = (await client.listSessions()).filter((session) => owned.has(session.session_id));
-        const selected = this.options.selected();
-        const selectedIndex = sessions.findIndex((session) => session.session_id === selected);
-        if (selectedIndex > 0) sessions.unshift(...sessions.splice(selectedIndex, 1));
-        return { ev: "sessions", sessions };
+        const generation = this.connectionGeneration;
+        const attached = this.client;
+        const client = attached ?? await this.openConnection(generation);
+        try {
+          const listed = await client.listSessions();
+          this.checkConnection(generation);
+          const owned = new Set(this.options.sessions());
+          const sessions = listed.filter((session) => owned.has(session.session_id));
+          const selected = this.options.selected();
+          const selectedIndex = sessions.findIndex((session) => session.session_id === selected);
+          if (selectedIndex > 0) sessions.unshift(...sessions.splice(selectedIndex, 1));
+          return { ev: "sessions", sessions };
+        } finally {
+          if (!attached) void client.close();
+        }
       }
       case "create_session":
       case "attach_session":
@@ -62,11 +70,13 @@ export class HarnessSession {
           // The preview has no interactive approval path. Require the runtime to
           // acknowledge an empty tool policy on this connection before each turn.
           await client.configureTools(sessionId, { enabled: [] });
+          if (this.client !== client) throw new HarnessError("disconnected", "The Rayu connection closed.");
           this.turnActive = true;
-          await client.sendMessage(sessionId, frame.content);
+          await client.sendMessage(sessionId, frame.content, { requireAccept: true });
         } catch (error) {
           this.turnActive = false;
-          if (error instanceof HarnessError && error.code === "timeout" && this.client === client) {
+          if (this.client === client && error instanceof HarnessError
+              && (error.code === "timeout" || error.code === "disconnected")) {
             this.disconnect(true);
           }
           throw error;
@@ -98,7 +108,8 @@ export class HarnessSession {
       throw new HarnessError("busy", "Stop or finish the current turn before changing sessions.");
     }
     this.changingSession = true;
-    let replacement: RayucodeClient | undefined;
+    const generation = this.connectionGeneration;
+    let candidate: RayucodeClient | undefined;
     try {
       const created = frame.req === "create_session";
       const target = typeof frame.session_id === "string" ? frame.session_id : "";
@@ -106,20 +117,23 @@ export class HarnessSession {
         throw new HarnessError("unknown_session", "Choose a session created by this VS Code workspace.");
       }
       const workingDir = created ? await this.options.chooseWorkspace() : undefined;
-      // Attaching without a target on a used daemon connection can keep the
-      // current session. Open a fresh connection to create a distinct one.
-      if (created && this.sessionId) replacement = await this.openConnection();
-      const client = replacement ?? await this.connect();
+      // Keep the current attachment usable if the new attach or its initial
+      // tool configuration fails after the daemon switches sessions.
+      candidate = await this.openConnection(generation);
       const session = created
-        ? await client.createSession({ workingDir, tools: { enabled: [] } })
-        : await client.attachSession(target);
-      if (replacement) this.useClient(replacement);
-      if (this.client !== client) throw new HarnessError("disconnected", "The Rayu connection closed.");
-      this.sessionId = session.session_id;
+        ? await candidate.createSession({ workingDir, tools: { enabled: [] } })
+        : await candidate.attachSession(target);
+      this.checkConnection(generation);
+      if (!created && session.session_id !== target) {
+        throw new HarnessError("unexpected_reply", "Rayu returned a different session.");
+      }
       await this.options.remember(session.session_id, created);
+      this.checkConnection(generation);
+      this.useClient(candidate);
+      this.sessionId = session.session_id;
       return { ev: "attached", session };
     } finally {
-      if (replacement && replacement !== this.client) void replacement.close();
+      if (candidate && candidate !== this.client) void candidate.close();
       this.changingSession = false;
     }
   }
@@ -134,35 +148,38 @@ export class HarnessSession {
     return { client: this.client, sessionId: this.sessionId };
   }
 
-  private connect(): Promise<RayucodeClient> {
-    if (this.client) return Promise.resolve(this.client);
-    if (this.connecting) return this.connecting;
-    this.connecting = this.openConnection()
-      .then((client) => this.useClient(client))
-      .finally(() => { this.connecting = undefined; });
-    return this.connecting;
+  private checkConnection(generation: number): void {
+    if (this.disposed || this.connectionGeneration !== generation) {
+      throw new HarnessError("disconnected", "The Rayu connection changed. Reconnect to continue.");
+    }
   }
 
-  private async openConnection(): Promise<RayucodeClient> {
-    return RayucodeClient.connect({
+  private async openConnection(generation: number): Promise<RayucodeClient> {
+    this.checkConnection(generation);
+    const client = await RayucodeClient.connect({
       socketPath: this.options.socketPath(),
       clientName: "rayucode-vscode-preview",
       requestTimeoutMs: 15_000,
     });
+    try {
+      this.checkConnection(generation);
+      return client;
+    } catch (error) {
+      void client.close();
+      throw error;
+    }
   }
 
-  private useClient(client: RayucodeClient): RayucodeClient {
-    if (this.disposed) {
-      void client.close();
-      throw new HarnessError("disconnected", "The Rayucode view closed.");
-    }
+  private useClient(client: RayucodeClient): void {
     const previous = this.client;
     this.client = client;
     void previous?.close();
     client.on("event", (frame: ServerFrame) => {
       if (this.client !== client || this.changingSession || !this.sessionId) return;
       if ("session_id" in frame && frame.session_id !== this.sessionId) return;
-      if (frame.ev === "turn_done") this.turnActive = false;
+      if (frame.ev === "turn_done" || (frame.ev === "error" && frame.reply_to === undefined)) {
+        this.turnActive = false;
+      }
       this.options.emit(frame);
     });
     const lostConnection = () => {
@@ -170,10 +187,10 @@ export class HarnessSession {
     };
     client.once("close", lostConnection);
     client.on("error", lostConnection);
-    return client;
   }
 
   private disconnect(notify = false) {
+    this.connectionGeneration++;
     const client = this.client;
     const sessionId = this.sessionId;
     this.client = undefined;
@@ -188,6 +205,10 @@ export class HarnessSession {
         phase: "disconnected",
       });
     }
+  }
+
+  resetConnection() {
+    this.disconnect(true);
   }
 
   dispose() {

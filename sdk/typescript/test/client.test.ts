@@ -51,6 +51,47 @@ test("a timed-out handshake closes the editor's connection", async () => {
   assert.equal(closed, true);
 });
 
+test("required prompt acceptance reports the server error, a missing acknowledgement, and a disconnect", async (t) => {
+  await t.test("server rejection", async (rejection) => {
+    const server = await startMockHarness({
+      onRequest(request, send) {
+        if (request.req === "send_message") {
+          send({ v: 1, reply_to: request.id, ev: "error", code: "invalid_request", message: "prompt rejected" });
+        }
+      },
+    });
+    rejection.after(() => server.close());
+    const client = await RayucodeClient.connect({ socketPath: server.socketPath });
+    await assert.rejects(
+      client.sendMessage("s1", "test", { requireAccept: true, acceptTimeoutMs: 30 }),
+      { code: "invalid_request", message: /prompt rejected/ },
+    );
+  });
+
+  await t.test("no acknowledgement", async (timeout) => {
+    const server = await startMockHarness();
+    timeout.after(() => server.close());
+    const client = await RayucodeClient.connect({ socketPath: server.socketPath });
+    await assert.rejects(
+      client.sendMessage("s1", "test", { requireAccept: true, acceptTimeoutMs: 30 }),
+      { code: "timeout" },
+    );
+  });
+
+  await t.test("connection closes during send", async () => {
+    const server = await startMockHarness({
+      onRequest(request) {
+        if (request.req === "send_message") void server.close();
+      },
+    });
+    const client = await RayucodeClient.connect({ socketPath: server.socketPath });
+    await assert.rejects(
+      client.sendMessage("s1", "test", { requireAccept: true }),
+      { code: "disconnected" },
+    );
+  });
+});
+
 test("replies are correlated by id even when out of order", async () => {
   const server = await startMockHarness({
     onRequest(request, send) {

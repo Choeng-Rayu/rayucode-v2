@@ -376,7 +376,7 @@ discovery pass only.
 | `setRetentionPolicy(days?)` | Auto-archive inactive sessions, or disable retention |
 | `createSession(workingDirOrOptions?)` | Create and attach, optionally overriding the full system prompt |
 | `attachSession(id)` / `detachSession(id)` | Subscribe / unsubscribe |
-| `sendMessage(id, content, images?)` | Send a user message (awaits `message_accepted`) |
+| `sendMessage(id, content, imagesOrOptions?)` | Send a user message and wait for acknowledgement. Pass `{ requireAccept: true }` to reject if the runtime does not confirm it. |
 | `run(id, content, options?)` | Send and collect one full turn |
 | `runStructured(id, content, options)` | Send, validate JSON Schema output, and retry corrections |
 | `events(sessionId?)` | Async iterator over stream events |

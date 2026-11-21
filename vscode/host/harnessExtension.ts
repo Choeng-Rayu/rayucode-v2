@@ -106,9 +106,13 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     const disposalListener = view.onDidDispose(() => {
       if (this.view === view) this.dispose();
     });
+    const configurationListener = vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("rayucode.runtime.socketPath")) session.resetConnection();
+    });
     this.binding = new vscode.Disposable(() => {
       messageListener.dispose();
       disposalListener.dispose();
+      configurationListener.dispose();
       session.dispose();
       this.view = undefined;
       this.ready = false;

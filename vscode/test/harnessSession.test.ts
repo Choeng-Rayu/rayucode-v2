@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import { test } from "node:test";
 import type { ServerFrame } from "@rayu-dev/rayucode-sdk";
 import { startMockHarness } from "../../sdk/typescript/test/mock-harness.js";
@@ -7,7 +8,9 @@ import { HarnessSession } from "../host/harnessSession.js";
 test("the editor scopes sessions and acknowledges sends through a tool-free Harness turn", async (t) => {
   const requests: string[] = [];
   const events: ServerFrame[] = [];
+  const eventsReceived = new EventEmitter();
   let denyConfiguration = false;
+  let failTurn = false;
   const fixture = { session_id: "editor", status: "idle", working_dir: "/fixture" };
   const nextFixture = { ...fixture, session_id: "second" };
   const harness = await startMockHarness({
@@ -37,6 +40,7 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
           assert.equal(request.content, "hello");
           send({ v: 1, ev: "message_accepted", session_id: fixture.session_id });
           send({ v: 1, ev: "text_delta", session_id: "terminal", text: "unrelated" });
+          if (failTurn) send({ v: 1, ev: "error", code: "internal", message: "Provider failed" });
           break;
         case "cancel":
           send({ ...reply, ev: "ok" });
@@ -52,7 +56,10 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
     sessions: () => owned,
     selected: () => owned.at(-1),
     remember: async (sessionId, created) => { if (created) owned.push(sessionId); },
-    emit: (frame) => events.push(frame),
+    emit: (frame) => {
+      events.push(frame);
+      eventsReceived.emit("frame:" + frame.ev);
+    },
   });
   t.after(async () => {
     session.dispose();
@@ -71,8 +78,64 @@ test("the editor scopes sessions and acknowledges sends through a tool-free Harn
   assert.deepEqual(await session.request(prompt), { ev: "ok" });
   assert.deepEqual(requests.slice(-2), ["configure_tools", "send_message"]);
   await assert.rejects(session.request(prompt), /current turn/);
+  const done = once(eventsReceived, "frame:turn_done");
   assert.deepEqual(await session.request({ req: "cancel", session_id: "editor" }), { ev: "ok" });
+  await done;
   assert.deepEqual(events.map((frame) => frame.ev), ["message_accepted", "turn_done"]);
   assert.deepEqual(await session.request({ req: "create_session" }), { ev: "attached", session: nextFixture });
   assert.deepEqual(await session.request({ req: "attach_session", session_id: "editor" }), { ev: "attached", session: fixture });
+  failTurn = true;
+  const terminalError = once(eventsReceived, "frame:error");
+  assert.deepEqual(await session.request(prompt), { ev: "ok" });
+  await terminalError;
+  failTurn = false;
+  assert.deepEqual(await session.request(prompt), { ev: "ok" });
+});
+
+test("reconnecting discards late attachments and uses the new runtime socket", async (t) => {
+  const oldSession = { session_id: "old", status: "idle" };
+  const newSession = { session_id: "new", status: "idle" };
+  const events: ServerFrame[] = [];
+  const received = new EventEmitter();
+  let replyToAttach: (() => void) | undefined;
+  const oldRuntime = await startMockHarness({
+    onRequest(request, send) {
+      if (request.req !== "attach_session") return;
+      replyToAttach = () => send({ v: 1, reply_to: request.id, ev: "attached", session: oldSession });
+      received.emit("attach");
+    },
+  });
+  const newRuntime = await startMockHarness({
+    onRequest(request, send) {
+      if (request.req === "attach_session") {
+        send({ v: 1, reply_to: request.id, ev: "attached", session: newSession });
+      } else if (request.req === "list_sessions") {
+        send({ v: 1, reply_to: request.id, ev: "sessions", sessions: [newSession] });
+      }
+    },
+  });
+  let socketPath = oldRuntime.socketPath;
+  const session = new HarnessSession({
+    socketPath: () => socketPath,
+    chooseWorkspace: async () => "/fixture",
+    sessions: () => ["old", "new"],
+    selected: () => "old",
+    remember: async () => {},
+    emit: (frame) => events.push(frame),
+  });
+  t.after(async () => {
+    session.dispose();
+    await Promise.all([oldRuntime.close(), newRuntime.close()]);
+  });
+
+  const started = once(received, "attach");
+  const oldAttachment = session.request({ req: "attach_session", session_id: "old" });
+  await started;
+  socketPath = newRuntime.socketPath;
+  session.resetConnection();
+  replyToAttach!();
+  await assert.rejects(oldAttachment, { code: "disconnected" });
+  assert.equal(events[0]?.ev, "connection_phase");
+  assert.deepEqual(await session.request({ req: "list_sessions" }), { ev: "sessions", sessions: [newSession] });
+  assert.deepEqual(await session.request({ req: "attach_session", session_id: "new" }), { ev: "attached", session: newSession });
 });

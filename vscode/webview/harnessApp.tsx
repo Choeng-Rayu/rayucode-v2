@@ -95,7 +95,8 @@ function Chat() {
     const stop = adapter.subscribe((frame) => {
       if (!isKnownEvent(frame)) return;
       if (frame.ev === "error" && "reply_to" in frame) return;
-      if (frame.ev === "connection_phase" && frame.phase === "disconnected") {
+      const disconnected = frame.ev === "connection_phase" && frame.phase === "disconnected";
+      if (disconnected) {
         setConnected(false);
         setError("The Rayu connection closed. Reconnect to recover the conversation.");
       }
@@ -115,6 +116,13 @@ function Chat() {
         }
         if (frame.ev === "message_accepted" && accepted && accepted.sessionId === frame.session_id) {
           next = appendLocalUserMessage(next, accepted.text);
+        }
+        if (disconnected && next.isStreaming) {
+          next = {
+            ...next,
+            isStreaming: false,
+            entries: next.entries.map((entry) => entry.streaming ? { ...entry, streaming: false } : entry),
+          };
         }
         return applyApiEvent(next, frame);
       });
@@ -211,7 +219,7 @@ function Chat() {
           backgroundTasks={Object.values(state.backgroundTasks)}
         />
         <Composer
-          isStreaming={state.isStreaming}
+          isStreaming={connected && state.isStreaming}
           disabled={!connected || busy || state.isStreaming}
           placeholder="Message Rayucode"
           slashCommands={[]}

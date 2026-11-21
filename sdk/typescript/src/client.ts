@@ -195,6 +195,8 @@ export interface SendMessageOptions {
   noReply?: boolean;
   /** Wait for message_accepted when starting a normal model turn. */
   waitForAccept?: boolean;
+  /** Require acknowledgement even if waitForAccept is false. Reject on failure or timeout. */
+  requireAccept?: boolean;
   /** Maximum acknowledgement wait in milliseconds. */
   acceptTimeoutMs?: number;
 }
@@ -580,7 +582,8 @@ export class RayucodeClient extends EventEmitter {
    * acknowledges by emitting `message_accepted` once the agent has the
    * message. Awaiting a reply here would always time out, so the frame is
    * written and, by default, the acknowledgement event is awaited instead.
-   * Pass `waitForAccept: false` for pure fire-and-forget.
+   * By default the acknowledgement wait is advisory. Use `requireAccept: true`
+   * to reject on a missing acknowledgement, or `waitForAccept: false` to skip the wait.
    */
   async sendMessage(
     sessionId: string,
@@ -613,15 +616,7 @@ export class RayucodeClient extends EventEmitter {
       });
       return;
     }
-    const waitForAccept = options.waitForAccept ?? true;
-    const accepted = waitForAccept
-      ? this.waitForEvent(
-          (frame) => frame.ev === "message_accepted" && frame.session_id === sessionId,
-          options.acceptTimeoutMs ?? 10_000,
-        )
-      : undefined;
-    this.notify({ req: "send_message", session_id: sessionId, content, images });
-    await accepted;
+    await this.sendTurn({ req: "send_message", session_id: sessionId, content, images }, options);
   }
 
   /** Submit a hidden recovery continuation without awaiting message acceptance. */
@@ -639,24 +634,16 @@ export class RayucodeClient extends EventEmitter {
     content: string,
     images: ImageAttachment[] = [],
     systemReminder?: string,
-    options: Pick<SendMessageOptions, "waitForAccept" | "acceptTimeoutMs"> = {},
+    options: Pick<SendMessageOptions, "waitForAccept" | "acceptTimeoutMs" | "requireAccept"> = {},
   ): Promise<void> {
     const reminder = systemReminder?.trim();
-    const waitForAccept = options.waitForAccept ?? true;
-    const accepted = waitForAccept
-      ? this.waitForEvent(
-          (frame) => frame.ev === "message_accepted" && frame.session_id === sessionId,
-          options.acceptTimeoutMs ?? 10_000,
-        )
-      : undefined;
-    this.notify({
+    await this.sendTurn({
       req: "send_message",
       session_id: sessionId,
       content,
       images,
       ...(reminder ? { system_reminder: reminder } : {}),
-    });
-    await accepted;
+    }, options);
   }
 
   /** Write a request without expecting a request-level reply. */
@@ -666,27 +653,46 @@ export class RayucodeClient extends EventEmitter {
     this.transport.write(encodeFrame({ v: API_VERSION_MAJOR, id, ...request }));
   }
 
-  /** Resolve on the first event matching `predicate`, or on timeout. */
-  private waitForEvent(
-    predicate: (frame: ServerFrame) => boolean,
-    timeoutMs: number,
+  private async sendTurn(
+    request: Extract<ApiRequest, { req: "send_message" }>,
+    options: Pick<SendMessageOptions, "waitForAccept" | "acceptTimeoutMs" | "requireAccept">,
   ): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const finish = () => {
+    const strict = options.requireAccept === true;
+    if (!strict && options.waitForAccept === false) {
+      this.notify(request);
+      return;
+    }
+    if (this.closed) throw this.closeError ?? new HarnessError("disconnected", "Harness connection closed");
+    const id = this.nextId++;
+    await new Promise<void>((resolve, reject) => {
+      const finish = (error?: unknown) => {
         clearTimeout(timer);
         this.off("event", onEvent);
-        this.off("close", finish);
-        resolve();
+        this.off("close", onClose);
+        if (error !== undefined) reject(error);
+        else resolve();
       };
       const onEvent = (frame: ServerFrame) => {
-        if (predicate(frame)) finish();
+        if (frame.ev === "message_accepted" && frame.session_id === request.session_id) {
+          finish();
+        } else if (strict && frame.ev === "error" && (frame.reply_to === undefined || frame.reply_to === id)) {
+          finish(new HarnessError(String(frame.code ?? "internal"), String(frame.message ?? "Prompt failed")));
+        }
       };
-      // Resolving on timeout rather than rejecting keeps a missing ack from
-      // failing an otherwise healthy turn: the stream is the source of truth.
-      const timer = setTimeout(finish, timeoutMs);
+      const onClose = () => finish(strict
+        ? new HarnessError("disconnected", "The connection closed before Rayu confirmed the prompt. Check session history before retrying.")
+        : undefined);
+      const timer = setTimeout(() => finish(strict
+        ? new HarnessError("timeout", "Rayu did not confirm the prompt. Check session history before retrying.")
+        : undefined), options.acceptTimeoutMs ?? 10_000);
       timer.unref?.();
       this.on("event", onEvent);
-      this.once("close", finish);
+      this.once("close", onClose);
+      try {
+        this.transport.write(encodeFrame({ v: API_VERSION_MAJOR, id, ...request }));
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
