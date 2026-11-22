@@ -1217,3 +1217,45 @@ async fn rayu_reasoning_effort_session_id_split_system_and_model_detail_end_to_e
         "SIG_GEMINI_3"
     );
 }
+
+#[tokio::test]
+async fn rayu_provider_uses_admin_max_input_tokens_for_context_budget_while_keeping_context_label() {
+    let test = test_env();
+    test.env.set("RAYU_API_KEY", "rayu_sk_live_limits_test");
+    let models_body = r#"{"object":"list","data":[
+        {"id":"gpt-5-hosted","object":"model","owned_by":"rayu","label":"GPT-5 Hosted","contextWindow":400000,"maxInputTokens":272000,"maxOutputTokens":96000,"supportsReasoning":true,"supportsImage":true,"supportsTools":true}
+    ]}"#
+        .to_string();
+    let (address, server) = spawn_mock(vec![
+        ("200 OK", models_body),
+        ("200 OK", complete_sse("ok")),
+    ]);
+    test.env
+        .set("RAYU_GATEWAY_URL", format!("http://{address}"));
+
+    let provider = RayuProvider::new();
+    provider.prefetch_models().await.unwrap();
+    provider.set_model("gpt-5-hosted").unwrap();
+
+    // Auto-compaction window follows admin maxInputTokens (272k), not 400k total.
+    assert_eq!(provider.context_window(), 272_000);
+    // Model picker keeps the advertised contextWindow label (400K ctx).
+    let route = provider
+        .model_routes()
+        .into_iter()
+        .find(|r| r.model == "gpt-5-hosted")
+        .unwrap();
+    assert!(route.detail.contains("400K ctx"), "detail={}", route.detail);
+
+    // Request max_tokens uses admin maxOutputTokens (96k).
+    let stream = provider
+        .complete(&[Message::user("hi")], &[], "sys", None)
+        .await
+        .unwrap();
+    let events: Vec<_> = stream.collect().await;
+    assert!(events.iter().all(|item| item.is_ok()));
+
+    let captured = server.join().unwrap();
+    let sent: serde_json::Value = serde_json::from_str(&captured[1].body).unwrap();
+    assert_eq!(sent["max_tokens"], 96_000);
+}

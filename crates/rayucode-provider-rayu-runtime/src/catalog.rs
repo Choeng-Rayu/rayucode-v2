@@ -52,6 +52,8 @@ pub struct RayuCatalogModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit_multiplier: Option<f64>,
@@ -140,6 +142,7 @@ fn model_from_entry(
         .filter(|description| !description.is_empty())
         .map(str::to_string);
     let context_window = entry.context_window.filter(|window| *window > 0);
+    let max_input_tokens = entry.max_input_tokens.filter(|tokens| *tokens > 0);
     let max_output_tokens = entry.max_output_tokens.filter(|tokens| *tokens > 0);
     let credit_multiplier = entry
         .credit_multiplier
@@ -149,6 +152,7 @@ fn model_from_entry(
         label,
         description,
         context_window,
+        max_input_tokens,
         max_output_tokens,
         credit_multiplier,
         supports_reasoning: entry.supports_reasoning,
@@ -224,6 +228,7 @@ pub(crate) fn parse_gateway_models(
             label,
             description: optional_trimmed(item.get("description")),
             context_window: optional_window(item.get("contextWindow")),
+            max_input_tokens: optional_window(item.get("maxInputTokens")),
             max_output_tokens: optional_positive_u32(item.get("maxOutputTokens")),
             credit_multiplier: optional_positive_f64(item.get("creditMultiplier")),
             supports_reasoning: optional_bool(item.get("supportsReasoning")),
@@ -701,6 +706,7 @@ mod tests {
             label: None,
             description: None,
             context_window: None,
+            max_input_tokens: None,
             max_output_tokens: None,
             supports_reasoning: None,
             supports_image: None,
@@ -732,6 +738,8 @@ mod tests {
         let mut allowed = entry("rayu-usable");
         allowed.label = Some("Usable Model".into());
         allowed.context_window = Some(200_000);
+        allowed.max_input_tokens = Some(180_000);
+        allowed.max_output_tokens = Some(64_000);
         allowed.supports_image = Some(true);
         let mut preview = entry("rayu-preview");
         preview.label = Some("rayu-preview".into()); // label == id is dropped
@@ -748,6 +756,8 @@ mod tests {
         assert!(models[0].usable);
         assert_eq!(models[0].label.as_deref(), Some("Usable Model"));
         assert_eq!(models[0].context_window, Some(200_000));
+        assert_eq!(models[0].max_input_tokens, Some(180_000));
+        assert_eq!(models[0].max_output_tokens, Some(64_000));
         assert_eq!(models[0].supports_image, Some(true));
         assert!(!models[1].usable);
         assert_eq!(models[1].label, None);
@@ -790,6 +800,7 @@ mod tests {
             label: None,
             description: None,
             context_window: None,
+            max_input_tokens: None,
             max_output_tokens: None,
             credit_multiplier: None,
             supports_reasoning: None,
@@ -819,7 +830,7 @@ mod tests {
             "data": [
                 {"id": "rayu-future-model-9", "object": "model", "owned_by": "rayu",
                  "label": "Future Model 9", "description": "Released after this binary",
-                 "contextWindow": 400000, "supportsReasoning": true,
+                 "contextWindow": 400000, "maxInputTokens": 272000, "maxOutputTokens": 128000, "supportsReasoning": true,
                  "supportsImage": false, "supportsTools": true},
                 {"id": "rayu-flash-mini", "object": "model", "owned_by": "rayu",
                  "contextWindow": 131072},
@@ -834,6 +845,8 @@ mod tests {
         assert_eq!(models[0].id, "rayu-future-model-9");
         assert_eq!(models[0].label.as_deref(), Some("Future Model 9"));
         assert_eq!(models[0].context_window, Some(400_000));
+        assert_eq!(models[0].max_input_tokens, Some(272_000));
+        assert_eq!(models[0].max_output_tokens, Some(128_000));
         assert_eq!(models[0].supports_reasoning, Some(true));
         assert_eq!(models[0].supports_image, Some(false));
         assert_eq!(models[0].supports_tools, Some(true));
@@ -872,6 +885,7 @@ mod tests {
                 label: None,
                 description: None,
                 context_window: None,
+                max_input_tokens: None,
                 max_output_tokens: None,
                 credit_multiplier: None,
                 supports_reasoning: None,
