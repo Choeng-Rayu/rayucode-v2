@@ -99,5 +99,29 @@ describe("AppShell & IconRail", () => {
     expect(useAppStore.getState().accent).toBe("blue")
     expect(document.documentElement.getAttribute("data-accent")).toBe("blue")
   })
+
+  it("renders HomeView on home route, ChatStream + SessionComposer on workspace route, and InspectorSidebar inside RightInspectorHost", async () => {
+    await act(async () => {
+      render(<App />)
+    })
+
+    // Home route renders HomeView and InspectorSidebar in RightInspectorHost
+    expect(screen.getByTestId("home-view")).toBeInTheDocument()
+    expect(screen.getByTestId("inspector-sidebar")).toBeInTheDocument()
+
+    // Switch to workspace route
+    await act(async () => {
+      useAppStore.getState().setActiveSession("ses_retire_cache")
+    })
+
+    expect(useAppStore.getState().activeRoute).toBe("workspace")
+    expect(
+      document.querySelector('[data-slot="chat-stream"]')
+    ).toBeInTheDocument()
+    expect(screen.getByTestId("session-composer-dock")).toHaveAttribute(
+      "data-composer-mode",
+      "workspace"
+    )
+  })
 })
 

@@ -19,6 +19,7 @@ export function AppShell({
   children,
   contextSlot,
   documentSlot,
+  previewFallback,
 }: AppShellProps) {
   const activeRoute = useAppStore((s) => s.activeRoute)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
@@ -72,6 +73,7 @@ export function AppShell({
         <RightInspectorHost
           contextSlot={contextSlot}
           documentSlot={documentSlot}
+          previewFallback={previewFallback}
         />
       )}
     </div>
