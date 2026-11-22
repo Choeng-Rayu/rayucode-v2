@@ -28,7 +28,8 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt};
 use rayucode_message_types::{Message, StreamEvent, ToolDefinition};
 use rayucode_provider_anthropic::{
-    ApiRequest, build_system_param, format_messages, format_messages_with_identity, format_tools,
+    ApiOutputConfig, ApiRequest, ApiThinking, attach_tool_thought_signatures,
+    build_system_param_split, format_messages, format_messages_with_identity, format_tools,
     request_tools,
 };
 use rayucode_provider_core::{
@@ -52,6 +53,10 @@ const LOGICAL_REQUEST_ID_HEADER: &str = "x-rayu-logical-request-id";
 /// Logical origin of the request, logged by the gateway as `source=`.
 const QUERY_SOURCE_HEADER: &str = "x-rayu-query-source";
 const QUERY_SOURCE: &str = "rayucode_v2_agent";
+/// Stable session id for gateway cache-sticky provider key selection and `prompt_cache_key`.
+const SESSION_ID_HEADER: &str = "x-rayu-session-id";
+/// Intended Rayu model code, logged by the gateway for routing observability.
+const INTENDED_MODEL_HEADER: &str = "x-rayu-intended-model";
 
 fn new_request_id() -> String {
     format!("rv2_{}", uuid::Uuid::new_v4().simple())
@@ -63,6 +68,8 @@ fn new_request_id() -> String {
 pub struct RayuProvider {
     model: Arc<Mutex<String>>,
     catalog: Arc<catalog::CatalogCache>,
+    reasoning_effort: Arc<Mutex<Option<String>>>,
+    session_id: Arc<Mutex<Option<String>>>,
 }
 
 impl RayuProvider {
@@ -77,6 +84,8 @@ impl RayuProvider {
         Self {
             model: Arc::new(Mutex::new(model)),
             catalog,
+            reasoning_effort: Arc::new(Mutex::new(None)),
+            session_id: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -89,6 +98,26 @@ impl RayuProvider {
         self.model
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_effort(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.reasoning_effort
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn lock_session_id(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn catalog_entry_for(&self, model: &str) -> Option<catalog::RayuCatalogModel> {
+        self.catalog
+            .best_known()
+            .models
+            .into_iter()
+            .find(|row| row.id == model)
     }
 
     /// Keep the user's selected model while it still exists in the catalog;
@@ -109,7 +138,8 @@ impl RayuProvider {
         credential: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
-        system: &str,
+        system_static: &str,
+        system_dynamic: &str,
         logical_request_id: &str,
     ) -> Result<EventStream> {
         let model = self.model();
@@ -118,15 +148,42 @@ impl RayuProvider {
             rayucode_base::rayu::gateway_base()
         );
         ensure_safe_bearer_endpoint(&url)?;
+
+        let catalog_entry = self.catalog_entry_for(&model);
+        let supports_reasoning = catalog_entry.as_ref().and_then(|e| e.supports_reasoning);
+        let supports_tools = catalog_entry.as_ref().and_then(|e| e.supports_tools);
+        let max_tokens = rayu_max_output_tokens(
+            &model,
+            catalog_entry.as_ref().and_then(|e| e.max_output_tokens),
+        );
+        let stored_effort = self.lock_effort().clone();
+        let (thinking, output_config) = build_thinking_and_effort(
+            &model,
+            stored_effort.as_deref(),
+            supports_reasoning,
+            max_tokens,
+        );
+
+        let cache_ttl_1h = rayucode_base::provider::anthropic::is_cache_ttl_1h()
+            && model.to_ascii_lowercase().contains("claude");
+        let mut api_messages = format_messages(messages, false);
+        attach_tool_thought_signatures(&mut api_messages, messages);
+        let api_messages = format_messages_with_identity(api_messages, false, cache_ttl_1h);
+        let api_tools = if supports_tools == Some(false) {
+            None
+        } else {
+            request_tools(format_tools(tools, false, cache_ttl_1h), Vec::new())
+        };
+
         let request = ApiRequest {
             model: model.clone(),
-            max_tokens: rayucode_provider_core::anthropic::anthropic_max_output_tokens(&model),
-            system: build_system_param(system, false, false),
-            messages: format_messages_with_identity(format_messages(messages, false), false, false),
-            tools: request_tools(format_tools(tools, false, false), Vec::new()),
+            max_tokens,
+            system: build_system_param_split(system_static, system_dynamic, false, cache_ttl_1h),
+            messages: api_messages,
+            tools: api_tools,
             metadata: None,
-            thinking: None,
-            output_config: None,
+            thinking,
+            output_config,
             temperature: None,
             service_tier: None,
             stream: true,
@@ -134,7 +191,9 @@ impl RayuProvider {
         // A fresh id per physical attempt; the logical id stays fixed across
         // 401 refreshes and transport replays so gateway logs group them.
         let request_id = new_request_id();
-        let response = http_client()
+        let idle_timeout =
+            rayucode_base::provider::stream_idle_timeout_for_effort(stored_effort.as_deref());
+        let mut req_builder = http_client()
             .post(&url)
             .bearer_auth(credential)
             .header(
@@ -145,14 +204,20 @@ impl RayuProvider {
             .header(REQUEST_ID_HEADER, &request_id)
             .header(LOGICAL_REQUEST_ID_HEADER, logical_request_id)
             .header(QUERY_SOURCE_HEADER, QUERY_SOURCE)
-            .json(&request)
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to send Rayu gateway request\n  endpoint: {url}\n  request_id: {request_id}"
-                )
-            })?;
+            .header(INTENDED_MODEL_HEADER, &model);
+        if let Some(session_id) = self.lock_session_id().clone().filter(|s| !s.is_empty()) {
+            req_builder = req_builder.header(SESSION_ID_HEADER, session_id);
+        }
+        let response = rayucode_provider_core::transport::send_with_initial_response_timeout(
+            req_builder.json(&request),
+            idle_timeout,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to send Rayu gateway request\n  endpoint: {url}\n  request_id: {request_id}"
+            )
+        })?;
         let status = response.status();
         if !status.is_success() {
             // Captured before the body is consumed: the gateway queues a burst
@@ -183,7 +248,7 @@ impl RayuProvider {
         }
         let trace = sse::ResponseTrace::from_response(&response, request_id);
         rayucode_base::logging::debug(&format!("Rayu gateway stream opened: {}", trace.describe()));
-        Ok(sse::stream_events(response, trace))
+        Ok(sse::stream_events(response, trace, idle_timeout))
     }
 
     /// One full attempt: send, and on a 401 before output refresh the JWT and
@@ -192,14 +257,22 @@ impl RayuProvider {
         &self,
         messages: Arc<Vec<Message>>,
         tools: Arc<Vec<ToolDefinition>>,
-        system: Arc<String>,
+        system_static: Arc<String>,
+        system_dynamic: Arc<String>,
         logical_request_id: Arc<String>,
     ) -> Result<EventStream> {
         let credential = rayucode_base::rayu::gateway_credential()
             .await
             .context("No Rayu credentials available: sign in with /login or set RAYU_API_KEY")?;
         let first = self
-            .complete_once(&credential, &messages, &tools, &system, &logical_request_id)
+            .complete_once(
+                &credential,
+                &messages,
+                &tools,
+                &system_static,
+                &system_dynamic,
+                &logical_request_id,
+            )
             .await;
         // Only a JWT session can be refreshed; an API-key 401 surfaces as-is.
         if !rayucode_base::rayu::has_usable_session() {
@@ -220,7 +293,14 @@ impl RayuProvider {
                     .await
                     .context("No Rayu credentials available after refresh")?;
                 provider
-                    .complete_once(&fresh, &messages, &tools, &system, &logical_request_id)
+                    .complete_once(
+                        &fresh,
+                        &messages,
+                        &tools,
+                        &system_static,
+                        &system_dynamic,
+                        &logical_request_id,
+                    )
                     .await
             })
         };
@@ -236,6 +316,216 @@ impl RayuProvider {
             pending: None,
             saw_output: false,
         }))
+    }
+
+    async fn complete_with_system(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+        system_dynamic: &str,
+    ) -> Result<EventStream> {
+        if self.model().trim().is_empty() {
+            self.prefetch_models().await?;
+            if self.model().trim().is_empty() {
+                bail!(
+                    "No Rayu models are available for your account or API key. Check your Rayu plan or API key model permissions."
+                );
+            }
+        }
+        let provider = self.clone();
+        let messages = Arc::new(messages.to_vec());
+        let tools = Arc::new(tools.to_vec());
+        let system_static = Arc::new(system_static.to_string());
+        let system_dynamic = Arc::new(system_dynamic.to_string());
+        let logical_request_id = Arc::new(new_request_id());
+        let open: retry::OpenFn = Arc::new(move || -> RetryFuture {
+            let provider = provider.clone();
+            let (messages, tools, system_static, system_dynamic, logical_request_id) = (
+                Arc::clone(&messages),
+                Arc::clone(&tools),
+                Arc::clone(&system_static),
+                Arc::clone(&system_dynamic),
+                Arc::clone(&logical_request_id),
+            );
+            Box::pin(async move {
+                provider
+                    .open_attempt(
+                        messages,
+                        tools,
+                        system_static,
+                        system_dynamic,
+                        logical_request_id,
+                    )
+                    .await
+            })
+        });
+        let (inner, attempt) = retry::open_with_retry(&open).await?;
+        Ok(retry::transport_retry_stream(inner, open, attempt))
+    }
+}
+
+fn rayu_max_output_tokens(model: &str, catalog_max: Option<u32>) -> u32 {
+    if let Some(tokens) = catalog_max.filter(|t| *t > 0) {
+        return tokens;
+    }
+    let m = model.to_ascii_lowercase();
+    if m.contains("deepseek-chat") && !m.contains("reason") {
+        8_192
+    } else if m.contains("claude-3-5-") || m.contains("claude-3.5-") {
+        8_192
+    } else if m.contains("claude-3-haiku")
+        || m.contains("claude-3-sonnet")
+        || m.contains("claude-3-opus")
+    {
+        4_096
+    } else if m.contains("gpt-4o") || m.contains("gpt-4-turbo") {
+        16_384
+    } else if m.contains("claude-")
+        || m.contains("gpt-5")
+        || m.contains("gemini-2.5")
+        || m.contains("gemini-3")
+        || m.contains("deepseek-reason")
+        || m.contains("deepseek-r1")
+        || m.contains("deepseek-v4")
+    {
+        64_000
+    } else {
+        32_768
+    }
+}
+
+fn normalize_rayu_effort(effort: &str) -> Option<&'static str> {
+    match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "off" | "disabled" => Some("none"),
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" | "med" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        "swarm" => Some("swarm"),
+        _ => None,
+    }
+}
+
+fn build_thinking_and_effort(
+    model: &str,
+    stored_effort: Option<&str>,
+    supports_reasoning: Option<bool>,
+    max_tokens: u32,
+) -> (Option<ApiThinking>, Option<ApiOutputConfig>) {
+    if supports_reasoning == Some(false) {
+        return (None, None);
+    }
+    let Some(raw) = stored_effort else {
+        return (None, None);
+    };
+    let resolved = if raw.eq_ignore_ascii_case("swarm") {
+        rayucode_base::prompt::swarm_root_reasoning_effort("swarm").unwrap_or("high")
+    } else {
+        raw
+    };
+    let Some(effort) = normalize_rayu_effort(resolved) else {
+        return (None, None);
+    };
+    if effort == "none" {
+        // Send only `thinking: {type: "disabled"}` (never `output_config.effort: "none"`,
+        // which first-party Anthropic and Bedrock reject with HTTP 400). Every gateway
+        // adapter recognizes `thinking.type == "disabled"` as explicit reasoning-off.
+        return (Some(ApiThinking::Disabled), None);
+    }
+
+    let is_claude = model.to_ascii_lowercase().contains("claude-");
+    if is_claude {
+        let caps = rayucode_provider_core::anthropic_reasoning_caps(model);
+        if caps.adaptive_thinking {
+            let wire_effort = match effort {
+                "minimal" => "low",
+                "xhigh" if !caps.xhigh_effort => "high",
+                "max" if !caps.max_effort => "high",
+                other => other,
+            };
+            return (
+                Some(ApiThinking::Adaptive {
+                    display: Some("summarized"),
+                    block_binding: None,
+                }),
+                Some(ApiOutputConfig {
+                    effort: wire_effort.to_string(),
+                }),
+            );
+        }
+        let raw_budget: u32 = match effort {
+            "minimal" => 1_024,
+            "low" => 2_048,
+            "medium" => 8_192,
+            "high" => 16_384,
+            "xhigh" => 24_576,
+            "max" => 32_768,
+            _ => 8_192,
+        };
+        let ceiling = max_tokens.saturating_sub(1_024).max(1_024);
+        let budget_tokens = raw_budget.min(ceiling);
+        let output_config = if caps.output_effort {
+            let wire_effort = match effort {
+                "minimal" => "low",
+                "xhigh" if !caps.xhigh_effort => "high",
+                "max" if !caps.max_effort => "high",
+                other => other,
+            };
+            Some(ApiOutputConfig {
+                effort: wire_effort.to_string(),
+            })
+        } else {
+            None
+        };
+        return (Some(ApiThinking::Enabled { budget_tokens }), output_config);
+    }
+
+    let raw_budget: u32 = match effort {
+        "minimal" => 1_024,
+        "low" => 2_048,
+        "medium" => 8_192,
+        "high" => 16_384,
+        "xhigh" => 24_576,
+        "max" => 32_768,
+        _ => 8_192,
+    };
+    // Anthropic/Bedrock/DeepSeek require `max_tokens > thinking.budget_tokens`.
+    let ceiling = max_tokens.saturating_sub(1_024).max(1_024);
+    let budget_tokens = raw_budget.min(ceiling);
+    (
+        Some(ApiThinking::Enabled { budget_tokens }),
+        Some(ApiOutputConfig {
+            effort: effort.to_string(),
+        }),
+    )
+}
+
+fn format_credit_multiplier(mult: f64) -> String {
+    let rounded = (mult * 100.0).round() / 100.0;
+    if (rounded - rounded.round()).abs() < 1e-6 {
+        format!("{}", rounded.round() as i64)
+    } else {
+        let s = format!("{rounded:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+fn format_context_tokens(ctx: u64) -> String {
+    if ctx >= 1_000_000 {
+        if ctx % 1_000_000 == 0 || (1_000_000..=1_060_000).contains(&ctx) {
+            format!("{}M ctx", (ctx as f64 / 1_000_000.0).round() as u64)
+        } else {
+            let m = ctx as f64 / 1_000_000.0;
+            let s = format!("{m:.1}");
+            format!("{}M ctx", s.trim_end_matches(".0"))
+        }
+    } else if ctx >= 1_000 {
+        format!("{}K ctx", ctx / 1_000)
+    } else {
+        format!("{ctx} ctx")
     }
 }
 
@@ -259,33 +549,30 @@ fn extract_gateway_error_summary(body: &str) -> String {
     rayucode_base::util::truncate_str(trimmed.lines().next().unwrap_or(trimmed), 180).to_string()
 }
 
+/// Formats Rayu hosted model metadata to match `rayu-cli`
+/// (e.g. `Credits x0.5(discount 30%) · rayu-hosted · DeepSeek-V4.1-flash:lastest · 1M ctx`).
 fn format_rayu_route_detail(model: &catalog::RayuCatalogModel) -> String {
     let mut parts = Vec::new();
-    if let Some(label) = model.label.as_deref().filter(|s| !s.trim().is_empty()) {
-        parts.push(label.trim().to_string());
-    }
     if let Some(desc) = model
         .description
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
         parts.push(desc.trim().to_string());
+    } else if let Some(mult) = model.credit_multiplier.filter(|m| m.is_finite() && *m > 0.0) {
+        parts.push(format!("Credits x{}", format_credit_multiplier(mult)));
+    }
+    parts.push("rayu-hosted".to_string());
+    if let Some(label) = model.label.as_deref().filter(|s| !s.trim().is_empty()) {
+        parts.push(label.trim().to_string());
     }
     if let Some(ctx) = model.context_window.filter(|w| *w > 0) {
-        let formatted = if ctx >= 1_000_000 && ctx % 1_000_000 == 0 {
-            format!("{}M ctx", ctx / 1_000_000)
-        } else if ctx >= 1_000 {
-            format!("{}K ctx", ctx / 1_000)
-        } else {
-            format!("{ctx} ctx")
-        };
-        parts.push(formatted);
+        parts.push(format_context_tokens(ctx));
     }
-    let mut detail = if parts.is_empty() {
-        "Rayu hosted model".to_string()
-    } else {
-        parts.join(" · ")
-    };
+    if model.supports_tools == Some(false) {
+        parts.push("no tools".to_string());
+    }
+    let mut detail = parts.join(" · ");
     if !model.usable {
         detail.push_str(" (visible, not included in your plan)");
     }
@@ -439,6 +726,11 @@ impl Stream for AuthRetryStream {
 
 #[async_trait]
 impl Provider for RayuProvider {
+    fn set_session_id(&self, session_id: &str) {
+        let trimmed = session_id.trim();
+        *self.lock_session_id() = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -446,35 +738,19 @@ impl Provider for RayuProvider {
         system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        if self.model().trim().is_empty() {
-            self.prefetch_models().await?;
-            if self.model().trim().is_empty() {
-                bail!(
-                    "No Rayu models are available for your account or API key. Check your Rayu plan or API key model permissions."
-                );
-            }
-        }
-        let provider = self.clone();
-        let messages = Arc::new(messages.to_vec());
-        let tools = Arc::new(tools.to_vec());
-        let system = Arc::new(system.to_string());
-        let logical_request_id = Arc::new(new_request_id());
-        let open: retry::OpenFn = Arc::new(move || -> RetryFuture {
-            let provider = provider.clone();
-            let (messages, tools, system, logical_request_id) = (
-                Arc::clone(&messages),
-                Arc::clone(&tools),
-                Arc::clone(&system),
-                Arc::clone(&logical_request_id),
-            );
-            Box::pin(async move {
-                provider
-                    .open_attempt(messages, tools, system, logical_request_id)
-                    .await
-            })
-        });
-        let (inner, attempt) = retry::open_with_retry(&open).await?;
-        Ok(retry::transport_retry_stream(inner, open, attempt))
+        self.complete_with_system(messages, tools, system, "").await
+    }
+
+    async fn complete_split(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+        system_dynamic: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.complete_with_system(messages, tools, system_static, system_dynamic)
+            .await
     }
 
     fn name(&self) -> &str {
@@ -494,7 +770,50 @@ impl Provider for RayuProvider {
             bail!("Rayu model cannot be empty");
         };
         *self.lock_model() = model.to_string();
+        if self
+            .catalog_entry_for(model)
+            .and_then(|e| e.supports_reasoning)
+            == Some(false)
+        {
+            *self.lock_effort() = None;
+        }
         Ok(())
+    }
+
+    fn reasoning_effort(&self) -> Option<String> {
+        self.lock_effort().clone()
+    }
+
+    fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
+        let model = self.model();
+        if self
+            .catalog_entry_for(&model)
+            .and_then(|e| e.supports_reasoning)
+            == Some(false)
+        {
+            bail!("Model '{model}' does not support reasoning effort");
+        }
+        let Some(canonical) = normalize_rayu_effort(effort) else {
+            bail!(
+                "Invalid reasoning effort '{}'. Supported values: {}",
+                effort,
+                self.available_efforts().join(", ")
+            );
+        };
+        *self.lock_effort() = Some(canonical.to_string());
+        Ok(())
+    }
+
+    fn available_efforts(&self) -> Vec<&'static str> {
+        let model = self.model();
+        if self
+            .catalog_entry_for(&model)
+            .and_then(|e| e.supports_reasoning)
+            == Some(false)
+        {
+            return Vec::new();
+        }
+        rayucode_provider_core::reasoning::RAYU_SELECTABLE_EFFORTS.to_vec()
     }
 
     fn available_models_display(&self) -> Vec<String> {
@@ -623,6 +942,8 @@ impl Provider for RayuProvider {
         Arc::new(Self {
             model: Arc::new(Mutex::new(self.model())),
             catalog: Arc::clone(&self.catalog),
+            reasoning_effort: Arc::new(Mutex::new(self.lock_effort().clone())),
+            session_id: Arc::new(Mutex::new(self.lock_session_id().clone())),
         })
     }
 }

@@ -611,3 +611,32 @@ fn agent_target_picker_uses_specific_column_labels() {
     assert_eq!(picker.tertiary_label(), "CONFIG");
     assert!(!picker.shows_default_shortcut_hint());
 }
+
+#[test]
+fn rayu_model_picker_allocates_width_and_renders_route_metadata() {
+    let mut picker = sample_picker();
+    picker.entries[0].name = "deepseek-v4.1-flash-1017-cloud".into();
+    picker.entries[0].options[0].provider = "Rayu".into();
+    picker.entries[0].options[0].api_method = "rayu".into();
+    picker.entries[0].options[0].detail =
+        "Credits x0.5(discount 30%) · rayu-hosted · DeepSeek-V4.1-flash:lastest · 1M ctx".into();
+
+    let width = picker_render_width(&picker, 160);
+    assert!(
+        width > 90 && width <= 160,
+        "picker must expand to accommodate Rayu route detail, got {width}"
+    );
+    assert!(picker_render_width(&picker, 40) <= 40);
+
+    let lines = model_suggestion_lines(&picker, 4);
+    let first: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(first.contains("deepseek-v4.1-flash-1017-cloud"), "{first}");
+    assert!(first.contains("Credits x0.5(discount 30%)"), "{first}");
+    assert!(first.contains("rayu-hosted"), "{first}");
+    assert!(first.contains("DeepSeek-V4.1-flash:lastest"), "{first}");
+    assert!(first.contains("1M ctx"), "{first}");
+}

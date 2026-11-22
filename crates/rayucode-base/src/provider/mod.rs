@@ -2167,6 +2167,12 @@ impl Provider for MultiProvider {
     }
 
     fn supports_image_input(&self) -> bool {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.supports_image_input())
+                .unwrap_or(false);
+        }
         match self.active_provider() {
             ActiveProvider::Claude => self
                 .anthropic_provider()
@@ -2642,6 +2648,11 @@ impl Provider for MultiProvider {
     }
 
     fn reasoning_effort(&self) -> Option<String> {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .and_then(|provider| provider.reasoning_effort());
+        }
         match self.active_provider() {
             ActiveProvider::Claude => self
                 .anthropic_provider()
@@ -2656,6 +2667,12 @@ impl Provider for MultiProvider {
     }
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .ok_or_else(|| anyhow::anyhow!("Rayu provider not available"))?
+                .set_reasoning_effort(effort);
+        }
         match self.active_provider() {
             ActiveProvider::Claude => self
                 .anthropic_provider()
@@ -2680,6 +2697,12 @@ impl Provider for MultiProvider {
     }
 
     fn available_efforts(&self) -> Vec<&'static str> {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.available_efforts())
+                .unwrap_or_default();
+        }
         match self.active_provider() {
             ActiveProvider::Claude => self
                 .anthropic_provider()
@@ -2767,8 +2790,16 @@ impl Provider for MultiProvider {
     }
 
     fn transport(&self) -> Option<String> {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .and_then(|provider| provider.transport());
+        }
         match self.active_provider() {
             ActiveProvider::OpenAI => self.openai_provider().and_then(|o| o.transport()),
+            ActiveProvider::OpenRouter => self
+                .active_openrouter_execution_provider()
+                .and_then(|o| o.transport()),
             _ => None,
         }
     }
@@ -2798,6 +2829,12 @@ impl Provider for MultiProvider {
     }
 
     fn supports_compaction(&self) -> bool {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.supports_compaction())
+                .unwrap_or(false);
+        }
         match self.active_provider() {
             ActiveProvider::Claude => self.anthropic_provider().is_some(),
             ActiveProvider::OpenAI => self
@@ -2984,6 +3021,12 @@ impl Provider for MultiProvider {
     }
 
     fn context_window(&self) -> usize {
+        if !crate::rayu::other_providers_enabled() {
+            return ProviderRegistry::new(self)
+                .compatible_profile(RAYU_PROFILE_ID)
+                .map(|provider| provider.context_window())
+                .unwrap_or(DEFAULT_CONTEXT_LIMIT);
+        }
         match self.active_provider() {
             ActiveProvider::Claude => {
                 if let Some(anthropic) = self.anthropic_provider() {

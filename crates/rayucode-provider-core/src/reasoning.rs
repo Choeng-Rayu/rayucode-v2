@@ -19,6 +19,11 @@ pub const OPENROUTER_SELECTABLE_EFFORTS: &[&str] =
 /// Direct DeepSeek effort levels, followed by RayuCode's swarm mode.
 pub const DEEPSEEK_SELECTABLE_EFFORTS: &[&str] = &["none", "low", "medium", "high", "max", "swarm"];
 
+/// Rayu hosted gateway effort levels (translated per upstream model family by the gateway).
+pub const RAYU_SELECTABLE_EFFORTS: &[&str] = &[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "swarm",
+];
+
 /// Convert a provider-advertised OpenAI/OpenRouter effort into the canonical
 /// static value used by the provider trait.
 pub fn canonical_reasoning_effort(value: &str) -> Option<&'static str> {
@@ -42,6 +47,10 @@ pub fn inferred_reasoning_efforts(
 ) -> Vec<&'static str> {
     let provider = provider_name.unwrap_or_default().to_ascii_lowercase();
     let model = model_name.unwrap_or_default().to_ascii_lowercase();
+
+    if provider.contains("rayu") {
+        return RAYU_SELECTABLE_EFFORTS.to_vec();
+    }
 
     if provider.contains("openrouter") {
         return OPENROUTER_SELECTABLE_EFFORTS.to_vec();

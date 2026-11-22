@@ -127,6 +127,85 @@ fn pending_question_excludes_human_wait_time_from_stream_stall_detection() {
 }
 
 #[test]
+fn question_panel_replaces_the_draft_and_keeps_the_transcript_visible() {
+    use crate::tui::DisplayMessage;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let mut app = create_test_app();
+    app.input = "a draft to resume".into();
+    app.cursor_pos = 4;
+    app.push_display_message(DisplayMessage::assistant(
+        "The conversation is still visible.",
+    ));
+    app.is_processing = true;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    handle_server_event(
+        &mut app,
+        ServerEvent::QuestionRequest {
+            session_id: "s1".into(),
+            request_id: "q1".into(),
+            tool_call_id: "call".into(),
+            questions: serde_json::from_value(serde_json::json!([{
+                "question":"Which format?", "header":"Format",
+                "options":[{"label":"JSON","description":"Structured"}, {"label":"Text","description":"Readable"}]
+            }])).unwrap(),
+        },
+        &mut remote,
+    );
+    let mut terminal = Terminal::new(TestBackend::new(64, 10)).unwrap();
+    let mut draw = |app: &crate::tui::app::App| {
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = draw(&app);
+    let title = rows
+        .iter()
+        .position(|row| row.contains("Which format?"))
+        .unwrap();
+    assert!(
+        rows[title - 1].contains("Waiting for your answer"),
+        "{rows:?}"
+    );
+    assert!(
+        rows[..title]
+            .iter()
+            .any(|row| row.contains("The conversation is still visible.")),
+        "{rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("a draft to resume")),
+        "{rows:?}"
+    );
+
+    handle_server_event(
+        &mut app,
+        ServerEvent::QuestionClosed {
+            session_id: "s1".into(),
+            request_id: "q1".into(),
+            reason: rayucode_tool_types::questions::QuestionCloseReason::Declined,
+        },
+        &mut remote,
+    );
+    assert_eq!(app.cursor_pos, 4);
+    assert!(
+        draw(&app)
+            .iter()
+            .any(|row| row.contains("a draft to resume"))
+    );
+}
+
+#[test]
 fn client_focus_defaults_to_true() {
     let app = create_test_app();
     assert!(

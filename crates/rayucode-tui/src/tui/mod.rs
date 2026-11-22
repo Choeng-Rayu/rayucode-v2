@@ -739,9 +739,15 @@ impl TurnFooterSnapshot {
 }
 
 pub trait TuiState {
-    fn draw_question_dialog(&self, _frame: &mut ratatui::Frame<'_>, _area: ratatui::layout::Rect) -> bool {
+    fn question_active(&self) -> bool {
         false
     }
+
+    fn question_panel_height(&self, _width: u16, _budget: u16) -> u16 {
+        0
+    }
+
+    fn draw_question_panel(&self, _frame: &mut ratatui::Frame<'_>, _area: ratatui::layout::Rect) {}
 
     /// Bounded last frame while derived caches are released. Source transcripts
     /// remain resident, but the renderer must not re-materialize them at idle.

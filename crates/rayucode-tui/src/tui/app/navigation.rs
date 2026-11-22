@@ -1344,14 +1344,24 @@ impl App {
             }};
         }
 
-        if self.panel_image_preview.is_some() {
+        if self
+            .question_dialog
+            .as_mut()
+            .is_some_and(|dialog| dialog.mouse(mouse))
+        {
+            finish_mouse_event!(false, "question_panel");
+        }
+
+        // An active question hides full-screen overlays and replaces the composer.
+        let question_active = self.question_dialog.is_some();
+        if !question_active && self.panel_image_preview.is_some() {
             if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
                 self.close_panel_image_preview();
             }
             finish_mouse_event!(false, "panel_image_preview");
         }
 
-        if self.commit_log_overlay.is_some() {
+        if !question_active && self.commit_log_overlay.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::CommitLogOverlay, -1);
@@ -1365,7 +1375,7 @@ impl App {
             }
         }
 
-        if self.changelog_scroll.is_some() {
+        if !question_active && self.changelog_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::ChangelogOverlay, -1);
@@ -1388,7 +1398,7 @@ impl App {
             }
         }
 
-        if self.help_scroll.is_some() {
+        if !question_active && self.help_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::HelpOverlay, -1);
@@ -1402,7 +1412,7 @@ impl App {
             }
         }
 
-        if self.model_status_scroll.is_some() {
+        if !question_active && self.model_status_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
                     self.enqueue_mouse_scroll(MouseScrollTarget::ModelStatusOverlay, -1);
@@ -1416,7 +1426,7 @@ impl App {
             }
         }
 
-        if let Some(ref picker_cell) = self.session_picker_overlay {
+        if !question_active && let Some(ref picker_cell) = self.session_picker_overlay {
             // Route wheel events over the preview pane through the shared
             // scroll-momentum queue so the picker scrolls with the same smooth
             // easing as the main chat viewport. List-pane wheels step the
@@ -1444,15 +1454,15 @@ impl App {
             }
             finish_mouse_event!(false, "session_picker_overlay");
         }
-        if let Some(ref picker_cell) = self.login_picker_overlay {
+        if !question_active && let Some(ref picker_cell) = self.login_picker_overlay {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
             finish_mouse_event!(false, "login_picker_overlay");
         }
-        if let Some(ref picker_cell) = self.account_picker_overlay {
+        if !question_active && let Some(ref picker_cell) = self.account_picker_overlay {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
             finish_mouse_event!(false, "account_picker_overlay");
         }
-        if let Some(view) = crate::tui::TuiState::transcript_view(self) {
+        if !question_active && let Some(view) = crate::tui::TuiState::transcript_view(self) {
             let editing = view.editing.is_some();
             if self.copy_selection_mode
                 && let Some(scroll_only) = self.handle_copy_selection_mouse(mouse)
@@ -1490,11 +1500,11 @@ impl App {
             }
             finish_mouse_event!(is_mouse_scroll_kind(mouse.kind), "transcript_view");
         }
-        if crate::tui::TuiState::theme_picker_selected(self).is_some() {
+        if !question_active && crate::tui::TuiState::theme_picker_selected(self).is_some() {
             finish_mouse_event!(false, "theme_picker");
         }
         if self.auto_scroll_paused
-            && !self.presentation_modal_blocked()
+            && (question_active || !self.presentation_modal_blocked())
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && super::super::ui::jump_to_latest_area().is_some_and(|area| {
                 super::super::layout_utils::point_in_rect(mouse.column, mouse.row, area)
@@ -1541,7 +1551,7 @@ impl App {
             }
             current_messages_area = Some(layout.messages_area);
             current_diagram_area = layout.diagram_area;
-            input_area = layout.input_area;
+            input_area = (!question_active).then_some(layout.input_area).flatten();
             terminal_width =
                 layout.messages_area.width + layout.diagram_area.map(|a| a.width).unwrap_or(0);
             terminal_height =
@@ -1771,7 +1781,8 @@ impl App {
             finish_mouse_event!(!immediate_redraw, "hovered_pane_scroll");
         }
 
-        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+        if !question_active
+            && matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
             && let Some(hash) =
                 crate::tui::ui::panel_image_preview::image_at(mouse.column, mouse.row)
         {
@@ -1792,7 +1803,8 @@ impl App {
             finish_mouse_event!(false, "toggle_swarm_expand");
         }
 
-        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+        if !question_active
+            && matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
             && crate::tui::ui::visible_expand_edit_badge_at(mouse.column, mouse.row)
             && super::input::handle_expand_edit_badge_shortcut(self, 'e')
         {
@@ -1964,7 +1976,9 @@ impl App {
             0
         };
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
-        let changed = if self.scroll_offset >= bottom_threshold && self.transcript_view.is_none() {
+        let changed = if self.scroll_offset >= bottom_threshold
+            && (self.transcript_view.is_none() || self.question_dialog.is_some())
+        {
             self.follow_chat_bottom();
             true
         } else {

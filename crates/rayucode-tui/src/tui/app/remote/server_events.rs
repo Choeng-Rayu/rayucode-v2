@@ -166,6 +166,7 @@ pub(in crate::tui::app) fn handle_server_event(
 ) -> bool {
     match &event {
         ServerEvent::QuestionRequest { session_id, request_id, questions, .. } if !questions.is_empty() => {
+            app.wake_idle_hibernation_for("question");
             app.question_dialog = Some(super::super::question::QuestionDialog::new(
                 session_id.clone(), request_id.clone(), questions.clone(),
             ));
