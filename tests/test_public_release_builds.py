@@ -3,6 +3,7 @@
 The compatibility checks execute the actual selection fragment with stubbed
 compiler/installer commands, not a real Docker build.
 """
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,11 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+RESOLVER_SPEC = importlib.util.spec_from_file_location(
+    "resolve_release_version", ROOT / "scripts/resolve_release_version.py"
+)
+resolver = importlib.util.module_from_spec(RESOLVER_SPEC)
+RESOLVER_SPEC.loader.exec_module(resolver)
 
 
 class PublicReleaseTests(unittest.TestCase):
@@ -35,6 +41,8 @@ class PublicReleaseTests(unittest.TestCase):
     def test_public_release_publishes_directly_to_rayucode_v2(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("github.repository == 'Choeng-Rayu/rayucode-v2'", workflow)
+        self.assertIn("branches:\n      - main", workflow)
+        self.assertIn("scripts/resolve_release_version.py", workflow)
         self.assertIn("contents: write", workflow)
         self.assertIn("GH_TOKEN: ${{ github.token }}", workflow)
         self.assertNotIn("rayucode-v2-releases", workflow)
@@ -48,6 +56,62 @@ class PublicReleaseTests(unittest.TestCase):
             "aarch64-pc-windows-msvc",
         ):
             self.assertIn(target, workflow)
+
+    def test_resolve_release_version_auto_bumps_patch_and_honors_manual_bumps(self):
+        # Standard merge to main: v3.0.0 -> v3.0.1
+        res = resolver.compute_next_main_release(
+            cargo_version=(3, 0, 0),
+            all_tags=["v0.99.0", "v3.0.0", "v3.0.0-preview.12"],
+            head_tags=[],
+            commit_message="feat: new feature",
+            head_sha="a" * 40,
+        )
+        self.assertEqual(res["should_release"], "true")
+        self.assertEqual(res["release_tag"], "v3.0.1")
+        self.assertEqual(res["prev_tag"], "v3.0.0")
+        self.assertEqual(res["create_tag"], "true")
+
+        # Numeric semver ordering: v3.0.9 -> v3.0.10 (not lexicographical)
+        res_num = resolver.compute_next_main_release(
+            cargo_version=(3, 0, 0),
+            all_tags=["v3.0.2", "v3.0.9", "v3.0.1"],
+            head_tags=[],
+            commit_message="fix: numeric bump",
+            head_sha="b" * 40,
+        )
+        self.assertEqual(res_num["release_tag"], "v3.0.10")
+        self.assertEqual(res_num["prev_tag"], "v3.0.9")
+
+        # Explicit minor/major bump in Cargo.toml: 3.1.0 > v3.0.10 -> v3.1.0
+        res_minor = resolver.compute_next_main_release(
+            cargo_version=(3, 1, 0),
+            all_tags=["v3.0.10"],
+            head_tags=[],
+            commit_message="feat: minor release",
+            head_sha="c" * 40,
+        )
+        self.assertEqual(res_minor["release_tag"], "v3.1.0")
+        self.assertEqual(res_minor["prev_tag"], "v3.0.10")
+
+        # Skip escape hatch in commit message
+        res_skip = resolver.compute_next_main_release(
+            cargo_version=(3, 0, 0),
+            all_tags=["v3.0.0"],
+            head_tags=[],
+            commit_message="docs: fix typo [skip release]",
+            head_sha="d" * 40,
+        )
+        self.assertEqual(res_skip["should_release"], "false")
+
+        # Already-tagged commit is never double-released
+        res_dup = resolver.compute_next_main_release(
+            cargo_version=(3, 0, 0),
+            all_tags=["v3.0.0", "v3.0.1"],
+            head_tags=["v3.0.1"],
+            commit_message="feat: already released",
+            head_sha="e" * 40,
+        )
+        self.assertEqual(res_dup["should_release"], "false")
 
     def test_compatibility_ci_and_local_selection(self):
         source = (ROOT / "scripts/build_linux_compat.sh").read_text()

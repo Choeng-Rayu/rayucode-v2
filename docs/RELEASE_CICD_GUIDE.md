@@ -33,28 +33,27 @@ Under **Settings → Secrets and variables → Actions → Variables**:
 | `x86_64-pc-windows-msvc` | `rayu-windows-x86_64.exe` + `.tar.gz` | `windows-latest` | Native x64 MSVC compile + PowerShell parser check + native `--version` |
 | `aarch64-pc-windows-msvc` | `rayu-windows-aarch64.exe` + `.tar.gz` | `windows-11-arm` | Native ARM64 MSVC compile (`--no-default-features --features pdf`) + native `--version` |
 
-## How to Cut a New Release (e.g. `v3.0.0`, `v3.0.1`)
+## How to Cut a New Release (Automatic on Push / Merge to `main`)
 
-1. Bump `version` in `Cargo.toml` (and run `cargo check` so `Cargo.lock` stays synchronized).
-2. Add release notes in `changelog/v<VERSION>.json`.
-3. Commit and push to `main` in `Choeng-Rayu/rayucode-v2`:
-   ```bash
-   git add Cargo.toml Cargo.lock changelog/
-   git commit -m "chore(release): v3.0.0"
-   git push origin main
-   ```
-4. Create and push the matching annotated tag:
-   ```bash
-   git tag -a v3.0.0 -m "RayuCode v3.0.0"
-   git push origin v3.0.0
-   ```
-5. GitHub Actions (`.github/workflows/release.yml`) automatically:
-   - Validates `Cargo.toml`, `Cargo.lock`, `install.sh` syntax, conversion tests, legacy migration tests, and setup friction tests.
-   - Compiles and natively smoke-tests all 6 Linux, macOS, and Windows targets in parallel.
-   - Generates unified `SHA256SUMS`, updates the `release-metadata` branch (`releases/latest/version`, `releases/v3.0.0/{SHA256SUMS,download-bases}`), and publishes the public GitHub Release on `Choeng-Rayu/rayucode-v2`.
-   - Runs an anonymous (`GITHUB_TOKEN` & `GH_TOKEN` unset) verification job downloading every asset, verifying `sha256sum -c SHA256SUMS`, and smoke-testing `scripts/install.sh` in a sandboxed `$HOME`.
+Develop on `dev` (or a feature branch), then push or merge into `main`:
 
-> You can also re-run any existing tag manually via **Actions → Release → Run workflow** with the `tag` input.
+```bash
+git checkout main
+git merge dev
+git push origin main
+```
+
+GitHub Actions (`.github/workflows/release.yml`) automatically:
+1. **Resolves the next version** via `scripts/resolve_release_version.py`:
+   - Auto-bumps the patch version from the latest stable tag (e.g. `v3.0.0` → `v3.0.1` → `v3.0.2`).
+   - If you manually bump `version` in `Cargo.toml` higher than the latest tag (e.g. `3.1.0` or `4.0.0`), it releases that exact minor/major version instead.
+   - To push a non-release commit (like a quick README fix) to `main` without building, include `[skip release]` in the commit message.
+2. Validates `Cargo.lock`, `install.sh` syntax, conversion tests, legacy migration tests, and setup friction tests, and auto-generates release notes (using `changelog/v<VERSION>.json` if present, or commit history since the previous tag).
+3. Compiles and natively smoke-tests all 6 Linux, macOS, and Windows targets in parallel (with `RAYU_BUILD_SEMVER` pinned to the new version, so `rayu --version` and `rayu update` report the exact new release without bot commits back to `main`).
+4. **Only after all 6 builds succeed**: creates tag `v<VERSION>` on the validated commit, generates unified `SHA256SUMS`, updates the `release-metadata` branch (`releases/latest/version`, `releases/v<VERSION>/{SHA256SUMS,download-bases}`), and publishes the public GitHub Release on `Choeng-Rayu/rayucode-v2`.
+5. Runs an anonymous (`GITHUB_TOKEN` & `GH_TOKEN` unset) verification job downloading every asset, verifying `sha256sum -c SHA256SUMS`, and smoke-testing `scripts/install.sh` in a sandboxed `$HOME`.
+
+> You can also rebuild any existing tag or trigger a release manually via **Actions → Release → Run workflow** (leave `tag` blank to auto-release `main`, or enter a tag like `v3.0.1` to rebuild it). Manual `git tag vX.Y.Z && git push origin vX.Y.Z` still works too.
 
 ## Verifying `rayu-web` and `rayu-cli` Installer Sync
 

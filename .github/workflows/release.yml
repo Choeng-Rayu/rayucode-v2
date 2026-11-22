@@ -5,7 +5,6 @@ env:
   RAYU_CI_BUILD: "1"
   RAYU_RELEASE_BUILD: "1"
   RAYU_USE_PLAIN_CARGO: "1"
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   ENABLE_OTHER_PROVIDER: ${{ vars.ENABLE_OTHER_PROVIDER || 'false' }}
   RAYU_FALLBACK_MODEL: ${{ vars.RAYU_FALLBACK_MODEL || 'deepseek-v4.1-flash-1017-cloud' }}
   # CI builds without the local parallel-frontend rustc wrapper from .cargo/config.toml.
@@ -19,16 +18,18 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to build and publish (vMAJOR.MINOR.PATCH, e.g. v3.0.0)
-        required: true
+        description: Optional existing tag (vMAJOR.MINOR.PATCH) to rebuild; leave blank to auto-release main
+        required: false
         type: string
   push:
+    branches:
+      - main
     tags:
       - 'v*'
       - '!v*-preview.*'
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'main' || (inputs.tag || github.ref_name) }}
   cancel-in-progress: false
 
 permissions:
@@ -36,44 +37,43 @@ permissions:
 
 jobs:
   prepare-release:
-    name: Validate tag & release configuration
+    name: Resolve & validate release version
     if: github.repository == 'Choeng-Rayu/rayucode-v2' && !contains(inputs.tag || github.ref_name, '-preview.')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      tag_sha: ${{ steps.validate.outputs.tag_sha }}
+      should_release: ${{ steps.resolve.outputs.should_release }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      prev_tag: ${{ steps.resolve.outputs.prev_tag }}
+      tag_sha: ${{ steps.resolve.outputs.tag_sha }}
+      create_tag: ${{ steps.resolve.outputs.create_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate release tag and Cargo.toml version
-        id: validate
+      - name: Resolve release tag & commit
+        id: resolve
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          python3 scripts/resolve_release_version.py --github-output "$GITHUB_OUTPUT"
+
+      - name: Checkout resolved release commit
+        if: steps.resolve.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "::error::Invalid release tag '$RELEASE_TAG' (expected vMAJOR.MINOR.PATCH)"
-            exit 1
-          }
-          tag_sha=$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "$tag_sha" != "${GITHUB_SHA}" ]; then
-            echo "::error::Tag ${RELEASE_TAG} (${tag_sha}) does not match triggering commit (${GITHUB_SHA})"
-            exit 1
-          fi
-          git checkout --detach "$tag_sha"
-          cargo_version=$(python3 -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"])')
-          expected_version="${RELEASE_TAG#v}"
-          if [ "$cargo_version" != "$expected_version" ]; then
-            echo "::error::Cargo.toml version ($cargo_version) does not match tag ($RELEASE_TAG)"
-            exit 1
-          fi
-          echo "Validated tag ${RELEASE_TAG} at ${tag_sha} (Cargo.toml version ${cargo_version})"
-          echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
+          git checkout --detach "${{ steps.resolve.outputs.tag_sha }}"
 
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.resolve.outputs.should_release == 'true'
 
       - name: Verify frozen Cargo.lock and installer tests
+        if: steps.resolve.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -85,7 +85,12 @@ jobs:
           bash scripts/setup_friction_eval.sh
 
       - name: Generate release notes
+        if: steps.resolve.outputs.should_release == 'true'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.release_tag }}
+          PREV_TAG: ${{ steps.resolve.outputs.prev_tag }}
+          TAG_SHA: ${{ steps.resolve.outputs.tag_sha }}
         run: |
           set -euo pipefail
           VERSION_NUM="${RELEASE_TAG#v}"
@@ -107,11 +112,21 @@ jobs:
           print("\n".join(lines).rstrip())
           PY
           else
-            cat > release_notes.md <<EOF
-          # RayuCode ${RELEASE_TAG}
-
-          Official cross-platform binary release of RayuCode CLI (Rust) for Linux, macOS, and Windows.
-          EOF
+            {
+              echo "# RayuCode ${RELEASE_TAG}"
+              echo ""
+              echo "Official cross-platform binary release of RayuCode CLI (Rust) for Linux, macOS, and Windows."
+              if [ -n "${PREV_TAG:-}" ]; then
+                changes=$(git log --no-merges --format='- %s (%h)' "${PREV_TAG}..${TAG_SHA}" | head -n 50 || true)
+                if [ -n "$changes" ]; then
+                  echo ""
+                  echo "## What's Changed (since ${PREV_TAG})"
+                  printf '%s\n' "$changes"
+                  echo ""
+                  echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${RELEASE_TAG}"
+                fi
+              fi
+            } > release_notes.md
           fi
           cat >> release_notes.md <<EOF
 
@@ -146,6 +161,7 @@ jobs:
           EOF
 
       - name: Upload release notes artifact
+        if: steps.resolve.outputs.should_release == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: release-notes
@@ -155,8 +171,11 @@ jobs:
   build-unix:
     name: Build (${{ matrix.target }})
     needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -312,8 +331,11 @@ jobs:
   build-windows:
     name: Build (${{ matrix.target }})
     needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -434,10 +456,15 @@ jobs:
   publish-public-release:
     name: Publish GitHub Release & checksums
     needs: [prepare-release, build-unix, build-windows]
+    if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
+      TAG_SHA: ${{ needs.prepare-release.outputs.tag_sha }}
+      CREATE_TAG: ${{ needs.prepare-release.outputs.create_tag }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -474,6 +501,22 @@ jobs:
 
           (cd staging && sha256sum rayu-* > SHA256SUMS)
           cat staging/SHA256SUMS
+
+      - name: Create release tag at validated commit (when triggered from main)
+        if: env.CREATE_TAG == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${RELEASE_TAG}" \
+              -f sha="${TAG_SHA}" >/dev/null
+            echo "Created tag ${RELEASE_TAG} -> ${TAG_SHA}"
+          else
+            echo "Tag ${RELEASE_TAG} already exists; reusing existing tag."
+          fi
 
       - name: Publish static release metadata to release-metadata branch
         shell: bash
@@ -533,8 +576,11 @@ jobs:
   verify-public-release:
     name: Verify anonymous public downloads & installer smoke test
     needs: [prepare-release, publish-public-release]
+    if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.release_tag }}
     steps:
       - name: Verify anonymous public access, checksums, and Linux installer
         shell: bash
@@ -557,7 +603,7 @@ jobs:
             exit 1
           }
 
-          latest_url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${GITHUB_REPOSITORY}/releases/latest")
+          latest_url=$(curl -fsSIL --retry 3 --retry-delay 2 -o /dev/null -w '%{url_effective}' "https://github.com/${GITHUB_REPOSITORY}/releases/latest")
           [[ "$latest_url" == *"/releases/tag/${RELEASE_TAG}" ]] || {
             echo "::error::releases/latest resolved to '$latest_url', expected '${RELEASE_TAG}'"
             exit 1
@@ -566,11 +612,11 @@ jobs:
           verify_dir=$(mktemp -d)
           trap 'rm -rf "$verify_dir"' EXIT
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          curl -fsSL "${base}/SHA256SUMS" -o "$verify_dir/SHA256SUMS"
+          curl -fsSL --retry 3 --retry-delay 2 "${base}/SHA256SUMS" -o "$verify_dir/SHA256SUMS"
           while read -r _sum filename; do
             [ -n "${filename:-}" ] || continue
             echo "Downloading $filename anonymously..."
-            curl -fsSL "${base}/${filename}" -o "$verify_dir/${filename}"
+            curl -fsSL --retry 3 --retry-delay 2 "${base}/${filename}" -o "$verify_dir/${filename}"
           done < "$verify_dir/SHA256SUMS"
           (cd "$verify_dir" && sha256sum -c SHA256SUMS)
 
@@ -581,7 +627,7 @@ jobs:
             RAYU_HOME="$install_home/.rayu" RAYU_INSTALL_DIR="$install_home/.local/bin" \
             RAYU_VERSION="$RELEASE_TAG" RAYU_SKIP_SERVER_RELOAD=1 RAYU_NO_TELEMETRY=1 \
             RAYU_SKIP_NPM_CHECK=1 \
-            bash -c "curl -fsSL 'https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${RELEASE_TAG}/scripts/install.sh' | bash"
+            bash -c "curl -fsSL --retry 5 --retry-delay 3 'https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${RELEASE_TAG}/scripts/install.sh' | bash"
           reported=$("$install_home/.local/bin/rayu" --version)
           echo "Installed binary reports: $reported"
           [[ "$reported" == "rayu ${RELEASE_TAG}"* ]] || {
