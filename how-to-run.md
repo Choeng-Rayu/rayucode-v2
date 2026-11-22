@@ -79,10 +79,36 @@ compile-time gate: exporting a different value at runtime cannot re-enable them.
 
 ### 2.2 Runtime keys (endpoints, auth gate, telemetry)
 
-Export the file into the shell that launches `rayu`:
+Runtime keys are **not** baked into the build. They reach a process only through
+its environment, so a local test run needs either an exported shell or the
+launcher below. Running `./target/release/rayu` with nothing exported talks to
+production regardless of what `.env` says.
+
+The easiest correct local run:
 
 ```bash
 cd /home/rayu/rayu/rayucode-v2
+scripts/rayu-local.sh                # interactive TUI against your .env
+scripts/rayu-local.sh run 'Say hello'
+```
+
+`scripts/rayu-local.sh` sources `.env`, points `RAYU_HOME` at `./.rayu-local`
+so a local `rayu login` cannot overwrite your real `~/.rayu/rayu-auth.json`, and
+binds a private socket so it never competes with the running daemon. It prints
+the binary, the resolved API URL, and the socket before it execs.
+
+Equivalent by hand:
+
+```bash
+cd /home/rayu/rayu/rayucode-v2
+set -a && source .env && set +a
+RAYU_HOME=$PWD/.rayu-local ./target/release/rayu --no-update \
+  --socket $PWD/.rayu-local/rayu.sock
+```
+
+To make the **installed** `rayu` use these endpoints too, export before launch:
+
+```bash
 set -a && source .env && set +a
 rayu
 ```
@@ -112,6 +138,10 @@ RAYU_HOME=$(mktemp -d) ./target/release/rayu run --no-update 'Say hello'
 ### 2.3 Verifying which values a process actually has
 
 ```bash
+# What binary you are actually running, and where it points:
+strings ./target/release/rayu | grep -oE 'https://(api|gateway)\.rayucode\.com[a-z/]*|https://rayucode\.com' | sort -u
+strings ./target/release/rayu | grep -c 'localhost:4000' || true   # 0 = not baked in
+
 # What the live daemon really sees (authoritative, no guessing):
 pid=$(pgrep -f 'rayu serve' | head -1)
 tr '\0' '\n' < /proc/$pid/environ | grep -E \
