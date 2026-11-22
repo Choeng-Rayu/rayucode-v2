@@ -41,6 +41,7 @@ export function AppShell({
   }, [toggleLeftSidebar])
 
   const routeMeta = ROUTES[activeRoute] ?? ROUTES.home
+  const isFullPageSettings = activeRoute === "settings"
 
   return (
     <div
@@ -48,33 +49,44 @@ export function AppShell({
       data-route={activeRoute}
       className={cn(
         "flex h-screen w-screen overflow-hidden",
-        leftCollapsed ? "bg-canvas" : "bg-chrome"
+        !isFullPageSettings && leftCollapsed ? "bg-canvas" : "bg-chrome"
       )}
     >
-      <LeftSidebar />
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <main
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas",
-            !leftCollapsed &&
-              "rounded-tl-[14px] border-t border-l border-hairline"
-          )}
-        >
+      {isFullPageSettings ? (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <DaemonBanner />
-          <TopBar />
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {children}
           </div>
-        </main>
-      </div>
+        </div>
+      ) : (
+        <>
+          <LeftSidebar />
 
-      {routeMeta.hasRightInspector && (
-        <RightInspectorHost
-          contextSlot={contextSlot}
-          documentSlot={documentSlot}
-          previewFallback={previewFallback}
-        />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <main
+              className={cn(
+                "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas",
+                !leftCollapsed &&
+                  "rounded-tl-[14px] border-t border-l border-hairline"
+              )}
+            >
+              <DaemonBanner />
+              <TopBar />
+              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+                {children}
+              </div>
+            </main>
+          </div>
+
+          {routeMeta.hasRightInspector && (
+            <RightInspectorHost
+              contextSlot={contextSlot}
+              documentSlot={documentSlot}
+              previewFallback={previewFallback}
+            />
+          )}
+        </>
       )}
     </div>
   )
