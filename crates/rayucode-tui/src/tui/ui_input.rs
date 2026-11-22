@@ -1000,6 +1000,20 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     if area.is_empty() {
         return;
     }
+    if app.question_active() {
+        let line = Line::styled(
+            "Waiting for your answer",
+            Style::default().fg(accent_color()),
+        );
+        frame.render_widget(
+            Paragraph::new(super::truncate_line_with_ellipsis_to_width(
+                &line,
+                area.width.into(),
+            )),
+            area,
+        );
+        return;
+    }
     if let Some(stats) = app.turn_footer() {
         let line = turn_footer_line(app, stats, area.width as usize, pending_count);
         frame.render_widget(Paragraph::new(line), area);

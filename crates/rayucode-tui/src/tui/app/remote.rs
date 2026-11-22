@@ -564,25 +564,58 @@ async fn apply_terminal_event<B: Backend>(
     remote: &mut RemoteConnection,
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
-    if let Some(dialog) = &mut app.question_dialog {
+    if app.question_dialog.is_some() {
         match &event {
-            Some(Ok(Event::Key(key))) if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') => {}
+            Some(Ok(Event::Key(key)))
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('c') =>
+            {
+                // Keep the normal interrupt and copy-selection behavior.
+            }
             Some(Ok(Event::Key(key))) => {
-                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-                    && let Some(response) = dialog.key(rayucode_tui_core::korean_input::normalize_key_event(*key))
-                {
-                    match remote.send_question_response(&dialog.session_id, &dialog.request_id, response).await {
-                        Ok(id) => dialog.submitted = Some(id),
-                        Err(error) => dialog.error = Some(format!("Could not send reply: {error}")),
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                    crate::tui::ui::note_key_event_read();
+                    app.note_client_interaction();
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+                    {
+                        if key.code == KeyCode::PageUp {
+                            app.scroll_up(10);
+                        } else {
+                            app.scroll_down(10);
+                        }
+                        dispatch_compacted_history_load(app, remote).await;
+                    } else if !app.handle_jump_to_latest_key(key.code, key.modifiers)
+                        && !(key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter)
+                        && let Some(dialog) = &mut app.question_dialog
+                        && let Some(response) =
+                            dialog.key(rayucode_tui_core::korean_input::normalize_key_event(*key))
+                    {
+                        dialog.remember_response(response.clone());
+                        match remote
+                            .send_question_response(
+                                &dialog.session_id,
+                                &dialog.request_id,
+                                response,
+                            )
+                            .await
+                        {
+                            Ok(id) => dialog.submitted = Some(id),
+                            Err(error) => {
+                                dialog.error = Some(format!("Could not send reply: {error}"))
+                            }
+                        }
                     }
+                }
+                return Ok(key.kind != KeyEventKind::Release);
+            }
+            Some(Ok(Event::Paste(text))) => {
+                app.note_client_interaction();
+                if let Some(dialog) = &mut app.question_dialog {
+                    dialog.paste(text);
                 }
                 return Ok(true);
             }
-            Some(Ok(Event::Paste(text))) => {
-                dialog.paste(text);
-                return Ok(true);
-            }
-            Some(Ok(Event::Mouse(_))) => return Ok(false),
             _ => {}
         }
     }

@@ -1692,9 +1692,10 @@ pub(crate) fn jump_to_latest_area() -> Option<Rect> {
 fn draw_jump_to_latest(frame: &mut Frame, app: &dyn TuiState, status: Rect) -> Rect {
     if !app.auto_scroll_paused()
         || status.is_empty()
-        || app
-            .inline_interactive_state()
-            .is_some_and(|picker| !picker.preview)
+        || (!app.question_active()
+            && app
+                .inline_interactive_state()
+                .is_some_and(|picker| !picker.preview))
     {
         return status;
     }
@@ -1704,7 +1705,7 @@ fn draw_jump_to_latest(frame: &mut Frame, app: &dyn TuiState, status: Rect) -> R
     } else {
         "Jump to latest".to_string()
     };
-    if app.turn_footer().is_some() && status.width < 34 {
+    if (app.turn_footer().is_some() || app.question_active()) && status.width < 34 {
         label = "↓".into();
     }
     if label.len() > usize::from(status.width) {
@@ -3095,12 +3096,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // natively in all terminal emulators.
     clear_area(frame, area);
 
-    if app.draw_question_dialog(frame, area) {
-        finalize_frame_metrics(app, total_start, Duration::ZERO, total_start.elapsed(), None);
-        return;
-    }
-
-    if let Some(hash) = app.panel_image_preview() {
+    let question_active = app.question_active();
+    if !question_active && let Some(hash) = app.panel_image_preview() {
         panel_image_preview::draw_preview(frame, area, hash);
         finalize_frame_metrics(
             app,
@@ -3112,7 +3109,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(overlay) = app.commit_log_overlay() {
+    if !question_active && let Some(overlay) = app.commit_log_overlay() {
         overlays::draw_commit_log_overlay(frame, area, overlay);
         finalize_frame_metrics(
             app,
@@ -3124,7 +3121,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(scroll) = app.changelog_scroll() {
+    if !question_active && let Some(scroll) = app.changelog_scroll() {
         overlays::draw_changelog_overlay(frame, area, scroll, app);
         finalize_frame_metrics(
             app,
@@ -3136,7 +3133,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(scroll) = app.help_scroll() {
+    if !question_active && let Some(scroll) = app.help_scroll() {
         overlays::draw_help_overlay(frame, area, scroll, app);
         finalize_frame_metrics(
             app,
@@ -3148,7 +3145,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some((scroll, content)) = app.model_status_overlay() {
+    if !question_active && let Some((scroll, content)) = app.model_status_overlay() {
         overlays::draw_model_status_overlay(frame, area, scroll, content);
         finalize_frame_metrics(
             app,
@@ -3160,7 +3157,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(picker_cell) = app.session_picker_overlay() {
+    if !question_active && let Some(picker_cell) = app.session_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
         finalize_frame_metrics(
@@ -3173,7 +3170,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(picker_cell) = app.login_picker_overlay() {
+    if !question_active && let Some(picker_cell) = app.login_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
         finalize_frame_metrics(
@@ -3186,7 +3183,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(picker_cell) = app.account_picker_overlay() {
+    if !question_active && let Some(picker_cell) = app.account_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
         finalize_frame_metrics(
@@ -3205,7 +3202,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         None
     };
-    let swarm_page_active = app.swarm_panel_full_page();
+    let swarm_page_active = !question_active && app.swarm_panel_full_page();
 
     // Check diagram display mode and get active diagrams early so we can
     // determine the horizontal split before computing input width etc.
@@ -3225,7 +3222,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         !swarm_page_active && diff_mode.is_file() && app.has_display_edit_tool_messages();
     let has_right_side_pane_content = has_side_panel_content || has_file_diff_edits;
     // Fullscreen side panel replaces the transcript area; status line and input stay.
-    let side_panel_fullscreen = has_side_panel_content && app.side_panel_fullscreen();
+    let side_panel_fullscreen =
+        has_side_panel_content && app.side_panel_fullscreen() && !question_active;
     // Regular side-panel pages and full-file diffs share the right-hand surface.
     // Suppress a separate diagram pane to avoid a triple-split layout.
     let suppress_side_diagram = has_right_side_pane_content;
@@ -3425,10 +3423,17 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     // Calculate input height based on the same wrapping logic used for rendering
     // (max 10 lines visible, scrolls if more).
-    let base_input_height =
-        input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt).min(10) as u16;
+    let base_input_height = if question_active {
+        0
+    } else {
+        input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt).min(10) as u16
+    };
     // Hints in the composer reserve a row. Suggestions float over the layout.
-    let hint_line_height = input_ui::input_hint_line_height(app);
+    let hint_line_height = if question_active {
+        0
+    } else {
+        input_ui::input_hint_line_height(app)
+    };
     let blocker_lines = messages::todo_blocker_footer(app.pinned_todos_payload(), chat_area.width);
 
     if let Some(ref mut capture) = debug_capture {
@@ -3462,7 +3467,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         prepared
     };
 
-    let onboarding_welcome = app.onboarding_welcome_active();
+    let onboarding_welcome = !question_active && app.onboarding_welcome_active();
 
     // The guided onboarding phases (login import, OpenAI prompt, continue prompt)
     // are entirely key-driven and own the whole chat column: they render their own
@@ -3488,7 +3493,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    if let Some(view) = app.transcript_view() {
+    if !question_active && let Some(view) = app.transcript_view() {
         viewport::clear_pinned_todo_layout();
         let status_height = u16::from(chat_area.height >= 3 && app.turn_footer().is_some());
         let bar_height = 1;
@@ -3526,7 +3531,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
-    let show_donut = !onboarding_welcome && super::idle_donut_active(app);
+    let show_donut = !question_active && !onboarding_welcome && super::idle_donut_active(app);
     let available_height = chat_area.height;
     // Keep one editable row first, then leave room for the transcript. On
     // short terminals, transient chrome must yield before either disappears.
@@ -3541,22 +3546,44 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         rows
     };
     let editable_height = reserve_rows(1);
-    let theme_picker = app.theme_picker_selected();
-    let focused_picker = app
-        .inline_interactive_state()
-        .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
+    let theme_picker = (!question_active)
+        .then(|| app.theme_picker_selected())
+        .flatten();
+    let focused_picker = !question_active
+        && app
+            .inline_interactive_state()
+            .is_some_and(|picker| !picker.preview && picker.kind != crate::tui::PickerKind::Model);
     let picker_floor = reserve_rows(u16::from(theme_picker.is_some() || focused_picker));
-    let status_height = reserve_rows(u16::from(available_height >= 3));
+    let status_height = reserve_rows(u16::from(
+        available_height >= if question_active { 4 } else { 3 },
+    ));
+    let question_height = if question_active {
+        let budget = (available_height / 2)
+            .max(4)
+            .min(available_height - min_messages_height - status_height);
+        editable_height
+            + reserve_rows(
+                app.question_panel_height(chat_area.width, budget)
+                    .saturating_sub(editable_height),
+            )
+    } else {
+        0
+    };
     let overscroll_height = reserve_rows(u16::from(available_height >= 3));
-    let inline_requested = if theme_picker.is_some() {
+    let inline_requested = if question_active {
+        0
+    } else if theme_picker.is_some() {
         rayucode_tui_style::ALL_THEME_PRESETS.len() as u16 + 1
     } else {
         inline_ui_height(app)
     };
     let inline_block_height =
         picker_floor + reserve_rows(inline_requested.saturating_sub(picker_floor));
-    let input_height =
-        editable_height + reserve_rows((base_input_height + hint_line_height).saturating_sub(1));
+    let input_height = if question_active {
+        question_height
+    } else {
+        editable_height + reserve_rows((base_input_height + hint_line_height).saturating_sub(1))
+    };
     let inline_ui_gap_height =
         reserve_rows((blocker_lines.len() as u16).max(u16::from(inline_block_height > 0)));
     let blocker_height = inline_ui_gap_height.min(blocker_lines.len() as u16);
@@ -3564,7 +3591,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let queued_height = reserve_rows(pending_count.min(3) as u16);
     let swarm_strip_height = reserve_rows(swarm_strip_lines.len() as u16);
     let notification_height = reserve_rows(input_ui::notification_height(app, chat_area.width));
-    let composer_rules_height = if available_height >= 10
+    let composer_rules_height = if !question_active
+        && available_height >= 10
         && app.login_input_hint().is_none()
         && !app.terminal_clear_collapsed()
     {
@@ -3584,7 +3612,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + blocker_height
         + composer_height
         + donut_height;
-    let terminal_clear_collapsed = !swarm_page_active && app.terminal_clear_collapsed();
+    let terminal_clear_collapsed =
+        !question_active && !swarm_page_active && app.terminal_clear_collapsed();
     let task_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
     let height_without_chrome = available_height.saturating_sub(fixed_chrome_height);
     let task_capacity = height_without_chrome.saturating_sub(min_messages_height);
@@ -3608,7 +3637,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // On short screens a task can use the optional shortcut row, leaving the
     // input, status and transcript visible.
     let overscroll_height = overscroll_height.min(task_capacity.saturating_sub(todo_height));
-    let turn_status_height = if app.turn_footer().is_some() || todo_height > 0 {
+    let turn_status_height = if question_active || app.turn_footer().is_some() || todo_height > 0 {
         status_height
     } else {
         0
@@ -3750,6 +3779,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         chat_area.width,
         footer_height,
     );
+    let (above_todo_height, below_todo_height) = if question_active {
+        (blocker_height, turn_status_height)
+    } else {
+        (turn_status_height, blocker_height)
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -3760,9 +3794,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             Constraint::Length(inline_block_height),
             Constraint::Length(inline_ui_gap_height),
             Constraint::Length(donut_height),
-            Constraint::Length(turn_status_height),
+            Constraint::Length(above_todo_height),
             Constraint::Length(todo_height),
-            Constraint::Length(blocker_height),
+            Constraint::Length(below_todo_height),
             Constraint::Length(composer_height),
             Constraint::Length(overscroll_height),
         ])
@@ -3771,7 +3805,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             ..chat_area
         });
     let composer_area = chunks[10];
-    let turn_status = chunks[7];
+    let (turn_status, blocker_area) = if question_active {
+        (chunks[9], chunks[7])
+    } else {
+        (chunks[7], chunks[9])
+    };
     let status_area = if turn_status_height > 0 {
         turn_status
     } else {
@@ -3880,7 +3918,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         messages_area,
         diagram_area,
         diff_pane_area,
-        Some(input_area),
+        (!question_active).then_some(input_area),
     );
 
     let mut chat_scrollbar: Option<NativeScrollbar> = None;
@@ -4034,12 +4072,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     if blocker_height > 0 {
-        frame.render_widget(Paragraph::new(blocker_lines), chunks[9]);
+        frame.render_widget(Paragraph::new(blocker_lines), blocker_area);
     }
 
     let model_in_composer =
         has_composer_rules && input_ui::draw_composer_rules(frame, app, composer_area);
-    if let Some(selected) = theme_picker.filter(|_| inline_block_height == 0) {
+    if question_active {
+        app.draw_question_panel(frame, composer_area);
+    } else if let Some(selected) = theme_picker.filter(|_| inline_block_height == 0) {
         inline_ui::draw_theme_picker(frame, input_area, selected);
     } else {
         let _ = input_ui::draw_input(frame, app, input_area, next_prompt, &mut debug_capture);
@@ -4156,13 +4196,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         height: composer_area.height.saturating_add(pinned_rows),
         ..composer_area
     };
-    if theme_picker.is_none() {
+    if !question_active && theme_picker.is_none() {
         input_ui::draw_command_suggestions_overlay(frame, app, popover_anchor);
     }
 
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
-    input_ui::draw_prompt_history_search_overlay(frame, app, popover_anchor);
+    if !question_active {
+        input_ui::draw_prompt_history_search_overlay(frame, app, popover_anchor);
+    }
 
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.

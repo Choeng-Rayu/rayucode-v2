@@ -734,10 +734,20 @@ impl App {
 }
 
 impl crate::tui::TuiState for App {
-    fn draw_question_dialog(&self, frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) -> bool {
-        let Some(dialog) = &self.question_dialog else { return false };
-        dialog.draw(frame, area);
-        true
+    fn question_active(&self) -> bool {
+        self.question_dialog.is_some()
+    }
+
+    fn question_panel_height(&self, width: u16, budget: u16) -> u16 {
+        self.question_dialog
+            .as_ref()
+            .map_or(0, |dialog| dialog.height(width, budget))
+    }
+
+    fn draw_question_panel(&self, frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect) {
+        if let Some(dialog) = &self.question_dialog {
+            dialog.draw(frame, area);
+        }
     }
 
     fn hibernation_frame(&self) -> Option<&ratatui::buffer::Buffer> {
