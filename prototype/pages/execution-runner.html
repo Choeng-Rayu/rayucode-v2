@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Execution Runner</title>
+  <link rel="stylesheet" href="../css/tokens.css">
+  <link rel="stylesheet" href="../css/layout.css">
+  <link rel="stylesheet" href="../css/components.css">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <header class="titlebar">
+      <div class="traffic" aria-hidden="true"><span class="t-close"></span><span class="t-min"></span><span class="t-max"></span></div>
+      <div class="titlebar-brand">
+        <svg class="icon" style="color:var(--accent-text)" aria-hidden="true"><use href="#i-mark"/></svg>
+        RayuCode
+      </div>
+      <nav class="titlebar-crumbs" aria-label="Breadcrumb">
+        <span>rayucode-v2</span><span class="sep">/</span><span class="crumb-current">Gateway: retry budget tests</span>
+      </nav>
+      <div class="titlebar-spacer"></div>
+      <div class="titlebar-actions">
+        <button class="icon-btn" type="button" aria-label="Search sessions"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
+        <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+        <a class="btn btn-sm" href="settings-models.html"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a>
+      </div>
+    </header>
+
+    <div class="app-body">
+
+      <nav class="rail" aria-label="Primary">
+        <a class="rail-link" href="../index.html" aria-label="Agent workspace" title="Agent workspace"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></a>
+        <a class="rail-link" href="codebase-context.html" aria-label="Codebase context" title="Codebase context"><svg class="icon" aria-hidden="true"><use href="#i-tree"/></svg></a>
+        <a class="rail-link" href="execution-runner.html" aria-current="page" aria-label="Execution runner" title="Execution runner"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></a>
+        <a class="rail-link" href="agent-workspace.html" aria-label="Review queue" title="Review queue"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg></a>
+        <div class="rail-spacer"></div>
+        <a class="rail-link" href="settings-models.html" aria-label="Settings and models" title="Settings &amp; models"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a>
+        <div class="rail-avatar" title="lyyeakkhai">LK</div>
+      </nav>
+
+      <aside class="sidebar" aria-label="Sessions">
+        <div class="sidebar-head">
+          <button class="project-switch" type="button">
+            <svg class="icon" style="width:14px;height:14px;color:var(--text-3)" aria-hidden="true"><use href="#i-folder"/></svg>
+            rayucode-v2
+            <svg class="icon chev" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-d"/></svg>
+          </button>
+          <a class="btn btn-primary" href="agent-workspace.html" style="width:100%;margin-top:var(--space-2)">
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-plus"/></svg>New session
+          </a>
+        </div>
+
+        <div class="sidebar-label">Live · 2</div>
+        <div class="session-list">
+          <a class="session-row" href="../index.html">
+            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Retire legacy session cache</span></span>
+            <span class="session-meta"><span>rayu · build</span><span>4m 12s</span><span>3 files</span></span>
+          </a>
+          <a class="session-row is-active" href="execution-runner.html">
+            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Gateway: retry budget tests</span></span>
+            <span class="session-meta"><span>rayu · auto</span><span>1m 47s</span><span>cargo test</span></span>
+          </a>
+
+          <div class="sidebar-label" style="padding-left:var(--space-2)">Waiting on you · 1</div>
+          <a class="session-row" href="agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-wait" aria-hidden="true"></span><span class="name">VS Code: model picker refresh</span></span>
+            <span class="session-meta"><span>rayu · plan</span><span>awaiting review</span></span>
+          </a>
+
+          <div class="sidebar-label" style="padding-left:var(--space-2)">Recent</div>
+          <a class="session-row" href="agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">Fix telemetry worker backoff</span></span>
+            <span class="session-meta"><span>merged</span><span>2h ago</span></span>
+          </a>
+          <a class="session-row" href="agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">SDK: streaming types cleanup</span></span>
+            <span class="session-meta"><span>merged</span><span>1d ago</span></span>
+          </a>
+          <a class="session-row" href="agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-fail" aria-hidden="true"></span><span class="name">Migrate OAuth device flow</span></span>
+            <span class="session-meta"><span>stopped</span><span>2d ago</span></span>
+          </a>
+        </div>
+
+        <div class="sidebar-foot">
+          <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-cpu"/></svg>
+          <span class="mono">3 agents · 214 MB</span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="pane-head">
+          <span class="pulse pulse-live" aria-hidden="true"></span>
+          <h1 class="pane-title">Gateway: retry budget tests</h1>
+          <span class="badge badge-live">Autonomous</span>
+          <span class="pane-sub">session e7b3 · step 3 of 5</span>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-pause"/></svg>Pause</button>
+          <button class="btn btn-danger-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
+        </div>
+        <div class="live-thread" role="presentation"></div>
+
+        <div class="split">
+          <div class="split-main" data-tabs>
+            <!-- Terminal -->
+            <div style="flex:1;display:flex;flex-direction:column;min-height:0;padding:var(--space-4) var(--space-6) 0">
+              <div class="term" style="flex:1">
+                <div class="term-head" role="tablist" aria-label="Terminal tabs">
+                  <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-terminal"/></svg>
+                  <button class="term-tab" role="tab" id="tab-agent" aria-controls="panel-agent" aria-selected="true" type="button">agent · cargo test</button>
+                  <button class="term-tab" role="tab" id="tab-shell" aria-controls="panel-shell" aria-selected="false" type="button">shell</button>
+                  <span class="spacer"></span>
+                  <span class="badge badge-mono">exit —</span>
+                  <button class="icon-btn" type="button" aria-label="Clear terminal"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-x"/></svg></button>
+                </div>
+                <div class="term-body" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent" tabindex="0">
+<pre><span class="term-line"><span class="term-prompt">rayu@e7b3</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ cargo test -p rayu-gateway retry_budget</span>
+<span class="term-line"><span class="term-dim">   Compiling rayu-gateway v0.9.4 (/Users/lyyeakkhai/workspace/rayu/rayucode/rayu-gateway-rust)</span></span>
+<span class="term-line"><span class="term-dim">    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.42s</span></span>
+<span class="term-line"><span class="term-dim">     Running unittests src/lib.rs (target/debug/deps/rayu_gateway-8c2f1a9e)</span></span>
+<span class="term-line"></span>
+<span class="term-line">running 6 tests</span>
+<span class="term-line">test retry::budget::tests::exhaustion_returns_503 ... <span class="term-ok">ok</span></span>
+<span class="term-line">test retry::budget::tests::respects_retry_after_header ... <span class="term-ok">ok</span></span>
+<span class="term-line">test retry::budget::tests::per_provider_isolation ... <span class="term-ok">ok</span></span>
+<span class="term-line">test retry::budget::tests::jitter_stays_within_bounds ... <span class="term-ok">ok</span></span>
+<span class="term-line">test retry::budget::tests::budget_refills_over_window ... <span class="term-ok">ok</span></span>
+<span class="term-line">test retry::budget::tests::streaming_midflight_retry ... <span class="term-warn">FAILED</span></span>
+<span class="term-line"></span>
+<span class="term-line">failures:</span>
+<span class="term-line">---- retry::budget::tests::streaming_midflight_retry stdout ----</span>
+<span class="term-line"><span class="term-err">thread 'streaming_midflight_retry' panicked at src/retry/budget.rs:214:9:</span></span>
+<span class="term-line"><span class="term-err">assertion `left == right` failed: retried stream must not duplicate chunks</span></span>
+<span class="term-line"><span class="term-err">  left: 42</span></span>
+<span class="term-line"><span class="term-err"> right: 40</span></span>
+<span class="term-line"></span>
+<span class="term-line">test result: <span class="term-warn">FAILED</span>. 5 passed; 1 failed; 0 ignored; measured in 0.84s</span>
+<span class="term-line"></span>
+<span class="term-line"><span class="term-prompt">rayu</span> <span class="term-dim">·</span> failure isolated to chunk dedup on retry; patching budget.rs:214 region <span class="term-caret" aria-hidden="true"></span></span></pre>
+                </div>
+                <div class="term-body" role="tabpanel" id="panel-shell" aria-labelledby="tab-shell" tabindex="0" hidden>
+<pre><span class="term-line"><span class="term-prompt">lyyeakkhai</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ git status --short</span>
+<span class="term-line"> M rayu-gateway-rust/src/retry/budget.rs</span>
+<span class="term-line"> M rayu-gateway-rust/src/retry/stream.rs</span>
+<span class="term-line"><span class="term-prompt">lyyeakkhai</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ <span class="term-caret" aria-hidden="true"></span></span></pre>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tool log strip -->
+            <div style="flex:none;padding:var(--space-3) var(--space-6) var(--space-4)">
+              <div class="tools">
+                <div class="tools-head">
+                  <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-zap"/></svg>
+                  Recent tool calls <span class="count">3</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-ghost btn-sm" type="button">Full log</button>
+                </div>
+                <div class="tool-step is-done">
+                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></span>
+                  <div class="t-body"><div class="t-name">edit</div><div class="t-arg">src/retry/stream.rs — dedup chunks by sequence id</div></div>
+                  <span class="t-dur">2.2s</span>
+                </div>
+                <div class="tool-step is-fail">
+                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                  <div class="t-body"><div class="t-name">bash</div><div class="t-arg">cargo test -p rayu-gateway retry_budget — 5 passed, 1 failed</div></div>
+                  <span class="t-dur">7.9s</span>
+                </div>
+                <div class="tool-step is-live">
+                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></span>
+                  <div class="t-body"><div class="t-name">edit</div><div class="t-arg">src/retry/budget.rs — replay window off-by-one</div></div>
+                  <span class="t-dur">running</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Task steps -->
+          <aside class="split-side" aria-label="Autonomous task steps">
+            <div class="inspect-section" style="border-bottom:none;padding-bottom:var(--space-2)">
+              <h2 class="inspect-title">Task steps · 3 / 5</h2>
+            </div>
+            <div class="task-list">
+              <div class="task is-done">
+                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
+                <div class="t-main"><div class="t-title">Reproduce the retry duplication</div><div class="t-desc">Failing test pinned at budget.rs:214</div></div>
+                <span class="t-meta">0:41</span>
+              </div>
+              <div class="task is-done">
+                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
+                <div class="t-main"><div class="t-title">Dedup stream chunks by sequence</div><div class="t-desc">stream.rs · +22 −3</div></div>
+                <span class="t-meta">1:12</span>
+              </div>
+              <div class="task is-live">
+                <span class="t-state"><span class="pulse pulse-live" style="width:7px;height:7px" aria-hidden="true"></span></span>
+                <div class="t-main"><div class="t-title">Fix replay window off-by-one</div><div class="t-desc">budget.rs · editing</div></div>
+                <span class="t-meta">0:34</span>
+              </div>
+              <div class="task">
+                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg></span>
+                <div class="t-main"><div class="t-title">Re-run gateway test suite</div><div class="t-desc">cargo test -p rayu-gateway</div></div>
+                <span class="t-meta">—</span>
+              </div>
+              <div class="task">
+                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg></span>
+                <div class="t-main"><div class="t-title">Commit and open PR</div><div class="t-desc">needs your approval to push</div></div>
+                <span class="t-meta">—</span>
+              </div>
+            </div>
+            <div class="inspect-section" style="border-top:1px solid var(--border)">
+              <h2 class="inspect-title">Run budget</h2>
+              <div class="kv"><span class="k">Elapsed</span><span class="v">1m 47s</span></div>
+              <div class="kv"><span class="k">Tokens</span><span class="v">21.6k / 200k</span></div>
+              <div class="meter"><span style="width:11%"></span></div>
+              <div class="kv" style="margin-top:var(--space-2)"><span class="k">Shell time</span><span class="v">23.4s</span></div>
+              <div class="kv"><span class="k">Approvals left</span><span class="v">push only</span></div>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+
+    <footer class="statusbar">
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>main</span>
+      <span class="status-item"><span class="pulse pulse-live" style="width:6px;height:6px" aria-hidden="true"></span>3 agents live</span>
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>214 MB · 2% CPU</span>
+      <span class="grow"></span>
+      <span class="status-item demo-note">Prototype · synthetic demo data</span>
+      <span class="status-item">rayucode v3.0.1-dev</span>
+    </footer>
+  </div>
+
+  <script src="../js/include.js"></script>
+  <script src="../js/app.js"></script>
+</body>
+</html>

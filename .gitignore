@@ -32,3 +32,10 @@ rayucode-v2/brag-output/
 /home/rayu/rayu/rayucode-v2/brag-output/
 /.rayu-local/
 
+
+# Impeccable runtime dirs (shared artifacts stay committed)
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/questions/
+.impeccable/config.local.json
+.DS_Store

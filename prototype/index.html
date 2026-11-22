@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Workspace</title>
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/layout.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+  <div data-include="assets/icons.svg"></div>
+  <div class="app">
+
+    <!-- Title bar -->
+    <header class="titlebar">
+      <div class="traffic" aria-hidden="true"><span class="t-close"></span><span class="t-min"></span><span class="t-max"></span></div>
+      <div class="titlebar-brand">
+        <svg class="icon" style="color:var(--accent-text)" aria-hidden="true"><use href="#i-mark"/></svg>
+        RayuCode
+      </div>
+      <nav class="titlebar-crumbs" aria-label="Breadcrumb">
+        <span>rayucode-v2</span><span class="sep">/</span><span class="crumb-current">Retire legacy session cache</span>
+      </nav>
+      <div class="titlebar-spacer"></div>
+      <div class="titlebar-actions">
+        <button class="icon-btn" type="button" aria-label="Search sessions"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
+        <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+        <a class="btn btn-sm" href="pages/settings-models.html"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a>
+      </div>
+    </header>
+
+    <div class="app-body">
+
+      <!-- Navigation rail -->
+      <nav class="rail" aria-label="Primary">
+        <a class="rail-link" href="index.html" aria-current="page" aria-label="Agent workspace" title="Agent workspace"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></a>
+        <a class="rail-link" href="pages/codebase-context.html" aria-label="Codebase context" title="Codebase context"><svg class="icon" aria-hidden="true"><use href="#i-tree"/></svg></a>
+        <a class="rail-link" href="pages/execution-runner.html" aria-label="Execution runner" title="Execution runner"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></a>
+        <a class="rail-link" href="pages/agent-workspace.html" aria-label="Review queue" title="Review queue"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg></a>
+        <div class="rail-spacer"></div>
+        <a class="rail-link" href="pages/settings-models.html" aria-label="Settings and models" title="Settings &amp; models"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a>
+        <div class="rail-avatar" title="lyyeakkhai">LK</div>
+      </nav>
+
+      <!-- Session sidebar -->
+      <aside class="sidebar" aria-label="Sessions">
+        <div class="sidebar-head">
+          <button class="project-switch" type="button">
+            <svg class="icon" style="width:14px;height:14px;color:var(--text-3)" aria-hidden="true"><use href="#i-folder"/></svg>
+            rayucode-v2
+            <svg class="icon chev" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-d"/></svg>
+          </button>
+          <a class="btn btn-primary" href="pages/agent-workspace.html" style="width:100%;margin-top:var(--space-2)">
+            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-plus"/></svg>New session
+          </a>
+        </div>
+
+        <div class="sidebar-label">Live · 2</div>
+        <div class="session-list">
+          <a class="session-row is-active" href="index.html">
+            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Retire legacy session cache</span></span>
+            <span class="session-meta"><span>rayu · build</span><span>4m 12s</span><span>3 files</span></span>
+          </a>
+          <a class="session-row" href="pages/execution-runner.html">
+            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Gateway: retry budget tests</span></span>
+            <span class="session-meta"><span>rayu · auto</span><span>1m 47s</span><span>cargo test</span></span>
+          </a>
+
+          <div class="sidebar-label" style="padding-left:var(--space-2)">Waiting on you · 1</div>
+          <a class="session-row" href="pages/agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-wait" aria-hidden="true"></span><span class="name">VS Code: model picker refresh</span></span>
+            <span class="session-meta"><span>rayu · plan</span><span>awaiting review</span></span>
+          </a>
+
+          <div class="sidebar-label" style="padding-left:var(--space-2)">Recent</div>
+          <a class="session-row" href="pages/agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">Fix telemetry worker backoff</span></span>
+            <span class="session-meta"><span>merged</span><span>2h ago</span></span>
+          </a>
+          <a class="session-row" href="pages/agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">SDK: streaming types cleanup</span></span>
+            <span class="session-meta"><span>merged</span><span>1d ago</span></span>
+          </a>
+          <a class="session-row" href="pages/agent-workspace.html">
+            <span class="session-title"><span class="pulse pulse-fail" aria-hidden="true"></span><span class="name">Migrate OAuth device flow</span></span>
+            <span class="session-meta"><span>stopped</span><span>2d ago</span></span>
+          </a>
+        </div>
+
+        <div class="sidebar-foot">
+          <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-cpu"/></svg>
+          <span class="mono">3 agents · 214 MB</span>
+        </div>
+      </aside>
+
+      <!-- Main: active agent stream -->
+      <main class="main">
+        <div class="pane-head">
+          <span class="pulse pulse-live" aria-hidden="true"></span>
+          <h1 class="pane-title">Retire legacy session cache</h1>
+          <span class="badge badge-live">Build</span>
+          <span class="pane-sub">session a41f · main</span>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-pause"/></svg>Pause</button>
+          <button class="btn btn-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-branch"/></svg>main</button>
+        </div>
+        <div class="live-thread" role="presentation"></div>
+
+        <div class="split">
+          <div class="split-main">
+            <div class="pane-scroll">
+              <div class="stream">
+
+                <!-- User prompt -->
+                <div class="msg msg-user">
+                  <p>The old <code>SessionCache</code> in <code>src/session/cache.rs</code> duplicates what the shard store already does. Retire it and route reads through <code>ShardStore::lookup</code>, keeping the LRU eviction budget.</p>
+                  <div class="msg-meta">you · 13:42 · 2 files attached</div>
+                </div>
+
+                <!-- Agent turn -->
+                <div class="msg msg-agent">
+                  <div class="msg-agent-head">
+                    <svg class="icon" style="width:14px;height:14px;color:var(--accent-text)" aria-hidden="true"><use href="#i-mark"/></svg>
+                    <span class="agent-name">rayu</span>
+                    <span class="mono">choeng-rayu-1 · 13:42</span>
+                  </div>
+
+                  <p>I'll retire <code>SessionCache</code> in three moves: point reads at the shard store, port the LRU budget so memory behaviour doesn't regress, then delete the old module and its tests. Reads first, so the diff stays reviewable.</p>
+
+                  <!-- Reasoning (collapsible) -->
+                  <div class="reason">
+                    <button class="reason-toggle" type="button" data-collapse="reason-1" aria-expanded="false">
+                      <svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg>
+                      Reasoned for <span class="dur">6.2s</span> · 4 steps
+                      <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                    </button>
+                    <div class="reason-body" id="reason-1" hidden>
+                      <ol>
+                        <li><code>SessionCache::get</code> and <code>ShardStore::lookup</code> share the same key derivation, so read paths can swap without a migration.</li>
+                        <li>The LRU budget lives in <code>CacheBudget</code>, which the shard store doesn't know about; port it as an adapter instead of forking the store.</li>
+                        <li>Two integration tests pin the eviction order; keep them green against the adapter before deleting the module.</li>
+                        <li>Deletion is safe once <code>rg SessionCache</code> returns only the module itself and its tests.</li>
+                      </ol>
+                    </div>
+                  </div>
+
+                  <!-- Tool timeline -->
+                  <div class="tools">
+                    <div class="tools-head">
+                      <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-zap"/></svg>
+                      Tool calls <span class="count">4 / 4</span>
+                      <span class="spacer"></span>
+                      <span class="badge badge-mono">12.8s</span>
+                    </div>
+                    <div class="tool-step is-done">
+                      <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></span>
+                      <div class="t-body"><div class="t-name">grep</div><div class="t-arg">SessionCache — 9 matches in 3 files</div></div>
+                      <span class="t-dur">0.4s</span>
+                    </div>
+                    <div class="tool-step is-done">
+                      <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg></span>
+                      <div class="t-body"><div class="t-name">read</div><div class="t-arg">src/session/cache.rs · src/shard/store.rs</div></div>
+                      <span class="t-dur">0.9s</span>
+                    </div>
+                    <div class="tool-step is-done">
+                      <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></span>
+                      <div class="t-body"><div class="t-name">edit</div><div class="t-arg">src/session/lookup.rs — route reads via ShardStore</div></div>
+                      <span class="t-dur">3.1s</span>
+                    </div>
+                    <div class="tool-step is-done">
+                      <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></span>
+                      <div class="t-body"><div class="t-name">bash</div><div class="t-arg">cargo test -p rayucode session:: — 14 passed</div></div>
+                      <span class="t-dur">8.4s</span>
+                    </div>
+                  </div>
+
+                  <p>Reads now route through the shard store with the LRU budget preserved as an adapter. All 14 session tests pass. Here's the core change for review:</p>
+
+                  <!-- Diff card -->
+                  <div class="diff">
+                    <div class="diff-head">
+                      <svg class="icon" style="width:13px;height:13px;color:var(--text-3)" aria-hidden="true"><use href="#i-diff"/></svg>
+                      <span class="file">src/session/lookup.rs</span>
+                      <span class="stat"><span class="add">+12</span> <span class="del">−7</span></span>
+                      <span class="spacer"></span>
+                      <button class="icon-btn" type="button" aria-label="Copy diff"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                    </div>
+                    <div class="diff-body">
+                      <div class="diff-line hunk"><span class="ln"></span><span class="mark"></span><span class="src">@@ -18,14 +18,19 @@ impl SessionLookup {</span></div>
+                      <div class="diff-line"><span class="ln">18</span><span class="mark"></span><span class="src">     pub fn get(&amp;self, key: &amp;SessionKey) -&gt; Option&lt;Session&gt; {</span></div>
+                      <div class="diff-line del"><span class="ln">19</span><span class="mark">−</span><span class="src">         self.cache.read().get(key).cloned()</span></div>
+                      <div class="diff-line add"><span class="ln">19</span><span class="mark">+</span><span class="src">         // Reads route through the shard store; the LRU budget</span></div>
+                      <div class="diff-line add"><span class="ln">20</span><span class="mark">+</span><span class="src">         // stays enforced by the CacheBudget adapter.</span></div>
+                      <div class="diff-line add"><span class="ln">21</span><span class="mark">+</span><span class="src">         let hit = self.shards.lookup(key)?;</span></div>
+                      <div class="diff-line add"><span class="ln">22</span><span class="mark">+</span><span class="src">         self.budget.touch(key);</span></div>
+                      <div class="diff-line add"><span class="ln">23</span><span class="mark">+</span><span class="src">         Some(hit)</span></div>
+                      <div class="diff-line"><span class="ln">24</span><span class="mark"></span><span class="src">     }</span></div>
+                      <div class="diff-line"><span class="ln">25</span><span class="mark"></span><span class="src"></span></div>
+                      <div class="diff-line del"><span class="ln">26</span><span class="mark">−</span><span class="src">     pub fn evict(&amp;self, key: &amp;SessionKey) {</span></div>
+                      <div class="diff-line del"><span class="ln">27</span><span class="mark">−</span><span class="src">         self.cache.write().remove(key);</span></div>
+                      <div class="diff-line add"><span class="ln">26</span><span class="mark">+</span><span class="src">     pub fn evict(&amp;self, key: &amp;SessionKey) {</span></div>
+                      <div class="diff-line add"><span class="ln">27</span><span class="mark">+</span><span class="src">         self.budget.release(key);</span></div>
+                      <div class="diff-line add"><span class="ln">28</span><span class="mark">+</span><span class="src">         self.shards.drop_session(key);</span></div>
+                      <div class="diff-line"><span class="ln">29</span><span class="mark"></span><span class="src">     }</span></div>
+                    </div>
+                    <div class="diff-foot">
+                      <span class="hint">1 of 3 changed files · tests green</span>
+                      <span class="spacer"></span>
+                      <button class="btn btn-danger-ghost btn-sm" type="button" data-diff-reject>Reject</button>
+                      <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Composer -->
+            <div class="composer-wrap">
+              <div class="composer">
+                <div class="composer-context">
+                  <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>src/session/cache.rs<button class="chip-x" type="button" aria-label="Remove cache.rs from context"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></span>
+                  <span class="chip"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>src/shard/store.rs<button class="chip-x" type="button" aria-label="Remove store.rs from context"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></span>
+                  <button class="add-ctx" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Add context</button>
+                </div>
+                <textarea class="composer-input" rows="2" placeholder="Ask rayu anything, @ to mention a file, / for actions" aria-label="Message the agent"></textarea>
+                <div class="composer-bar">
+                  <div class="seg" role="group" aria-label="Agent mode">
+                    <button type="button" aria-pressed="false">Plan</button>
+                    <button type="button" aria-pressed="true">Build</button>
+                    <button type="button" aria-pressed="false">Autonomous</button>
+                  </div>
+                  <button class="model-pill" type="button" aria-label="Choose model">
+                    <svg class="icon" aria-hidden="true"><use href="#i-spark"/></svg>
+                    <span class="m-name">choeng-rayu-1</span><span class="m-tier">medium</span>
+                    <svg class="icon" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <span class="spacer"></span>
+                  <button class="icon-btn" type="button" aria-label="Voice input"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg></button>
+                  <button class="send-btn" type="button" aria-label="Send message"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Inspector -->
+          <aside class="split-side" aria-label="Session inspector">
+            <div class="inspect-section">
+              <h2 class="inspect-title">Plan</h2>
+              <div class="plan-step is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Route reads via ShardStore</div>
+              <div class="plan-step is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Port LRU budget adapter</div>
+              <div class="plan-step is-live"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg>Review lookup.rs diff</div>
+              <div class="plan-step is-todo"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg>Delete legacy cache module</div>
+              <div class="plan-step is-todo"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg>Full test sweep + commit</div>
+            </div>
+            <div class="inspect-section">
+              <h2 class="inspect-title">Changed files</h2>
+              <div class="kv"><span class="k mono">session/lookup.rs</span><span class="v" style="color:var(--accent-text)">+12 −7</span></div>
+              <div class="kv"><span class="k mono">session/cache.rs</span><span class="v" style="color:var(--danger)">−214</span></div>
+              <div class="kv"><span class="k mono">shard/budget.rs</span><span class="v" style="color:var(--accent-text)">+48</span></div>
+            </div>
+            <div class="inspect-section">
+              <h2 class="inspect-title">Session</h2>
+              <div class="kv"><span class="k">Model</span><span class="v">choeng-rayu-1</span></div>
+              <div class="kv"><span class="k">Mode</span><span class="v">build</span></div>
+              <div class="kv"><span class="k">Elapsed</span><span class="v">4m 12s</span></div>
+              <div class="kv"><span class="k">Tokens</span><span class="v">38.2k / 200k</span></div>
+              <div class="meter"><span style="width:19%"></span></div>
+              <div class="kv" style="margin-top:var(--space-2)"><span class="k">Memory</span><span class="v">71 MB</span></div>
+              <div class="meter"><span style="width:9%"></span></div>
+            </div>
+            <div class="inspect-section">
+              <h2 class="inspect-title">Approvals</h2>
+              <div class="kv"><span class="k">File edits</span><span class="v">ask</span></div>
+              <div class="kv"><span class="k">Shell commands</span><span class="v">ask</span></div>
+              <div class="kv"><span class="k">Git push</span><span class="v">always ask</span></div>
+            </div>
+          </aside>
+        </div>
+      </main>
+    </div>
+
+    <!-- Status bar -->
+    <footer class="statusbar">
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>main</span>
+      <span class="status-item"><span class="pulse pulse-live" style="width:6px;height:6px" aria-hidden="true"></span>3 agents live</span>
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>214 MB · 2% CPU</span>
+      <span class="grow"></span>
+      <span class="status-item demo-note">Prototype · synthetic demo data</span>
+      <span class="status-item">rayucode v3.0.1-dev</span>
+    </footer>
+  </div>
+
+  <script src="js/include.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

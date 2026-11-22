@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Settings &amp; Models</title>
+  <link rel="stylesheet" href="../css/tokens.css">
+  <link rel="stylesheet" href="../css/layout.css">
+  <link rel="stylesheet" href="../css/components.css">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <header class="titlebar">
+      <div class="traffic" aria-hidden="true"><span class="t-close"></span><span class="t-min"></span><span class="t-max"></span></div>
+      <div class="titlebar-brand">
+        <svg class="icon" style="color:var(--accent-text)" aria-hidden="true"><use href="#i-mark"/></svg>
+        RayuCode
+      </div>
+      <nav class="titlebar-crumbs" aria-label="Breadcrumb">
+        <span>rayucode-v2</span><span class="sep">/</span><span class="crumb-current">Settings</span>
+      </nav>
+      <div class="titlebar-spacer"></div>
+      <div class="titlebar-actions">
+        <button class="icon-btn" type="button" aria-label="Search settings"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
+        <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+        <a class="btn btn-sm" href="../index.html"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-chat"/></svg>Back to session</a>
+      </div>
+    </header>
+
+    <div class="app-body no-sidebar">
+
+      <nav class="rail" aria-label="Primary">
+        <a class="rail-link" href="../index.html" aria-label="Agent workspace" title="Agent workspace"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></a>
+        <a class="rail-link" href="codebase-context.html" aria-label="Codebase context" title="Codebase context"><svg class="icon" aria-hidden="true"><use href="#i-tree"/></svg></a>
+        <a class="rail-link" href="execution-runner.html" aria-label="Execution runner" title="Execution runner"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></a>
+        <a class="rail-link" href="agent-workspace.html" aria-label="Review queue" title="Review queue"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg></a>
+        <div class="rail-spacer"></div>
+        <a class="rail-link" href="settings-models.html" aria-current="page" aria-label="Settings and models" title="Settings &amp; models"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a>
+        <div class="rail-avatar" title="lyyeakkhai">LK</div>
+      </nav>
+
+      <main class="main">
+        <div class="pane-head">
+          <h1 class="pane-title">Settings</h1>
+          <span class="pane-sub">lyyeakkhai · gateway plan</span>
+          <div class="spacer"></div>
+          <span class="demo-note">Changes apply to new sessions</span>
+        </div>
+
+        <div class="pane-scroll">
+          <div class="settings-grid">
+            <nav class="settings-nav" aria-label="Settings sections">
+              <a class="is-active" href="#models">Models &amp; routing</a>
+              <a href="#autonomy">Agent autonomy</a>
+              <a href="#appearance">Appearance</a>
+              <a href="#account">Account</a>
+            </nav>
+
+            <div>
+              <!-- Models -->
+              <section class="settings-section" id="models">
+                <h2>Models &amp; routing</h2>
+                <p class="section-desc">RayuCode routes each kind of work to a model. Overrides apply per session; the catalog refreshes from the gateway without a restart.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main">
+                    <div class="s-name">Default model</div>
+                    <div class="s-desc">Used when a route has no override.</div>
+                  </div>
+                  <select class="select" aria-label="Default model">
+                    <option selected>choeng-rayu-1 · medium</option>
+                    <option>choeng-rayu-1 · high</option>
+                    <option>choeng-rayu-1-mini · fast</option>
+                  </select>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Catalog auto-refresh</div>
+                    <div class="s-desc">Discover new provider models without a RayuCode release. Explicit refresh always bypasses the cache.</div>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Catalog auto-refresh"></button>
+                </div>
+
+                <div style="margin-top:var(--space-5)">
+                  <table class="route-table">
+                    <thead>
+                      <tr><th scope="col">Work</th><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" style="text-align:right">p50 latency</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td><div class="r-task">Chat &amp; planning</div><div class="r-desc">Conversation, plans, review notes</div></td>
+                        <td class="r-model">choeng-rayu-1</td>
+                        <td><select class="select" aria-label="Chat effort"><option>low</option><option selected>medium</option><option>high</option></select></td>
+                        <td class="r-lat">1.2s</td>
+                      </tr>
+                      <tr>
+                        <td><div class="r-task">Code edits</div><div class="r-desc">Diffs, refactors, multi-file changes</div></td>
+                        <td class="r-model">choeng-rayu-1</td>
+                        <td><select class="select" aria-label="Code edit effort"><option>low</option><option>medium</option><option selected>high</option></select></td>
+                        <td class="r-lat">2.8s</td>
+                      </tr>
+                      <tr>
+                        <td><div class="r-task">Fast lookups</div><div class="r-desc">Grep triage, titles, summaries</div></td>
+                        <td class="r-model">choeng-rayu-1-mini</td>
+                        <td><select class="select" aria-label="Lookup effort"><option selected>low</option><option>medium</option></select></td>
+                        <td class="r-lat">0.4s</td>
+                      </tr>
+                      <tr>
+                        <td><div class="r-task">Swarm workers</div><div class="r-desc">Parallel lane agents</div></td>
+                        <td class="r-model">choeng-rayu-1</td>
+                        <td><select class="select" aria-label="Swarm effort"><option>low</option><option selected>medium</option><option>high</option></select></td>
+                        <td class="r-lat">1.9s</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <p class="demo-note" style="margin-top:var(--space-2)">Latency figures are illustrative demo values, not measured benchmarks.</p>
+                </div>
+              </section>
+
+              <!-- Autonomy -->
+              <section class="settings-section" id="autonomy">
+                <h2>Agent autonomy</h2>
+                <p class="section-desc">How much rayu may do before asking. Autonomous mode still stops at the boundaries you set here.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main">
+                    <div class="s-name">Default mode</div>
+                    <div class="s-desc">Plan proposes, Build edits with review, Autonomous runs to completion.</div>
+                  </div>
+                  <div class="seg" role="group" aria-label="Default mode">
+                    <button type="button" aria-pressed="false">Plan</button>
+                    <button type="button" aria-pressed="true">Build</button>
+                    <button type="button" aria-pressed="false">Autonomous</button>
+                  </div>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Auto-approve file edits</div>
+                    <div class="s-desc">Skip diff review inside the workspace. Deletions still ask.</div>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Auto-approve file edits"></button>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Auto-approve shell commands</div>
+                    <div class="s-desc">Allowlisted commands only: cargo, npm, git status, rg.</div>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-approve shell commands"></button>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Git push &amp; PR creation</div>
+                    <div class="s-desc">Always requires your explicit approval, in every mode.</div>
+                  </div>
+                  <span class="badge badge-live"><svg class="icon" style="width:11px;height:11px" aria-hidden="true"><use href="#i-shield"/></svg>Always ask</span>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Parallel agent limit</div>
+                    <div class="s-desc">Cap live sessions to protect memory on this machine.</div>
+                  </div>
+                  <select class="select" aria-label="Parallel agent limit">
+                    <option>4 agents</option>
+                    <option selected>8 agents</option>
+                    <option>16 agents</option>
+                    <option>32 agents</option>
+                  </select>
+                </div>
+              </section>
+
+              <!-- Appearance -->
+              <section class="settings-section" id="appearance">
+                <h2>Appearance</h2>
+                <p class="section-desc">Theme applies instantly across every view and persists on this machine.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main">
+                    <div class="s-name">Theme</div>
+                    <div class="s-desc">Obsidian dark or alabaster light, both with the RayuCode green signature.</div>
+                  </div>
+                </div>
+                <div class="theme-cards">
+                  <button class="theme-card tc-dark" type="button" data-theme-set="dark" aria-pressed="true">
+                    <span class="tc-preview" aria-hidden="true">
+                      <span class="tc-bar"></span>
+                      <span class="tc-line"></span>
+                      <span class="tc-line short"></span>
+                    </span>
+                    <span class="tc-label"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><svg class="icon" style="width:13px;height:13px;color:var(--text-3);visibility:visible" aria-hidden="true"><use href="#i-moon"/></svg>Obsidian dark</span>
+                  </button>
+                  <button class="theme-card tc-light" type="button" data-theme-set="light" aria-pressed="false">
+                    <span class="tc-preview" aria-hidden="true">
+                      <span class="tc-bar"></span>
+                      <span class="tc-line"></span>
+                      <span class="tc-line short"></span>
+                    </span>
+                    <span class="tc-label"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><svg class="icon" style="width:13px;height:13px;color:var(--text-3);visibility:visible" aria-hidden="true"><use href="#i-sun"/></svg>Alabaster light</span>
+                  </button>
+                </div>
+
+                <div class="setting-row" style="margin-top:var(--space-4)">
+                  <div class="s-main">
+                    <div class="s-name">Reduced motion</div>
+                    <div class="s-desc">Follows your OS setting. Live pulses become static dots.</div>
+                  </div>
+                  <span class="badge badge-mono">system</span>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Editor font</div>
+                    <div class="s-desc">Used for code, diffs and terminal output.</div>
+                  </div>
+                  <select class="select" aria-label="Editor font">
+                    <option selected>JetBrains Mono</option>
+                    <option>SF Mono</option>
+                    <option>Geist Mono</option>
+                  </select>
+                </div>
+              </section>
+
+              <!-- Account -->
+              <section class="settings-section" id="account">
+                <h2>Account</h2>
+                <p class="section-desc">Signed in through rayucode.com. Credits and plans are managed on the web dashboard.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main">
+                    <div class="s-name">lyyeakkhai</div>
+                    <div class="s-desc">Gateway plan · device paired 14 Nov</div>
+                  </div>
+                  <a class="btn btn-sm" href="https://rayucode.com" target="_blank" rel="noopener"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-globe"/></svg>Open dashboard</a>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Telemetry</div>
+                    <div class="s-desc">Anonymous usage counters. Never code or prompts.</div>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Telemetry"></button>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main">
+                    <div class="s-name">Sign out of this device</div>
+                    <div class="s-desc">Revokes the device token; sessions stop at the next request.</div>
+                  </div>
+                  <button class="btn btn-danger-ghost btn-sm" type="button">Sign out</button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <footer class="statusbar">
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>main</span>
+      <span class="status-item"><span class="pulse pulse-live" style="width:6px;height:6px" aria-hidden="true"></span>3 agents live</span>
+      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>214 MB · 2% CPU</span>
+      <span class="grow"></span>
+      <span class="status-item demo-note">Prototype · synthetic demo data</span>
+      <span class="status-item">rayucode v3.0.1-dev</span>
+    </footer>
+  </div>
+
+  <script src="../js/include.js"></script>
+  <script src="../js/app.js"></script>
+</body>
+</html>

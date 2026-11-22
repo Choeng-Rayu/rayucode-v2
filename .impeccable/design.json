@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-22T07:38:00Z",
+  "title": "Design System: RayuCode Desktop",
+  "extensions": {
+    "colorMeta": {
+      "emerald": { "role": "primary", "displayName": "Signature Emerald", "canonical": "#10B981", "tonalRamp": ["oklch(20% 0.05 165)", "oklch(30% 0.08 165)", "oklch(42% 0.11 165)", "oklch(55% 0.13 165)", "oklch(69% 0.15 165)", "oklch(78% 0.12 165)", "oklch(87% 0.08 165)", "oklch(95% 0.03 165)"] },
+      "mint": { "role": "primary", "displayName": "Live Mint", "canonical": "#34D399", "tonalRamp": ["oklch(22% 0.05 168)", "oklch(33% 0.08 168)", "oklch(45% 0.11 168)", "oklch(58% 0.13 168)", "oklch(78% 0.14 168)", "oklch(84% 0.10 168)", "oklch(90% 0.06 168)", "oklch(96% 0.02 168)"] },
+      "jade": { "role": "primary", "displayName": "Daylight Jade", "canonical": "#059669", "tonalRamp": ["oklch(18% 0.05 165)", "oklch(28% 0.08 165)", "oklch(38% 0.10 165)", "oklch(60% 0.13 165)", "oklch(70% 0.12 165)", "oklch(79% 0.09 165)", "oklch(88% 0.06 165)", "oklch(95% 0.02 165)"] },
+      "obsidian": { "role": "neutral", "displayName": "Obsidian", "canonical": "#0B0E0D", "tonalRamp": ["oklch(15% 0.005 165)", "oklch(22% 0.006 165)", "oklch(30% 0.007 165)", "oklch(42% 0.008 165)", "oklch(56% 0.008 165)", "oklch(70% 0.007 165)", "oklch(84% 0.005 165)", "oklch(95% 0.003 165)"] },
+      "slate-charcoal": { "role": "neutral", "displayName": "Slate Charcoal", "canonical": "#111614", "tonalRamp": ["oklch(18% 0.006 165)", "oklch(25% 0.007 165)", "oklch(33% 0.008 165)", "oklch(45% 0.008 165)", "oklch(58% 0.008 165)", "oklch(72% 0.007 165)", "oklch(85% 0.005 165)", "oklch(95% 0.003 165)"] },
+      "alabaster": { "role": "neutral", "displayName": "Alabaster", "canonical": "#FAFAFA", "tonalRamp": ["oklch(20% 0.002 120)", "oklch(32% 0.003 120)", "oklch(45% 0.004 120)", "oklch(58% 0.004 120)", "oklch(72% 0.004 120)", "oklch(84% 0.003 120)", "oklch(92% 0.002 120)", "oklch(98% 0.001 120)"] },
+      "meta-dark": { "role": "neutral", "displayName": "Meta Sage", "canonical": "#8C9991", "tonalRamp": ["oklch(25% 0.01 160)", "oklch(35% 0.012 160)", "oklch(45% 0.014 160)", "oklch(55% 0.015 160)", "oklch(66% 0.015 160)", "oklch(76% 0.012 160)", "oklch(86% 0.008 160)", "oklch(94% 0.004 160)"] },
+      "danger-dark": { "role": "state", "displayName": "Failure Red", "canonical": "#F87171", "tonalRamp": ["oklch(25% 0.08 25)", "oklch(35% 0.12 25)", "oklch(45% 0.16 25)", "oklch(55% 0.19 25)", "oklch(70% 0.17 25)", "oklch(78% 0.12 25)", "oklch(87% 0.07 25)", "oklch(95% 0.03 25)"] },
+      "warn-dark": { "role": "state", "displayName": "Review Amber", "canonical": "#FBBF24", "tonalRamp": ["oklch(28% 0.06 85)", "oklch(38% 0.09 85)", "oklch(50% 0.12 85)", "oklch(62% 0.14 85)", "oklch(83% 0.16 85)", "oklch(88% 0.11 85)", "oklch(92% 0.07 85)", "oklch(97% 0.03 85)"] }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Section Title", "purpose": "Settings section headings only." },
+      "pane-title": { "displayName": "Pane Title", "purpose": "One h1 per view, in the pane head." },
+      "body": { "displayName": "Agent Body", "purpose": "Agent prose and descriptions, max 72ch." },
+      "dense": { "displayName": "Dense UI", "purpose": "Rows, buttons, file tree, tool steps." },
+      "label": { "displayName": "Inspector Label", "purpose": "Uppercase group and inspector titles." },
+      "mono": { "displayName": "Developer Mono", "purpose": "Code, diffs, terminal, every numeral (tabular)." }
+    },
+    "shadows": [
+      { "name": "shadow-1", "value": "0 1px 2px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.25)", "purpose": "Composer at rest (dark). Light: 0 1px 2px rgba(23,33,28,0.06), 0 4px 12px rgba(23,33,28,0.06)." },
+      { "name": "shadow-2", "value": "0 2px 6px rgba(0,0,0,0.4), 0 12px 32px rgba(0,0,0,0.35)", "purpose": "Reserved for overlays; unused at rest." },
+      { "name": "focus-glow", "value": "0 0 0 3px rgba(52,211,153,0.35)", "purpose": "Keyboard focus ring on every interactive element; the brief's sanctioned emerald focus glow." }
+    ],
+    "motion": [
+      { "name": "dur", "value": "150ms", "purpose": "Every state transition." },
+      { "name": "ease", "value": "cubic-bezier(0.25, 0.46, 0.45, 0.94)", "purpose": "Default ease-out for hovers and toggles." },
+      { "name": "pulse-ring", "value": "2.4s infinite scale 0.6→1.5 fade", "purpose": "The session pulse: breathing ring on live dots only." },
+      { "name": "thread-flow", "value": "3.2s linear infinite background-position", "purpose": "Flowing emerald thread under the active pane head." }
+    ],
+    "breakpoints": [
+      { "name": "inspector-hide", "value": "1180px" },
+      { "name": "sidebar-hide", "value": "900px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Emerald fill for the one primary action in a region.",
+      "html": "<button class=\"ds-btn-primary\">Accept</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 8px; background: var(--accent, #10B981); color: var(--accent-ink, #04120C); font-family: Inter, sans-serif; font-size: 13px; font-weight: 600; padding: 7px 12px; border: none; border-radius: 10px; cursor: pointer; transition: background 150ms cubic-bezier(0.25,0.46,0.45,0.94); } .ds-btn-primary:hover { background: var(--accent-bright, #34D399); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(52,211,153,0.35); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Raised surface with hairline border for supporting actions.",
+      "html": "<button class=\"ds-btn-secondary\">Pause</button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 8px; background: var(--bg-raised, #161C19); color: var(--text-1, #ECF2EE); font-family: Inter, sans-serif; font-size: 13px; font-weight: 500; padding: 7px 12px; border: 1px solid var(--border, rgba(255,255,255,0.08)); border-radius: 10px; cursor: pointer; transition: background 150ms, border-color 150ms; } .ds-btn-secondary:hover { background: var(--bg-hover, #1A211D); border-color: var(--border-strong, rgba(255,255,255,0.14)); } .ds-btn-secondary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(52,211,153,0.35); }"
+    },
+    {
+      "name": "Send Button",
+      "kind": "button",
+      "refersTo": "send-button",
+      "description": "Circular emerald send at the composer's bottom right.",
+      "html": "<button class=\"ds-send\" aria-label=\"Send message\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 19V5M5.5 11.5 12 5l6.5 6.5\"/></svg></button>",
+      "css": ".ds-send { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; border: none; background: var(--accent, #10B981); color: var(--accent-ink, #04120C); cursor: pointer; transition: background 150ms, transform 150ms; } .ds-send:hover { background: var(--accent-bright, #34D399); transform: translateY(-1px); } .ds-send:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(52,211,153,0.35); }"
+    },
+    {
+      "name": "Context Chip",
+      "kind": "chip",
+      "refersTo": "chip-context",
+      "description": "Mono file/symbol chip pinned into the composer context.",
+      "html": "<span class=\"ds-chip\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"color:var(--accent-text,#34D399)\"><path d=\"M6 3h8l4 4v14H6V3Z\"/><path d=\"M14 3v4h4\"/></svg>src/session/lookup.rs<button class=\"ds-chip-x\" aria-label=\"Remove\"><svg width=\"10\" height=\"10\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\"><path d=\"M6 6l12 12M18 6 6 18\"/></svg></button></span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 8px; border-radius: 6px; border: 1px solid var(--border, rgba(255,255,255,0.08)); background: var(--bg-inset, #0D1210); font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-2, #A8B5AD); white-space: nowrap; } .ds-chip-x { display: grid; place-items: center; width: 14px; height: 14px; border: none; background: none; border-radius: 3px; color: var(--text-3, #8C9991); cursor: pointer; } .ds-chip-x:hover { background: var(--bg-hover, #1A211D); color: var(--text-1, #ECF2EE); }"
+    },
+    {
+      "name": "Live Badge",
+      "kind": "chip",
+      "refersTo": "badge-live",
+      "description": "Emerald-tinted pill naming a live state or mode.",
+      "html": "<span class=\"ds-badge-live\">Build</span>",
+      "css": ".ds-badge-live { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-family: Inter, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; color: var(--accent-text, #34D399); background: rgba(16,185,129,0.12); }"
+    },
+    {
+      "name": "Session Pulse",
+      "kind": "custom",
+      "refersTo": "session-pulse",
+      "description": "Signature move: breathing mint dot marking a live agent session.",
+      "html": "<span class=\"ds-pulse\" aria-hidden=\"true\"></span>",
+      "css": ".ds-pulse { position: relative; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-bright, #34D399); } .ds-pulse::after { content: ''; position: absolute; inset: -3px; border-radius: 50%; border: 1.5px solid var(--accent-bright, #34D399); opacity: 0; animation: ds-pulse-ring 2.4s cubic-bezier(0.25,0.46,0.45,0.94) infinite; } @keyframes ds-pulse-ring { 0% { transform: scale(0.6); opacity: 0.8; } 70% { transform: scale(1.5); opacity: 0; } 100% { transform: scale(1.5); opacity: 0; } } @media (prefers-reduced-motion: reduce) { .ds-pulse::after { animation: none; } }"
+    },
+    {
+      "name": "Mode Toggle",
+      "kind": "nav",
+      "refersTo": "seg-mode",
+      "description": "Plan / Build / Autonomous segmented control in the composer bar.",
+      "html": "<div class=\"ds-seg\" role=\"group\" aria-label=\"Agent mode\"><button aria-pressed=\"false\">Plan</button><button aria-pressed=\"true\">Build</button><button aria-pressed=\"false\">Autonomous</button></div>",
+      "css": ".ds-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 10px; background: var(--bg-inset, #0D1210); border: 1px solid var(--border, rgba(255,255,255,0.08)); } .ds-seg button { padding: 4px 10px; border: none; background: none; border-radius: 7px; font-family: Inter, sans-serif; font-size: 12px; font-weight: 500; color: var(--text-3, #8C9991); cursor: pointer; transition: background 150ms, color 150ms; } .ds-seg button:hover { color: var(--text-1, #ECF2EE); } .ds-seg button[aria-pressed='true'] { background: rgba(16,185,129,0.12); color: var(--accent-text, #34D399); font-weight: 600; } .ds-seg button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(52,211,153,0.35); }"
+    },
+    {
+      "name": "Diff Card",
+      "kind": "card",
+      "refersTo": "card-diff",
+      "description": "Inline review card: mono file header, tinted add/del rows, Accept/Reject footer.",
+      "html": "<div class=\"ds-diff\"><div class=\"ds-diff-head\"><span class=\"ds-diff-file\">src/session/lookup.rs</span><span class=\"ds-diff-stat\"><span style=\"color:var(--accent-text,#34D399)\">+12</span> <span style=\"color:var(--danger,#F87171)\">−7</span></span></div><div class=\"ds-diff-body\"><div class=\"ds-diff-line ds-del\"><span class=\"ds-ln\">19</span><span class=\"ds-mark\">−</span><span class=\"ds-src\">self.cache.read().get(key).cloned()</span></div><div class=\"ds-diff-line ds-add\"><span class=\"ds-ln\">19</span><span class=\"ds-mark\">+</span><span class=\"ds-src\">let hit = self.shards.lookup(key)?;</span></div></div><div class=\"ds-diff-foot\"><span class=\"ds-hint\">tests green</span><button class=\"ds-reject\">Reject</button><button class=\"ds-accept\">Accept</button></div></div>",
+      "css": ".ds-diff { border: 1px solid var(--border, rgba(255,255,255,0.08)); border-radius: 10px; background: var(--bg-pane, #111614); overflow: hidden; font-family: Inter, sans-serif; max-width: 560px; } .ds-diff-head { display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border, rgba(255,255,255,0.08)); font-size: 12px; } .ds-diff-file { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: var(--text-1, #ECF2EE); } .ds-diff-stat { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-variant-numeric: tabular-nums; } .ds-diff-body { background: var(--bg-inset, #0D1210); padding: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; overflow-x: auto; } .ds-diff-line { display: flex; min-width: max-content; padding: 4px 12px; } .ds-ln { width: 44px; text-align: right; padding-right: 8px; color: var(--text-3, #8C9991); font-variant-numeric: tabular-nums; } .ds-mark { width: 20px; text-align: center; } .ds-src { white-space: pre; color: var(--text-1, #ECF2EE); } .ds-add { background: rgba(16,185,129,0.10); } .ds-add .ds-mark { color: var(--accent-text, #34D399); } .ds-del { background: rgba(248,113,113,0.09); } .ds-del .ds-mark { color: var(--danger, #F87171); } .ds-diff-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--border, rgba(255,255,255,0.08)); } .ds-hint { flex: 1; font-size: 11px; color: var(--text-3, #8C9991); } .ds-accept { background: var(--accent, #10B981); color: var(--accent-ink, #04120C); border: none; border-radius: 6px; padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer; } .ds-accept:hover { background: var(--accent-bright, #34D399); } .ds-reject { background: none; border: none; color: var(--danger, #F87171); border-radius: 6px; padding: 4px 8px; font-size: 12px; cursor: pointer; } .ds-reject:hover { background: rgba(248,113,113,0.12); }"
+    },
+    {
+      "name": "Composer Input",
+      "kind": "input",
+      "refersTo": "composer",
+      "description": "The anchored chat composer; focus shifts border to emerald with a ring.",
+      "html": "<div class=\"ds-composer\"><textarea class=\"ds-composer-input\" rows=\"2\" placeholder=\"Ask rayu anything, @ to mention a file, / for actions\"></textarea></div>",
+      "css": ".ds-composer { border: 1px solid var(--border-strong, rgba(255,255,255,0.14)); border-radius: 14px; background: var(--bg-raised, #161C19); box-shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.25); transition: border-color 150ms, box-shadow 150ms; max-width: 560px; } .ds-composer:focus-within { border-color: var(--accent, #10B981); box-shadow: 0 1px 2px rgba(0,0,0,0.35), 0 4px 12px rgba(0,0,0,0.25), 0 0 0 3px rgba(52,211,153,0.35); } .ds-composer-input { display: block; width: 100%; border: none; background: transparent; resize: none; padding: 12px 16px 8px; font-family: Inter, sans-serif; font-size: 14px; line-height: 1.55; color: var(--text-1, #ECF2EE); caret-color: var(--accent-bright, #34D399); min-height: 64px; box-sizing: border-box; } .ds-composer-input::placeholder { color: var(--text-3, #8C9991); } .ds-composer-input:focus { outline: none; }"
+    },
+    {
+      "name": "Rail Navigation",
+      "kind": "nav",
+      "refersTo": "rail-link",
+      "description": "56px icon rail; the active view carries an emerald tint plus full inset ring.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-rail-link is-active\" href=\"#\" aria-current=\"page\" aria-label=\"Agent workspace\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 12a8 8 0 0 1-8 8H4l2.3-2.9A8 8 0 1 1 21 12Z\"/><path d=\"M8.5 10.5h7M8.5 13.5h4.5\"/></svg></a><a class=\"ds-rail-link\" href=\"#\" aria-label=\"Execution runner\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"m7 9 3 3-3 3M12.5 15H17\"/></svg></a></nav>",
+      "css": ".ds-rail { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px; background: var(--bg-app, #0B0E0D); border-right: 1px solid var(--border, rgba(255,255,255,0.08)); } .ds-rail-link { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; color: var(--text-3, #8C9991); transition: color 150ms, background 150ms; } .ds-rail-link:hover { color: var(--text-1, #ECF2EE); background: var(--bg-hover, #1A211D); } .ds-rail-link.is-active { color: var(--accent-text, #34D399); background: rgba(16,185,129,0.12); box-shadow: inset 0 0 0 1px rgba(52,211,153,0.35); } .ds-rail-link:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(52,211,153,0.35); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Mission-Control Desk",
+    "overview": "RayuCode Desktop is one obsidian window where a developer supervises a swarm of coding agents. The interface is calm and dense like a well-kept editor: hairline seams divide panes, monospace carries every measurement, and green appears only where something is alive, selected, primary, or succeeded. Dark is the default for long desk sessions; the light theme is crisp alabaster with rich jade for daylight rooms. Both themes share one token system; a view never invents its own palette.",
+    "keyCharacteristics": [
+      "Obsidian #0B0E0D / slate-charcoal #111614 grounds; emerald #10B981 / mint #34D399 accents (light: alabaster #FAFAFA, jade #059669 / forest #047857)",
+      "Inter for UI, JetBrains Mono for code, data, and every numeral (tabular)",
+      "Hairline 1px borders as the primary depth device; one soft-shadow voice for raised surfaces only",
+      "The session pulse: a breathing emerald dot ties rail, sidebar row, and stream header to one live session",
+      "150ms transitions; reduced-motion collapses all animation"
+    ],
+    "rules": [
+      { "name": "The Green Means Alive Rule", "body": "Green marks state and action only: live sessions, selection, primary actions, success, diff additions. Never a decorative wash, never a gradient fill.", "section": "colors" },
+      { "name": "The One Token System Rule", "body": "Every view and both themes read from tokens.css; [data-theme=light] overrides values, never structure.", "section": "colors" },
+      { "name": "The Mono Measures Rule", "body": "Monospace is for code, data, and measurement only, never as a technical costume for prose.", "section": "typography" },
+      { "name": "The Seam Rule", "body": "Declare elevation once per surface: a hairline border or a shadow, never a border under a wide soft shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep green to the state-and-action vocabulary",
+      "Do set every numeral in JetBrains Mono with tabular figures",
+      "Do hold body and meta text at 4.5:1 or better on its actual surface in both themes",
+      "Do use the full inset ring plus tint for selection",
+      "Do label synthetic demonstration data"
+    ],
+    "donts": [
+      "Don't use one-sided border bars, gradient text, decorative glow halos, or hard offset shadows",
+      "Don't nest cards or wrap a pane in another card",
+      "Don't use emoji or unicode glyphs as icons; extend assets/icons.svg in the same 1.75px stroke",
+      "Don't invent prices, benchmarks, or customer claims",
+      "Don't pick a theme by category; dark is the pinned default and light is a first-class equal"
+    ]
+  }
+}

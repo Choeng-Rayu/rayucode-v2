@@ -1,0 +1,33 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "inter",
+        "createdAt": "2026-11-22T07:15:52.107Z",
+        "reason": "user brief pins: 'Pair a crisp geometric/humanist UI sans-serif (Inter / Geist) with a sharp developer monospace (JetBrains Mono / Geist Mono)'"
+      },
+      {
+        "rule": "em-dash-overuse",
+        "value": "*",
+        "files": [
+          "prototype/pages/execution-runner.html"
+        ],
+        "createdAt": "2026-11-22T07:15:52.126Z",
+        "reason": "agent: em-dashes are literal cargo test output and tool-arg separators in synthetic terminal data, not prose cadence"
+      },
+      {
+        "rule": "monotonous-spacing",
+        "value": "*",
+        "files": [
+          "prototype/index.html",
+          "prototype/pages/*.html"
+        ],
+        "createdAt": "2026-11-22T07:18:02.221Z",
+        "reason": "agent: dense Operate desktop UI deliberately uses one 4px base rhythm; code/diff rows are uniform by design like an editor"
+      }
+    ]
+  }
+}
