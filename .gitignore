@@ -38,3 +38,8 @@ captures/
 .impeccable/questions/
 .impeccable/config.local.json
 .DS_Store
+
+# RayuCode Desktop build outputs & swarm verification logs
+desktop/dist/
+desktop/dist-electron/
+.swarm-logs/
