@@ -58,6 +58,22 @@ grep -h -oE 'rustc-env=RAYU_(ENABLE_OTHER_PROVIDER|FALLBACK_MODEL)=.*' \
 the build script and re-checks its dependents on the next `cargo` call. You do
 not need `cargo clean`. No other file in the repository reads `./.env`.
 
+A normal compile always picks up the current `.env`, with two exceptions:
+
+1. **An exported process variable wins over the file.**
+   `ENABLE_OTHER_PROVIDER=true cargo build ...` beats the `false` in `.env`.
+   Cargo treats that as a separate build configuration, so it rebuilds and bakes
+   the exported value instead of the file value. Unset the variable and rebuild
+   to get the file back.
+2. **Content replaced behind an old mtime can be skipped.** Cargo decides whether
+   `.env` changed by comparing mtimes. Overwriting the contents while forcing the
+   timestamp backwards leaves the previous value baked in. Normal editing never
+   does this, and a plain `touch .env` is the fix if it ever happens.
+
+Editing `.env` does not rebuild anything by itself; the next `cargo` command
+does. That is why a rebuild only ever reflects the file as it stood when the
+compile started.
+
 `ENABLE_OTHER_PROVIDER=false` hides every non-Rayu provider. That is a
 compile-time gate: exporting a different value at runtime cannot re-enable them.
 
