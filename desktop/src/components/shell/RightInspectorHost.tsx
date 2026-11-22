@@ -8,6 +8,7 @@ import {
   InspectorSidebar,
   type PreviewDocumentTab,
 } from "@/features/inspector"
+import { PreviewsHost } from "@/features/previews"
 import { useAppStore } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
 
@@ -46,7 +47,7 @@ export function RightInspectorHost({
     return (
       <InspectorSidebar
         mode={rightMode}
-        previewFallback={previewFallback}
+        previewFallback={previewFallback ?? <PreviewsHost />}
       />
     )
   }

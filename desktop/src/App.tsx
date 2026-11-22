@@ -14,17 +14,20 @@ import {
   TelegramSkeleton,
 } from "@/components/ui/page-skeletons"
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
+import { AutomationsView } from "@/features/automations"
 import {
   ChatStream,
   sendTracePrompt,
   traceKeys,
   type ExecutionTurn,
 } from "@/features/execution-trace"
+import { PreviewsHost } from "@/features/previews"
 import {
   HomeView,
   SessionComposer,
   type ComposerSubmitPayload,
 } from "@/features/sessions"
+import { SwarmView } from "@/features/swarm"
 import { useAppStore, type AppRoute } from "@/lib/app-store"
 
 function ActiveWorkspaceStage() {
@@ -117,11 +120,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Swarm orchestration view failed to render">
           <React.Suspense fallback={<SwarmSkeleton />}>
-            <RouteFallbackCard
-              route="swarm"
-              title="Gateway retry & session shards"
-              subtitle="rayucode-swarm-core · 4 agents · 2 worktrees · 0 file conflicts"
-            />
+            <SwarmView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -129,11 +128,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Automations view failed to render">
           <React.Suspense fallback={<AutomationsSkeleton />}>
-            <RouteFallbackCard
-              route="automations"
-              title="Automations"
-              subtitle="Run unattended overnight missions (rayucode-overnight-core) and recurring checks with structured morning handoff reports."
-            />
+            <AutomationsView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -191,7 +186,7 @@ function ActiveRouteCanvas() {
 export function App() {
   return (
     <AppProviders>
-      <AppShell>
+      <AppShell previewFallback={<PreviewsHost />}>
         <ActiveRouteCanvas />
       </AppShell>
     </AppProviders>

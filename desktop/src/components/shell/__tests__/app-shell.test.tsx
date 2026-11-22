@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest"
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it } from "vitest"
 
 import { App } from "@/App"
@@ -122,6 +122,60 @@ describe("AppShell & IconRail", () => {
       "data-composer-mode",
       "workspace"
     )
+  })
+
+  it("renders SwarmView on swarm route, AutomationsView on automations route, and PreviewsHost inside RightInspectorHost", async () => {
+    await act(async () => {
+      render(<App />)
+    })
+
+    // Open browser preview in RightInspectorHost
+    await act(async () => {
+      useAppStore.getState().openDocPreview("browser", "localhost:3000")
+    })
+    expect(screen.getByTestId("previews-host")).toHaveAttribute(
+      "data-preview-tab",
+      "browser"
+    )
+    expect(screen.getByTestId("browser-pane")).toBeInTheDocument()
+
+    // Open excel preview in RightInspectorHost
+    await act(async () => {
+      useAppStore
+        .getState()
+        .openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
+    })
+    expect(screen.getByTestId("previews-host")).toHaveAttribute(
+      "data-preview-tab",
+      "excel"
+    )
+    expect(screen.getByTestId("excel-pane")).toBeInTheDocument()
+
+    // Open markdown preview in RightInspectorHost
+    await act(async () => {
+      useAppStore.getState().openDocPreview("markdown", "MIGRATION_PLAN.md")
+    })
+    expect(screen.getByTestId("previews-host")).toHaveAttribute(
+      "data-preview-tab",
+      "markdown"
+    )
+    expect(screen.getByTestId("markdown-pane")).toBeInTheDocument()
+
+    // Switch to swarm route
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("swarm")
+    })
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-slot="swarm-view"]')
+      ).toBeInTheDocument()
+    })
+
+    // Switch to automations route
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("automations")
+    })
+    expect(await screen.findByTestId("automations-view")).toBeInTheDocument()
   })
 })
 
