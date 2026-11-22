@@ -1105,3 +1105,115 @@ async fn a_daily_turn_limit_429_is_surfaced_immediately() {
     );
     assert_eq!(server.join().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn rayu_reasoning_effort_session_id_split_system_and_model_detail_end_to_end() {
+    let test = test_env();
+    test.env.set("RAYU_API_KEY", "rayu_sk_live_effort_test");
+    let models_body = r#"{"object":"list","data":[
+        {"id":"deepseek-v4.1-flash-1017-cloud","object":"model","owned_by":"rayu","label":"DeepSeek-V4.1-flash:lastest","description":"Credits x0.5(discount 30%)","contextWindow":1000000,"maxOutputTokens":64000,"creditMultiplier":0.5,"supportsReasoning":true,"supportsImage":false,"supportsTools":true},
+        {"id":"deepseek-non-reason","object":"model","owned_by":"rayu","label":"Fast Plain","contextWindow":128000,"supportsReasoning":false,"supportsImage":false,"supportsTools":false}
+    ]}"#
+        .to_string();
+    let (address, server) = spawn_mock(vec![
+        ("200 OK", models_body),
+        ("200 OK", complete_sse("reasoned answer")),
+    ]);
+    test.env
+        .set("RAYU_GATEWAY_URL", format!("http://{address}"));
+
+    let provider = RayuProvider::new();
+    provider.prefetch_models().await.unwrap();
+    provider
+        .set_model("rayu:deepseek-v4.1-flash-1017-cloud")
+        .unwrap();
+
+    // Model picker route detail matches rayu-cli metadata format.
+    let routes = provider.model_routes();
+    let ds = routes
+        .iter()
+        .find(|r| r.model == "deepseek-v4.1-flash-1017-cloud")
+        .unwrap();
+    assert_eq!(
+        ds.detail,
+        "Credits x0.5(discount 30%) · rayu-hosted · DeepSeek-V4.1-flash:lastest · 1M ctx"
+    );
+
+    // Reasoning effort works end-to-end on reasoning-capable models.
+    assert!(provider.available_efforts().contains(&"high"));
+    provider.set_reasoning_effort("high").unwrap();
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+
+    // Session id and split system prompts are sent on the wire.
+    provider.set_session_id("sess_rayu_sticky_42");
+    let messages = vec![
+        Message {
+            role: rayucode_message_types::Role::User,
+            content: vec![rayucode_message_types::ContentBlock::Text {
+                text: "check file".into(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        Message {
+            role: rayucode_message_types::Role::Assistant,
+            content: vec![rayucode_message_types::ContentBlock::ToolUse {
+                id: "toolu_g3".into(),
+                name: "read".into(),
+                input: serde_json::json!({"path": "a.rs"}),
+                thought_signature: Some("SIG_GEMINI_3".into()),
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+        Message {
+            role: rayucode_message_types::Role::User,
+            content: vec![rayucode_message_types::ContentBlock::ToolResult {
+                tool_use_id: "toolu_g3".into(),
+                content: "fn main() {}".into(),
+                is_error: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        },
+    ];
+    let stream = provider
+        .complete_split(&messages, &[], "STATIC_SYS", "DYNAMIC_SYS", None)
+        .await
+        .unwrap();
+    let events: Vec<_> = stream.collect().await;
+    assert!(events.iter().all(|item| item.is_ok()));
+
+    // Non-reasoning model rejects effort and clears stored effort on switch.
+    provider.set_model("deepseek-non-reason").unwrap();
+    assert!(provider.available_efforts().is_empty());
+    assert_eq!(provider.reasoning_effort(), None);
+    assert!(provider.set_reasoning_effort("high").is_err());
+
+    let captured = server.join().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(
+        captured[1].header("x-rayu-session-id"),
+        Some("sess_rayu_sticky_42")
+    );
+    assert_eq!(
+        captured[1].header("x-rayu-intended-model"),
+        Some("deepseek-v4.1-flash-1017-cloud")
+    );
+    let sent: serde_json::Value = serde_json::from_str(&captured[1].body).unwrap();
+    assert_eq!(sent["max_tokens"], 64000);
+    assert_eq!(sent["thinking"]["type"], "enabled");
+    assert_eq!(sent["thinking"]["budget_tokens"], 16384);
+    assert_eq!(sent["output_config"]["effort"], "high");
+    // Static system block carries cache_control; dynamic block stays uncached.
+    assert_eq!(sent["system"][0]["text"], "STATIC_SYS");
+    assert_eq!(sent["system"][0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(sent["system"][1]["text"], "DYNAMIC_SYS");
+    assert!(sent["system"][1].get("cache_control").is_none());
+    // Gemini-3 thought_signature survives replay on ToolUse.
+    assert_eq!(
+        sent["messages"][1]["content"][0]["thought_signature"],
+        "SIG_GEMINI_3"
+    );
+}

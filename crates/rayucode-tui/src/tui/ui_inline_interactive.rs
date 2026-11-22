@@ -394,6 +394,7 @@ fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: u
     let mut max_model_len = display_width(picker.primary_label());
     let mut max_provider_len = display_width(picker.secondary_label(is_preview));
     let mut max_via_len = display_width(picker.tertiary_label());
+    let mut max_detail_len = 0usize;
 
     for &fi in picker.filtered.iter().take(WIDTH_SCAN_LIMIT) {
         let entry = &picker.entries[fi];
@@ -407,6 +408,9 @@ fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: u
             };
             max_provider_len = max_provider_len.max(display_width(provider_label.as_str()));
             max_via_len = max_via_len.max(display_width(&route_method_display(route)));
+            if let Some(detail_text) = route_detail_display_text(&route.detail, !route.available) {
+                max_detail_len = max_detail_len.max(display_width(detail_text.as_str()));
+            }
         }
     }
 
@@ -442,7 +446,15 @@ fn picker_render_width(picker: &crate::tui::InlineInteractiveState, max_width: u
         .min(model_cap)
         .min(model_budget.max(min_model_width.min(model_budget)));
 
-    marker_width + provider_width + via_width + model_width
+    let base = marker_width + provider_width + via_width + model_width;
+    if max_detail_len > 0 {
+        // Reserve room for `  <detail>` (including the minimum column floors
+        // used by `draw_inline_interactive` for provider/via) up to `max_width`.
+        let draw_base = marker_width + provider_width.max(8) + via_width.max(6) + model_width;
+        draw_base.saturating_add(2 + max_detail_len).min(max_width)
+    } else {
+        base
+    }
 }
 
 pub(super) fn format_elapsed(secs: f32) -> String {
@@ -566,6 +578,10 @@ pub(super) fn model_suggestion_lines(
                     route_style
                 },
             ));
+            if let Some(detail_text) = route_detail_display_text(&route.detail, unavailable) {
+                spans.push(Span::styled(" · ", dim));
+                spans.push(Span::styled(detail_text, dim));
+            }
         }
         if row == start && start > 0 {
             spans.push(Span::styled(format!("  ↑{start}"), dim));
@@ -662,6 +678,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     let mut max_model_len = display_width(picker.primary_label());
     let mut max_account_title_len = display_width("ACCOUNT");
     let mut max_account_state_len = display_width("STATE");
+    let mut any_detail = false;
     for &fi in picker.filtered.iter().take(WIDTH_SCAN_LIMIT) {
         let entry = &picker.entries[fi];
         let route = entry.active_option();
@@ -669,6 +686,9 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         if let Some(r) = route {
             max_provider_len = max_provider_len.max(display_width(r.provider.as_str()));
             max_via_len = max_via_len.max(display_width(&route_method_display(r)));
+            if route_detail_display_text(&r.detail, !r.available).is_some() {
+                any_detail = true;
+            }
         }
         if is_account_picker {
             let (title, _) = account_picker_entry_title(entry, show_account_provider_badge);
@@ -757,7 +777,15 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     }
     let account_state_width = (max_account_state_len + 1).clamp(7, 10);
     let account_title_width = width.saturating_sub(marker_width + account_state_width);
-    let model_width = width.saturating_sub(marker_width + provider_width + via_width);
+    let available_model_width = width.saturating_sub(marker_width + provider_width + via_width);
+    // Keep the model column fitted to the widest model name when rows carry
+    // detail metadata (e.g. Rayu credits/label/context window) so `detail_width`
+    // gets the remaining horizontal space instead of collapsing to 0.
+    let model_width = if any_detail {
+        max_model_len.min(available_model_width)
+    } else {
+        available_model_width
+    };
 
     let (col_labels, col_logical) = picker.header_layout(is_preview);
     let col_widths: [usize; 3] = if is_account_picker {

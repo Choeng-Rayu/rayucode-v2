@@ -476,6 +476,7 @@ pub fn format_content_blocks_with_native(
                         serde_json::json!({})
                     },
                     cache_control: None,
+                    thought_signature: None,
                 });
             }
             ContentBlock::ToolResult {
@@ -623,6 +624,7 @@ pub enum ApiThinking {
     Enabled {
         budget_tokens: u32,
     },
+    Disabled,
 }
 
 /// Permit the API to discard stale signed reasoning after compaction or a
@@ -751,6 +753,47 @@ pub fn build_system_param_split(
     }
 }
 
+/// Attach `thought_signature` values from source `ContentBlock::ToolUse` blocks
+/// onto the matching formatted `ApiContentBlock::ToolUse` blocks (by sanitized
+/// tool id). Used by the Rayu hosted gateway runtime so Gemini-3 tool-call
+/// continuations stay stateless across gateway instances without affecting
+/// native Anthropic requests.
+pub fn attach_tool_thought_signatures(
+    api_messages: &mut [ApiMessage],
+    source_messages: &[Message],
+) {
+    let mut sigs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for msg in source_messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolUse {
+                id,
+                thought_signature: Some(sig),
+                ..
+            } = block
+                && !sig.is_empty()
+            {
+                sigs.insert(sanitize_tool_id(id), sig.clone());
+            }
+        }
+    }
+    if sigs.is_empty() {
+        return;
+    }
+    for msg in api_messages {
+        for block in &mut msg.content {
+            if let ApiContentBlock::ToolUse {
+                id,
+                thought_signature,
+                ..
+            } = block
+                && let Some(sig) = sigs.get(id)
+            {
+                *thought_signature = Some(sig.clone());
+            }
+        }
+    }
+}
+
 pub fn format_messages_with_identity(
     messages: Vec<ApiMessage>,
     _is_oauth: bool,
@@ -863,6 +906,11 @@ pub enum ApiContentBlock {
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControlParam>,
+        /// Optional Gemini-3 thought signature echoed back through the Rayu
+        /// gateway's Anthropic-Messages surface; always `None` on native
+        /// Anthropic requests so wire serialization is untouched there.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {

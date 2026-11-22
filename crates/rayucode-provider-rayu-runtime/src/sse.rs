@@ -16,11 +16,11 @@ use rayucode_provider_core::EventStream;
 use serde::Deserialize;
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum BlockKind {
     Text,
     Thinking,
-    ToolUse,
+    ToolUse(String),
     Other,
 }
 
@@ -31,8 +31,10 @@ pub(crate) struct SseParser {
     buffer: String,
     queue: VecDeque<Result<StreamEvent>>,
     /// Block kind per content-block index, so `content_block_stop` knows
-    /// whether to close a tool call or a thinking block.
+    /// whether to close a tool call or a thinking block, and `signature_delta`
+    /// can route Gemini-3 tool signatures to `ToolUseSignatureFor`.
     blocks: Vec<Option<BlockKind>>,
+    has_input_from_start: bool,
     message_ended: bool,
 }
 
@@ -84,6 +86,12 @@ impl SseParser {
             if event_type.is_empty() && data.is_empty() {
                 continue;
             }
+            if event_type.is_empty()
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&data)
+                && let Some(ty) = val.get("type").and_then(|v| v.as_str())
+            {
+                event_type = ty.to_string();
+            }
             self.process_event(&event_type, &data);
         }
     }
@@ -110,6 +118,12 @@ impl SseParser {
                 if let Ok(parsed) = serde_json::from_str::<MessageStart>(data)
                     && let Some(usage) = parsed.message.usage
                 {
+                    if usage.input_tokens.unwrap_or(0) > 0
+                        || usage.cache_read_input_tokens.unwrap_or(0) > 0
+                        || usage.cache_creation_input_tokens.unwrap_or(0) > 0
+                    {
+                        self.has_input_from_start = true;
+                    }
                     self.emit_usage(usage);
                 }
             }
@@ -121,19 +135,28 @@ impl SseParser {
                 let kind = match block.block_type.as_str() {
                     "text" => BlockKind::Text,
                     "thinking" | "redacted_thinking" => BlockKind::Thinking,
-                    "tool_use" => BlockKind::ToolUse,
+                    "tool_use" => BlockKind::ToolUse(block.id.clone().unwrap_or_default()),
                     _ => BlockKind::Other,
                 };
-                self.set_block(parsed.index, kind);
+                self.set_block(parsed.index, kind.clone());
                 match kind {
+                    BlockKind::Text => {
+                        if let Some(text) = block.text.filter(|t| !t.is_empty()) {
+                            self.queue.push_back(Ok(StreamEvent::TextDelta(text)));
+                        }
+                    }
                     BlockKind::Thinking => {
                         self.queue.push_back(Ok(StreamEvent::ThinkingStart));
                         if let Some(thinking) = block.thinking.filter(|text| !text.is_empty()) {
                             self.queue
                                 .push_back(Ok(StreamEvent::ThinkingDelta(thinking)));
                         }
+                        if let Some(sig) = block.signature.filter(|s| !s.is_empty()) {
+                            self.queue
+                                .push_back(Ok(StreamEvent::ThinkingSignatureDelta(sig)));
+                        }
                     }
-                    BlockKind::ToolUse => {
+                    BlockKind::ToolUse(_) => {
                         if let (Some(id), Some(name)) = (block.id, block.name) {
                             self.queue
                                 .push_back(Ok(StreamEvent::ToolUseStart { id, name }));
@@ -151,7 +174,21 @@ impl SseParser {
                     "text_delta" => delta.text.map(StreamEvent::TextDelta),
                     "input_json_delta" => delta.partial_json.map(StreamEvent::ToolInputDelta),
                     "thinking_delta" => delta.thinking.map(StreamEvent::ThinkingDelta),
-                    "signature_delta" => delta.signature.map(StreamEvent::ThinkingSignatureDelta),
+                    "signature_delta" => delta.signature.map(|sig| {
+                        let tool_id = parsed
+                            .index
+                            .and_then(|idx| self.blocks.get(idx))
+                            .and_then(|slot| slot.as_ref())
+                            .and_then(|kind| match kind {
+                                BlockKind::ToolUse(id) if !id.is_empty() => Some(id.clone()),
+                                _ => None,
+                            });
+                        if let Some(id) = tool_id {
+                            StreamEvent::ToolUseSignatureFor { id, signature: sig }
+                        } else {
+                            StreamEvent::ThinkingSignatureDelta(sig)
+                        }
+                    }),
                     _ => None,
                 };
                 if let Some(event) = event {
@@ -167,7 +204,7 @@ impl SseParser {
                     .get_mut(parsed.index)
                     .and_then(|slot| slot.take());
                 match kind {
-                    Some(BlockKind::ToolUse) => {
+                    Some(BlockKind::ToolUse(_)) => {
                         self.queue.push_back(Ok(StreamEvent::ToolUseEnd));
                     }
                     Some(BlockKind::Thinking) => {
@@ -180,7 +217,19 @@ impl SseParser {
                 let Ok(parsed) = serde_json::from_str::<MessageDelta>(data) else {
                     return;
                 };
-                if let Some(usage) = parsed.usage {
+                if let Some(mut usage) = parsed.usage {
+                    // Output-only deltas (or proxies echoing 0 for input buckets)
+                    // must not wipe non-zero input/cache counts reported by
+                    // `message_start`.
+                    if self.has_input_from_start
+                        && usage.input_tokens.unwrap_or(0) == 0
+                        && usage.cache_read_input_tokens.unwrap_or(0) == 0
+                        && usage.cache_creation_input_tokens.unwrap_or(0) == 0
+                    {
+                        usage.input_tokens = None;
+                        usage.cache_read_input_tokens = None;
+                        usage.cache_creation_input_tokens = None;
+                    }
                     self.emit_usage(usage);
                 }
                 if let Some(charge) = parsed
@@ -254,7 +303,11 @@ struct ContentBlockStartBody {
     #[serde(rename = "type")]
     block_type: String,
     #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
     thinking: Option<String>,
+    #[serde(default)]
+    signature: Option<String>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -263,6 +316,8 @@ struct ContentBlockStartBody {
 
 #[derive(Deserialize)]
 struct ContentBlockDelta {
+    #[serde(default)]
+    index: Option<usize>,
     delta: DeltaBody,
 }
 
@@ -382,8 +437,13 @@ pub(crate) fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-/// Wrap a gateway HTTP response as a provider [`EventStream`].
-pub(crate) fn stream_events(response: reqwest::Response, trace: ResponseTrace) -> EventStream {
+/// Wrap a gateway HTTP response as a provider [`EventStream`], guarding reads
+/// against dead TCP connections with `idle_timeout`.
+pub(crate) fn stream_events(
+    response: reqwest::Response,
+    trace: ResponseTrace,
+    idle_timeout: std::time::Duration,
+) -> EventStream {
     let inner = response.bytes_stream();
     let parser = SseParser::default();
     let started = std::time::Instant::now();
@@ -400,12 +460,12 @@ pub(crate) fn stream_events(response: reqwest::Response, trace: ResponseTrace) -
                     if finished {
                         return None;
                     }
-                    match inner.next().await {
-                        Some(Ok(bytes)) => {
+                    match tokio::time::timeout(idle_timeout, inner.next()).await {
+                        Ok(Some(Ok(bytes))) => {
                             bytes_read += bytes.len();
                             parser.push_bytes(&bytes);
                         }
-                        Some(Err(error)) => {
+                        Ok(Some(Err(error))) => {
                             finished = true;
                             let message = format!(
                                 "Rayu gateway stream transport error: {} ({}, bytes_read={bytes_read}, elapsed_ms={}, message_ended={})",
@@ -420,9 +480,24 @@ pub(crate) fn stream_events(response: reqwest::Response, trace: ResponseTrace) -
                                 (inner, parser, finished, bytes_read),
                             ));
                         }
-                        None => {
+                        Ok(None) => {
                             finished = true;
                             parser.finish();
+                        }
+                        Err(_) => {
+                            finished = true;
+                            let message = format!(
+                                "Rayu gateway stream idle timeout after {:?} ({}, bytes_read={bytes_read}, elapsed_ms={}, message_ended={})",
+                                idle_timeout,
+                                trace.describe(),
+                                started.elapsed().as_millis(),
+                                parser.message_ended,
+                            );
+                            rayucode_base::logging::warn(&message);
+                            return Some((
+                                Err(anyhow::anyhow!(message)),
+                                (inner, parser, finished, bytes_read),
+                            ));
                         }
                     }
                 }
@@ -677,6 +752,60 @@ mod tests {
             StreamEvent::MessageEnd {
                 stop_reason: Some(reason)
             } if reason == "end_turn"
+        ));
+    }
+
+    #[test]
+    fn tool_use_signature_delta_emits_tool_use_signature_for() {
+        let stream = concat!(
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_g3_1\",\"name\":\"read\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"GEMINI3_SIG\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        );
+        let events: Vec<StreamEvent> = parse_all(&[stream.as_bytes()])
+            .into_iter()
+            .map(|item| item.unwrap())
+            .collect();
+        assert!(events.iter().any(|ev| matches!(
+            ev,
+            StreamEvent::ToolUseSignatureFor { id, signature }
+                if id == "toolu_g3_1" && signature == "GEMINI3_SIG"
+        )));
+    }
+
+    #[test]
+    fn output_only_zero_input_message_delta_does_not_overwrite_message_start_usage() {
+        let stream = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":500,\"cache_read_input_tokens\":400,\"output_tokens\":1}}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":55}}\n\n",
+        );
+        let events: Vec<StreamEvent> = parse_all(&[stream.as_bytes()])
+            .into_iter()
+            .map(|item| item.unwrap())
+            .collect();
+        assert!(matches!(
+            events[0],
+            StreamEvent::TokenUsage {
+                input_tokens: Some(500),
+                cache_read_input_tokens: Some(400),
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            StreamEvent::TokenUsage {
+                input_tokens: None,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                output_tokens: Some(55),
+            }
         ));
     }
 }

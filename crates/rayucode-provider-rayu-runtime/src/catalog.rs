@@ -52,6 +52,10 @@ pub struct RayuCatalogModel {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_multiplier: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_reasoning: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_image: Option<bool>,
@@ -108,6 +112,16 @@ fn optional_window(value: Option<&serde_json::Value>) -> Option<u64> {
     (raw.is_finite() && raw > 0.0).then_some(raw.floor() as u64)
 }
 
+fn optional_positive_u32(value: Option<&serde_json::Value>) -> Option<u32> {
+    let raw = value.and_then(|v| v.as_f64())?;
+    (raw.is_finite() && raw > 0.0 && raw <= f64::from(u32::MAX)).then_some(raw.floor() as u32)
+}
+
+fn optional_positive_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    let raw = value.and_then(|v| v.as_f64())?;
+    (raw.is_finite() && raw > 0.0).then_some(raw)
+}
+
 fn model_from_entry(
     entry: &rayucode_base::rayu::RayuModelEntry,
     id: String,
@@ -126,11 +140,17 @@ fn model_from_entry(
         .filter(|description| !description.is_empty())
         .map(str::to_string);
     let context_window = entry.context_window.filter(|window| *window > 0);
+    let max_output_tokens = entry.max_output_tokens.filter(|tokens| *tokens > 0);
+    let credit_multiplier = entry
+        .credit_multiplier
+        .filter(|mult| mult.is_finite() && *mult > 0.0);
     RayuCatalogModel {
         id,
         label,
         description,
         context_window,
+        max_output_tokens,
+        credit_multiplier,
         supports_reasoning: entry.supports_reasoning,
         supports_image: entry.supports_image,
         supports_tools: entry.supports_tools,
@@ -204,6 +224,8 @@ pub(crate) fn parse_gateway_models(
             label,
             description: optional_trimmed(item.get("description")),
             context_window: optional_window(item.get("contextWindow")),
+            max_output_tokens: optional_positive_u32(item.get("maxOutputTokens")),
+            credit_multiplier: optional_positive_f64(item.get("creditMultiplier")),
             supports_reasoning: optional_bool(item.get("supportsReasoning")),
             supports_image: optional_bool(item.get("supportsImage")),
             supports_tools: optional_bool(item.get("supportsTools")),
@@ -679,6 +701,7 @@ mod tests {
             label: None,
             description: None,
             context_window: None,
+            max_output_tokens: None,
             supports_reasoning: None,
             supports_image: None,
             supports_tools: None,
@@ -767,6 +790,8 @@ mod tests {
             label: None,
             description: None,
             context_window: None,
+            max_output_tokens: None,
+            credit_multiplier: None,
             supports_reasoning: None,
             supports_image: None,
             supports_tools: None,
@@ -847,6 +872,8 @@ mod tests {
                 label: None,
                 description: None,
                 context_window: None,
+                max_output_tokens: None,
+                credit_multiplier: None,
                 supports_reasoning: None,
                 supports_image: None,
                 supports_tools: None,
