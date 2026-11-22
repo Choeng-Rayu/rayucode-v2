@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Telegram Remote</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=15">
+  <link rel="stylesheet" href="../css/layout.css?v=15">
+  <link rel="stylesheet" href="../css/components.css?v=15">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <!-- Column 1: Left Sidebar (Icon Rail + Telegram Pane) -->
+    <aside class="sidebar" aria-label="Telegram Remote navigation">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn is-active" href="telegram.html" aria-current="page" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <a class="cx-avatar" href="settings-models.html#account" title="Account · lyyeakkhai">LK</a>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <span class="cx-brand-btn" style="cursor:default">Telegram</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" aria-label="Refresh bridge status" data-toast="Telegram bridge listening · 18ms RTT"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+        </div>
+
+        <div class="customize-nav" role="navigation" aria-label="Telegram sections">
+          <a class="customize-link is-active" href="#tg-connection"><svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>Connection</a>
+          <a class="customize-link" href="#tg-approvals"><svg class="icon" aria-hidden="true"><use href="#i-shield-outline"/></svg>Approvals<span class="badge badge-live" style="margin-left:auto">2</span></a>
+          <a class="customize-link" href="#tg-commands"><svg class="icon" aria-hidden="true"><use href="#i-slash"/></svg>Bot Commands</a>
+          <a class="customize-link" href="#tg-safety"><svg class="icon" aria-hidden="true"><use href="#i-lock"/></svg>Safety</a>
+        </div>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Listening Sessions</div>
+          <a class="conv-row is-active" href="agent-workspace.html"><span class="pulse pulse-live" aria-hidden="true"></span><span class="conv-name">Retire legacy session cache</span></a>
+          <a class="conv-row" href="execution-runner.html"><span class="pulse pulse-done" aria-hidden="true"></span><span class="conv-name">Gateway: retry budget tests</span></a>
+          <div class="cx-sec-label">CLI Sync</div>
+          <div class="installed-empty mono" style="font-size:11px">rayu telegram status</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Telegram Remote Main Canvas -->
+    <div class="center-col">
+      <main class="canvas">
+        <div class="pane-scroll">
+          <div class="op-page">
+            <header class="op-header">
+              <div>
+                <h1 class="op-title">Telegram Remote</h1>
+                <p class="op-sub">Drive RayuCode sessions, send prompts or images, and approve tool calls or plans from a private Telegram chat (<code>/telegram-bot</code>).</p>
+              </div>
+              <div class="op-actions">
+                <button class="btn btn-sm" type="button" data-toast="Sent test ping to @RayuCodeBot (Chat ID 842910443)">Ping bot</button>
+                <button class="btn btn-primary btn-sm" type="button" data-toast="Attached active session a41f to Telegram bridge">Drive active session</button>
+              </div>
+            </header>
+
+            <!-- Section 1: Connection & Pairing Mode (exact TelegramConnectPanel.tsx flows) -->
+            <section class="op-sec" id="tg-connection">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Bot Connection</h2>
+                <div class="seg" role="group" aria-label="Telegram connection mode">
+                  <button type="button" data-tg-mode="connected" aria-pressed="true">Connected</button>
+                  <button type="button" data-tg-mode="hosted" aria-pressed="false">Rayu shared bot (QR)</button>
+                  <button type="button" data-tg-mode="byo" aria-pressed="false">Own @BotFather token</button>
+                </div>
+              </div>
+
+              <!-- Panel A: Connected state -->
+              <div class="op-ledger" id="tg-panel-connected">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name"><span class="pulse pulse-live" aria-hidden="true"></span>Telegram is connected<span class="badge badge-live">Listening</span></div>
+                    <div class="op-ledger-meta">Linked through <strong>@RayuCodeBot</strong> (Rayu shared hosted bot). Chat ID <code>842910443</code> <span class="demo-note">(demo)</span>.</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-danger-ghost btn-sm" type="button" data-toast="Disconnected @RayuCodeBot from this host">Disconnect</button>
+                  </div>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main"><div class="op-ledger-name">Driving session</div><div class="op-ledger-meta">Incoming Telegram messages and image attachments route here.</div></div>
+                  <span class="op-ledger-val">a41f · rayucode-v2</span>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main"><div class="op-ledger-name">Generated media delivery</div><div class="op-ledger-meta">Shared bot sends text notices; switch to a @BotFather bot for inline images &amp; MP4.</div></div>
+                  <span class="op-ledger-val">Text notice</span>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main"><div class="op-ledger-name">Host CLI parity</div><div class="op-ledger-meta">Move an existing hosted link with <code>rayu telegram link --replace-existing</code>.</div></div>
+                  <span class="op-ledger-val">~/.rayu/rayu-auth.json</span>
+                </div>
+              </div>
+
+              <!-- Panel B: Rayu Shared Bot QR Pairing -->
+              <div class="op-ledger" id="tg-panel-hosted" hidden>
+                <div class="op-qr-grid">
+                  <div class="op-qr-frame" aria-label="Telegram pairing QR code (demo)">
+                    <svg viewBox="0 0 21 21" width="156" height="156" shape-rendering="crispEdges">
+                      <rect width="21" height="21" fill="#FFFFFF"/>
+                      <path fill="#11110E" d="M0 0h7v7H0V0Zm1 1v5h5V1H1Zm1 1h3v3H2V2ZM14 0h7v7h-7V0Zm1 1v5h5V1h-5Zm1 1h3v3h-3V2ZM0 14h7v7H0v-7Zm1 1v5h5v-5H1Zm1 1h3v3H2v-3ZM9 1h2v2H9V1Zm3 0h1v3h-1V1ZM8 4h2v2H8V4Zm3 2h2v2h-2V6ZM1 9h3v1H1V9Zm4 0h2v2H5V9Zm3-1h2v3H8V8Zm3 1h3v2h-3V9Zm4-1h2v2h-2V8Zm3 1h3v2h-3V9ZM1 11h2v2H1v-2Zm3 1h3v1H4v-1Zm5 0h2v3H9v-3Zm3 1h2v2h-2v-2Zm3-1h2v3h-2v-3Zm3 1h3v2h-3v-2ZM9 16h2v2H9v-2Zm3-1h3v2h-3v-2Zm4 1h2v2h-2v-2Zm3 0h2v4h-2v-4ZM8 19h4v2H8v-2Zm5 0h3v2h-3v-2Zm4 0h1v2h-1v-2Z"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="op-ledger-name">Rayu shared bot — recommended</div>
+                    <p class="op-sub" style="margin-top:6px">Sign in with Rayu and scan this QR code, or open <code>@RayuCodeBot</code> in Telegram and send:</p>
+                    <div class="op-field">
+                      <input class="op-input" type="text" value="/start rayu_9k4m2p" readonly aria-label="Pairing command">
+                    </div>
+                    <div class="op-actions" style="margin-top:10px">
+                      <button class="btn btn-primary btn-sm" type="button" data-toast="Copied https://t.me/RayuCodeBot?start=rayu_9k4m2p">Copy pairing link</button>
+                      <button class="btn btn-sm" type="button" data-toast="Generated fresh 10-minute pairing code">Regenerate QR</button>
+                    </div>
+                    <p class="demo-note" style="margin-top:10px">Waiting for link in Telegram… code valid for 10 minutes (synthetic demo code).</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Panel C: Own @BotFather Token (Write-only) -->
+              <div class="op-ledger" id="tg-panel-byo" hidden>
+                <div style="padding:20px">
+                  <div class="op-ledger-name">Connect your own @BotFather bot</div>
+                  <p class="op-sub" style="margin-top:6px">Create a bot via <strong>@BotFather</strong> with <code>/newbot</code>, copy the token (e.g. <code>123456789:ABCDef…</code>), and verify it below. Supports inline generated images and MP4 delivery.</p>
+                  <div class="op-field">
+                    <label for="tg-byo-token">Bot token (write-only)</label>
+                    <input id="tg-byo-token" class="op-input" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your @BotFather token">
+                    <span class="demo-note">Checked with Telegram before saving. Never read back into view state or transcript.</span>
+                  </div>
+                  <div class="op-actions" style="margin-top:12px">
+                    <button class="btn btn-primary btn-sm" type="button" data-toast="Verified bot token with Telegram API (demo)">Verify and connect</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 2: Pending Remote Approvals (rayu permissions) -->
+            <section class="op-sec" id="tg-approvals">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Pending Approvals</h2>
+                <span class="demo-note">Synced with <code>rayu permissions</code> &amp; Telegram inline buttons</span>
+              </div>
+              <div class="op-ledger">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name"><span class="badge badge-warn">Bash</span><code>cargo test -p rayu-gateway retry_budget</code></div>
+                    <div class="op-ledger-meta">Requested by worker-1 (e7b3) · 12s ago · waiting on host or Telegram</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-danger-ghost btn-sm" type="button" data-approval-act="deny">Deny</button>
+                    <button class="btn btn-primary btn-sm" type="button" data-approval-act="approve">Approve</button>
+                  </div>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name"><span class="badge">ExitPlanMode</span>Delete legacy <code>src/session/cache.rs</code> after ShardStore migration</div>
+                    <div class="op-ledger-meta">Requested by coordinator (a41f) · 2m ago · 14 unit tests green</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-danger-ghost btn-sm" type="button" data-approval-act="deny">Deny</button>
+                    <button class="btn btn-primary btn-sm" type="button" data-approval-act="approve">Approve</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 3: Supported Telegram Chat Commands -->
+            <section class="op-sec" id="tg-commands">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Telegram Chat Commands</h2>
+              </div>
+              <div class="op-cmd-grid">
+                <div class="op-cmd-row"><code>/sessions</code><span>Pick which local RayuCode session to drive</span></div>
+                <div class="op-cmd-row"><code>/model</code><span>Switch model route in Rayu-first gateway order</span></div>
+                <div class="op-cmd-row"><code>/provider</code><span>Switch configured provider on the host</span></div>
+                <div class="op-cmd-row"><code>/interrupt</code><span>Soft-cancel the active Telegram turn</span></div>
+                <div class="op-cmd-row"><code>/connect</code><span>Prompt host login when auth is missing</span></div>
+                <div class="op-cmd-row"><code>/stop</code><span>Disconnect the Telegram remote link</span></div>
+              </div>
+            </section>
+
+            <!-- Section 4: Safety & Remote Uninstall Guardrail -->
+            <section class="op-sec" id="tg-safety">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Safety Guardrails</h2>
+              </div>
+              <div class="op-ledger">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">Remote uninstall (<code>/uninstall &lt;device-id&gt;</code>)</div>
+                    <div class="op-ledger-meta">Disabled by default. Enable locally via <code>rayu telegram uninstall enable</code>; preserves projects and session data.</div>
+                  </div>
+                  <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Allow remote uninstall"></button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=15"></script>
+  <script src="../js/app.js?v=15"></script>
+</body>
+</html>

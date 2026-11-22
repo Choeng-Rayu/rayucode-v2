@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Automations &amp; Overnight Runs</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=15">
+  <link rel="stylesheet" href="../css/layout.css?v=15">
+  <link rel="stylesheet" href="../css/components.css?v=15">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <!-- Column 1: Left Sidebar (Icon Rail + Automations Pane) -->
+    <aside class="sidebar" aria-label="Automations navigation">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn is-active" href="automations.html" aria-current="page" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <a class="cx-avatar" href="settings-models.html#account" title="Account · lyyeakkhai">LK</a>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <span class="cx-brand-btn" style="cursor:default">Automations</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" data-toggle-launcher aria-label="New overnight run" title="New overnight run"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-plus"/></svg></button>
+        </div>
+
+        <div class="customize-nav" role="navigation" aria-label="Automation views">
+          <a class="customize-link is-active" href="#ovn-running"><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Active Runs</a>
+          <a class="customize-link" href="#ovn-schedules"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Schedules</a>
+          <a class="customize-link" href="#ovn-reports"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Morning Reports</a>
+        </div>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Running</div>
+          <a class="conv-row is-active" href="#ovn-running"><span class="pulse pulse-live" aria-hidden="true"></span><span class="conv-name">Gateway soak &amp; dedup</span></a>
+          <div class="cx-sec-label">Scheduled</div>
+          <a class="recent-row" href="#ovn-schedules">Daily PR &amp; CI triage · 08:30</a>
+          <a class="recent-row" href="#ovn-schedules">Nightly clippy + cargo test · 02:00</a>
+          <a class="recent-row" href="#ovn-schedules">Weekly KV cache digest · Sun</a>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Automations & Overnight Runs Canvas -->
+    <div class="center-col">
+      <main class="canvas">
+        <div class="pane-scroll">
+          <div class="op-page">
+            <header class="op-header">
+              <div>
+                <h1 class="op-title">Automations</h1>
+                <p class="op-sub">Run unattended overnight missions (<code>rayucode-overnight-core</code>) and recurring checks with structured morning handoff reports.</p>
+              </div>
+              <div class="op-actions">
+                <a class="btn btn-sm" href="execution-runner.html"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-swarm"/></svg>Live Swarm</a>
+                <button class="btn btn-primary btn-sm" type="button" data-toggle-launcher><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-plus"/></svg>New overnight run</button>
+              </div>
+            </header>
+
+            <!-- Inline Overnight Launcher (no modal) -->
+            <div class="op-launcher" id="overnight-launcher" hidden>
+              <div class="op-ledger-name">Start overnight mission</div>
+              <input id="ovn-mission" class="op-input" style="max-width:none" type="text" placeholder="Describe mission, e.g. Harden retry_budget edge cases and stage validation report">
+              <div class="op-launcher-row">
+                <select id="ovn-duration" class="select" aria-label="Duration">
+                  <option>2h focused</option>
+                  <option>4h evening</option>
+                  <option selected>8h overnight</option>
+                </select>
+                <select class="select" aria-label="Max parallel agents">
+                  <option>max 2 agents</option>
+                  <option selected>max 4 agents</option>
+                  <option>max 6 agents</option>
+                </select>
+                <select class="select" aria-label="Permissions">
+                  <option selected>Auto-edit</option>
+                  <option>Plan (read-only)</option>
+                  <option>Full Manage</option>
+                </select>
+                <span class="grow"></span>
+                <button class="btn btn-ghost btn-sm" type="button" data-toggle-launcher>Cancel</button>
+                <button class="btn btn-primary btn-sm" type="button" data-launch-overnight>Launch run</button>
+              </div>
+            </div>
+
+            <!-- Section 1: Running Overnight Manifest -->
+            <section class="op-sec" id="ovn-running">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Running Now</h2>
+                <span class="demo-note">Illustrative overnight manifest (demo)</span>
+              </div>
+              <div class="op-ledger" id="ovn-running-list">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name"><span class="pulse pulse-live" aria-hidden="true"></span>Overnight: Gateway soak &amp; retry dedup<span class="badge badge-live">Running</span></div>
+                    <div class="op-ledger-meta">run_id: <code>ovn_8f2a</code> · <code>choeng-rayu-1</code> · max 4 agents · wakes 07:00 (handoff ready 06:45) · 3 task cards · 1 validation green</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-sm" type="button" data-collapse="ovn-log-1" aria-expanded="false">Event log</button>
+                    <button class="btn btn-danger-ghost btn-sm" type="button" data-toast="Cancel requested for ovn_8f2a">Cancel</button>
+                  </div>
+                </div>
+                <div id="ovn-log-1" style="padding:12px 16px;border-top:1px solid var(--border);background:var(--bg-inset)" hidden>
+                  <pre class="mono" style="margin:0;font-size:11.5px;color:var(--text-2);line-height:1.6">01:14:02  preflight   repo clean on feat/retire-session-cache · 214 MB RAM budget
+01:16:40  task_card   spawned worker-1 (e7b3) → stress retry_budget streaming dedup
+01:28:11  validation  cargo test -p rayu-gateway retry_budget → 5 ok, 1 patch queued
+01:31:05  handoff     drafting review_notes.md for 06:45 morning report</pre>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 2: Recurring Schedules -->
+            <section class="op-sec" id="ovn-schedules">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Recurring Schedules</h2>
+              </div>
+              <div class="op-ledger">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">Daily PR &amp; CI triage<span class="badge">Plan</span></div>
+                    <div class="op-ledger-meta">08:30 Mon–Fri · <code>rayucode-v2</code> · summarizes failing checks &amp; open review comments to Telegram</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-ghost btn-sm" type="button" data-toast="Triggered Daily PR &amp; CI triage">Run now</button>
+                    <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Enable Daily PR triage"></button>
+                  </div>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">Nightly Rust clippy + cargo test<span class="badge badge-live">Auto-edit</span></div>
+                    <div class="op-ledger-meta">02:00 Daily · <code>rayucode-v2</code> · fixes lint warnings on an isolated worktree branch</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-ghost btn-sm" type="button" data-toast="Triggered Nightly clippy + cargo test">Run now</button>
+                    <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Enable Nightly clippy"></button>
+                  </div>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">Weekly token &amp; KV cache digest<span class="badge">Plan</span></div>
+                    <div class="op-ledger-meta">Sun 18:00 · <code>rayu-web</code> · exports Excel cost breakdown &amp; cache hit trend</div>
+                  </div>
+                  <div class="op-actions">
+                    <button class="btn btn-ghost btn-sm" type="button" data-toast="Triggered Weekly digest">Run now</button>
+                    <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Enable Weekly digest"></button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 3: Morning Handoff Reports -->
+            <section class="op-sec" id="ovn-reports">
+              <div class="op-sec-head">
+                <h2 class="op-sec-title">Morning Handoff Reports</h2>
+              </div>
+              <div class="op-ledger">
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">SessionCache audit &amp; ShardStore port<span class="badge badge-live">Completed</span></div>
+                    <div class="op-ledger-meta">Yesterday · 06:52 · 14 unit tests passing · 2 issue drafts staged · 1.84 credits · 93% KV warm</div>
+                  </div>
+                  <div class="op-actions">
+                    <a class="btn btn-sm" href="changes.html">Review diffs</a>
+                  </div>
+                </div>
+                <div class="op-ledger-row">
+                  <div class="op-ledger-main">
+                    <div class="op-ledger-name">VS Code model picker parity check<span class="badge badge-live">Completed</span></div>
+                    <div class="op-ledger-meta">Nov 20 · 06:48 · 0 regressions · 0.62 credits · 91% KV warm</div>
+                  </div>
+                  <div class="op-actions">
+                    <a class="btn btn-sm" href="agent-workspace.html">Open session</a>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=15"></script>
+  <script src="../js/app.js?v=15"></script>
+</body>
+</html>

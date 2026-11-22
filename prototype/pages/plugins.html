@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Plugins</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=16">
+  <link rel="stylesheet" href="../css/layout.css?v=16">
+  <link rel="stylesheet" href="../css/components.css?v=16">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <!-- Column 1: Left Sidebar (Icon Rail + Customize Pane) -->
+    <aside class="sidebar" aria-label="Customize navigation">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn is-active" href="plugins.html" aria-current="page" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <div class="cx-profile-wrap">
+          <button class="cx-avatar-btn" type="button" data-dropdown="profile-pop" aria-haspopup="menu" aria-expanded="false" aria-label="User profile menu" title="ly yeak khai · Personal account">
+            <span class="cx-avatar" aria-hidden="true">LK</span>
+          </button>
+          <div class="profile-pop" id="profile-pop" data-dropdown-menu role="menu" aria-label="Account menu" hidden>
+            <div class="profile-pop-group">
+              <a class="profile-pop-item" href="settings.html" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                <span>Settings</span>
+                <span class="profile-pop-keys"><kbd class="profile-pop-key">⌘</kbd><kbd class="profile-pop-key">,</kbd></span>
+              </a>
+              <a class="profile-pop-item" href="settings.html#usage-billing" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg>
+                <span>Upgrade Plan</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Rewards center · 0 credits earned">
+                <svg class="icon" aria-hidden="true"><use href="#i-gift"/></svg>
+                <span>Rewards center</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Invite link copied to clipboard">
+                <svg class="icon" aria-hidden="true"><use href="#i-heart-hand"/></svg>
+                <span>Invite Friends</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Pet companion toggled (⌥Space)">
+                <svg class="icon" aria-hidden="true"><use href="#i-pet-ghost"/></svg>
+                <span>Show pet</span>
+              </button>
+              <a class="profile-pop-item" href="settings.html#appearance" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+                <span>Appearance</span>
+                <svg class="icon profile-pop-chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode v1.0.4 Changelog">
+                <svg class="icon" aria-hidden="true"><use href="#i-changelog"/></svg>
+                <span>Changelog</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Scan QR code to get the mobile app">
+                <svg class="icon" aria-hidden="true"><use href="#i-mobile-dl"/></svg>
+                <span>Get the mobile app</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode Desktop v1.0.4">
+                <svg class="icon" aria-hidden="true"><use href="#i-about-mark"/></svg>
+                <span>About RayuCode</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+            </div>
+            <div class="profile-pop-sep" aria-hidden="true"></div>
+            <div class="profile-pop-group">
+              <button class="profile-pop-item is-danger" type="button" role="menuitem" data-toast="Signed out of Personal account">
+                <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <span class="cx-brand-btn" style="cursor:default">Customize</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" aria-label="Search plugins" onclick="document.getElementById('plugin-search-input').focus()"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-search"/></svg></button>
+        </div>
+
+        <div class="customize-nav" role="navigation" aria-label="Customize sections">
+          <button class="customize-link is-active" type="button" data-customize-view="plugins">
+            <svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>
+            Plugins
+          </button>
+          <button class="customize-link" type="button" data-customize-view="skills">
+            <svg class="icon" aria-hidden="true"><use href="#i-cube"/></svg>
+            Skills
+          </button>
+          <button class="customize-link" type="button" data-customize-view="memory">
+            <svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg>
+            Memory
+          </button>
+        </div>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Installed</div>
+          <div class="installed-empty" id="installed-plugins-empty">No installed plugins</div>
+          <div class="installed-list" id="installed-plugins-list"></div>
+        </div>
+
+        <!-- Bottom Getting Started Card -->
+        <div class="gs-card">
+          <div class="gs-head">
+            <span class="gs-title">Getting started</span>
+            <span class="gs-count">0 of 6</span>
+          </div>
+          <div class="gs-track"><span class="gs-fill"></span></div>
+          <div class="gs-list">
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Import from CLI</button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Enable notifications</button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Set up a daily update</button>
+            <button class="gs-item" type="button" data-gs-item>
+              <span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
+              Triage GitHub PRs
+              <span class="gs-badge" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5A11.5 11.5 0 0 0 .5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.95c-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.08 0 4.41-2.69 5.39-5.26 5.67.42.36.79 1.07.79 2.15v3.19c0 .31.21.67.8.55A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
+              </span>
+            </button>
+            <button class="gs-item" type="button" data-gs-item>
+              <span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
+              Catch me up on Linear
+              <span class="gs-badge" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M2.2 13.7a10 10 0 0 0 8.1 8.1l-8.1-8.1Zm-.2-3 11.3 11.3a10 10 0 0 0 2.3-.9L2.9 8.4a10 10 0 0 0-.9 2.3Zm2.3-4.6 13.6 13.6a10 10 0 0 0 1.6-1.6L5.9 4.5a10 10 0 0 0-1.6 1.6ZM7.9 3.1l13 13A10 10 0 0 0 7.9 3.1Z"/></svg>
+              </span>
+            </button>
+            <button class="gs-item" type="button" data-gs-item>
+              <span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
+              Review project decisions
+              <span class="gs-badge" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24"><path fill="#00AC47" d="M8.3 3.5h7.4l6.3 11h-7.4z"/><path fill="#0066DA" d="M2 14.5 8.3 3.5l3.7 6.4-6.3 11z"/><path fill="#FFBA00" d="M5.7 20.9h12.6L22 14.5H9.4z"/></svg>
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Full-Width Rounded Plugins Canvas -->
+    <div class="center-col">
+      <main class="canvas">
+        <div class="pane-scroll">
+
+          <!-- PLUGINS VIEW -->
+          <div class="plugins-page" id="view-plugins">
+            <header class="plugins-header">
+              <div>
+                <h1 class="plugins-title">Plugins</h1>
+                <p class="plugins-sub">Connect plugins to let RayuCode work across your tools</p>
+                <div class="plugins-filter-row">
+                  <button class="plugins-pill is-active" type="button">Public</button>
+                </div>
+              </div>
+
+              <div class="plugins-tools">
+                <label class="plugins-search">
+                  <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                  <input id="plugin-search-input" type="search" placeholder="Search plugins" aria-label="Search plugins">
+                </label>
+                <button class="icon-btn" type="button" aria-label="Refresh plugins" data-toast="Plugin registry synced"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+                <a class="icon-btn" href="settings-models.html#cli-parity" aria-label="Plugin settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a>
+                <div class="dropdown">
+                  <button class="plugins-add-btn" type="button" data-dropdown="add-plugin-menu" aria-expanded="false">
+                    Add
+                    <svg class="icon" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <div class="dropdown-pop" id="add-plugin-menu" data-dropdown-menu hidden>
+                    <div class="dropdown-head">Add Custom Integration</div>
+                    <button class="dropdown-item" type="button" data-toast="Opened MCP server config (~/.rayu/mcp.json)"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>Connect MCP server<span class="d-sub">stdio / SSE</span></button>
+                    <button class="dropdown-item" type="button" data-toast="Import local plugin manifest"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>Load local plugin<span class="d-sub">manifest.json</span></button>
+                    <div class="dropdown-sep"></div>
+                    <a class="dropdown-item" href="settings-models.html#cli-parity"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Manage connectors</a>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            <!-- Featured Interactive Showcase Banner (RayuCode Forest/Emerald Branded) -->
+            <section class="plugin-hero" aria-label="Featured plugins">
+              <div class="plugin-hero-stage">
+                <!-- Tile 1: Cloudflare / Flame (or Sentry/Firebase) -> Flame / Cloudflare Workers / Firebase -->
+                <button class="hero-tile t-1" type="button" aria-pressed="false"
+                  data-hero-plugin="Firebase"
+                  data-hero-desc="Inspect Firestore collections, Auth users, Cloud Functions logs, and deploy preview channels directly from RayuCode via MCP."
+                  aria-label="Preview Firebase plugin" title="Firebase">
+                  <svg viewBox="0 0 40 40">
+                    <path fill="#FF9100" d="M21.2 7.5c1.8 4.4 7.8 9.2 7.8 16.3a9 9 0 0 1-18 0c0-3.2 1.4-6.4 3.4-8.8.4 2.1 1.6 3.7 3.3 4.3-1-4.3.7-8.7 3.5-11.8Z"/>
+                    <path fill="#FFCA28" d="M18.6 18.8c-1.8 2.4-2.8 5-2.1 7.8a6.8 6.8 0 0 0 5.3 4.9 6.6 6.6 0 0 1-8.4-6.3c0-3 1.8-5.2 5.2-6.4Z"/>
+                    <path fill="#F4511E" d="M21.2 7.5c4.6 4.7 7.8 9.6 7.8 16.3a9 9 0 0 1-7.2 8.8c2.6-2.2 3.8-5.5 3.1-9-.7-3.4-3-6.2-4.8-8.9.2-2.8.5-5.1 1.1-7.2Z"/>
+                  </svg>
+                </button>
+
+                <!-- Tile 2: Supabase / Code Bracket Tool -->
+                <button class="hero-tile t-2" type="button" aria-pressed="false"
+                  data-hero-plugin="Supabase"
+                  data-hero-desc="Query Postgres tables, inspect RLS policies, run migrations, and tail Edge Function logs straight from your RayuCode workspace."
+                  aria-label="Preview Supabase plugin" title="Supabase">
+                  <svg viewBox="0 0 40 40">
+                    <rect x="3" y="3" width="34" height="34" rx="9" fill="#0F7B4F"/>
+                    <path fill="#3ECF8E" d="M22.2 32.8c-.9 1.1-2.7.5-2.7-.9V21.5h10.8c1.5 0 2.3 1.7 1.4 2.9l-9.5 8.4Z"/>
+                    <path fill="#FFFFFF" d="M17.8 7.2c.9-1.1 2.7-.5 2.7.9v10.4H9.7c-1.5 0-2.3-1.7-1.4-2.9l9.5-8.4Z"/>
+                  </svg>
+                </button>
+
+                <!-- Tile 3: Dynatrace (Default Active Featured!) -->
+                <button class="hero-tile t-3 is-selected" type="button" aria-pressed="true"
+                  data-hero-plugin="Dynatrace"
+                  data-hero-desc="Investigate production issues with real Dynatrace data: problems and root causes, logs, metrics, traces, and vulnerabilities, via skills and the MCP..."
+                  aria-label="Preview Dynatrace plugin" title="Dynatrace">
+                  <svg viewBox="0 0 40 40">
+                    <polygon fill="#A3E635" points="10,12 24,7 31,12 18,16"/>
+                    <polygon fill="#22C55E" points="31,12 31,27 23,33 23,18"/>
+                    <polygon fill="#38BDF8" points="10,12 18,16 18,28 10,31"/>
+                    <polygon fill="#9333EA" points="10,31 18,28 23,33 14,34"/>
+                    <polygon fill="#11110E" points="16.5,16.5 24,15 24,25.5 16.5,27"/>
+                  </svg>
+                </button>
+
+                <!-- Tile 4: Notion -->
+                <button class="hero-tile t-4" type="button" aria-pressed="false"
+                  data-hero-plugin="Notion"
+                  data-hero-desc="Search team wikis, sync RFC specs into Markdown previews, and update sprint databases automatically as RayuCode ships PRs."
+                  aria-label="Preview Notion plugin" title="Notion">
+                  <svg viewBox="0 0 40 40">
+                    <path fill="#FFFFFF" d="M10.8 10.6 25 9.2c1.1-.1 1.6.2 2.4.8l3.2 2.2c.4.3.6.6.6 1.1v16.4c0 1-.4 1.6-1.5 1.7l-15.6.9c-1 .1-1.5-.1-2-.8l-2.6-3.4c-.4-.6-.6-1-.6-1.7V12.2c0-.9.5-1.5 1.9-1.6Z"/>
+                    <path fill="#11110E" d="M14.2 14.3h13.2v14.8l-13.2.8V14.3Z"/>
+                    <path fill="#FFFFFF" d="M16.6 16.6h2.7l5.2 8.1v-8.1h2.1v11.1h-2.5l-5.4-8.4v8.4h-2.1V16.6Z"/>
+                  </svg>
+                </button>
+
+                <!-- Tile 5: Linear -->
+                <button class="hero-tile t-5" type="button" aria-pressed="false"
+                  data-hero-plugin="Linear"
+                  data-hero-desc="Triage cycles, pull issue context directly into your prompt, and auto-link RayuCode Swarm branches and pull requests."
+                  aria-label="Preview Linear plugin" title="Linear">
+                  <svg viewBox="0 0 40 40">
+                    <path fill="#818CF8" d="M5.6 22.8A14.8 14.8 0 0 0 17.2 34.4L5.6 22.8Zm-.3-4.3 16.2 16.2a14.8 14.8 0 0 0 3.3-1.3L6.6 15.2a14.8 14.8 0 0 0-1.3 3.3Zm3.3-6.6 19.5 19.5a14.8 14.8 0 0 0 2.3-2.3L10.9 9.6a14.8 14.8 0 0 0-2.3 2.3Zm5.2-4.3 18.6 18.6A14.8 14.8 0 0 0 13.8 7.6Z"/>
+                  </svg>
+                </button>
+
+                <!-- Tile 6: Stripe -->
+                <button class="hero-tile t-6" type="button" aria-pressed="false"
+                  data-hero-plugin="Stripe"
+                  data-hero-desc="Inspect payment intents, test webhooks locally, and scaffold billing &amp; checkout flows with real Stripe API schemas."
+                  aria-label="Preview Stripe plugin" title="Stripe">
+                  <svg viewBox="0 0 40 40">
+                    <rect x="3" y="3" width="34" height="34" rx="9" fill="#635BFF"/>
+                    <path fill="#FFFFFF" d="M21.4 17.6c-2.5-.9-3.6-1.5-3.6-2.5 0-.9.8-1.4 2.1-1.4 1.8 0 3.7.7 5 1.4l1-3.5c-1.4-.7-3.4-1.3-6-1.3-4.1 0-6.8 2.2-6.8 5.4 0 3.3 2.4 4.7 5.7 5.8 2.3.8 3.1 1.4 3.1 2.4 0 1-.9 1.6-2.5 1.6-2 0-4.4-.8-6.1-1.8l-1 3.6c1.6.9 4.2 1.6 7 1.6 4.4 0 7.3-2.1 7.3-5.6 0-3.3-2.1-4.8-5.2-5.7Z"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="plugin-hero-info">
+                <div class="plugin-hero-label">Featured</div>
+                <h2 class="plugin-hero-title" id="hero-plugin-title">Dynatrace</h2>
+                <p class="plugin-hero-desc" id="hero-plugin-desc">Investigate production issues with real Dynatrace data: problems and root causes, logs, metrics, traces, and vulnerabilities, via skills and the MCP...</p>
+                <div class="plugin-hero-actions">
+                  <button class="btn btn-primary" type="button" id="hero-plugin-add" data-hero-install="Dynatrace"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-plus"/></svg>Add</button>
+                  <button class="btn" type="button" id="hero-plugin-details" data-toast="Dynatrace · MCP server &amp; RayuCode skills ready">Details</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- Section 1: Popular -->
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">Popular <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="plugins-grid">
+
+                <!-- 1. Gmail (Official Google Gmail multi-color M mark) -->
+                <div class="plugin-item" data-search="gmail google email mail popular">
+                  <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <g transform="translate(6 9.5) scale(0.933)">
+                        <path fill="#4285F4" d="M2.5 22.5h4.5V11.2L0 6v14a2.5 2.5 0 0 0 2.5 2.5Z"/>
+                        <path fill="#34A853" d="M23 22.5h4.5A2.5 2.5 0 0 0 30 20V6l-7 5.2v11.3Z"/>
+                        <path fill="#FBBC04" d="M23 2.5v8.7L30 6V3.5A3.5 3.5 0 0 0 24.4.7L23 2.5Z"/>
+                        <path fill="#EA4335" d="M7 11.2V2.5L15 8.5l8-6v8.7l-8 6-8-6Z"/>
+                        <path fill="#C5221F" d="M0 3.5V6l7 5.2V2.5L5.6.7A3.5 3.5 0 0 0 0 3.5Z"/>
+                      </g>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Gmail</div>
+                    <div class="plugin-desc">Read and manage Gmail</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Gmail" aria-pressed="false" aria-label="Install Gmail"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 2. Google Drive (Official Google Drive 4-color triangle mark, optically centered) -->
+                <div class="plugin-item" data-search="google drive docs sheets slides popular">
+                  <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <g transform="translate(8 9.2) scale(0.86)">
+                        <path fill="#0066DA" d="M4.6 24.3 6.3 27.2c.4.7.9 1.2 1.6 1.6l5-8.7H2.9c0 .8.2 1.6.6 2.3l1.1 1.9Z"/>
+                        <path fill="#00AC47" d="M15 10.1 10 1.4c-.7.4-1.2.9-1.6 1.6L1.9 14.3a4.6 4.6 0 0 0-.6 2.3h10l3.7-6.5Z"/>
+                        <path fill="#EA4335" d="M22.1 28.8c.7-.4 1.2-.9 1.6-1.6l1.7-2.9 1.1-1.9c.4-.7.6-1.5.6-2.3h-10l2.1 4.2 2.9 4.5Z"/>
+                        <path fill="#00832D" d="M15 10.1 20 1.4a4.6 4.6 0 0 0-2.3-.6h-5.4a4.6 4.6 0 0 0-2.3.6l5 8.7Z"/>
+                        <path fill="#2684FC" d="M17.1 20.1h-4.2l-5 8.7c.7.4 1.5.6 2.3.6h9.6c.8 0 1.6-.2 2.3-.6l-5-8.7Z"/>
+                        <path fill="#FFBA00" d="M24.2 14.3 18.6 4.5l-.9-1.5a4.6 4.6 0 0 0-1.6-1.6l-5 8.7 5.8 10h10.2c0-.8-.2-1.6-.6-2.3l-2.3-3.5Z"/>
+                      </g>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Google Drive</div>
+                    <div class="plugin-desc">Drive, Docs, Sheets or Slides</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Google Drive" aria-pressed="false" aria-label="Install Google Drive"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 3. Health (Apple Health / Health badge mark + info action) -->
+                <div class="plugin-item" data-search="health apple fitness wellness popular">
+                  <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="#E53946" d="M20 8.5c2.2 0 3.7 1.3 5.2 2.2 1.6.9 3.6 1 4.6 2.7 1 1.7.4 3.5.7 5.2.3 1.8 1.5 3.2.9 5-.6 1.8-2.4 2.5-3.5 3.9-1.2 1.4-1.7 3.3-3.5 3.9-1.8.6-3.4-.5-5.3-.5-1.9 0-3.5 1.1-5.3.5-1.8-.6-2.3-2.5-3.5-3.9-1.1-1.4-2.9-2.1-3.5-3.9-.6-1.8.6-3.2.9-5 .3-1.7-.3-3.5.7-5.2 1-1.7 3-1.8 4.6-2.7 1.5-.9 3-2.2 5.2-2.2Z"/>
+                      <path fill="#FFFFFF" d="M20 26.2s-5.8-3.6-5.8-7.4a3.3 3.3 0 0 1 5.8-2.1 3.3 3.3 0 0 1 5.8 2.1c0 3.8-5.8 7.4-5.8 7.4Z"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Health</div>
+                    <div class="plugin-desc">Explore your health data</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-toast="Health requires macOS Apple Health permission" aria-label="Health plugin info"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg></button>
+                </div>
+
+                <!-- 4. Remote Desktop Commander (DC monogram logo) -->
+                <div class="plugin-item" data-search="remote desktop commander computer terminal popular">
+                  <div class="plugin-logo" style="background:#1A1A1D" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="#FFFFFF" d="M8.5 13h6.2c4 0 6.8 2.7 6.8 7s-2.8 7-6.8 7H8.5V13Zm3.4 3v8h2.6c2.2 0 3.5-1.5 3.5-4s-1.3-4-3.5-4h-2.6Z"/>
+                      <path fill="#FFFFFF" d="M28.6 15.8c-2 0-3.3 1.6-3.3 4.2s1.3 4.2 3.3 4.2c1.2 0 2.1-.5 2.7-1.4l2.4 1.8c-1.1 1.6-2.8 2.6-5.2 2.6-4.1 0-6.8-2.9-6.8-7.2s2.7-7.2 6.8-7.2c2.4 0 4.1 1 5.2 2.6l-2.4 1.8c-.6-.9-1.5-1.4-2.7-1.4Z"/>
+                      <rect x="27.5" y="18.7" width="4.2" height="2.6" rx="0.6" fill="#FFFFFF"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Remote Desktop Commander</div>
+                    <div class="plugin-desc">Use your computer from chat</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Remote Desktop Commander" aria-pressed="false" aria-label="Install Remote Desktop Commander"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 5. Writing Style (White tile with delicate nib mark) -->
+                <div class="plugin-item" data-search="writing style prose copywriter popular">
+                  <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="none" stroke="#18181B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M13.5 26.5c1.5-5.6 4.2-9.6 9.8-12.8 1.6-.9 3.6.3 3.2 2.1-1.1 5-4.7 8.4-10.3 9.7l-2.7 1Zm0 0 6.2-6.2"/>
+                      <circle cx="20.2" cy="19.8" r="1.2" fill="#18181B"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Writing Style</div>
+                    <div class="plugin-desc">Write with context from your own writing</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Writing Style" aria-pressed="false" aria-label="Install Writing Style"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 6. GitHub (Official GitHub Octocat mark) -->
+                <div class="plugin-item" data-search="github git pr issues ci popular">
+                  <div class="plugin-logo" style="background:#18181B" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="#FFFFFF" d="M20 8.5A11.5 11.5 0 0 0 8.5 20c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.95c-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.08 0 4.41-2.69 5.39-5.26 5.67.42.36.79 1.07.79 2.15v3.19c0 .31.21.67.8.55A11.5 11.5 0 0 0 31.5 20 11.5 11.5 0 0 0 20 8.5Z"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">GitHub</div>
+                    <div class="plugin-desc">Triage PRs, issues, CI, and publish flows</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="GitHub" aria-pressed="false" aria-label="Install GitHub"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+              </div>
+            </section>
+
+            <!-- Section 2: New & Noteworthy -->
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">New &amp; Noteworthy <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="plugins-grid">
+
+                <!-- 7. iCloud Mail (Official Apple Mail blue envelope) -->
+                <div class="plugin-item" data-search="icloud mail apple email new noteworthy">
+                  <div class="plugin-logo" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <defs>
+                        <linearGradient id="g-imail" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stop-color="#4EB3FF"/>
+                          <stop offset="100%" stop-color="#1A75F5"/>
+                        </linearGradient>
+                      </defs>
+                      <rect width="40" height="40" fill="url(#g-imail)"/>
+                      <rect x="8.5" y="12.5" width="23" height="15" rx="2.5" fill="#FFFFFF"/>
+                      <path d="M9.5 13.5 20 21.3l10.5-7.8" fill="none" stroke="#1E7BF5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">iCloud Mail</div>
+                    <div class="plugin-desc">Read and manage iCloud email</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="iCloud Mail" aria-pressed="false" aria-label="Install iCloud Mail"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 8. iCloud Calendar (Official Apple Calendar Tue / 1 tile) -->
+                <div class="plugin-item" data-search="icloud calendar apple events schedule new noteworthy">
+                  <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <rect width="40" height="40" fill="#FFFFFF"/>
+                      <text x="20" y="13.5" text-anchor="middle" fill="#FF3B30" font-family="Inter, -apple-system, sans-serif" font-size="8" font-weight="700">Tue</text>
+                      <text x="20" y="31.5" text-anchor="middle" fill="#18181B" font-family="Inter, -apple-system, sans-serif" font-size="19.5" font-weight="600">1</text>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">iCloud Calendar</div>
+                    <div class="plugin-desc">Read and manage iCloud events</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="iCloud Calendar" aria-pressed="false" aria-label="Install iCloud Calendar"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 9. ElevenLabs (Official ElevenLabs || double bar mark) -->
+                <div class="plugin-item" data-search="elevenlabs voice audio agents media tts new noteworthy">
+                  <div class="plugin-logo" style="background:#0F0F11" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <rect x="15.5" y="12.5" width="3.2" height="15" rx="0.6" fill="#FFFFFF"/>
+                      <rect x="21.3" y="12.5" width="3.2" height="15" rx="0.6" fill="#FFFFFF"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">ElevenLabs</div>
+                    <div class="plugin-desc">Voice agents and media</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="ElevenLabs" aria-pressed="false" aria-label="Install ElevenLabs"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 10. Tripsy (Official Tripsy orange suitcase mark) -->
+                <div class="plugin-item" data-search="tripsy travel trips itinerary new noteworthy">
+                  <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <defs>
+                        <linearGradient id="g-tripsy" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stop-color="#FB923C"/>
+                          <stop offset="100%" stop-color="#EA580C"/>
+                        </linearGradient>
+                      </defs>
+                      <path d="M15.5 13.5v-2.2a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v2.2" fill="none" stroke="#EA580C" stroke-width="2.2" stroke-linecap="round"/>
+                      <rect x="8.5" y="13.5" width="23" height="17" rx="4.5" fill="url(#g-tripsy)"/>
+                      <rect x="13" y="13.5" width="2.4" height="17" fill="#FFFFFF" opacity="0.28"/>
+                      <rect x="24.6" y="13.5" width="2.4" height="17" fill="#FFFFFF" opacity="0.28"/>
+                      <rect x="17.5" y="19.5" width="5" height="3.2" rx="1" fill="#FFFFFF"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Tripsy</div>
+                    <div class="plugin-desc">Plan and organize your trips</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Tripsy" aria-pressed="false" aria-label="Install Tripsy"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 11. Sonos (Official SONOS wordmark on black) -->
+                <div class="plugin-item" data-search="sonos speaker audio music home new noteworthy">
+                  <div class="plugin-logo" style="background:#0F0F11" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <text x="20" y="22.4" text-anchor="middle" fill="#FFFFFF" font-family="Inter, -apple-system, sans-serif" font-size="7.4" font-weight="700" letter-spacing="1.4">SONOS</text>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Sonos</div>
+                    <div class="plugin-desc">Control your Sonos system</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Sonos" aria-pressed="false" aria-label="Install Sonos"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 12. Hevy (Official Hevy geometric dumbbell H mark) -->
+                <div class="plugin-item" data-search="hevy gym workout fitness new noteworthy">
+                  <div class="plugin-logo" style="background:#141417" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="none" stroke="#FFFFFF" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" d="M10.5 16v8M13.8 13.5v13a1.2 1.2 0 0 0 2.4 0v-4.3h7.6v4.3a1.2 1.2 0 0 0 2.4 0v-13a1.2 1.2 0 0 0-2.4 0v4.3h-7.6v-4.3a1.2 1.2 0 0 0-2.4 0ZM29.5 16v8"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Hevy</div>
+                    <div class="plugin-desc">Gym workout plans and insights</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Hevy" aria-pressed="false" aria-label="Install Hevy"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+              </div>
+            </section>
+
+            <!-- Section 3: Small Business -->
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">Small Business <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="plugins-grid">
+
+                <!-- 13. Dropbox (Official Dropbox 5-diamond mark on #0061FF) -->
+                <div class="plugin-item" data-search="dropbox files cloud storage small business">
+                  <div class="plugin-logo" style="background:#0061FF" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <g fill="#FFFFFF">
+                        <polygon points="14.5,10.5 8.5,14.4 14.5,18.3 20,14.4"/>
+                        <polygon points="25.5,10.5 20,14.4 25.5,18.3 31.5,14.4"/>
+                        <polygon points="8.5,22.2 14.5,26.1 20,22.2 14.5,18.3"/>
+                        <polygon points="25.5,18.3 20,22.2 25.5,26.1 31.5,22.2"/>
+                        <polygon points="14.5,27.5 20,23.6 25.5,27.5 20,31.2"/>
+                      </g>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Dropbox</div>
+                    <div class="plugin-desc">Find, create, and take action</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Dropbox" aria-pressed="false" aria-label="Install Dropbox"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 14. HubSpot (Official HubSpot sprocket mark on #FF5C35) -->
+                <div class="plugin-item" data-search="hubspot crm sales marketing small business">
+                  <div class="plugin-logo" style="background:#FF5C35" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <g fill="#FFFFFF" stroke="#FFFFFF" stroke-linecap="round">
+                        <circle cx="22.8" cy="21" r="4.6" fill="none" stroke-width="2.5"/>
+                        <line x1="22.8" y1="16.2" x2="22.8" y2="11.5" stroke-width="2.2"/>
+                        <circle cx="22.8" cy="10.4" r="2.2" stroke="none"/>
+                        <line x1="18.6" y1="18.8" x2="14.4" y2="16.2" stroke-width="2.2"/>
+                        <circle cx="13.2" cy="15.4" r="2" stroke="none"/>
+                        <line x1="18.9" y1="23.8" x2="14.2" y2="27.2" stroke-width="2.2"/>
+                        <circle cx="13" cy="28" r="2.6" stroke="none"/>
+                        <line x1="27.3" y1="21" x2="30.2" y2="21" stroke-width="2.2"/>
+                        <circle cx="30.8" cy="21" r="1.8" stroke="none"/>
+                      </g>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">HubSpot</div>
+                    <div class="plugin-desc">Insights to action in HubSpot</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="HubSpot" aria-pressed="false" aria-label="Install HubSpot"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 15. Stripe (Official Stripe ribbon mark on #635BFF) -->
+                <div class="plugin-item" data-search="stripe payments billing revenue small business">
+                  <div class="plugin-logo" style="background:#635BFF" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <path fill="#8A85FF" d="M0 24.5 40 16v24H0V24.5Z" opacity="0.42"/>
+                      <path fill="#FFFFFF" d="M11 16.4 29 11.8v11.8L11 28.2V16.4Z"/>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Stripe</div>
+                    <div class="plugin-desc">Accept payments, grow revenue.</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Stripe" aria-pressed="false" aria-label="Install Stripe"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+                <!-- 16. Canva (Official circular Canva teal-to-violet gradient badge) -->
+                <div class="plugin-item" data-search="canva design graphics slides small business">
+                  <div class="plugin-logo" style="border-radius:50%;border-color:transparent;background:transparent;box-shadow:none" aria-hidden="true">
+                    <svg viewBox="0 0 40 40">
+                      <defs>
+                        <linearGradient id="g-canva" x1="0" y1="0" x2="1" y2="1">
+                          <stop offset="0%" stop-color="#00C4CC"/>
+                          <stop offset="52%" stop-color="#4A6CF7"/>
+                          <stop offset="100%" stop-color="#7D2AE8"/>
+                        </linearGradient>
+                      </defs>
+                      <circle cx="20" cy="20" r="19" fill="url(#g-canva)"/>
+                      <text x="20" y="23.5" text-anchor="middle" fill="#FFFFFF" font-family="Georgia, 'Times New Roman', serif" font-style="italic" font-size="11.2" font-weight="700">Canva</text>
+                    </svg>
+                  </div>
+                  <div class="plugin-info">
+                    <div class="plugin-name">Canva</div>
+                    <div class="plugin-desc">Create, review, edit designs</div>
+                  </div>
+                  <button class="plugin-action" type="button" data-plugin-toggle="Canva" aria-pressed="false" aria-label="Install Canva"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                </div>
+
+              </div>
+            </section>
+          </div>
+
+          <!-- SKILLS VIEW (when clicking Skills in Customize sidebar) -->
+          <div class="plugins-page" id="view-skills" hidden>
+            <header class="plugins-header">
+              <div>
+                <h1 class="plugins-title">Skills</h1>
+                <p class="plugins-sub">Reusable workflows loaded from <code>~/.rayu/skills</code> and project <code>.agents/skills</code></p>
+                <div class="plugins-filter-row">
+                  <button class="plugins-pill is-active" type="button">Workspace</button>
+                </div>
+              </div>
+              <div class="plugins-tools">
+                <button class="plugins-add-btn" type="button" data-toast="Created new skill template in .agents/skills/">New skill</button>
+              </div>
+            </header>
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">Loaded Skills <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="plugins-grid">
+                <div class="plugin-item">
+                  <div class="plugin-logo" style="background:var(--accent-soft);color:var(--accent-text)" aria-hidden="true"><svg class="icon" style="width:18px;height:18px"><use href="#i-swarm"/></svg></div>
+                  <div class="plugin-info"><div class="plugin-name">parallel-swarm</div><div class="plugin-desc">Coordinate multi-agent workers with automatic conflict notices</div></div>
+                  <span class="badge badge-live">Active</span>
+                </div>
+                <div class="plugin-item">
+                  <div class="plugin-logo" style="background:var(--info-soft);color:var(--info)" aria-hidden="true"><svg class="icon" style="width:18px;height:18px"><use href="#i-eye"/></svg></div>
+                  <div class="plugin-info"><div class="plugin-name">preview-studio</div><div class="plugin-desc">Open Browser, Microsoft Office, and Markdown live previews</div></div>
+                  <span class="badge badge-live">Active</span>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <!-- MEMORY VIEW (RayuCode /memory & KV /cache) -->
+          <div class="plugins-page" id="view-memory" hidden>
+            <header class="plugins-header">
+              <div>
+                <h1 class="plugins-title">Memory &amp; Cache</h1>
+                <p class="plugins-sub">Durable session learnings (<code>/memory</code>) and warm KV prompt cache (<code>/cache</code>)</p>
+                <div class="plugins-filter-row">
+                  <button class="plugins-pill is-active" type="button">rayucode-v2</button>
+                </div>
+              </div>
+              <div class="plugins-tools">
+                <button class="btn btn-sm" type="button" data-toast="Extracted durable learnings from active session">Extract memory</button>
+                <button class="plugins-add-btn" type="button" data-toast="KV prompt cache refreshed · 94% hit rate (1h TTL)">Refresh KV cache</button>
+              </div>
+            </header>
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">Memory Files <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="plugins-grid">
+                <div class="plugin-item">
+                  <div class="plugin-logo" style="background:var(--accent-soft);color:var(--accent-text)" aria-hidden="true"><svg class="icon" style="width:18px;height:18px"><use href="#i-brain"/></svg></div>
+                  <div class="plugin-info"><div class="plugin-name">MEMORY.md</div><div class="plugin-desc">Workspace architecture, Rayu-first model order &amp; conventions · 248 tok</div></div>
+                  <span class="badge badge-live">Loaded</span>
+                </div>
+                <div class="plugin-item">
+                  <div class="plugin-logo" style="background:var(--info-soft);color:var(--info)" aria-hidden="true"><svg class="icon" style="width:18px;height:18px"><use href="#i-file"/></svg></div>
+                  <div class="plugin-info"><div class="plugin-name">CLAUDE.md / AGENTS.md</div><div class="plugin-desc">Repo instructions &amp; TUI/gateway constraints · 158 tok</div></div>
+                  <span class="badge badge-live">Loaded</span>
+                </div>
+              </div>
+            </section>
+            <section class="plugins-section">
+              <h2 class="plugins-sec-head">Prompt KV Cache <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+              <div class="receipt-card" style="max-width:460px">
+                <div class="receipt-row"><span>Status</span><span style="color:var(--accent-text)">Warm · 1h TTL</span></div>
+                <div class="receipt-row"><span>Cache hit ratio</span><span>94%</span></div>
+                <div class="receipt-row"><span>Cached prefix</span><span>24.8K tokens</span></div>
+                <div class="receipt-save">Synced across rayu CLI &amp; Desktop via ~/.rayu/</div>
+              </div>
+            </section>
+          </div>
+
+        </div>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=16"></script>
+  <script src="../js/app.js?v=16"></script>
+</body>
+</html>
