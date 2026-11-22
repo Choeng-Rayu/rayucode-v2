@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 
-import { useAppStore } from "../app-store"
+import { applyUrlQueryParamsToStore, useAppStore } from "../app-store"
 
 describe("useAppStore", () => {
   beforeEach(() => {
@@ -62,5 +62,21 @@ describe("useAppStore", () => {
     useAppStore.getState().toggleRightSidebar()
     expect(useAppStore.getState().rightCollapsed).toBe(true)
     expect(useAppStore.getState().fullView).toBe(false)
+  })
+
+  it("initializes store state from URL query parameters", () => {
+    applyUrlQueryParamsToStore(
+      "?route=workspace&tab=browser&fullview=1&theme=light&accent=blue"
+    )
+
+    const s = useAppStore.getState()
+    expect(s.activeRoute).toBe("workspace")
+    expect(s.activeSessionId).toBe("ses_retire_cache")
+    expect(s.rightMode).toBe("document")
+    expect(s.activeRightTab).toBe("browser")
+    expect(s.activeDocPill).toBe("localhost:3000")
+    expect(s.fullView).toBe(true)
+    expect(s.theme).toBe("light")
+    expect(s.accent).toBe("blue")
   })
 })

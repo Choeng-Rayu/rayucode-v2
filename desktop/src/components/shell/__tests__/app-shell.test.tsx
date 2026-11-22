@@ -177,5 +177,31 @@ describe("AppShell & IconRail", () => {
     })
     expect(await screen.findByTestId("automations-view")).toBeInTheDocument()
   })
+
+  it("renders Wave 3 views (PluginsView, ChangesView, TelegramView, SettingsView) across their routes", async () => {
+    await act(async () => {
+      render(<App />)
+    })
+
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("plugins")
+    })
+    expect(await screen.findByTestId("plugins-view")).toBeInTheDocument()
+
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("changes")
+    })
+    expect(await screen.findByTestId("changes-view")).toBeInTheDocument()
+
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("telegram")
+    })
+    expect(await screen.findByTestId("telegram-view")).toBeInTheDocument()
+
+    await act(async () => {
+      useAppStore.getState().setActiveRoute("settings")
+    })
+    expect(await screen.findByTestId("settings-view")).toBeInTheDocument()
+  })
 })
 

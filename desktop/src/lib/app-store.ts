@@ -243,3 +243,121 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }))
   },
 }))
+
+const VALID_ROUTES = new Set<AppRoute>([
+  "home",
+  "workspace",
+  "swarm",
+  "automations",
+  "plugins",
+  "changes",
+  "telegram",
+  "settings",
+])
+
+const VALID_TABS = new Set<RightTabId>([
+  "overview",
+  "terminal",
+  "diff",
+  "browser",
+  "files",
+  "code",
+  "excel",
+  "markdown",
+])
+
+export function applyUrlQueryParamsToStore(search?: string): void {
+  const queryString =
+    search !== undefined
+      ? search
+      : typeof window !== "undefined"
+        ? window.location.search
+        : ""
+  if (!queryString) return
+
+  const params = new URLSearchParams(queryString)
+  const store = useAppStore.getState()
+
+  const themeParam = params.get("theme")
+  if (themeParam === "dark" || themeParam === "light") {
+    store.setTheme(themeParam)
+  }
+
+  const accentParam = params.get("accent")
+  if (accentParam === "green" || accentParam === "blue") {
+    store.setAccent(accentParam)
+  }
+
+  const routeParam = params.get("route") as AppRoute | null
+  const sessionParam = params.get("session")
+  const tabParam = params.get("tab")
+
+  if (routeParam && VALID_ROUTES.has(routeParam)) {
+    if (routeParam === "workspace") {
+      const defaultSession =
+        sessionParam ??
+        (tabParam === "excel" ? "ses_q4_excel" : "ses_retire_cache")
+      useAppStore.setState({
+        activeRoute: "workspace",
+        activeSessionId: defaultSession,
+      })
+    } else {
+      useAppStore.setState({
+        activeRoute: routeParam,
+        activeSessionId:
+          sessionParam !== null ? sessionParam : store.activeSessionId,
+      })
+    }
+  } else if (sessionParam) {
+    store.setActiveSession(sessionParam)
+  }
+
+  if (tabParam === "context" || tabParam === "overview") {
+    store.openRightTab("overview", null)
+  } else if (tabParam && VALID_TABS.has(tabParam as RightTabId)) {
+    const rightTab = tabParam as RightTabId
+    const pillParam = params.get("pill")
+    if (rightTab === "code") {
+      const fileParam = params.get("file") ?? pillParam ?? "lookup.rs"
+      const lineParam = params.get("line")
+      store.openCodeFile(
+        fileParam,
+        lineParam !== null ? Number(lineParam) : 21
+      )
+    } else {
+      store.openRightTab(
+        rightTab,
+        pillParam !== null ? pillParam : DEFAULT_TAB_PILLS[rightTab]
+      )
+    }
+  } else if (params.has("file")) {
+    const fileParam = params.get("file") ?? "lookup.rs"
+    const lineParam = params.get("line")
+    store.openCodeFile(
+      fileParam,
+      lineParam !== null ? Number(lineParam) : 21
+    )
+  }
+
+  const fullviewParam = params.get("fullview")
+  if (fullviewParam === "1" || fullviewParam === "true") {
+    store.setFullView(true)
+  } else if (fullviewParam === "0" || fullviewParam === "false") {
+    store.setFullView(false)
+  }
+
+  const leftCollapsedParam = params.get("leftCollapsed")
+  if (leftCollapsedParam === "1" || leftCollapsedParam === "true") {
+    store.setLeftCollapsed(true)
+  }
+
+  const rightCollapsedParam = params.get("rightCollapsed")
+  if (rightCollapsedParam === "1" || rightCollapsedParam === "true") {
+    store.setRightCollapsed(true)
+  }
+}
+
+if (typeof window !== "undefined" && window.location.search) {
+  applyUrlQueryParamsToStore(window.location.search)
+}
+

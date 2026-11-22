@@ -14,12 +14,9 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
 import { createQueryClient } from "@/lib/query-client"
 
-import {
-  CodeViewer,
-  ContextPanel,
-  InspectorSidebar,
-  TerminalPanel,
-} from "../index"
+import { CodeViewer } from "../components/code-viewer"
+import { TerminalPanel } from "../components/terminal-panel"
+import { ContextPanel, InspectorSidebar } from "../index"
 
 function renderWithProviders(ui: React.ReactElement) {
   const client = createQueryClient()

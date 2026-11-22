@@ -15,20 +15,24 @@ import {
 } from "@/components/ui/page-skeletons"
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
 import { AutomationsView } from "@/features/automations"
+import { ChangesView } from "@/features/changes"
 import {
   ChatStream,
   sendTracePrompt,
   traceKeys,
   type ExecutionTurn,
 } from "@/features/execution-trace"
+import { PluginsView } from "@/features/plugins"
 import { PreviewsHost } from "@/features/previews"
 import {
   HomeView,
   SessionComposer,
   type ComposerSubmitPayload,
 } from "@/features/sessions"
+import { SettingsView } from "@/features/settings"
 import { SwarmView } from "@/features/swarm"
-import { useAppStore, type AppRoute } from "@/lib/app-store"
+import { TelegramView } from "@/features/telegram"
+import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
 
 function ActiveWorkspaceStage() {
   const activeSessionId =
@@ -74,28 +78,6 @@ function ActiveWorkspaceStage() {
   )
 }
 
-function RouteFallbackCard({
-  route,
-  title,
-  subtitle,
-}: {
-  route: AppRoute
-  title: string
-  subtitle: string
-}) {
-  return (
-    <div
-      data-testid={`route-stage-${route}`}
-      className="mx-auto flex w-full max-w-[1040px] flex-col gap-4 p-6"
-    >
-      <div className="rayu-card-bevel rounded-xl bg-pane p-5">
-        <h1 className="text-lg font-semibold text-ink">{title}</h1>
-        <p className="mt-1 text-xs text-muted-ink">{subtitle}</p>
-      </div>
-    </div>
-  )
-}
-
 function ActiveRouteCanvas() {
   const activeRoute = useAppStore((s) => s.activeRoute)
 
@@ -136,11 +118,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Plugins view failed to render">
           <React.Suspense fallback={<PluginsSkeleton />}>
-            <RouteFallbackCard
-              route="plugins"
-              title="Plugins"
-              subtitle="Connect plugins to let RayuCode work across your tools"
-            />
+            <PluginsView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -148,11 +126,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Changes view failed to render">
           <React.Suspense fallback={<ChangesSkeleton />}>
-            <RouteFallbackCard
-              route="changes"
-              title="feat/retire-session-cache"
-              subtitle="4 changed files · +82 −224 · explicit PR approval guardrail"
-            />
+            <ChangesView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -160,11 +134,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Telegram Remote view failed to render">
           <React.Suspense fallback={<TelegramSkeleton />}>
-            <RouteFallbackCard
-              route="telegram"
-              title="Telegram Remote"
-              subtitle="Drive RayuCode sessions, send prompts or images, and approve tool calls or plans from a private Telegram chat (/telegram-bot)."
-            />
+            <TelegramView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -172,11 +142,7 @@ function ActiveRouteCanvas() {
       return (
         <SectionErrorBoundary title="Settings view failed to render">
           <React.Suspense fallback={<SettingsSkeleton />}>
-            <RouteFallbackCard
-              route="settings"
-              title="Settings"
-              subtitle="Account, Appearance (Dark / Light + Rayu Green / Ocean Blue), Models, Voice, Connections, Shortcuts"
-            />
+            <SettingsView />
           </React.Suspense>
         </SectionErrorBoundary>
       )
@@ -184,6 +150,17 @@ function ActiveRouteCanvas() {
 }
 
 export function App() {
+  React.useEffect(() => {
+    if (window.location.search) {
+      applyUrlQueryParamsToStore(window.location.search)
+    }
+    const handlePopState = () => {
+      applyUrlQueryParamsToStore(window.location.search)
+    }
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [])
+
   return (
     <AppProviders>
       <AppShell previewFallback={<PreviewsHost />}>

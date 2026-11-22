@@ -3,11 +3,8 @@ export {
   ContextPanel,
   type ContextPanelProps,
 } from "./components/context-panel"
-export { CodeViewer, type CodeViewerProps } from "./components/code-viewer"
-export {
-  TerminalPanel,
-  type TerminalPanelProps,
-} from "./components/terminal-panel"
+export type { CodeViewerProps } from "./components/code-viewer"
+export type { TerminalPanelProps } from "./components/terminal-panel"
 export {
   DiffTabPanel,
   type DiffTabPanelProps,

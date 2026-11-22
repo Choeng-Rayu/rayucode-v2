@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import {
@@ -19,6 +20,13 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PRIMARY_NAV_ITEMS, type PrimaryNavItem } from "@/config/navigation"
+import { automationsQueryOptions } from "@/features/automations"
+import { changesStateQueryOptions } from "@/features/changes"
+import { pluginsQueryOptions } from "@/features/plugins"
+import { sessionsQueryOptions } from "@/features/sessions"
+import { settingsQueryOptions } from "@/features/settings"
+import { swarmStateQueryOptions } from "@/features/swarm"
+import { telegramQueryOptions } from "@/features/telegram"
 import { useAppStore, type AppRoute } from "@/lib/app-store"
 import { getAuthSession } from "@/lib/auth-placeholder"
 import { ipcClient, type GettingStartedItem, type ProjectGroup } from "@/lib/ipc-client"
@@ -128,7 +136,38 @@ export function IconRail() {
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const toggleLeftSidebar = useAppStore((s) => s.toggleLeftSidebar)
+  const queryClient = useQueryClient()
   const auth = getAuthSession()
+
+  const handlePrefetchRoute = React.useCallback(
+    (route: AppRoute) => {
+      switch (route) {
+        case "home":
+        case "workspace":
+          void queryClient.prefetchQuery(sessionsQueryOptions())
+          break
+        case "swarm":
+          void queryClient.prefetchQuery(swarmStateQueryOptions())
+          break
+        case "automations":
+          void queryClient.prefetchQuery(automationsQueryOptions())
+          break
+        case "plugins":
+          void queryClient.prefetchQuery(pluginsQueryOptions())
+          break
+        case "changes":
+          void queryClient.prefetchQuery(changesStateQueryOptions())
+          break
+        case "telegram":
+          void queryClient.prefetchQuery(telegramQueryOptions())
+          break
+        case "settings":
+          void queryClient.prefetchQuery(settingsQueryOptions())
+          break
+      }
+    },
+    [queryClient]
+  )
 
   const isNavItemActive = (itemId: AppRoute) => {
     if (itemId === "home") {
@@ -190,6 +229,8 @@ export function IconRail() {
                 type="button"
                 aria-label={item.label}
                 aria-current={active ? "page" : undefined}
+                onMouseEnter={() => handlePrefetchRoute(item.id)}
+                onFocus={() => handlePrefetchRoute(item.id)}
                 onClick={() => setActiveRoute(item.id)}
                 className={cn(
                   "relative grid size-9 cursor-pointer place-items-center rounded-[10px] border transition-all",
@@ -420,16 +461,41 @@ export function SessionPane() {
     )
   }
 
+  const openSessionWithOptionalPreview = (
+    sessionId: string,
+    route?: string
+  ) => {
+    if (route === "swarm") {
+      setActiveRoute("swarm")
+      return
+    }
+    setActiveSession(sessionId)
+    if (sessionId === "ses_credits_dash") {
+      openDocPreview("browser", "localhost:3000")
+    } else if (sessionId === "ses_q4_excel") {
+      openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
+    } else if (sessionId === "ses_migration_md") {
+      openDocPreview("markdown", "MIGRATION_PLAN.md")
+    }
+  }
+
   const handleToggleChecklist = async (item: GettingStartedItem) => {
     const updated = await ipcClient.sessions.toggleGettingStarted(item.id)
     setGettingStarted(updated)
-    if (item.badge === "telegram") setActiveRoute("telegram")
-    if (item.badge === "browser") openRightTab("browser", "localhost:3000")
-    if (item.badge === "sheet")
+    if (item.badge === "telegram") {
+      setActiveRoute("telegram")
+    } else if (item.badge === "browser") {
+      setActiveSession(activeSessionId ?? "ses_retire_cache")
+      openRightTab("browser", "localhost:3000")
+    } else if (item.badge === "sheet") {
+      setActiveSession("ses_q4_excel")
       openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-    if (item.badge === "markdown")
+    } else if (item.badge === "markdown") {
+      setActiveSession(activeSessionId ?? "ses_retire_cache")
       openDocPreview("markdown", "MIGRATION_PLAN.md")
-    if (item.badge === "swarm") setActiveRoute("swarm")
+    } else if (item.badge === "swarm") {
+      setActiveRoute("swarm")
+    }
   }
 
   if (leftCollapsed) {
@@ -583,12 +649,7 @@ export function SessionPane() {
                     <button
                       key={s.id}
                       type="button"
-                      onClick={() => {
-                        setActiveSession(s.id)
-                        if (s.id === "ses_q4_excel") {
-                          openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-                        }
-                      }}
+                      onClick={() => openSessionWithOptionalPreview(s.id, s.route)}
                       className={cn(
                         "flex w-full cursor-pointer items-center rounded-[9px] px-2.5 py-1.5 text-left text-[13px] transition-colors",
                         isActive
@@ -612,16 +673,7 @@ export function SessionPane() {
           <button
             key={r.id}
             type="button"
-            onClick={() => {
-              if (r.route === "swarm") {
-                setActiveRoute("swarm")
-              } else {
-                setActiveSession(r.id)
-                if (r.id === "ses_q4_excel") {
-                  openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-                }
-              }
-            }}
+            onClick={() => openSessionWithOptionalPreview(r.id, r.route)}
             className="block w-full cursor-pointer truncate rounded-[9px] px-2.5 py-1.5 text-left text-[13px] text-body transition-colors hover:bg-hover hover:text-ink"
           >
             {r.title}
