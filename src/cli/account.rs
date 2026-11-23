@@ -173,6 +173,7 @@ mod tests {
             top_up_enabled: true,
             limit_mode: None,
             api_key: None,
+            ..Default::default()
         }
     }
 

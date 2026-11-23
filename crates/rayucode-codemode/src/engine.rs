@@ -40,8 +40,18 @@ const PRELUDE: &str = r#"
   });
   globalThis.listTools = (filter) => {
     const all = JSON.parse(__listTools());
-    if (!filter) return all;
-    const f = String(filter).toLowerCase();
+    if (filter === undefined || filter === null) return all;
+    if (filter instanceof RegExp) {
+      const rx = new RegExp(filter.source, filter.flags.replace(/[gy]/g, ""));
+      return all.filter((t) => rx.test(t.name) || rx.test(t.description));
+    }
+    if (typeof filter !== "string") {
+      throw new TypeError(`listTools(filter) expects a non-empty string or RegExp, got ${typeof filter}`);
+    }
+    if (filter.trim() === "") {
+      throw new TypeError("listTools(filter) cannot be empty; omit the argument to list all tools");
+    }
+    const f = filter.toLowerCase();
     return all.filter((t) => t.name.toLowerCase().includes(f) || t.description.toLowerCase().includes(f));
   };
   globalThis.describeTool = (name) => {

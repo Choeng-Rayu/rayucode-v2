@@ -15,6 +15,8 @@ import {
   type ApiRequest,
   type ImageAttachment,
   type PermissionDecision,
+  type PermissionMode,
+  type RuntimeCommand,
   type ServerFrame,
   type SessionInfo,
   type TodoSnapshot,
@@ -178,6 +180,27 @@ function buildRpcAdapter(
         request_id: requestId,
         decision,
       });
+    },
+    async setPermissionMode(sessionId, mode: PermissionMode) {
+      await rpc.request({
+        req: "set_permission_mode",
+        session_id: sessionId,
+        mode,
+      });
+    },
+    async runtimeCommand(sessionId, command: RuntimeCommand, args: string[] = []) {
+      const reply = await rpc.request({
+        req: "runtime_command",
+        session_id: sessionId,
+        command,
+        ...(args.length > 0 ? { args } : {}),
+      });
+      return {
+        session_id: typeof reply.session_id === "string" ? reply.session_id : sessionId,
+        command: (typeof reply.command === "string" ? reply.command : command) as RuntimeCommand,
+        data: reply.data,
+        message: typeof reply.message === "string" ? reply.message : "",
+      };
     },
     async setApiKey(provider, apiKey) {
       await rpc.request({ req: "set_api_key", provider, api_key: apiKey });

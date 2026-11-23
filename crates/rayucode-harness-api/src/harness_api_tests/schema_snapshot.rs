@@ -856,16 +856,47 @@ fn permission_mode_and_permission_frames_wire_shapes_and_aliases() {
         perm_hello
     );
 
+    assert_eq!(API_VERSION_MINOR, 14);
+
     let event = ServerFrame::event(ApiEvent::PermissionRequest {
         session_id: "s1".into(),
         request_id: "perm_1".into(),
         tool_name: "bash".into(),
         description: "Run bash command".into(),
+        risk_tier: None,
     });
     let wire = serde_json::to_value(&event).unwrap();
     assert_eq!(wire["ev"], "permission_request");
+    assert!(wire.get("risk_tier").is_none());
     assert_eq!(
         serde_json::from_value::<ServerFrame>(wire).unwrap(),
         event
+    );
+
+    let event_with_risk = ServerFrame::event(ApiEvent::PermissionRequest {
+        session_id: "s1".into(),
+        request_id: "perm_2".into(),
+        tool_name: "bash".into(),
+        description: "Run rm -rf".into(),
+        risk_tier: Some("confirm".into()),
+    });
+    let wire_risk = serde_json::to_value(&event_with_risk).unwrap();
+    assert_eq!(wire_risk["risk_tier"], "confirm");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(wire_risk).unwrap(),
+        event_with_risk
+    );
+
+    let changed = ServerFrame::event(ApiEvent::PermissionModeChanged {
+        session_id: "s1".into(),
+        mode: PermissionMode::Plan,
+    });
+    let wire_changed = serde_json::to_value(&changed).unwrap();
+    assert_eq!(wire_changed["ev"], "permission_mode_changed");
+    assert_eq!(wire_changed["session_id"], "s1");
+    assert_eq!(wire_changed["mode"], "plan");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(wire_changed).unwrap(),
+        changed
     );
 }

@@ -2,6 +2,36 @@
 
 Official releases have two gates: **successful CI for the exact tagged commit** and **a complete platform asset set before publication**. Local preparation can save build time, but it does not bypass either gate. `.github/workflows/release.yml` owns final publication.
 
+
+
+    # How to Release a New Version (`rayucode-v2`)
+
+    ## Patch Release (`v3.0.1` → `v3.0.2` → `v3.0.3`)
+    Work on `dev`, then merge and push to `main`:
+
+    ```bash
+    git checkout main
+    git merge dev
+    git push origin main
+
+  GitHub Actions automatically bumps the patch version, compiles all 6 targets (Linux x64/ARM64, macOS Apple Silicon/Intel, Windows x64/ARM64), creates the git tag, and publishes to GitHub Releases + rayu update.
+
+  Minor / Major Release (e.g. v3.1.0 or v4.0.0)
+
+  1. Update version in Cargo.toml.
+  2. Run cargo check (updates Cargo.lock).
+  3. Commit and push/merge to main.
+
+  Skip a Release on main
+
+  Include [skip release] in the commit message (e.g. docs: fix typo [skip release]).
+
+  If scripts/install.sh or scripts/install.ps1 Changed
+
+  Copy the updated script(s) to rayu-web/public/ and deploy rayu-web.
+
+
+
 ## Opt-in v1 preview channel
 
 The separate `.github/workflows/preview.yml` pipeline is **enabled by default** on

@@ -8,20 +8,112 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 13;
+export const API_VERSION_MINOR = 14;
 
-export type RuntimeCommand = "skills" | "context" | "info" | "cache" | "memory" | "swarm" | "agents" | "subagent_model" | "autoreview" | "autojudge" | "transport" | "fast" | "telemetry" | "subscription" | "overnight" | "productivity" | "initiatives" | "premium" | "provider_test_coverage" | "refresh_model_list" | "continue" | "resume_all" | "remote" | "server_reload" | "review" | "judge" | "subagent" | "auth" | "logout";
+export const KNOWN_RUNTIME_COMMANDS = [
+  "skills",
+  "context",
+  "info",
+  "cache",
+  "memory",
+  "swarm",
+  "agents",
+  "subagent_model",
+  "autoreview",
+  "autojudge",
+  "transport",
+  "fast",
+  "telemetry",
+  "subscription",
+  "overnight",
+  "productivity",
+  "initiatives",
+  "premium",
+  "provider_test_coverage",
+  "refresh_model_list",
+  "continue",
+  "resume_all",
+  "remote",
+  "server_reload",
+  "review",
+  "judge",
+  "subagent",
+  "auth",
+  "logout",
+  "background",
+  "mcp",
+  "telegram",
+  "features",
+  "doctor",
+  "session_search",
+  "schedules",
+  "ambient",
+] as const;
+
+export type RuntimeCommand =
+  | "skills"
+  | "context"
+  | "info"
+  | "cache"
+  | "memory"
+  | "swarm"
+  | "agents"
+  | "subagent_model"
+  | "autoreview"
+  | "autojudge"
+  | "transport"
+  | "fast"
+  | "telemetry"
+  | "subscription"
+  | "overnight"
+  | "productivity"
+  | "initiatives"
+  | "premium"
+  | "provider_test_coverage"
+  | "refresh_model_list"
+  | "continue"
+  | "resume_all"
+  | "remote"
+  | "server_reload"
+  | "review"
+  | "judge"
+  | "subagent"
+  | "auth"
+  | "logout"
+  | "background"
+  | "mcp"
+  | "telegram"
+  | "features"
+  | "doctor"
+  | "session_search"
+  | "schedules"
+  | "ambient";
+
+export interface RuntimeCommandOutput {
+  session_id: string;
+  command: RuntimeCommand;
+  data: unknown;
+  message: string;
+}
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
+
+export const KNOWN_PERMISSION_MODES = [
+  "default",
+  "accept_edits",
+  "plan",
+  "full_manage",
+  "orchestrator",
+] as const;
 
 export type PermissionMode =
   | "default"
   | "accept_edits"
-  | "acceptEdits"
   | "plan"
   | "full_manage"
-  | "fullManage"
   | "orchestrator";
+
+export type PermissionRiskTier = "safe" | "bounded" | "confirm" | "catastrophic";
 
 export type ErrorCode =
   | "unsupported_version"
@@ -53,6 +145,14 @@ export interface SessionInfo {
   user_connected?: boolean;
   /** Approximate size of the stored transcript, in bytes. */
   transcript_bytes?: number;
+  /** Whether the user pinned/saved this session. */
+  saved?: boolean;
+  /** Optional label given with `/save <label>`. */
+  save_label?: string | null;
+  /** Persisted transcript update time, used for newest-first ordering. */
+  updated_at_ms?: number;
+  /** Most recent active-process timestamp when available. */
+  last_active_at_ms?: number;
   archived?: boolean;
   archived_at_ms?: number;
 }
@@ -121,12 +221,20 @@ export interface ResponseStats {
   rayu_credits?: number;
 }
 
+export interface HistoryTool {
+  id: string;
+  name: string;
+  input?: unknown;
+}
+
 export interface HistoryMessage {
   /** Only on the final assistant row. Preview/old-server history may omit it. */
   response_stats?: ResponseStats;
   /** "user" | "assistant" | "tool" */
   role: string;
   content: string;
+  /** On "tool" rows: the call this result answers. Absent from older servers. */
+  tool?: HistoryTool;
 }
 
 export type RenderedImageSource =
@@ -407,6 +515,13 @@ export type ApiEvent =
       request_id: string;
       tool_name: string;
       description: string;
+      /** Optional risk tier classification ("safe" | "bounded" | "confirm" | "catastrophic"). */
+      risk_tier?: string;
+    }
+  | {
+      ev: "permission_mode_changed";
+      session_id: string;
+      mode: PermissionMode;
     }
   /** Attachment recovery intent. Can precede attached. Never auto-sent by the bridge. */
   | { ev: "session_recovery"; session_id: string; continuation_message: string; reconnect_notice?: string }
@@ -531,6 +646,7 @@ export const KNOWN_EVENT_KINDS = [
   "background_progress",
   "message_accepted",
   "permission_request",
+  "permission_mode_changed",
   "session_status",
   "session_recovery",
   "connection_phase",

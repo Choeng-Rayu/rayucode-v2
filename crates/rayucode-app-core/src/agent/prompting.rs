@@ -28,9 +28,87 @@ impl Agent {
     }
 
     pub(crate) async fn runtime_context_snapshot(&self) -> serde_json::Value {
+        let prompt = self.build_system_prompt_split(None);
+        let current_tools = self.tool_definitions_for_debug().await;
+        let effective_tools = self.locked_tools.as_ref().unwrap_or(&current_tools);
+        let system_tokens = prompt.estimated_tokens();
+        let tools_tokens = ToolDefinition::aggregate_prompt_token_estimate(effective_tools);
+
+        let mut memory_tokens: usize = 0;
+        let mut files_tokens: usize = 0;
+        let mut messages_tokens: usize = 0;
+        let mut file_tool_call_ids: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for msg in &self.session.messages {
+            for block in &msg.content {
+                if let crate::message::ContentBlock::ToolUse { id, name, .. } = block
+                    && matches!(
+                        name.as_str(),
+                        "read" | "read_file" | "glob" | "grep" | "agentgrep" | "ls" | "list_files"
+                    )
+                {
+                    file_tool_call_ids.insert(id.as_str());
+                }
+            }
+        }
+        for msg in &self.session.messages {
+            for block in &msg.content {
+                match block {
+                    crate::message::ContentBlock::Text { text, .. } => {
+                        let est = crate::util::estimate_tokens(text);
+                        if text.contains("<memory>")
+                            || text.contains("<auto-memory")
+                            || text.contains("## Relevant Memory")
+                            || text.contains("# Relevant Memory")
+                        {
+                            memory_tokens += est;
+                        } else {
+                            messages_tokens += est;
+                        }
+                    }
+                    crate::message::ContentBlock::ToolUse { name, input, .. } => {
+                        let est = crate::util::estimate_tokens(name)
+                            + crate::util::estimate_tokens(&input.to_string());
+                        messages_tokens += est;
+                    }
+                    crate::message::ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        let est = crate::util::estimate_tokens(content);
+                        if file_tool_call_ids.contains(tool_use_id.as_str()) {
+                            files_tokens += est;
+                        } else {
+                            messages_tokens += est;
+                        }
+                    }
+                    crate::message::ContentBlock::Image { .. } => {
+                        files_tokens += 1_000;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let context_window = self.provider_context_window();
+        let total_used =
+            system_tokens + tools_tokens + memory_tokens + files_tokens + messages_tokens;
+        let free_tokens = context_window.saturating_sub(total_used);
+
         let mut context = self.debug_context().await;
         context["messages"] = serde_json::json!(self.session.visible_conversation_messages());
-        context["context_window"] = serde_json::json!(self.provider_context_window());
+        context["context_window"] = serde_json::json!(context_window);
+        context["token_breakdown"] = serde_json::json!({
+            "system": system_tokens,
+            "tools": tools_tokens,
+            "memory": memory_tokens,
+            "files": files_tokens,
+            "messages": messages_tokens,
+            "total_used": total_used,
+            "free": free_tokens,
+            "context_window": context_window,
+        });
         context
     }
 

@@ -831,7 +831,12 @@ pub fn normalize_memory_search_text(content: &str, tags: &[String]) -> String {
 }
 
 pub fn memory_matches_search(memory: &MemoryEntry, normalized_query: &str) -> bool {
-    memory.searchable_text().contains(normalized_query)
+    let mut terms = normalized_query.split_whitespace().peekable();
+    if terms.peek().is_none() {
+        return false;
+    }
+    let searchable = memory.searchable_text();
+    terms.all(|term| searchable.contains(term))
 }
 
 pub mod ranking {

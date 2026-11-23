@@ -108,12 +108,106 @@ use tokio::sync::RwLock;
 pub(crate) use rayucode_tool_core::intent_schema_property;
 pub use rayucode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMode};
 pub use rayucode_tool_types::{ToolImage, ToolOutput};
-pub(crate) use session_search::spawn_recent_index_warmup;
+pub(crate) use session_search::{SessionSearchTool, spawn_recent_index_warmup};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SessionSelfDevSurface {
+    #[default]
+    Normal,
+    CliCanary,
+    Desktop,
+}
+
+impl SessionSelfDevSurface {
+    pub(crate) fn from_flags(is_canary: bool, is_desktop: bool) -> Self {
+        if is_desktop {
+            Self::Desktop
+        } else if is_canary {
+            Self::CliCanary
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// Filter and adjust `selfdev`, `desktop_selfdev`, `debug_socket`, and `rayu_docs`
+/// definitions for the active session surface. Single source of truth shared by
+/// `Agent::build_filtered_tool_definitions_with` and `Registry::definitions_for_session`.
+pub(crate) fn apply_selfdev_tool_surface(
+    tools: &mut Vec<ToolDefinition>,
+    surface: SessionSelfDevSurface,
+) {
+    match surface {
+        SessionSelfDevSurface::Desktop => {
+            tools.retain(|tool| {
+                !matches!(tool.name.as_str(), "selfdev" | "debug_socket" | "rayu_docs")
+            });
+        }
+        SessionSelfDevSurface::Normal => {
+            tools.retain(|tool| !matches!(tool.name.as_str(), "desktop_selfdev" | "selfdev"));
+        }
+        SessionSelfDevSurface::CliCanary => {
+            tools.retain(|tool| !matches!(tool.name.as_str(), "desktop_selfdev" | "rayu_docs"));
+            for tool in tools.iter_mut() {
+                if tool.name == "selfdev" {
+                    tool.description =
+                        selfdev::SelfDevTool::description_for(true).to_string();
+                    tool.input_schema = selfdev::SelfDevTool::schema_for(true);
+                }
+            }
+        }
+    }
+}
+
+/// Validate product-mode separation for self-dev and bundled-docs tools.
+/// Single source of truth shared by `Agent::validate_tool_allowed` and `Registry::execute_with_start`.
+pub(crate) fn validate_selfdev_tool_allowed(
+    name: &str,
+    surface: SessionSelfDevSurface,
+) -> Result<()> {
+    match surface {
+        SessionSelfDevSurface::Desktop => {
+            if matches!(name, "selfdev" | "debug_socket") {
+                anyhow::bail!(
+                    "Tool '{}' targets Rayu CLI, not Desktop. Use 'desktop_selfdev' in Desktop self-development mode.",
+                    name
+                );
+            }
+            if name == "rayu_docs" {
+                anyhow::bail!(
+                    "Tool 'rayu_docs' is disabled in Desktop self-development mode. Read the working tree documentation instead."
+                );
+            }
+        }
+        SessionSelfDevSurface::CliCanary => {
+            if name == "desktop_selfdev" {
+                anyhow::bail!(
+                    "Tool 'desktop_selfdev' is only available in a RayuCode Desktop source checkout."
+                );
+            }
+            if name == "rayu_docs" {
+                anyhow::bail!(
+                    "Tool 'rayu_docs' is disabled in self-development mode. Read the working tree documentation instead."
+                );
+            }
+        }
+        SessionSelfDevSurface::Normal => {
+            if name == "desktop_selfdev" {
+                anyhow::bail!(
+                    "Tool 'desktop_selfdev' is only available in a RayuCode Desktop source checkout."
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Default)]
 struct SessionToolPolicy {
     allowed_tools: Option<HashSet<String>>,
     disabled_tools: HashSet<String>,
+    compaction: Option<Arc<RwLock<CompactionManager>>>,
+    selfdev_surface: Option<SessionSelfDevSurface>,
     owner: Option<u64>,
 }
 
@@ -145,10 +239,27 @@ impl Drop for SessionToolPolicyRegistration {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn register_session_tool_policy(
     session_id: &str,
     allowed_tools: Option<HashSet<String>>,
     disabled_tools: HashSet<String>,
+) -> SessionToolPolicyRegistration {
+    register_session_runtime_policy(
+        session_id,
+        allowed_tools,
+        disabled_tools,
+        None,
+        SessionSelfDevSurface::Normal,
+    )
+}
+
+pub(crate) fn register_session_runtime_policy(
+    session_id: &str,
+    allowed_tools: Option<HashSet<String>>,
+    disabled_tools: HashSet<String>,
+    compaction: Option<Arc<RwLock<CompactionManager>>>,
+    selfdev_surface: SessionSelfDevSurface,
 ) -> SessionToolPolicyRegistration {
     let owner = NEXT_SESSION_TOOL_POLICY_OWNER.fetch_add(1, Ordering::Relaxed);
     let mut policies = SESSION_TOOL_POLICIES
@@ -159,6 +270,8 @@ pub(crate) fn register_session_tool_policy(
         SessionToolPolicy {
             allowed_tools,
             disabled_tools,
+            compaction,
+            selfdev_surface: Some(selfdev_surface),
             owner: Some(owner),
         },
     );
@@ -166,6 +279,14 @@ pub(crate) fn register_session_tool_policy(
         session_id: session_id.to_string(),
         owner,
     }
+}
+
+pub(crate) fn session_compaction(session_id: &str) -> Option<Arc<RwLock<CompactionManager>>> {
+    SESSION_TOOL_POLICIES
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session_id)
+        .and_then(|policy| policy.compaction.clone())
 }
 
 #[cfg(test)]
@@ -182,6 +303,8 @@ pub(crate) fn set_session_tool_policy(
         SessionToolPolicy {
             allowed_tools,
             disabled_tools,
+            compaction: None,
+            selfdev_surface: None,
             owner: None,
         },
     );
@@ -296,10 +419,13 @@ struct McpPolicyIndex {
     history: HashMap<(String, String), HashSet<String>>,
 }
 
-/// Registry of available tools (Arc-wrapped for sharing)
+/// Registry of available tools (Arc-wrapped for sharing).
 ///
-/// Clone creates a fresh CompactionManager so each subagent gets independent
-/// message history tracking. Tools and skills are shared via Arc.
+/// `Clone` is a cheap handle clone that shares the live `CompactionManager` so
+/// tool executions (`turn_streaming_mpsc`, `batch`, `codemode`) and overflow
+/// guards observe the session's real context usage. Call
+/// [`Registry::fork_with_fresh_compaction`] when spawning an independent
+/// session from an existing connection's registry (e.g. `/clear`, `/resume`).
 pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     mcp_policy: Arc<StdRwLock<McpPolicyIndex>>,
@@ -336,14 +462,24 @@ impl Clone for Registry {
             tools: self.tools.clone(),
             mcp_policy: Arc::clone(&self.mcp_policy),
             skills: self.skills.clone(),
-            // Each clone gets a fresh CompactionManager to prevent parallel
-            // subagents from corrupting each other's message history
-            compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            compaction: Arc::clone(&self.compaction),
         }
     }
 }
 
 impl Registry {
+    /// Clone this registry with an isolated `CompactionManager` for a distinct
+    /// session (e.g. `/clear`, `/resume`, or detached subagents), while still
+    /// sharing the tool map, MCP policy, and skill registry.
+    pub fn fork_with_fresh_compaction(&self) -> Self {
+        Self {
+            tools: self.tools.clone(),
+            mcp_policy: Arc::clone(&self.mcp_policy),
+            skills: self.skills.clone(),
+            compaction: Arc::new(RwLock::new(CompactionManager::new())),
+        }
+    }
+
     /// Desktop opts in through its inline response renderer capability.
     /// Keep Desktop-only UI tools out of the base map so terminal/headless
     /// registries never advertise or execute them, including through batch
@@ -649,6 +785,12 @@ impl Registry {
         if let Some(policy) = policy.as_ref() {
             defs.retain(|def| !self.tool_is_disabled(&policy.disabled_tools, &def.name));
         }
+        let surface = policy
+            .as_ref()
+            .and_then(|p| p.selfdev_surface)
+            .unwrap_or(SessionSelfDevSurface::Normal);
+        apply_selfdev_tool_surface(&mut defs, surface);
+        permission_gate::filter_tool_definitions(session_id, &mut defs);
         defs.retain(|def| !is_fixed_mcp_tool(&def.name));
         defs
     }
@@ -1039,27 +1181,17 @@ impl Registry {
                 "selfdev" | "debug_socket" | "desktop_selfdev" | "rayu_docs"
             )
         {
-            let desktop = ctx
-                .working_dir
-                .as_deref()
-                .and_then(rayucode_selfdev_types::desktop_repo_root)
-                .is_some();
-            if desktop && resolved_name == "rayu_docs" {
-                anyhow::bail!(
-                    "Tool 'rayu_docs' is disabled in Desktop self-development mode. Read the working tree documentation instead."
-                );
-            }
-            if desktop && matches!(resolved_name, "selfdev" | "debug_socket") {
-                anyhow::bail!(
-                    "Tool '{}' targets Rayu CLI, not Desktop. Use 'desktop_selfdev'.",
-                    resolved_name
-                );
-            }
-            if !desktop && resolved_name == "desktop_selfdev" {
-                anyhow::bail!(
-                    "Tool 'desktop_selfdev' requires a RayuCode Desktop source checkout."
-                );
-            }
+            let surface = session_tool_policy(&ctx.session_id)
+                .and_then(|p| p.selfdev_surface)
+                .unwrap_or_else(|| {
+                    let desktop = ctx
+                        .working_dir
+                        .as_deref()
+                        .and_then(rayucode_selfdev_types::desktop_repo_root)
+                        .is_some();
+                    SessionSelfDevSurface::from_flags(false, desktop)
+                });
+            validate_selfdev_tool_allowed(resolved_name, surface)?;
         }
         if !is_custom && let Some(policy) = session_tool_policy(&ctx.session_id) {
             if let Some(allowed) = policy.allowed_tools.as_ref()
@@ -1071,6 +1203,9 @@ impl Registry {
                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
             }
         }
+        // Enforce session PermissionMode even on batch/codemode subcalls or direct
+        // Registry::execute calls that bypass Agent::validate_tool_allowed.
+        permission_gate::validate_mode_allows(&ctx.session_id, resolved_name)?;
         let tool: Arc<dyn Tool> = if is_custom {
             Arc::new(sdk::CallbackTool(resolved_name.into()))
         } else {
@@ -1094,6 +1229,23 @@ impl Registry {
 
         // Drop the lock before executing
         drop(tools);
+
+        // Subcalls dispatched via batch/codemode (`ToolContext::for_subcall`) or direct
+        // Registry invocations are not individually authorized by turn_streaming_mpsc, so
+        // authorize them here against the active session PermissionMode (while avoiding
+        // double-prompting on the exact top-level call already authorized by the turn,
+        // even when a provider supplies a tool_call_id containing `:`).
+        if !telegram
+            && !permission_gate::is_already_authorized(&ctx.session_id, &ctx.tool_call_id)
+        {
+            permission_gate::authorize_with_working_dir(
+                &ctx.session_id,
+                resolved_name,
+                &input,
+                ctx.working_dir.clone(),
+            )
+            .await?;
+        }
 
         let working_dir = ctx
             .working_dir
@@ -1195,7 +1347,12 @@ impl Registry {
 
         // Context overflow guard: check if this output would push us over the limit
         output = self
-            .guard_context_overflow(name, output, accepts_large_output(&input))
+            .guard_context_overflow_for_session(
+                &ctx.session_id,
+                name,
+                output,
+                accepts_large_output(&input),
+            )
             .await;
 
         let mut fields = Self::tool_lifecycle_fields("done", name, resolved_name, &input, &ctx);
@@ -1220,13 +1377,27 @@ impl Registry {
     /// damage was already done by the time they read the warning. Refusing costs
     /// a few dozen tokens, states the price, and lets the caller either narrow
     /// the query or knowingly pay by passing `accept_large_output`.
+    #[cfg(test)]
     async fn guard_context_overflow(
         &self,
         tool_name: &str,
         output: ToolOutput,
         accept_large_output: bool,
     ) -> ToolOutput {
-        let compaction = self.compaction.read().await;
+        self.guard_context_overflow_for_session("", tool_name, output, accept_large_output)
+            .await
+    }
+
+    async fn guard_context_overflow_for_session(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        output: ToolOutput,
+        accept_large_output: bool,
+    ) -> ToolOutput {
+        let compaction_handle =
+            session_compaction(session_id).unwrap_or_else(|| Arc::clone(&self.compaction));
+        let compaction = compaction_handle.read().await;
         let budget = compaction.token_budget();
         if budget == 0 {
             return output;
@@ -1955,6 +2126,339 @@ impl Registry {
     /// Get shared access to the compaction manager
     pub fn compaction(&self) -> Arc<RwLock<CompactionManager>> {
         self.compaction.clone()
+    }
+}
+
+/// Classify a tool call into a stable Harness API v1.14 risk tier
+/// (`"safe"`, `"bounded"`, `"confirm"`, or `"catastrophic"`), combining
+/// `permission_gate` tool classification with `rayucode_command_risk` for shell commands.
+pub(crate) fn assess_tool_risk_tier(
+    tool_name: &str,
+    input: &Value,
+    working_dir: Option<std::path::PathBuf>,
+) -> &'static str {
+    let resolved = Registry::resolve_tool_name(tool_name.strip_prefix("functions.").unwrap_or(tool_name));
+    if matches!(resolved, "bash" | "shell" | "run_command") {
+        if let Some(command) = input.get("command").and_then(Value::as_str) {
+            let risk_ctx = rayucode_command_risk::RiskContext::from_env(working_dir);
+            let assessment = rayucode_command_risk::assess(command, &risk_ctx);
+            return match assessment.level {
+                rayucode_command_risk::RiskLevel::Safe => "safe",
+                rayucode_command_risk::RiskLevel::Low => "bounded",
+                rayucode_command_risk::RiskLevel::Confirm => "confirm",
+                rayucode_command_risk::RiskLevel::Catastrophic => "catastrophic",
+            };
+        }
+        return "confirm";
+    }
+    match permission_gate::classify_tool(resolved) {
+        permission_gate::ToolPermissionClass::ReadOnly
+        | permission_gate::ToolPermissionClass::Coordinate => "safe",
+        permission_gate::ToolPermissionClass::Edit => "bounded",
+        permission_gate::ToolPermissionClass::Command => "confirm",
+    }
+}
+
+#[cfg(test)]
+mod permission_mode_registry_tests {
+    use super::*;
+    use crate::protocol::{PermissionDecision, PermissionMode, ServerEvent};
+    use serde_json::json;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn assess_tool_risk_tier_maps_command_risk_and_tool_classes() {
+        assert_eq!(assess_tool_risk_tier("read", &json!({"path": "a.rs"}), None), "safe");
+        assert_eq!(assess_tool_risk_tier("swarm", &json!({}), None), "safe");
+        assert_eq!(assess_tool_risk_tier("edit", &json!({"file_path": "a.rs"}), None), "bounded");
+        assert_eq!(assess_tool_risk_tier("write", &json!({"file_path": "a.rs"}), None), "bounded");
+        assert_eq!(
+            assess_tool_risk_tier("bash", &json!({"command": "ls -la"}), None),
+            "safe"
+        );
+        assert_eq!(
+            assess_tool_risk_tier("bash", &json!({"command": "rm -rf ~"}), None),
+            "catastrophic"
+        );
+        assert_eq!(
+            assess_tool_risk_tier("mcp__github__create_issue", &json!({}), None),
+            "confirm"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_execute_and_definitions_enforce_plan_and_orchestrator_modes() {
+        let registry = Registry::empty();
+        registry
+            .register("read".into(), Arc::new(read::ReadTool::new()))
+            .await;
+        registry
+            .register("write".into(), Arc::new(write::WriteTool::new()))
+            .await;
+        registry
+            .register("bash".into(), Arc::new(bash::BashTool::new()))
+            .await;
+        registry
+            .register("swarm".into(), Arc::new(communicate::CommunicateTool::new()))
+            .await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let conn = Arc::new(permission_gate::PermissionConnection::new(tx));
+
+        // Plan mode hides and blocks write/bash even via Registry::execute.
+        conn.set_mode(PermissionMode::Plan);
+        permission_gate::scope("s-plan", Some(conn.clone()), async {
+            let defs = registry.definitions_for_session("s-plan").await;
+            let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+            assert!(names.contains(&"read"));
+            assert!(names.contains(&"swarm"));
+            assert!(!names.contains(&"write"));
+            assert!(!names.contains(&"bash"));
+
+            let ctx = ToolContext {
+                session_id: "s-plan".into(),
+                message_id: "m1".into(),
+                tool_call_id: "c1".into(),
+                working_dir: None,
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: ToolExecutionMode::AgentTurn,
+            };
+            let err = registry
+                .execute("bash", json!({"command": "echo hi", "intent": "test"}), ctx)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("Blocked by Plan mode"));
+        })
+        .await;
+
+        // Orchestrator mode blocks write/bash and permits swarm/read.
+        conn.set_mode(PermissionMode::Orchestrator);
+        permission_gate::scope("s-orch", Some(conn.clone()), async {
+            let ctx = ToolContext {
+                session_id: "s-orch".into(),
+                message_id: "m1".into(),
+                tool_call_id: "c2".into(),
+                working_dir: None,
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: ToolExecutionMode::AgentTurn,
+            };
+            let err = registry
+                .execute("write", json!({"file_path": "a.txt", "content": "x", "intent": "write"}), ctx)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("Blocked by Orchestrator mode"));
+        })
+        .await;
+
+        // AcceptEdits prompts on subcall bash execution via PermissionConnection.
+        conn.set_mode(PermissionMode::AcceptEdits);
+        let subcall_ctx = ToolContext {
+            session_id: "s-sub".into(),
+            message_id: "m1".into(),
+            tool_call_id: "parent".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::AgentTurn,
+        }
+        .for_subcall("batch-1-bash".into());
+        let reg_clone = registry.clone();
+        let conn_clone = conn.clone();
+        let worker = tokio::spawn(async move {
+            permission_gate::scope("s-sub", Some(conn_clone), async move {
+                reg_clone
+                    .execute(
+                        "bash",
+                        json!({"command": "echo hi", "intent": "subcall"}),
+                        subcall_ctx,
+                    )
+                    .await
+            })
+            .await
+        });
+        let Some(ServerEvent::PermissionRequest {
+            request_id,
+            tool_name,
+            ..
+        }) = rx.recv().await
+        else {
+            panic!("expected PermissionRequest for subcall bash in AcceptEdits mode");
+        };
+        assert_eq!(tool_name, "bash");
+        conn.respond("s-sub", &request_id, PermissionDecision::Deny)
+            .unwrap();
+        let err = worker.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains("Denied by user"));
+    }
+
+    #[tokio::test]
+    async fn batch_and_codemode_subcalls_enforce_permissions_across_spawns_without_colon_double_prompt() {
+        let registry = Registry::empty();
+        registry
+            .register("read".into(), Arc::new(read::ReadTool::new()))
+            .await;
+        registry
+            .register("bash".into(), Arc::new(bash::BashTool::new()))
+            .await;
+        let weak = registry.downgrade();
+        registry
+            .register("batch".into(), Arc::new(batch::BatchTool::new(weak.clone())))
+            .await;
+        registry
+            .register(
+                "codemode".into(),
+                Arc::new(codemode::CodemodeTool::new(weak)),
+            )
+            .await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let conn = Arc::new(permission_gate::PermissionConnection::new(tx));
+        conn.set_mode(PermissionMode::AcceptEdits);
+
+        // 1. A top-level call whose provider-assigned tool_call_id contains `:` must
+        //    NOT double-prompt inside Registry::execute once authorized by the turn.
+        let colon_id = "call:provider:42".to_string();
+        let ctx = ToolContext {
+            session_id: "s-live".into(),
+            message_id: "m1".into(),
+            tool_call_id: colon_id.clone(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::AgentTurn,
+        };
+        let reg_clone = registry.clone();
+        let conn_clone = conn.clone();
+        let out = tokio::spawn(async move {
+            permission_gate::scope_with_authorized_call(
+                "s-live",
+                Some(conn_clone),
+                &colon_id,
+                reg_clone.execute(
+                    "bash",
+                    json!({"command": "echo ok", "intent": "colon id test"}),
+                    ctx,
+                ),
+            )
+            .await
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(out.output.contains("ok"));
+        assert!(
+            rx.try_recv().is_err(),
+            "top-level call with `:` in tool_call_id must not double-prompt"
+        );
+
+        // 2. A `batch` tool running inside a spawned task (simulating `spawn_session`)
+        //    must still prompt on its `bash` subcall and populate `risk_tier`.
+        let batch_ctx = ToolContext {
+            session_id: "s-live".into(),
+            message_id: "m2".into(),
+            tool_call_id: "batch-parent".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::AgentTurn,
+        };
+        let reg_clone = registry.clone();
+        let conn_clone = conn.clone();
+        let batch_worker = tokio::spawn(async move {
+            permission_gate::scope_with_authorized_call(
+                "s-live",
+                Some(conn_clone),
+                "batch-parent",
+                reg_clone.execute(
+                    "batch",
+                    json!({
+                        "intent": "run bash via batch",
+                        "tool_calls": [{
+                            "tool": "bash",
+                            "intent": "subcall echo",
+                            "parameters": {"command": "rm -rf ~", "intent": "subcall echo"}
+                        }]
+                    }),
+                    batch_ctx,
+                ),
+            )
+            .await
+        });
+        let Some(ServerEvent::PermissionRequest {
+            request_id,
+            tool_name,
+            risk_tier,
+            ..
+        }) = rx.recv().await
+        else {
+            panic!("expected PermissionRequest for batch bash subcall");
+        };
+        assert_eq!(tool_name, "bash");
+        assert_eq!(risk_tier.as_deref(), Some("catastrophic"));
+        conn.respond("s-live", &request_id, PermissionDecision::Deny)
+            .unwrap();
+        let batch_out = batch_worker.await.unwrap().unwrap();
+        assert!(
+            batch_out.output.contains("Denied by user"),
+            "expected Denied by user in batch output, got: {}",
+            batch_out.output
+        );
+
+        // 3. A `codemode` tool (which runs on an OS thread and calls `outer.spawn`)
+        //    must still prompt on its `bash` subcall under AcceptEdits.
+        if rayucode_codemode::AVAILABLE {
+            let cm_ctx = ToolContext {
+                session_id: "s-live".into(),
+                message_id: "m3".into(),
+                tool_call_id: "cm-parent".into(),
+                working_dir: None,
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: ToolExecutionMode::AgentTurn,
+            };
+            let reg_clone = registry.clone();
+            let conn_clone = conn.clone();
+            let cm_worker = tokio::spawn(async move {
+                permission_gate::scope_with_authorized_call(
+                    "s-live",
+                    Some(conn_clone),
+                    "cm-parent",
+                    reg_clone.execute(
+                        "codemode",
+                        json!({
+                            "intent": "run bash via codemode",
+                            "code": "return await tools.bash({ command: 'echo hacked', intent: 'sub' });"
+                        }),
+                        cm_ctx,
+                    ),
+                )
+                .await
+            });
+            let Some(ServerEvent::PermissionRequest {
+                request_id,
+                tool_name,
+                risk_tier,
+                ..
+            }) = rx.recv().await
+            else {
+                panic!("expected PermissionRequest for codemode bash subcall");
+            };
+            assert_eq!(tool_name, "bash");
+            assert_eq!(risk_tier.as_deref(), Some("safe"));
+            conn.respond("s-live", &request_id, PermissionDecision::Deny)
+                .unwrap();
+            let cm_res = cm_worker.await.unwrap();
+            let rendered = match cm_res {
+                Ok(out) => out.output,
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                rendered.contains("Denied by user"),
+                "expected Denied by user in codemode output, got: {rendered}"
+            );
+        }
     }
 }
 

@@ -246,6 +246,15 @@ impl SharedMcpPool {
         }
     }
 
+    /// Last connection error recorded for a server, if any.
+    pub async fn last_error(&self, name: &str) -> Option<String> {
+        self.last_errors
+            .read()
+            .await
+            .get(name)
+            .map(|record| record.message.clone())
+    }
+
     /// Get a handle for a specific server
     pub async fn get_handle(&self, name: &str) -> Option<McpHandle> {
         let handles = self.handles.read().await;

@@ -2,14 +2,19 @@
 
 use super::protocol::*;
 use anyhow::{Context, Result};
-use serde_json::Value;
-use std::collections::HashMap;
+use serde_json::{Value, json};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+/// Maximum number of `tools/list` pagination pages fetched from one server.
+const MAX_TOOLS_LIST_PAGES: usize = 100;
+/// Maximum recent stderr lines kept for startup failure diagnostics.
+const STDERR_TAIL_MAX_LINES: usize = 20;
 
 /// Shared communication handle for an MCP server.
 /// Multiple sessions can hold clones of this and send concurrent requests.
@@ -150,17 +155,48 @@ impl McpHandle {
             .clone()
     }
 
-    /// Refresh the list of available tools
+    /// Refresh the list of available tools, following MCP `nextCursor` pagination.
     pub async fn refresh_tools(&self) -> Result<()> {
-        let response = self.request("tools/list", None).await?;
+        let mut all_tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors: HashSet<String> = HashSet::new();
 
-        if let Some(result) = response.result {
+        for page in 0..MAX_TOOLS_LIST_PAGES {
+            let params = cursor
+                .as_ref()
+                .map(|cursor| json!({ "cursor": cursor }));
+            let response = self.request("tools/list", params).await?;
+            let Some(result) = response.result else {
+                break;
+            };
             let tools_result: ToolsListResult = serde_json::from_value(result)?;
-            *self
-                .tools
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = tools_result.tools;
+            all_tools.extend(tools_result.tools);
+
+            let next = tools_result
+                .next_cursor
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty());
+            match next {
+                Some(next_cursor) => {
+                    if !seen_cursors.insert(next_cursor.clone()) {
+                        crate::logging::warn(&format!(
+                            "MCP [{}]: tools/list repeated cursor '{}' on page {}; stopping pagination",
+                            self.name,
+                            next_cursor,
+                            page + 1
+                        ));
+                        break;
+                    }
+                    cursor = Some(next_cursor);
+                }
+                None => break,
+            }
         }
+
+        *self
+            .tools
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = all_tools;
 
         Ok(())
     }
@@ -244,9 +280,12 @@ impl McpClient {
         let stdout = child.stdout.take().context("No stdout")?;
         let stderr = child.stderr.take().context("No stderr")?;
 
-        // Spawn stderr reader
+        // Spawn stderr reader, keeping a bounded tail so startup failures report
+        // the server's actual diagnostics instead of only "exited".
         let server_name = name.clone();
-        tokio::spawn(async move {
+        let stderr_tail: Arc<StdMutex<VecDeque<String>>> = Arc::new(StdMutex::new(VecDeque::new()));
+        let stderr_tail_writer = Arc::clone(&stderr_tail);
+        let mut stderr_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stderr);
             let mut line = String::new();
             loop {
@@ -260,6 +299,13 @@ impl McpClient {
                                 "MCP [{}] stderr: {}",
                                 server_name, trimmed
                             ));
+                            let mut tail = stderr_tail_writer
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if tail.len() >= STDERR_TAIL_MAX_LINES {
+                                tail.pop_front();
+                            }
+                            tail.push_back(trimmed.to_string());
                         }
                     }
                     Err(_) => break,
@@ -347,16 +393,19 @@ impl McpClient {
             backend: Backend::Stdio(child),
         };
 
-        client
-            .initialize()
-            .await
-            .with_context(|| format!("MCP server '{}' failed to initialize", name))?;
+        if let Err(err) = client.initialize().await {
+            let diag = client
+                .stdio_startup_diagnostics(&mut stderr_task, &stderr_tail)
+                .await;
+            return Err(err.context(format!("MCP server '{}' failed to initialize{diag}", name)));
+        }
 
-        client
-            .handle
-            .refresh_tools()
-            .await
-            .with_context(|| format!("MCP server '{}' failed to list tools", name))?;
+        if let Err(err) = client.handle.refresh_tools().await {
+            let diag = client
+                .stdio_startup_diagnostics(&mut stderr_task, &stderr_tail)
+                .await;
+            return Err(err.context(format!("MCP server '{}' failed to list tools{diag}", name)));
+        }
 
         crate::logging::info(&format!(
             "MCP: Connected to '{}' with {} tools",
@@ -365,6 +414,42 @@ impl McpClient {
         ));
 
         Ok(client)
+    }
+
+    /// Collect child exit status and recent stderr lines after a stdio startup
+    /// failure. Briefly waits for the stderr reader so fast-exiting servers'
+    /// error messages are not lost in a race with stdout EOF.
+    async fn stdio_startup_diagnostics(
+        &mut self,
+        stderr_task: &mut tokio::task::JoinHandle<()>,
+        stderr_tail: &Arc<StdMutex<VecDeque<String>>>,
+    ) -> String {
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), stderr_task).await;
+        let exit_detail = match &mut self.backend {
+            Backend::Stdio(child) => match child.try_wait() {
+                Ok(Some(status)) => Some(format!("exit status: {status}")),
+                _ => None,
+            },
+            Backend::Remote(_) => None,
+        };
+        let stderr_lines: Vec<String> = stderr_tail
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .cloned()
+            .collect();
+        let mut parts = Vec::new();
+        if let Some(exit_detail) = exit_detail {
+            parts.push(exit_detail);
+        }
+        if !stderr_lines.is_empty() {
+            parts.push(format!("stderr: {}", stderr_lines.join(" | ")));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", parts.join("; "))
+        }
     }
 
     fn new_handle(
@@ -797,6 +882,40 @@ done
         .expect("connect must not hang on a server that exited");
         let err = format!("{:#}", result.err().expect("connect must fail"));
         assert!(err.contains("exited"), "unexpected error: {err}");
+        assert!(
+            err.contains("boom"),
+            "startup error must include captured stderr: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_tools_paginates_next_cursor() {
+        let script = r#"
+while IFS= read -r line; do
+  case "$line" in
+    *'"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"paged","version":"1"}}}\n'
+      ;;
+    *'"cursor":"page2"'*)
+      printf '{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"tool_31","inputSchema":{"type":"object"}},{"name":"tool_32","inputSchema":{"type":"object"}}]}}\n'
+      ;;
+    *'"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"tool_01","inputSchema":{"type":"object"}},{"name":"tool_02","inputSchema":{"type":"object"}}],"nextCursor":"page2"}}\n'
+      ;;
+  esac
+done
+"#;
+        let config = McpServerConfig {
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), script.to_string()],
+            ..fake_server_config()
+        };
+        let mut client = McpClient::connect("paged".to_string(), &config)
+            .await
+            .expect("connect paginated server");
+        let names: Vec<String> = client.tools().into_iter().map(|t| t.name).collect();
+        client.shutdown().await;
+        assert_eq!(names, vec!["tool_01", "tool_02", "tool_31", "tool_32"]);
     }
 
     #[tokio::test]

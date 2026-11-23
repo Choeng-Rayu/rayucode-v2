@@ -1140,7 +1140,13 @@ mod tests {
             let provider = crate::provider::external::instantiate_external_provider(key)
                 .unwrap_or_else(|| panic!("{key} runtime factory should instantiate"));
             assert_eq!(provider.name(), expected_name);
-            assert!(!provider.model().is_empty());
+            // Rayu's catalog is intentionally 100% server-managed with no
+            // hardcoded fallback model IDs, so a cold start without a cached
+            // disk catalog legitimately begins with an empty model until live
+            // catalog prefetch completes.
+            if key != crate::provider::external::RAYU_RUNTIME {
+                assert!(!provider.model().is_empty());
+            }
         }
 
         // Copilot's factory is fallible (requires a GitHub token), so only

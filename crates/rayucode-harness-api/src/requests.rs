@@ -387,6 +387,47 @@ pub enum PermissionMode {
     Orchestrator,
 }
 
+impl PermissionMode {
+    pub const ALL: &'static [Self] = &[
+        Self::Default,
+        Self::AcceptEdits,
+        Self::Plan,
+        Self::FullManage,
+        Self::Orchestrator,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::Plan => "plan",
+            Self::FullManage => "full_manage",
+            Self::Orchestrator => "orchestrator",
+        }
+    }
+}
+
+impl std::fmt::Display for PermissionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for PermissionMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "default" => Ok(Self::Default),
+            "accept_edits" | "acceptEdits" => Ok(Self::AcceptEdits),
+            "plan" => Ok(Self::Plan),
+            "full_manage" | "fullManage" => Ok(Self::FullManage),
+            "orchestrator" => Ok(Self::Orchestrator),
+            other => Err(format!("unknown permission mode: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionDecision {

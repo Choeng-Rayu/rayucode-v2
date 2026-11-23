@@ -480,6 +480,7 @@ impl Agent {
             self.session.original_working_dir = self.session.working_dir.clone();
         }
         self.session.working_dir = Some(dir.to_string());
+        self.sync_session_tool_policy();
         self.refresh_agents_md_snapshot();
         self.session.refresh_initial_session_context_message();
         self.log_env_snapshot("working_dir");

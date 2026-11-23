@@ -16,7 +16,9 @@ import {
   API_VERSION_MINOR,
   HarnessError,
   KNOWN_EVENT_KINDS,
+  KNOWN_PERMISSION_MODES,
   KNOWN_REQUEST_KINDS,
+  KNOWN_RUNTIME_COMMANDS,
   RayuCreditsAccumulator,
   formatRayuCredits,
   formatRayuCreditsExact,
@@ -81,11 +83,32 @@ test("browser entrypoint graph has zero Node builtins or external dependencies",
   }
 });
 
-test("browser entrypoint exports protocol v1.12 metadata and rayu credits helpers", () => {
+test("browser entrypoint exports protocol v1.14 metadata and rayu credits helpers", () => {
   assert.equal(API_VERSION_MAJOR, 1);
-  assert.ok(API_VERSION_MINOR >= 12);
+  assert.equal(API_VERSION_MINOR, 14);
   assert.ok(KNOWN_EVENT_KINDS.includes("rayu_credits"));
+  assert.ok(KNOWN_EVENT_KINDS.includes("permission_mode_changed"));
   assert.ok(KNOWN_REQUEST_KINDS.includes("send_message"));
+  assert.ok(KNOWN_REQUEST_KINDS.includes("set_permission_mode"));
+  assert.deepEqual(KNOWN_PERMISSION_MODES, [
+    "default",
+    "accept_edits",
+    "plan",
+    "full_manage",
+    "orchestrator",
+  ]);
+  for (const cmd of [
+    "background",
+    "mcp",
+    "telegram",
+    "features",
+    "doctor",
+    "session_search",
+    "schedules",
+    "ambient",
+  ] as const) {
+    assert.ok(KNOWN_RUNTIME_COMMANDS.includes(cmd), `missing RuntimeCommand ${cmd}`);
+  }
 
   const err = new HarnessError("session_not_found", "missing");
   assert.equal(err.code, "session_not_found");

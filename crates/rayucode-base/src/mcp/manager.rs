@@ -55,6 +55,8 @@ pub struct McpManager {
     pool_handles: RwLock<HashMap<String, McpHandle>>,
     /// Per-session owned clients (non-shared / stateful servers)
     owned_clients: RwLock<HashMap<String, McpClient>>,
+    /// Last connection error recorded for owned (non-shared) servers.
+    owned_last_errors: RwLock<HashMap<String, String>>,
     /// In-flight owned-server handshakes, keyed by server name. This prevents
     /// background startup and a manual connect from spawning two processes for
     /// the same session server at the same time.
@@ -125,6 +127,7 @@ impl McpManager {
             pool: None,
             pool_handles: RwLock::new(HashMap::new()),
             owned_clients: RwLock::new(HashMap::new()),
+            owned_last_errors: RwLock::new(HashMap::new()),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             config: McpConfig::load_for_dir(project_dir.as_deref()),
             session_id: "owned".to_string(),
@@ -149,6 +152,7 @@ impl McpManager {
             pool: Some(pool),
             pool_handles: RwLock::new(HashMap::new()),
             owned_clients: RwLock::new(HashMap::new()),
+            owned_last_errors: RwLock::new(HashMap::new()),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             config: McpConfig::load_for_dir(project_dir.as_deref()),
             session_id,
@@ -162,6 +166,7 @@ impl McpManager {
             pool: None,
             pool_handles: RwLock::new(HashMap::new()),
             owned_clients: RwLock::new(HashMap::new()),
+            owned_last_errors: RwLock::new(HashMap::new()),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             config,
             session_id: "owned".to_string(),
@@ -341,9 +346,17 @@ impl McpManager {
         let result = match connection {
             Ok(client) => {
                 clients.insert(name.to_string(), client);
+                self.owned_last_errors.write().await.remove(name);
                 Ok(())
             }
-            Err(error) => Err(format!("{:#}", error)),
+            Err(error) => {
+                let message = format!("{:#}", error);
+                self.owned_last_errors
+                    .write()
+                    .await
+                    .insert(name.to_string(), message.clone());
+                Err(message)
+            }
         };
 
         if connecting
@@ -377,6 +390,7 @@ impl McpManager {
         if let Some(mut client) = clients.remove(name) {
             client.shutdown().await;
         }
+        self.owned_last_errors.write().await.remove(name);
         Ok(())
     }
 
@@ -423,6 +437,17 @@ impl McpManager {
                 .map(|(name, _)| name.clone()),
         );
         names
+    }
+
+    /// Last connection error recorded for a server (shared pool or session-owned), if any.
+    pub async fn last_error(&self, server_name: &str) -> Option<String> {
+        if let Some(err) = self.owned_last_errors.read().await.get(server_name).cloned() {
+            return Some(err);
+        }
+        if let Some(pool) = &self.pool {
+            return pool.last_error(server_name).await;
+        }
+        None
     }
 
     /// Tool definitions for one connected server, or `None` when it is not

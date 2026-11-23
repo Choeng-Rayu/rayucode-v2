@@ -76,6 +76,16 @@ fn payload(input: FeedbackInput) -> Result<String> {
     Ok(text)
 }
 
+fn save_local_feedback_report(text: &str) -> Option<std::path::PathBuf> {
+    let dir = crate::storage::rayu_dir().ok()?.join("feedback");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let path = dir.join(format!("feedback-{stamp}-{}.md", &suffix[..8]));
+    std::fs::write(&path, format!("{text}\n")).ok()?;
+    Some(path)
+}
+
 #[async_trait]
 impl Tool for MaintainerFeedbackTool {
     fn name(&self) -> &str {
@@ -125,9 +135,16 @@ impl Tool for MaintainerFeedbackTool {
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
         let text = payload(serde_json::from_value(input)?)?;
         if !crate::telemetry::is_enabled() {
-            return Ok(ToolOutput::new(
+            let mut message = String::from(
                 "Feedback was not sent because telemetry is disabled. The user can use /telemetry to change that setting.",
-            ));
+            );
+            if let Some(path) = save_local_feedback_report(&text) {
+                message.push_str(&format!(
+                    "\nSaved a local copy (no network request made): {}",
+                    path.display()
+                ));
+            }
+            return Ok(ToolOutput::new(message));
         }
         crate::telemetry::record_feedback(&text);
         Ok(ToolOutput::new(
@@ -226,5 +243,25 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    #[test]
+    fn save_local_feedback_report_writes_file_under_rayu_home() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let prev_home = std::env::var("RAYU_HOME").ok();
+        crate::env::set_var("RAYU_HOME", temp.path());
+
+        let path = save_local_feedback_report("[agent feedback; category=bug; origin=agent] probe")
+            .expect("should write local feedback copy");
+        assert!(path.starts_with(temp.path().join("feedback")));
+        let body = std::fs::read_to_string(&path).expect("read saved feedback");
+        assert!(body.contains("probe"));
+
+        if let Some(prev) = prev_home {
+            crate::env::set_var("RAYU_HOME", prev);
+        } else {
+            crate::env::remove_var("RAYU_HOME");
+        }
     }
 }

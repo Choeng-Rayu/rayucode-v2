@@ -425,6 +425,7 @@ impl Agent {
             self.unlock_tools();
         }
         self.session.set_canary(build_hash);
+        self.sync_session_tool_policy();
         if let Err(err) = self.session.save() {
             logging::error(&format!("Failed to persist canary session state: {}", err));
         }
@@ -721,11 +722,7 @@ impl Agent {
                     .tool_is_disabled(&self.disabled_tools, &tool.name)
             });
         }
-        Self::apply_selfdev_tool_surface(
-            &mut tools,
-            self.session.is_canary,
-            self.is_desktop_selfdev(),
-        );
+        crate::tool::apply_selfdev_tool_surface(&mut tools, self.selfdev_surface());
         if apply_mcp_exposure {
             self.apply_mcp_tool_exposure(&mut tools);
         }
@@ -762,41 +759,6 @@ impl Agent {
 
         if deferred {
             tools.retain(|tool| !tool.name.starts_with("mcp__"));
-        }
-    }
-
-    /// Expose the `selfdev` tool only while running in self-development mode.
-    /// Self-dev agents use the working tree rather than bundled `rayu_docs`,
-    /// which can lag behind the source they are editing.
-    ///
-    /// The registry keeps the implementation available for self-dev sessions,
-    /// but regular agents should not spend tool-list context on an internal
-    /// development surface.
-    fn apply_selfdev_tool_surface(
-        tools: &mut Vec<ToolDefinition>,
-        is_canary: bool,
-        is_desktop: bool,
-    ) {
-        // Desktop development is a separate product mode, not a CLI canary.
-        // Never advertise CLI build/reload or TUI debug sockets in that mode.
-        if is_desktop {
-            tools.retain(|tool| {
-                !matches!(tool.name.as_str(), "selfdev" | "debug_socket" | "rayu_docs")
-            });
-            return;
-        }
-        tools.retain(|tool| tool.name != "desktop_selfdev");
-        if !is_canary {
-            tools.retain(|tool| tool.name != "selfdev");
-            return;
-        }
-        tools.retain(|tool| tool.name != "rayu_docs");
-        for tool in tools.iter_mut() {
-            if tool.name == "selfdev" {
-                tool.description =
-                    crate::tool::selfdev::SelfDevTool::description_for(true).to_string();
-                tool.input_schema = crate::tool::selfdev::SelfDevTool::schema_for(true);
-            }
         }
     }
 
@@ -1177,23 +1139,7 @@ impl Agent {
                 sdk_enabled = true;
             }
         }
-        let is_desktop = self.is_desktop_selfdev();
-        if is_desktop && matches!(name, "selfdev" | "debug_socket") {
-            return Err(anyhow::anyhow!(
-                "Tool '{}' targets Rayu CLI, not Desktop. Use 'desktop_selfdev' in Desktop self-development mode.",
-                name
-            ));
-        }
-        if !is_desktop && name == "desktop_selfdev" {
-            return Err(anyhow::anyhow!(
-                "Tool 'desktop_selfdev' is only available in a RayuCode Desktop source checkout."
-            ));
-        }
-        if (self.session.is_canary || is_desktop) && name == "rayu_docs" {
-            return Err(anyhow::anyhow!(
-                "Tool 'rayu_docs' is disabled in self-development mode. Read the working tree documentation instead."
-            ));
-        }
+        crate::tool::validate_selfdev_tool_allowed(name, self.selfdev_surface())?;
         if sdk_enabled {
             return Ok(());
         }
@@ -1290,11 +1236,7 @@ impl Agent {
         self.refresh_agents_md_snapshot();
         let agents_md_ms = lap.elapsed().as_millis();
         let lap = Instant::now();
-        self._tool_policy_registration = crate::tool::register_session_tool_policy(
-            &self.session.id,
-            self.allowed_tools.clone(),
-            self.disabled_tools.clone(),
-        );
+        self.sync_session_tool_policy();
         let policy_ms = lap.elapsed().as_millis();
         let assign_ms = assign_start.elapsed().as_millis();
         if assign_ms >= 50 {
@@ -1367,9 +1309,13 @@ impl Agent {
         Ok(previous_status)
     }
 
-    /// Get conversation history for sync
-    pub fn get_history(&self) -> Vec<HistoryMessage> {
-        crate::session::render_messages(&self.session)
+    /// Convert a session's stored messages into protocol `HistoryMessage` entries.
+    /// Single source of truth shared by `Agent::get_history` and swarm
+    /// `handle_comm_read_context` fallback when an agent is mid-turn.
+    pub(crate) fn history_messages_from_session(
+        session: &crate::session::Session,
+    ) -> Vec<HistoryMessage> {
+        crate::session::render_messages(session)
             .into_iter()
             .map(|msg| HistoryMessage {
                 tool_duration_ms: msg.tool_duration_ms,
@@ -1384,6 +1330,11 @@ impl Agent {
                 tool_data: msg.tool_data,
             })
             .collect()
+    }
+
+    /// Get conversation history for sync
+    pub fn get_history(&self) -> Vec<HistoryMessage> {
+        Self::history_messages_from_session(&self.session)
     }
 
     /// Borrow the in-memory session so history assembly need not re-read the

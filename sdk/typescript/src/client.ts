@@ -29,8 +29,10 @@ import {
   type ImageAttachment,
   type ModelRouteInfo,
   type PermissionDecision,
+  type PermissionMode,
   type RenderedImage,
   type RuntimeCommand,
+  type RuntimeCommandOutput,
   type ServerFrame,
   type SessionInfo,
   type SessionToolDefinition,
@@ -148,6 +150,8 @@ export interface ConnectOptions {
   clientName?: string;
   /** Enable only when this client renders user_response tool calls inline. */
   supportsUserResponse?: boolean;
+  /** Enable when this client renders interactive permission_request prompts. */
+  supportsPermissions?: boolean;
   /** Supply a custom transport instead of dialing a Unix socket. */
   transport?: Transport;
   /** Milliseconds before a request without a reply rejects. 0 disables. */
@@ -333,6 +337,7 @@ export class RayucodeClient extends EventEmitter {
         max_version: API_VERSION_MAJOR,
         client: clientName,
         supports_user_response: options.supportsUserResponse ?? false,
+        ...(options.supportsPermissions ? { supports_permissions: true } : {}),
       });
       if (frame.ev !== "hello_ok") {
         throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
@@ -782,6 +787,18 @@ export class RayucodeClient extends EventEmitter {
     });
   }
 
+  /** Change the active local permission mode for the attached session. */
+  async setPermissionMode(
+    sessionId: string,
+    mode: PermissionMode,
+  ): Promise<void> {
+    await this.requestOk({
+      req: "set_permission_mode",
+      session_id: sessionId,
+      mode,
+    });
+  }
+
   /**
    * Models this session can switch to, and which one is serving it.
    *
@@ -794,9 +811,7 @@ export class RayucodeClient extends EventEmitter {
   }
 
   /** Runtime identity, route catalog, protocol metadata, and a live health check. */
-  async runtimeCommand(sessionId: string, command: RuntimeCommand, args: string[] = []): Promise<{
-    session_id: string; command: RuntimeCommand; data: unknown; message: string;
-  }> {
+  async runtimeCommand(sessionId: string, command: RuntimeCommand, args: string[] = []): Promise<RuntimeCommandOutput> {
     // Hello capabilities are a snapshot. Let the bridge recheck a missing
     // capability without disturbing the session, and send the request once.
     const frame = await this.expectReply(

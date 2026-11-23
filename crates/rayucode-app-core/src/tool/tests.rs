@@ -1748,6 +1748,38 @@ async fn test_single_output_ceiling_is_absolute_not_only_proportional() {
 }
 
 #[tokio::test]
+async fn registry_clone_shares_compaction_while_fork_isolates_it() {
+    let compaction = Arc::new(RwLock::new(CompactionManager::new().with_budget(10_000)));
+    compaction.write().await.update_observed_input_tokens(9_500);
+    let registry = Registry {
+        mcp_policy: Arc::default(),
+        tools: Arc::new(RwLock::new(HashMap::new())),
+        skills: Arc::new(RwLock::new(crate::skill::SkillRegistry::default())),
+        compaction,
+    };
+
+    // Cloned registry (used on every live tool execution) must still observe
+    // the exhausted 9.5k / 10k context window.
+    let cloned = registry.clone();
+    let result = cloned
+        .guard_context_overflow("test", ToolOutput::new("x".repeat(4_000)), false)
+        .await;
+    assert!(
+        result.output.contains("CONTEXT LIMIT REACHED"),
+        "cloned registry must preserve live compaction state: {}",
+        result.output
+    );
+
+    // Forked registry (used by /clear and /resume for distinct sessions) must
+    // get an isolated CompactionManager.
+    let forked = registry.fork_with_fresh_compaction();
+    assert!(
+        !Arc::ptr_eq(&registry.compaction(), &forked.compaction()),
+        "fork_with_fresh_compaction must allocate a fresh CompactionManager"
+    );
+}
+
+#[tokio::test]
 async fn initiative_is_not_registered_or_advertised() {
     let registry = Registry::new(Arc::new(MockProvider)).await;
     let names = registry.tool_names().await;

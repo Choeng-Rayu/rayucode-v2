@@ -155,7 +155,7 @@ pub fn start_overnight_run(options: OvernightStartOptions) -> Result<OvernightLa
             manifest.clone(),
             child,
             options.provider,
-            options.registry,
+            options.registry.fork_with_fresh_compaction(),
             child_is_canary,
         );
         None

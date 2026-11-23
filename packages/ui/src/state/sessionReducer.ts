@@ -1,5 +1,5 @@
 /**
- * Deterministic Harness API v1.12 session state reducer shared by RayuCode Web
+ * Deterministic Harness API v1.14 session state reducer shared by RayuCode Web
  * (Next.js) and the VS Code Extension Webview.
  *
  * Uses `RayuCreditsAccumulator` from `@rayu-dev/rayucode-sdk/browser` so live
@@ -13,11 +13,14 @@ import {
   type AnyApiEvent,
   type HistoryMessage,
   type ModelRouteInfo,
+  type PermissionMode,
   type ResponseStats,
   type SessionInfo,
   type TodoSnapshot,
   type TurnStopReason,
 } from "@rayu-dev/rayucode-sdk/browser";
+
+export type { PermissionMode };
 
 export type ToolExecutionStatus = "pending" | "running" | "done" | "error";
 
@@ -48,6 +51,7 @@ export interface PendingPermission {
   sessionId: string;
   toolName: string;
   description: string;
+  riskTier?: string;
 }
 
 export interface BackgroundTaskActivity {
@@ -72,6 +76,7 @@ export interface ChatSessionState {
   status: string;
   connectionPhase: string;
   isStreaming: boolean;
+  permissionMode: PermissionMode;
   provider?: string;
   model?: string;
   reasoningEffort?: string;
@@ -96,6 +101,7 @@ export function createInitialSessionState(sessionId: string | null = null): Chat
     status: "idle",
     connectionPhase: "connected",
     isStreaming: false,
+    permissionMode: "default",
     routes: [],
     entries: [],
     pendingPermissions: [],
@@ -125,10 +131,17 @@ export function hydrateHistoryMessages(messages: HistoryMessage[]): TranscriptEn
       });
     } else if (msg.role === "tool") {
       const last = entries[entries.length - 1];
+      const inputText =
+        msg.tool?.input !== undefined && msg.tool?.input !== null
+          ? typeof msg.tool.input === "string"
+            ? msg.tool.input
+            : JSON.stringify(msg.tool.input, null, 2)
+          : "";
       const toolEntry: ToolExecutionItem = {
-        callId: `hist-tool-${i}`,
-        name: "tool",
-        inputText: "",
+        callId: msg.tool?.id ?? `hist-tool-${i}`,
+        name: msg.tool?.name ?? "tool",
+        inputText,
+        ...(msg.tool?.input !== undefined ? { input: msg.tool.input } : {}),
         output: msg.content,
         status: "done",
       };
@@ -207,8 +220,18 @@ export function resolveLocalPermission(
   };
 }
 
+export function setLocalPermissionMode(
+  state: ChatSessionState,
+  mode: PermissionMode,
+): ChatSessionState {
+  return {
+    ...state,
+    permissionMode: mode,
+  };
+}
+
 /**
- * Pure reducer applying any Harness API v1.12 event frame to `ChatSessionState`.
+ * Pure reducer applying any Harness API v1.14 event frame to `ChatSessionState`.
  * Events targeting a different session (when `state.sessionId` is set) are ignored
  * except global events (`sessions`, `error`).
  */
@@ -487,8 +510,15 @@ export function applyApiEvent(
             sessionId: frame.session_id,
             toolName: frame.tool_name,
             description: frame.description,
+            ...(frame.risk_tier !== undefined ? { riskTier: frame.risk_tier } : {}),
           },
         ],
+      };
+
+    case "permission_mode_changed":
+      return {
+        ...state,
+        permissionMode: frame.mode,
       };
 
     case "background_progress":

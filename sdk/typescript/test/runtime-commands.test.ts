@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RayucodeClient, HarnessError } from "../dist/index.js";
+import { RayucodeClient, HarnessError, type RuntimeCommand } from "../dist/index.js";
 import { startMockHarness } from "./mock-harness.ts";
 
 test("runtime commands revalidate stale hello capabilities without retrying mutations", async () => {
@@ -49,6 +49,56 @@ test("runtime commands preserve an old bridge rejection without resubmitting", a
       return true;
     });
     assert.equal(count, 1);
+  } finally {
+    client.close();
+    await server.close();
+  }
+});
+
+test("runtime commands support all v1.14 extensions", async () => {
+  const seen: RuntimeCommand[] = [];
+  const server = await startMockHarness({
+    capabilities: [
+      "runtime_commands",
+      "background_tasks",
+      "swarm_control",
+      "mcp_control",
+      "telegram_control",
+      "config_features",
+      "doctor",
+    ],
+    onRequest(request, send) {
+      seen.push(request.command);
+      send({
+        v: 1,
+        reply_to: request.id,
+        ev: "runtime_command_result",
+        session_id: request.session_id,
+        command: request.command,
+        data: { ok: true, command: request.command, args: request.args ?? [] },
+        message: `${request.command} ok`,
+      });
+    },
+  });
+  const client = await RayucodeClient.connect({ socketPath: server.socketPath });
+  try {
+    const v114Commands: RuntimeCommand[] = [
+      "background",
+      "mcp",
+      "telegram",
+      "features",
+      "doctor",
+      "session_search",
+      "schedules",
+      "ambient",
+    ];
+    for (const cmd of v114Commands) {
+      const res = await client.runtimeCommand("sess-v114", cmd, ["status"]);
+      assert.equal(res.command, cmd);
+      assert.equal(res.session_id, "sess-v114");
+      assert.deepEqual(res.data, { ok: true, command: cmd, args: ["status"] });
+    }
+    assert.deepEqual(seen, v114Commands);
   } finally {
     client.close();
     await server.close();

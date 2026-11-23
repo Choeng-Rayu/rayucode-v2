@@ -26,11 +26,7 @@ impl Agent {
         self.session = new_session;
         self.provider.set_session_id(&self.session.id);
         self.begin_concurrency_tracking();
-        self._tool_policy_registration = crate::tool::register_session_tool_policy(
-            &self.session.id,
-            self.allowed_tools.clone(),
-            self.disabled_tools.clone(),
-        );
+        self.sync_session_tool_policy();
         self.refresh_agents_md_snapshot();
         self.reconcile_explicit_provider_pin_route();
         self.reset_runtime_state_for_session_change();

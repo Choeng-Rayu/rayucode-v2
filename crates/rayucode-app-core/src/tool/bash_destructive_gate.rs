@@ -67,7 +67,11 @@ pub(super) fn bash_parameters_schema() -> serde_json::Value {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in MILLISECONDS (not seconds), e.g. 600000 = 10min; kills with exit 124. Omit for no timeout."
+                "description": "Timeout in ms (max 600000). Promotes foreground; kill_on_timeout or background kills (124)."
+            },
+            "kill_on_timeout": {
+                "type": "boolean",
+                "description": "Kill foreground process group (exit 124) on timeout instead of promoting to background."
             },
             "run_in_background": {
                 "type": "boolean",

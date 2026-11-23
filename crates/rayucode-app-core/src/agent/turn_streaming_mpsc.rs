@@ -65,6 +65,12 @@ impl Agent {
                     repaired
                 ));
             }
+            // If `SetPermissionMode` arrived while the previous round held the
+            // Agent mutex, clear the locked tool snapshot before rebuilding tool
+            // definitions for the next provider request.
+            if crate::tool::permission_gate::take_tools_invalidated(&self.session.id) {
+                self.invalidate_sdk_tools();
+            }
             // Start provider transport setup before deriving and potentially
             // compacting the request history. This is the first point where the
             // stable request settings are available.
@@ -1594,7 +1600,12 @@ impl Agent {
                 let permission_auth = tokio::select! {
                     biased;
                     _ = self.graceful_shutdown.notified() => Err(anyhow::anyhow!("Tool call interrupted")),
-                    res = crate::tool::permission_gate::authorize(&self.session.id, &tc.name, &tc.input) => res,
+                    res = crate::tool::permission_gate::authorize_with_working_dir(
+                        &self.session.id,
+                        &tc.name,
+                        &tc.input,
+                        self.working_dir().map(PathBuf::from),
+                    ) => res,
                 };
                 if let Err(err) = permission_auth {
                     let err_msg = err.to_string();
@@ -1646,29 +1657,45 @@ impl Agent {
                 let tool_input_for_spawn = tc.input.clone();
                 let tool_progress_tx = event_tx.clone();
                 let call_id = tc.id.clone();
+                // Capture the session's active permission gate BEFORE `spawn_session`
+                // (`tokio::spawn` drops task-locals) so `batch`/`codemode` subcalls
+                // remain strictly gated under the session's PermissionMode, while
+                // recording `tc.id` so the top-level call is not double-prompted.
+                let perm_conn_for_spawn =
+                    crate::tool::permission_gate::current_connection(&self.session.id);
+                let perm_session_id_for_spawn = self.session.id.clone();
+                let perm_call_id_for_spawn = tc.id.clone();
                 let run_tool = async move {
-                    let on_start = || {
-                        if trace {
-                            eprintln!(
-                                "[trace] tool_exec_start name={tool_name_for_spawn} id={call_id}"
-                            );
-                        }
-                        logging::info(&format!("Tool starting: {tool_name_for_spawn}"));
-                        if telegram_turn {
-                            let _ = tool_progress_tx.send(ServerEvent::ToolExec {
-                                id: call_id,
-                                name: tool_name_for_spawn.clone(),
-                            });
-                        }
-                    };
-                    crate::tool::bash_progress::with_bash_progress(
-                        tool_progress_tx.clone(),
-                        registry_clone.execute_with_start(
-                            &tool_name_for_spawn,
-                            tool_input_for_spawn,
-                            ctx,
-                            on_start,
-                        ),
+                    crate::tool::permission_gate::scope_with_authorized_call(
+                        &perm_session_id_for_spawn,
+                        perm_conn_for_spawn,
+                        &perm_call_id_for_spawn,
+                        async move {
+                            let on_start = || {
+                                if trace {
+                                    eprintln!(
+                                        "[trace] tool_exec_start name={tool_name_for_spawn} id={call_id}"
+                                    );
+                                }
+                                logging::info(&format!("Tool starting: {tool_name_for_spawn}"));
+                                if telegram_turn {
+                                    let _ = tool_progress_tx.send(ServerEvent::ToolExec {
+                                        id: call_id,
+                                        name: tool_name_for_spawn.clone(),
+                                    });
+                                }
+                            };
+                            crate::tool::bash_progress::with_bash_progress(
+                                tool_progress_tx.clone(),
+                                registry_clone.execute_with_start(
+                                    &tool_name_for_spawn,
+                                    tool_input_for_spawn,
+                                    ctx,
+                                    on_start,
+                                ),
+                            )
+                            .await
+                        },
                     )
                     .await
                 };

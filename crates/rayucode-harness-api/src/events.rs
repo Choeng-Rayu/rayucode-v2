@@ -335,6 +335,15 @@ pub enum ApiEvent {
         request_id: String,
         tool_name: String,
         description: String,
+        /// Optional risk tier classification (`"safe"`, `"bounded"`, `"confirm"`, or `"catastrophic"`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        risk_tier: Option<String>,
+    },
+
+    /// The active local permission mode for the attached session changed.
+    PermissionModeChanged {
+        session_id: String,
+        mode: crate::PermissionMode,
     },
 
     /// Recovery intent from attachment history, emitted at most once per attach.

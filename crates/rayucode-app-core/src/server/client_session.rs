@@ -189,7 +189,7 @@ pub(super) async fn handle_clear_session(
 
     let mut new_agent = Agent::new_with_initial_working_dir(
         Arc::clone(provider),
-        registry.clone(),
+        registry.fork_with_fresh_compaction(),
         working_dir.as_deref(),
     );
     let new_id = new_agent.session_id().to_string();
@@ -1698,7 +1698,7 @@ pub(super) async fn handle_resume_session(
     // different session into that published Arc: doing so silently changes
     // every observer's runtime beneath its still-old session ID.
     let source_agent = agent;
-    let mut detached = Agent::new(provider.fork(), registry.clone());
+    let mut detached = Agent::new(provider.fork(), registry.fork_with_fresh_compaction());
     if let Ok(source) = source_agent.try_lock() {
         detached.set_debug(source.is_debug());
     }

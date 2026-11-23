@@ -859,3 +859,58 @@ test("setContextCap returns effective budget and supports zero/null clearing", a
     await server.close();
   }
 });
+
+test("setPermissionMode sends set_permission_mode and receives permission_mode_changed and risk_tier", async () => {
+  const seenRequests: any[] = [];
+  const server = await startMockHarness({
+    capabilities: ["permissions", "permission_modes"],
+    onRequest(request, send) {
+      seenRequests.push(request);
+      if (request.req === "set_permission_mode") {
+        send({ v: 1, reply_to: request.id, ev: "ok" });
+        send({
+          v: 1,
+          ev: "permission_mode_changed",
+          session_id: request.session_id,
+          mode: request.mode,
+        });
+      }
+    },
+  });
+  const client = await RayucodeClient.connect({
+    socketPath: server.socketPath,
+    supportsPermissions: true,
+  });
+  const stream = client.events("s1");
+  try {
+    await client.setPermissionMode("s1", "accept_edits");
+    const modeChanged = (await stream.next()).value;
+    assert.equal(modeChanged?.ev, "permission_mode_changed");
+    if (modeChanged?.ev === "permission_mode_changed") {
+      assert.equal(modeChanged.session_id, "s1");
+      assert.equal(modeChanged.mode, "accept_edits");
+    }
+
+    server.broadcast({
+      v: 1,
+      ev: "permission_request",
+      session_id: "s1",
+      request_id: "perm-1",
+      tool_name: "bash",
+      description: "rm -rf target",
+      risk_tier: "confirm",
+    });
+    const permReq = (await stream.next()).value;
+    assert.equal(permReq?.ev, "permission_request");
+    if (permReq?.ev === "permission_request") {
+      assert.equal(permReq.risk_tier, "confirm");
+    }
+
+    assert.equal(seenRequests[0].req, "set_permission_mode");
+    assert.equal(seenRequests[0].mode, "accept_edits");
+  } finally {
+    await stream.return?.(undefined as never);
+    client.close();
+    await server.close();
+  }
+});

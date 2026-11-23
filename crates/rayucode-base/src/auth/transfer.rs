@@ -1030,9 +1030,9 @@ fn import_cloud_inner(
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::MetadataExt;
         let directory = secure_directory(home, true)?;
-        if directory.metadata().map_err(|_| TransferError::Io)?.mode() & 0o022 != 0 {
+        let dir_meta = directory.metadata().map_err(|_| TransferError::Io)?;
+        if !super::account_store::directory_has_safe_owner_permissions(&dir_meta) {
             return Err(TransferError::UnsafePath);
         }
         let _lock = super::account_store::lock_store(home, provider.store_name())

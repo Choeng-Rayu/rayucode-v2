@@ -202,6 +202,9 @@ async fn capture_connected_restart_snapshot()
             crate::protocol::ServerEvent::Ack { id } if id == request_id => {}
             crate::protocol::ServerEvent::Done { id } if id == request_id => {}
             crate::protocol::ServerEvent::Error { id, message, .. } if id == request_id => {
+                if message.starts_with("Debug control is disabled") {
+                    return Ok(None);
+                }
                 anyhow::bail!(message);
             }
             _ => {}

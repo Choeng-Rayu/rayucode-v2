@@ -10,7 +10,10 @@ import type {
   ImageAttachment,
   ModelRouteInfo,
   PermissionDecision,
+  PermissionMode,
   RenderedImage,
+  RuntimeCommand,
+  RuntimeCommandOutput,
   SessionInfo,
   TodoSnapshot,
 } from "@rayu-dev/rayucode-sdk/browser";
@@ -72,12 +75,18 @@ export interface RayucodePlatformAdapter {
   setReasoningEffort?(sessionId: string, effort: string): Promise<void>;
   getTodoState?(sessionId: string): Promise<TodoSnapshot>;
 
-  // Permissions & auth
+  // Permissions, runtime commands & auth
   respondPermission(
     sessionId: string,
     requestId: string,
     decision: PermissionDecision,
   ): Promise<void>;
+  setPermissionMode?(sessionId: string, mode: PermissionMode): Promise<void>;
+  runtimeCommand?(
+    sessionId: string,
+    command: RuntimeCommand,
+    args?: string[],
+  ): Promise<RuntimeCommandOutput>;
   getAccountSummary?(): Promise<SettingsAccountSummary>;
   startSignIn?(): Promise<void>;
   signOut?(): Promise<void>;
