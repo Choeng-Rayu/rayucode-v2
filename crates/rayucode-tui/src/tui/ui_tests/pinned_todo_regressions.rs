@@ -234,6 +234,25 @@ fn pinned_tasks_show_active_worker_once_at_any_width() {
         let text = terminal_text(&terminal);
         assert_eq!(text.matches("placement-worker").count(), 1, "{text}");
         assert_eq!(text.matches("Pinned regression task").count(), 1, "{text}");
+        let buffer = terminal.backend().buffer();
+        for label in ["Pinned regression task", "placement-worker · GPT-5.6"] {
+            let (row, column) = text
+                .lines()
+                .enumerate()
+                .find_map(|(row, line)| {
+                    line.find(label)
+                        .map(|start| (row, unicode_width::UnicodeWidthStr::width(&line[..start])))
+                })
+                .unwrap();
+            for x in column..column + unicode_width::UnicodeWidthStr::width(label) {
+                assert!(
+                    buffer[(x as u16, row as u16)]
+                        .modifier
+                        .contains(Modifier::BOLD),
+                    "{label} should be bold"
+                );
+            }
+        }
     });
 }
 

@@ -289,7 +289,20 @@ fn staged_worker_rows_show_each_runtime_model_with_its_own_metrics() {
         ),
     ];
     for width in [100, 160] {
-        let rows = render(&tasks, &agents, width);
+        let lines = render_lines(&tasks, &agents, width);
+        let rows: Vec<_> = lines.iter().map(ToString::to_string).collect();
+        for (line, row) in lines.iter().zip(&rows) {
+            if row.contains("↑") {
+                assert!(
+                    line.spans.iter().all(|span| line
+                        .style
+                        .patch(span.style)
+                        .add_modifier
+                        .contains(Modifier::BOLD)),
+                    "{row}"
+                );
+            }
+        }
         let review = rows
             .iter()
             .find(|row| row.contains("Review"))
@@ -864,6 +877,13 @@ fn worker_dot_strip_fits_narrow_width() {
 }
 
 fn render(todos: &[TodoItem], agents: &[TodoCardAgent], width: u16) -> Vec<String> {
+    render_lines(todos, agents, width)
+        .iter()
+        .map(|line| line.to_string().trim_end().to_string())
+        .collect()
+}
+
+fn render_lines(todos: &[TodoItem], agents: &[TodoCardAgent], width: u16) -> Vec<Line<'static>> {
     crate::tui::markdown::set_center_code_blocks(false);
     let mut payload = serde_json::json!({ "todos": todos, "plan": {}, "goals": [] });
     if !agents.is_empty() {
@@ -871,16 +891,6 @@ fn render(todos: &[TodoItem], agents: &[TodoCardAgent], width: u16) -> Vec<Strin
     }
     let msg = DisplayMessage::todos(payload.to_string());
     render_pinned_todos_message(&msg, width, crate::config::DiffDisplayMode::Off)
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect()
 }
 
 fn assert_fits(rows: &[String], width: u16) {
@@ -1117,11 +1127,12 @@ fn lanes_of_later_phases_are_dimmed() {
             .iter()
             .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
             .unwrap();
-        line.spans
+        let span = line
+            .spans
             .iter()
             .find(|span| span.content.contains(needle))
-            .unwrap()
-            .style
+            .unwrap();
+        line.style.patch(span.style)
     };
     let dim = Some(rgb(105, 100, 135));
     assert_ne!(style_of("parser").fg, dim, "active phase lane stays bright");
@@ -1131,13 +1142,14 @@ fn lanes_of_later_phases_are_dimmed() {
         "later phase lane is dimmed"
     );
     assert_eq!(style_of("Build and commit").fg, dim);
-    // Lane names wear their phase label's colour and weight.
+    // Lane names keep their phase colour and task rows stay bold in later phases.
     let bold =
         |style: ratatui::style::Style| style.add_modifier.contains(ratatui::style::Modifier::BOLD);
     assert_eq!(style_of("parser").fg, style_of("phase 1").fg);
     assert!(bold(style_of("parser")) && bold(style_of("phase 1")));
     assert_eq!(style_of("integration").fg, style_of("phase 2").fg);
-    assert!(!bold(style_of("integration")) && !bold(style_of("phase 2")));
+    assert!(bold(style_of("integration")) && bold(style_of("Build and commit")));
+    assert!(!bold(style_of("phase 2")));
 }
 
 fn live_lane_todos() -> Vec<TodoItem> {
