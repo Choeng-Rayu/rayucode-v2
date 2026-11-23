@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Settings &amp; Models</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=15">
+  <link rel="stylesheet" href="../css/layout.css?v=15">
+  <link rel="stylesheet" href="../css/components.css?v=15">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <aside class="sidebar" aria-label="Navigation">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top"><button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar"><svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg><span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span></button></div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <div class="cx-profile-wrap">
+          <button class="cx-avatar-btn" type="button" data-dropdown="profile-pop" aria-haspopup="menu" aria-expanded="false" aria-label="User profile menu" title="ly yeak khai · Personal account">
+            <span class="cx-avatar" aria-hidden="true">LK</span>
+          </button>
+          <div class="profile-pop" id="profile-pop" data-dropdown-menu role="menu" aria-label="Account menu" hidden>
+            <div class="profile-pop-group">
+              <a class="profile-pop-item" href="settings.html" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                <span>Settings</span>
+                <span class="profile-pop-keys"><kbd class="profile-pop-key">⌘</kbd><kbd class="profile-pop-key">,</kbd></span>
+              </a>
+              <a class="profile-pop-item" href="settings.html#usage-billing" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg>
+                <span>Upgrade Plan</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Rewards center · 0 credits earned">
+                <svg class="icon" aria-hidden="true"><use href="#i-gift"/></svg>
+                <span>Rewards center</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Invite link copied to clipboard">
+                <svg class="icon" aria-hidden="true"><use href="#i-heart-hand"/></svg>
+                <span>Invite Friends</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Pet companion toggled (⌥Space)">
+                <svg class="icon" aria-hidden="true"><use href="#i-pet-ghost"/></svg>
+                <span>Show pet</span>
+              </button>
+              <a class="profile-pop-item" href="settings.html#appearance" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+                <span>Appearance</span>
+                <svg class="icon profile-pop-chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode v1.0.4 Changelog">
+                <svg class="icon" aria-hidden="true"><use href="#i-changelog"/></svg>
+                <span>Changelog</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Scan QR code to get the mobile app">
+                <svg class="icon" aria-hidden="true"><use href="#i-mobile-dl"/></svg>
+                <span>Get the mobile app</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode Desktop v1.0.4">
+                <svg class="icon" aria-hidden="true"><use href="#i-about-mark"/></svg>
+                <span>About RayuCode</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+            </div>
+            <div class="profile-pop-sep" aria-hidden="true"></div>
+            <div class="profile-pop-group">
+              <button class="profile-pop-item is-danger" type="button" role="menuitem" data-toast="Signed out of Personal account">
+                <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+        </div>
+        <div class="cx-brand-row">
+          <button class="cx-brand-btn" type="button" data-toast="Settings &amp; Models">RayuCode<svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+        </div>
+        <a class="cx-new-chat" href="../index.html"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg>New chat</a>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Projects</div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="st-p1" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">rayucode-v2</span></button>
+            <div class="proj-items" id="st-p1">
+              <a class="conv-row" href="agent-workspace.html"><span class="conv-name">Retire legacy session cache</span></a>
+              <a class="conv-row" href="execution-runner.html"><span class="conv-name">Gateway: retry budget tests</span></a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="center-col">
+      <main class="canvas">
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <a class="icon-btn" href="../index.html" aria-label="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <div class="canvas-head-title">
+            <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+            <span>Settings</span>
+          </div>
+          <span class="pane-sub">synced with ~/.rayu/rayu-auth.json</span>
+          <div class="spacer"></div>
+          <div class="canvas-head-actions">
+            <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+            <a class="btn btn-sm" href="../index.html">Done</a>
+          </div>
+        </header>
+
+        <div class="pane-scroll">
+          <div class="settings-grid">
+            <nav class="settings-nav" aria-label="Settings sections">
+              <a class="is-active" href="#models">Models &amp; routing</a>
+              <a href="#preview-ide">Preview &amp; IDE (v1)</a>
+              <a href="#cli-parity">CLI parity &amp; remote</a>
+              <a href="#autonomy">Agent autonomy</a>
+              <a href="#appearance">Appearance</a>
+              <a href="#account">Account</a>
+            </nav>
+
+            <div>
+              <section class="settings-section" id="models">
+                <h2>Models &amp; routing</h2>
+                <p class="section-desc">Preserves exact Rayu-first live gateway order. New models discovered from your account appear automatically.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main"><div class="s-name">Default model</div><div class="s-desc">Used for new conversations and CLI commands without an explicit override.</div></div>
+                  <select class="select" aria-label="Default model">
+                    <option selected>choeng-rayu-1 · Medium</option>
+                    <option>choeng-rayu-1 · High</option>
+                    <option>choeng-rayu-1-mini · Fast</option>
+                  </select>
+                </div>
+
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Prompt KV cache TTL</div><div class="s-desc">Persisted across CLI and Desktop via <code>/cache</code>.</div></div>
+                  <select class="select" aria-label="Cache TTL"><option>5m TTL</option><option selected>1h TTL (warm)</option></select>
+                </div>
+
+                <div style="margin-top:16px">
+                  <table class="route-table">
+                    <thead><tr><th>Work</th><th>Model</th><th>Effort</th><th style="text-align:right">p50 latency</th></tr></thead>
+                    <tbody>
+                      <tr><td><div class="r-task">Chat &amp; planning</div><div class="r-desc">Conversations, plans, reviews</div></td><td class="r-model">choeng-rayu-1</td><td><select class="select" aria-label="Chat effort"><option>low</option><option selected>medium</option><option>high</option></select></td><td class="r-lat">1.2s</td></tr>
+                      <tr><td><div class="r-task">Code edits</div><div class="r-desc">Diffs &amp; refactors</div></td><td class="r-model">choeng-rayu-1</td><td><select class="select" aria-label="Code effort"><option>low</option><option>medium</option><option selected>high</option></select></td><td class="r-lat">2.8s</td></tr>
+                      <tr><td><div class="r-task">Fast lookups</div><div class="r-desc">Grep triage &amp; titles</div></td><td class="r-model">choeng-rayu-1-mini</td><td><select class="select" aria-label="Lookup effort"><option selected>low</option><option>medium</option></select></td><td class="r-lat">0.4s</td></tr>
+                    </tbody>
+                  </table>
+                  <p class="demo-note" style="margin-top:8px">Latency figures are illustrative demo values.</p>
+                </div>
+              </section>
+
+              <section class="settings-section" id="preview-ide">
+                <h2>Preview &amp; IDE (v1)</h2>
+                <p class="section-desc">Version 1 skips a folder tree explorer to stay calm. Use built-in previews for Browser, Microsoft Office, and Markdown, with external VS Code handoff when needed.</p>
+
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main"><div class="s-name">External IDE target</div><div class="s-desc">Used when opening diffs or Markdown files externally.</div></div>
+                  <select class="select" aria-label="External IDE target"><option selected>Visual Studio Code</option><option>Cursor</option><option>Zed</option></select>
+                </div>
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Open Browser preview</div><div class="s-desc">Embedded localhost WebView with Desktop &amp; Mobile toggles.</div></div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Open Browser preview"></button>
+                </div>
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Open Microsoft (.docx, .xlsx, .pptx)</div><div class="s-desc">Preview Word, Excel, and PowerPoint artifacts with native app handoff.</div></div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Open Microsoft preview"></button>
+                </div>
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Open Preview MD</div><div class="s-desc">Rendered GFM Markdown + inline LaTeX with Raw Source toggle.</div></div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Open Preview MD"></button>
+                </div>
+              </section>
+
+              <section class="settings-section" id="cli-parity">
+                <h2>CLI parity &amp; remote</h2>
+                <p class="section-desc">Shared daemon socket with <code>rayu</code> CLI so sessions, Swarm, memory, and Telegram remote stay in sync.</p>
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main"><div class="s-name">Telegram remote bot (<code>/telegram-bot</code>)</div><div class="s-desc">Paired with @RayuCodeBot for remote prompts &amp; approvals.</div></div>
+                  <span class="badge badge-live"><svg class="icon" style="width:11px;height:11px" aria-hidden="true"><use href="#i-telegram"/></svg>Linked</span>
+                </div>
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Session memory (<code>/memory</code>)</div><div class="s-desc">Persist durable learnings across conversations.</div></div>
+                  <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Session memory"></button>
+                </div>
+              </section>
+
+              <section class="settings-section" id="autonomy">
+                <h2>Agent autonomy</h2>
+                <p class="section-desc">Synced with <code>rayu permissions</code>.</p>
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main"><div class="s-name">Local Permissions</div><div class="s-desc">Exact RayuCode permission modes synced across CLI, VS Code, and Desktop (<code>Shift+Tab</code> cycles while typing).</div></div>
+                  <div class="seg" role="group" aria-label="Local Permissions">
+                    <button type="button" aria-pressed="true">Ask</button>
+                    <button type="button" aria-pressed="false">Auto-edit</button>
+                    <button type="button" aria-pressed="false">Plan</button>
+                    <button type="button" aria-pressed="false">Full Manage</button>
+                    <button type="button" aria-pressed="false">Orchestrator</button>
+                  </div>
+                </div>
+                <div class="setting-row">
+                  <div class="s-main"><div class="s-name">Git push &amp; PR creation</div><div class="s-desc">Always requires explicit confirmation.</div></div>
+                  <span class="badge badge-live"><svg class="icon" style="width:11px;height:11px" aria-hidden="true"><use href="#i-shield"/></svg>Always ask</span>
+                </div>
+              </section>
+
+              <section class="settings-section" id="appearance">
+                <h2>Appearance</h2>
+                <p class="section-desc">Official Rayu Code Warm Graphite Dark (default) and Warm Paper Light palettes from rayucode.com.</p>
+                <div class="theme-cards">
+                  <button class="theme-card tc-dark" type="button" data-theme-set="dark" aria-pressed="true">
+                    <span class="tc-preview" aria-hidden="true"><span class="tc-bar"></span><span class="tc-line"></span><span class="tc-line short"></span></span>
+                    <span class="tc-label"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Warm Graphite Dark</span>
+                  </button>
+                  <button class="theme-card tc-light" type="button" data-theme-set="light" aria-pressed="false">
+                    <span class="tc-preview" aria-hidden="true"><span class="tc-bar"></span><span class="tc-line"></span><span class="tc-line short"></span></span>
+                    <span class="tc-label"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Warm Paper Light</span>
+                  </button>
+                </div>
+              </section>
+
+              <section class="settings-section" id="account">
+                <h2>Account</h2>
+                <p class="section-desc">Signed in via <code>rayu login --provider rayu</code>.</p>
+                <div class="setting-row" style="border-top:none;padding-top:0">
+                  <div class="s-main"><div class="s-name">lyyeakkhai</div><div class="s-desc">Rayu Gateway · shared CLI &amp; Desktop auth</div></div>
+                  <a class="btn btn-sm" href="https://rayucode.com" target="_blank" rel="noopener">Open rayucode.com</a>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=15"></script>
+  <script src="../js/app.js?v=15"></script>
+</body>
+</html>

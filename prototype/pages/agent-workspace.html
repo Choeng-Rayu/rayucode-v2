@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Retire legacy session cache</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=27">
+  <link rel="stylesheet" href="../css/layout.css?v=27">
+  <link rel="stylesheet" href="../css/components.css?v=27">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app has-right is-ctx-mode">
+
+    <!-- Column 1: Codex-Matched Left Sidebar -->
+    <aside class="sidebar" aria-label="Navigation and conversations">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn is-active" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <div class="cx-profile-wrap">
+          <button class="cx-avatar-btn" type="button" data-dropdown="profile-pop" aria-haspopup="menu" aria-expanded="false" aria-label="User profile menu" title="ly yeak khai · Personal account">
+            <span class="cx-avatar" aria-hidden="true">LK</span>
+          </button>
+          <div class="profile-pop" id="profile-pop" data-dropdown-menu role="menu" aria-label="Account menu" hidden>
+            <div class="profile-pop-group">
+              <a class="profile-pop-item" href="settings.html" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                <span>Settings</span>
+                <span class="profile-pop-keys"><kbd class="profile-pop-key">⌘</kbd><kbd class="profile-pop-key">,</kbd></span>
+              </a>
+              <a class="profile-pop-item" href="settings.html#usage-billing" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg>
+                <span>Upgrade Plan</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Rewards center · 0 credits earned">
+                <svg class="icon" aria-hidden="true"><use href="#i-gift"/></svg>
+                <span>Rewards center</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Invite link copied to clipboard">
+                <svg class="icon" aria-hidden="true"><use href="#i-heart-hand"/></svg>
+                <span>Invite Friends</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Pet companion toggled (⌥Space)">
+                <svg class="icon" aria-hidden="true"><use href="#i-pet-ghost"/></svg>
+                <span>Show pet</span>
+              </button>
+              <a class="profile-pop-item" href="settings.html#appearance" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+                <span>Appearance</span>
+                <svg class="icon profile-pop-chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode v1.0.4 Changelog">
+                <svg class="icon" aria-hidden="true"><use href="#i-changelog"/></svg>
+                <span>Changelog</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Scan QR code to get the mobile app">
+                <svg class="icon" aria-hidden="true"><use href="#i-mobile-dl"/></svg>
+                <span>Get the mobile app</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode Desktop v1.0.4">
+                <svg class="icon" aria-hidden="true"><use href="#i-about-mark"/></svg>
+                <span>About RayuCode</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+            </div>
+            <div class="profile-pop-sep" aria-hidden="true"></div>
+            <div class="profile-pop-group">
+              <button class="profile-pop-item is-danger" type="button" role="menuitem" data-toast="Signed out of Personal account">
+                <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <button class="cx-brand-btn" type="button" data-toast="Workspace: RayuCode Desktop v1">RayuCode<svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" aria-label="Filter" data-toast="Filter conversations"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-filter"/></svg></button>
+          <button class="icon-btn" type="button" aria-label="Search" data-toast="Search conversations (⌘K)"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-search"/></svg></button>
+        </div>
+
+        <a class="cx-new-chat" href="../index.html"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg>New chat</a>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Projects</div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="aw-p1" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">rayucode-v2</span></button>
+            <div class="proj-items" id="aw-p1">
+              <a class="conv-row is-active" href="agent-workspace.html"><span class="conv-name">Retire legacy session cache</span></a>
+              <a class="conv-row" href="agent-workspace.html#review"><span class="conv-name">VS Code: model picker refresh</span></a>
+            </div>
+          </div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="aw-p2" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">rayu-web</span></button>
+            <div class="proj-items" id="aw-p2" hidden><a class="conv-row" href="preview-studio.html#browser"><span class="conv-name">Credits usage dashboard</span></a></div>
+          </div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="aw-p3" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">specs-and-docs</span></button>
+            <div class="proj-items" id="aw-p3" hidden><a class="conv-row" href="excel-session.html"><span class="conv-name">Q4 token cost spreadsheet</span></a></div>
+          </div>
+
+          <div class="cx-sec-label">Recents</div>
+          <a class="recent-row" href="agent-workspace.html">Retire legacy session cache</a>
+          <a class="recent-row" href="agent-workspace.html">VS Code: model picker refresh</a>
+          <a class="recent-row" href="execution-runner.html">Gateway: retry budget tests</a>
+          <a class="recent-row" href="preview-studio.html#browser">Credits usage dashboard preview</a>
+          <a class="recent-row" href="excel-session.html">Q4 token cost spreadsheet model</a>
+          <a class="recent-row" href="preview-studio.html#md">Desktop v1 migration plan MD</a>
+        </div>
+
+        <div class="gs-card">
+          <div class="gs-head"><span class="gs-title">Getting started</span><span class="gs-count">2 of 6</span></div>
+          <div class="gs-track"><span class="gs-fill" style="width:33%"></span></div>
+          <div class="gs-list">
+            <button class="gs-item is-done" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Import from CLI</button>
+            <button class="gs-item is-done" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Pair Telegram remote<span class="gs-badge"><svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg></span></button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Open Browser preview<span class="gs-badge"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg></span></button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Preview Microsoft doc<span class="gs-badge"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg></span></button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Open Preview MD<span class="gs-badge"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg></span></button>
+            <button class="gs-item" type="button" data-gs-item><span class="gs-circle"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Launch parallel Swarm<span class="gs-badge"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></span></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Center Active Session Canvas (Unified 46px Header Flush to Top) -->
+    <div class="center-col">
+      <main class="canvas">
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+            <a class="icon-btn" href="../index.html" aria-label="New chat" title="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <button class="chat-title-btn" type="button" data-toast="Session: Retire legacy session cache · KV 94% warm">
+            <span>Retire legacy session cache</span>
+            <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+          </button>
+          <div class="spacer"></div>
+          <div class="chat-head-strip" role="tablist" aria-label="Right sidebar panels">
+            <button class="rs-tab-btn" role="tab" id="ptab-overview" aria-controls="ppanel-overview" aria-selected="true" data-tab-pill="Environment &amp; Context" type="button" title="Environment &amp; Context"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
+            <button class="rs-tab-btn" role="tab" id="ptab-term" aria-controls="ppanel-term" aria-selected="false" data-tab-pill="rayu daemon" type="button" title="CLI Terminal"><svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg></button>
+            <button class="rs-tab-btn" role="tab" id="ptab-changes" aria-controls="ppanel-changes" aria-selected="false" data-tab-pill="3 changed files" type="button" title="Changes &amp; Diffs"><svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg></button>
+            <button class="rs-tab-btn" role="tab" id="ptab-browser" aria-controls="ppanel-browser" aria-selected="false" data-tab-pill="localhost:3000" type="button" title="Open Browser"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></button>
+            <button class="rs-tab-btn" role="tab" id="ptab-office" aria-controls="ppanel-office" aria-selected="false" data-tab-pill="MIGRATION_PLAN.md" type="button" title="Files · Microsoft &amp; MD"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg></button>
+            <div class="dropdown">
+              <button class="rs-tab-btn" type="button" data-dropdown="rs-more-menu" aria-expanded="false" aria-label="More actions" title="More"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+              <div class="dropdown-pop" id="rs-more-menu" data-dropdown-menu hidden>
+                <div class="dropdown-head">Session &amp; View</div>
+                <button class="dropdown-item theme-toggle" type="button"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg>Toggle Light / Dark theme</button>
+                <div class="accent-menu-row">
+                  <span>Accent</span>
+                  <div class="accent-swatches">
+                    <button class="accent-pill" type="button" data-accent-set="green" aria-pressed="true"><span class="accent-dot is-green"></span>Green</button>
+                    <button class="accent-pill" type="button" data-accent-set="blue" aria-pressed="false"><span class="accent-dot is-blue"></span>Blue</button>
+                  </div>
+                </div>
+                <button class="dropdown-item" type="button" data-toast="Session paused"><svg class="icon" aria-hidden="true"><use href="#i-pause"/></svg>Pause session</button>
+                <div class="dropdown-sep"></div>
+                <a class="dropdown-item" href="preview-studio.html#browser"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg>Full Browser Preview<span class="d-sub">:3000</span></a>
+                <a class="dropdown-item" href="excel-session.html"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>Microsoft Excel Session<span class="d-sub">.xlsx</span></a>
+                <a class="dropdown-item" href="preview-studio.html#md"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg>Full Preview MD<span class="d-sub">.md</span></a>
+                <div class="dropdown-sep"></div>
+                <button class="dropdown-item" type="button" data-toast="Opened ~/workspace/rayu/rayucode-v2 in Visual Studio Code"><svg class="icon" aria-hidden="true"><use href="#i-code-ide"/></svg>Open in VS Code<span class="d-sub">external</span></button>
+              </div>
+            </div>
+          </div>
+        </header>
+        <div class="live-thread" role="presentation"></div>
+
+        <div class="pane-scroll">
+          <div class="stream">
+            <div class="ctx-note">
+              <svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>
+              <span>Context automatically compacted</span>
+            </div>
+
+            <div class="msg-user-stack">
+              <div class="user-ref-pill">
+                <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
+                <span>src/session/cache.rs · src/shard/store.rs</span>
+              </div>
+              <div class="msg msg-user">
+                <p>Retire <code>SessionCache</code> in <code>src/session/cache.rs</code> and route reads through <code>ShardStore::lookup</code> with the LRU budget preserved. Update the dashboard preview, cost sheet, and <code>MIGRATION_PLAN.md</code>.</p>
+              </div>
+            </div>
+
+            <div class="msg msg-agent">
+              <!-- Codex-style Collapsible Work Trace (Click "Worked for 1m 25s ›" to inspect every command & shell output) -->
+              <div class="work-trace">
+                <button class="work-toggle" type="button" data-work-toggle="work-body-1" aria-expanded="false" title="Inspect execution steps &amp; shell output">
+                  <span class="work-label">Worked for 1m 25s</span>
+                  <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                </button>
+
+                <div class="work-body" id="work-body-1" hidden>
+                  <p class="work-note">I'll audit all <code>SessionCache</code> callers across <code>rayucode-v2</code> and verify that <code>ShardStore::lookup</code> preserves the existing LRU budget before editing.</p>
+
+                  <div class="work-group">
+                    <button class="work-group-toggle" type="button" data-group-toggle="wg-rail-1" aria-expanded="true">
+                      <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                      <span>Read files, ran commands</span>
+                      <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                    </button>
+                    <div class="work-rail" id="wg-rail-1">
+                      <button class="work-cmd-toggle is-fail" type="button" data-shell-toggle="sh-cmd-0" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                        <span class="work-cmd-text">Command failed (git status --short &amp;&amp; rg --files -g 'cache.rs' -g 'store.rs')</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="shell-card" id="sh-cmd-0" hidden>
+                        <div class="shell-card-head">
+                          <span>Shell</span>
+                          <button class="shell-copy-btn" type="button" data-copy-cmd="git status --short && rg --files -g 'cache.rs' -g 'store.rs'" aria-label="Copy command" title="Copy command"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                        </div>
+                        <div class="shell-cmd-line">$ git status --short &amp;&amp; rg --files -g 'cache.rs' -g 'store.rs'</div>
+                        <pre class="shell-out">rg: No files were searched, which means ripgrep probably applied a filter you didn't expect.</pre>
+                        <div class="shell-card-foot is-err"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>Exit 1 · retried with fd/grep</div>
+                      </div>
+
+                      <div class="work-step-row">
+                        <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                        <span>Read <button class="work-file-link" type="button" data-open-code="cache.rs" data-open-line="1">src/session/cache.rs:1-6</button>, <button class="work-file-link" type="button" data-open-code="store.rs" data-open-line="15">src/shard/store.rs:14-23</button></span>
+                      </div>
+
+                      <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="sh-cmd-1" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                        <span class="work-cmd-text">grep -rn "SessionCache\|CacheBudget" crates/rayucode-core/src/session/</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="shell-card" id="sh-cmd-1" hidden>
+                        <div class="shell-card-head">
+                          <span>Shell</span>
+                          <button class="shell-copy-btn" type="button" data-copy-cmd='grep -rn "SessionCache\|CacheBudget" crates/rayucode-core/src/session/' aria-label="Copy command" title="Copy command"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                        </div>
+                        <div class="shell-cmd-line">$ grep -rn "SessionCache\|CacheBudget" crates/rayucode-core/src/session/</div>
+                        <pre class="shell-out">crates/rayucode-core/src/session/lookup.rs:19:    self.cache.read().get(key).cloned()
+crates/rayucode-core/src/session/cache.rs:12:     pub struct SessionCache { ... }
+crates/rayucode-core/src/session/budget.rs:41:    pub fn touch(&amp;self, key: &amp;SessionKey)</pre>
+                        <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success</div>
+                      </div>
+
+                      <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="sh-cmd-2" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                        <span class="work-cmd-text">cargo test -p rayucode session:: -- --nocapture</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="shell-card" id="sh-cmd-2" hidden>
+                        <div class="shell-card-head">
+                          <span>Shell</span>
+                          <button class="shell-copy-btn" type="button" data-copy-cmd="cargo test -p rayucode session:: -- --nocapture" aria-label="Copy command" title="Copy command"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                        </div>
+                        <div class="shell-cmd-line">$ cargo test -p rayucode session:: -- --nocapture</div>
+                        <pre class="shell-out">   Compiling rayucode-core v2.0.0 (/Users/lyyeakkhai/workspace/rayu/rayucode-v2)
+running 14 tests
+test session::lookup::routes_via_shard_store ... ok
+test session::lookup::touches_lru_budget_on_hit ... ok
+test session::budget::evicts_oldest_over_cap ... ok
+test session::store::zero_migration_key_derivation ... ok
+test result: ok. 14 passed; 0 failed; 0 ignored; finished in 0.48s</pre>
+                        <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success</div>
+                      </div>
+
+                      <div class="work-step-row">
+                        <svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>
+                        <span>Listed files in <strong>docs/specs</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p class="work-note">Routing through <code>ShardStore::lookup</code> passes all 14 unit tests without data migration. Next I'll verify the localhost dashboard, cost workbook, and migration spec.</p>
+
+                  <div class="work-group">
+                    <button class="work-group-toggle" type="button" data-group-toggle="wg-rail-2" aria-expanded="true">
+                      <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                      <span>Read files, ran commands</span>
+                      <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                    </button>
+                    <div class="work-rail" id="wg-rail-2">
+                      <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="sh-cmd-3" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                        <span class="work-cmd-text">git diff --stat src/session/lookup.rs docs/MIGRATION_PLAN.md</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="shell-card" id="sh-cmd-3" hidden>
+                        <div class="shell-card-head">
+                          <span>Shell</span>
+                          <button class="shell-copy-btn" type="button" data-copy-cmd="git diff --stat src/session/lookup.rs docs/MIGRATION_PLAN.md" aria-label="Copy command" title="Copy command"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                        </div>
+                        <div class="shell-cmd-line">$ git diff --stat src/session/lookup.rs docs/MIGRATION_PLAN.md</div>
+                        <pre class="shell-out"> src/session/lookup.rs   | 19 +++++++-----
+ src/session/cache.rs    | 48 ------------------------------
+ docs/MIGRATION_PLAN.md  | 14 ++++++++-
+ 3 files changed, 26 insertions(+), 55 deletions(-)</pre>
+                        <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success</div>
+                      </div>
+
+                      <div class="work-step-row">
+                        <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                        <span>Read <button class="work-file-link" type="button" data-open-preview="ptab-office">MIGRATION_PLAN.md</button></span>
+                      </div>
+
+                      <div class="work-step-row">
+                        <svg class="icon" aria-hidden="true"><use href="#i-image"/></svg>
+                        <span>Viewed 3 previews</span>
+                      </div>
+                      <div class="work-thumbs">
+                        <button class="work-thumb" type="button" data-open-preview="ptab-browser">
+                          <span class="work-thumb-top"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>:3000</span>
+                          <span class="work-thumb-bars"><span></span><span></span></span>
+                          <span class="work-thumb-label">Dashboard UI</span>
+                        </button>
+                        <button class="work-thumb" type="button" data-open-preview="ptab-office">
+                          <span class="work-thumb-top"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>.xlsx</span>
+                          <span class="work-thumb-bars"><span></span><span></span></span>
+                          <span class="work-thumb-label">Token-Cost-Model</span>
+                        </button>
+                        <button class="work-thumb" type="button" data-open-preview="ptab-office">
+                          <span class="work-thumb-top"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg>.md</span>
+                          <span class="work-thumb-bars"><span></span><span></span></span>
+                          <span class="work-thumb-label">MIGRATION_PLAN</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Clean Editorial Answer (Zero AI slop · clickable blue code/file references) -->
+              <div class="agent-answer">
+                <p><strong>Done — safe to ship without data migration.</strong> All session reads now route through <code>ShardStore::lookup</code> with <code>CacheBudget</code> preserved, and all <strong>14/14</strong> tests in <code>session::</code> pass. Swarm <code>worker-1</code> also confirmed zero conflicting gateway edits. <button class="cite-link" type="button" data-open-code="lookup.rs" data-open-line="21"><span class="cite-ico">&lt;/&gt;</span>src/session/lookup.rs (line 21)</button><span class="cite-sep">·</span><button class="cite-link" type="button" data-open-preview="ptab-office"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-file"/></svg>MIGRATION_PLAN.md (line 14)</button></p>
+
+                <h3>Summary of changes</h3>
+                <ol class="answer-list">
+                  <li><strong>Routed reads through ShardStore.</strong> Replaced <code>self.cache.read().get(key)</code> with <code>self.shards.lookup(key)?</code> and touched <code>self.budget.touch(key)</code> on every hit so eviction order matches the CLI daemon byte for byte. <button class="cite-link" type="button" data-open-code="lookup.rs" data-open-line="21"><span class="cite-ico">&lt;/&gt;</span>lookup.rs (line 21)</button></li>
+                  <li><strong>Removed dead cache path.</strong> Deleted 48 lines of legacy <code>SessionCache</code> locking in <code>src/session/cache.rs</code> and confirmed zero remaining references across <code>crates/rayucode-core</code>. <button class="cite-link" type="button" data-open-code="cache.rs" data-open-line="5"><span class="cite-ico">&lt;/&gt;</span>cache.rs</button><span class="cite-sep">·</span><button class="cite-link" type="button" data-open-code="store.rs" data-open-line="15"><span class="cite-ico">&lt;/&gt;</span>store.rs (line 15)</button></li>
+                  <li><strong>Synced previews &amp; cost model.</strong> Refreshed the localhost dashboard preview, <code>Token-Cost-Model.xlsx</code>, and <code>MIGRATION_PLAN.md</code> in the right sidebar. <button class="cite-link" type="button" data-open-preview="ptab-browser"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-globe"/></svg>localhost:3000</button><span class="cite-sep">·</span><button class="cite-link" type="button" data-open-preview="ptab-office"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-sheet"/></svg>Token-Cost-Model.xlsx</button></li>
+                </ol>
+              </div>
+
+              <div class="diff">
+                <div class="diff-head">
+                  <svg class="icon" style="width:13px;height:13px;color:var(--text-3)" aria-hidden="true"><use href="#i-diff"/></svg>
+                  <span class="file">src/session/lookup.rs</span>
+                  <span class="stat"><span class="add">+12</span> <span class="del">−7</span></span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-ghost btn-sm" type="button" data-toast="Opened src/session/lookup.rs:18 in Visual Studio Code">VS Code</button>
+                </div>
+                <div class="diff-body">
+                  <div class="diff-line hunk"><span class="ln"></span><span class="mark"></span><span class="src">@@ -18,14 +18,19 @@ impl SessionLookup {</span></div>
+                  <div class="diff-line"><span class="ln">18</span><span class="mark"></span><span class="src">     pub fn get(&amp;self, key: &amp;SessionKey) -&gt; Option&lt;Session&gt; {</span></div>
+                  <div class="diff-line del"><span class="ln">19</span><span class="mark">−</span><span class="src">         self.cache.read().get(key).cloned()</span></div>
+                  <div class="diff-line add"><span class="ln">19</span><span class="mark">+</span><span class="src">         let hit = self.shards.lookup(key)?;</span></div>
+                  <div class="diff-line add"><span class="ln">20</span><span class="mark">+</span><span class="src">         self.budget.touch(key);</span></div>
+                  <div class="diff-line add"><span class="ln">21</span><span class="mark">+</span><span class="src">         Some(hit)</span></div>
+                  <div class="diff-line"><span class="ln">22</span><span class="mark"></span><span class="src">     }</span></div>
+                </div>
+                <div class="diff-foot">
+                  <span class="hint">1 of 3 changed files · 14/14 tests passed</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-danger-ghost btn-sm" type="button" data-diff-reject>Reject</button>
+                  <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                </div>
+              </div>
+
+              <div class="turn-actions">
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-copy aria-label="Copy response">
+                    <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                  </button>
+                  <div class="turn-act-card is-compact" role="tooltip">
+                    <div class="turn-act-card-title">Copy response</div>
+                  </div>
+                </div>
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-fork aria-label="Fork from here">
+                    <svg class="icon" aria-hidden="true"><use href="#i-fork"/></svg>
+                  </button>
+                  <div class="turn-act-card" role="tooltip">
+                    <div class="turn-act-card-title">Fork from here</div>
+                    <div class="turn-act-card-desc">Starts a new session from this point. This one stays as it is.</div>
+                  </div>
+                </div>
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-pin aria-pressed="false" aria-label="Pin response">
+                    <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>
+                  </button>
+                  <div class="turn-act-card" role="tooltip">
+                    <div class="turn-act-card-title">Pin response</div>
+                    <div class="turn-act-card-desc">Keeps this reply pinned so you can jump back to it anytime.</div>
+                  </div>
+                </div>
+                <span class="turn-time">2m ago</span>
+                <span class="turn-meta-right">
+                  <span class="credits">0.42 cr</span>
+                  <span>·</span>
+                  <span>KV cache 94%</span>
+                  <button class="turn-replay-btn" type="button" data-replay-trace title="Watch live step-by-step execution trace">
+                    <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>
+                    Simulate live run
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-dock" style="padding-bottom:14px">
+          <div class="composer-shell">
+            <div class="slash-pop" id="slash-chat" data-dropdown-menu hidden>
+              <div class="dropdown-head">RayuCode CLI Commands</div>
+              <button class="slash-row" type="button" data-slash-insert="/model"><span class="slash-cmd">/model</span><span class="slash-desc">Switch route in Rayu-first order</span></button>
+              <button class="slash-row" type="button" data-slash-insert="/swarm"><span class="slash-cmd">/swarm</span><span class="slash-desc">Spawn parallel workers</span></button>
+              <button class="slash-row" type="button" data-slash-insert="/preview"><span class="slash-cmd">/preview</span><span class="slash-desc">Open Browser, Microsoft, or MD</span></button>
+              <button class="slash-row" type="button" data-slash-insert="/cache 1h"><span class="slash-cmd">/cache 1h</span><span class="slash-desc">Extend KV prompt cache TTL</span></button>
+              <button class="slash-row" type="button" data-slash-insert="/telegram-bot"><span class="slash-cmd">/telegram-bot</span><span class="slash-desc">Manage Telegram remote link</span></button>
+            </div>
+            <div class="composer-inner">
+              <textarea class="composer-input" rows="1" placeholder="Ask anything, @ to mention, / for actions" aria-label="Reply to RayuCode"></textarea>
+              <div class="composer-bar">
+                <button class="icon-btn" type="button" data-dropdown="slash-chat" aria-expanded="false" aria-label="Add context"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                <div class="model-wrap" data-effort-cur="2">
+                  <button class="model-trigger" type="button" data-dropdown="model-pop-chat" aria-haspopup="dialog" aria-expanded="false" title="Model &amp; Reasoning Effort">
+                    <span class="m-name">Claude Opus 5.5</span>
+                    <span class="m-tier">Medium</span>
+                    <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <div class="model-pop" id="model-pop-chat" data-dropdown-menu hidden>
+                    <div class="effort-card" role="dialog" aria-label="Reasoning effort">
+                      <div class="effort-head">
+                        <button class="effort-icon-btn" type="button" data-effort-fast aria-label="Fast mode (Low effort)" title="Fast mode (Low effort)">
+                          <svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg>
+                        </button>
+                        <div class="effort-center">
+                          <div class="effort-val">Medium</div>
+                          <button class="effort-model-link" type="button" data-model-open-list>
+                            <span class="em-name">Claude Opus 5.5</span>
+                            <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                          </button>
+                        </div>
+                        <button class="effort-icon-btn" type="button" data-effort-reset aria-label="Reset effort to Medium" title="Reset effort to Medium">
+                          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+                        </button>
+                      </div>
+                      <div class="effort-slider" role="slider" aria-label="Reasoning effort" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2" aria-valuetext="Medium" style="--p:0.5">
+                        <div class="effort-fill"></div>
+                        <button class="effort-stop is-filled" type="button" data-effort-idx="0" aria-label="Auto" title="Auto"></button>
+                        <button class="effort-stop is-filled" type="button" data-effort-idx="1" aria-label="Low" title="Low"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="2" aria-label="Medium" title="Medium" aria-pressed="true"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="3" aria-label="High" title="High"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="4" aria-label="Max" title="Max"></button>
+                        <div class="effort-thumb" aria-hidden="true"></div>
+                      </div>
+                    </div>
+                    <div class="model-list-card" role="listbox" aria-label="Select model" hidden>
+                      <div class="model-list-head">
+                        <span>Select model</span>
+                        <button class="model-list-back" type="button" data-model-back-effort>Effort</button>
+                      </div>
+                      <div class="model-list-scroll">
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="default" data-model-label="Default">
+                          <span class="model-opt-main"><span class="model-opt-name">Default</span><span class="model-opt-sub">Recommended set of models</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="true" data-model-id="claude-opus-5-5" data-model-label="Claude Opus 5.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Opus 5.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-6.1-sol" data-model-label="GPT-6.1 Sol">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-6.1 Sol</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-6-astra" data-model-label="GPT-6 Astra">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-6 Astra</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-opus-5" data-model-label="Claude Opus 5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Opus 5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-fable-5-1" data-model-label="Claude Fable 5.1">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Fable 5.1</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-sonnet-5" data-model-label="Claude Sonnet 5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Sonnet 5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-sonnet-4-6" data-model-label="Claude Sonnet 4.6">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Sonnet 4.6</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-haiku-4-5" data-model-label="Claude Haiku 4.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Haiku 4.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-sol" data-model-label="GPT-5.6 Sol">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Sol</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-pro" data-model-label="GPT-5.6 Pro">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Pro</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-terra" data-model-label="GPT-5.6 Terra">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Terra</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-luna" data-model-label="GPT-5.6 Luna">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Luna</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gemini-3.1-pro-preview" data-model-label="Gemini 3.1 Pro">
+                          <span class="model-opt-main"><span class="model-opt-name">Gemini 3.1 Pro</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gemini-3-flash" data-model-label="Gemini 3 Flash">
+                          <span class="model-opt-main"><span class="model-opt-name">Gemini 3 Flash</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="deepseek-v4-flash" data-model-label="DeepSeek V4 Flash">
+                          <span class="model-opt-main"><span class="model-opt-name">DeepSeek V4 Flash</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="kimi-k2.5" data-model-label="Kimi K2.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Kimi K2.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-oss-120b" data-model-label="GPT-OSS 120B">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-OSS 120B</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="minimax-m2.7" data-model-label="MiniMax M2.7">
+                          <span class="model-opt-main"><span class="model-opt-name">MiniMax M2.7</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="GLM-5.1" data-model-label="GLM-5.1">
+                          <span class="model-opt-main"><span class="model-opt-name">GLM-5.1</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <span class="spacer"></span>
+                <div class="perm-wrap">
+                  <button class="perm-trigger" type="button" data-dropdown="perm-pop-chat" aria-haspopup="listbox" aria-expanded="false" title="Local Permissions (Shift+Tab to cycle)">
+                    <svg class="icon perm-trigger-icon" aria-hidden="true"><use href="#i-shield-outline"/></svg>
+                    <span class="mode-label">Auto-edit</span>
+                    <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <div class="perm-pop" id="perm-pop-chat" data-dropdown-menu role="listbox" aria-label="Local Permissions" hidden>
+                    <div class="perm-pop-head">Local Permissions</div>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="default" data-perm-label="Ask" data-perm-icon="#i-lock">
+                      <svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-lock"/></svg>
+                      <span class="perm-opt-body">
+                        <span class="perm-opt-title">Ask <span class="perm-default-pill">Default <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg></span></span>
+                        <span class="perm-opt-desc">Ask before running tools that change anything.</span>
+                      </span>
+                      <svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                    </button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="true" data-perm-id="acceptEdits" data-perm-label="Auto-edit" data-perm-icon="#i-shield-outline">
+                      <svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-shield-outline"/></svg>
+                      <span class="perm-opt-body">
+                        <span class="perm-opt-title">Auto-edit</span>
+                        <span class="perm-opt-desc">Apply file edits without asking. Still asks for commands.</span>
+                      </span>
+                      <svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                    </button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="plan" data-perm-label="Plan" data-perm-icon="#i-eye">
+                      <svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-eye"/></svg>
+                      <span class="perm-opt-body">
+                        <span class="perm-opt-title">Plan</span>
+                        <span class="perm-opt-desc">Investigate and write a plan without asking. Never changes your code.</span>
+                      </span>
+                      <svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                    </button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="fullManage" data-perm-label="Full Manage" data-perm-icon="#i-shield-alert">
+                      <svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-shield-alert"/></svg>
+                      <span class="perm-opt-body">
+                        <span class="perm-opt-title">Full Manage</span>
+                        <span class="perm-opt-desc">Run all non-interactive tools without asking.</span>
+                      </span>
+                      <svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                    </button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="orchestrator" data-perm-label="Orchestrator" data-perm-icon="#i-swarm">
+                      <svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-swarm"/></svg>
+                      <span class="perm-opt-body">
+                        <span class="perm-opt-title">Orchestrator</span>
+                        <span class="perm-opt-desc">Full access for delegated workers; the main agent only coordinates.</span>
+                      </span>
+                      <svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                    </button>
+                  </div>
+                </div>
+                <button class="icon-btn" type="button" aria-label="Voice input"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg></button>
+                <button class="send-orb" type="button" aria-label="Send message"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Column 3: Full-Height Right Sidebar (Unified 46px Top Document Bar) -->
+    <aside class="right-sidebar has-doc-bar" aria-label="Session inspector and previews">
+      <div class="rs-doc-bar">
+        <button class="rb-session-crumb" type="button" data-browser-exit title="Return to chat session"><span class="rb-kbd">⌘1</span><span>Retire legacy session cache</span><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        <div class="rs-doc-pill">
+          <span class="rs-doc-pill-name" id="rs-active-pill-name">lookup.rs</span>
+          <button class="rs-doc-pill-x" type="button" data-open-preview="ptab-overview" aria-label="Close document" title="Back to Context"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <span class="spacer"></span>
+        <div class="rs-doc-actions">
+          <button class="icon-btn" type="button" data-browser-full aria-label="Full view" title="Full view"><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg></button>
+          <button class="icon-btn" type="button" data-toggle-drawer aria-label="Close sidebar" title="Close sidebar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="rs-ctx-strip" aria-label="Inspector panels">
+          <button class="rs-tab-btn" type="button" aria-selected="true" data-toggle-drawer title="Environment &amp; Context"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
+          <button class="rs-tab-btn" type="button" data-open-preview="ptab-term" title="CLI Terminal"><svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg></button>
+          <button class="rs-tab-btn" type="button" data-open-preview="ptab-changes" title="Code &amp; Changes"><svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg></button>
+          <button class="rs-tab-btn" type="button" data-open-preview="ptab-browser" title="Open Browser"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></button>
+          <button class="rs-tab-btn" type="button" data-open-preview="ptab-office" title="Files · Microsoft &amp; MD"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg></button>
+          <div class="dropdown">
+            <button class="rs-tab-btn" type="button" data-dropdown="rs-ctx-more-menu" aria-expanded="false" aria-label="More actions" title="More"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+            <div class="dropdown-pop" id="rs-ctx-more-menu" data-dropdown-menu hidden>
+              <div class="dropdown-head">Session &amp; View</div>
+              <button class="dropdown-item theme-toggle" type="button"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg>Toggle Light / Dark theme</button>
+              <div class="accent-menu-row">
+                <span>Accent</span>
+                <div class="accent-swatches">
+                  <button class="accent-pill" type="button" data-accent-set="green" aria-pressed="true"><span class="accent-dot is-green"></span>Green</button>
+                  <button class="accent-pill" type="button" data-accent-set="blue" aria-pressed="false"><span class="accent-dot is-blue"></span>Blue</button>
+                </div>
+              </div>
+              <div class="dropdown-sep"></div>
+              <a class="dropdown-item" href="preview-studio.html#browser"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg>Full Browser Preview<span class="d-sub">:3000</span></a>
+              <a class="dropdown-item" href="excel-session.html"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>Microsoft Excel Session<span class="d-sub">.xlsx</span></a>
+              <button class="dropdown-item" type="button" data-toast="Opened ~/workspace/rayu/rayucode-v2 in Visual Studio Code"><svg class="icon" aria-hidden="true"><use href="#i-code-ide"/></svg>Open in VS Code<span class="d-sub">external</span></button>
+            </div>
+          </div>
+        </div>
+        <button class="rb-exit-btn" type="button" data-browser-exit><svg class="icon" aria-hidden="true"><use href="#i-collapse"/></svg>Exit full view</button>
+      </div>
+
+      <div class="preview-panel" role="tabpanel" id="ppanel-overview" aria-labelledby="ptab-overview">
+        <div class="rs-scroll">
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Environment</h2>
+            <div class="env-list">
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg><span class="env-val">rayucode-v2</span><a class="env-gear-btn" href="settings.html" aria-label="Environment settings" title="Environment settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a></div>
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span class="env-val">rayucode-v2 <span class="env-path">· ~/workspace/rayu</span></span></div>
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg><span class="env-val">feat/retire-session-cache</span></div>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Context</h2>
+            <div class="ctx-summary"><span class="ctx-pct">3% used</span><span class="ctx-tok">28K / 1M</span></div>
+            <div class="ctx-bar" aria-label="Context window breakdown">
+              <span class="ctx-seg ctx-c-messages" style="width:4.2%"></span>
+              <span class="ctx-seg ctx-c-skills" style="width:1.6%"></span>
+              <span class="ctx-seg ctx-c-system" style="width:1.1%"></span>
+              <span class="ctx-seg ctx-c-mcp" style="width:0.7%"></span>
+              <span class="ctx-seg ctx-c-memory" style="width:0.5%"></span>
+              <span class="ctx-seg ctx-c-agents" style="width:0.5%"></span>
+              <span class="ctx-seg ctx-c-buffer" style="width:3.3%"></span>
+            </div>
+            <div class="ctx-rows">
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-messages"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="ctx-det-mcptools" aria-expanded="false">MCP tools</button><span class="ctx-num">70.9K</span><span class="ctx-pct-col">7.1%</span></div>
+              <div class="ctx-detail" id="ctx-det-mcptools" hidden>
+                <div class="ctx-detail-item"><span class="k">local-preview (102 tools)</span><span class="v">31.4K</span></div>
+                <div class="ctx-detail-item"><span class="k">github (48 tools)</span><span class="v">19.8K</span></div>
+                <div class="ctx-detail-item"><span class="k">chrome-devtools (26 tools)</span><span class="v">12.6K</span></div>
+                <div class="ctx-detail-item"><span class="k">rayu-gateway (12 tools)</span><span class="v">7.1K</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-skills"></span><span class="ctx-lbl">System tools</span><span class="ctx-num">13.5K</span><span class="ctx-pct-col">1.4%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-system"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="ctx-det-skills" aria-expanded="false">Skills</button><span class="ctx-num">9.9K</span><span class="ctx-pct-col">1.0%</span></div>
+              <div class="ctx-detail" id="ctx-det-skills" hidden>
+                <div class="ctx-detail-item"><span class="k">impeccable</span><span class="v">4.2K</span></div>
+                <div class="ctx-detail-item"><span class="k">systematic-debugging</span><span class="v">2.6K</span></div>
+                <div class="ctx-detail-item"><span class="k">test-driven-development</span><span class="v">1.9K</span></div>
+                <div class="ctx-detail-item"><span class="k">verification-before-completion</span><span class="v">1.2K</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-mcp"></span><span class="ctx-lbl">System prompt</span><span class="ctx-num">4.6K</span><span class="ctx-pct-col">0.5%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-memory"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="ctx-det-mem" aria-expanded="false">Memory files</button><span class="ctx-num">3.7K</span><span class="ctx-pct-col">0.4%</span></div>
+              <div class="ctx-detail" id="ctx-det-mem" hidden>
+                <div class="ctx-detail-item"><span class="k">~/.rayu/memory/rayucode-v2.md</span><span class="v">2.1K</span></div>
+                <div class="ctx-detail-item"><span class="k">~/.rayu/memory/shard-store.md</span><span class="v">1.6K</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-agents"></span><span class="ctx-lbl">Messages</span><span class="ctx-num">2.3K</span><span class="ctx-pct-col">0.2%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-memory"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="ctx-det-mcp" aria-expanded="false">MCP server instructions</button><span class="ctx-num">1.1K</span><span class="ctx-pct-col">0.1%</span></div>
+              <div class="ctx-detail" id="ctx-det-mcp" hidden>
+                <div class="ctx-detail-item"><span class="k">chrome-devtools</span><span class="v">460</span></div>
+                <div class="ctx-detail-item"><span class="k">context7</span><span class="v">380</span></div>
+                <div class="ctx-detail-item"><span class="k">github</span><span class="v">260</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-agents"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="ctx-det-agents" aria-expanded="false">Custom agents</button><span class="ctx-num">212</span><span class="ctx-pct-col">0.0%</span></div>
+              <div class="ctx-detail" id="ctx-det-agents" hidden>
+                <div class="ctx-detail-item"><span class="k">coordinator · Claude Opus 5.5</span><span class="v">64</span></div>
+                <div class="ctx-detail-item"><span class="k">worker-1 · Claude Sonnet 5</span><span class="v">52</span></div>
+                <div class="ctx-detail-item"><span class="k">reviewer · GPT-6.1 Sol</span><span class="v">48</span></div>
+                <div class="ctx-detail-item"><span class="k">verifier · DeepSeek V4 Flash</span><span class="v">48</span></div>
+              </div>
+            </div>
+            <div class="ctx-rows">
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-buffer"></span><span class="ctx-lbl">Autocompact buffer</span><span class="ctx-num">33K</span><span class="ctx-pct-col">3.3%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-free"></span><span class="ctx-lbl">Free space</span><span class="ctx-num">860.7K</span><span class="ctx-pct-col">86.1%</span></div>
+            </div>
+            <div class="ctx-disclosures">
+              <button class="ctx-disc-btn" type="button" data-collapse="disc-mcp" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>MCP tools<span class="disc-cnt">188</span></button>
+              <div class="ctx-disc-body" id="disc-mcp" hidden><span>chrome-devtools · 26 tools</span><span>github · 48 tools</span><span>rayu-gateway · 12 tools</span><span>local-preview · 102 tools</span></div>
+              <button class="ctx-disc-btn" type="button" data-collapse="disc-mem" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>Memory files<span class="disc-cnt">4</span></button>
+              <div class="ctx-disc-body" id="disc-mem" hidden><span>~/.rayu/memory/rayucode-v2.md</span><span>~/.rayu/memory/shard-store.md</span></div>
+              <button class="ctx-disc-btn" type="button" data-collapse="disc-agents" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>Custom agents<span class="disc-cnt">4</span></button>
+              <div class="ctx-disc-body" id="disc-agents" hidden><span>coordinator · Claude Opus 5.5</span><span>worker-1 · Claude Sonnet 5</span><span>reviewer · GPT-6.1 Sol</span><span>verifier · DeepSeek V4 Flash</span></div>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Connectors</h2>
+            <div class="conn-list">
+              <div class="conn-row"><span class="conn-glyph">E</span><span>Exa</span></div>
+              <div class="conn-row"><span class="conn-glyph">P</span><span>Playwright</span></div>
+              <div class="conn-row"><span class="conn-glyph">G</span><span>GitHub</span><button class="conn-action" type="button" data-toast="Opening GitHub OAuth reconnect...">Reconnect</button></div>
+            </div>
+            <div class="conn-extra" id="conn-extra-chat" hidden>
+              <div class="conn-row"><span class="conn-glyph">T</span><span>Telegram Bot</span><span class="conn-action is-ok">Linked</span></div>
+              <div class="conn-row"><span class="conn-glyph">C</span><span>Chrome devtools</span></div>
+              <div class="conn-row"><span class="conn-glyph">M</span><span>Microsoft Office</span></div>
+            </div>
+            <button class="conn-more" type="button" data-conn-more="conn-extra-chat">Show more</button>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Outputs</h2>
+            <div class="outputs-list">
+              <button class="output-row" type="button" data-open-preview="ptab-browser"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>dashboard-preview.html</span></button>
+              <button class="output-row" type="button" data-open-preview="ptab-office"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span>MIGRATION_PLAN.md</span></button>
+              <a class="output-row" href="excel-session.html"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg><span>Q4-Token-Cost-Model.xlsx</span></a>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Changes</h2>
+            <div class="changes-row">
+              <svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg>
+              <span class="changes-stat"><span class="add">+60</span><span class="del">−221</span></span>
+              <button class="changes-pr-btn" type="button" data-toast="Create PR requires explicit approval">Create PR</button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="preview-panel" role="tabpanel" id="ppanel-term" aria-labelledby="ptab-term" hidden>
+        <div class="term" style="flex:1;border:none;border-radius:0">
+          <div class="term-head"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-terminal"/></svg><span class="mono">rayu daemon · a41f</span><span class="spacer"></span><a href="execution-runner.html" style="font-size:10px">Expand →</a></div>
+          <div class="term-body"><pre><span class="term-line"><span class="term-prompt">$</span> rayu swarm status</span>
+<span class="term-line">  <span class="term-ok">●</span> coordinator (a41f) 71 MB</span>
+<span class="term-line">  <span class="term-ok">●</span> worker-1    (e7b3) 74 MB</span>
+<span class="term-line">  <span class="term-ok">●</span> worker-2    (c9d2) 69 MB</span>
+<span class="term-line"></span>
+<span class="term-line"><span class="term-prompt">$</span> cargo test -p rayucode session::</span>
+<span class="term-line">test result: <span class="term-ok">ok</span>. 14 passed; 0 failed</span>
+<span class="term-line"><span class="term-prompt">$</span> <span class="term-caret" aria-hidden="true"></span></span></pre></div>
+        </div>
+      </div>
+
+      <div class="preview-panel" role="tabpanel" id="ppanel-changes" aria-labelledby="ptab-changes" hidden>
+        <div class="rs-code-view">
+          <div class="rs-code-files" role="tablist" aria-label="Referenced code files">
+            <button class="rs-code-ftab is-active" type="button" data-open-code="lookup.rs" data-open-line="21">lookup.rs</button>
+            <button class="rs-code-ftab" type="button" data-open-code="cache.rs" data-open-line="5">cache.rs</button>
+            <button class="rs-code-ftab" type="button" data-open-code="store.rs" data-open-line="15">store.rs</button>
+          </div>
+          <div class="rs-code-head">
+            <span class="rs-code-path" id="rs-code-path">crates / rayucode-core / src / session / lookup.rs</span>
+            <button class="btn btn-ghost btn-sm" type="button" data-toast="Opened in Visual Studio Code">VS Code</button>
+          </div>
+          <div class="rs-code-body" id="rs-code-body">
+            <div class="rs-code-line"><span class="rs-code-ln">10</span><span class="rs-code-src"><span class="ck">use</span> crate::session::{<span class="ct">CacheBudget</span>, <span class="ct">Session</span>, <span class="ct">SessionKey</span>};</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">11</span><span class="rs-code-src"><span class="ck">use</span> crate::shard::<span class="ct">ShardStore</span>;</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">12</span><span class="rs-code-src"></span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">13</span><span class="rs-code-src"><span class="ck">pub struct</span> <span class="ct">SessionLookup</span> {</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">14</span><span class="rs-code-src">  shards: <span class="ct">ShardStore</span>,</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">15</span><span class="rs-code-src">  budget: <span class="ct">CacheBudget</span>,</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">16</span><span class="rs-code-src">}</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">17</span><span class="rs-code-src"></span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">18</span><span class="rs-code-src"><span class="ck">impl</span> <span class="ct">SessionLookup</span> {</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">19</span><span class="rs-code-src">  <span class="ck">pub fn</span> <span class="cf">get</span>(&amp;<span class="ck">self</span>, key: &amp;<span class="ct">SessionKey</span>) -&gt; <span class="ct">Option</span>&lt;<span class="ct">Session</span>&gt; {</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">20</span><span class="rs-code-src">    <span class="cc">// Routed directly through ShardStore with LRU touch</span></span></div>
+            <div class="rs-code-line is-hl"><span class="rs-code-ln">21</span><span class="rs-code-src">    <span class="ck">let</span> hit = <span class="ck">self</span>.shards.<span class="cf">lookup</span>(key)?;</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">22</span><span class="rs-code-src">    <span class="ck">self</span>.budget.<span class="cf">touch</span>(key);</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">23</span><span class="rs-code-src">    <span class="ct">Some</span>(hit)</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">24</span><span class="rs-code-src">  }</span></div>
+            <div class="rs-code-line"><span class="rs-code-ln">25</span><span class="rs-code-src">}</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="preview-panel" role="tabpanel" id="ppanel-browser" aria-labelledby="ptab-browser" hidden>
+        <div class="rb-shell">
+          <div class="rb-tabbar">
+            <button class="rb-session-crumb" type="button" data-browser-exit title="Return to chat session"><span class="rb-kbd">⌘1</span><span>Retire legacy session cache</span><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+            <div class="rb-tab">
+              <span class="rb-favicon">R</span>
+              <span class="rb-tab-title">localhost:3000</span>
+              <span class="rb-tab-kbd">⌘2</span>
+              <button class="rb-tab-x" type="button" aria-label="Close tab" data-toast="Closed browser tab"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+            </div>
+            <button class="icon-btn" type="button" aria-label="New tab" data-toast="Opened new browser tab"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+            <span class="grow"></span>
+            <button class="icon-btn rb-expand-btn" type="button" data-browser-full aria-label="Full view" title="Full view"><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg></button>
+            <button class="icon-btn rb-close-btn" type="button" data-toggle-drawer aria-label="Hide sidebar" title="Hide sidebar"><svg class="icon" aria-hidden="true"><use href="#i-split"/></svg></button>
+            <button class="rb-exit-btn" type="button" data-browser-exit><svg class="icon" aria-hidden="true"><use href="#i-collapse"/></svg>Exit full view</button>
+          </div>
+
+          <div class="rb-addrbar">
+            <div class="rb-nav-group">
+              <button class="icon-btn" type="button" aria-label="Back" data-toast="Browser back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-l"/></svg></button>
+              <button class="icon-btn" type="button" aria-label="Forward" data-toast="Browser forward"><svg class="icon" aria-hidden="true"><use href="#i-arrow-r"/></svg></button>
+              <button class="icon-btn" type="button" aria-label="Reload" data-toast="Reloaded localhost:3000"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+            </div>
+            <button class="rb-ask-btn" type="button" data-fb-toggle title="Ask RayuCode about this page"><svg class="icon" aria-hidden="true"><use href="#i-ask-page"/></svg><span class="rb-ask-label">Ask RayuCode</span></button>
+            <div class="rb-url-pill"><input type="text" value="localhost:3000/dashboard" aria-label="Address bar"></div>
+            <button class="rb-circle-btn" type="button" aria-label="Browser extensions" data-toast="RayuCode DevTools bridge active"><svg class="icon" aria-hidden="true"><use href="#i-puzzle"/></svg></button>
+            <div class="dropdown">
+              <button class="rb-circle-btn" type="button" data-dropdown="p-rb-menu" aria-expanded="false" aria-label="Browser menu"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+              <div class="rb-menu" id="p-rb-menu" data-dropdown-menu hidden>
+                <button class="rb-menu-item" type="button" data-toast="Find in page (⌘F)">Find in page</button>
+                <button class="rb-menu-item" type="button" data-toast="Print dialog ready">Print</button>
+                <div class="rb-menu-sep"></div>
+                <div class="rb-zoom-row">
+                  <span>Zoom</span>
+                  <span class="spacer"></span>
+                  <div class="rb-zoom-pill">
+                    <button type="button" data-browser-zoom="-10" aria-label="Zoom out"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
+                    <span class="rb-zoom-val">100%</span>
+                    <button type="button" data-browser-zoom="10" aria-label="Zoom in"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+                  <button class="icon-btn" type="button" data-browser-zoom="reset" aria-label="Reset zoom" style="width:24px;height:24px"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+                </div>
+                <div class="rb-menu-sep"></div>
+                <button class="rb-menu-item" type="button" data-browser-device>Device toolbar<svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+                <button class="rb-menu-item" type="button" data-toast="Captured browser viewport screenshot">Take a screenshot</button>
+                <div class="rb-menu-sep"></div>
+                <button class="rb-menu-item" type="button" data-toast="Import cookies from local Chromium">Import cookies and passwords...</button>
+                <button class="rb-menu-item" type="button" data-toast="Passwords &amp; autofill settings">Passwords and autofill<svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+                <button class="rb-menu-item" type="button" data-toast="No recent browser downloads">Downloads</button>
+                <button class="rb-menu-item" type="button" data-toast="Browser history">History</button>
+                <button class="rb-menu-item" type="button" data-toast="Cleared preview cache &amp; cookies">Clear browsing data</button>
+                <div class="rb-menu-sep"></div>
+                <a class="rb-menu-item" href="settings-models.html#preview-ide" style="text-decoration:none">Browser settings</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="rb-stage">
+            <div class="rb-page-surface" data-zoom="100">
+              <div class="mock-webapp-nav"><div class="flex" style="font-size:var(--text-xs);font-weight:600"><img class="rayu-fox-sm" src="../assets/rayu-fox.png" alt="Rayu Code">Rayu Code · Local Telemetry</div><span class="badge badge-live">HMR :3000</span></div>
+              <div class="mock-webapp-body">
+                <div class="mock-kpi-grid">
+                  <div class="mock-kpi"><div class="k-label">Memory RSS</div><div class="k-val">71 MB</div><div class="k-delta">−38% vs legacy</div></div>
+                  <div class="mock-kpi"><div class="k-label">KV Cache Hit</div><div class="k-val">94.2%</div><div class="k-delta">warm · 1h TTL</div></div>
+                  <div class="mock-kpi"><div class="k-label">Swarm Workers</div><div class="k-val">3 live</div><div class="k-delta">0 conflicts</div></div>
+                </div>
+                <p class="demo-note">Synthetic localhost preview — click <strong>Full view</strong> (⤢) to expand with floating RayuCode chat.</p>
+              </div>
+            </div>
+
+            <!-- Floating Bottom-Right RayuCode Chat Overlay (shown in Full View) -->
+            <div class="fb-chat" aria-label="Floating RayuCode chat">
+              <div class="fb-chat-head">
+                <svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>
+                <span>Retire legacy session cache</span>
+                <svg class="icon" style="width:11px;height:11px" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                <span class="spacer"></span>
+                <button class="icon-btn" type="button" data-fb-toggle aria-label="Minimize chat" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
+              </div>
+              <div class="fb-chat-body">
+                <p>Verified live telemetry after routing <code>SessionLookup::get</code> through <code>ShardStore::lookup</code>:</p>
+                <table class="fb-mini-table">
+                  <thead><tr><th>Metric</th><th>What changed</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr><td>Memory RSS</td><td>Dropped from 114 MB to 71 MB across coordinator</td><td>Passing (−38%)</td></tr>
+                    <tr><td>Session tests</td><td>14 / 14 <code>session::</code> tests green with <code>CacheBudget</code></td><td>Ready to merge</td></tr>
+                  </tbody>
+                </table>
+                <p><strong>Recommendation:</strong> Accept the <code>lookup.rs</code> diff and delete legacy <code>src/session/cache.rs</code>.</p>
+              </div>
+              <div class="fb-chat-foot">
+                <button class="icon-btn" type="button" aria-label="Add context" data-toast="Attached current page DOM snapshot"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                <input class="fb-chat-input" type="text" placeholder="Work with RayuCode" aria-label="Ask RayuCode about this page">
+                <button class="icon-btn" type="button" aria-label="Voice input" data-toast="Voice input ready"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg></button>
+                <button class="send-orb" type="button" data-fb-send aria-label="Send" style="width:28px;height:28px"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-send"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="preview-panel" role="tabpanel" id="ppanel-office" aria-labelledby="ptab-office" data-tabs hidden>
+        <div class="preview-tabs-bar" role="tablist" aria-label="Document preview type">
+          <button class="preview-tab" role="tab" id="sub-office" aria-controls="subpanel-office" aria-selected="true" type="button"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>Microsoft</button>
+          <button class="preview-tab" role="tab" id="sub-md" aria-controls="subpanel-md" aria-selected="false" type="button"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg>Preview MD</button>
+          <span class="spacer"></span>
+          <a href="preview-studio.html#office" style="font-size:10px">Full →</a>
+        </div>
+        <div class="preview-panel" role="tabpanel" id="subpanel-office" aria-labelledby="sub-office">
+          <div class="office-toolbar"><span class="badge badge-excel">Excel</span><span class="mono" style="font-size:11px">Token-Cost.xlsx</span><span class="grow"></span><button class="btn btn-sm" type="button" data-toast="Launched in Microsoft Excel">Open</button></div>
+          <div class="office-stage" style="padding:12px">
+            <div class="xl-shell">
+              <div class="xl-formula-bar"><span class="xl-cell-ref">C5</span><span class="dim">fx</span><span style="color:var(--accent-text)">=SUM(C1:C4)</span></div>
+              <table class="xl-grid"><thead><tr><th></th><th>Route</th><th>Cr</th></tr></thead><tbody><tr><td class="xl-rn">1</td><td>Planner</td><td class="xl-num">0.24</td></tr><tr><td class="xl-rn">2</td><td>Edits</td><td class="xl-num">0.15</td></tr><tr><td class="xl-rn">3</td><td>Grep</td><td class="xl-num">0.03</td></tr><tr class="xl-total"><td class="xl-rn">5</td><td>Total</td><td class="xl-num xl-active">0.42</td></tr></tbody></table>
+            </div>
+          </div>
+        </div>
+        <div class="preview-panel" role="tabpanel" id="subpanel-md" aria-labelledby="sub-md" hidden>
+          <div class="md-toolbar"><span class="badge badge-mono">MIGRATION_PLAN.md</span><span class="grow"></span><a href="preview-studio.html#md" style="font-size:10px">Studio →</a></div>
+          <div class="md-stage" style="padding:14px">
+            <article class="md-article">
+              <h1 style="font-size:1.05rem">SessionCache Retirement</h1>
+              <p>Route session reads through <code>ShardStore::lookup</code> with <code>CacheBudget</code>.</p>
+              <ul class="md-checklist">
+                <li><span class="md-check is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>ShardStore lookup wired</li>
+                <li><span class="md-check is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>14 unit tests passing</li>
+                <li><span class="md-check"></span>Delete legacy cache.rs</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <script src="../js/include.js?v=27"></script>
+  <script src="../js/app.js?v=27"></script>
+</body>
+</html>

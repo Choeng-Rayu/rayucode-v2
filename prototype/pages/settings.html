@@ -1,0 +1,1922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Settings</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=25">
+  <link rel="stylesheet" href="../css/layout.css?v=25">
+  <link rel="stylesheet" href="../css/components.css?v=25">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="settings-app">
+
+    <!-- Left Settings Navigation Sidebar (Full-Page Shell) -->
+    <aside class="sp-sidebar" aria-label="Settings navigation">
+      <div class="sp-topbar">
+        <button class="icon-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar" title="Toggle sidebar">
+          <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+        </button>
+        <a class="icon-btn" href="../index.html" aria-label="Back" title="Back to app">
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-l"/></svg>
+        </a>
+        <button class="icon-btn is-dim" type="button" aria-label="Forward" disabled>
+          <svg class="icon" aria-hidden="true"><use href="#i-arrow-r"/></svg>
+        </button>
+      </div>
+
+      <a class="sp-back" href="../index.html">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-l"/></svg>
+        <span>Back to app</span>
+      </a>
+
+      <div class="sp-search-wrap">
+        <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+        <input class="sp-search-input" id="sp-search-input" type="search" placeholder="Search" aria-label="Search settings">
+      </div>
+
+      <nav class="sp-nav" aria-label="Settings categories">
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">Profile</div>
+          <button class="sp-nav-item" type="button" data-sp-section="profile">
+            <span class="sp-mini-avatar" aria-hidden="true">LK</span>
+            <span>ly yeak khai</span>
+            <svg class="icon sp-nav-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+          </button>
+        </div>
+
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">Account</div>
+          <button class="sp-nav-item is-active" type="button" data-sp-section="account">
+            <svg class="icon" aria-hidden="true"><use href="#i-user-circle"/></svg>
+            <span>Account</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="parental-controls">
+            <svg class="icon" aria-hidden="true"><use href="#i-user-circle"/></svg>
+            <span>Parental controls</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="trusted-contact">
+            <svg class="icon" aria-hidden="true"><use href="#i-user-circle"/></svg>
+            <span>Trusted contact</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="usage-billing">
+            <svg class="icon" aria-hidden="true"><use href="#i-gauge"/></svg>
+            <span>Usage &amp; billing</span>
+          </button>
+        </div>
+
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">App</div>
+          <button class="sp-nav-item" type="button" data-sp-section="general">
+            <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+            <span>General</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="appearance">
+            <svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg>
+            <span>Appearance</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="notifications">
+            <svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg>
+            <span>Notifications</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="voice">
+            <svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg>
+            <span>Voice</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="configuration">
+            <svg class="icon" aria-hidden="true"><use href="#i-personalize"/></svg>
+            <span>Configuration</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="personalization">
+            <svg class="icon" aria-hidden="true"><use href="#i-personalize"/></svg>
+            <span>Personalization</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="mini-pets">
+            <svg class="icon" aria-hidden="true"><use href="#i-pet"/></svg>
+            <span>Mini &amp; Pets</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="keyboard-shortcuts">
+            <svg class="icon" aria-hidden="true"><use href="#i-shortcut"/></svg>
+            <span>Keyboard shortcuts</span>
+          </button>
+        </div>
+
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">Data &amp; Privacy</div>
+          <button class="sp-nav-item" type="button" data-sp-section="import">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span>Import</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="archived-chats">
+            <svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>
+            <span>Archived chats</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="device-storage">
+            <svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>
+            <span>Device storage</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="data-controls">
+            <svg class="icon" aria-hidden="true"><use href="#i-database"/></svg>
+            <span>Data controls</span>
+          </button>
+        </div>
+
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">Integrations</div>
+          <button class="sp-nav-item" type="button" data-sp-section="plugins">
+            <svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>
+            <span>Plugins</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="passwords">
+            <svg class="icon" aria-hidden="true"><use href="#i-key"/></svg>
+            <span>Passwords</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="computer-use">
+            <svg class="icon" aria-hidden="true"><use href="#i-cursor"/></svg>
+            <span>Computer use</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="appshots">
+            <svg class="icon" aria-hidden="true"><use href="#i-capture"/></svg>
+            <span>Appshots</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="browser">
+            <svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg>
+            <span>Browser</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="cloud-computer">
+            <svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg>
+            <span>Cloud computer</span>
+          </button>
+        </div>
+
+        <div class="sp-nav-group">
+          <div class="sp-nav-label">Coding</div>
+          <button class="sp-nav-item" type="button" data-sp-section="hooks">
+            <svg class="icon" aria-hidden="true"><use href="#i-hook"/></svg>
+            <span>Hooks</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="connections">
+            <svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>
+            <span>Connections</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="codex-cloud">
+            <svg class="icon" aria-hidden="true"><use href="#i-cloud"/></svg>
+            <span>Codex Cloud</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="code-review">
+            <svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg>
+            <span>Code Review</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="git">
+            <svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>
+            <span>Git</span>
+          </button>
+          <button class="sp-nav-item" type="button" data-sp-section="worktrees">
+            <svg class="icon" aria-hidden="true"><use href="#i-worktree"/></svg>
+            <span>Worktrees</span>
+          </button>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Right Full-Height Inset Canvas -->
+    <div class="sp-canvas-col">
+      <main class="sp-canvas">
+        <div class="sp-canvas-float-top">
+          <button class="icon-btn sp-reopen-btn" type="button" data-toggle-sidebar aria-label="Show sidebar" title="Show sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+          </button>
+          <span class="spacer"></span>
+          <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme" title="Toggle Dark / Light theme">
+            <svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg>
+          </button>
+        </div>
+
+        <div class="sp-content">
+
+          <!-- ==================== 0. PROFILE (ly yeak khai) ==================== -->
+          <section class="sp-panel" id="sp-panel-profile" hidden>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:26px">
+              <div style="display:flex;align-items:center;gap:16px">
+                <span class="profile-pop-avatar" style="width:52px;height:52px;font-size:18px;border-radius:14px">LK</span>
+                <div>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <h1 class="sp-title" style="margin:0">ly yeak khai</h1>
+                    <span class="sp-status-pill">Full-stack developer</span>
+                  </div>
+                  <div class="sp-row-desc" style="margin-top:4px">yeakhaily@gmail.com · @yeakhaily</div>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="sp-pill-btn" type="button" data-toast="Edit public profile">Edit</button>
+                <button class="sp-pill-btn" type="button" data-toast="Copied profile link">Share</button>
+              </div>
+            </div>
+
+            <div class="sp-stat-grid">
+              <div class="sp-stat-box">
+                <div class="sp-stat-label">Active streak</div>
+                <div class="sp-stat-value">14 days</div>
+                <div class="sp-stat-sub">Best: 29 days</div>
+              </div>
+              <div class="sp-stat-box">
+                <div class="sp-stat-label">Sessions completed</div>
+                <div class="sp-stat-value">128</div>
+                <div class="sp-stat-sub">Across 4 repos</div>
+              </div>
+              <div class="sp-stat-box">
+                <div class="sp-stat-label">KV cache savings</div>
+                <div class="sp-stat-value">94.2%</div>
+                <div class="sp-stat-sub">Warm 1h TTL</div>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title">Account &amp; subscription</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Current plan</div>
+                <div class="sp-row-desc">The subscription plan for this personal workspace</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-status-pill is-ok">Plus</span>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Sign out</div>
+                <div class="sp-row-desc">Remove credentials from this device. Local tasks and settings are kept.</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-danger-btn" type="button" data-toast="Signed out of this device">Sign out</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 1. ACCOUNT (Default — 1:1 Reference Match) ==================== -->
+          <section class="sp-panel" id="sp-panel-account" aria-labelledby="sp-h-account">
+            <h1 class="sp-title" id="sp-h-account">Account</h1>
+            <p class="sp-subtitle">Review your account details</p>
+
+            <h2 class="sp-group-title">Details</h2>
+
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Name</div>
+                <div class="sp-row-desc">The name associated with your account</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">ly yeak khai</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit name" data-toast="Edit account name">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Username</div>
+                <div class="sp-row-desc">Your unique handle on ChatGPT</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">@yeakhaily</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit username" data-toast="Edit username">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Email</div>
+                <div class="sp-row-desc">The email address linked to your account</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">yeakhaily@gmail.com</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit email" data-toast="Edit email address">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Plan</div>
+                <div class="sp-row-desc">The plan for your current workspace</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">Plus</span>
+              </div>
+            </div>
+
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Age</div>
+                <div class="sp-row-desc">The age range used to apply account protections</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">18 or older</span>
+              </div>
+            </div>
+
+            <div class="sp-row is-spaced">
+              <div class="sp-row-info">
+                <div class="sp-row-label">GPT builder profile</div>
+                <div class="sp-row-desc">The display name on your GPT builder profile</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val">ly yeak khai</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit GPT builder profile" data-toast="Edit GPT builder profile">
+                  <svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="sp-row is-spaced">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Delete account</div>
+                <div class="sp-row-desc">Permanently delete your account and its data</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-danger-btn" type="button" data-toast="Delete account requires confirmation">Delete</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 2. PARENTAL CONTROLS ==================== -->
+          <section class="sp-panel" id="sp-panel-parental-controls" hidden>
+            <h1 class="sp-title">Parental controls</h1>
+            <p class="sp-subtitle">Manage family links, quiet hours, and age-appropriate guardrails</p>
+
+            <h2 class="sp-group-title">Family members</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Linked family accounts</div>
+                <div class="sp-row-desc">No teen or child accounts are currently linked to your profile</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="Invite family member link copied">Link account</button>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title sp-section-gap">Safeguards</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Quiet hours</div>
+                <div class="sp-row-desc">Pause chat access during scheduled study or sleep windows</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Quiet hours"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Sensitive content filter</div>
+                <div class="sp-row-desc">Apply stricter filtering for linked teen accounts</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Sensitive content filter"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Voice &amp; image generation</div>
+                <div class="sp-row-desc">Allow linked members to use voice mode and image tools</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Voice and image generation"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 3. TRUSTED CONTACT ==================== -->
+          <section class="sp-panel" id="sp-panel-trusted-contact" hidden>
+            <h1 class="sp-title">Trusted contact</h1>
+            <p class="sp-subtitle">Designate a verified contact who can help recover access or receive safety alerts</p>
+
+            <h2 class="sp-group-title">Recovery contact</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Primary trusted contact</div>
+                <div class="sp-row-desc">No trusted contact added yet</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn is-primary" type="button" data-toast="Opened Add Trusted Contact dialog">Add contact</button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Account recovery verification</div>
+                <div class="sp-row-desc">Require a 6-digit confirmation code from your trusted contact if locked out</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Account recovery verification"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Security alert notifications</div>
+                <div class="sp-row-desc">Notify your trusted contact on unrecognized sign-ins</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Security alert notifications"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 4. USAGE & BILLING (Overview + Analytics, RayuCode Plans & Models) ==================== -->
+          <section class="sp-panel" id="sp-panel-usage-billing" data-tabs hidden>
+            <h1 class="sp-title">Usage &amp; billing</h1>
+            <p class="sp-subtitle">Track your usage and check your limits</p>
+
+            <div class="ub-tabs" role="tablist" aria-label="Usage and billing views">
+              <button class="ub-tab" type="button" role="tab" id="ub-tab-overview" aria-controls="ub-panel-overview" aria-selected="true">Overview</button>
+              <button class="ub-tab" type="button" role="tab" id="ub-tab-analytics" aria-controls="ub-panel-analytics" aria-selected="false">Analytics</button>
+            </div>
+
+            <!-- OVERVIEW TAB -->
+            <div class="ub-subpanel" id="ub-panel-overview" role="tabpanel" aria-labelledby="ub-tab-overview">
+              <h2 class="ub-sec-head">Your plan</h2>
+              <p class="ub-sec-desc">Personal &amp; Team plans share one RayuCode ladder. Manage upgrades, KHQR/card billing, or BYOK keys at <a class="ub-link" href="https://rayucode.com/plans" target="_blank" rel="noopener">rayucode.com/plans</a></p>
+
+              <div class="sp-row is-no-border" style="padding-top:4px;padding-bottom:14px">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">RayuCode Plus <span class="sp-status-pill is-ok" style="margin-left:6px">115,000 cr / mo</span></div>
+                  <div class="sp-row-desc">$20 / month · Hosted models, API access, Orchestrator, Telegram, OCR, Audio &amp; BYOK</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-collapse="ub-plans-drawer" aria-expanded="false">View all 9 plans</button>
+                </div>
+              </div>
+
+              <!-- Expandable Official RayuCode 9-Tier Plan Ladder (Personal + Team + Enterprise) -->
+              <div class="ub-plans-drawer" id="ub-plans-drawer" hidden>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Free</span><span class="ub-plan-tile-price">$0</span></div>
+                  <div class="ub-plan-tile-desc">BYOK only (30+ providers) · 50 turns/day · Full CLI &amp; MCP tools</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Basic</span><span class="ub-plan-tile-price">$3/mo</span></div>
+                  <div class="ub-plan-tile-desc">15,000 cr/mo · 3,750/wk · Hosted models, Orchestrator, Telegram, OCR/Audio</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Pro</span><span class="ub-plan-tile-price">$10/mo</span></div>
+                  <div class="ub-plan-tile-desc">50,000 cr/mo · 12,500/wk · Unlocks Hosted API access + all Basic features</div>
+                </div>
+                <div class="ub-plan-tile is-current">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Plus · Current</span><span class="ub-plan-tile-price">$20/mo</span></div>
+                  <div class="ub-plan-tile-desc">115,000 cr/mo · 28,750/wk · 1,437 cr/5h · Full hosted catalog &amp; API</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Max</span><span class="ub-plan-tile-price">$50/mo</span></div>
+                  <div class="ub-plan-tile-desc">300,000 cr/mo · 75,000/wk · 3,750 cr/5h · Largest personal allowance</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Team</span><span class="ub-plan-tile-price">$10/mo</span></div>
+                  <div class="ub-plan-tile-desc">30,000 shared cr · Unlimited seats · 7,500/member wk · Inherits Max</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Team Plus</span><span class="ub-plan-tile-price">$29/mo</span></div>
+                  <div class="ub-plan-tile-desc">100,000 shared cr · Unlimited seats · 25,000/member wk · Shared pool</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Team Max</span><span class="ub-plan-tile-price">$79/mo</span></div>
+                  <div class="ub-plan-tile-desc">400,000 shared cr · Unlimited seats · 100,000/member wk · Company-wide</div>
+                </div>
+                <div class="ub-plan-tile">
+                  <div class="ub-plan-tile-top"><span class="ub-plan-tile-name">Enterprise</span><span class="ub-plan-tile-price">Custom</span></div>
+                  <div class="ub-plan-tile-desc">Negotiated credits, custom pacing, dedicated SLA &amp; all features</div>
+                </div>
+              </div>
+
+              <h2 class="ub-sec-head" style="margin-top:18px">Plan limits &amp; pacing</h2>
+              <p class="ub-sec-desc">Shared across RayuCode CLI, Desktop, VS Code, Orchestrator subagents, API keys, and Telegram. BYOK traffic never uses Rayu credits. <a class="ub-link" href="#usage-billing" data-collapse="ub-plans-drawer" aria-expanded="false">Compare plans</a></p>
+
+              <div class="ub-limits-card">
+                <div>
+                  <div class="ub-limit-top">
+                    <div>
+                      <div class="ub-limit-name">5-hour session window</div>
+                      <div class="ub-limit-meta">5% of weekly budget (1,437 cr cap) · Resets in 3h 51m</div>
+                    </div>
+                    <span class="ub-limit-pct">1,437 / 1,437 cr (100% left)</span>
+                  </div>
+                  <div class="ub-bar"><span class="ub-bar-fill" style="width:100%"></span></div>
+                </div>
+                <div>
+                  <div class="ub-limit-top">
+                    <div>
+                      <div class="ub-limit-name">Weekly pacing budget</div>
+                      <div class="ub-limit-meta">Rolling 7-day pace (28,750 cr) · Resets in 6d 5h</div>
+                    </div>
+                    <span class="ub-limit-pct">28,750 / 28,750 cr (100% left)</span>
+                  </div>
+                  <div class="ub-bar"><span class="ub-bar-fill" style="width:100%"></span></div>
+                </div>
+                <div>
+                  <div class="ub-limit-top">
+                    <div>
+                      <div class="ub-limit-name">Monthly plan allowance</div>
+                      <div class="ub-limit-meta">RayuCode Plus · Draws before PAYG wallet · 10x cheaper on cache reads</div>
+                    </div>
+                    <span class="ub-limit-pct" style="color:var(--accent-text)">104,200 / 115,000 cr left</span>
+                  </div>
+                  <div class="ub-bar"><span class="ub-bar-fill is-accent" style="width:90.6%"></span></div>
+                </div>
+              </div>
+
+              <div class="sp-row is-no-border" style="padding:8px 0 26px">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Use all credits (disable pacing windows)</div>
+                  <div class="sp-row-desc">Basic and above control. Spend your monthly allowance without waiting for the 5-hour or weekly pacing windows to refill.</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Use all credits"></button>
+                </div>
+              </div>
+
+              <h2 class="ub-sec-head">Usage limit resets</h2>
+              <p class="ub-sec-desc" style="padding-bottom:12px;border-bottom:1px solid var(--border-soft)">Use a reset to restore your 5-hour window, weekly pacing budget, or both</p>
+
+              <div class="ub-mini-tabs" role="tablist" aria-label="Reset list">
+                <button class="ub-mini-tab" type="button" role="tab" aria-selected="true" data-toast="1 reset available">Available 1</button>
+                <button class="ub-mini-tab" type="button" role="tab" aria-selected="false" data-toast="No past resets used">History</button>
+              </div>
+
+              <div class="sp-row" style="border-top:1px solid var(--border-soft);border-bottom:none;padding-bottom:28px">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Full reset (Weekly + 5 hr)</div>
+                  <div class="sp-row-desc">Expires Dec 13, 3:30 AM GMT+7</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-toast="Full reset ready to apply">Use reset</button>
+                </div>
+              </div>
+
+              <h2 class="ub-sec-head">Pay-as-you-go (PAYG) wallet</h2>
+              <p class="ub-sec-desc" style="padding-bottom:12px;border-bottom:1px solid var(--border-soft)">Top up permanent credits via Card or KHQR (min $1, <code>/topup</code>). Plan credits spend first; PAYG never expires. <a class="ub-link" href="https://rayucode.com/plans" target="_blank" rel="noopener">Learn more</a></p>
+
+              <div class="sp-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">0 PAYG credits remaining</div>
+                  <div class="sp-row-desc">Permanent personal wallet · Separate from monthly plan allowance</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-toast="Opening /topup (Card &amp; KHQR)...">Top up</button>
+                </div>
+              </div>
+              <div class="sp-row is-no-border">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Bring Your Own Keys (BYOK)</div>
+                  <div class="sp-row-desc">Connect 30+ providers via <code>/connect</code> — never consumes Rayu credits</div>
+                </div>
+                <div class="sp-row-right">
+                  <span class="ub-promo-pill">0 Rayu cr</span>
+                  <button class="sp-pill-btn" type="button" data-toast="Opening /connect provider keys...">Manage keys</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ANALYTICS TAB -->
+            <div class="ub-subpanel" id="ub-panel-analytics" role="tabpanel" aria-labelledby="ub-tab-analytics" hidden>
+              <h2 class="ub-sec-head">Usage history</h2>
+              <p class="ub-sec-desc" style="padding-bottom:12px;border-bottom:1px solid var(--border-soft)">See how hosted credits were consumed across Chat, Orchestrator subagents, API keys, Telegram, OCR/Audio, and Media. BYOK requests are excluded.</p>
+
+              <div class="ub-controls">
+                <div class="seg">
+                  <button type="button" aria-pressed="true">7d</button>
+                  <button type="button" aria-pressed="false">30d</button>
+                </div>
+                <select class="select" aria-label="Group usage by">
+                  <option selected>By feature</option>
+                  <option>By hosted model</option>
+                  <option>By surface (CLI / Desktop / API)</option>
+                </select>
+              </div>
+
+              <div class="ub-range-row">
+                <span>Nov 16 – 22, 2026</span>
+                <div style="display:flex;gap:4px">
+                  <button class="icon-btn" type="button" aria-label="Previous week" data-toast="Showing Nov 9 – 15, 2026"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></button>
+                  <button class="icon-btn" type="button" aria-label="Next week" data-toast="Latest week"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+                </div>
+              </div>
+
+              <!-- Stacked Bar Chart -->
+              <div class="ub-chart-box">
+                <svg class="ub-chart-svg" viewBox="0 0 640 165" role="img" aria-label="Weekly usage stacked bar chart">
+                  <line x1="0" y1="20" x2="640" y2="20" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="0" y1="60" x2="640" y2="60" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="0" y1="100" x2="640" y2="100" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="0" y1="140" x2="640" y2="140" stroke="var(--border)" stroke-width="1"/>
+                  <!-- Nov 17 bar -->
+                  <rect x="130" y="102" width="32" height="38" rx="4" fill="#6AA8FF"/>
+                  <!-- Nov 20 bar -->
+                  <rect x="380" y="122" width="32" height="18" rx="4" fill="#6AA8FF"/>
+                  <!-- Nov 21 stacked bar -->
+                  <rect x="462" y="80" width="32" height="60" rx="2" fill="#E69E6C"/>
+                  <rect x="462" y="34" width="32" height="46" rx="4" fill="#6AA8FF"/>
+                  <rect x="462" y="24" width="32" height="10" rx="3" fill="#5FD19C"/>
+                  <!-- X Labels -->
+                  <text x="60" y="158" fill="var(--text-3)" font-size="11" font-family="Inter, sans-serif">Nov 16</text>
+                  <text x="304" y="158" fill="var(--text-3)" font-size="11" font-family="Inter, sans-serif">Nov 19</text>
+                  <text x="548" y="158" fill="var(--text-3)" font-size="11" font-family="Inter, sans-serif">Nov 22</text>
+                </svg>
+              </div>
+
+              <!-- 6-item Legend (RayuCode Gated Features) -->
+              <div class="ub-legend-grid">
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#6AA8FF"></span><div><div class="ub-legend-lbl">Hosted Chat &amp; CLI</div><div class="ub-legend-val">54.2%</div></div></div>
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#E69E6C"></span><div><div class="ub-legend-lbl">Orchestrator &amp; Subagents</div><div class="ub-legend-val">34.8%</div></div></div>
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#5FD19C"></span><div><div class="ub-legend-lbl">Hosted API Access</div><div class="ub-legend-val">6.4%</div></div></div>
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#E57399"></span><div><div class="ub-legend-lbl">Telegram Bot Remote</div><div class="ub-legend-val">2.9%</div></div></div>
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#A78BFA"></span><div><div class="ub-legend-lbl">OCR &amp; Audio (STT/TTS)</div><div class="ub-legend-val">1.2%</div></div></div>
+                <div class="ub-legend-item"><span class="ub-legend-bar" style="background:#4FD1C5"></span><div><div class="ub-legend-lbl">Image &amp; Video Gen</div><div class="ub-legend-val">0.5%</div></div></div>
+              </div>
+
+              <!-- Top Sessions -->
+              <h2 class="ub-sec-head">Top sessions</h2>
+              <p class="ub-sec-desc">Compare each session's 5h window, weekly pace, and hosted credits spent</p>
+              <table class="ub-table">
+                <thead>
+                  <tr>
+                    <th>Session</th>
+                    <th class="num">% of 5h window</th>
+                    <th class="num">% of weekly pace</th>
+                    <th class="num">Credits used</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="ub-chat-cell"><svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>Retire legacy session cache</span></td>
+                    <td class="num">86.15%</td>
+                    <td class="num">13.46%</td>
+                    <td class="num">3,870</td>
+                  </tr>
+                  <tr>
+                    <td><span class="ub-chat-cell"><svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>Gateway: retry budget tests</span></td>
+                    <td class="num">74.15%</td>
+                    <td class="num">11.59%</td>
+                    <td class="num">3,332</td>
+                  </tr>
+                  <tr>
+                    <td><span class="ub-chat-cell"><svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>VS Code: model picker refresh</span></td>
+                    <td class="num">59.6%</td>
+                    <td class="num">9.31%</td>
+                    <td class="num">2,676</td>
+                  </tr>
+                  <tr>
+                    <td><span class="ub-chat-cell"><svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>Desktop v1 migration plan MD</span></td>
+                    <td class="num">18.4%</td>
+                    <td class="num">3.21%</td>
+                    <td class="num">922</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style="margin:12px 0 34px">
+                <button class="sp-pill-btn" type="button" data-toast="Loaded all 12 recent sessions">Show more</button>
+              </div>
+
+              <!-- Tool Activity -->
+              <div class="ub-controls" style="margin-bottom:4px">
+                <div>
+                  <h2 class="ub-sec-head">Tool activity</h2>
+                  <p class="ub-sec-desc" style="margin-bottom:0">See which MCP plugins and skills were used over time. Updated Nov 21, 11:54 PM UTC</p>
+                </div>
+                <div class="seg">
+                  <button type="button" aria-pressed="true">7d</button>
+                  <button type="button" aria-pressed="false">30d</button>
+                </div>
+              </div>
+              <div style="border-top:1px solid var(--border-soft);padding-top:14px;margin-top:12px">
+                <div class="sp-stat-label">Plugins &amp; skills called</div>
+                <div class="ub-metric-big">24</div>
+                <svg class="ub-chart-svg" viewBox="0 0 640 150" role="img" aria-label="Tool activity line chart">
+                  <text x="0" y="18" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">15</text>
+                  <text x="0" y="54" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">10</text>
+                  <text x="4" y="90" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">5</text>
+                  <text x="4" y="126" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">0</text>
+                  <line x1="28" y1="14" x2="640" y2="14" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="50" x2="640" y2="50" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="86" x2="640" y2="86" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="122" x2="640" y2="122" stroke="var(--border)" stroke-width="1"/>
+                  <polyline fill="none" stroke="#6AA8FF" stroke-width="2" points="28,122 130,122 232,122 334,122 436,122 538,26 636,122"/>
+                  <polyline fill="none" stroke="#E69E6C" stroke-width="2" points="28,122 130,122 232,122 334,122 436,122 538,42 636,122"/>
+                  <text x="28" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 16</text>
+                  <text x="316" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 19</text>
+                  <text x="598" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 22</text>
+                </svg>
+                <div class="ub-dot-legend">
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#6AA8FF"></span>Chrome DevTools</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#E69E6C"></span>GitHub Workflow</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#5FD19C"></span>Office / MD Preview</span>
+                </div>
+              </div>
+
+              <!-- Messages by Official RayuCode Hosted Models -->
+              <div class="ub-controls" style="margin-top:34px;margin-bottom:4px">
+                <div>
+                  <h2 class="ub-sec-head">Messages by hosted model</h2>
+                  <p class="ub-sec-desc" style="margin-bottom:0">Track requests across RayuCode's hosted catalog (10+ models on Basic and above)</p>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <div class="seg">
+                    <button type="button" aria-pressed="true">7d</button>
+                    <button type="button" aria-pressed="false">30d</button>
+                  </div>
+                  <div class="seg">
+                    <button type="button" aria-pressed="true">By model</button>
+                    <button type="button" aria-pressed="false">By surface</button>
+                  </div>
+                </div>
+              </div>
+              <div style="border-top:1px solid var(--border-soft);padding-top:14px;margin-top:12px">
+                <div class="sp-stat-label">Messages</div>
+                <div class="ub-metric-big">113</div>
+                <svg class="ub-chart-svg" viewBox="0 0 640 150" role="img" aria-label="Messages by hosted model line chart">
+                  <text x="0" y="18" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">45</text>
+                  <text x="0" y="54" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">30</text>
+                  <text x="0" y="90" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">15</text>
+                  <text x="4" y="126" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">0</text>
+                  <line x1="28" y1="14" x2="640" y2="14" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="50" x2="640" y2="50" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="86" x2="640" y2="86" stroke="var(--border-soft)" stroke-width="1"/>
+                  <line x1="28" y1="122" x2="640" y2="122" stroke="var(--border)" stroke-width="1"/>
+                  <polyline fill="none" stroke="#6AA8FF" stroke-width="2" points="28,122 130,20 232,120 334,118 436,120 538,122 636,122"/>
+                  <polyline fill="none" stroke="#E69E6C" stroke-width="2" points="28,122 130,122 232,122 334,118 436,44 538,98 636,122"/>
+                  <polyline fill="none" stroke="#5FD19C" stroke-width="2" points="28,122 130,122 232,122 334,122 436,115 538,94 636,122"/>
+                  <polyline fill="none" stroke="#E57399" stroke-width="2" points="28,122 130,116 232,120 334,116 436,108 538,120 636,122"/>
+                  <polyline fill="none" stroke="#A78BFA" stroke-width="2" points="28,122 130,120 232,122 334,120 436,118 538,122 636,122"/>
+                  <text x="28" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 16</text>
+                  <text x="316" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 19</text>
+                  <text x="598" y="144" fill="var(--text-3)" font-size="10.5" font-family="Inter, sans-serif">Nov 22</text>
+                </svg>
+                <div class="ub-dot-legend">
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#6AA8FF"></span>deepseek-v4-pro</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#E69E6C"></span>deepseek-v4-flash</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#5FD19C"></span>longcat-2</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#E57399"></span>kimi-k2.7</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#A78BFA"></span>qwen3.5-397b</span>
+                  <span class="ub-dot-item"><span class="ub-dot" style="background:#4FD1C5"></span>glm-5.2</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 5. GENERAL ==================== -->
+          <section class="sp-panel" id="sp-panel-general" hidden>
+            <h1 class="sp-title">General</h1>
+            <p class="sp-subtitle">Configure language, startup behavior, and default workspace preferences</p>
+
+            <h2 class="sp-group-title">Workspace</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Language</div>
+                <div class="sp-row-desc">Display language for menus, labels, and system messages</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Language">
+                  <option selected>Auto-detect (English)</option>
+                  <option>English (US)</option>
+                  <option>Khmer</option>
+                  <option>Japanese</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Default model</div>
+                <div class="sp-row-desc">Used for new chats and CLI sessions without an explicit override</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Default model">
+                  <option selected>choeng-rayu-1 · Medium</option>
+                  <option>choeng-rayu-1 · High</option>
+                  <option>choeng-rayu-1-mini · Fast</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Launch at login</div>
+                <div class="sp-row-desc">Start RayuCode quietly in the menu bar when macOS starts</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Launch at login"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Automatic updates</div>
+                <div class="sp-row-desc">Download desktop and CLI daemon updates in the background</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Automatic updates"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">App version</div>
+                <div class="sp-row-desc">RayuCode Desktop v1.0.4 (arm64) · Up to date</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="RayuCode Desktop v1.0.4 is up to date">Check for updates</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 6. APPEARANCE ==================== -->
+          <section class="sp-panel" id="sp-panel-appearance" hidden>
+            <h1 class="sp-title">Appearance</h1>
+            <p class="sp-subtitle">Customize theme, typography, and interface density</p>
+
+            <h2 class="sp-group-title">Theme</h2>
+            <div class="sp-theme-grid">
+              <button class="sp-theme-card" type="button" data-theme-set="dark" aria-pressed="true">
+                <div class="sp-theme-preview is-dark"><div class="tp-rail"></div><div class="tp-main"><div class="tp-bar"></div><div class="tp-bar is-short"></div></div></div>
+                <div class="sp-theme-name"><span>Warm Graphite Dark</span></div>
+              </button>
+              <button class="sp-theme-card" type="button" data-theme-set="light" aria-pressed="false">
+                <div class="sp-theme-preview is-light"><div class="tp-rail"></div><div class="tp-main"><div class="tp-bar"></div><div class="tp-bar is-short"></div></div></div>
+                <div class="sp-theme-name"><span>Warm Paper Light</span></div>
+              </button>
+              <button class="sp-theme-card" type="button" aria-pressed="false" data-toast="Synced with macOS system appearance">
+                <div class="sp-theme-preview is-sys"><div class="tp-rail"></div><div class="tp-main"><div class="tp-bar"></div><div class="tp-bar is-short"></div></div></div>
+                <div class="sp-theme-name"><span>Match System</span></div>
+              </button>
+            </div>
+
+            <h2 class="sp-group-title">Accent color</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Interface &amp; link accent</div>
+                <div class="sp-row-desc">Choose Rayu Green (brand default) or Ocean Blue for clickable code references, highlights, and primary actions</div>
+              </div>
+              <div class="sp-row-right">
+                <div class="accent-swatches">
+                  <button class="accent-pill" type="button" data-accent-set="green" aria-pressed="true"><span class="accent-dot is-green"></span>Rayu Green</button>
+                  <button class="accent-pill" type="button" data-accent-set="blue" aria-pressed="false"><span class="accent-dot is-blue"></span>Ocean Blue</button>
+                </div>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title">Typography &amp; layout</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Code font</div>
+                <div class="sp-row-desc">Monospace typeface for diffs, terminal, and inline snippets</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Code font">
+                  <option selected>JetBrains Mono</option>
+                  <option>SF Mono</option>
+                  <option>Berkeley Mono</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Font size</div>
+                <div class="sp-row-desc">Base UI and conversation reading scale</div>
+              </div>
+              <div class="sp-row-right">
+                <div class="seg">
+                  <button type="button" aria-pressed="false">Compact</button>
+                  <button type="button" aria-pressed="true">Default</button>
+                  <button type="button" aria-pressed="false">Large</button>
+                </div>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Reduce motion</div>
+                <div class="sp-row-desc">Minimize popover and sidebar transition animations</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Reduce motion"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 7. NOTIFICATIONS ==================== -->
+          <section class="sp-panel" id="sp-panel-notifications" hidden>
+            <h1 class="sp-title">Notifications</h1>
+            <p class="sp-subtitle">Choose when RayuCode alerts you across desktop and mobile</p>
+
+            <h2 class="sp-group-title">Desktop alerts</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Agent turn completed</div>
+                <div class="sp-row-desc">Notify when a long-running task or Swarm finishes in the background</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Agent turn completed"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Permission &amp; approval requests</div>
+                <div class="sp-row-desc">Alert immediately when a command or file edit needs confirmation</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Permission requests"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Completion sound</div>
+                <div class="sp-row-desc">Play a subtle chime when responses finish</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Completion sound">
+                  <option selected>Soft glass</option>
+                  <option>Pop</option>
+                  <option>None</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Telegram remote push</div>
+                <div class="sp-row-desc">Forward approval prompts to your paired Telegram bot when away</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Telegram remote push"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 8. VOICE ==================== -->
+          <section class="sp-panel" id="sp-panel-voice" hidden>
+            <h1 class="sp-title">Voice</h1>
+            <p class="sp-subtitle">Configure microphone dictation, push-to-talk, and spoken responses</p>
+
+            <h2 class="sp-group-title">Audio input &amp; output</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Input microphone</div>
+                <div class="sp-row-desc">Device used for composer dictation and voice mode</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Input microphone">
+                  <option selected>MacBook Pro Microphone (Default)</option>
+                  <option>AirPods Pro</option>
+                  <option>USB Studio Mic</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Voice style</div>
+                <div class="sp-row-desc">Spoken voice used when reading replies aloud</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Voice style">
+                  <option selected>Breeze · Calm</option>
+                  <option>Ember · Warm</option>
+                  <option>Juniper · Crisp</option>
+                </select>
+                <button class="sp-pill-btn" type="button" data-toast="Playing Breeze voice preview...">Preview</button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-send after silence</div>
+                <div class="sp-row-desc">Submit dictated prompts automatically after 1.5s of silence</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Auto-send after silence"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Background noise suppression</div>
+                <div class="sp-row-desc">Filter keyboard clicks and fan noise during dictation</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Noise suppression"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 9. CONFIGURATION ==================== -->
+          <section class="sp-panel" id="sp-panel-configuration" hidden>
+            <h1 class="sp-title">Configuration</h1>
+            <p class="sp-subtitle">Inspect gateway routing, KV prompt cache TTL, and local CLI config files</p>
+
+            <h2 class="sp-group-title">Runtime &amp; gateway</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Prompt KV cache TTL</div>
+                <div class="sp-row-desc">Shared across Desktop and CLI via <code>/cache</code></div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Prompt KV cache TTL">
+                  <option>5m TTL</option>
+                  <option selected>1h TTL (warm)</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Default local permissions</div>
+                <div class="sp-row-desc">Tool approval policy for newly created sessions</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Default permissions">
+                  <option selected>Ask (Default)</option>
+                  <option>Auto-edit</option>
+                  <option>Plan</option>
+                  <option>Full Manage</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Config file</div>
+                <div class="sp-row-desc">Synced live with <code>~/.rayu/config.toml</code></div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="Opened ~/.rayu/config.toml in editor">Open file</button>
+              </div>
+            </div>
+
+            <pre class="sp-code">[gateway]
+order = ["rayu-primary", "rayu-fallback"]
+default_model = "choeng-rayu-1"
+effort = "medium"
+
+[cache]
+kv_ttl = "1h"
+warm_preload = true</pre>
+          </section>
+
+          <!-- ==================== 10. PERSONALIZATION ==================== -->
+          <section class="sp-panel" id="sp-panel-personalization" hidden>
+            <h1 class="sp-title">Personalization</h1>
+            <p class="sp-subtitle">Tailor tone, custom instructions, and durable cross-session memory</p>
+
+            <h2 class="sp-group-title">Custom instructions</h2>
+            <div style="padding:14px 0 6px">
+              <div class="sp-row-label">How should RayuCode respond to you?</div>
+              <div class="sp-row-desc">Applied across new conversations and CLI runs</div>
+              <textarea class="sp-textarea" aria-label="Custom instructions">Prefer concise, direct answers with clickable file links. Match existing repository patterns and verify UI edits with real browser renders.</textarea>
+              <div style="display:flex;justify-content:flex-end;margin-top:10px">
+                <button class="sp-pill-btn is-primary" type="button" data-toast="Saved custom instructions">Save instructions</button>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title sp-section-gap">Memory</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Reference saved memories</div>
+                <div class="sp-row-desc">Load durable memory files from <code>~/.rayu/memory/</code> automatically</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Reference saved memories"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Saved memory files</div>
+                <div class="sp-row-desc">2 active files · 406 tokens</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="2 memory files active: rayucode-v2.md, shard-store.md">Manage</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 11. MINI & PETS ==================== -->
+          <section class="sp-panel" id="sp-panel-mini-pets" hidden>
+            <h1 class="sp-title">Mini &amp; Pets</h1>
+            <p class="sp-subtitle">Control the floating desktop companion and quick mini launcher</p>
+
+            <div class="sp-pet-stage">
+              <img src="../assets/rayu-fox.png" alt="Rayu Fox companion">
+              <div style="flex:1;min-width:0">
+                <div class="sp-row-label" style="font-size:15px">Rayu Fox</div>
+                <div class="sp-row-desc">Reacts to Thinking, Grepping, Editing, and completed builds on your desktop.</div>
+              </div>
+              <button class="sp-pill-btn" type="button" data-toast="Pet companion toggled (⌥Space)">Toggle pet · ⌥Space</button>
+            </div>
+
+            <h2 class="sp-group-title">Behavior</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Show Pet on desktop</div>
+                <div class="sp-row-desc">Keep your companion visible above other windows</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Show Pet on desktop"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Quick mini bar shortcut</div>
+                <div class="sp-row-desc">Summon the floating mini prompt from any app</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-kbd-keys"><kbd class="sp-kbd">⌥</kbd><kbd class="sp-kbd">Space</kbd></span>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Resting corner</div>
+                <div class="sp-row-desc">Default screen edge where your pet perches</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Resting corner">
+                  <option selected>Bottom right</option>
+                  <option>Bottom left</option>
+                  <option>Menu bar</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 12. KEYBOARD SHORTCUTS ==================== -->
+          <section class="sp-panel" id="sp-panel-keyboard-shortcuts" hidden>
+            <h1 class="sp-title">Keyboard shortcuts</h1>
+            <p class="sp-subtitle">Fast navigation and controls across the desktop workspace</p>
+
+            <h2 class="sp-group-title">Global &amp; navigation</h2>
+            <div class="sp-row">
+              <div class="sp-row-info"><div class="sp-row-label">Show Pet / Mini launcher</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⌥</kbd><kbd class="sp-kbd">Space</kbd></span></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info"><div class="sp-row-label">Toggle left sidebar</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⇧</kbd><kbd class="sp-kbd">⌘</kbd><kbd class="sp-kbd">S</kbd></span></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info"><div class="sp-row-label">Open Settings</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⌘</kbd><kbd class="sp-kbd">,</kbd></span></div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info"><div class="sp-row-label">Search conversations</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⌘</kbd><kbd class="sp-kbd">K</kbd></span></div>
+            </div>
+
+            <h2 class="sp-group-title sp-section-gap">Composer &amp; permissions</h2>
+            <div class="sp-row">
+              <div class="sp-row-info"><div class="sp-row-label">Send message</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">Return</kbd></span></div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info"><div class="sp-row-label">Insert new line</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⇧</kbd><kbd class="sp-kbd">Return</kbd></span></div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info"><div class="sp-row-label">Cycle local permission mode</div></div>
+              <div class="sp-row-right"><span class="sp-kbd-keys"><kbd class="sp-kbd">⇧</kbd><kbd class="sp-kbd">Tab</kbd></span></div>
+            </div>
+          </section>
+
+          <!-- ==================== 13. IMPORT ==================== -->
+          <section class="sp-panel" id="sp-panel-import" hidden>
+            <h1 class="sp-title">Import</h1>
+            <p class="sp-subtitle">Bring existing sessions, MCP configs, and memories into RayuCode</p>
+
+            <h2 class="sp-group-title">Detected local sources</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Rayu CLI (~/.rayu)</div>
+                  <div class="sp-row-desc">12 sessions · 2 memory files · gateway auth synced</div>
+                </div>
+                <button class="sp-pill-btn is-primary" type="button" data-toast="Imported 12 sessions from Rayu CLI">Import</button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Claude Code (~/.claude)</div>
+                  <div class="sp-row-desc">Import skills, MCP servers, and project instructions</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Scanned ~/.claude for MCP servers &amp; skills">Import</button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">ChatGPT / JSON archive</div>
+                  <div class="sp-row-desc">Import exported conversations.json into searchable recents</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Choose conversations.json file...">Choose file</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 14. ARCHIVED CHATS ==================== -->
+          <section class="sp-panel" id="sp-panel-archived-chats" hidden>
+            <h1 class="sp-title">Archived chats</h1>
+            <p class="sp-subtitle">Restore older conversations or permanently clear them from this device</p>
+
+            <h2 class="sp-group-title">Archived · 3</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Migrate ShardStore index to v2</div>
+                  <div class="sp-row-desc">rayucode-v2 · Archived Nov 18, 2026</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-toast="Restored conversation to Recents">Restore</button>
+                  <button class="sp-danger-btn" type="button" data-toast="Deleted archived chat">Delete</button>
+                </div>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Draft Q3 API rate-limit RFC</div>
+                  <div class="sp-row-desc">specs-and-docs · Archived Nov 10, 2026</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-toast="Restored conversation to Recents">Restore</button>
+                  <button class="sp-danger-btn" type="button" data-toast="Deleted archived chat">Delete</button>
+                </div>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Audit Tailwind v4 token cleanup</div>
+                  <div class="sp-row-desc">rayu-web · Archived Oct 29, 2026</div>
+                </div>
+                <div class="sp-row-right">
+                  <button class="sp-pill-btn" type="button" data-toast="Restored conversation to Recents">Restore</button>
+                  <button class="sp-danger-btn" type="button" data-toast="Deleted archived chat">Delete</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 15. DEVICE STORAGE ==================== -->
+          <section class="sp-panel" id="sp-panel-device-storage" hidden>
+            <h1 class="sp-title">Device storage</h1>
+            <p class="sp-subtitle">Inspect local disk usage for prompt caches, sessions, and preview artifacts</p>
+
+            <div class="sp-card" style="margin-top:0;margin-bottom:24px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline">
+                <span class="sp-row-label">Total used on this Mac</span>
+                <span class="sp-row-val mono">418 MB</span>
+              </div>
+              <div class="sp-meter">
+                <span class="sp-meter-seg" style="width:46%"></span>
+                <span class="sp-meter-seg is-blue" style="width:28%"></span>
+                <span class="sp-meter-seg is-amber" style="width:16%"></span>
+                <span class="sp-meter-seg is-purple" style="width:10%"></span>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title">Breakdown</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">KV prompt cache</div>
+                <div class="sp-row-desc">Warm local cache accelerating repeated repo context</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">192 MB</span>
+                <button class="sp-pill-btn" type="button" data-toast="Cleared 192 MB KV cache">Clear</button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Preview &amp; Appshot artifacts</div>
+                <div class="sp-row-desc">Cached Office renders, screenshots, and browser snapshots</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">118 MB</span>
+                <button class="sp-pill-btn" type="button" data-toast="Cleared 118 MB preview cache">Clear</button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Session transcripts &amp; logs</div>
+                <div class="sp-row-desc">Local conversation database in <code>~/.rayu/sessions/</code></div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">108 MB</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 16. DATA CONTROLS ==================== -->
+          <section class="sp-panel" id="sp-panel-data-controls" hidden>
+            <h1 class="sp-title">Data controls</h1>
+            <p class="sp-subtitle">Control how your prompts, telemetry, and exports are handled</p>
+
+            <h2 class="sp-group-title">Privacy</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Improve the model for everyone</div>
+                <div class="sp-row-desc">Allow anonymized snippets to help improve future models</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Improve the model"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Crash diagnostics</div>
+                <div class="sp-row-desc">Send redacted stack traces when the desktop daemon crashes</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Crash diagnostics"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Export account data</div>
+                <div class="sp-row-desc">Download a portable archive of all chats, settings, and memories</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="Preparing data export archive...">Export</button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Delete all chats</div>
+                <div class="sp-row-desc">Permanently remove all active and archived conversations</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-danger-btn" type="button" data-toast="Confirm deleting all chats">Delete all</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 17. PLUGINS (Exact Same Design as plugins.html) ==================== -->
+          <section class="sp-panel" id="sp-panel-plugins" hidden>
+            <div class="plugins-page">
+              <header class="plugins-header">
+                <div>
+                  <h1 class="plugins-title">Plugins</h1>
+                  <p class="plugins-sub">Connect plugins to let RayuCode work across your tools</p>
+                  <div class="plugins-filter-row">
+                    <button class="plugins-pill is-active" type="button">Public</button>
+                  </div>
+                </div>
+
+                <div class="plugins-tools">
+                  <label class="plugins-search">
+                    <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                    <input id="plugin-search-input" type="search" placeholder="Search plugins" aria-label="Search plugins">
+                  </label>
+                  <button class="icon-btn" type="button" aria-label="Refresh plugins" data-toast="Plugin registry synced"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+                  <div class="dropdown">
+                    <button class="plugins-add-btn" type="button" data-dropdown="sp-add-plugin-menu" aria-expanded="false">
+                      Add
+                      <svg class="icon" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                    </button>
+                    <div class="dropdown-pop" id="sp-add-plugin-menu" data-dropdown-menu hidden>
+                      <div class="dropdown-head">Add Custom Integration</div>
+                      <button class="dropdown-item" type="button" data-toast="Opened MCP server config (~/.rayu/mcp.json)"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg>Connect MCP server<span class="d-sub">stdio / SSE</span></button>
+                      <button class="dropdown-item" type="button" data-toast="Import local plugin manifest"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>Load local plugin<span class="d-sub">manifest.json</span></button>
+                    </div>
+                  </div>
+                </div>
+              </header>
+
+              <section class="plugins-section">
+                <h2 class="plugins-sec-head">Popular <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+                <div class="plugins-grid">
+                  <div class="plugin-item" data-search="gmail google email mail popular">
+                    <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><g transform="translate(6 9.5) scale(0.933)"><path fill="#4285F4" d="M2.5 22.5h4.5V11.2L0 6v14a2.5 2.5 0 0 0 2.5 2.5Z"/><path fill="#34A853" d="M23 22.5h4.5A2.5 2.5 0 0 0 30 20V6l-7 5.2v11.3Z"/><path fill="#FBBC04" d="M23 2.5v8.7L30 6V3.5A3.5 3.5 0 0 0 24.4.7L23 2.5Z"/><path fill="#EA4335" d="M7 11.2V2.5L15 8.5l8-6v8.7l-8 6-8-6Z"/><path fill="#C5221F" d="M0 3.5V6l7 5.2V2.5L5.6.7A3.5 3.5 0 0 0 0 3.5Z"/></g></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Gmail</div><div class="plugin-desc">Read and manage Gmail</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="Gmail" aria-pressed="false" aria-label="Install Gmail"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="google drive docs sheets slides popular">
+                    <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><g transform="translate(8 9.2) scale(0.86)"><path fill="#0066DA" d="M4.6 24.3 6.3 27.2c.4.7.9 1.2 1.6 1.6l5-8.7H2.9c0 .8.2 1.6.6 2.3l1.1 1.9Z"/><path fill="#00AC47" d="M15 10.1 10 1.4c-.7.4-1.2.9-1.6 1.6L1.9 14.3a4.6 4.6 0 0 0-.6 2.3h10l3.7-6.5Z"/><path fill="#EA4335" d="M22.1 28.8c.7-.4 1.2-.9 1.6-1.6l1.7-2.9 1.1-1.9c.4-.7.6-1.5.6-2.3h-10l2.1 4.2 2.9 4.5Z"/><path fill="#00832D" d="M15 10.1 20 1.4a4.6 4.6 0 0 0-2.3-.6h-5.4a4.6 4.6 0 0 0-2.3.6l5 8.7Z"/><path fill="#2684FC" d="M17.1 20.1h-4.2l-5 8.7c.7.4 1.5.6 2.3.6h9.6c.8 0 1.6-.2 2.3-.6l-5-8.7Z"/><path fill="#FFBA00" d="M24.2 14.3 18.6 4.5l-.9-1.5a4.6 4.6 0 0 0-1.6-1.6l-5 8.7 5.8 10h10.2c0-.8-.2-1.6-.6-2.3l-2.3-3.5Z"/></g></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Google Drive</div><div class="plugin-desc">Drive, Docs, Sheets or Slides</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="Google Drive" aria-pressed="false" aria-label="Install Google Drive"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="health apple fitness wellness popular">
+                    <div class="plugin-logo" style="background:#1F1F22" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><path fill="#E53946" d="M20 8.5c2.2 0 3.7 1.3 5.2 2.2 1.6.9 3.6 1 4.6 2.7 1 1.7.4 3.5.7 5.2.3 1.8 1.5 3.2.9 5-.6 1.8-2.4 2.5-3.5 3.9-1.2 1.4-1.7 3.3-3.5 3.9-1.8.6-3.4-.5-5.3-.5-1.9 0-3.5 1.1-5.3.5-1.8-.6-2.3-2.5-3.5-3.9-1.1-1.4-2.9-2.1-3.5-3.9-.6-1.8.6-3.2.9-5 .3-1.7-.3-3.5.7-5.2 1-1.7 3-1.8 4.6-2.7 1.5-.9 3-2.2 5.2-2.2Z"/><path fill="#FFFFFF" d="M20 26.2s-5.8-3.6-5.8-7.4a3.3 3.3 0 0 1 5.8-2.1 3.3 3.3 0 0 1 5.8 2.1c0 3.8-5.8 7.4-5.8 7.4Z"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Health</div><div class="plugin-desc">Explore your health data</div></div>
+                    <button class="plugin-action" type="button" data-toast="Health requires macOS Apple Health permission" aria-label="Health plugin info"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="remote desktop commander computer terminal popular">
+                    <div class="plugin-logo" style="background:#1A1A1D" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><path fill="#FFFFFF" d="M8.5 13h6.2c4 0 6.8 2.7 6.8 7s-2.8 7-6.8 7H8.5V13Zm3.4 3v8h2.6c2.2 0 3.5-1.5 3.5-4s-1.3-4-3.5-4h-2.6Z"/><path fill="#FFFFFF" d="M28.6 15.8c-2 0-3.3 1.6-3.3 4.2s1.3 4.2 3.3 4.2c1.2 0 2.1-.5 2.7-1.4l2.4 1.8c-1.1 1.6-2.8 2.6-5.2 2.6-4.1 0-6.8-2.9-6.8-7.2s2.7-7.2 6.8-7.2c2.4 0 4.1 1 5.2 2.6l-2.4 1.8c-.6-.9-1.5-1.4-2.7-1.4Z"/><rect x="27.5" y="18.7" width="4.2" height="2.6" rx="0.6" fill="#FFFFFF"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Remote Desktop Commander</div><div class="plugin-desc">Use your computer from chat</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="Remote Desktop Commander" aria-pressed="false" aria-label="Install Remote Desktop Commander"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="writing style prose copywriter popular">
+                    <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><path fill="none" stroke="#18181B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M13.5 26.5c1.5-5.6 4.2-9.6 9.8-12.8 1.6-.9 3.6.3 3.2 2.1-1.1 5-4.7 8.4-10.3 9.7l-2.7 1Zm0 0 6.2-6.2"/><circle cx="20.2" cy="19.8" r="1.2" fill="#18181B"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Writing Style</div><div class="plugin-desc">Write with context from your own writing</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="Writing Style" aria-pressed="false" aria-label="Install Writing Style"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="github git pr issues ci popular">
+                    <div class="plugin-logo" style="background:#18181B" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><path fill="#FFFFFF" d="M20 8.5A11.5 11.5 0 0 0 8.5 20c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.95c-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.08-.12-.29-.51-1.46.11-3.04 0 0 .97-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.08 0 4.41-2.69 5.39-5.26 5.67.42.36.79 1.07.79 2.15v3.19c0 .31.21.67.8.55A11.5 11.5 0 0 0 31.5 20 11.5 11.5 0 0 0 20 8.5Z"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">GitHub</div><div class="plugin-desc">Triage PRs, issues, CI, and publish flows</div></div>
+                    <button class="plugin-action is-installed" type="button" data-plugin-toggle="GitHub" aria-pressed="true" aria-label="Installed GitHub"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="plugins-section">
+                <h2 class="plugins-sec-head">New &amp; Noteworthy <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg></h2>
+                <div class="plugins-grid">
+                  <div class="plugin-item" data-search="icloud mail apple email new noteworthy">
+                    <div class="plugin-logo" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><defs><linearGradient id="sp-g-imail" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4EB3FF"/><stop offset="100%" stop-color="#1A75F5"/></linearGradient></defs><rect width="40" height="40" fill="url(#sp-g-imail)"/><rect x="8.5" y="12.5" width="23" height="15" rx="2.5" fill="#FFFFFF"/><path d="M9.5 13.5 20 21.3l10.5-7.8" fill="none" stroke="#1E7BF5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">iCloud Mail</div><div class="plugin-desc">Read and manage iCloud email</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="iCloud Mail" aria-pressed="false" aria-label="Install iCloud Mail"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="icloud calendar apple events schedule new noteworthy">
+                    <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><rect width="40" height="40" fill="#FFFFFF"/><text x="20" y="13.5" text-anchor="middle" fill="#FF3B30" font-family="Inter, sans-serif" font-size="8" font-weight="700">Tue</text><text x="20" y="31.5" text-anchor="middle" fill="#18181B" font-family="Inter, sans-serif" font-size="19.5" font-weight="600">1</text></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">iCloud Calendar</div><div class="plugin-desc">Read and manage iCloud events</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="iCloud Calendar" aria-pressed="false" aria-label="Install iCloud Calendar"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="elevenlabs voice audio agents media tts new noteworthy">
+                    <div class="plugin-logo" style="background:#0F0F11" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><rect x="15.5" y="12.5" width="3.2" height="15" rx="0.6" fill="#FFFFFF"/><rect x="21.3" y="12.5" width="3.2" height="15" rx="0.6" fill="#FFFFFF"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">ElevenLabs</div><div class="plugin-desc">Voice agents and media</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="ElevenLabs" aria-pressed="false" aria-label="Install ElevenLabs"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+
+                  <div class="plugin-item" data-search="tripsy travel trips itinerary new noteworthy">
+                    <div class="plugin-logo" style="background:#FFFFFF" aria-hidden="true">
+                      <svg viewBox="0 0 40 40"><defs><linearGradient id="sp-g-tripsy" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FB923C"/><stop offset="100%" stop-color="#EA580C"/></linearGradient></defs><path d="M15.5 13.5v-2.2a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v2.2" fill="none" stroke="#EA580C" stroke-width="2.2" stroke-linecap="round"/><rect x="8.5" y="13.5" width="23" height="17" rx="4.5" fill="url(#sp-g-tripsy)"/><rect x="13" y="13.5" width="2.4" height="17" fill="#FFFFFF" opacity="0.28"/></svg>
+                    </div>
+                    <div class="plugin-info"><div class="plugin-name">Tripsy</div><div class="plugin-desc">Manage trips and itineraries</div></div>
+                    <button class="plugin-action" type="button" data-plugin-toggle="Tripsy" aria-pressed="false" aria-label="Install Tripsy"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <!-- ==================== 18. PASSWORDS ==================== -->
+          <section class="sp-panel" id="sp-panel-passwords" hidden>
+            <h1 class="sp-title">Passwords</h1>
+            <p class="sp-subtitle">Encrypted local keychain for API tokens and environment secrets</p>
+
+            <h2 class="sp-group-title">Stored secrets</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label mono">RAYU_GATEWAY_TOKEN</div>
+                  <div class="sp-row-desc">macOS Keychain · Last used 2m ago</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Rotated RAYU_GATEWAY_TOKEN">Rotate</button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label mono">GITHUB_PERSONAL_TOKEN</div>
+                  <div class="sp-row-desc">macOS Keychain · Scopes: repo, read:org</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Revoked token confirmation required">Manage</button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label mono">TELEGRAM_BOT_SECRET</div>
+                  <div class="sp-row-desc">macOS Keychain · Linked to @rayucode_bot</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Verified Telegram webhook secret">Verify</button>
+              </div>
+            </div>
+            <div style="margin-top:16px">
+              <button class="sp-pill-btn is-primary" type="button" data-toast="Add new encrypted secret to Keychain">Add secret</button>
+            </div>
+          </section>
+
+          <!-- ==================== 19. COMPUTER USE ==================== -->
+          <section class="sp-panel" id="sp-panel-computer-use" hidden>
+            <h1 class="sp-title">Computer use</h1>
+            <p class="sp-subtitle">Grant macOS permissions and guardrails for desktop UI automation</p>
+
+            <h2 class="sp-group-title">System permissions</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Screen Recording</div>
+                <div class="sp-row-desc">Required so agents can inspect windows and verify layouts</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-status-pill is-ok"><span class="sp-status-dot"></span>Granted</span>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Accessibility control</div>
+                <div class="sp-row-desc">Allows clicking controls and typing in authorized apps</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-status-pill is-warn"><span class="sp-status-dot"></span>Needs approval</span>
+                <button class="sp-pill-btn" type="button" data-toast="Opening macOS Privacy &amp; Security...">Grant</button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Require confirmation before input</div>
+                <div class="sp-row-desc">Pause before clicking submit buttons or running destructive actions</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Require confirmation"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 20. APPSHOTS ==================== -->
+          <section class="sp-panel" id="sp-panel-appshots" hidden>
+            <h1 class="sp-title">Appshots</h1>
+            <p class="sp-subtitle">Automatic visual snapshots for UI diffs, QA timelines, and design review</p>
+
+            <h2 class="sp-group-title">Capture settings</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-capture after UI edits</div>
+                <div class="sp-row-desc">Take a clean viewport screenshot whenever frontend files change</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-capture"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Resolution scale</div>
+                <div class="sp-row-desc">Device pixel ratio for captured PNGs</div>
+              </div>
+              <div class="sp-row-right">
+                <div class="seg">
+                  <button type="button" aria-pressed="false">1x</button>
+                  <button type="button" aria-pressed="true">2x Retina</button>
+                </div>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Retention period</div>
+                <div class="sp-row-desc">Automatically prune old screenshots to save disk space</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Retention period">
+                  <option>7 days</option>
+                  <option selected>30 days</option>
+                  <option>Keep forever</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 21. BROWSER ==================== -->
+          <section class="sp-panel" id="sp-panel-browser" hidden>
+            <h1 class="sp-title">Browser</h1>
+            <p class="sp-subtitle">Configure the embedded preview browser and DevTools bridge</p>
+
+            <h2 class="sp-group-title">Preview WebView</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Default localhost URL</div>
+                <div class="sp-row-desc">Opened when launching Browser Preview from the composer</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">http://localhost:3000</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit URL" data-toast="Edit default localhost URL"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Chrome DevTools bridge</div>
+                <div class="sp-row-desc">Stream console errors and network failures into active agent context</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Chrome DevTools bridge"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Sync cookies from Chrome</div>
+                <div class="sp-row-desc">Reuse authenticated local sessions during QA preview</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="sp-pill-btn" type="button" data-toast="Opened cookie domain picker">Import cookies</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 22. CLOUD COMPUTER ==================== -->
+          <section class="sp-panel" id="sp-panel-cloud-computer" hidden>
+            <h1 class="sp-title">Cloud computer</h1>
+            <p class="sp-subtitle">Run isolated builds, tests, and browser tasks in managed cloud sandboxes</p>
+
+            <h2 class="sp-group-title">Sandbox environment</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Preferred region</div>
+                <div class="sp-row-desc">Lowest-latency cluster for remote execution</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Preferred region">
+                  <option selected>Singapore (ap-southeast-1)</option>
+                  <option>Tokyo (ap-northeast-1)</option>
+                  <option>US West (us-west-2)</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Compute tier</div>
+                <div class="sp-row-desc">vCPU and memory allocated per cloud container</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Compute tier">
+                  <option selected>Standard · 4 vCPU / 8 GB</option>
+                  <option>Performance · 8 vCPU / 16 GB</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-suspend idle containers</div>
+                <div class="sp-row-desc">Hibernate sandboxes after 15 minutes of inactivity</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-suspend"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 23. HOOKS ==================== -->
+          <section class="sp-panel" id="sp-panel-hooks" hidden>
+            <h1 class="sp-title">Hooks</h1>
+            <p class="sp-subtitle">Run custom shell commands automatically before or after agent actions</p>
+
+            <h2 class="sp-group-title">Active lifecycle hooks</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">PostToolUse · Format modified files</div>
+                  <div class="sp-row-desc mono">prettier --write $RAYU_EDITED_FILES</div>
+                </div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Format hook"></button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">PreCommit · Run unit tests</div>
+                  <div class="sp-row-desc mono">cargo test --workspace --quiet</div>
+                </div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Test hook"></button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">PreToolUse · Block destructive shell ops</div>
+                  <div class="sp-row-desc mono">rayu-guard check --strict</div>
+                </div>
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Guard hook"></button>
+              </div>
+            </div>
+            <div style="margin-top:16px">
+              <button class="sp-pill-btn is-primary" type="button" data-toast="Create new lifecycle hook">New hook</button>
+            </div>
+          </section>
+
+          <!-- ==================== 24. CONNECTIONS ==================== -->
+          <section class="sp-panel" id="sp-panel-connections" hidden>
+            <h1 class="sp-title">Connections</h1>
+            <p class="sp-subtitle">Connected OAuth services and Model Context Protocol (MCP) servers</p>
+
+            <h2 class="sp-group-title">Services &amp; MCP</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">GitHub</div>
+                  <div class="sp-row-desc">48 tools · PRs, branches, and Actions logs</div>
+                </div>
+                <div class="sp-row-right">
+                  <span class="sp-status-pill is-ok"><span class="sp-status-dot"></span>Connected</span>
+                  <button class="sp-pill-btn" type="button" data-toast="Reconnected GitHub OAuth">Reconnect</button>
+                </div>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Telegram Bot</div>
+                  <div class="sp-row-desc">Remote approvals &amp; session alerts via @rayucode_bot</div>
+                </div>
+                <span class="sp-status-pill is-ok"><span class="sp-status-dot"></span>Linked</span>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Rayu Gateway</div>
+                  <div class="sp-row-desc">14 tools · Model routing, telemetry &amp; cache stats</div>
+                </div>
+                <span class="sp-status-pill is-ok"><span class="sp-status-dot"></span>Active</span>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label">Linear</div>
+                  <div class="sp-row-desc">Sync issues and sprint context into prompts</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Opening Linear OAuth...">Connect</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 25. CODEX CLOUD ==================== -->
+          <section class="sp-panel" id="sp-panel-codex-cloud" hidden>
+            <h1 class="sp-title">Codex Cloud</h1>
+            <p class="sp-subtitle">Delegate background coding tasks to cloud workers connected to your repositories</p>
+
+            <h2 class="sp-group-title">Cloud execution</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Enable cloud delegation</div>
+                <div class="sp-row-desc">Allow offloading long refactors and test suites to cloud runners</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Enable cloud delegation"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Max concurrent cloud tasks</div>
+                <div class="sp-row-desc">Parallel background branches running at the same time</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Max concurrent tasks">
+                  <option>2 workers</option>
+                  <option selected>4 workers</option>
+                  <option>8 workers</option>
+                </select>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Open draft PR automatically</div>
+                <div class="sp-row-desc">Push a draft pull request once cloud tests pass</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Open draft PR"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 26. CODE REVIEW ==================== -->
+          <section class="sp-panel" id="sp-panel-code-review" hidden>
+            <h1 class="sp-title">Code Review</h1>
+            <p class="sp-subtitle">Configure automated diff review, lint checks, and PR feedback depth</p>
+
+            <h2 class="sp-group-title">Review policy</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-review before commit</div>
+                <div class="sp-row-desc">Scan staged diffs for security, SQL safety, and regressions</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-review"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Review strictness</div>
+                <div class="sp-row-desc">Filter comments by minimum severity level</div>
+              </div>
+              <div class="sp-row-right">
+                <div class="seg">
+                  <button type="button" aria-pressed="false">Bugs only</button>
+                  <button type="button" aria-pressed="true">Balanced</button>
+                  <button type="button" aria-pressed="false">Strict</button>
+                </div>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Diff presentation</div>
+                <div class="sp-row-desc">Default diff viewer layout inside Agent Workspace</div>
+              </div>
+              <div class="sp-row-right">
+                <select class="select" aria-label="Diff presentation">
+                  <option selected>Unified inline</option>
+                  <option>Side-by-side split</option>
+                </select>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 27. GIT ==================== -->
+          <section class="sp-panel" id="sp-panel-git" hidden>
+            <h1 class="sp-title">Git</h1>
+            <p class="sp-subtitle">Branch conventions, commit signing, and GitHub CLI integration</p>
+
+            <h2 class="sp-group-title">Repository workflow</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">GitHub CLI (gh)</div>
+                <div class="sp-row-desc">Authenticated as <code>@yeakhaily</code></div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-status-pill is-ok"><span class="sp-status-dot"></span>Ready</span>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Branch prefix</div>
+                <div class="sp-row-desc">Prefix applied when agents create a new feature branch</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">feat/</span>
+                <button class="sp-edit-btn" type="button" aria-label="Edit branch prefix" data-toast="Edit branch prefix"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-stage accepted diffs</div>
+                <div class="sp-row-desc">Stage hunks automatically when you click Accept in the stream</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-stage accepted diffs"></button>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Sign commits with SSH key</div>
+                <div class="sp-row-desc">Add verified signature to agent-authored commits</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="false" aria-label="Sign commits"></button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ==================== 28. WORKTREES ==================== -->
+          <section class="sp-panel" id="sp-panel-worktrees" hidden>
+            <h1 class="sp-title">Worktrees</h1>
+            <p class="sp-subtitle">Isolate parallel Swarm workers in separate git worktrees without touching your checkout</p>
+
+            <h2 class="sp-group-title">Worktree defaults</h2>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-isolate Swarm workers</div>
+                <div class="sp-row-desc">Spawn each parallel agent in its own git worktree</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-isolate Swarm workers"></button>
+              </div>
+            </div>
+            <div class="sp-row">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Worktree base directory</div>
+                <div class="sp-row-desc">Where isolated branches are checked out on disk</div>
+              </div>
+              <div class="sp-row-right">
+                <span class="sp-row-val mono">~/.rayu/worktrees</span>
+              </div>
+            </div>
+            <div class="sp-row is-no-border">
+              <div class="sp-row-info">
+                <div class="sp-row-label">Auto-prune merged worktrees</div>
+                <div class="sp-row-desc">Remove clean worktree folders after their branch is merged</div>
+              </div>
+              <div class="sp-row-right">
+                <button class="switch" type="button" role="switch" aria-checked="true" aria-label="Auto-prune merged worktrees"></button>
+              </div>
+            </div>
+
+            <h2 class="sp-group-title sp-section-gap">Active worktrees · 2</h2>
+            <div class="sp-card-list">
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label mono">feat/retire-session-cache</div>
+                  <div class="sp-row-desc">rayucode-v2 · 3 modified files · worker-1</div>
+                </div>
+                <button class="sp-pill-btn" type="button" data-toast="Opened feat/retire-session-cache in Finder">Reveal</button>
+              </div>
+              <div class="sp-card-row">
+                <div class="sp-row-info">
+                  <div class="sp-row-label mono">fix/gateway-retry-budget</div>
+                  <div class="sp-row-desc">rayucode-v2 · clean · reviewer</div>
+                </div>
+                <button class="sp-danger-btn" type="button" data-toast="Pruned worktree fix/gateway-retry-budget">Prune</button>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <button class="sp-help-fab" type="button" aria-label="Help" data-toast="RayuCode Help &amp; Documentation">
+          <svg class="icon" aria-hidden="true"><use href="#i-help-q"/></svg>
+        </button>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=25"></script>
+  <script src="../js/app.js?v=25"></script>
+</body>
+</html>
