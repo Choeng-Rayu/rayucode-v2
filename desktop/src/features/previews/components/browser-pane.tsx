@@ -77,6 +77,7 @@ export function BrowserPane({ className }: BrowserPaneProps) {
   const [isReloading, setIsReloading] = React.useState(false)
   const [findOpen, setFindOpen] = React.useState(false)
   const [findQuery, setFindQuery] = React.useState("")
+  const [liveIframeMode, setLiveIframeMode] = React.useState(false)
   const [chatMinimized, setChatMinimized] = React.useState(false)
   const [localMessages, setLocalMessages] = React.useState<BrowserChatMessage[]>(
     []
@@ -544,6 +545,22 @@ export function BrowserPane({ className }: BrowserPaneProps) {
 
             <DropdownMenuItem
               onClick={() => {
+                setLiveIframeMode((prev) => !prev)
+                toast(
+                  liveIframeMode
+                    ? "Switched to interactive Demo surface"
+                    : `Switched to Live iframe (${currentUrl})`
+                )
+              }}
+            >
+              <Monitor className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+              <span>
+                {liveIframeMode ? "Switch to demo preview" : "Load live URL iframe"}
+              </span>
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              onClick={() => {
                 void openUrlInSystemBrowser(currentUrl)
                 toast(`Opened ${currentUrl} in system browser`)
               }}
@@ -599,6 +616,15 @@ export function BrowserPane({ className }: BrowserPaneProps) {
         data-testid="browser-stage"
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-inset"
       >
+        {liveIframeMode ? (
+          <iframe
+            key={currentUrl}
+            src={currentUrl}
+            title={`Live preview of ${currentUrl}`}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            className="h-full w-full flex-1 border-0 bg-canvas"
+          />
+        ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className={cn("p-3", fullView && "p-6")}>
             <div
@@ -815,6 +841,7 @@ export function BrowserPane({ className }: BrowserPaneProps) {
             </div>
           </div>
         </ScrollArea>
+        )}
 
         {/* Floating Ask RayuCode Chat Drawer when Full View is active */}
         {fullView && (

@@ -24,12 +24,23 @@ export type RightTabId =
   | "markdown"
 
 export type DocPreviewKind = "code" | "excel" | "markdown" | "browser" | "terminal" | "diff" | "files"
+export type DaemonRuntimeMode = "live" | "demo"
+
+export interface PendingPermission {
+  sessionId: string
+  requestId: string
+  toolName: string
+  description: string
+}
 
 export interface AppStoreState {
   theme: ThemeMode
   accent: AccentColor
   activeRoute: AppRoute
   activeSessionId: string | null
+  activeWorkspacePath: string | null
+  daemonMode: DaemonRuntimeMode
+  pendingPermission: PendingPermission | null
   leftCollapsed: boolean
   rightCollapsed: boolean
   rightMode: RightPaneMode
@@ -44,6 +55,9 @@ export interface AppStoreState {
   setAccent: (accent: AccentColor) => void
   setActiveRoute: (route: AppRoute) => void
   setActiveSession: (sessionId: string | null) => void
+  setActiveWorkspacePath: (workspacePath: string | null) => void
+  setDaemonMode: (mode: DaemonRuntimeMode) => void
+  setPendingPermission: (permission: PendingPermission | null) => void
   toggleLeftSidebar: () => void
   setLeftCollapsed: (collapsed: boolean) => void
   toggleRightSidebar: () => void
@@ -117,6 +131,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   accent: readInitialAccent(),
   activeRoute: "home",
   activeSessionId: null,
+  activeWorkspacePath: null,
+  daemonMode: "demo",
+  pendingPermission: null,
   leftCollapsed: false,
   rightCollapsed: false,
   rightMode: "context",
@@ -151,6 +168,18 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       activeSessionId,
       activeRoute: activeSessionId ? "workspace" : "home",
     })
+  },
+
+  setActiveWorkspacePath: (activeWorkspacePath) => {
+    set({ activeWorkspacePath })
+  },
+
+  setDaemonMode: (daemonMode) => {
+    set({ daemonMode })
+  },
+
+  setPendingPermission: (pendingPermission) => {
+    set({ pendingPermission })
   },
 
   toggleLeftSidebar: () => {

@@ -21,7 +21,7 @@ import type {
 } from "../types"
 
 interface ExtendedInspectorBridge {
-  runTerminalCommand?: (cmd: string) => Promise<InspectorTerminalLine>
+  runTerminalCommand?: (cmd: string) => Promise<InspectorTerminalLine | null>
 }
 
 const DEFAULT_CONTEXT_ROWS: ContextBreakdownRow[] = [
@@ -466,7 +466,9 @@ export async function runInspectorTerminalCommand(
 
   if (typeof inspectorApi.runTerminalCommand === "function") {
     const result = await inspectorApi.runTerminalCommand(parsed.command)
-    return inspectorTerminalLineSchema.parse(result)
+    if (result) {
+      return inspectorTerminalLineSchema.parse(result)
+    }
   }
 
   if (typeof window !== "undefined" && window.rayu?.daemon?.invoke) {

@@ -19,6 +19,7 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm lint:design && pnpm test && pnpm build"
   },
   "dependencies": {
+    "@rayu-dev/rayucode-sdk": "1.2.0",
     "@tanstack/react-query": "^5.108.2",
     "@tanstack/react-virtual": "^3.14.26",
     "@xterm/addon-fit": "^0.11.0",

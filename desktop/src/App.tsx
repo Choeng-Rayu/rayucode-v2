@@ -33,6 +33,7 @@ import { SettingsView } from "@/features/settings"
 import { SwarmView } from "@/features/swarm"
 import { TelegramView } from "@/features/telegram"
 import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 
 function ActiveWorkspaceStage() {
   const activeSessionId =
@@ -158,7 +159,41 @@ export function App() {
       applyUrlQueryParamsToStore(window.location.search)
     }
     window.addEventListener("popstate", handlePopState)
-    return () => window.removeEventListener("popstate", handlePopState)
+
+    // Sync real Electron workspace & daemon status when running inside Electron
+    void ipcClient.workspace.getInfo().then((info) => {
+      if (info?.path) {
+        useAppStore.getState().setActiveWorkspacePath(info.path)
+      }
+    })
+    void ipcClient.daemon.getStatus().then((status) => {
+      useAppStore
+        .getState()
+        .setDaemonMode(status.connected && status.mode !== "demo" ? "live" : "demo")
+    })
+    const unsubStatus = ipcClient.daemon.onStatusChange((status) => {
+      useAppStore
+        .getState()
+        .setDaemonMode(status.connected && status.mode !== "demo" ? "live" : "demo")
+    })
+    const unsubHarness = ipcClient.harness.onEvent((frame) => {
+      if (frame.ev === "permission_request") {
+        useAppStore.getState().setPendingPermission({
+          sessionId: String(frame.session_id ?? ""),
+          requestId: String(frame.request_id ?? ""),
+          toolName: String(frame.tool_name ?? "tool"),
+          description: String(frame.description ?? "Tool execution requested"),
+        })
+      } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
+        useAppStore.getState().setPendingPermission(null)
+      }
+    })
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState)
+      unsubStatus()
+      unsubHarness()
+    }
   }, [])
 
   return (

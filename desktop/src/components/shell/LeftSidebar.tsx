@@ -433,6 +433,7 @@ export function IconRail() {
 }
 
 export function SessionPane() {
+  const queryClient = useQueryClient()
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
@@ -574,8 +575,11 @@ export function SessionPane() {
           type="button"
           aria-label="Open IDE"
           onClick={() => {
-            void ipcClient.native.openInVSCode("~/workspace/rayu/rayucode-v2")
-            toast("Opened ~/workspace/rayu/rayucode-v2 in Visual Studio Code")
+            const target =
+              useAppStore.getState().activeWorkspacePath ??
+              "~/workspace/rayu/rayucode-v2"
+            void ipcClient.native.openInVSCode(target)
+            toast(`Opened ${target} in Visual Studio Code`)
           }}
           className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-premium bg-raised px-2 py-0.5 text-[11px] font-medium text-body shadow-bevel-surface transition-colors hover:border-premium-hi hover:text-ink"
         >
@@ -615,8 +619,25 @@ export function SessionPane() {
 
       {/* Scrollable Projects & Recents (Zero Folder Tree!) */}
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        <div className="px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
-          Projects
+        <div className="flex items-center justify-between px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
+          <span>Projects</span>
+          <button
+            type="button"
+            aria-label="Open workspace folder"
+            onClick={() => {
+              void ipcClient.workspace.pickFolder().then((info) => {
+                if (!info) return
+                useAppStore.getState().setActiveWorkspacePath(info.path)
+                void ipcClient.sessions.listProjects().then(setProjects)
+                void queryClient.invalidateQueries({ queryKey: ["changes"] })
+                void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+                toast(`Opened workspace: ${info.project}`)
+              })
+            }}
+            className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-normal text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+          >
+            + Open
+          </button>
         </div>
         {projects.map((proj) => (
           <div key={proj.id} className="mb-1">

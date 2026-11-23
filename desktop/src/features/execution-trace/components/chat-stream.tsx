@@ -1,10 +1,17 @@
 import * as React from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { FileText, List } from "lucide-react"
+import { FileText, List, ShieldAlert } from "lucide-react"
+import { toast } from "sonner"
 
+import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
 import { useAppStore } from "@/lib/app-store"
+import {
+  createHarnessStreamTracker,
+  mapHarnessFrameToLiveEvents,
+} from "@/lib/harness-adapter"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import { traceKeys, traceTurnsQueryOptions } from "../api/trace-api"
@@ -213,13 +220,77 @@ export function ChatStream({
     ExecutionTurn[]
   >([])
 
-  const { liveTurn, isStreaming, simulateLiveRun, resetLiveTurn } =
-    useLiveTrace({
-      onComplete: (completedTurn) => {
-        setCompletedSimulatedTurns((prev) => [...prev, completedTurn])
-        resetLiveTurn()
-      },
+  const {
+    liveTurn,
+    isStreaming,
+    startLiveTurn,
+    pushEvent,
+    simulateLiveRun,
+    resetLiveTurn,
+  } = useLiveTrace({
+    onComplete: (completedTurn) => {
+      setCompletedSimulatedTurns((prev) => [...prev, completedTurn])
+      resetLiveTurn()
+    },
+  })
+
+  const pendingPermission = useAppStore((s) => s.pendingPermission)
+  const setPendingPermission = useAppStore((s) => s.setPendingPermission)
+
+  // Stream live RayuCode harness frames directly into the rAF-batched trace
+  React.useEffect(() => {
+    const tracker = createHarnessStreamTracker()
+    let hasActiveTurn = false
+
+    const unsubscribe = ipcClient.harness.onEvent((frame) => {
+      const frameSession =
+        typeof frame.session_id === "string" ? frame.session_id : null
+      if (frameSession && frameSession !== effectiveSessionId) return
+
+      const mapped = mapHarnessFrameToLiveEvents(frame, tracker)
+      if (mapped.length === 0) return
+
+      if (!hasActiveTurn) {
+        hasActiveTurn = true
+        startLiveTurn({
+          sessionId: effectiveSessionId,
+          userPrompt: "Live daemon turn",
+        })
+      }
+
+      for (const ev of mapped) {
+        pushEvent(ev)
+        if (ev.type === "complete") {
+          hasActiveTurn = false
+        }
+      }
     })
+
+    return unsubscribe
+  }, [effectiveSessionId, pushEvent, startLiveTurn])
+
+  const handlePermissionDecision = React.useCallback(
+    async (decision: "allow" | "allow_always" | "deny") => {
+      if (!pendingPermission) return
+      const req = pendingPermission
+      setPendingPermission(null)
+      try {
+        await ipcClient.trace.respondToPermission(
+          req.sessionId,
+          req.requestId,
+          decision
+        )
+        toast(
+          decision === "deny"
+            ? `Denied ${req.toolName}`
+            : `Approved ${req.toolName}`
+        )
+      } catch {
+        toast.error("Failed to send permission decision to daemon")
+      }
+    },
+    [pendingPermission, setPendingPermission]
+  )
 
   const allTurns = React.useMemo(() => {
     const baseTurns = controlledTurns ?? fetchedTurns ?? []
@@ -296,6 +367,63 @@ export function ChatStream({
           )}
         </div>
       </ScrollArea>
+
+      {pendingPermission &&
+        (!pendingPermission.sessionId ||
+          pendingPermission.sessionId === effectiveSessionId) && (
+          <div
+            data-testid="live-permission-banner"
+            className="mx-auto mb-2 w-full max-w-[732px] px-4"
+          >
+            <div className="rayu-card-bevel flex flex-wrap items-center justify-between gap-3 rounded-xl bg-raised px-3.5 py-2.5">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <ShieldAlert
+                  className="size-4 shrink-0 text-warn"
+                  aria-hidden="true"
+                />
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-ink">
+                    Permission requested · {pendingPermission.toolName}
+                  </div>
+                  <div className="truncate font-mono text-[11px] text-muted-ink">
+                    {pendingPermission.description}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  onClick={() => {
+                    void handlePermissionDecision("deny")
+                  }}
+                >
+                  Deny
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    void handlePermissionDecision("allow")
+                  }}
+                >
+                  Allow once
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  onClick={() => {
+                    void handlePermissionDecision("allow_always")
+                  }}
+                >
+                  Allow always
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
       {bottomComposer && (
         <div

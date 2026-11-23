@@ -35,6 +35,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import {
@@ -1437,18 +1438,40 @@ auto_compact = ${preferences.autoCompactContext}`}
                       </span>
                     </div>
 
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="ping-daemon-btn"
-                      disabled={pingDaemonMutation.isPending}
-                      onClick={handlePingDaemon}
-                    >
-                      {pingDaemonMutation.isPending
-                        ? "Pinging..."
-                        : "Ping daemon"}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {!daemonStatus?.connected && (
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          data-testid="launch-daemon-btn"
+                          onClick={() => {
+                            void ipcClient.daemon.launch().then((status) => {
+                              if (status.connected) {
+                                toast.success(`Connected to ${status.version}`)
+                              } else {
+                                toast("Start `rayu api-bridge` in terminal to connect live")
+                              }
+                              void daemonQuery.refetch()
+                            })
+                          }}
+                        >
+                          Launch daemon
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="ping-daemon-btn"
+                        disabled={pingDaemonMutation.isPending}
+                        onClick={handlePingDaemon}
+                      >
+                        {pingDaemonMutation.isPending
+                          ? "Pinging..."
+                          : "Ping daemon"}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="mt-4 grid grid-cols-1 gap-3 border-t border-hairline-soft pt-3.5 sm:grid-cols-3">

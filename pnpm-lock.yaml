@@ -10,6 +10,9 @@ importers:
 
   desktop:
     dependencies:
+      '@rayu-dev/rayucode-sdk':
+        specifier: 1.2.0
+        version: link:../sdk/typescript
       '@tanstack/react-query':
         specifier: ^5.108.2
         version: 5.108.2(@types/react@19.3.0)(react@19.3.1)

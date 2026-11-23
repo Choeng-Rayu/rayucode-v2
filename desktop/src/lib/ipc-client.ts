@@ -1,5 +1,14 @@
-// Comprehensive typed IPC client & realistic prototype mock fallback
+// Comprehensive typed IPC client with Live Electron + RayuCode Harness SDK wiring
 // Shared contract between Electron window.rayu.*, Vite browser preview, and Vitest
+
+import {
+  mapHistoryMessagesToTurns,
+  mapModelRoutesToOptions,
+  mapSessionInfoToSummary,
+  type HarnessHistoryMessageLike,
+  type HarnessModelRouteLike,
+  type HarnessSessionInfoLike,
+} from "./harness-adapter"
 
 export type ReasoningEffort = "Auto" | "Low" | "Medium" | "High" | "Max"
 export type PermissionModeId =
@@ -2248,11 +2257,110 @@ const mockDaemonStatus: DaemonStatus = {
 // Window Bridge Interface & Typed Client
 // ============================================================================
 
+export interface WorkspaceInfo {
+  host: string
+  project: string
+  path: string
+  branch: string
+}
+
+export interface TerminalCommandResult {
+  id: string
+  prompt: string
+  command: string
+  output: string
+  exitCode: number
+  durationMs: number
+  isOk: boolean
+  isError: boolean
+}
+
 export interface RayuBridgeApi {
   daemon?: {
-    getStatus?: () => Promise<DaemonStatus>
+    getStatus?: () => Promise<DaemonStatus & { mode?: "live" | "demo" }>
+    launch?: () => Promise<DaemonStatus & { mode?: "live" | "demo" }>
     invoke?: <T = unknown>(method: string, params?: unknown) => Promise<T>
-    onStatusChange?: (cb: (status: DaemonStatus) => void) => () => void
+    onStatusChange?: (
+      cb: (status: DaemonStatus & { mode?: "live" | "demo" }) => void
+    ) => () => void
+  }
+  harness?: {
+    listSessions?: () => Promise<HarnessSessionInfoLike[]>
+    createSession?: (workingDir?: string) => Promise<HarnessSessionInfoLike>
+    attachSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
+    forkSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
+    getHistory?: (sessionId: string) => Promise<{
+      messages: HarnessHistoryMessageLike[]
+      images?: unknown[]
+    }>
+    sendMessage?: (sessionId: string, content: string) => Promise<{ ok: boolean }>
+    cancel?: (sessionId: string) => Promise<{ ok: boolean }>
+    respondToPermission?: (
+      sessionId: string,
+      requestId: string,
+      decision: "allow" | "allow_always" | "deny"
+    ) => Promise<{ ok: boolean }>
+    getRuntimeInfo?: (sessionId: string) => Promise<{
+      provider?: string
+      model?: string
+      routes?: HarnessModelRouteLike[]
+    }>
+    setModel?: (sessionId: string, model: string) => Promise<{ ok: boolean }>
+    setReasoningEffort?: (
+      sessionId: string,
+      effort: string
+    ) => Promise<{ ok: boolean }>
+    runtimeCommand?: (
+      sessionId: string,
+      command: string,
+      args?: string[]
+    ) => Promise<{ command: string; data: unknown; message: string }>
+    onEvent?: (cb: (frame: Record<string, unknown>) => void) => () => void
+  }
+  workspace?: {
+    getInfo?: () => Promise<WorkspaceInfo>
+    setPath?: (targetPath: string) => Promise<WorkspaceInfo>
+    pickFolder?: () => Promise<WorkspaceInfo | null>
+    readFile?: (filePath: string) => Promise<{
+      pill: string
+      path: string
+      language: string
+      startLine: number
+      lines: string[]
+    }>
+  }
+  git?: {
+    getChanges?: () => Promise<ChangesState | null>
+    toggleStage?: (
+      filePath: string,
+      staged: boolean
+    ) => Promise<ChangesState | null>
+    stageAll?: (staged: boolean) => Promise<ChangesState | null>
+    discardFile?: (filePath: string) => Promise<ChangesState | null>
+    commit?: (message: string) => Promise<{
+      hash: string
+      branch: string
+      message: string
+      committedCount: number
+      committedAt: string
+    }>
+    createPr?: (input: {
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+    }) => Promise<{
+      id: string
+      url: string
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+      createdAt: string
+    }>
+  }
+  terminal?: {
+    runCommand?: (command: string) => Promise<TerminalCommandResult>
   }
   native?: {
     openInExcel?: (filePath: string) => Promise<{ ok: boolean }>
@@ -2272,12 +2380,65 @@ function getBridge(): RayuBridgeApi | undefined {
   return window.rayu
 }
 
+let lastKnownDaemonLive = false
+let lastActiveHarnessSessionId: string | null = null
+
+async function isHarnessLive(): Promise<boolean> {
+  const bridge = getBridge()
+  if (!bridge?.harness || !bridge?.daemon?.getStatus) return false
+  if (lastKnownDaemonLive) return true
+  try {
+    const status = await bridge.daemon.getStatus()
+    lastKnownDaemonLive = Boolean(status.connected && status.mode !== "demo")
+    return lastKnownDaemonLive
+  } catch {
+    lastKnownDaemonLive = false
+    return false
+  }
+}
+
 export const ipcClient = {
   sessions: {
     async list(): Promise<SessionSummary[]> {
+      const bridge = getBridge()
+      if (bridge?.harness?.listSessions && (await isHarnessLive())) {
+        try {
+          const liveSessions = await bridge.harness.listSessions()
+          if (liveSessions.length > 0) {
+            return liveSessions.map(mapSessionInfoToSummary)
+          }
+        } catch {
+          // Fall back to mock sessions when daemon is unavailable
+        }
+      }
       return [...mockSessions]
     },
     async listProjects(): Promise<ProjectGroup[]> {
+      const bridge = getBridge()
+      if (bridge?.workspace?.getInfo) {
+        try {
+          const info = await bridge.workspace.getInfo()
+          const liveSessions = await ipcClient.sessions.list()
+          return [
+            {
+              id: `proj_${info.project}`,
+              name: info.project,
+              path: info.path,
+              expanded: true,
+              sessions: liveSessions.slice(0, 6).map((s) => ({
+                id: s.id,
+                title: s.title,
+              })),
+            },
+            ...MOCK_PROJECTS.filter((p) => p.name !== info.project).map((p) => ({
+              ...p,
+              sessions: [...p.sessions],
+            })),
+          ]
+        } catch {
+          // Fall through to defaults
+        }
+      }
       return MOCK_PROJECTS.map((p) => ({ ...p, sessions: [...p.sessions] }))
     },
     async listRecents(): Promise<Array<{ id: string; title: string; route?: string }>> {
@@ -2301,6 +2462,41 @@ export const ipcClient = {
       effort?: ReasoningEffort
       permissionMode?: PermissionModeId
     }): Promise<SessionSummary> {
+      const bridge = getBridge()
+      if (bridge?.harness?.createSession && (await isHarnessLive())) {
+        try {
+          const live = await bridge.harness.createSession()
+          lastActiveHarnessSessionId = live.session_id
+          if (input.modelId && bridge.harness.setModel) {
+            await bridge.harness.setModel(live.session_id, input.modelId).catch(() => {})
+          }
+          if (input.effort && bridge.harness.setReasoningEffort) {
+            await bridge.harness
+              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+              .catch(() => {})
+          }
+          if (input.prompt.trim() && bridge.harness.sendMessage) {
+            await bridge.harness
+              .sendMessage(live.session_id, input.prompt.trim())
+              .catch(() => {})
+          }
+          const mapped = mapSessionInfoToSummary(live)
+          return {
+            ...mapped,
+            title:
+              input.prompt.length > 48
+                ? `${input.prompt.slice(0, 48)}...`
+                : input.prompt || mapped.title,
+            modelId: input.modelId ?? mapped.modelId,
+            modelLabel: input.modelLabel ?? mapped.modelLabel,
+            effort: input.effort ?? mapped.effort,
+            permissionMode: input.permissionMode ?? mapped.permissionMode,
+          }
+        } catch {
+          // Fall back to local mock session creation
+        }
+      }
+
       const created: SessionSummary = {
         id: `ses_${Date.now()}`,
         title:
@@ -2328,15 +2524,61 @@ export const ipcClient = {
 
   models: {
     async list(): Promise<ModelOption[]> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.getRuntimeInfo &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        try {
+          const info = await bridge.harness.getRuntimeInfo(
+            lastActiveHarnessSessionId
+          )
+          if (info.routes && info.routes.length > 0) {
+            return mapModelRoutesToOptions(info.routes)
+          }
+        } catch {
+          // Fall back to curated RayuCode catalog
+        }
+      }
       return [...MOCK_MODELS]
     },
     async refresh(): Promise<ModelOption[]> {
-      return [...MOCK_MODELS]
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "refresh_model_list")
+          .catch(() => {})
+      }
+      return ipcClient.models.list()
     },
   },
 
   trace: {
     async listTurns(sessionId?: string | null): Promise<ExecutionTurn[]> {
+      const bridge = getBridge()
+      if (
+        sessionId &&
+        bridge?.harness?.getHistory &&
+        !sessionId.startsWith("ses_") &&
+        (await isHarnessLive())
+      ) {
+        try {
+          lastActiveHarnessSessionId = sessionId
+          if (bridge.harness.attachSession) {
+            await bridge.harness.attachSession(sessionId).catch(() => {})
+          }
+          const history = await bridge.harness.getHistory(sessionId)
+          return mapHistoryMessagesToTurns(sessionId, history.messages)
+        } catch {
+          // Fall back to mock turns
+        }
+      }
+
       if (!sessionId) return [...mockTurns]
       const filtered = mockTurns.filter((t) => t.sessionId === sessionId)
       return filtered.length > 0 ? filtered : [...mockTurns]
@@ -2346,6 +2588,38 @@ export const ipcClient = {
       prompt: string
       modelLabel: string
     }): Promise<ExecutionTurn> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.sendMessage &&
+        !input.sessionId.startsWith("ses_") &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness.sendMessage(input.sessionId, input.prompt)
+        return {
+          id: `live_turn_${Date.now()}`,
+          sessionId: input.sessionId,
+          userPrompt: input.prompt,
+          workedDuration: "1s",
+          isLive: true,
+          notes: [],
+          groups: [],
+          answerIntro: "",
+          answerBullets: [],
+          diffCard: {
+            id: `diff_${Date.now()}`,
+            file: "workspace",
+            additions: 0,
+            deletions: 0,
+            hint: "Streaming response from rayu daemon",
+            lines: [],
+          },
+          timestamp: "Just now",
+          credits: "0.00 cr",
+          kvCachePct: 94,
+          pinned: false,
+        }
+      }
+
       const newTurn: ExecutionTurn = {
         id: `turn_${Date.now()}`,
         sessionId: input.sessionId,
@@ -2412,21 +2686,139 @@ export const ipcClient = {
       return mockTurns.find((t) => t.id === turnId)
     },
     async forkTurn(turnId: string): Promise<SessionSummary> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.forkSession &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        try {
+          const forked = await bridge.harness.forkSession(
+            lastActiveHarnessSessionId
+          )
+          return mapSessionInfoToSummary(forked)
+        } catch {
+          // Fall back to mock fork
+        }
+      }
       const source = mockTurns.find((t) => t.id === turnId) ?? mockTurns[0]
       return ipcClient.sessions.createSession({
         prompt: `Forked: ${source.userPrompt}`,
       })
     },
+    async cancel(sessionId: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.cancel && (await isHarnessLive())) {
+        return bridge.harness.cancel(sessionId)
+      }
+      return { ok: true }
+    },
+    async respondToPermission(
+      sessionId: string,
+      requestId: string,
+      decision: "allow" | "allow_always" | "deny"
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.respondToPermission) {
+        return bridge.harness.respondToPermission(sessionId, requestId, decision)
+      }
+      return { ok: true }
+    },
   },
 
   inspector: {
     async getState(): Promise<InspectorState> {
-      return structuredClone(MOCK_INSPECTOR)
+      const state = structuredClone(MOCK_INSPECTOR)
+      const bridge = getBridge()
+      if (bridge?.workspace?.getInfo) {
+        try {
+          const info = await bridge.workspace.getInfo()
+          state.environment = {
+            host: info.host,
+            project: info.project,
+            path: info.path,
+            branch: info.branch,
+          }
+        } catch {
+          // Keep default environment metadata
+        }
+      }
+      if (bridge?.git?.getChanges) {
+        try {
+          const gitChanges = await bridge.git.getChanges()
+          if (gitChanges) {
+            state.environment.branch = gitChanges.branch
+            state.changesSummary = {
+              additions: gitChanges.totalAdditions,
+              deletions: gitChanges.totalDeletions,
+              changedFilesCount: gitChanges.files.length,
+            }
+          }
+        } catch {
+          // Keep default changes summary
+        }
+      }
+      return state
     },
     async getCodeFile(fileKey: string) {
+      const bridge = getBridge()
+      if (bridge?.workspace?.readFile) {
+        try {
+          const realFile = await bridge.workspace.readFile(fileKey)
+          if (realFile && realFile.lines.length > 0) {
+            return realFile
+          }
+        } catch {
+          // Fall back to demo file snippet when fileKey is a prototype alias
+        }
+      }
       return (
         MOCK_INSPECTOR.codeFiles[fileKey] ?? MOCK_INSPECTOR.codeFiles["lookup.rs"]
       )
+    },
+    async runTerminalCommand(command: string): Promise<{
+      id: string
+      prompt: string
+      command: string
+      output: string
+      isOk: boolean
+      isError: boolean
+    } | null> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.runCommand) {
+        const res = await bridge.terminal.runCommand(command)
+        return {
+          id: res.id,
+          prompt: res.prompt,
+          command: res.command,
+          output: res.output,
+          isOk: res.isOk,
+          isError: res.isError,
+        }
+      }
+      return null
+    },
+  },
+
+  workspace: {
+    async getInfo(): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.getInfo) return null
+      try {
+        return await bridge.workspace.getInfo()
+      } catch {
+        return null
+      }
+    },
+    async pickFolder(): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.pickFolder) return null
+      return bridge.workspace.pickFolder()
+    },
+    async setPath(targetPath: string): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.setPath) return null
+      return bridge.workspace.setPath(targetPath)
     },
   },
 
@@ -2452,7 +2844,6 @@ export const ipcClient = {
               ? numVal
               : input.value
         }
-        // Recalculate totals row if present
         const dataRows = sheet.rows.filter((r) => r.rowNumber >= 2 && !r.isTotal)
         const totalRow = sheet.rows.find((r) => r.isTotal)
         if (totalRow) {
@@ -2489,6 +2880,16 @@ export const ipcClient = {
 
   swarm: {
     async getState(): Promise<SwarmState> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "swarm", ["status"])
+          .catch(() => {})
+      }
       return structuredClone(mockSwarm)
     },
     async spawnWorker(input: {
@@ -2497,6 +2898,20 @@ export const ipcClient = {
       worktree: string
       task: string
     }): Promise<SwarmState> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "swarm", [
+            "spawn",
+            input.name,
+            input.task,
+          ])
+          .catch(() => {})
+      }
       const worker: SwarmAgent = {
         id: input.name,
         name: input.name,
@@ -2588,6 +3003,19 @@ export const ipcClient = {
       maxAgents: string
       permissionMode: string
     }): Promise<AutomationsState> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "overnight", [
+            "start",
+            input.mission,
+          ])
+          .catch(() => {})
+      }
       const run: OvernightRun = {
         id: `ovn_${Math.random().toString(36).slice(2, 6)}`,
         title: input.mission,
@@ -2647,9 +3075,33 @@ export const ipcClient = {
 
   changes: {
     async getState(): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges) {
+        try {
+          const live = await bridge.git.getChanges()
+          if (live && live.files.length > 0) {
+            return live
+          }
+        } catch {
+          // Fall back to mock changes outside git repo
+        }
+      }
       return structuredClone(mockChanges)
     },
     async acceptFile(fileId: string): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.toggleStage) {
+        try {
+          const live = await bridge.git.getChanges()
+          const target = live?.files.find((f) => f.id === fileId)
+          if (target) {
+            const updated = await bridge.git.toggleStage(target.path, false)
+            if (updated) return updated
+          }
+        } catch {
+          // Fall back to mock state
+        }
+      }
       mockChanges = {
         ...mockChanges,
         files: mockChanges.files.map((f) =>
@@ -2659,6 +3111,19 @@ export const ipcClient = {
       return structuredClone(mockChanges)
     },
     async rejectFile(fileId: string): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.discardFile) {
+        try {
+          const live = await bridge.git.getChanges()
+          const target = live?.files.find((f) => f.id === fileId)
+          if (target) {
+            const updated = await bridge.git.discardFile(target.path)
+            if (updated) return updated
+          }
+        } catch {
+          // Fall back to mock state
+        }
+      }
       mockChanges = {
         ...mockChanges,
         files: mockChanges.files.map((f) =>
@@ -2666,6 +3131,48 @@ export const ipcClient = {
         ),
       }
       return structuredClone(mockChanges)
+    },
+    async toggleStage(fileId: string): Promise<ChangesState | null> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.toggleStage) {
+        const live = await bridge.git.getChanges()
+        const target = live?.files.find((f) => f.id === fileId)
+        if (target) {
+          const updated = await bridge.git.toggleStage(
+            target.path,
+            Boolean(target.staged)
+          )
+          if (updated) return updated
+        }
+      }
+      return null
+    },
+    async stageAll(staged: boolean): Promise<ChangesState | null> {
+      const bridge = getBridge()
+      if (bridge?.git?.stageAll) {
+        const updated = await bridge.git.stageAll(staged)
+        if (updated) return updated
+      }
+      return null
+    },
+    async commitStaged(input: { message: string }) {
+      const bridge = getBridge()
+      if (bridge?.git?.commit) {
+        return bridge.git.commit(input.message)
+      }
+      return null
+    },
+    async createPullRequest(input: {
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+    }) {
+      const bridge = getBridge()
+      if (bridge?.git?.createPr) {
+        return bridge.git.createPr(input)
+      }
+      return null
     },
   },
 
@@ -2717,22 +3224,71 @@ export const ipcClient = {
     },
   },
 
+  harness: {
+    onEvent(cb: (frame: Record<string, unknown>) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.harness?.onEvent) {
+        return bridge.harness.onEvent(cb)
+      }
+      return () => {}
+    },
+    async setModel(sessionId: string, model: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setModel && (await isHarnessLive())) {
+        return bridge.harness.setModel(sessionId, model)
+      }
+      return { ok: true }
+    },
+    async setReasoningEffort(
+      sessionId: string,
+      effort: string
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
+        return bridge.harness.setReasoningEffort(sessionId, effort)
+      }
+      return { ok: true }
+    },
+  },
+
   daemon: {
-    async getStatus(): Promise<DaemonStatus> {
+    async getStatus(): Promise<DaemonStatus & { mode?: "live" | "demo" }> {
       const bridge = getBridge()
       if (bridge?.daemon?.getStatus) {
         try {
-          return await bridge.daemon.getStatus()
+          const status = await bridge.daemon.getStatus()
+          lastKnownDaemonLive = Boolean(
+            status.connected && status.mode !== "demo"
+          )
+          return status
         } catch {
-          // fallback to mock status
+          lastKnownDaemonLive = false
         }
       }
-      return { ...mockDaemonStatus }
+      return { ...mockDaemonStatus, mode: "demo" }
     },
-    onStatusChange(cb: (status: DaemonStatus) => void): () => void {
+    async launch(): Promise<DaemonStatus & { mode?: "live" | "demo" }> {
+      const bridge = getBridge()
+      if (bridge?.daemon?.launch) {
+        const status = await bridge.daemon.launch()
+        lastKnownDaemonLive = Boolean(
+          status.connected && status.mode !== "demo"
+        )
+        return status
+      }
+      return { ...mockDaemonStatus, mode: "demo" }
+    },
+    onStatusChange(
+      cb: (status: DaemonStatus & { mode?: "live" | "demo" }) => void
+    ): () => void {
       const bridge = getBridge()
       if (bridge?.daemon?.onStatusChange) {
-        return bridge.daemon.onStatusChange(cb)
+        return bridge.daemon.onStatusChange((status) => {
+          lastKnownDaemonLive = Boolean(
+            status.connected && status.mode !== "demo"
+          )
+          cb(status)
+        })
       }
       return () => {}
     },
