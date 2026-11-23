@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Q4 token cost spreadsheet (Microsoft Excel)</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=27">
+  <link rel="stylesheet" href="../css/layout.css?v=27">
+  <link rel="stylesheet" href="../css/components.css?v=27">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app has-right has-excel-right">
+
+    <!-- Column 1: Unified Left Sidebar -->
+    <aside class="sidebar" aria-label="Navigation and conversations">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn is-active" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <a class="cx-avatar" href="settings-models.html#account" title="Account · lyyeakkhai">LK</a>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <button class="cx-brand-btn" type="button" data-toast="Workspace: RayuCode Desktop v1">RayuCode<svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" aria-label="Filter chats" data-toast="Filter conversations"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-filter"/></svg></button>
+          <button class="icon-btn" type="button" aria-label="Search chats" data-toast="Search conversations (⌘K)"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-search"/></svg></button>
+        </div>
+
+        <a class="cx-new-chat" href="../index.html"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg>New chat</a>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Projects</div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="xl-p1" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">rayucode-v2</span></button>
+            <div class="proj-items" id="xl-p1" hidden>
+              <a class="conv-row" href="agent-workspace.html"><span class="conv-name">Retire legacy session cache</span></a>
+            </div>
+          </div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="xl-p2" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg><span class="proj-name">specs-and-docs</span></button>
+            <div class="proj-items" id="xl-p2">
+              <a class="conv-row is-active" href="excel-session.html"><span class="conv-name">Q4 token cost spreadsheet</span></a>
+              <a class="conv-row" href="preview-studio.html#md"><span class="conv-name">Desktop v1 migration plan MD</span></a>
+            </div>
+          </div>
+
+          <div class="cx-sec-label">Recents</div>
+          <a class="recent-row" href="excel-session.html">Q4 token cost spreadsheet</a>
+          <a class="recent-row" href="agent-workspace.html">Retire legacy session cache</a>
+          <a class="recent-row" href="execution-runner.html">Gateway: retry budget tests</a>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Active Chat Stream with RayuCode working on Excel -->
+    <div class="center-col">
+      <main class="canvas">
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <a class="icon-btn" href="../index.html" aria-label="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <button class="chat-title-btn" type="button" data-toast="Session: Q4 token cost spreadsheet · specs-and-docs">
+            <span>Q4 token cost spreadsheet</span>
+            <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+          </button>
+          <div class="spacer"></div>
+          <div class="chat-head-strip" role="tablist" aria-label="Right sidebar panels">
+            <button class="rs-tab-btn" role="tab" id="xtab-overview" aria-controls="xpanel-overview" aria-selected="false" data-tab-pill="Environment &amp; Context" type="button" title="Environment &amp; Context"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
+            <a class="rs-tab-btn" href="execution-runner.html" aria-label="CLI Terminal" title="CLI Terminal"><svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg></a>
+            <a class="rs-tab-btn" href="changes.html" aria-label="Changes" title="Changes &amp; Diffs"><svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg></a>
+            <a class="rs-tab-btn" href="agent-workspace.html#browser-side" aria-label="Open Browser" title="Open Browser"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></a>
+            <button class="rs-tab-btn" role="tab" id="xtab-excel" aria-controls="xpanel-excel" aria-selected="true" data-tab-pill="Q4-Token-Cost-Model.xlsx" type="button" title="Microsoft Excel · Q4-Token-Cost-Model.xlsx"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg></button>
+            <div class="dropdown">
+              <button class="rs-tab-btn" type="button" data-dropdown="xl-more-menu" aria-expanded="false" aria-label="More actions" title="More"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+              <div class="dropdown-pop" id="xl-more-menu" data-dropdown-menu hidden>
+                <div class="dropdown-head">Session &amp; Workbook</div>
+                <button class="dropdown-item theme-toggle" type="button"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg>Toggle Light / Dark theme</button>
+                <div class="accent-menu-row">
+                  <span>Accent</span>
+                  <div class="accent-swatches">
+                    <button class="accent-pill" type="button" data-accent-set="green" aria-pressed="true"><span class="accent-dot is-green"></span>Green</button>
+                    <button class="accent-pill" type="button" data-accent-set="blue" aria-pressed="false"><span class="accent-dot is-blue"></span>Blue</button>
+                  </div>
+                </div>
+                <a class="dropdown-item" href="../assets/Q4-Token-Cost-Model.xlsx" download="Q4-Token-Cost-Model.xlsx"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>Open in native Excel<span class="d-sub">.xlsx</span></a>
+                <button class="dropdown-item" type="button" data-xl-embed-toggle><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg>Load Live Excel Web URL</button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div class="pane-scroll">
+          <div class="stream">
+            <div class="msg msg-user">
+              <p>Build <code>Q4-Token-Cost-Model.xlsx</code> breaking down Rayu Gateway usage across Chat, Code Edits, Grep, Swarm, and Overnight runs with live <code>=SUM()</code> and <code>=AVERAGE()</code> formulas, and open it in Microsoft Excel on the right.</p>
+              <div class="msg-meta">you · 2m ago · specs-and-docs</div>
+            </div>
+
+            <div class="msg msg-agent">
+              <div class="work-trace">
+                <button class="work-toggle" type="button" data-work-toggle="xl-work-body" aria-expanded="false" title="Inspect execution steps &amp; shell output">
+                  <span class="work-label">Worked for 18s</span>
+                  <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                </button>
+                <div class="work-body" id="xl-work-body" hidden>
+                  <p class="work-note">I'll aggregate Q4 gateway usage metrics and write an OOXML workbook with native Excel <code>=SUM()</code> and <code>=AVERAGE()</code> formulas.</p>
+                  <div class="work-group">
+                    <button class="work-group-toggle" type="button" data-group-toggle="xl-wg-rail" aria-expanded="true">
+                      <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                      <span>Read files, ran commands</span>
+                      <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                    </button>
+                    <div class="work-rail" id="xl-wg-rail">
+                      <div class="work-step-row">
+                        <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                        <span>Read <button class="work-file-link" type="button" data-toast="~/.rayu/usage-summary.json">~/.rayu/usage-summary.json</button></span>
+                      </div>
+                      <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="xl-sh-1" aria-expanded="false">
+                        <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                        <span class="work-cmd-text">python3 scripts/build_q4_xlsx.py --out assets/Q4-Token-Cost-Model.xlsx</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="shell-card" id="xl-sh-1" hidden>
+                        <div class="shell-card-head">
+                          <span>Shell</span>
+                          <button class="shell-copy-btn" type="button" data-copy-cmd="python3 scripts/build_q4_xlsx.py --out assets/Q4-Token-Cost-Model.xlsx" aria-label="Copy command" title="Copy command"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button>
+                        </div>
+                        <div class="shell-cmd-line">$ python3 scripts/build_q4_xlsx.py --out assets/Q4-Token-Cost-Model.xlsx</div>
+                        <pre class="shell-out">wrote assets/Q4-Token-Cost-Model.xlsx (3 sheets, 5 formulas verified)
+  C7 = SUM(C2:C6)     -> 614,000
+  D7 = AVERAGE(D2:D6) -> 93.2%
+  F7 = SUM(F2:F6)     -> $168.40</pre>
+                        <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="agent-answer">
+                <p><strong>Workbook ready and open on the right.</strong> Built <code>Q4-Token-Cost-Model.xlsx</code> with live formulas (<code>=SUM(C2:C6)</code>, <code>=AVERAGE(D2:D6)</code>, <code>=SUM(F2:F6)</code>) across 3 worksheets. <a class="cite-link" href="../assets/Q4-Token-Cost-Model.xlsx" download="Q4-Token-Cost-Model.xlsx"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-sheet"/></svg>Q4-Token-Cost-Model.xlsx</a></p>
+                <p>Edit any cell directly in the sheet to recalculate totals live, click <strong>Live Excel Web</strong> to load a OneDrive / SharePoint workbook inside Microsoft's Office Web Viewer, or click <strong>Open in Excel App</strong> to open the real <code>.xlsx</code> file natively.</p>
+              </div>
+
+              <div class="turn-actions">
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-copy aria-label="Copy response">
+                    <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+                  </button>
+                  <div class="turn-act-card is-compact" role="tooltip">
+                    <div class="turn-act-card-title">Copy response</div>
+                  </div>
+                </div>
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-fork aria-label="Fork from here">
+                    <svg class="icon" aria-hidden="true"><use href="#i-fork"/></svg>
+                  </button>
+                  <div class="turn-act-card" role="tooltip">
+                    <div class="turn-act-card-title">Fork from here</div>
+                    <div class="turn-act-card-desc">Starts a new session from this point. This one stays as it is.</div>
+                  </div>
+                </div>
+                <div class="turn-act-wrap">
+                  <button class="turn-act-btn" type="button" data-turn-pin aria-pressed="false" aria-label="Pin response">
+                    <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg>
+                  </button>
+                  <div class="turn-act-card" role="tooltip">
+                    <div class="turn-act-card-title">Pin response</div>
+                    <div class="turn-act-card-desc">Keeps this reply pinned so you can jump back to it anytime.</div>
+                  </div>
+                </div>
+                <span class="turn-time">1m ago</span>
+                <span class="turn-meta-right">
+                  <span class="credits">0.14 cr</span>
+                  <span>·</span>
+                  <span>KV cache 95%</span>
+                  <button class="turn-replay-btn" type="button" data-replay-trace title="Watch live step-by-step execution trace">
+                    <svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>
+                    Simulate live run
+                  </button>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom Composer -->
+        <div class="composer-dock" style="padding-bottom:16px">
+          <div class="composer-shell">
+            <div class="composer-inner">
+              <textarea class="composer-input" rows="1" placeholder="Ask RayuCode to add a sheet, formula, or chart..." aria-label="Message RayuCode"></textarea>
+              <div class="composer-bar">
+                <button class="icon-btn" type="button" aria-label="Add context" data-toast="Attach .xlsx, .docx, or file"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+                <div class="model-wrap" data-effort-cur="2">
+                  <button class="model-trigger" type="button" data-dropdown="model-pop-xl" aria-haspopup="dialog" aria-expanded="false" title="Model &amp; Reasoning Effort">
+                    <span class="m-name">Claude Opus 5.5</span>
+                    <span class="m-tier">Medium</span>
+                    <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <div class="model-pop" id="model-pop-xl" data-dropdown-menu hidden>
+                    <div class="effort-card" role="dialog" aria-label="Reasoning effort">
+                      <div class="effort-head">
+                        <button class="effort-icon-btn" type="button" data-effort-fast aria-label="Fast mode (Low effort)" title="Fast mode (Low effort)">
+                          <svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg>
+                        </button>
+                        <div class="effort-center">
+                          <div class="effort-val">Medium</div>
+                          <button class="effort-model-link" type="button" data-model-open-list>
+                            <span class="em-name">Claude Opus 5.5</span>
+                            <svg class="icon" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                          </button>
+                        </div>
+                        <button class="effort-icon-btn" type="button" data-effort-reset aria-label="Reset effort to Medium" title="Reset effort to Medium">
+                          <svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>
+                        </button>
+                      </div>
+                      <div class="effort-slider" role="slider" aria-label="Reasoning effort" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2" aria-valuetext="Medium" style="--p:0.5">
+                        <div class="effort-fill"></div>
+                        <button class="effort-stop is-filled" type="button" data-effort-idx="0" aria-label="Auto" title="Auto"></button>
+                        <button class="effort-stop is-filled" type="button" data-effort-idx="1" aria-label="Low" title="Low"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="2" aria-label="Medium" title="Medium" aria-pressed="true"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="3" aria-label="High" title="High"></button>
+                        <button class="effort-stop" type="button" data-effort-idx="4" aria-label="Max" title="Max"></button>
+                        <div class="effort-thumb" aria-hidden="true"></div>
+                      </div>
+                    </div>
+                    <div class="model-list-card" role="listbox" aria-label="Select model" hidden>
+                      <div class="model-list-head">
+                        <span>Select model</span>
+                        <button class="model-list-back" type="button" data-model-back-effort>Effort</button>
+                      </div>
+                      <div class="model-list-scroll">
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="default" data-model-label="Default">
+                          <span class="model-opt-main"><span class="model-opt-name">Default</span><span class="model-opt-sub">Recommended set of models</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="true" data-model-id="claude-opus-5-5" data-model-label="Claude Opus 5.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Opus 5.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-6.1-sol" data-model-label="GPT-6.1 Sol">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-6.1 Sol</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-6-astra" data-model-label="GPT-6 Astra">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-6 Astra</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-opus-5" data-model-label="Claude Opus 5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Opus 5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-fable-5-1" data-model-label="Claude Fable 5.1">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Fable 5.1</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-sonnet-5" data-model-label="Claude Sonnet 5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Sonnet 5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-sonnet-4-6" data-model-label="Claude Sonnet 4.6">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Sonnet 4.6</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="claude-haiku-4-5" data-model-label="Claude Haiku 4.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Claude Haiku 4.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-sol" data-model-label="GPT-5.6 Sol">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Sol</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-pro" data-model-label="GPT-5.6 Pro">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Pro</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-terra" data-model-label="GPT-5.6 Terra">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Terra</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-5.6-luna" data-model-label="GPT-5.6 Luna">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-5.6 Luna</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gemini-3.1-pro-preview" data-model-label="Gemini 3.1 Pro">
+                          <span class="model-opt-main"><span class="model-opt-name">Gemini 3.1 Pro</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gemini-3-flash" data-model-label="Gemini 3 Flash">
+                          <span class="model-opt-main"><span class="model-opt-name">Gemini 3 Flash</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="deepseek-v4-flash" data-model-label="DeepSeek V4 Flash">
+                          <span class="model-opt-main"><span class="model-opt-name">DeepSeek V4 Flash</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="kimi-k2.5" data-model-label="Kimi K2.5">
+                          <span class="model-opt-main"><span class="model-opt-name">Kimi K2.5</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="gpt-oss-120b" data-model-label="GPT-OSS 120B">
+                          <span class="model-opt-main"><span class="model-opt-name">GPT-OSS 120B</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="minimax-m2.7" data-model-label="MiniMax M2.7">
+                          <span class="model-opt-main"><span class="model-opt-name">MiniMax M2.7</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                        <button class="model-opt" type="button" role="option" aria-selected="false" data-model-id="GLM-5.1" data-model-label="GLM-5.1">
+                          <span class="model-opt-main"><span class="model-opt-name">GLM-5.1</span></span>
+                          <svg class="icon model-opt-check" aria-hidden="true"><use href="#i-check"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <span class="spacer"></span>
+                <div class="perm-wrap">
+                  <button class="perm-trigger" type="button" data-dropdown="perm-pop-xl" aria-haspopup="listbox" aria-expanded="false" title="Local Permissions (Shift+Tab to cycle)">
+                    <svg class="icon perm-trigger-icon" aria-hidden="true"><use href="#i-shield-outline"/></svg>
+                    <span class="mode-label">Auto-edit</span>
+                    <svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg>
+                  </button>
+                  <div class="perm-pop" id="perm-pop-xl" data-dropdown-menu role="listbox" aria-label="Local Permissions" hidden>
+                    <div class="perm-pop-head">Local Permissions</div>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="default" data-perm-label="Ask" data-perm-icon="#i-lock"><svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-lock"/></svg><span class="perm-opt-body"><span class="perm-opt-title">Ask <span class="perm-default-pill">Default <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg></span></span><span class="perm-opt-desc">Ask before running tools that change anything.</span></span><svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="true" data-perm-id="acceptEdits" data-perm-label="Auto-edit" data-perm-icon="#i-shield-outline"><svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-shield-outline"/></svg><span class="perm-opt-body"><span class="perm-opt-title">Auto-edit</span><span class="perm-opt-desc">Apply file edits without asking. Still asks for commands.</span></span><svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="plan" data-perm-label="Plan" data-perm-icon="#i-eye"><svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-eye"/></svg><span class="perm-opt-body"><span class="perm-opt-title">Plan</span><span class="perm-opt-desc">Investigate and write a plan without asking. Never changes your code.</span></span><svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="fullManage" data-perm-label="Full Manage" data-perm-icon="#i-shield-alert"><svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-shield-alert"/></svg><span class="perm-opt-body"><span class="perm-opt-title">Full Manage</span><span class="perm-opt-desc">Run all non-interactive tools without asking.</span></span><svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+                    <button class="perm-opt" type="button" role="option" aria-selected="false" data-perm-id="orchestrator" data-perm-label="Orchestrator" data-perm-icon="#i-swarm"><svg class="icon perm-opt-ico" aria-hidden="true"><use href="#i-swarm"/></svg><span class="perm-opt-body"><span class="perm-opt-title">Orchestrator</span><span class="perm-opt-desc">Full access for delegated workers; the main agent only coordinates.</span></span><svg class="icon perm-opt-check" aria-hidden="true"><use href="#i-check"/></svg></button>
+                  </div>
+                </div>
+                <button class="icon-btn" type="button" aria-label="Voice input"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg></button>
+                <button class="send-orb" type="button" aria-label="Send message"><svg class="icon" aria-hidden="true"><use href="#i-send"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Column 3: Full-Height Right Sidebar (Unified 46px Top Document Bar + Authentic Microsoft Excel) -->
+    <aside class="right-sidebar has-doc-bar" aria-label="Microsoft Excel workbook">
+      <div class="rs-doc-bar">
+        <button class="rb-session-crumb" type="button" data-browser-exit title="Return to chat session"><span class="rb-kbd">⌘1</span><span>Q4 token cost spreadsheet</span><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        <div class="rs-doc-pill">
+          <span class="rs-doc-pill-name" id="rs-active-pill-name">Q4-Token-Cost-Model.xlsx</span>
+          <button class="rs-doc-pill-x" type="button" data-open-preview="xtab-overview" aria-label="Close workbook" title="Back to Context"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <span class="spacer"></span>
+        <div class="rs-doc-actions">
+          <button class="icon-btn" type="button" data-browser-full aria-label="Full view" title="Full view"><svg class="icon" aria-hidden="true"><use href="#i-expand"/></svg></button>
+          <button class="icon-btn" type="button" data-toggle-drawer aria-label="Close sidebar" title="Close sidebar"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="rs-ctx-strip" aria-label="Inspector panels">
+          <button class="rs-tab-btn" type="button" aria-selected="true" data-toggle-drawer title="Environment &amp; Context"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
+          <a class="rs-tab-btn" href="execution-runner.html" aria-label="CLI Terminal" title="CLI Terminal"><svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg></a>
+          <a class="rs-tab-btn" href="changes.html" aria-label="Changes" title="Changes &amp; Diffs"><svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg></a>
+          <a class="rs-tab-btn" href="agent-workspace.html#browser-side" aria-label="Open Browser" title="Open Browser"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg></a>
+          <button class="rs-tab-btn" type="button" data-open-preview="xtab-excel" title="Microsoft Excel · Q4-Token-Cost-Model.xlsx"><svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg></button>
+          <button class="rs-tab-btn" type="button" data-dropdown="xl-more-menu" aria-expanded="false" aria-label="More actions" title="More"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+        </div>
+        <button class="rb-exit-btn" type="button" data-browser-exit><svg class="icon" aria-hidden="true"><use href="#i-collapse"/></svg>Exit full view</button>
+      </div>
+      <div class="preview-panel" role="tabpanel" id="xpanel-overview" aria-labelledby="xtab-overview" hidden>
+        <div class="rs-scroll">
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Environment</h2>
+            <div class="env-list">
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg><span class="env-val">This computer</span><button class="env-link" type="button" data-toast="Saved environment profile">Save</button></div>
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span class="env-val">specs-and-docs <span class="env-path">· ~/workspace/rayu</span></span></div>
+              <div class="env-row"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg><span class="env-val">main</span></div>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Context</h2>
+            <div class="ctx-summary"><span class="ctx-pct">6% used</span><span class="ctx-tok">55.5K / 1M</span></div>
+            <div class="ctx-bar" aria-label="Context window breakdown">
+              <span class="ctx-seg ctx-c-messages" style="width:3.9%"></span>
+              <span class="ctx-seg ctx-c-skills" style="width:1.4%"></span>
+              <span class="ctx-seg ctx-c-system" style="width:1.0%"></span>
+              <span class="ctx-seg ctx-c-mcp" style="width:0.6%"></span>
+              <span class="ctx-seg ctx-c-memory" style="width:0.5%"></span>
+              <span class="ctx-seg ctx-c-agents" style="width:0.5%"></span>
+              <span class="ctx-seg ctx-c-buffer" style="width:3.3%"></span>
+            </div>
+            <div class="ctx-rows">
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-messages"></span><span class="ctx-lbl">Messages</span><span class="ctx-num">38.6K</span><span class="ctx-pct-col">3.9%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-skills"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="x-ctx-det-skills" aria-expanded="false">Skills</button><span class="ctx-num">10K</span><span class="ctx-pct-col">1.0%</span></div>
+              <div class="ctx-detail" id="x-ctx-det-skills" hidden>
+                <div class="ctx-detail-item"><span class="k">excel-modeling</span><span class="v">4.4K</span></div>
+                <div class="ctx-detail-item"><span class="k">ooxml-formulas</span><span class="v">3.2K</span></div>
+                <div class="ctx-detail-item"><span class="k">verification-before-completion</span><span class="v">2.4K</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-system"></span><span class="ctx-lbl">System prompt</span><span class="ctx-num">6.7K</span><span class="ctx-pct-col">0.7%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-mcp"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="x-ctx-det-mcp" aria-expanded="false">MCP server instructions</button><span class="ctx-num">700</span><span class="ctx-pct-col">0.1%</span></div>
+              <div class="ctx-detail" id="x-ctx-det-mcp" hidden>
+                <div class="ctx-detail-item"><span class="k">microsoft-office</span><span class="v">360</span></div>
+                <div class="ctx-detail-item"><span class="k">context7</span><span class="v">210</span></div>
+                <div class="ctx-detail-item"><span class="k">github</span><span class="v">130</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-memory"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="x-ctx-det-mem" aria-expanded="false">Memory files</button><span class="ctx-num">353</span><span class="ctx-pct-col">0.0%</span></div>
+              <div class="ctx-detail" id="x-ctx-det-mem" hidden>
+                <div class="ctx-detail-item"><span class="k">~/.rayu/memory/pricing-model.md</span><span class="v">353</span></div>
+              </div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-agents"></span><button class="ctx-lbl is-dotted" type="button" data-ctx-detail="x-ctx-det-agents" aria-expanded="false">Custom agents</button><span class="ctx-num">132</span><span class="ctx-pct-col">0.0%</span></div>
+              <div class="ctx-detail" id="x-ctx-det-agents" hidden>
+                <div class="ctx-detail-item"><span class="k">coordinator · Claude Opus 5.5</span><span class="v">42</span></div>
+                <div class="ctx-detail-item"><span class="k">sheet-builder · Claude Sonnet 5</span><span class="v">36</span></div>
+                <div class="ctx-detail-item"><span class="k">formula-auditor · GPT-6.1 Sol</span><span class="v">54</span></div>
+              </div>
+            </div>
+            <div class="ctx-rows">
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-buffer"></span><span class="ctx-lbl">Autocompact buffer</span><span class="ctx-num">33K</span><span class="ctx-pct-col">3.3%</span></div>
+              <div class="ctx-row"><span class="ctx-swatch ctx-c-free"></span><span class="ctx-lbl">Free space</span><span class="ctx-num">910.5K</span><span class="ctx-pct-col">91.0%</span></div>
+            </div>
+            <div class="ctx-disclosures">
+              <button class="ctx-disc-btn" type="button" data-collapse="x-disc-mcp" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>MCP tools<span class="disc-cnt">190</span></button>
+              <div class="ctx-disc-body" id="x-disc-mcp" hidden><span>microsoft-office · 32 tools</span><span>chrome-devtools · 26 tools</span><span>github · 48 tools</span><span>local-preview · 84 tools</span></div>
+              <button class="ctx-disc-btn" type="button" data-collapse="x-disc-mem" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>Memory files<span class="disc-cnt">1</span></button>
+              <div class="ctx-disc-body" id="x-disc-mem" hidden><span>~/.rayu/memory/pricing-model.md</span></div>
+              <button class="ctx-disc-btn" type="button" data-collapse="x-disc-agents" aria-expanded="false"><svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>Custom agents<span class="disc-cnt">4</span></button>
+              <div class="ctx-disc-body" id="x-disc-agents" hidden><span>coordinator · Claude Opus 5.5</span><span>sheet-builder · Claude Sonnet 5</span><span>formula-auditor · GPT-6.1 Sol</span><span>verifier · DeepSeek V4 Flash</span></div>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Connectors</h2>
+            <div class="conn-list">
+              <div class="conn-row"><span class="conn-glyph">E</span><span>Exa</span></div>
+              <div class="conn-row"><span class="conn-glyph">P</span><span>Playwright</span></div>
+              <div class="conn-row"><span class="conn-glyph">G</span><span>GitHub</span><button class="conn-action" type="button" data-toast="Opening GitHub OAuth reconnect...">Reconnect</button></div>
+            </div>
+            <div class="conn-extra" id="conn-extra-xl" hidden>
+              <div class="conn-row"><span class="conn-glyph">M</span><span>Microsoft Office</span><span class="conn-action is-ok">Linked</span></div>
+              <div class="conn-row"><span class="conn-glyph">T</span><span>Telegram Bot</span><span class="conn-action is-ok">Linked</span></div>
+            </div>
+            <button class="conn-more" type="button" data-conn-more="conn-extra-xl">Show more</button>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Outputs</h2>
+            <div class="outputs-list">
+              <button class="output-row" type="button" data-open-preview="xtab-excel"><svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg><span>Q4-Token-Cost-Model.xlsx</span></button>
+              <a class="output-row" href="agent-workspace.html#browser-side"><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><span>dashboard-preview.html</span></a>
+              <a class="output-row" href="preview-studio.html#md"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg><span>MIGRATION_PLAN.md</span></a>
+            </div>
+          </section>
+
+          <section class="rs-sec">
+            <h2 class="rs-sec-title">Changes</h2>
+            <div class="changes-row">
+              <svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg>
+              <span class="changes-stat"><span class="add">+142</span><span class="del">−0</span></span>
+              <button class="changes-pr-btn" type="button" data-toast="Create PR requires explicit approval">Create PR</button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="rb-shell" role="tabpanel" id="xpanel-excel" aria-labelledby="xtab-excel">
+
+        <!-- Original Microsoft Excel Ribbon, Formula Bar, Live Editable Workbook & Live Office Online Iframe -->
+        <div class="xl-app">
+          <div class="xl-titlebar">
+            <span class="xl-brand-badge" aria-hidden="true">X</span>
+            <span class="xl-doc-name">Q4-Token-Cost-Model.xlsx</span>
+            <span class="xl-saved-pill">AutoSave On</span>
+            <div class="xl-title-actions">
+              <button class="xl-top-btn" type="button" data-xl-embed-toggle title="Load live Microsoft Office Online / OneDrive embed URL">Live Excel Web</button>
+              <a class="xl-top-btn" href="../assets/Q4-Token-Cost-Model.xlsx" download="Q4-Token-Cost-Model.xlsx" title="Open real Q4-Token-Cost-Model.xlsx in native Microsoft Excel">
+                <svg class="icon" aria-hidden="true"><use href="#i-external"/></svg>
+                Open in Excel App
+              </a>
+            </div>
+          </div>
+
+          <div class="xl-ribbon-tabs" role="tablist" aria-label="Excel ribbon">
+            <button class="xl-rtab" type="button" data-toast="Excel File menu">File</button>
+            <button class="xl-rtab is-active" type="button">Home</button>
+            <button class="xl-rtab" type="button" data-toast="Insert chart, PivotTable, or table">Insert</button>
+            <button class="xl-rtab" type="button" data-toast="Page layout &amp; print area">Page Layout</button>
+            <button class="xl-rtab" type="button" data-toast="Formulas: SUM, AVERAGE, XLOOKUP">Formulas</button>
+            <button class="xl-rtab" type="button" data-toast="Data sort, filter &amp; refresh">Data</button>
+            <button class="xl-rtab" type="button" data-toast="Review comments &amp; track changes">Review</button>
+          </div>
+
+          <div class="xl-ribbon-bar">
+            <div class="xl-rgroup">
+              <button class="xl-rbtn" type="button" data-toast="Calibri 11pt">Calibri</button>
+              <button class="xl-rbtn" type="button" data-toast="Font size 11">11</button>
+              <button class="xl-rbtn is-on" type="button" data-toast="Bold"><strong>B</strong></button>
+              <button class="xl-rbtn" type="button" data-toast="Italic"><em>I</em></button>
+              <button class="xl-rbtn" type="button" data-toast="Underline"><u>U</u></button>
+            </div>
+            <div class="xl-rgroup">
+              <button class="xl-rbtn" type="button" data-toast="Currency format ($)">$</button>
+              <button class="xl-rbtn" type="button" data-toast="Percentage format (%)">%</button>
+              <button class="xl-rbtn" type="button" data-toast="Increase decimal">.00</button>
+            </div>
+            <div class="xl-rgroup">
+              <button class="xl-rbtn" type="button" data-toast="AutoSum =SUM(F2:F6)">Σ AutoSum</button>
+              <button class="xl-rbtn" type="button" data-toast="Filter &amp; Sort enabled">Sort &amp; Filter</button>
+            </div>
+          </div>
+
+          <!-- Optional Live Microsoft Office Web Viewer URL Bar -->
+          <div class="xl-embed-bar" id="xl-embed-bar" hidden>
+            <strong>Microsoft Office Embed:</strong>
+            <input type="url" placeholder="Paste OneDrive, SharePoint, or public HTTPS .xlsx URL..." aria-label="Excel HTTPS or OneDrive URL">
+            <button class="btn btn-primary btn-sm" type="button" data-xl-embed-load style="background:#107C41;border-color:#0B5D30;color:#fff">Load live Excel</button>
+            <button class="btn btn-sm" type="button" data-xl-embed-local style="background:#fff;color:#1F1F1F;border-color:#C6DFCE">Local workbook</button>
+          </div>
+
+          <!-- Authentic Excel Name Box & Formula Bar -->
+          <div class="xl-fbar">
+            <div class="xl-namebox">F7</div>
+            <div class="xl-fx-mark" aria-hidden="true">fx</div>
+            <input class="xl-finput" type="text" value="=SUM(F2:F6)" aria-label="Excel formula bar" readonly>
+          </div>
+
+          <!-- Live Microsoft Office Web Viewer Iframe (activated when a public HTTPS / OneDrive URL is loaded) -->
+          <div class="xl-iframe-wrap" id="xl-iframe-wrap" hidden>
+            <iframe title="Microsoft Excel Online Live Embed" referrerpolicy="no-referrer"></iframe>
+          </div>
+
+          <!-- Local Authentic Editable Excel Grid (synced with Q4-Token-Cost-Model.xlsx) -->
+          <div class="xl-sheet-scroll" id="xl-local-scroll">
+            <table class="xl-sheet" id="xl-sheet-q4" data-xl-sheet-table="q4">
+              <thead>
+                <tr>
+                  <th class="xl-corner"></th>
+                  <th style="min-width:130px">A</th>
+                  <th style="min-width:108px">B</th>
+                  <th style="min-width:72px">C</th>
+                  <th style="min-width:70px">D</th>
+                  <th style="min-width:60px">E</th>
+                  <th style="min-width:82px">F</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="xl-head-row">
+                  <td class="xl-rh">1</td>
+                  <td data-ref="A1">Route / Task</td>
+                  <td data-ref="B1">Model</td>
+                  <td class="is-num" data-ref="C1">Input K Tok</td>
+                  <td class="is-num" data-ref="D1">KV Cache %</td>
+                  <td class="is-num" data-ref="E1">Credits</td>
+                  <td class="is-num" data-ref="F1">Est. Cost ($)</td>
+                </tr>
+                <tr>
+                  <td class="xl-rh">2</td>
+                  <td data-ref="A2">Chat &amp; Planning</td>
+                  <td data-ref="B2">choeng-rayu-1</td>
+                  <td class="is-num" contenteditable="true" data-ref="C2">420</td>
+                  <td class="is-num" contenteditable="true" data-ref="D2">94%</td>
+                  <td class="is-num" contenteditable="true" data-ref="E2">18.4</td>
+                  <td class="is-num" contenteditable="true" data-ref="F2">$24.80</td>
+                </tr>
+                <tr>
+                  <td class="xl-rh">3</td>
+                  <td data-ref="A3">Code Edits &amp; Diffs</td>
+                  <td data-ref="B3">choeng-rayu-1</td>
+                  <td class="is-num" contenteditable="true" data-ref="C3">680</td>
+                  <td class="is-num" contenteditable="true" data-ref="D3">92%</td>
+                  <td class="is-num" contenteditable="true" data-ref="E3">31.2</td>
+                  <td class="is-num" contenteditable="true" data-ref="F3">$42.10</td>
+                </tr>
+                <tr>
+                  <td class="xl-rh">4</td>
+                  <td data-ref="A4">Fast Grep &amp; Triage</td>
+                  <td data-ref="B4">choeng-rayu-1-mini</td>
+                  <td class="is-num" contenteditable="true" data-ref="C4">910</td>
+                  <td class="is-num" contenteditable="true" data-ref="D4">96%</td>
+                  <td class="is-num" contenteditable="true" data-ref="E4">6.8</td>
+                  <td class="is-num" contenteditable="true" data-ref="F4">$9.18</td>
+                </tr>
+                <tr>
+                  <td class="xl-rh">5</td>
+                  <td data-ref="A5">Parallel Swarm (3x)</td>
+                  <td data-ref="B5">choeng-rayu-1</td>
+                  <td class="is-num" contenteditable="true" data-ref="C5">540</td>
+                  <td class="is-num" contenteditable="true" data-ref="D5">89%</td>
+                  <td class="is-num" contenteditable="true" data-ref="E5">26.5</td>
+                  <td class="is-num" contenteditable="true" data-ref="F5">$35.78</td>
+                </tr>
+                <tr>
+                  <td class="xl-rh">6</td>
+                  <td data-ref="A6">Overnight Soak Runs</td>
+                  <td data-ref="B6">choeng-rayu-1</td>
+                  <td class="is-num" contenteditable="true" data-ref="C6">310</td>
+                  <td class="is-num" contenteditable="true" data-ref="D6">95%</td>
+                  <td class="is-num" contenteditable="true" data-ref="E6">12.1</td>
+                  <td class="is-num" contenteditable="true" data-ref="F6">$16.34</td>
+                </tr>
+                <tr class="xl-tot-row">
+                  <td class="xl-rh">7</td>
+                  <td data-ref="A7">Total / Avg (Demo)</td>
+                  <td data-ref="B7">Rayu Gateway</td>
+                  <td class="is-num" data-ref="C7" data-formula="=SUM(C2:C6)">2,860</td>
+                  <td class="is-num" data-ref="D7" data-formula="=AVERAGE(D2:D6)">93.2%</td>
+                  <td class="is-num" data-ref="E7" data-formula="=SUM(E2:E6)">95.0</td>
+                  <td class="is-num is-selected" data-ref="F7" data-formula="=SUM(F2:F6)">$128.20</td>
+                </tr>
+                <tr><td class="xl-rh">8</td><td data-ref="A8"></td><td data-ref="B8"></td><td data-ref="C8"></td><td data-ref="D8"></td><td data-ref="E8"></td><td data-ref="F8"></td></tr>
+                <tr><td class="xl-rh">9</td><td data-ref="A9" style="color:#605E5C;font-style:italic">KV Cache Savings</td><td data-ref="B9" style="color:#107C41;font-weight:600">−58.4% vs cold</td><td data-ref="C9"></td><td data-ref="D9"></td><td data-ref="E9"></td><td data-ref="F9"></td></tr>
+                <tr><td class="xl-rh">10</td><td data-ref="A10"></td><td data-ref="B10"></td><td data-ref="C10"></td><td data-ref="D10"></td><td data-ref="E10"></td><td data-ref="F10"></td></tr>
+                <tr><td class="xl-rh">11</td><td data-ref="A11"></td><td data-ref="B11"></td><td data-ref="C11"></td><td data-ref="D11"></td><td data-ref="E11"></td><td data-ref="F11"></td></tr>
+                <tr><td class="xl-rh">12</td><td data-ref="A12"></td><td data-ref="B12"></td><td data-ref="C12"></td><td data-ref="D12"></td><td data-ref="E12"></td><td data-ref="F12"></td></tr>
+                <tr><td class="xl-rh">13</td><td data-ref="A13"></td><td data-ref="B13"></td><td data-ref="C13"></td><td data-ref="D13"></td><td data-ref="E13"></td><td data-ref="F13"></td></tr>
+                <tr><td class="xl-rh">14</td><td data-ref="A14"></td><td data-ref="B14"></td><td data-ref="C14"></td><td data-ref="D14"></td><td data-ref="E14"></td><td data-ref="F14"></td></tr>
+              </tbody>
+            </table>
+
+            <!-- Sheet 2: KV Cache Savings -->
+            <table class="xl-sheet" data-xl-sheet-table="cache" hidden>
+              <thead>
+                <tr><th class="xl-corner"></th><th style="min-width:170px">A</th><th style="min-width:110px">B</th><th style="min-width:110px">C</th><th style="min-width:110px">D</th></tr>
+              </thead>
+              <tbody>
+                <tr class="xl-head-row"><td class="xl-rh">1</td><td data-ref="A1">Cache TTL Policy</td><td class="is-num" data-ref="B1">Hit Rate</td><td class="is-num" data-ref="C1">Saved Tok (K)</td><td class="is-num" data-ref="D1">Savings ($)</td></tr>
+                <tr><td class="xl-rh">2</td><td data-ref="A2">5m TTL (default)</td><td class="is-num" data-ref="B2">74.0%</td><td class="is-num" data-ref="C2">1,420</td><td class="is-num" data-ref="D2">$64.10</td></tr>
+                <tr><td class="xl-rh">3</td><td data-ref="A3">1h TTL (warm)</td><td class="is-num" data-ref="B3">93.2%</td><td class="is-num" data-ref="C3">2,665</td><td class="is-num" data-ref="D3">$179.90</td></tr>
+                <tr class="xl-tot-row"><td class="xl-rh">4</td><td data-ref="A4">Net Warm Advantage</td><td class="is-num" data-ref="B4">+19.2%</td><td class="is-num" data-ref="C4">+1,245</td><td class="is-num" data-ref="D4" data-formula="=D3-D2">+$115.80</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="xl-tabs-bar" role="tablist" aria-label="Workbook sheets">
+            <button class="xl-stab is-active" type="button" data-xl-sheet="q4">Q4 Cost Model</button>
+            <button class="xl-stab" type="button" data-xl-sheet="cache">KV Cache Savings</button>
+            <button class="xl-rbtn" type="button" data-toast="Added Sheet3" style="margin-left:4px">+</button>
+          </div>
+
+          <div class="xl-statusbar">
+            <span>Ready</span>
+            <span class="spacer"></span>
+            <span>Count: 5</span>
+            <span data-xl-status-sum>Sum: $128.20</span>
+            <span>100%</span>
+          </div>
+        </div>
+
+        <!-- Floating Bottom-Right RayuCode Chat Card (when Excel is in Full View) -->
+        <div class="fb-chat" aria-label="Floating RayuCode chat">
+          <div class="fb-chat-head">
+            <svg class="icon" aria-hidden="true"><use href="#i-sheet"/></svg>
+            <span>Q4 token cost spreadsheet</span>
+            <span class="spacer"></span>
+            <button class="icon-btn" type="button" data-fb-toggle aria-label="Minimize chat" title="Minimize"><svg class="icon" aria-hidden="true"><use href="#i-minus"/></svg></button>
+          </div>
+          <div class="fb-chat-body">
+            <p>Working on <strong>Q4-Token-Cost-Model.xlsx</strong> in Full View. Ask RayuCode to add pivot formulas, compare providers, or verify totals.</p>
+          </div>
+          <div class="fb-chat-foot">
+            <button class="icon-btn" type="button" aria-label="Add context" data-toast="Attached active Excel range A1:F7"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
+            <input class="fb-chat-input" type="text" placeholder="Work with RayuCode on this sheet" aria-label="Ask RayuCode">
+            <button class="send-orb" type="button" data-fb-send aria-label="Send" style="width:28px;height:28px"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <script src="../js/include.js?v=27"></script>
+  <script src="../js/app.js?v=27"></script>
+</body>
+</html>

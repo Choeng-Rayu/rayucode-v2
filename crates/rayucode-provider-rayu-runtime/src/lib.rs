@@ -566,7 +566,11 @@ fn format_rayu_route_detail(model: &catalog::RayuCatalogModel) -> String {
     if let Some(label) = model.label.as_deref().filter(|s| !s.trim().is_empty()) {
         parts.push(label.trim().to_string());
     }
-    if let Some(ctx) = model.context_window.filter(|w| *w > 0) {
+    if let Some(ctx) = model
+        .context_window
+        .or(model.max_input_tokens)
+        .filter(|w| *w > 0)
+    {
         parts.push(format_context_tokens(ctx));
     }
     if model.supports_tools == Some(false) {
@@ -926,7 +930,7 @@ impl Provider for RayuProvider {
             .models
             .iter()
             .find(|row| row.id == model)
-            .and_then(|row| row.context_window)
+            .and_then(|row| row.max_input_tokens.or(row.context_window))
         {
             return window as usize;
         }

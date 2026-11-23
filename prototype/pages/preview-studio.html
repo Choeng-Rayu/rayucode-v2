@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Preview Studio (Browser · Microsoft · MD)</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=15">
+  <link rel="stylesheet" href="../css/layout.css?v=15">
+  <link rel="stylesheet" href="../css/components.css?v=15">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <aside class="sidebar" aria-label="Navigation and preview items">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top"><button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar"><svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg><span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span></button></div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <div class="cx-profile-wrap">
+          <button class="cx-avatar-btn" type="button" data-dropdown="profile-pop" aria-haspopup="menu" aria-expanded="false" aria-label="User profile menu" title="ly yeak khai · Personal account">
+            <span class="cx-avatar" aria-hidden="true">LK</span>
+          </button>
+          <div class="profile-pop" id="profile-pop" data-dropdown-menu role="menu" aria-label="Account menu" hidden>
+            <div class="profile-pop-group">
+              <a class="profile-pop-item" href="settings.html" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>
+                <span>Settings</span>
+                <span class="profile-pop-keys"><kbd class="profile-pop-key">⌘</kbd><kbd class="profile-pop-key">,</kbd></span>
+              </a>
+              <a class="profile-pop-item" href="settings.html#usage-billing" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg>
+                <span>Upgrade Plan</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Rewards center · 0 credits earned">
+                <svg class="icon" aria-hidden="true"><use href="#i-gift"/></svg>
+                <span>Rewards center</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Invite link copied to clipboard">
+                <svg class="icon" aria-hidden="true"><use href="#i-heart-hand"/></svg>
+                <span>Invite Friends</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Pet companion toggled (⌥Space)">
+                <svg class="icon" aria-hidden="true"><use href="#i-pet-ghost"/></svg>
+                <span>Show pet</span>
+              </button>
+              <a class="profile-pop-item" href="settings.html#appearance" role="menuitem">
+                <svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg>
+                <span>Appearance</span>
+                <svg class="icon profile-pop-chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+              </a>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode v1.0.4 Changelog">
+                <svg class="icon" aria-hidden="true"><use href="#i-changelog"/></svg>
+                <span>Changelog</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="Scan QR code to get the mobile app">
+                <svg class="icon" aria-hidden="true"><use href="#i-mobile-dl"/></svg>
+                <span>Get the mobile app</span>
+              </button>
+              <button class="profile-pop-item" type="button" role="menuitem" data-toast="RayuCode Desktop v1.0.4">
+                <svg class="icon" aria-hidden="true"><use href="#i-about-mark"/></svg>
+                <span>About RayuCode</span>
+                <svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg>
+              </button>
+            </div>
+            <div class="profile-pop-sep" aria-hidden="true"></div>
+            <div class="profile-pop-group">
+              <button class="profile-pop-item is-danger" type="button" role="menuitem" data-toast="Signed out of Personal account">
+                <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg>
+                <span>Sign out</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+        <div class="cx-brand-row">
+          <button class="cx-brand-btn" type="button" data-toast="Preview Studio · v1 Scope">RayuCode<svg class="icon chev" aria-hidden="true"><use href="#i-chev-d"/></svg></button>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" aria-label="Search" data-toast="Search previews"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-search"/></svg></button>
+        </div>
+        <a class="cx-new-chat" href="../index.html"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg>New chat</a>
+
+        <div class="session-list">
+          <div class="cx-sec-label">v1 Previews</div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="ps-b" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg><span class="proj-name">Open Browser</span></button>
+            <div class="proj-items" id="ps-b">
+              <button class="conv-row is-active" type="button" data-open-preview="studio-tab-browser"><span class="conv-name">localhost:3000/dashboard</span></button>
+              <button class="conv-row" type="button" data-open-preview="studio-tab-browser" data-toast="Previewing rayucode.com/docs"><span class="conv-name">rayucode.com/docs</span></button>
+            </div>
+          </div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="ps-o" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg><span class="proj-name">Open Microsoft</span></button>
+            <div class="proj-items" id="ps-o">
+              <button class="conv-row" type="button" data-open-preview="studio-tab-office"><span class="conv-name">Architecture-Spec.docx</span></button>
+              <button class="conv-row" type="button" data-open-preview="studio-tab-office"><span class="conv-name">Token-Cost-Model.xlsx</span></button>
+              <button class="conv-row" type="button" data-open-preview="studio-tab-office"><span class="conv-name">RayuCode-v1-Deck.pptx</span></button>
+            </div>
+          </div>
+          <div class="proj-group">
+            <button class="proj-head" type="button" data-collapse="ps-m" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg><span class="proj-name">Open Preview MD</span></button>
+            <div class="proj-items" id="ps-m">
+              <button class="conv-row" type="button" data-open-preview="studio-tab-md"><span class="conv-name">MIGRATION_PLAN.md</span></button>
+              <button class="conv-row" type="button" data-open-preview="studio-tab-md"><span class="conv-name">README.md</span></button>
+              <button class="conv-row" type="button" data-open-preview="studio-tab-md"><span class="conv-name">DESIGN.md</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="center-col">
+      <main class="canvas" data-tabs>
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+            <a class="icon-btn" href="../index.html" aria-label="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <div class="canvas-head-title">
+            <svg class="icon" aria-hidden="true"><use href="#i-folder-clean"/></svg>
+            <span>Preview Studio</span>
+          </div>
+          <div class="preview-tabs-bar" role="tablist" aria-label="Core v1 Preview Scope" style="border:none;background:transparent;padding:0;margin-left:8px">
+            <button class="preview-tab" role="tab" id="studio-tab-browser" data-hash-tab="browser" aria-controls="studio-panel-browser" aria-selected="true" type="button"><svg class="icon" aria-hidden="true"><use href="#i-browser"/></svg>Open Browser</button>
+            <button class="preview-tab" role="tab" id="studio-tab-office" data-hash-tab="office" aria-controls="studio-panel-office" aria-selected="false" type="button"><svg class="icon" aria-hidden="true"><use href="#i-doc"/></svg>Open Microsoft</button>
+            <button class="preview-tab" role="tab" id="studio-tab-md" data-hash-tab="md" aria-controls="studio-panel-md" aria-selected="false" type="button"><svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg>Open Preview MD</button>
+          </div>
+          <div class="spacer"></div>
+          <div class="canvas-head-actions">
+            <a class="btn btn-ghost btn-sm" href="agent-workspace.html"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chat"/></svg>Back to chat</a>
+            <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+          </div>
+        </header>
+
+        <!-- TAB 1: OPEN BROWSER -->
+        <section class="preview-panel" role="tabpanel" id="studio-panel-browser" aria-labelledby="studio-tab-browser">
+          <div class="browser-toolbar">
+            <button class="icon-btn" type="button" aria-label="Back" data-toast="Browser back"><svg class="icon" aria-hidden="true"><use href="#i-arrow-l"/></svg></button>
+            <button class="icon-btn" type="button" aria-label="Forward" data-toast="Browser forward"><svg class="icon" aria-hidden="true"><use href="#i-arrow-r"/></svg></button>
+            <button class="icon-btn" type="button" aria-label="Reload" data-toast="Reloaded localhost:3000/dashboard"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
+            <div class="browser-url"><span class="url-lock" aria-hidden="true"></span><input type="text" value="http://localhost:3000/dashboard" aria-label="URL"></div>
+            <div class="flex" style="gap:2px">
+              <button class="icon-btn is-active" type="button" data-viewport="desktop" aria-label="Desktop view"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+              <button class="icon-btn" type="button" data-viewport="mobile" aria-label="Mobile view"><svg class="icon" aria-hidden="true"><use href="#i-phone"/></svg></button>
+            </div>
+            <button class="btn btn-primary btn-sm" type="button" data-toast="Opened http://localhost:3000/dashboard in system browser"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-external"/></svg>Open in Browser</button>
+          </div>
+
+          <div class="browser-stage">
+            <div class="browser-viewport" style="max-width:920px">
+              <div class="mock-webapp-nav">
+                <div class="flex" style="font-weight:600;font-size:var(--text-sm)"><img class="rayu-fox-sm" src="../assets/rayu-fox.png" alt="Rayu Code">Rayu Code · Local Telemetry</div>
+                <div class="flex"><span class="badge badge-mono">vite · :3000</span><span class="badge badge-live">HMR Connected</span></div>
+              </div>
+              <div class="mock-webapp-body" style="padding:22px">
+                <div class="flex" style="justify-content:space-between;flex-wrap:wrap">
+                  <div>
+                    <div style="font-size:1.08rem;font-weight:600;letter-spacing:-0.02em">Parallel Agent Throughput</div>
+                    <div class="dim" style="font-size:var(--text-xs)">Live local preview from <code>rayu-web</code> — synthetic demo data</div>
+                  </div>
+                  <button class="btn btn-sm" type="button" data-toast="Attached browser screenshot to active conversation"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-image"/></svg>Attach to chat</button>
+                </div>
+                <div class="mock-kpi-grid">
+                  <div class="mock-kpi"><div class="k-label">Running Agents</div><div class="k-val">3 / 8</div><div class="k-delta">Swarm coordinator active</div></div>
+                  <div class="mock-kpi"><div class="k-label">Total Daemon RAM</div><div class="k-val">214 MB</div><div class="k-delta">−38% after ShardStore</div></div>
+                  <div class="mock-kpi"><div class="k-label">Prompt KV Cache</div><div class="k-val">94.2%</div><div class="k-delta">1h TTL warm</div></div>
+                </div>
+                <table class="route-table">
+                  <thead><tr><th>Session</th><th>Model Route</th><th>Status</th><th style="text-align:right">Credits</th></tr></thead>
+                  <tbody>
+                    <tr><td class="r-task">Retire legacy session cache</td><td class="r-model">choeng-rayu-1</td><td><span class="badge badge-live">Live</span></td><td class="r-lat">0.42</td></tr>
+                    <tr><td class="r-task">Gateway: retry budget tests</td><td class="r-model">choeng-rayu-1</td><td><span class="badge badge-live">Autonomous</span></td><td class="r-lat">0.31</td></tr>
+                    <tr><td class="r-task">VS Code: model picker refresh</td><td class="r-model">choeng-rayu-1</td><td><span class="badge badge-warn">Review</span></td><td class="r-lat">0.29</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="browser-console"><span style="color:var(--accent-text)">● Console: 0 errors</span><span>GET /api/sessions 200 (14ms)</span><span class="grow"></span><span>Embedded WebView · v1</span></div>
+        </section>
+
+        <!-- TAB 2: OPEN MICROSOFT -->
+        <section class="preview-panel" role="tabpanel" id="studio-panel-office" aria-labelledby="studio-tab-office" data-tabs hidden>
+          <div class="office-toolbar">
+            <div class="office-file-tabs" role="tablist" aria-label="Microsoft Office files">
+              <button class="office-tab" role="tab" id="otab-word" aria-controls="opanel-word" aria-selected="true" type="button"><svg class="icon" style="color:var(--office-word)" aria-hidden="true"><use href="#i-doc"/></svg>Architecture-Spec.docx</button>
+              <button class="office-tab" role="tab" id="otab-excel" aria-controls="opanel-excel" aria-selected="false" type="button"><svg class="icon" style="color:var(--office-excel)" aria-hidden="true"><use href="#i-sheet"/></svg>Token-Cost-Model.xlsx</button>
+              <button class="office-tab" role="tab" id="otab-ppt" aria-controls="opanel-ppt" aria-selected="false" type="button"><svg class="icon" style="color:var(--office-ppt)" aria-hidden="true"><use href="#i-slide"/></svg>RayuCode-v1-Deck.pptx</button>
+            </div>
+            <span class="grow"></span>
+            <button class="btn btn-primary btn-sm" type="button" data-toast="Launched active file in Microsoft Office desktop app"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-external"/></svg>Open in Microsoft App</button>
+          </div>
+
+          <div class="office-stage">
+            <div class="office-subpanel" role="tabpanel" id="opanel-word" aria-labelledby="otab-word">
+              <div class="doc-paper">
+                <div class="doc-paper-meta"><span class="badge badge-word"><svg class="icon" style="width:11px;height:11px" aria-hidden="true"><use href="#i-doc"/></svg>Microsoft Word · .docx</span><span>Updated 14m ago · 2 pages</span></div>
+                <h2>RayuCode Desktop v1 — Product &amp; CLI Parity Spec</h2>
+                <p>Version 1 brings full RayuCode CLI parity into a calm desktop workspace with no folder tree explorer, native Environment &amp; Context inspection, and built-in previews.</p>
+                <h3>1. Core v1 Preview Scope</h3>
+                <table class="doc-table">
+                  <thead><tr><th>Preview Surface</th><th>Formats / Targets</th><th>External Handoff</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>Open Browser</strong></td><td><code>localhost:*</code>, Desktop &amp; Mobile viewports</td><td>System Browser</td></tr>
+                    <tr><td><strong>Open Microsoft</strong></td><td>Word <code>.docx</code>, Excel <code>.xlsx</code>, PowerPoint <code>.pptx</code></td><td>Microsoft Word / Excel / PPT</td></tr>
+                    <tr><td><strong>Open Preview MD</strong></td><td>GFM Markdown <code>.md</code>, tables, code, LaTeX</td><td>Visual Studio Code</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="office-subpanel" role="tabpanel" id="opanel-excel" aria-labelledby="otab-excel" hidden>
+              <div class="xl-shell" style="max-width:860px;margin:0 auto">
+                <div class="xl-formula-bar"><span class="badge badge-excel" style="margin-right:4px">Excel .xlsx</span><span class="xl-cell-ref">E6</span><span class="dim">fx</span><span style="color:var(--accent-text)">=SUM(E2:E5)</span></div>
+                <div class="xl-grid-wrap">
+                  <table class="xl-grid">
+                    <thead><tr><th></th><th>A · Workload</th><th>B · Model Route</th><th>C · Input Tok</th><th>D · KV Cache Hit</th><th>E · Credits</th></tr></thead>
+                    <tbody>
+                      <tr><td class="xl-rn">1</td><td>Chat &amp; Architecture Plan</td><td>choeng-rayu-1</td><td class="xl-num">14,200</td><td class="xl-num">94.0%</td><td class="xl-num">0.14</td></tr>
+                      <tr><td class="xl-rn">2</td><td>Multi-file Rust Refactor</td><td>choeng-rayu-1</td><td class="xl-num">16,800</td><td class="xl-num">91.4%</td><td class="xl-num">0.18</td></tr>
+                      <tr><td class="xl-rn">3</td><td>Grep &amp; Symbol Triage</td><td>choeng-rayu-1-mini</td><td class="xl-num">3,100</td><td class="xl-num">98.1%</td><td class="xl-num">0.03</td></tr>
+                      <tr><td class="xl-rn">4</td><td>Swarm Worker Verification</td><td>choeng-rayu-1</td><td class="xl-num">4,100</td><td class="xl-num">89.5%</td><td class="xl-num">0.07</td></tr>
+                      <tr class="xl-total"><td class="xl-rn">6</td><td>Session Total (Demo)</td><td>Rayu Gateway</td><td class="xl-num">38,200</td><td class="xl-num">93.2%</td><td class="xl-num xl-active">0.42</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="xl-sheets"><span class="xl-sheet-pill is-active">Summary</span><span class="xl-sheet-pill">Provider Rates</span><span class="xl-sheet-pill">Cache Savings</span><span class="grow"></span><span class="dim mono">Synthetic demo values</span></div>
+              </div>
+            </div>
+
+            <div class="office-subpanel" role="tabpanel" id="opanel-ppt" aria-labelledby="otab-ppt" hidden>
+              <div class="ppt-layout" style="max-width:900px;margin:0 auto">
+                <div class="ppt-filmstrip" aria-label="Slides">
+                  <button class="ppt-thumb is-active" type="button" data-slide="1"><span class="t-idx">01 / 03</span><span class="t-lbl">RayuCode Desktop v1</span></button>
+                  <button class="ppt-thumb" type="button" data-slide="2"><span class="t-idx">02 / 03</span><span class="t-lbl">CLI Feature Parity</span></button>
+                  <button class="ppt-thumb" type="button" data-slide="3"><span class="t-idx">03 / 03</span><span class="t-lbl">v1 Preview Scope</span></button>
+                </div>
+                <div>
+                  <div class="ppt-canvas">
+                    <div class="ppt-slide" data-slide-panel="1"><span class="ppt-kicker">Microsoft PowerPoint · .pptx · Slide 1 of 3</span><h2 class="ppt-h1">RayuCode Desktop v1: Calm Parallel Supervision</h2><ul class="ppt-bullets"><li>Official Rayu Code Warm Graphite Dark &amp; Warm Paper Light palettes.</li><li>Antigravity-style Projects → Conversations layout (no folder tree in v1).</li><li>Full-height right inspector with live Context, Connectors &amp; Preview tabs.</li></ul></div>
+                    <div class="ppt-slide" data-slide-panel="2" hidden><span class="ppt-kicker">Microsoft PowerPoint · .pptx · Slide 2 of 3</span><h2 class="ppt-h1">100% Parity with the RayuCode Rust CLI</h2><ul class="ppt-bullets"><li>Shared daemon socket: Swarm workers, conflict alerts, and memory efficiency.</li><li>Live Rayu-first model discovery, KV cache stats, and Credits receipt.</li><li>Native Telegram remote pairing (<code>/telegram-bot</code>) &amp; Self-Dev builds.</li></ul></div>
+                    <div class="ppt-slide" data-slide-panel="3" hidden><span class="ppt-kicker">Microsoft PowerPoint · .pptx · Slide 3 of 3</span><h2 class="ppt-h1">Built-in Core Previews</h2><ul class="ppt-bullets"><li><strong>Open Browser:</strong> Inspect <code>localhost</code> apps in Desktop &amp; Mobile viewports.</li><li><strong>Open Microsoft:</strong> Preview Word, Excel, and PowerPoint files in-app or natively.</li><li><strong>Open Preview MD:</strong> Read plans, tables, and code blocks in Rendered or Raw mode.</li></ul></div>
+                    <div class="flex" style="justify-content:space-between;border-top:1px solid var(--border);padding-top:10px;font-size:10px;color:var(--text-3)"><span class="mono">rayucode.com · v1 deck</span><span class="badge badge-ppt">PowerPoint Preview</span></div>
+                  </div>
+                  <div class="ppt-notes"><strong>Speaker notes:</strong> Click slide thumbnails on the left to inspect slides, or launch directly in Microsoft PowerPoint.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB 3: OPEN PREVIEW MD -->
+        <section class="preview-panel" role="tabpanel" id="studio-panel-md" aria-labelledby="studio-tab-md" hidden>
+          <div class="md-toolbar">
+            <span class="badge badge-mono">MIGRATION_PLAN.md</span><span class="dim mono" style="font-size:10px">UTF-8 · GFM + LaTeX</span>
+            <span class="grow"></span>
+            <div class="seg" role="group" aria-label="Markdown mode"><button type="button" aria-pressed="true" data-md-mode="rendered">Rendered</button><button type="button" aria-pressed="false" data-md-mode="raw">Raw Source</button></div>
+            <button class="btn btn-sm" type="button" data-toast="Opened MIGRATION_PLAN.md in Visual Studio Code">Edit in VS Code</button>
+          </div>
+          <div class="md-stage">
+            <div class="md-layout" data-md-rendered>
+              <nav class="md-toc" aria-label="Table of contents">
+                <div class="md-toc-title">On this page</div>
+                <a class="is-active" href="#md-summary">Summary</a>
+                <a href="#md-checklist">Rollout Checklist</a>
+                <a href="#md-code">Lookup Adapter</a>
+                <a href="#md-metrics">Memory Impact</a>
+              </nav>
+              <article class="md-article">
+                <h1 id="md-summary">SessionCache Retirement &amp; ShardStore Migration</h1>
+                <p>Tracks removing the legacy <code>SessionCache</code> module in <code>rayucode-v2</code> and routing session lookups directly through <code>ShardStore::lookup</code> with <code>CacheBudget</code>.</p>
+                <div class="md-callout"><strong>CLI Parity Verified:</strong> Both <code>rayu</code> CLI and Desktop connect to the shared daemon socket.</div>
+                <h2 id="md-checklist">Rollout Checklist</h2>
+                <ul class="md-checklist">
+                  <li><span class="md-check is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Audit all 9 references to <code>SessionCache</code></li>
+                  <li><span class="md-check is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Port <code>CacheBudget</code> LRU adapter</li>
+                  <li><span class="md-check is-done"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>Run <code>cargo test -p rayucode session::</code> (14 passed)</li>
+                  <li><span class="md-check"></span>Accept diff and delete <code>src/session/cache.rs</code></li>
+                </ul>
+                <h2 id="md-code">Lookup Adapter</h2>
+                <pre class="md-code"><span class="tok-kw">pub fn</span> <span class="tok-fn">get</span>(&amp;<span class="tok-kw">self</span>, key: &amp;<span class="tok-type">SessionKey</span>) -&gt; <span class="tok-type">Option</span>&lt;<span class="tok-type">Session</span>&gt; {
+    <span class="tok-kw">let</span> hit = <span class="tok-kw">self</span>.shards.<span class="tok-fn">lookup</span>(key)?;
+    <span class="tok-kw">self</span>.budget.<span class="tok-fn">touch</span>(key);
+    <span class="tok-type">Some</span>(hit)
+}</pre>
+                <h2 id="md-metrics">Memory Impact</h2>
+                <table class="doc-table"><thead><tr><th>Metric</th><th>Before</th><th>After (ShardStore)</th></tr></thead><tbody><tr><td>Per-session RSS</td><td class="mono">115 MB</td><td class="mono" style="color:var(--accent-text)">71 MB (−38%)</td></tr><tr><td>Test suite</td><td class="mono">14 passed</td><td class="mono" style="color:var(--accent-text)">14 passed</td></tr></tbody></table>
+              </article>
+            </div>
+            <pre class="md-raw" data-md-raw hidden># SessionCache Retirement &amp; ShardStore Migration
+
+Tracks removing `SessionCache` and routing through `ShardStore::lookup`.
+
+## Rollout Checklist
+- [x] Audit all 9 references
+- [x] Port `CacheBudget` LRU adapter
+- [x] Run `cargo test -p rayucode session::`
+- [ ] Accept diff and delete `src/session/cache.rs`</pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=15"></script>
+  <script src="../js/app.js?v=15"></script>
+</body>
+</html>

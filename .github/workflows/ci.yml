@@ -615,6 +615,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Built Windows binary failed to run --version'
           }
+          $pythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
+          & $pythonCmd scripts/verify_public_release.py --check-windows-pe "target/x86_64-pc-windows-msvc/release/rayu.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run Windows installer lifecycle tests
         shell: pwsh

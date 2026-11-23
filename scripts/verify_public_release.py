@@ -12,9 +12,21 @@ import subprocess
 import tarfile
 import tempfile
 import os
+import struct
 
 PLATFORMS = ("linux-x86_64", "linux-aarch64", "macos-aarch64", "macos-x86_64",
              "windows-x86_64", "windows-aarch64", "freebsd-x86_64")
+# Dynamic MSVC runtime DLLs that are absent on clean Windows 10/11 installs
+# without the Visual C++ Redistributable. Windows binaries must link the CRT
+# statically (+crt-static) so none of these appear in the PE import table.
+FORBIDDEN_WINDOWS_DLL_PREFIXES = (
+    "vcruntime",
+    "msvcp",
+    "msvcr",
+    "concrt",
+    "vcomp",
+    "ucrtbased",
+)
 REQUIRED = {f"rayu-{platform}.tar.gz" for platform in PLATFORMS} | {
     "rayu-windows-x86_64.exe", "rayu-windows-aarch64.exe",
     "SHA256SUMS", "release-provenance.json",
@@ -24,6 +36,83 @@ TARGETS = dict(zip(PLATFORMS, (
     "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc",
     "x86_64-unknown-freebsd",
 )))
+
+
+def pe_imported_dlls(data):
+    """Return DLL names from a PE32/PE32+ import directory (stdlib only)."""
+    if len(data) < 0x40 or data[:2] != b"MZ":
+        raise ValueError("Not a valid Windows PE executable (missing MZ header)")
+    pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe_offset + 24 > len(data) or data[pe_offset:pe_offset + 4] != b"PE\x00\x00":
+        raise ValueError("Not a valid Windows PE executable (missing PE signature)")
+    _, num_sections, _, _, _, opt_header_size, _ = struct.unpack_from("<HHIIIHH", data, pe_offset + 4)
+    opt_offset = pe_offset + 24
+    if opt_offset + opt_header_size > len(data) or opt_header_size < 2:
+        raise ValueError("Truncated PE optional header")
+    magic = struct.unpack_from("<H", data, opt_offset)[0]
+    if magic == 0x20B:  # PE32+
+        dd_offset = opt_offset + 112
+    elif magic == 0x10B:  # PE32
+        dd_offset = opt_offset + 96
+    else:
+        raise ValueError(f"Unsupported PE optional header magic: 0x{magic:x}")
+    if dd_offset + 16 > opt_offset + opt_header_size:
+        return []
+    import_rva, _ = struct.unpack_from("<II", data, dd_offset + 8)
+    if import_rva == 0:
+        return []
+
+    sec_offset = opt_offset + opt_header_size
+    sections = []
+    for idx in range(num_sections):
+        entry = sec_offset + idx * 40
+        if entry + 40 > len(data):
+            raise ValueError("Truncated PE section table")
+        vsize, vrva, rsize, roff = struct.unpack_from("<IIII", data, entry + 8)
+        sections.append((vrva, max(vsize, rsize), roff, rsize))
+
+    def rva_to_offset(rva):
+        for vrva, span, roff, rsize in sections:
+            if vrva <= rva < vrva + span:
+                delta = rva - vrva
+                if delta < rsize and roff + delta < len(data):
+                    return roff + delta
+        return None
+
+    desc_offset = rva_to_offset(import_rva)
+    if desc_offset is None:
+        raise ValueError("PE import directory RVA is outside file sections")
+
+    dlls = []
+    while desc_offset + 20 <= len(data):
+        ilt_rva, _, _, name_rva, iat_rva = struct.unpack_from("<IIIII", data, desc_offset)
+        if ilt_rva == 0 and name_rva == 0 and iat_rva == 0:
+            break
+        if name_rva != 0:
+            name_offset = rva_to_offset(name_rva)
+            if name_offset is None:
+                raise ValueError("PE import DLL name RVA is outside file sections")
+            end = data.find(b"\x00", name_offset)
+            if end == -1:
+                raise ValueError("Unterminated PE import DLL name")
+            dlls.append(data[name_offset:end].decode("ascii", errors="replace"))
+        desc_offset += 20
+    return dlls
+
+
+def verify_windows_pe_portable(path):
+    """Fail if a Windows PE binary dynamically links MSVC redistributable DLLs."""
+    dlls = pe_imported_dlls(Path(path).read_bytes())
+    forbidden = sorted({
+        dll for dll in dlls
+        if dll.lower().startswith(FORBIDDEN_WINDOWS_DLL_PREFIXES)
+    })
+    if forbidden:
+        raise ValueError(
+            f"{Path(path).name}: dynamically imports non-OS MSVC runtime DLL(s): "
+            f"{', '.join(forbidden)}. Build with -C target-feature=+crt-static."
+        )
+    return dlls
 
 
 def verify_archive(path, standalone=None):
@@ -173,8 +262,14 @@ def main():
                         help="Verify license files, inventories and standalone notices")
     parser.add_argument("--check-archive", type=Path,
                         help="Validate a local release archive without downloading it")
+    parser.add_argument("--check-windows-pe", type=Path,
+                        help="Verify a Windows PE binary does not dynamically link MSVC runtime DLLs")
     parser.add_argument("--directory", help="Keep downloads in this new directory")
     args = parser.parse_args()
+    if args.check_windows_pe:
+        dlls = verify_windows_pe_portable(args.check_windows_pe)
+        print(f"VERIFIED PE PORTABILITY: {args.check_windows_pe.name} ({len(dlls)} OS DLL imports, static CRT)")
+        return
     if args.check_archive:
         verify_archive(args.check_archive)
         return

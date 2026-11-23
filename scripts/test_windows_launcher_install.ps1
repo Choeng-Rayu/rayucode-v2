@@ -76,6 +76,17 @@ try {
     $freshProfileBinary = Join-Path $testRoot 'fresh-profile-version.cmd'
     Set-Content -LiteralPath $freshProfileBinary -Value "@echo off`r`n>&2 echo rayu collects anonymous usage statistics.`r`necho rayu v0.47.0 (f7f5898c)" -NoNewline
     Assert-Equal 'v0.47.0' (Get-RayuVersionFromBinary $freshProfileBinary) 'binary version probe should tolerate a successful fresh-profile telemetry notice on stderr'
+    Assert-Equal '0xC0000135' (Format-RayuExitCode -1073741515) 'negative NTSTATUS exit codes should format as unsigned 8-digit hex'
+    Assert-Equal '1' (Format-RayuExitCode 1) 'positive exit codes should format as decimal'
+    $missingDllBinary = Join-Path $testRoot 'missing-dll.cmd'
+    Set-Content -LiteralPath $missingDllBinary -Value "@echo off`r`nexit /b -1073741515" -NoNewline
+    $missingDllMessage = ''
+    try {
+        Assert-RayuBinaryCandidate -BinaryPath $missingDllBinary -ExpectedVersion 'v3.0.3' | Out-Null
+    } catch {
+        $missingDllMessage = [string]$_
+    }
+    Assert-True ($missingDllMessage -match '0xC0000135' -and $missingDllMessage -match 'VCRUNTIME140\.dll') "missing DLL exit code should surface 0xC0000135 and VCRUNTIME140.dll guidance (got: $missingDllMessage)"
 
     Write-Host 'test_windows_architecture_detection_prefers_native_arm64'
     Assert-Equal 'rayu-windows-x86_64' (Resolve-RayuWindowsArtifact @('X64', 'AMD64')) 'x64 Windows should select the x64 release asset'
@@ -115,7 +126,7 @@ try {
     Assert-Equal $false ([bool]$ConfigureHotkey) 'core install should not add login persistence by default'
     Assert-Equal $false ([bool]$BuildFromSource) 'installer should not start a source build by default'
     Assert-True ($installText.Contains('will not start a long source build automatically')) 'missing release assets should produce an explicit source-build opt-in message'
-    Assert-True ($installText.Contains('"--locked", "-p", "rayu", "--bin", "rayu"')) 'source-build fallback should compile only the locked rayu binary target'
+    Assert-True ($installText.Contains('"--locked", "-p", "rayucode", "--bin", "rayu"')) 'source-build fallback should compile only the locked rayu binary target'
 
     Write-Host 'test_hotkey_shortcut_script_is_valid_powershell'
     $shortcutScript = Get-RayuHotkeyShortcutScript -StartupShortcutPath "C:\Users\Test User\AppData\Roaming\rayu's hotkey.lnk" -RayuExePath "C:\Program Files\rayu's bin\rayu.exe"

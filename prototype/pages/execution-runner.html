@@ -3,237 +3,485 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RayuCode — Execution Runner</title>
-  <link rel="stylesheet" href="../css/tokens.css">
-  <link rel="stylesheet" href="../css/layout.css">
-  <link rel="stylesheet" href="../css/components.css">
+  <title>RayuCode — Swarm</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=28">
+  <link rel="stylesheet" href="../css/layout.css?v=28">
+  <link rel="stylesheet" href="../css/components.css?v=28">
 </head>
 <body>
   <div data-include="../assets/icons.svg"></div>
   <div class="app">
 
-    <header class="titlebar">
-      <div class="traffic" aria-hidden="true"><span class="t-close"></span><span class="t-min"></span><span class="t-max"></span></div>
-      <div class="titlebar-brand">
-        <svg class="icon" style="color:var(--accent-text)" aria-hidden="true"><use href="#i-mark"/></svg>
-        RayuCode
-      </div>
-      <nav class="titlebar-crumbs" aria-label="Breadcrumb">
-        <span>rayucode-v2</span><span class="sep">/</span><span class="crumb-current">Gateway: retry budget tests</span>
-      </nav>
-      <div class="titlebar-spacer"></div>
-      <div class="titlebar-actions">
-        <button class="icon-btn" type="button" aria-label="Search sessions"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg></button>
-        <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
-        <a class="btn btn-sm" href="settings-models.html"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a>
-      </div>
-    </header>
-
-    <div class="app-body">
-
-      <nav class="rail" aria-label="Primary">
-        <a class="rail-link" href="../index.html" aria-label="Agent workspace" title="Agent workspace"><svg class="icon" aria-hidden="true"><use href="#i-chat"/></svg></a>
-        <a class="rail-link" href="codebase-context.html" aria-label="Codebase context" title="Codebase context"><svg class="icon" aria-hidden="true"><use href="#i-tree"/></svg></a>
-        <a class="rail-link" href="execution-runner.html" aria-current="page" aria-label="Execution runner" title="Execution runner"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></a>
-        <a class="rail-link" href="agent-workspace.html" aria-label="Review queue" title="Review queue"><svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg></a>
-        <div class="rail-spacer"></div>
-        <a class="rail-link" href="settings-models.html" aria-label="Settings and models" title="Settings &amp; models"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></a>
-        <div class="rail-avatar" title="lyyeakkhai">LK</div>
-      </nav>
-
-      <aside class="sidebar" aria-label="Sessions">
-        <div class="sidebar-head">
-          <button class="project-switch" type="button">
-            <svg class="icon" style="width:14px;height:14px;color:var(--text-3)" aria-hidden="true"><use href="#i-folder"/></svg>
-            rayucode-v2
-            <svg class="icon chev" style="width:12px;height:12px" aria-hidden="true"><use href="#i-chev-d"/></svg>
+    <!-- Column 1: Left Sidebar (Icon Rail + Swarm Navigation & Roster) -->
+    <aside class="sidebar" aria-label="Swarm navigation">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
           </button>
-          <a class="btn btn-primary" href="agent-workspace.html" style="width:100%;margin-top:var(--space-2)">
-            <svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-plus"/></svg>New session
-          </a>
         </div>
-
-        <div class="sidebar-label">Live · 2</div>
-        <div class="session-list">
-          <a class="session-row" href="../index.html">
-            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Retire legacy session cache</span></span>
-            <span class="session-meta"><span>rayu · build</span><span>4m 12s</span><span>3 files</span></span>
-          </a>
-          <a class="session-row is-active" href="execution-runner.html">
-            <span class="session-title"><span class="pulse pulse-live" aria-hidden="true"></span><span class="name">Gateway: retry budget tests</span></span>
-            <span class="session-meta"><span>rayu · auto</span><span>1m 47s</span><span>cargo test</span></span>
-          </a>
-
-          <div class="sidebar-label" style="padding-left:var(--space-2)">Waiting on you · 1</div>
-          <a class="session-row" href="agent-workspace.html">
-            <span class="session-title"><span class="pulse pulse-wait" aria-hidden="true"></span><span class="name">VS Code: model picker refresh</span></span>
-            <span class="session-meta"><span>rayu · plan</span><span>awaiting review</span></span>
-          </a>
-
-          <div class="sidebar-label" style="padding-left:var(--space-2)">Recent</div>
-          <a class="session-row" href="agent-workspace.html">
-            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">Fix telemetry worker backoff</span></span>
-            <span class="session-meta"><span>merged</span><span>2h ago</span></span>
-          </a>
-          <a class="session-row" href="agent-workspace.html">
-            <span class="session-title"><span class="pulse pulse-done" aria-hidden="true"></span><span class="name">SDK: streaming types cleanup</span></span>
-            <span class="session-meta"><span>merged</span><span>1d ago</span></span>
-          </a>
-          <a class="session-row" href="agent-workspace.html">
-            <span class="session-title"><span class="pulse pulse-fail" aria-hidden="true"></span><span class="name">Migrate OAuth device flow</span></span>
-            <span class="session-meta"><span>stopped</span><span>2d ago</span></span>
-          </a>
-        </div>
-
-        <div class="sidebar-foot">
-          <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-cpu"/></svg>
-          <span class="mono">3 agents · 214 MB</span>
-        </div>
-      </aside>
-
-      <main class="main">
-        <div class="pane-head">
-          <span class="pulse pulse-live" aria-hidden="true"></span>
-          <h1 class="pane-title">Gateway: retry budget tests</h1>
-          <span class="badge badge-live">Autonomous</span>
-          <span class="pane-sub">session e7b3 · step 3 of 5</span>
-          <div class="spacer"></div>
-          <button class="btn btn-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-pause"/></svg>Pause</button>
-          <button class="btn btn-danger-ghost btn-sm" type="button"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-stop"/></svg>Stop</button>
-        </div>
-        <div class="live-thread" role="presentation"></div>
-
-        <div class="split">
-          <div class="split-main" data-tabs>
-            <!-- Terminal -->
-            <div style="flex:1;display:flex;flex-direction:column;min-height:0;padding:var(--space-4) var(--space-6) 0">
-              <div class="term" style="flex:1">
-                <div class="term-head" role="tablist" aria-label="Terminal tabs">
-                  <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-terminal"/></svg>
-                  <button class="term-tab" role="tab" id="tab-agent" aria-controls="panel-agent" aria-selected="true" type="button">agent · cargo test</button>
-                  <button class="term-tab" role="tab" id="tab-shell" aria-controls="panel-shell" aria-selected="false" type="button">shell</button>
-                  <span class="spacer"></span>
-                  <span class="badge badge-mono">exit —</span>
-                  <button class="icon-btn" type="button" aria-label="Clear terminal"><svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-x"/></svg></button>
-                </div>
-                <div class="term-body" role="tabpanel" id="panel-agent" aria-labelledby="tab-agent" tabindex="0">
-<pre><span class="term-line"><span class="term-prompt">rayu@e7b3</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ cargo test -p rayu-gateway retry_budget</span>
-<span class="term-line"><span class="term-dim">   Compiling rayu-gateway v0.9.4 (/Users/lyyeakkhai/workspace/rayu/rayucode/rayu-gateway-rust)</span></span>
-<span class="term-line"><span class="term-dim">    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.42s</span></span>
-<span class="term-line"><span class="term-dim">     Running unittests src/lib.rs (target/debug/deps/rayu_gateway-8c2f1a9e)</span></span>
-<span class="term-line"></span>
-<span class="term-line">running 6 tests</span>
-<span class="term-line">test retry::budget::tests::exhaustion_returns_503 ... <span class="term-ok">ok</span></span>
-<span class="term-line">test retry::budget::tests::respects_retry_after_header ... <span class="term-ok">ok</span></span>
-<span class="term-line">test retry::budget::tests::per_provider_isolation ... <span class="term-ok">ok</span></span>
-<span class="term-line">test retry::budget::tests::jitter_stays_within_bounds ... <span class="term-ok">ok</span></span>
-<span class="term-line">test retry::budget::tests::budget_refills_over_window ... <span class="term-ok">ok</span></span>
-<span class="term-line">test retry::budget::tests::streaming_midflight_retry ... <span class="term-warn">FAILED</span></span>
-<span class="term-line"></span>
-<span class="term-line">failures:</span>
-<span class="term-line">---- retry::budget::tests::streaming_midflight_retry stdout ----</span>
-<span class="term-line"><span class="term-err">thread 'streaming_midflight_retry' panicked at src/retry/budget.rs:214:9:</span></span>
-<span class="term-line"><span class="term-err">assertion `left == right` failed: retried stream must not duplicate chunks</span></span>
-<span class="term-line"><span class="term-err">  left: 42</span></span>
-<span class="term-line"><span class="term-err"> right: 40</span></span>
-<span class="term-line"></span>
-<span class="term-line">test result: <span class="term-warn">FAILED</span>. 5 passed; 1 failed; 0 ignored; measured in 0.84s</span>
-<span class="term-line"></span>
-<span class="term-line"><span class="term-prompt">rayu</span> <span class="term-dim">·</span> failure isolated to chunk dedup on retry; patching budget.rs:214 region <span class="term-caret" aria-hidden="true"></span></span></pre>
-                </div>
-                <div class="term-body" role="tabpanel" id="panel-shell" aria-labelledby="tab-shell" tabindex="0" hidden>
-<pre><span class="term-line"><span class="term-prompt">lyyeakkhai</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ git status --short</span>
-<span class="term-line"> M rayu-gateway-rust/src/retry/budget.rs</span>
-<span class="term-line"> M rayu-gateway-rust/src/retry/stream.rs</span>
-<span class="term-line"><span class="term-prompt">lyyeakkhai</span> <span class="term-dim">~/workspace/rayu/rayucode</span> $ <span class="term-caret" aria-hidden="true"></span></span></pre>
-                </div>
-              </div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn is-active" href="execution-runner.html" aria-current="page" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn" href="changes.html" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
             </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings.html#usage-billing">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <div class="cx-profile-wrap">
+          <button class="cx-avatar-btn" type="button" data-dropdown="profile-pop" aria-haspopup="menu" aria-expanded="false" aria-label="User profile menu" title="ly yeak khai · Personal account">
+            <span class="cx-avatar" aria-hidden="true">LK</span>
+          </button>
+          <div class="profile-pop" id="profile-pop" data-dropdown-menu role="menu" aria-label="Account menu" hidden>
+            <div class="profile-pop-group">
+              <a class="profile-pop-item" href="settings.html" role="menuitem"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span><span class="profile-pop-keys"><kbd class="profile-pop-key">⌘</kbd><kbd class="profile-pop-key">,</kbd></span></a>
+              <a class="profile-pop-item" href="settings.html#appearance" role="menuitem"><svg class="icon" aria-hidden="true"><use href="#i-palette"/></svg><span>Appearance</span><svg class="icon profile-pop-chev" aria-hidden="true"><use href="#i-chev-r"/></svg></a>
+              <a class="profile-pop-item" href="settings.html#usage-billing" role="menuitem"><svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg><span>Upgrade Plan</span><svg class="icon profile-pop-ext" aria-hidden="true"><use href="#i-arrow-ur"/></svg></a>
+            </div>
+            <div class="profile-pop-sep" aria-hidden="true"></div>
+            <div class="profile-pop-group">
+              <button class="profile-pop-item is-danger" type="button" role="menuitem" data-toast="Signed out of Personal account"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Sign out</span></button>
+            </div>
+          </div>
+        </div>
+      </nav>
 
-            <!-- Tool log strip -->
-            <div style="flex:none;padding:var(--space-3) var(--space-6) var(--space-4)">
-              <div class="tools">
-                <div class="tools-head">
-                  <svg class="icon" style="width:13px;height:13px" aria-hidden="true"><use href="#i-zap"/></svg>
-                  Recent tool calls <span class="count">3</span>
-                  <span class="spacer"></span>
-                  <button class="btn btn-ghost btn-sm" type="button">Full log</button>
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <span class="cx-brand-btn" style="cursor:default">Swarm</span>
+          <span class="spacer"></span>
+          <button class="icon-btn" type="button" data-sw-toggle-spawn aria-label="Spawn worker" title="Spawn worker"><svg class="icon" style="width:15px;height:15px" aria-hidden="true"><use href="#i-plus"/></svg></button>
+        </div>
+
+        <div class="session-list">
+          <div class="cx-sec-label">Active Swarms</div>
+          <a class="conv-row is-active" href="#sw-active"><span class="pulse pulse-live" aria-hidden="true"></span><span class="conv-name">Gateway retry &amp; shards</span></a>
+          <a class="conv-row" href="agent-workspace.html"><span class="conv-name">Retire legacy session cache</span></a>
+
+          <div class="cx-sec-label">Roster · swm_a41f</div>
+          <button class="conv-row" type="button" data-sw-select="coordinator"><span class="conv-name mono">coordinator</span></button>
+          <button class="conv-row is-active" type="button" data-sw-select="worker-1"><span class="pulse pulse-live" aria-hidden="true"></span><span class="conv-name mono">worker-1</span></button>
+          <button class="conv-row" type="button" data-sw-select="worker-2"><span class="pulse pulse-live" aria-hidden="true"></span><span class="conv-name mono">worker-2</span></button>
+          <button class="conv-row" type="button" data-sw-select="verifier"><span class="conv-name mono">verifier</span></button>
+
+          <div class="cx-sec-label">Worktrees</div>
+          <a class="recent-row mono" href="#sw-bottom">wt/retry-budget</a>
+          <a class="recent-row mono" href="#sw-bottom">wt/session-shards</a>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Clean RayuCode Swarm Orchestration Canvas -->
+    <div class="center-col">
+      <main class="canvas">
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <a class="icon-btn" href="../index.html" aria-label="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <div class="canvas-head-title">
+            <svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg>
+            <span>Gateway retry &amp; session shards</span>
+          </div>
+          <span class="pane-sub mono">swm_a41f · plan v3</span>
+          <div class="spacer"></div>
+          <div class="canvas-head-actions">
+            <button class="btn btn-primary btn-sm" type="button" data-sw-toggle-spawn><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-plus"/></svg>Spawn worker</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-toast="Paused all running workers in swm_a41f"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-pause"/></svg>Pause all</button>
+            <div class="dropdown">
+              <button class="icon-btn" type="button" data-dropdown="sw-more-menu" aria-expanded="false" aria-label="View options" title="View &amp; accent"><svg class="icon" aria-hidden="true"><use href="#i-dots-h"/></svg></button>
+              <div class="dropdown-pop" id="sw-more-menu" data-dropdown-menu hidden>
+                <div class="dropdown-head">Swarm View</div>
+                <button class="dropdown-item theme-toggle" type="button"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg>Toggle Light / Dark theme</button>
+                <div class="accent-menu-row">
+                  <span>Accent</span>
+                  <div class="accent-swatches">
+                    <button class="accent-pill" type="button" data-accent-set="green" aria-pressed="true"><span class="accent-dot is-green"></span>Green</button>
+                    <button class="accent-pill" type="button" data-accent-set="blue" aria-pressed="false"><span class="accent-dot is-blue"></span>Blue</button>
+                  </div>
                 </div>
-                <div class="tool-step is-done">
-                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></span>
-                  <div class="t-body"><div class="t-name">edit</div><div class="t-arg">src/retry/stream.rs — dedup chunks by sequence id</div></div>
-                  <span class="t-dur">2.2s</span>
-                </div>
-                <div class="tool-step is-fail">
-                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg></span>
-                  <div class="t-body"><div class="t-name">bash</div><div class="t-arg">cargo test -p rayu-gateway retry_budget — 5 passed, 1 failed</div></div>
-                  <span class="t-dur">7.9s</span>
-                </div>
-                <div class="tool-step is-live">
-                  <span class="t-icon"><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg></span>
-                  <div class="t-body"><div class="t-name">edit</div><div class="t-arg">src/retry/budget.rs — replay window off-by-one</div></div>
-                  <span class="t-dur">running</span>
-                </div>
+                <div class="dropdown-sep"></div>
+                <a class="dropdown-item" href="changes.html"><svg class="icon" aria-hidden="true"><use href="#i-diff-box"/></svg>Review all changes</a>
+                <a class="dropdown-item" href="automations.html"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Automations &amp; overnight</a>
               </div>
             </div>
           </div>
+        </header>
+        <div class="live-thread" role="presentation"></div>
 
-          <!-- Task steps -->
-          <aside class="split-side" aria-label="Autonomous task steps">
-            <div class="inspect-section" style="border-bottom:none;padding-bottom:var(--space-2)">
-              <h2 class="inspect-title">Task steps · 3 / 5</h2>
+        <div class="pane-scroll">
+          <div class="sw-page" id="sw-active">
+
+            <!-- Single-line Swarm Telemetry Strip (high signal, zero bloat) -->
+            <div class="sw-strip">
+              <span class="sw-strip-item"><span class="pulse pulse-live" aria-hidden="true"></span><strong>4 agents</strong> · 2 running, 1 completed, 1 root</span>
+              <span class="sw-strip-sep">·</span>
+              <span class="sw-strip-item"><strong>2 worktrees</strong> · 0 file conflicts</span>
+              <span class="sw-strip-sep">·</span>
+              <span class="sw-strip-item mono"><code>/effort swarm</code> · depth 0 → 1</span>
+              <span class="spacer"></span>
+              <span class="sw-strip-item mono" style="color:var(--accent-text)">0.86 cr · KV cache 94%</span>
             </div>
-            <div class="task-list">
-              <div class="task is-done">
-                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
-                <div class="t-main"><div class="t-title">Reproduce the retry duplication</div><div class="t-desc">Failing test pinned at budget.rs:214</div></div>
-                <span class="t-meta">0:41</span>
+
+            <!-- Inline Spawn Worker Launcher (no modal) -->
+            <div class="sw-spawn-bar" id="sw-spawn-bar" hidden>
+              <div class="sw-spawn-row">
+                <input id="sw-new-name" class="sw-spawn-input" style="max-width:140px;flex:none" type="text" value="worker-3" aria-label="Worker name">
+                <select id="sw-new-model" class="select" aria-label="Model">
+                  <option selected>Claude Sonnet 5</option>
+                  <option>Claude Opus 5.5</option>
+                  <option>GPT-6.1 Sol</option>
+                  <option>DeepSeek V4 Flash</option>
+                  <option>Gemini 3.1 Pro</option>
+                </select>
+                <select id="sw-new-wt" class="select" aria-label="Workspace scope">
+                  <option value="wt/retry-budget">wt/retry-budget</option>
+                  <option value="wt/session-shards">wt/session-shards</option>
+                  <option value="new git worktree" selected>New git worktree</option>
+                  <option value="local checkout">Local checkout (read-only)</option>
+                </select>
               </div>
-              <div class="task is-done">
-                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg></span>
-                <div class="t-main"><div class="t-title">Dedup stream chunks by sequence</div><div class="t-desc">stream.rs · +22 −3</div></div>
-                <span class="t-meta">1:12</span>
-              </div>
-              <div class="task is-live">
-                <span class="t-state"><span class="pulse pulse-live" style="width:7px;height:7px" aria-hidden="true"></span></span>
-                <div class="t-main"><div class="t-title">Fix replay window off-by-one</div><div class="t-desc">budget.rs · editing</div></div>
-                <span class="t-meta">0:34</span>
-              </div>
-              <div class="task">
-                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg></span>
-                <div class="t-main"><div class="t-title">Re-run gateway test suite</div><div class="t-desc">cargo test -p rayu-gateway</div></div>
-                <span class="t-meta">—</span>
-              </div>
-              <div class="task">
-                <span class="t-state"><svg class="icon" aria-hidden="true"><use href="#i-dot"/></svg></span>
-                <div class="t-main"><div class="t-title">Commit and open PR</div><div class="t-desc">needs your approval to push</div></div>
-                <span class="t-meta">—</span>
+              <div class="sw-spawn-row">
+                <input id="sw-new-task" class="sw-spawn-input" type="text" placeholder="Assign todo lane task, e.g. Add mid-flight streaming retry dedup regression test">
+                <button class="btn btn-ghost btn-sm" type="button" data-sw-toggle-spawn>Cancel</button>
+                <button class="btn btn-primary btn-sm" type="button" data-sw-spawn-go>Spawn</button>
               </div>
             </div>
-            <div class="inspect-section" style="border-top:1px solid var(--border)">
-              <h2 class="inspect-title">Run budget</h2>
-              <div class="kv"><span class="k">Elapsed</span><span class="v">1m 47s</span></div>
-              <div class="kv"><span class="k">Tokens</span><span class="v">21.6k / 200k</span></div>
-              <div class="meter"><span style="width:11%"></span></div>
-              <div class="kv" style="margin-top:var(--space-2)"><span class="k">Shell time</span><span class="v">23.4s</span></div>
-              <div class="kv"><span class="k">Approvals left</span><span class="v">push only</span></div>
+
+            <!-- Main Two-Column Swarm Split: Roster (left) + Selected Worker Live Trace (right) -->
+            <div class="sw-grid">
+
+              <!-- Agent Roster -->
+              <section class="sw-roster" aria-label="Swarm roster">
+                <div class="sw-panel-head">
+                  <span>Agents · one-level fan-out</span>
+                  <span class="mono">rayucode-swarm-core</span>
+                </div>
+                <div id="sw-roster-list">
+                  <button class="sw-agent-row" type="button" data-sw-select="coordinator">
+                    <div class="sw-agent-top">
+                      <span class="pulse pulse-done" aria-hidden="true"></span>
+                      <span class="sw-agent-name">coordinator</span>
+                      <span class="sw-agent-role">Root · depth 0</span>
+                      <span class="sw-agent-state">coordinating</span>
+                    </div>
+                    <div class="sw-agent-task">Owns VersionedPlan v3 · waiting on worker-1 &amp; worker-2</div>
+                    <div class="sw-agent-meta"><span>Claude Opus 5.5</span><span>·</span><span>3 scopes</span><span>·</span><span>2m 14s</span></div>
+                  </button>
+
+                  <button class="sw-agent-row is-selected" type="button" data-sw-select="worker-1">
+                    <div class="sw-agent-top">
+                      <span class="pulse pulse-live" aria-hidden="true"></span>
+                      <span class="sw-agent-name">worker-1</span>
+                      <span class="sw-agent-role">wt/retry-budget</span>
+                      <span class="sw-agent-state is-run">running</span>
+                    </div>
+                    <div class="sw-agent-task">Fix streaming_midflight_retry_dedup in src/retry/stream.rs</div>
+                    <div class="sw-agent-meta"><span>Claude Sonnet 5</span><span>·</span><span>2 / 3 lane items</span><span>·</span><span>48s</span></div>
+                  </button>
+
+                  <button class="sw-agent-row" type="button" data-sw-select="worker-2">
+                    <div class="sw-agent-top">
+                      <span class="pulse pulse-live" aria-hidden="true"></span>
+                      <span class="sw-agent-name">worker-2</span>
+                      <span class="sw-agent-role">wt/session-shards</span>
+                      <span class="sw-agent-state is-run">running</span>
+                    </div>
+                    <div class="sw-agent-task">Benchmark ShardStore::lookup p99 under 50k active keys</div>
+                    <div class="sw-agent-meta"><span>GPT-6.1 Sol</span><span>·</span><span>1 / 2 lane items</span><span>·</span><span>34s</span></div>
+                  </button>
+
+                  <button class="sw-agent-row" type="button" data-sw-select="verifier">
+                    <div class="sw-agent-top">
+                      <span class="pulse pulse-done" aria-hidden="true"></span>
+                      <span class="sw-agent-name">verifier</span>
+                      <span class="sw-agent-role">read-only</span>
+                      <span class="sw-agent-state">completed</span>
+                    </div>
+                    <div class="sw-agent-task">Verified 14/14 session:: unit tests · auto-reported to root</div>
+                    <div class="sw-agent-meta"><span>DeepSeek V4 Flash</span><span>·</span><span>2 / 2 lane items</span><span>·</span><span>19s</span></div>
+                  </button>
+                </div>
+              </section>
+
+              <!-- Selected Agent Live Codex-Style Inspector -->
+              <section class="sw-detail" aria-label="Selected agent trace">
+
+                <!-- Panel: worker-1 (default selected) -->
+                <div class="sw-detail-panel" data-sw-panel="worker-1">
+                  <div class="sw-detail-head">
+                    <div class="sw-detail-title">
+                      <span class="pulse pulse-live" aria-hidden="true"></span>
+                      <strong>worker-1</strong>
+                      <span class="sw-detail-sub">Claude Sonnet 5 · wt/retry-budget · reports → coordinator</span>
+                    </div>
+                    <div class="op-actions">
+                      <button class="btn btn-ghost btn-sm" type="button" data-toast="Opened wt/retry-budget in VS Code">VS Code</button>
+                      <button class="btn btn-danger-ghost btn-sm" type="button" data-sw-stop="worker-1">Stop</button>
+                    </div>
+                  </div>
+                  <div class="sw-detail-body">
+                    <div class="sw-lane">
+                      <div class="sw-lane-head"><span>Assigned todo lane</span><span class="mono">2 / 3</span></div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Reproduce mid-flight retry dedup failure in retry_budget tests</div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Guard duplicate attempt key in src/retry/stream.rs</div>
+                      <div class="sw-lane-item is-now"><span class="sw-lane-dot"></span>Re-run cargo test -p rayu-gateway retry_budget and forward output</div>
+                    </div>
+
+                    <div class="work-group">
+                      <button class="work-group-toggle" type="button" data-group-toggle="sw-rail-w1" aria-expanded="true">
+                        <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                        <span>Read files, ran commands</span>
+                        <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                      </button>
+                      <div class="work-rail" id="sw-rail-w1">
+                        <div class="work-step-row">
+                          <svg class="icon" aria-hidden="true"><use href="#i-book"/></svg>
+                          <span>Read <button class="work-file-link" type="button" data-toast="src/retry/stream.rs:42-118">src/retry/stream.rs:42-118</button></span>
+                        </div>
+                        <button class="work-cmd-toggle is-fail is-cmd-mono" type="button" data-shell-toggle="sw-sh-w1-1" aria-expanded="false">
+                          <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                          <span class="work-cmd-text">cargo test -p rayu-gateway retry_budget (first run)</span>
+                          <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                        </button>
+                        <div class="shell-card" id="sw-sh-w1-1" hidden>
+                          <div class="shell-card-head"><span>Shell</span><button class="shell-copy-btn" type="button" data-copy-cmd="cargo test -p rayu-gateway retry_budget" aria-label="Copy"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+                          <div class="shell-cmd-line">$ cargo test -p rayu-gateway retry_budget</div>
+                          <pre class="shell-out">test retry::budget::tests::streaming_midflight_retry_dedup ... FAILED
+assertion `left == right` failed: left: 2, right: 1</pre>
+                          <div class="shell-card-foot is-err"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>Exit 1 · isolated to stream.rs:78</div>
+                        </div>
+
+                        <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="sw-sh-w1-2" aria-expanded="true">
+                          <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                          <span class="work-cmd-text">cargo test -p rayu-gateway retry_budget -- --nocapture</span>
+                          <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                        </button>
+                        <div class="shell-card" id="sw-sh-w1-2">
+                          <div class="shell-card-head"><span>Shell</span><button class="shell-copy-btn" type="button" data-copy-cmd="cargo test -p rayu-gateway retry_budget -- --nocapture" aria-label="Copy"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+                          <div class="shell-cmd-line">$ cargo test -p rayu-gateway retry_budget -- --nocapture</div>
+                          <pre class="shell-out">running 6 tests
+test retry::budget::tests::exponential_jitter_bounds ... ok
+test retry::budget::tests::respects_provider_retry_after ... ok
+test retry::budget::tests::streaming_midflight_retry_dedup ... ok
+test result: ok. 6 passed; 0 failed; finished in 0.31s</pre>
+                          <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success · auto-forwarding tail to coordinator</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sw-dm-bar">
+                    <input class="sw-dm-input" type="text" placeholder="Send steering DM to worker-1..." aria-label="Message worker-1">
+                    <button class="btn btn-primary btn-sm" type="button" data-sw-dm-send="worker-1">Send DM</button>
+                  </div>
+                </div>
+
+                <!-- Panel: coordinator -->
+                <div class="sw-detail-panel" data-sw-panel="coordinator" hidden>
+                  <div class="sw-detail-head">
+                    <div class="sw-detail-title">
+                      <span class="pulse pulse-done" aria-hidden="true"></span>
+                      <strong>coordinator</strong>
+                      <span class="sw-detail-sub">Claude Opus 5.5 · root depth 0 · owns VersionedPlan v3</span>
+                    </div>
+                    <div class="op-actions">
+                      <button class="btn btn-ghost btn-sm" type="button" data-toast="Broadcasted plan v3 to all workers">Broadcast plan</button>
+                    </div>
+                  </div>
+                  <div class="sw-detail-body">
+                    <div class="sw-lane">
+                      <div class="sw-lane-head"><span>Coordinator state</span><span class="mono">plan v3 approved</span></div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Split work into 2 isolated git worktrees (zero file overlap)</div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Received automatic completion report from verifier (14/14 green)</div>
+                      <div class="sw-lane-item is-now"><span class="sw-lane-dot"></span>Awaiting worker-1 and worker-2 completion before handing off to Worktree Manager</div>
+                    </div>
+                    <p class="work-note" style="color:var(--text-2)">Coordinator holds the single <code>VersionedPlan</code> slot and never performs git merges directly; worktree managers integrate once all scopes are verified.</p>
+                  </div>
+                  <div class="sw-dm-bar">
+                    <input class="sw-dm-input" type="text" placeholder="Steer coordinator or request plan update..." aria-label="Message coordinator">
+                    <button class="btn btn-primary btn-sm" type="button" data-sw-dm-send="coordinator">Send DM</button>
+                  </div>
+                </div>
+
+                <!-- Panel: worker-2 -->
+                <div class="sw-detail-panel" data-sw-panel="worker-2" hidden>
+                  <div class="sw-detail-head">
+                    <div class="sw-detail-title">
+                      <span class="pulse pulse-live" aria-hidden="true"></span>
+                      <strong>worker-2</strong>
+                      <span class="sw-detail-sub">GPT-6.1 Sol · wt/session-shards · reports → coordinator</span>
+                    </div>
+                    <div class="op-actions">
+                      <button class="btn btn-danger-ghost btn-sm" type="button" data-sw-stop="worker-2">Stop</button>
+                    </div>
+                  </div>
+                  <div class="sw-detail-body">
+                    <div class="sw-lane">
+                      <div class="sw-lane-head"><span>Assigned todo lane</span><span class="mono">1 / 2</span></div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Add 50k-key lookup benchmark to crates/rayucode-core/benches</div>
+                      <div class="sw-lane-item is-now"><span class="sw-lane-dot"></span>Measure p99 latency delta vs retired SessionCache</div>
+                    </div>
+                    <div class="work-group">
+                      <div class="work-rail">
+                        <button class="work-cmd-toggle is-cmd-mono" type="button" data-shell-toggle="sw-sh-w2-1" aria-expanded="true">
+                          <svg class="icon" aria-hidden="true"><use href="#i-terminal-prompt"/></svg>
+                          <span class="work-cmd-text">cargo bench -p rayucode-core shard_lookup_50k</span>
+                          <svg class="icon chev" aria-hidden="true"><use href="#i-chev-r"/></svg>
+                        </button>
+                        <div class="shell-card" id="sw-sh-w2-1">
+                          <div class="shell-card-head"><span>Shell</span><button class="shell-copy-btn" type="button" data-copy-cmd="cargo bench -p rayucode-core shard_lookup_50k" aria-label="Copy"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div>
+                          <div class="shell-cmd-line">$ cargo bench -p rayucode-core shard_lookup_50k</div>
+                          <pre class="shell-out">shard_lookup_50k        time: [142.4 ns 144.1 ns 146.0 ns]
+                        change: [-31.8% -30.2% -28.9%] (p &lt; 0.001)</pre>
+                          <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Success</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="sw-dm-bar">
+                    <input class="sw-dm-input" type="text" placeholder="Send steering DM to worker-2..." aria-label="Message worker-2">
+                    <button class="btn btn-primary btn-sm" type="button" data-sw-dm-send="worker-2">Send DM</button>
+                  </div>
+                </div>
+
+                <!-- Panel: verifier -->
+                <div class="sw-detail-panel" data-sw-panel="verifier" hidden>
+                  <div class="sw-detail-head">
+                    <div class="sw-detail-title">
+                      <span class="pulse pulse-done" aria-hidden="true"></span>
+                      <strong>verifier</strong>
+                      <span class="sw-detail-sub">DeepSeek V4 Flash · read-only · completed in 19s</span>
+                    </div>
+                    <div class="op-actions">
+                      <button class="btn btn-ghost btn-sm" type="button" data-toast="Re-queued verifier run">Re-run</button>
+                    </div>
+                  </div>
+                  <div class="sw-detail-body">
+                    <div class="sw-lane">
+                      <div class="sw-lane-head"><span>Assigned todo lane</span><span class="mono">2 / 2</span></div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Verify session:: test suite across workspace</div>
+                      <div class="sw-lane-item is-done"><span class="sw-lane-dot"></span>Check zero conflicting edits across active worktrees</div>
+                    </div>
+                    <div class="shell-card">
+                      <div class="shell-card-head"><span>Shell</span></div>
+                      <div class="shell-cmd-line">$ cargo test -p rayucode session::</div>
+                      <pre class="shell-out">test result: ok. 14 passed; 0 failed; 0 ignored; finished in 0.44s</pre>
+                      <div class="shell-card-foot is-ok"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>Auto-reported to coordinator</div>
+                    </div>
+                  </div>
+                  <div class="sw-dm-bar">
+                    <input class="sw-dm-input" type="text" placeholder="Assign follow-up verification to verifier..." aria-label="Message verifier">
+                    <button class="btn btn-primary btn-sm" type="button" data-sw-dm-send="verifier">Wake</button>
+                  </div>
+                </div>
+              </section>
             </div>
-          </aside>
+
+            <!-- Bottom Tabbed Ledger: Message Board / Shared Plan v3 / Worktrees -->
+            <section id="sw-bottom" data-tabs style="display:flex;flex-direction:column;gap:10px">
+              <div class="sw-tabs-head">
+                <div class="sw-tab-bar" role="tablist" aria-label="Swarm coordination views">
+                  <button class="sw-tab-btn" role="tab" id="swtab-board" aria-controls="swpanel-board" aria-selected="true" type="button">Message Board</button>
+                  <button class="sw-tab-btn" role="tab" id="swtab-plan" aria-controls="swpanel-plan" aria-selected="false" type="button">Shared Plan (v3)</button>
+                  <button class="sw-tab-btn" role="tab" id="swtab-wt" aria-controls="swpanel-wt" aria-selected="false" type="button">Worktrees (2)</button>
+                </div>
+                <span class="demo-note">Daemon snapshot persisted · survives reload</span>
+              </div>
+
+              <div class="sw-board" role="tabpanel" id="swpanel-board" aria-labelledby="swtab-board">
+                <div id="sw-board-feed">
+                  <div class="sw-board-row">
+                    <span class="sw-board-time">01:49:18</span>
+                    <span class="sw-board-route">worker-1 <span>→</span> coordinator</span>
+                    <span>Fixed mid-flight retry dedup in <code>src/retry/stream.rs:78</code> — 6/6 retry_budget tests green.</span>
+                    <span class="sw-board-tag is-ok">auto-output</span>
+                  </div>
+                  <div class="sw-board-row">
+                    <span class="sw-board-time">01:48:52</span>
+                    <span class="sw-board-route">verifier <span>→</span> coordinator</span>
+                    <span>Completed read-only check: 14/14 <code>session::</code> tests pass, zero cross-worktree conflicts.</span>
+                    <span class="sw-board-tag is-ok">completed</span>
+                  </div>
+                  <div class="sw-board-row">
+                    <span class="sw-board-time">01:48:10</span>
+                    <span class="sw-board-route">coordinator <span>→</span> @all</span>
+                    <span>Approved <code>VersionedPlan v3</code>: isolated <code>wt/retry-budget</code> and <code>wt/session-shards</code> scopes.</span>
+                    <span class="sw-board-tag">broadcast</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sw-board" role="tabpanel" id="swpanel-plan" aria-labelledby="swtab-plan" hidden>
+                <div class="sw-board-row">
+                  <span class="sw-board-time">Scope 1</span>
+                  <span class="sw-board-route">worker-1 · wt/retry-budget</span>
+                  <span>Deduplicate streaming mid-flight retries in <code>rayu-gateway</code> and verify 6 unit tests.</span>
+                  <span class="sw-board-tag is-ok">6/6 green</span>
+                </div>
+                <div class="sw-board-row">
+                  <span class="sw-board-time">Scope 2</span>
+                  <span class="sw-board-route">worker-2 · wt/session-shards</span>
+                  <span>Benchmark <code>ShardStore::lookup</code> p99 under 50k keys (-30.2% latency confirmed).</span>
+                  <span class="sw-board-tag is-ok">running</span>
+                </div>
+                <div class="sw-board-row">
+                  <span class="sw-board-time">Scope 3</span>
+                  <span class="sw-board-route">verifier · read-only</span>
+                  <span>Validate workspace session regression suite and report conflicts to root.</span>
+                  <span class="sw-board-tag is-ok">done</span>
+                </div>
+              </div>
+
+              <div class="sw-board" role="tabpanel" id="swpanel-wt" aria-labelledby="swtab-wt" hidden>
+                <div class="sw-board-row">
+                  <span class="sw-board-time">wt-1</span>
+                  <span class="sw-board-route">wt/retry-budget</span>
+                  <span>Owner: <code>worker-1</code> · <code>src/retry/stream.rs</code> · <span style="color:var(--accent-text)">+28</span> <span style="color:var(--danger)">−9</span></span>
+                  <button class="btn btn-sm" type="button" data-toast="Merge queued for explicit user approval">Integrate</button>
+                </div>
+                <div class="sw-board-row">
+                  <span class="sw-board-time">wt-2</span>
+                  <span class="sw-board-route">wt/session-shards</span>
+                  <span>Owner: <code>worker-2</code> · <code>benches/shard_lookup.rs</code> · <span style="color:var(--accent-text)">+44</span></span>
+                  <button class="btn btn-sm" type="button" data-toast="Merge queued for explicit user approval">Integrate</button>
+                </div>
+              </div>
+            </section>
+
+          </div>
         </div>
       </main>
     </div>
 
-    <footer class="statusbar">
-      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>main</span>
-      <span class="status-item"><span class="pulse pulse-live" style="width:6px;height:6px" aria-hidden="true"></span>3 agents live</span>
-      <span class="status-item"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>214 MB · 2% CPU</span>
-      <span class="grow"></span>
-      <span class="status-item demo-note">Prototype · synthetic demo data</span>
-      <span class="status-item">rayucode v3.0.1-dev</span>
-    </footer>
   </div>
 
-  <script src="../js/include.js"></script>
-  <script src="../js/app.js"></script>
+  <script src="../js/include.js?v=28"></script>
+  <script src="../js/app.js?v=28"></script>
 </body>
 </html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RayuCode — Changes &amp; Diff Review</title>
+  <link rel="stylesheet" href="../css/tokens.css?v=15">
+  <link rel="stylesheet" href="../css/layout.css?v=15">
+  <link rel="stylesheet" href="../css/components.css?v=15">
+</head>
+<body>
+  <div data-include="../assets/icons.svg"></div>
+  <div class="app">
+
+    <!-- Column 1: Left Sidebar (Icon Rail + Changed Files Pane, No Folder Tree) -->
+    <aside class="sidebar" aria-label="Changed files">
+      <nav class="cx-rail" aria-label="Primary">
+        <div class="cx-rail-top">
+          <button class="cx-toggle-btn" type="button" data-toggle-sidebar aria-pressed="true" aria-label="Toggle sidebar">
+            <svg class="icon" aria-hidden="true"><use href="#i-sidebar"/></svg>
+            <span class="cx-tooltip" role="tooltip">Toggle sidebar <kbd>⇧⌘S</kbd></span>
+          </button>
+        </div>
+        <a class="cx-rail-btn" href="../index.html" aria-label="Home" title="Home"><svg class="icon" aria-hidden="true"><use href="#i-home"/></svg></a>
+        <a class="cx-rail-btn" href="execution-runner.html" aria-label="Swarm" title="Swarm"><svg class="icon" aria-hidden="true"><use href="#i-swarm"/></svg></a>
+        <a class="cx-rail-btn" href="automations.html" aria-label="Automations" title="Automations"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg></a>
+        <a class="cx-rail-btn" href="plugins.html" aria-label="Plugins" title="Plugins"><svg class="icon" aria-hidden="true"><use href="#i-plug"/></svg></a>
+        <a class="cx-rail-btn is-active" href="changes.html" aria-current="page" aria-label="Changes" title="Changes"><svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg></a>
+        <a class="cx-rail-btn cx-tg-btn" href="telegram.html" aria-label="Telegram Remote" title="Telegram Remote">
+          <svg class="icon" aria-hidden="true"><use href="#i-telegram"/></svg>
+          <span class="rail-live-dot" aria-hidden="true"></span>
+        </a>
+        <div class="cx-rail-spacer"></div>
+        <div class="cx-usage-wrap">
+          <button class="cx-rail-btn cx-usage-btn" type="button" data-dropdown="usage-pop" aria-haspopup="dialog" aria-expanded="false" aria-label="Plan &amp; usage limits" title="Plan &amp; usage limits">
+            <svg class="icon" style="width:20px;height:20px" aria-hidden="true"><use href="#i-ring"/></svg>
+          </button>
+          <div class="usage-pop" id="usage-pop" data-dropdown-menu role="dialog" aria-label="Usage limits" hidden>
+            <div class="usage-pop-head">Usage source: Your Pro plan</div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-rows">
+              <div class="usage-pop-row"><span class="u-label">5-hour limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Weekly limit</span><span class="u-val">100% left</span></div>
+              <div class="usage-pop-row"><span class="u-label">Credits</span><span class="u-val">0 credits</span></div>
+            </div>
+            <div class="usage-pop-sep" aria-hidden="true"></div>
+            <div class="usage-pop-foot">
+              <a class="usage-pop-action" href="settings-models.html#account">Manage usage</a>
+            </div>
+          </div>
+        </div>
+        <a class="cx-avatar" href="settings-models.html#account" title="Account · lyyeakkhai">LK</a>
+      </nav>
+
+      <div class="cx-pane">
+        <div class="cx-nav-arrows">
+          <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+          <button class="icon-btn" type="button" aria-label="Forward" data-toast="Latest view"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r"/></svg></button>
+        </div>
+
+        <div class="cx-brand-row">
+          <span class="cx-brand-btn" style="cursor:default">Changes</span>
+          <span class="spacer"></span>
+          <span class="mono dim" style="font-size:11px">4 files</span>
+        </div>
+
+        <div class="session-list">
+          <div class="cx-sec-label">feat/retire-session-cache</div>
+          <button class="chg-file-row is-active" type="button" data-change-file="chg-lookup">
+            <span class="c-path">src/session/lookup.rs</span>
+            <span class="c-stat"><span class="add">+12</span><span class="del">−7</span></span>
+          </button>
+          <button class="chg-file-row" type="button" data-change-file="chg-budget">
+            <span class="c-path">src/retry/budget.rs</span>
+            <span class="c-stat"><span class="add">+22</span><span class="del">−3</span></span>
+          </button>
+          <button class="chg-file-row" type="button" data-change-file="chg-cache">
+            <span class="c-path">src/session/cache.rs</span>
+            <span class="c-stat"><span class="del">−214</span></span>
+          </button>
+          <button class="chg-file-row" type="button" data-change-file="chg-plan">
+            <span class="c-path">MIGRATION_PLAN.md</span>
+            <span class="c-stat"><span class="add">+48</span></span>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Column 2: Unified Diff Review Canvas -->
+    <div class="center-col">
+      <main class="canvas">
+        <header class="canvas-head has-border">
+          <div class="collapsed-nav">
+            <a class="icon-btn" href="../index.html" aria-label="Back"><svg class="icon" style="width:14px;height:14px" aria-hidden="true"><use href="#i-chev-r" style="transform:scaleX(-1);transform-origin:center"/></svg></a>
+            <a class="icon-btn" href="../index.html" aria-label="New chat"><svg class="icon" aria-hidden="true"><use href="#i-compose"/></svg></a>
+          </div>
+          <div class="canvas-head-title">
+            <svg class="icon" aria-hidden="true"><use href="#i-branch"/></svg>
+            <span>feat/retire-session-cache</span>
+          </div>
+          <span class="changes-stat" style="font-size:12px"><span class="add">+82</span><span class="del">−224</span></span>
+          <div class="spacer"></div>
+          <div class="canvas-head-actions">
+            <button class="btn btn-sm" type="button" data-toast="Opened git diff in Visual Studio Code"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-code-ide"/></svg>VS Code</button>
+            <button class="btn btn-sm" type="button" data-toast="Staged all 4 files">Stage all</button>
+            <button class="btn btn-primary btn-sm" type="button" data-toast="Create PR requires explicit confirmation (Always ask)"><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-branch"/></svg>Create PR</button>
+            <button class="icon-btn theme-toggle" type="button" aria-label="Switch to light theme"><svg class="icon" aria-hidden="true"><use class="icon-use" href="#i-sun"/></svg></button>
+          </div>
+        </header>
+
+        <div class="pane-scroll">
+          <div class="op-page" style="padding-top:24px">
+
+            <!-- File 1: lookup.rs -->
+            <div class="chg-panel" id="chg-lookup">
+              <div class="diff">
+                <div class="diff-head">
+                  <svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>
+                  <span class="file">src/session/lookup.rs</span>
+                  <span class="stat"><span class="add">+12</span> <span class="del">−7</span></span>
+                  <span class="spacer"></span>
+                  <span class="badge badge-mono">coordinator · a41f</span>
+                </div>
+                <div class="diff-body">
+                  <div class="diff-line hunk"><span class="ln"></span><span class="mark">@@</span><span class="src"> -41,12 +41,17 @@ impl SessionLookup {</span></div>
+                  <div class="diff-line"><span class="ln">41</span><span class="mark"></span><span class="src">     pub async fn get(&amp;self, id: &amp;SessionId) -&gt; Result&lt;Option&lt;Session&gt;&gt; {</span></div>
+                  <div class="diff-line del"><span class="ln">42</span><span class="mark">−</span><span class="src">         if let Some(hit) = self.legacy_cache.get(id).await {</span></div>
+                  <div class="diff-line del"><span class="ln">43</span><span class="mark">−</span><span class="src">             return Ok(Some(hit));</span></div>
+                  <div class="diff-line del"><span class="ln">44</span><span class="mark">−</span><span class="src">         }</span></div>
+                  <div class="diff-line add"><span class="ln">42</span><span class="mark">+</span><span class="src">         if let Some(hit) = self.shards.lookup(id, &amp;self.budget).await? {</span></div>
+                  <div class="diff-line add"><span class="ln">43</span><span class="mark">+</span><span class="src">             metrics::increment_counter!("rayu.shard.cache_hit");</span></div>
+                  <div class="diff-line add"><span class="ln">44</span><span class="mark">+</span><span class="src">             return Ok(Some(hit));</span></div>
+                  <div class="diff-line add"><span class="ln">45</span><span class="mark">+</span><span class="src">         }</span></div>
+                  <div class="diff-line"><span class="ln">46</span><span class="mark"></span><span class="src">         self.store.load(id).await</span></div>
+                  <div class="diff-line"><span class="ln">47</span><span class="mark"></span><span class="src">     }</span></div>
+                </div>
+                <div class="diff-foot">
+                  <span class="hint">Ready for review · 14 tests green</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-danger-ghost btn-sm" type="button" data-diff-reject>Reject</button>
+                  <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- File 2: budget.rs -->
+            <div class="chg-panel" id="chg-budget" hidden>
+              <div class="diff">
+                <div class="diff-head">
+                  <svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>
+                  <span class="file">crates/rayu-gateway/src/retry/budget.rs</span>
+                  <span class="stat"><span class="add">+22</span> <span class="del">−3</span></span>
+                  <span class="spacer"></span>
+                  <span class="badge badge-mono">worker-1 · e7b3</span>
+                </div>
+                <div class="diff-body">
+                  <div class="diff-line hunk"><span class="ln"></span><span class="mark">@@</span><span class="src"> -209,8 +209,14 @@ impl StreamRetry {</span></div>
+                  <div class="diff-line"><span class="ln">209</span><span class="mark"></span><span class="src">     pub fn accept_chunk(&amp;mut self, seq: u64, bytes: Bytes) -&gt; Option&lt;Bytes&gt; {</span></div>
+                  <div class="diff-line del"><span class="ln">210</span><span class="mark">−</span><span class="src">         self.last_seq = seq;</span></div>
+                  <div class="diff-line del"><span class="ln">211</span><span class="mark">−</span><span class="src">         Some(bytes)</span></div>
+                  <div class="diff-line add"><span class="ln">210</span><span class="mark">+</span><span class="src">         if seq &lt;= self.last_seq {</span></div>
+                  <div class="diff-line add"><span class="ln">211</span><span class="mark">+</span><span class="src">             return None; // dedup mid-flight replay chunk</span></div>
+                  <div class="diff-line add"><span class="ln">212</span><span class="mark">+</span><span class="src">         }</span></div>
+                  <div class="diff-line add"><span class="ln">213</span><span class="mark">+</span><span class="src">         self.last_seq = seq;</span></div>
+                  <div class="diff-line add"><span class="ln">214</span><span class="mark">+</span><span class="src">         Some(bytes)</span></div>
+                  <div class="diff-line"><span class="ln">215</span><span class="mark"></span><span class="src">     }</span></div>
+                </div>
+                <div class="diff-foot">
+                  <span class="hint">Fixes streaming_midflight_retry (40 == 40)</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-danger-ghost btn-sm" type="button" data-diff-reject>Reject</button>
+                  <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- File 3: cache.rs -->
+            <div class="chg-panel" id="chg-cache" hidden>
+              <div class="diff">
+                <div class="diff-head">
+                  <svg class="icon" aria-hidden="true"><use href="#i-diff"/></svg>
+                  <span class="file">src/session/cache.rs</span>
+                  <span class="stat"><span class="del">−214 (deleted)</span></span>
+                  <span class="spacer"></span>
+                  <span class="badge badge-danger">Delete file</span>
+                </div>
+                <div class="diff-body">
+                  <div class="diff-line hunk"><span class="ln"></span><span class="mark">@@</span><span class="src"> -1,6 +0,0 @@</span></div>
+                  <div class="diff-line del"><span class="ln">1</span><span class="mark">−</span><span class="src"> //! Legacy in-memory SessionCache (replaced by ShardStore::lookup)</span></div>
+                  <div class="diff-line del"><span class="ln">2</span><span class="mark">−</span><span class="src"> pub struct SessionCache { map: RwLock&lt;HashMap&lt;SessionId, Session&gt;&gt; }</span></div>
+                </div>
+                <div class="diff-foot">
+                  <span class="hint">0 remaining references across workspace</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-danger-ghost btn-sm" type="button" data-diff-reject>Reject</button>
+                  <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- File 4: MIGRATION_PLAN.md -->
+            <div class="chg-panel" id="chg-plan" hidden>
+              <div class="diff">
+                <div class="diff-head">
+                  <svg class="icon" aria-hidden="true"><use href="#i-markdown"/></svg>
+                  <span class="file">MIGRATION_PLAN.md</span>
+                  <span class="stat"><span class="add">+48</span></span>
+                  <span class="spacer"></span>
+                  <a class="btn btn-sm" href="preview-studio.html#md">Open Preview MD</a>
+                </div>
+                <div class="diff-body">
+                  <div class="diff-line add"><span class="ln">1</span><span class="mark">+</span><span class="src"> # SessionCache Retirement &amp; ShardStore Migration</span></div>
+                  <div class="diff-line add"><span class="ln">2</span><span class="mark">+</span><span class="src"> - [x] Route reads through ShardStore::lookup with CacheBudget</span></div>
+                  <div class="diff-line add"><span class="ln">3</span><span class="mark">+</span><span class="src"> - [x] Verify 14 session:: unit tests and −38% RSS reduction</span></div>
+                </div>
+                <div class="diff-foot">
+                  <span class="hint">Markdown spec updated automatically</span>
+                  <span class="spacer"></span>
+                  <button class="btn btn-primary btn-sm" type="button" data-diff-accept><svg class="icon" style="width:12px;height:12px" aria-hidden="true"><use href="#i-check"/></svg>Accept</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </main>
+    </div>
+
+  </div>
+
+  <script src="../js/include.js?v=15"></script>
+  <script src="../js/app.js?v=15"></script>
+</body>
+</html>

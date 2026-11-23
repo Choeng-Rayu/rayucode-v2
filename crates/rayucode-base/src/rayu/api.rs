@@ -54,6 +54,8 @@ pub struct RayuModelEntry {
     pub description: Option<String>,
     pub context_window: Option<u64>,
     #[serde(default)]
+    pub max_input_tokens: Option<u64>,
+    #[serde(default)]
     pub max_output_tokens: Option<u32>,
     pub supports_reasoning: Option<bool>,
     pub supports_image: Option<bool>,

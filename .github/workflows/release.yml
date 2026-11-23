@@ -430,6 +430,9 @@ jobs:
           if (-not $reported.StartsWith("rayu ${{ env.RELEASE_TAG }}")) {
             throw "Expected version starting with 'rayu ${{ env.RELEASE_TAG }}', got '$reported'"
           }
+          $pythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
+          & $pythonCmd scripts/verify_public_release.py --check-windows-pe "target/${{ matrix.target }}/release/rayu.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package Windows .exe and .tar.gz
         shell: pwsh

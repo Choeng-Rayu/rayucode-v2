@@ -733,9 +733,28 @@ function ConvertFrom-RayuVersionOutput([string]$Output) {
     return $null
 }
 
-function Get-RayuVersionFromBinary([string]$BinaryPath) {
-    if (-not $BinaryPath -or -not (Test-Path -LiteralPath $BinaryPath)) {
+function Format-RayuExitCode($ExitCode) {
+    if ($null -eq $ExitCode) {
         return $null
+    }
+    $code = [int]$ExitCode
+    if ($code -lt 0) {
+        $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($code), 0)
+        return ('0x{0:X8}' -f $unsigned)
+    }
+    return [string]$code
+}
+
+function Invoke-RayuVersionProbe([string]$BinaryPath) {
+    $result = [pscustomobject]@{
+        Version      = $null
+        ExitCode     = $null
+        Output       = ""
+        ErrorMessage = $null
+    }
+    if (-not $BinaryPath -or -not (Test-Path -LiteralPath $BinaryPath)) {
+        $result.ErrorMessage = "binary file not found"
+        return $result
     }
 
     $previousErrorActionPreference = $ErrorActionPreference
@@ -746,41 +765,69 @@ function Get-RayuVersionFromBinary([string]$BinaryPath) {
         # succeeds. Capture both streams without letting that notice abort the
         # version probe.
         $ErrorActionPreference = 'Continue'
+        $global:LASTEXITCODE = 0
         $output = (& $BinaryPath --version 2>&1 | Out-String).Trim()
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            return $null
+        $exitCode = $global:LASTEXITCODE
+        $result.ExitCode = $exitCode
+        $result.Output = $output
+        if ($exitCode -eq 0) {
+            $result.Version = ConvertFrom-RayuVersionOutput $output
         }
-        return (ConvertFrom-RayuVersionOutput $output)
+        return $result
     } catch {
-        return $null
+        $result.ErrorMessage = $_.Exception.Message
+        return $result
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
+function Get-RayuVersionFromBinary([string]$BinaryPath) {
+    return (Invoke-RayuVersionProbe $BinaryPath).Version
+}
+
 function Assert-RayuBinaryCandidate {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$ExpectedVersion
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+        [string]$Artifact = ""
     )
 
     if ($env:RAYU_INSTALL_SKIP_BINARY_VALIDATION -eq "1") {
         return $null
     }
 
-    $reportedVersion = Get-RayuVersionFromBinary $BinaryPath
-    if (-not $reportedVersion) {
-        Write-Err "Downloaded rayu binary could not run '--version'. It may be corrupt, quarantined by antivirus, or built for the wrong architecture."
+    $probe = Invoke-RayuVersionProbe $BinaryPath
+    if (-not $probe.Version) {
+        $formattedExit = Format-RayuExitCode $probe.ExitCode
+        if ($probe.ExitCode -eq -1073741515) {
+            $vcRedistUrl = if ($Artifact -eq "rayu-windows-aarch64") {
+                "https://aka.ms/vs/17/release/vc_redist.arm64.exe"
+            } else {
+                "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+            }
+            Write-Err "Downloaded rayu binary could not start (exit code $formattedExit, missing Windows DLL such as VCRUNTIME140.dll). Install the latest RayuCode release (statically linked) or install the Microsoft Visual C++ Redistributable ($vcRedistUrl)."
+        }
+
+        $details = @()
+        if ($formattedExit) { $details += "exit code $formattedExit" }
+        if ($probe.ErrorMessage) { $details += $probe.ErrorMessage }
+        if ($probe.Output) {
+            $snippet = ($probe.Output -replace '\s+', ' ').Trim()
+            if ($snippet.Length -gt 200) { $snippet = $snippet.Substring(0, 200) + "..." }
+            $details += "output: $snippet"
+        }
+        $detailSuffix = if ($details.Count -gt 0) { " ($($details -join '; '))" } else { "" }
+        Write-Err "Downloaded rayu binary could not run '--version'$detailSuffix. It may be corrupt, quarantined by antivirus, missing a system DLL, or built for the wrong architecture."
     }
 
     $expectedNumber = $ExpectedVersion.TrimStart('v')
-    if ($reportedVersion.TrimStart('v') -ne $expectedNumber) {
-        Write-Err "Downloaded binary reports $reportedVersion, but the installer requested $ExpectedVersion"
+    if ($probe.Version.TrimStart('v') -ne $expectedNumber) {
+        Write-Err "Downloaded binary reports $($probe.Version), but the installer requested $ExpectedVersion"
     }
 
-    Write-Info "Validated rayu binary: $reportedVersion"
-    return $reportedVersion
+    Write-Info "Validated rayu binary: $($probe.Version)"
+    return $probe.Version
 }
 
 function Test-RayuMsvcBuildToolsAvailable {
@@ -1349,7 +1396,7 @@ if ($DownloadMode -eq "tar") {
     $NoticesSource = $SrcDir
 }
 
-Assert-RayuBinaryCandidate -BinaryPath $DestBin -ExpectedVersion $Version | Out-Null
+Assert-RayuBinaryCandidate -BinaryPath $DestBin -ExpectedVersion $Version -Artifact $Artifact | Out-Null
 
 $StableBin = Join-Path $StableDir "rayu.exe"
 Copy-Item -Path $DestBin -Destination $StableBin -Force
