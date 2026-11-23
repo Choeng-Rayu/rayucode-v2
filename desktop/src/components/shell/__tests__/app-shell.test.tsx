@@ -83,11 +83,13 @@ describe("AppShell & IconRail", () => {
       render(<App />)
     })
 
-    const themeBtn = screen.getByRole("button", {
-      name: "Switch to light theme",
-    })
+    // Top bar no longer renders a redundant quick theme toggle button
+    expect(
+      screen.queryByRole("button", { name: "Switch to light theme" })
+    ).not.toBeInTheDocument()
+
     await act(async () => {
-      fireEvent.click(themeBtn)
+      useAppStore.getState().toggleTheme()
     })
 
     expect(useAppStore.getState().theme).toBe("light")

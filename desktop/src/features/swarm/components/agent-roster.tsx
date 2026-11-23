@@ -71,6 +71,13 @@ export function AgentRoster({
       </div>
 
       <ScrollArea className="max-h-[540px]">
+        {agents.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-muted-ink">
+            No active swarm workers. Click{" "}
+            <span className="font-medium text-ink">Spawn worker</span> above to
+            launch a parallel agent.
+          </div>
+        ) : (
         <div role="list" className="divide-y divide-hairline">
           {agents.map((agent) => {
             const isSelected = agent.id === selectedAgentId
@@ -146,6 +153,7 @@ export function AgentRoster({
             )
           })}
         </div>
+        )}
       </ScrollArea>
     </section>
   )

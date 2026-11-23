@@ -339,31 +339,27 @@ describe("SessionComposer & HomeView", () => {
       "Rayu Future 9 Ultra"
     )
 
-    // Typing "/" opens slash command menu and clicking "/swarm" inserts it
+    // Typing "/" opens built-in skills menu and clicking "swarm" renders an inline skill token (no raw "/")
     const input = screen.getByRole("textbox", { name: "Message RayuCode" })
     input.focus()
     fireEvent.change(input, { target: { value: "/" } })
-    const swarmCmd = screen.getByRole("button", { name: /\/swarm/i })
+    const swarmCmd = screen.getByRole("button", { name: /swarm/i })
     fireEvent.click(swarmCmd)
-    expect(input).toHaveValue("/swarm ")
+    expect(screen.getByTestId("composer-skill-token-swarm")).toHaveTextContent(
+      "swarm"
+    )
+    expect(input).toHaveValue("")
   })
 
-  it("renders HomeView greeting, opens a recent session on click, and creates a session on submit", async () => {
+  it("renders serene prototype HomeView greeting with rayu-fox hero and creates a new session with the user prompt", async () => {
     const createSpy = vi.spyOn(ipcClient.sessions, "createSession")
     renderWithProviders(<HomeView />)
 
-    // Editorial greeting
+    // Editorial greeting + real rayu-fox hero matching prototype/index.html
+    expect(screen.getByAltText("Rayu Code")).toBeInTheDocument()
     expect(
       screen.getByRole("heading", { level: 1 })
     ).toHaveTextContent("Good to see you, Khai. What's next?")
-
-    // Virtualized recent session click navigates to workspace
-    const recentRow = await screen.findByTestId(
-      "recent-session-row-ses_retire_cache"
-    )
-    fireEvent.click(recentRow)
-    expect(useAppStore.getState().activeSessionId).toBe("ses_retire_cache")
-    expect(useAppStore.getState().activeRoute).toBe("workspace")
 
     // Reset route and submit a new prompt via composer
     useAppStore.setState({ activeRoute: "home", activeSessionId: null })
@@ -391,6 +387,73 @@ describe("SessionComposer & HomeView", () => {
     await waitFor(() => {
       expect(useAppStore.getState().activeRoute).toBe("workspace")
       expect(useAppStore.getState().activeSessionId).toMatch(/^ses_/)
+      expect(useAppStore.getState().pendingStreamPrompt).toMatchObject({
+        prompt: "Verify ShardStore lookup latency",
+      })
     })
+  })
+
+  it("opens Presentations Templates carousel from + menu, shows Clarifying Question card, and submits structured prompt", async () => {
+    const onSubmit = vi.fn()
+    renderWithProviders(<SessionComposer mode="home" onSubmit={onSubmit} />)
+
+    // Open + menu -> click Presentations
+    fireEvent.click(screen.getByTestId("composer-plus-trigger"))
+    expect(screen.getByTestId("composer-add-menu")).toBeInTheDocument()
+    expect(screen.getByText("RayuCode conversations")).toBeInTheDocument()
+    expect(screen.getByTestId("files-and-chats-search")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("plugin-presentations-btn"))
+
+    // Inline Presentations token + Presentations Templates carousel appear
+    expect(
+      screen.getByTestId("composer-skill-token-presentations")
+    ).toHaveTextContent("Presentations")
+    expect(
+      screen.getByTestId("template-carousel-presentation")
+    ).toBeInTheDocument()
+
+    // Click Operating Review -> Clarifying Question Card opens
+    fireEvent.click(screen.getByTestId("template-card-tpl_operating_review"))
+    const card = screen.getByTestId("clarifying-question-card")
+    expect(card).toHaveTextContent(
+      "What should the Business Review deck be based on?"
+    )
+    expect(screen.getByTestId("clarifying-option-1")).toHaveTextContent(
+      "I'll provide data"
+    )
+    expect(screen.getByTestId("clarifying-option-2")).toHaveTextContent(
+      "Repository overview"
+    )
+
+    // Pick option 2 -> submits structured prompt with /presentations + Operating Review spec
+    fireEvent.click(screen.getByTestId("clarifying-option-2"))
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("[Template: Operating Review"),
+        })
+      )
+    })
+  })
+
+  it("opens Spreadsheets Templates carousel and switches composer placeholder in Plan mode", () => {
+    renderWithProviders(<SessionComposer mode="home" permissionMode="plan" />)
+    expect(
+      screen.getByPlaceholderText("Describe your task to generate a plan...")
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("composer-plus-trigger"))
+    fireEvent.click(screen.getByTestId("plugin-spreadsheets-btn"))
+
+    expect(
+      screen.getByTestId("composer-skill-token-spreadsheets")
+    ).toHaveTextContent("Spreadsheets")
+    expect(
+      screen.getByTestId("template-carousel-spreadsheet")
+    ).toBeInTheDocument()
+    expect(screen.getByText("Analytics Dashboard")).toBeInTheDocument()
+    expect(screen.getByText("Financial Budget")).toBeInTheDocument()
+    expect(screen.getByText("Operating Calendar")).toBeInTheDocument()
   })
 })

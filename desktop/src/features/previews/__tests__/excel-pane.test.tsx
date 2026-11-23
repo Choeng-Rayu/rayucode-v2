@@ -243,5 +243,39 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
       useAppStore.getState().openRightTab("markdown")
     })
     await screen.findByTestId("markdown-pane")
+
+    await act(async () => {
+      useAppStore.getState().openRightTab("slide", "Slide")
+    })
+    const slidePane = await screen.findByTestId("slide-pane")
+    expect(slidePane).toHaveTextContent("Enterprise Quarterly Business Review")
+    expect(screen.getByTestId("slide-request-edits-btn")).toBeInTheDocument()
+
+    // Navigate to Slide 2 via vertical slide tick rail
+    fireEvent.click(screen.getByRole("tab", { name: "Slide 2" }))
+    expect(slidePane).toHaveTextContent(
+      "Platform Capabilities & Operational Readiness"
+    )
+
+    // Open Diagram Studio preview and toggle between Preview & Code
+    await act(async () => {
+      useAppStore
+        .getState()
+        .openDiagramPreview(
+          "flowchart LR\n  A[Renderer] --> B[Preload] --> C[Main]",
+          "Electron Bridge Flow"
+        )
+    })
+    const diagramPane = await screen.findByTestId("diagram-pane")
+    expect(diagramPane).toHaveTextContent("Electron Bridge Flow")
+    expect(screen.getByTestId("diagram-preview-stage")).toBeInTheDocument()
+
+    const codeTab = screen.getByTestId("diagram-mode-code")
+    fireEvent.mouseDown(codeTab)
+    fireEvent.click(codeTab)
+    const editor = await screen.findByTestId("diagram-code-editor")
+    expect(editor).toHaveValue(
+      "flowchart LR\n  A[Renderer] --> B[Preload] --> C[Main]"
+    )
   })
 })

@@ -1,12 +1,13 @@
 {
   "name": "@rayu-dev/rayucode-desktop",
+  "productName": "RayuCode",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite --port 5173",
-    "dev:electron": "tsc -p tsconfig.electron.json && electron .",
+    "dev:electron": "pnpm build:electron && node scripts/brand-dev-electron-mac.mjs && electron .",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint src electron",
     "lint:fix": "eslint --fix src electron",
@@ -14,8 +15,12 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:renderer": "vite build",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json && node -e \"require('fs').copyFileSync('electron/preload.cjs','dist-electron/preload.cjs')\"",
     "build": "pnpm build:renderer && pnpm build:electron",
+    "stage:binary": "node scripts/stage-rayu-binary.mjs",
+    "package:mac": "pnpm stage:binary && pnpm build && pnpm dlx electron-builder --config electron-builder.yml --mac --publish=never",
+    "package:win": "pnpm stage:binary && pnpm build && pnpm dlx electron-builder --config electron-builder.yml --win --publish=never",
+    "package:linux": "pnpm stage:binary && pnpm build && pnpm dlx electron-builder --config electron-builder.yml --linux --publish=never",
     "verify": "pnpm typecheck && pnpm lint && pnpm lint:design && pnpm test && pnpm build"
   },
   "dependencies": {

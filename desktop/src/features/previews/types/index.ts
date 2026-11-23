@@ -1,4 +1,4 @@
-export type PreviewTabKind = "browser" | "excel" | "markdown"
+export type PreviewTabKind = "browser" | "excel" | "markdown" | "slide" | "diagram"
 
 export type BrowserDeviceMode = "desktop" | "mobile"
 

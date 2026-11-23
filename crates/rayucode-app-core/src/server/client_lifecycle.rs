@@ -1428,6 +1428,7 @@ pub(super) async fn handle_client(
                     &soft_interrupt_queues,
                 )
                 .await;
+                provisional_session = true;
             }
 
             Request::Rewind { id, message_index } => {

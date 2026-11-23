@@ -117,6 +117,7 @@ export function SwarmView({ className }: SwarmViewProps) {
               aria-expanded={spawnBarOpen}
               onClick={() => setSpawnBarOpen((prev) => !prev)}
               data-slot="toggle-spawn-worker-btn"
+              data-testid="swarm-toggle-spawn-btn"
             >
               <Plus className="size-3.5" aria-hidden="true" />
               <span>Spawn worker</span>
@@ -126,7 +127,7 @@ export function SwarmView({ className }: SwarmViewProps) {
               type="button"
               variant="ghost"
               size="sm"
-              disabled={isTogglingAll}
+              disabled={isTogglingAll || swarm.agents.length === 0}
               onClick={() => void togglePauseAll()}
               data-slot="toggle-pause-all-btn"
             >

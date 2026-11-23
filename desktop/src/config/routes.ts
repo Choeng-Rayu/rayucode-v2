@@ -18,13 +18,13 @@ export const ROUTES: Record<AppRoute, RouteDefinition> = {
   workspace: {
     id: "workspace",
     label: "Home",
-    title: "Retire legacy session cache",
+    title: "Session",
     hasRightInspector: true,
   },
   swarm: {
     id: "swarm",
     label: "Swarm",
-    title: "Gateway retry & session shards",
+    title: "Swarm",
     hasRightInspector: false,
   },
   automations: {
@@ -42,7 +42,7 @@ export const ROUTES: Record<AppRoute, RouteDefinition> = {
   changes: {
     id: "changes",
     label: "Changes",
-    title: "feat/retire-session-cache",
+    title: "Changes",
     hasRightInspector: false,
   },
   telegram: {

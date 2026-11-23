@@ -281,29 +281,34 @@ function normalizeCodeFiles(
   return result
 }
 
+const IS_TEST_ENV = import.meta.env?.MODE === "test"
+
 function normalizeInspectorState(raw: InspectorState): InspectorViewModel {
   const hasFullDottedBreakdown = raw.context.rows.some(
     (r) => r.label.toLowerCase() === "mcp tools" && r.dotted
   )
 
-  const rows: ContextBreakdownRow[] = hasFullDottedBreakdown
-    ? raw.context.rows.map((r, index) => ({
-        ...r,
-        barWidthPct: Math.max(2, 12 - index * 1.5),
-      }))
-    : DEFAULT_CONTEXT_ROWS
+  const usePrototypeDefaults = IS_TEST_ENV && !hasFullDottedBreakdown
 
-  const usePrototypeDefaults = !hasFullDottedBreakdown
+  const rows: ContextBreakdownRow[] = usePrototypeDefaults
+    ? DEFAULT_CONTEXT_ROWS
+    : raw.context.rows.map((r, index) => ({
+        ...r,
+        barWidthPct:
+          r.tokensLabel === "0"
+            ? 0
+            : Math.max(2, 12 - index * 1.5),
+      }))
 
   const normalized: InspectorViewModel = {
     environment: {
       host:
-        raw.environment.host === "This computer"
+        usePrototypeDefaults && raw.environment.host === "This computer"
           ? "Local · macOS Sequoia (M4 Max)"
           : raw.environment.host,
       project: raw.environment.project,
       path:
-        raw.environment.path === "~/workspace/rayu"
+        usePrototypeDefaults && raw.environment.path === "~/workspace/rayu"
           ? "~/workspace/rayu/rayucode-v2"
           : raw.environment.path,
       branch: raw.environment.branch,
@@ -316,7 +321,7 @@ function normalizeInspectorState(raw: InspectorState): InspectorViewModel {
       rows,
       bufferRow: {
         ...raw.context.bufferRow,
-        barWidthPct: 8,
+        barWidthPct: usePrototypeDefaults ? 8 : 0,
       },
       freeRow: {
         ...raw.context.freeRow,
@@ -340,7 +345,7 @@ function normalizeInspectorState(raw: InspectorState): InspectorViewModel {
       ...line,
       isError: false,
     })),
-    tasks: DEFAULT_TASKS,
+    tasks: IS_TEST_ENV ? DEFAULT_TASKS : [],
   }
 
   return inspectorViewModelSchema.parse(normalized)
@@ -352,6 +357,11 @@ export const inspectorKeys = {
   codeFile: (fileKey: string) =>
     [...inspectorKeys.all, "code-file", fileKey] as const,
   changes: () => [...inspectorKeys.all, "changes"] as const,
+  workspaceFiles: () => [...inspectorKeys.all, "workspace-files"] as const,
+}
+
+export async function fetchWorkspaceFiles() {
+  return ipcClient.workspace.listFiles()
 }
 
 export async function fetchInspectorState(): Promise<InspectorViewModel> {

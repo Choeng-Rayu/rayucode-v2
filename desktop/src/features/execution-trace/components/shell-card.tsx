@@ -1,5 +1,13 @@
 import * as React from "react"
-import { Check, ChevronRight, Copy, Terminal, X } from "lucide-react"
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  LayoutGrid,
+  MoreHorizontal,
+  Terminal,
+  X,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import { cn } from "@/lib/utils"
@@ -27,6 +35,7 @@ export function ShellCard({
     standalone || defaultExpanded
   )
   const [copied, setCopied] = React.useState(false)
+  const [showFullOutput, setShowFullOutput] = React.useState(false)
   const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isControlled = controlledExpanded !== undefined
@@ -37,6 +46,10 @@ export function ShellCard({
       : uncontrolledExpanded
 
   const isFailed = Boolean(step.isFailed) || step.exitCode !== 0
+  const isPlaintextTool =
+    step.isMono === false ||
+    step.displayCommand.toLowerCase().startsWith("importing ") ||
+    step.displayCommand.toLowerCase().startsWith("inspecting ")
   const cardId = `shell-card-${step.id}`
 
   React.useEffect(() => {
@@ -82,12 +95,12 @@ export function ShellCard({
       id={cardId}
       data-slot="shell-card"
       className={cn(
-        "my-0.5 overflow-hidden rounded-[11px] border border-hairline bg-inset shadow-bevel-surface",
+        "my-1 overflow-hidden rounded-[12px] border border-hairline bg-inset shadow-bevel-surface",
         standalone && className
       )}
     >
       <div className="flex items-center justify-between gap-3 border-b border-hairline-soft px-3.5 py-2 text-[11.5px] font-medium text-muted-ink">
-        <span>Shell</span>
+        <span>{isPlaintextTool ? "plaintext" : "Shell"}</span>
         <div className="flex items-center gap-2.5">
           <span
             data-slot="shell-status"
@@ -122,14 +135,33 @@ export function ShellCard({
         </div>
       </div>
 
-      <div className="break-words px-3.5 pt-2 pb-1.5 font-mono text-[12.2px] leading-relaxed text-ink">
-        $ {step.command}
-      </div>
+      {!isPlaintextTool ? (
+        <div className="break-words px-3.5 pt-2 pb-1.5 font-mono text-[12.2px] leading-relaxed text-ink">
+          $ {step.command}
+        </div>
+      ) : null}
 
       {step.output && (
-        <pre className="m-0 max-h-[210px] overflow-auto px-3.5 pt-0.5 pb-2.5 font-mono text-xs leading-[1.55] whitespace-pre text-body tabular-nums">
-          {step.output}
-        </pre>
+        <div className="relative">
+          <pre
+            className={cn(
+              "m-0 overflow-auto px-3.5 pt-2 pb-3 font-mono text-xs leading-[1.55] whitespace-pre text-body tabular-nums",
+              !showFullOutput && "max-h-[210px]"
+            )}
+          >
+            {step.output}
+          </pre>
+          {step.output.split("\n").length > 8 ? (
+            <button
+              type="button"
+              aria-label="Toggle full tool output"
+              onClick={() => setShowFullOutput((prev) => !prev)}
+              className="absolute right-3 bottom-2.5 inline-flex size-6 cursor-pointer items-center justify-center rounded-full border border-hairline bg-raised text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <MoreHorizontal className="size-3.5" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
       )}
     </div>
   )
@@ -138,7 +170,8 @@ export function ShellCard({
     return cardBody
   }
 
-  const useMonoRow = !isFailed && step.isMono !== false
+  const useMonoRow = !isFailed && !isPlaintextTool
+  const RowIcon = isPlaintextTool ? LayoutGrid : Terminal
 
   return (
     <div data-slot="shell-command-row" className={cn("flex flex-col", className)}>
@@ -148,17 +181,20 @@ export function ShellCard({
         aria-controls={cardId}
         onClick={handleToggle}
         className={cn(
-          "-ml-2 flex w-full cursor-pointer items-center gap-2 rounded-[9px] border border-transparent px-2 py-1 text-left text-[13px] leading-[1.4] text-muted-ink transition-colors hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          isExpanded && "border-brand/45 bg-brand-softer text-ink"
+          "-ml-2 inline-flex max-w-full cursor-pointer items-center gap-2 self-start rounded-[9px] border border-transparent px-2.5 py-1 text-left text-[13px] leading-[1.4] text-muted-ink transition-colors hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isExpanded &&
+            (isPlaintextTool
+              ? "border-info bg-inset text-ink"
+              : "border-brand/45 bg-brand-softer text-ink")
         )}
       >
-        <Terminal
+        <RowIcon
           className="size-3.5 shrink-0 text-muted-ink"
           aria-hidden="true"
         />
         <span
           className={cn(
-            "min-w-0 flex-1 truncate",
+            "min-w-0 truncate",
             useMonoRow ? "font-mono text-[12.2px]" : "font-sans",
             isFailed && !isExpanded && "text-muted-ink"
           )}
@@ -167,7 +203,7 @@ export function ShellCard({
         </span>
         <ChevronRight
           className={cn(
-            "ml-1 size-3 shrink-0 text-muted-ink transition-transform duration-150",
+            "ml-0.5 size-3 shrink-0 text-muted-ink transition-transform duration-150",
             isExpanded && "rotate-90 text-ink"
           )}
           aria-hidden="true"

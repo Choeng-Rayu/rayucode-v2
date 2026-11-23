@@ -4,12 +4,18 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "dist-electron/**", "node_modules/**", "scripts/**"],
+    ignores: [
+      "dist/**",
+      "dist-electron/**",
+      "node_modules/**",
+      "scripts/**",
+      "electron/preload.cjs",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{ts,tsx}", "electron/**/*.ts"],
+    files: ["src/**/*.{ts,tsx}", "electron/**/*.{ts,cts}"],
     plugins: {
       "react-hooks": reactHooks,
     },

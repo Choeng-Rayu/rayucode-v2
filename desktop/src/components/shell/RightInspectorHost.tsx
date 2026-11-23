@@ -31,7 +31,14 @@ export function RightInspectorHost({
 }: RightInspectorHostProps) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed)
   const rightMode = useAppStore((s) => s.rightMode)
+  const activeRightTab = useAppStore((s) => s.activeRightTab)
   const fullView = useAppStore((s) => s.fullView)
+  const isWidePreview =
+    rightMode === "document" &&
+    (activeRightTab === "slide" ||
+      activeRightTab === "excel" ||
+      activeRightTab === "browser" ||
+      activeRightTab === "diagram")
 
   if (rightCollapsed) {
     return null
@@ -57,7 +64,11 @@ export function RightInspectorHost({
       aria-label="Environment, context and previews"
       className={cn(
         "flex h-full shrink-0 flex-col border-l border-hairline bg-chrome transition-[width] duration-150",
-        fullView ? "fixed inset-0 z-40 w-full" : "w-[344px]"
+        fullView
+          ? "fixed inset-0 z-40 w-full"
+          : isWidePreview
+            ? "w-[50%] min-w-[420px] max-w-[760px]"
+            : "w-[344px]"
       )}
     >
       <RightSidebarTopBar />

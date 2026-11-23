@@ -1,7 +1,31 @@
 import { execFile } from "node:child_process"
+import fs from "node:fs/promises"
 import { promisify } from "node:util"
 
+import { resolveSafeWorkspacePath } from "./workspace-bridge.js"
+
 const execFileAsync = promisify(execFile)
+const MAX_DIFF_CONCURRENCY = 6
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let nextIdx = 0
+  const runners = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (nextIdx < items.length) {
+        const current = nextIdx++
+        results[current] = await worker(items[current], current)
+      }
+    }
+  )
+  await Promise.all(runners)
+  return results
+}
 
 export interface GitDiffHunkLine {
   lineNumber: number | null
@@ -187,10 +211,12 @@ export async function getGitChanges(
     entries.push({ path: filePath, indexStatus, workTreeStatus })
   }
 
-  // Cap per-refresh diff reads at 40 files to stay responsive on huge worktrees
+  // Cap per-refresh diff reads at 40 files with bounded concurrency (6 forks max)
   const limited = entries.slice(0, 40)
-  const files: GitChangedFile[] = await Promise.all(
-    limited.map(async (entry, idx) => {
+  const files: GitChangedFile[] = await mapWithConcurrency(
+    limited,
+    MAX_DIFF_CONCURRENCY,
+    async (entry, idx) => {
       const staged =
         entry.indexStatus !== " " && entry.indexStatus !== "?"
       const deleted =
@@ -260,7 +286,7 @@ export async function getGitChanges(
                 },
               ],
       }
-    })
+    }
   )
 
   const totalAdditions = files.reduce((sum, f) => sum + f.additions, 0)
@@ -303,6 +329,19 @@ export async function discardGitFile(
   cwd: string,
   filePath: string
 ): Promise<GitChangesPayload | null> {
+  const statusOut = await runGit(cwd, [
+    "status",
+    "--porcelain=v1",
+    "--",
+    filePath,
+  ]).catch(() => "")
+  const trimmed = statusOut.trim()
+  if (trimmed.startsWith("?? ")) {
+    const safeAbs = resolveSafeWorkspacePath(cwd, filePath)
+    await fs.unlink(safeAbs)
+    return getGitChanges(cwd)
+  }
+
   await runGit(cwd, ["checkout", "HEAD", "--", filePath]).catch(async () => {
     await runGit(cwd, ["checkout", "--", filePath])
   })

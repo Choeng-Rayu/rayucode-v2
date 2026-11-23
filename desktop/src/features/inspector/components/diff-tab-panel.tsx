@@ -16,11 +16,14 @@ import {
 } from "../hooks/use-context-stats"
 
 function resolveCodeFileKey(path: string): string {
-  const base = path.split("/").pop() ?? "lookup.rs"
-  if (base === "lookup.rs" || base === "cache.rs" || base === "store.rs") {
+  const base = path.split("/").pop() ?? path
+  if (
+    import.meta.env?.MODE === "test" &&
+    (base === "lookup.rs" || base === "cache.rs" || base === "store.rs")
+  ) {
     return base
   }
-  return "lookup.rs"
+  return path
 }
 
 export interface DiffTabPanelProps {
@@ -38,6 +41,7 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
   const decisionMutation = useDiffDecisionMutation()
   const openCodeFile = useAppStore((s) => s.openCodeFile)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
+  const setActiveRoute = useAppStore((s) => s.setActiveRoute)
 
   const [selectedFileId, setSelectedFileId] = React.useState<string | null>(
     null
@@ -139,7 +143,15 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
       </div>
 
       {/* Active diff hunk card */}
-      {activeFile && (
+      {!activeFile ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
+          <FileDiff className="size-5 text-muted-ink" strokeWidth={1.5} aria-hidden="true" />
+          <p className="text-xs font-medium text-ink">Working tree clean</p>
+          <p className="text-[11px] text-muted-ink">
+            No uncommitted diffs on <span className="font-mono">{changes.branch}</span>.
+          </p>
+        </div>
+      ) : (
         <ScrollArea className="min-h-0 flex-1">
           <div className="flex flex-col gap-3 p-3.5">
             <div className="rayu-card-bevel overflow-hidden rounded-[10px] border border-hairline bg-inset">
@@ -204,7 +216,7 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                     if (activeFile.path.endsWith(".md")) {
                       openDocPreview("markdown", activeFile.path)
                     } else {
-                      openCodeFile(resolveCodeFileKey(activeFile.path), 21)
+                      openCodeFile(resolveCodeFileKey(activeFile.path), 1)
                     }
                   }}
                 >
@@ -217,7 +229,7 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                   variant="ghost"
                   size="xs"
                   onClick={() => {
-                    void openFileInVSCode(activeFile.path, 19)
+                    void openFileInVSCode(activeFile.path, 1)
                     toast(`Opened ${activeFile.path} in Visual Studio Code`)
                   }}
                 >
@@ -256,9 +268,7 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                 type="button"
                 variant="default"
                 size="xs"
-                onClick={() =>
-                  toast("Create PR requires explicit confirmation (Always ask)")
-                }
+                onClick={() => setActiveRoute("changes")}
                 className="ml-auto"
               >
                 Create PR

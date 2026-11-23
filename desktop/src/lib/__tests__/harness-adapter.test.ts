@@ -57,11 +57,79 @@ describe("harness-adapter", () => {
     expect(turns[0].groups[0].steps).toHaveLength(1)
   })
 
-  it("streams live harness frames into LiveTraceEvent sequence", () => {
+  it("folds imported tool results and skill instruction injections into tool steps instead of giant user bubbles", () => {
+    const turns = mapHistoryMessagesToTurns("s_skill", [
+      { role: "user", content: "Build an Excel budget model" },
+      {
+        role: "user",
+        content:
+          "[Imported tool result: toolu_123] Launching skill: anthropic-skills:xlsx",
+      },
+      {
+        role: "user",
+        content:
+          "Base directory for this skill: /Users/dev/skills/xlsx\n\n## XLSX creation, editing, and analysis",
+      },
+      {
+        role: "assistant",
+        content: "Created Q4-Budget.xlsx with verified formulas.",
+      },
+    ])
+    expect(turns).toHaveLength(1)
+    expect(turns[0].userPrompt).toBe("Build an Excel budget model")
+    expect(turns[0].groups[0].steps).toHaveLength(2)
+    expect(turns[0].answerIntro).toBe(
+      "Created Q4-Budget.xlsx with verified formulas."
+    )
+  })
+
+  it("streams live harness frames into Codex-style LiveTraceEvent sequence", () => {
     const tracker = createHarnessStreamTracker()
+
+    // Reasoning delta stays quiet (no noisy "Reasoning via Rayu Cloud..." placeholder)
     expect(
-      mapHarnessFrameToLiveEvents({ ev: "tool_start", call_id: "c1", name: "bash" }, tracker)
-    ).toEqual([{ type: "note", text: "Running bash..." }])
+      mapHarnessFrameToLiveEvents(
+        { ev: "reasoning_delta", text: "checking files" },
+        tracker
+      )
+    ).toEqual([])
+
+    // read_file maps cleanly into "Read files" with clickable FileReadStep
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "tool_start",
+          call_id: "c_read",
+          name: "read_file",
+          tool_input: { path: "README.md" },
+        },
+        tracker
+      )
+    ).toEqual([{ type: "tool-status", label: "Reading README.md..." }])
+
+    const readDone = mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_done",
+        call_id: "c_read",
+        name: "read_file",
+        tool_input: { path: "README.md" },
+        tool_output: "# RayuCode",
+      },
+      tracker
+    )
+    expect(readDone[1]).toMatchObject({
+      type: "step",
+      groupTitle: "Read files",
+      step: { kind: "read", label: "Read" },
+    })
+
+    // Shell command maps cleanly into "Ran a command"
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "tool_start", call_id: "c1", name: "bash" },
+        tracker
+      )
+    ).toEqual([{ type: "tool-status", label: "Running command..." }])
 
     mapHarnessFrameToLiveEvents(
       { ev: "tool_input_delta", call_id: "c1", delta: '{"command":"cargo test"}' },
@@ -72,9 +140,9 @@ describe("harness-adapter", () => {
       { ev: "tool_done", call_id: "c1", name: "bash", output: "ok" },
       tracker
     )
-    expect(doneEvents).toHaveLength(1)
-    expect(doneEvents[0]).toMatchObject({
+    expect(doneEvents[1]).toMatchObject({
       type: "step",
+      groupTitle: "Ran a command",
       step: { kind: "command", command: "cargo test", output: "ok", exitCode: 0 },
     })
 
@@ -82,8 +150,15 @@ describe("harness-adapter", () => {
       mapHarnessFrameToLiveEvents({ ev: "text_delta", text: "Hello world" }, tracker)
     ).toEqual([{ type: "answer-delta", delta: "Hello world" }])
 
+    expect(
+      mapHarnessFrameToLiveEvents({ ev: "promote_answer_to_note" }, tracker)
+    ).toEqual([{ type: "promote-note" }])
+
     mapHarnessFrameToLiveEvents({ ev: "rayu_credits", turn_credits: 0.05 }, tracker)
     const completed = mapHarnessFrameToLiveEvents({ ev: "turn_done" }, tracker)
-    expect(completed[0]).toMatchObject({ type: "complete", credits: "0.05 cr" })
+    expect(completed.find((e) => e.type === "complete")).toMatchObject({
+      type: "complete",
+      credits: "0.05 cr",
+    })
   })
 })

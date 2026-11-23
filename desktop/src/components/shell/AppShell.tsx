@@ -73,7 +73,14 @@ export function AppShell({
             >
               <DaemonBanner />
               <TopBar />
-              <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              <div
+                className={cn(
+                  "flex min-h-0 flex-1 flex-col",
+                  activeRoute === "home" || activeRoute === "workspace"
+                    ? "overflow-hidden"
+                    : "overflow-y-auto"
+                )}
+              >
                 {children}
               </div>
             </main>

@@ -1,5 +1,12 @@
 import * as React from "react"
-import { ArrowLeft, FileSpreadsheet, FileText, Globe } from "lucide-react"
+import {
+  ArrowLeft,
+  FileSpreadsheet,
+  FileText,
+  Globe,
+  Network,
+  Presentation,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { ContextSkeleton } from "@/components/ui/page-skeletons"
@@ -56,6 +63,16 @@ function DefaultPreviewPlaceholder({ tab }: { tab: PreviewDocumentTab }) {
       label: activeDocPill ?? "MIGRATION_PLAN.md",
       description: "Rendered Markdown document preview pane ready.",
       Icon: FileText,
+    },
+    slide: {
+      label: activeDocPill ?? "Slide",
+      description: "Interactive presentation & PowerPoint slide studio ready.",
+      Icon: Presentation,
+    },
+    diagram: {
+      label: activeDocPill ?? "Flowchart",
+      description: "Interactive Mermaid diagram preview & source code editor.",
+      Icon: Network,
     },
   }
 
@@ -121,7 +138,9 @@ export function InspectorSidebar({
         return <FilesTabPanel />
       case "browser":
       case "excel":
-      case "markdown": {
+      case "markdown":
+      case "slide":
+      case "diagram": {
         if (typeof previewFallback === "function") {
           return previewFallback(activeRightTab)
         }

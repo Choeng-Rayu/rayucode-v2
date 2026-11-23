@@ -14,6 +14,14 @@ export {
   MarkdownPane,
   type MarkdownPaneProps,
 } from "./components/markdown-pane"
+export {
+  SlidePane,
+  type SlidePaneProps,
+} from "./components/slide-pane"
+export {
+  DiagramPane,
+  type DiagramPaneProps,
+} from "./components/diagram-pane"
 
 export {
   useBrowserBounds,

@@ -1,6 +1,12 @@
 import { z } from "zod"
 
-export const previewTabKindSchema = z.enum(["browser", "excel", "markdown"])
+export const previewTabKindSchema = z.enum([
+  "browser",
+  "excel",
+  "markdown",
+  "slide",
+  "diagram",
+])
 
 export const browserDeviceModeSchema = z.enum(["desktop", "mobile"])
 

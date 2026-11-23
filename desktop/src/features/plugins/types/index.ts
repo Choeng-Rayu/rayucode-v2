@@ -12,6 +12,15 @@ export interface PluginCatalogItem {
   infoOnly?: boolean
   infoToast?: string
   searchKeywords: string
+  mcpServerId?: string
+  sourcePath?: string
+  scope?: "global" | "workspace"
+  transport?: "stdio" | "url"
+  command?: string
+  args?: string[]
+  url?: string
+  envKeys?: string[]
+  isCustomMcp?: boolean
 }
 
 export interface SkillItem {

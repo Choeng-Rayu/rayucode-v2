@@ -114,6 +114,48 @@ export async function readWorkspaceFile(
   }
 }
 
+export interface PickedWorkspaceEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+}
+
+export async function pickWorkspaceFiles(
+  parentWindow: BrowserWindow | null,
+  defaultPath?: string
+): Promise<PickedWorkspaceEntry[]> {
+  const { dialog } = await import("electron")
+  const options: OpenDialogOptions = {
+    title: "Add Files or Folders",
+    defaultPath,
+    properties: ["openFile", "openDirectory", "multiSelections"],
+  }
+  const result = parentWindow
+    ? await dialog.showOpenDialog(parentWindow, options)
+    : await dialog.showOpenDialog(options)
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return []
+  }
+
+  const entries: PickedWorkspaceEntry[] = []
+  for (const filePath of result.filePaths) {
+    let isDirectory = false
+    try {
+      const stat = await fs.stat(filePath)
+      isDirectory = stat.isDirectory()
+    } catch {
+      // ignore stat errors
+    }
+    entries.push({
+      name: path.basename(filePath) || filePath,
+      path: filePath,
+      isDirectory,
+    })
+  }
+  return entries
+}
+
 export async function pickWorkspaceFolder(
   parentWindow: BrowserWindow | null
 ): Promise<string | null> {

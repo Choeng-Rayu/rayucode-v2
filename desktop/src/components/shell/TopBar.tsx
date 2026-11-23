@@ -215,6 +215,20 @@ export function MoreOptionsMenu({ triggerClassName }: { triggerClassName?: strin
             .md
           </span>
         </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => openDocPreview("slide", "Slide")}>
+          <span>PowerPoint Slide Studio</span>
+          <span className="ml-auto font-mono text-[10px] text-muted-ink">
+            .pptx
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => openDocPreview("diagram", "Architecture Flowchart")}
+        >
+          <span>Flowchart Diagram Preview</span>
+          <span className="ml-auto font-mono text-[10px] text-muted-ink">
+            .mmd
+          </span>
+        </DropdownMenuItem>
 
         <DropdownMenuSeparator />
 
@@ -266,7 +280,10 @@ export function SixIconStrip({ className }: { className?: string }) {
             (rightMode === "document" && activeRightTab === tab.id) ||
             (tab.id === "files" &&
               rightMode === "document" &&
-              (activeRightTab === "excel" || activeRightTab === "markdown")))
+              (activeRightTab === "excel" ||
+                activeRightTab === "markdown" ||
+                activeRightTab === "slide" ||
+                activeRightTab === "diagram")))
         return (
           <Tooltip key={tab.id}>
             <TooltipTrigger asChild>
@@ -298,28 +315,33 @@ export function SixIconStrip({ className }: { className?: string }) {
 export function TopBar() {
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const activeSessionTitle = useAppStore((s) => s.activeSessionTitle)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
   const rightCollapsed = useAppStore((s) => s.rightCollapsed)
   const rightMode = useAppStore((s) => s.rightMode)
-  const theme = useAppStore((s) => s.theme)
-  const toggleTheme = useAppStore((s) => s.toggleTheme)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const openRightTab = useAppStore((s) => s.openRightTab)
 
   const routeMeta = ROUTES[activeRoute] ?? ROUTES.home
   const sessionTitle =
-    activeSessionId === "ses_q4_excel"
-      ? "Q4 token cost spreadsheet"
-      : activeSessionId === "ses_model_picker"
-        ? "VS Code: model picker refresh"
-        : activeRoute === "workspace"
-          ? "Retire legacy session cache"
-          : routeMeta.title
+    activeRoute === "workspace"
+      ? activeSessionTitle ??
+        (activeSessionId === "ses_q4_excel"
+          ? "Q4 token cost spreadsheet"
+          : activeSessionId === "ses_model_picker"
+            ? "VS Code: model picker refresh"
+            : activeSessionId === "ses_retire_cache"
+              ? "Retire legacy session cache"
+              : "Active session")
+      : routeMeta.title
 
-  // In Context Mode with right sidebar open, the 6-icon strip sits in the right sidebar header
-  // so the center top bar stays calm (<Title> ▾ only).
-  // When in Document Mode or when right sidebar is collapsed, the 6-icon strip renders in the center top bar.
-  const showCenterStrip = rightMode === "document" || rightCollapsed
+  // On Home with collapsed right sidebar, match prototype/index.html calm actions (Theme, Terminal, Files).
+  const isCleanHomeHeader = activeRoute === "home" && rightCollapsed
+  const showCenterStrip =
+    routeMeta.hasRightInspector &&
+    !isCleanHomeHeader &&
+    (rightMode === "document" || rightCollapsed)
 
   return (
     <header
@@ -376,7 +398,7 @@ export function TopBar() {
       {/* Session / Route Title button */}
       <button
         type="button"
-        onClick={() => toast(`Session: ${sessionTitle} · KV 94% warm`)}
+        onClick={() => toast(`Session: ${sessionTitle}`)}
         className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-[7px] px-1.5 py-1 text-sm font-medium tracking-tight text-ink transition-colors hover:bg-hover"
       >
         <span className="truncate">{sessionTitle}</span>
@@ -394,50 +416,41 @@ export function TopBar() {
 
       <div className="flex-1" />
 
-      {/* Quick theme toggle + Dual-mode 6-icon strip */}
+      {/* Dual-mode 6-icon strip & utility actions */}
       <div className="flex items-center gap-1.5">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              aria-label={
-                theme === "dark"
-                  ? "Switch to light theme"
-                  : "Switch to dark theme"
-              }
-              className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
-            >
-              {theme === "dark" ? (
-                <svg
-                  className="size-[15px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.65"
-                  aria-hidden="true"
+        {isCleanHomeHeader && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Open terminal"
+                  onClick={() => openRightTab("terminal", "rayu daemon")}
+                  className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
                 >
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19" />
-                </svg>
-              ) : (
-                <svg
-                  className="size-[15px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.65"
-                  aria-hidden="true"
+                  <InspectorTabIcon icon="terminal" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">CLI Terminal</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Open files and previews"
+                  onClick={() => openRightTab("files", "MIGRATION_PLAN.md")}
+                  className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
                 >
-                  <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" />
-                </svg>
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Toggle theme</TooltipContent>
-        </Tooltip>
+                  <InspectorTabIcon icon="folder" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Files &amp; Previews</TooltipContent>
+            </Tooltip>
+          </>
+        )}
 
         {showCenterStrip && <SixIconStrip />}
+        {!routeMeta.hasRightInspector && <MoreOptionsMenu />}
       </div>
     </header>
   )
@@ -445,14 +458,23 @@ export function TopBar() {
 
 export function RightSidebarTopBar() {
   const rightMode = useAppStore((s) => s.rightMode)
+  const activeRightTab = useAppStore((s) => s.activeRightTab)
   const activeDocPill = useAppStore((s) => s.activeDocPill)
+  const openDocTabs = useAppStore((s) => s.openDocTabs)
   const fullView = useAppStore((s) => s.fullView)
+  const openRightTab = useAppStore((s) => s.openRightTab)
   const closeDocumentToContext = useAppStore((s) => s.closeDocumentToContext)
   const setFullView = useAppStore((s) => s.setFullView)
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
+  const addSlide = useAppStore((s) => s.addSlide)
+
+  const currentPill = activeDocPill ?? "lookup.rs"
+  const backgroundTabs = openDocTabs
+    .filter((t) => t.pill !== currentPill)
+    .slice(-1)
 
   return (
-    <div className="flex h-[46px] shrink-0 items-center gap-2 border-b border-hairline bg-chrome px-3 select-none">
+    <div className="flex h-[46px] shrink-0 items-center gap-1.5 border-b border-hairline bg-chrome px-3 select-none">
       {rightMode === "context" ? (
         <div className="ml-auto flex items-center">
           <SixIconStrip />
@@ -470,11 +492,31 @@ export function RightSidebarTopBar() {
             </button>
           )}
 
-          {/* Active italicized document pill (e.g. lookup.rs ×) */}
+          {/* Background open doc tab (e.g. template_following.md ⌘1) matching Screenshot 2 */}
+          {backgroundTabs.map((bgTab, idx) => (
+            <button
+              key={bgTab.pill}
+              type="button"
+              onClick={() => openRightTab(bgTab.tab, bgTab.pill)}
+              className="inline-flex h-[30px] max-w-[180px] cursor-pointer items-center gap-2 rounded-[9px] px-2.5 text-xs text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <span className="truncate">{bgTab.pill}</span>
+              <span className="font-mono text-[10px] opacity-70">
+                ⌘{idx + 1}
+              </span>
+            </button>
+          ))}
+
+          {/* Active document pill (e.g. Slide ⌘2 × or lookup.rs ×) */}
           <div className="rayu-surface-bevel inline-flex h-[30px] max-w-[240px] items-center gap-2 rounded-[9px] bg-active pr-2 pl-3 text-[13px] font-medium text-ink italic">
-            <span className="truncate" data-testid="active-doc-pill">
-              {activeDocPill ?? "lookup.rs"}
+            <span className="truncate not-italic" data-testid="active-doc-pill">
+              {currentPill}
             </span>
+            {backgroundTabs.length > 0 ? (
+              <span className="font-mono text-[10px] not-italic text-muted-ink">
+                ⌘{backgroundTabs.length + 1}
+              </span>
+            ) : null}
             <button
               type="button"
               aria-label="Close document"
@@ -494,6 +536,30 @@ export function RightSidebarTopBar() {
               </svg>
             </button>
           </div>
+
+          {activeRightTab === "slide" ? (
+            <button
+              type="button"
+              aria-label="Add slide tab"
+              title="Add new slide"
+              onClick={() => {
+                addSlide()
+                toast("Added new slide")
+              }}
+              className="grid size-7 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <svg
+                className="size-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          ) : null}
 
           <span className="flex-1" />
 

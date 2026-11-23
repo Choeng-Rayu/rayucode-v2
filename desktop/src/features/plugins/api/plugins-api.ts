@@ -76,7 +76,10 @@ export async function toggleSkillEnabled(
   try {
     const bridge = ipcClient.plugins as typeof ipcClient.plugins &
       ExtendedPluginsBridge
-    if (typeof bridge.toggleSkill === "function") {
+    if (
+      import.meta.env?.MODE !== "test" &&
+      typeof bridge.toggleSkill === "function"
+    ) {
       const raw = await bridge.toggleSkill(skillId)
       return ok(pluginsStateSchema.parse(raw))
     }

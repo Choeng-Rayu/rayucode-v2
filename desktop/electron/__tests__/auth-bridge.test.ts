@@ -1,0 +1,295 @@
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import {
+  buildCliLoginUrl,
+  getRayuAppConfigDir,
+  isSafeRayuBaseUrl,
+  parseAnthropicSseChunk,
+  parseCallbackUrl,
+  RayuAuthManager,
+} from "../auth-bridge"
+
+describe("auth-bridge helpers", () => {
+  it("validates Rayu base URLs safely", () => {
+    expect(isSafeRayuBaseUrl("https://api.rayucode.com/api")).toBe(true)
+    expect(isSafeRayuBaseUrl("https://gateway.rayucode.com")).toBe(true)
+    expect(isSafeRayuBaseUrl("http://127.0.0.1:4000")).toBe(true)
+    expect(isSafeRayuBaseUrl("http://localhost:8787")).toBe(true)
+    expect(isSafeRayuBaseUrl("http://[::1]:8080")).toBe(true)
+
+    expect(isSafeRayuBaseUrl("http://api.rayucode.com")).toBe(false)
+    expect(isSafeRayuBaseUrl("https://user:pass@api.rayucode.com")).toBe(false)
+    expect(isSafeRayuBaseUrl("javascript:alert(1)")).toBe(false)
+    expect(isSafeRayuBaseUrl("not-a-url")).toBe(false)
+  })
+
+  it("builds CLI login URLs with port and state query params", () => {
+    const url = buildCliLoginUrl("https://rayucode.com/", 54321, "deadbeef")
+    expect(url).toBe("https://rayucode.com/cli-login?port=54321&state=deadbeef")
+  })
+
+  it("parses full and relative OAuth callback URLs", () => {
+    expect(
+      parseCallbackUrl("http://127.0.0.1:54321/callback?code=abc123&state=xyz")
+    ).toEqual({ code: "abc123", state: "xyz" })
+
+    expect(parseCallbackUrl("/callback?code=c1&state=s1")).toEqual({
+      code: "c1",
+      state: "s1",
+    })
+
+    expect(() => parseCallbackUrl("/callback?state=only")).toThrow(
+      /authorization code/i
+    )
+    expect(() => parseCallbackUrl("/callback?code=only")).toThrow(
+      /state parameter/i
+    )
+  })
+
+  it("parses Anthropic SSE data frames and ignores comments and [DONE]", () => {
+    const block = [
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}',
+      "",
+      'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"step 1"}}',
+      'data: {"type":"message_delta","usage":{"input_tokens":120,"output_tokens":45,"cache_read_input_tokens":90}}',
+      "data: [DONE]",
+    ].join("\r\n")
+
+    const events = parseAnthropicSseChunk(block)
+    expect(events).toHaveLength(3)
+    expect(events[0]).toMatchObject({
+      type: "content_block_delta",
+      delta: { type: "text_delta", text: "Hello" },
+    })
+    expect(events[1]).toMatchObject({
+      type: "content_block_delta",
+      delta: { type: "thinking_delta", thinking: "step 1" },
+    })
+    expect(events[2]).toMatchObject({
+      type: "message_delta",
+      usage: { input_tokens: 120, output_tokens: 45, cache_read_input_tokens: 90 },
+    })
+  })
+})
+
+describe("auth-bridge Wave 1 guarantees", () => {
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    process.env = { ...originalEnv }
+    vi.restoreAllMocks()
+  })
+
+  it("resolves platform app config directory aligned with Rust rayucode-storage", () => {
+    delete process.env.RAYU_HOME
+    delete process.env.RAYU_CONFIG_DIR
+    const dir = getRayuAppConfigDir()
+    if (process.platform === "darwin") {
+      expect(dir).toBe(
+        path.join(os.homedir(), "Library", "Application Support", "rayucode")
+      )
+    } else if (process.platform === "win32") {
+      expect(dir.toLowerCase()).toMatch(/rayucode$/)
+    } else {
+      expect(dir).toMatch(/rayucode$/)
+    }
+
+    const customHome = path.join(os.tmpdir(), "rayu-custom-home-test")
+    process.env.RAYU_HOME = customHome
+    expect(getRayuAppConfigDir()).toBe(
+      path.join(customHome, "config", "rayucode")
+    )
+  })
+
+  it("emits turn_stopped ONCE without a trailing turn_done on SSE error frame", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-auth-sse-"))
+    process.env.RAYU_HOME = tmpHome
+    const appDir = getRayuAppConfigDir()
+    fs.mkdirSync(appDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(appDir, "rayu.env"),
+      "RAYU_API_KEY=rayu_sk_live_testkey1234567890\n",
+      { mode: 0o600 }
+    )
+
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n'
+          )
+        )
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"error","error":{"message":"rate_limit_exceeded"}}\n\n'
+          )
+        )
+        controller.close()
+      },
+    })
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        body: stream,
+      })
+    )
+
+    const manager = new RayuAuthManager()
+    const emitted: Array<{ ev: string; reason?: string; message?: string }> = []
+    await manager.streamCloudChat({
+      sessionId: "ses_sse_err",
+      messages: [{ role: "user", content: "hello" }],
+      model: "claude-sonnet-4-6",
+      onEvent: (ev) => emitted.push(ev),
+    })
+
+    const terminalEvents = emitted.filter(
+      (e) => e.ev === "turn_done" || e.ev === "turn_stopped"
+    )
+    expect(terminalEvents).toHaveLength(1)
+    expect(terminalEvents[0]?.ev).toBe("turn_stopped")
+    expect(terminalEvents[0]?.message).toContain("rate_limit_exceeded")
+
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it("emits clean cancelled turn_stopped when user cancels stream", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-auth-abort-"))
+    process.env.RAYU_HOME = tmpHome
+    const appDir = getRayuAppConfigDir()
+    fs.mkdirSync(appDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(appDir, "rayu.env"),
+      "RAYU_API_KEY=rayu_sk_live_testkey1234567890\n",
+      { mode: 0o600 }
+    )
+
+    const manager = new RayuAuthManager()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((_url: string, init?: { signal?: AbortSignal }) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }))
+          })
+          queueMicrotask(() => manager.cancelStream("ses_abort"))
+        })
+      })
+    )
+
+    const emitted: Array<{ ev: string; reason?: string }> = []
+    await manager.streamCloudChat({
+      sessionId: "ses_abort",
+      messages: [{ role: "user", content: "cancel me" }],
+      model: "claude-sonnet-4-6",
+      onEvent: (ev) => emitted.push(ev),
+    })
+
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toMatchObject({
+      ev: "turn_stopped",
+      reason: "cancelled",
+    })
+
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it("executes real local workspace tools in a multi-turn agentic loop when workspaceDir is provided", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-agent-loop-"))
+    const tmpHome = path.join(tmpRoot, "home")
+    const tmpWs = path.join(tmpRoot, "workspace")
+    process.env.RAYU_HOME = tmpHome
+    const appDir = getRayuAppConfigDir()
+    fs.mkdirSync(appDir, { recursive: true })
+    fs.mkdirSync(tmpWs, { recursive: true })
+    fs.writeFileSync(
+      path.join(appDir, "rayu.env"),
+      "RAYU_API_KEY=rayu_sk_live_testkey1234567890\n",
+      { mode: 0o600 }
+    )
+    fs.writeFileSync(
+      path.join(tmpWs, "README.md"),
+      "# RayuCode Desktop\nLocal-first autonomous coding studio.\n"
+    )
+
+    const encoder = new TextEncoder()
+    let callCount = 0
+    const fetchMock = vi.fn().mockImplementation(async (_url: string, init?: { body?: string }) => {
+      callCount += 1
+      if (callCount === 1) {
+        const parsedBody = JSON.parse(String(init?.body ?? "{}")) as {
+          tools?: Array<{ name: string }>
+        }
+        expect(parsedBody.tools?.some((t) => t.name === "read_file")).toBe(true)
+
+        const round1 = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+                  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I will read README.md first."}}\n\n' +
+                  'data: {"type":"content_block_stop","index":0}\n\n' +
+                  'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}\n\n' +
+                  'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"README.md\\"}"}}\n\n' +
+                  'data: {"type":"content_block_stop","index":1}\n\n'
+              )
+            )
+            controller.close()
+          },
+        })
+        return { ok: true, status: 200, body: round1 }
+      }
+
+      // Second round must receive the real file contents in tool_result
+      const bodyStr = String(init?.body ?? "")
+      expect(bodyStr).toContain("Local-first autonomous coding studio.")
+
+      const round2 = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"RayuCode Desktop is a local-first autonomous coding studio."}}\n\n'
+            )
+          )
+          controller.close()
+        },
+      })
+      return { ok: true, status: 200, body: round2 }
+    })
+
+    vi.stubGlobal("fetch", fetchMock)
+
+    const manager = new RayuAuthManager()
+    const emitted: Array<{ ev: string; name?: string; tool_output?: string; text?: string }> = []
+    await manager.streamCloudChat({
+      sessionId: "ses_tools",
+      messages: [{ role: "user", content: "Tell me about RayuCode Desktop" }],
+      model: "claude-sonnet-4-6",
+      workspaceDir: tmpWs,
+      onEvent: (ev) => emitted.push(ev),
+    })
+
+    expect(callCount).toBe(2)
+    expect(emitted.some((e) => e.ev === "promote_answer_to_note")).toBe(true)
+    expect(emitted.some((e) => e.ev === "tool_start" && e.name === "read_file")).toBe(true)
+    expect(
+      emitted.some(
+        (e) =>
+          e.ev === "tool_done" &&
+          e.name === "read_file" &&
+          e.tool_output?.includes("Local-first autonomous coding studio.")
+      )
+    ).toBe(true)
+    expect(emitted.some((e) => e.ev === "turn_done")).toBe(true)
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  })
+})

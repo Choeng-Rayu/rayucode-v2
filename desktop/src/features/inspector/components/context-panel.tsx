@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   ChevronRight,
   FileDiff,
@@ -8,6 +9,7 @@ import {
   GitBranch,
   Globe,
   Monitor,
+  Presentation,
   Settings,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -23,6 +25,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import { useContextStats } from "../hooks/use-context-stats"
@@ -31,11 +34,17 @@ import type { InspectorOutputKind } from "../types"
 function OutputKindIcon({ kind }: { kind: InspectorOutputKind }) {
   switch (kind) {
     case "browser":
-      return <Globe className="size-3.5 shrink-0 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+      return (
+        <Globe
+          className="size-3.5 shrink-0 text-info"
+          strokeWidth={1.65}
+          aria-hidden="true"
+        />
+      )
     case "excel":
       return (
         <FileSpreadsheet
-          className="size-3.5 shrink-0 text-muted-ink"
+          className="size-3.5 shrink-0 text-office-excel"
           strokeWidth={1.65}
           aria-hidden="true"
         />
@@ -43,7 +52,15 @@ function OutputKindIcon({ kind }: { kind: InspectorOutputKind }) {
     case "markdown":
       return (
         <FileText
-          className="size-3.5 shrink-0 text-muted-ink"
+          className="size-3.5 shrink-0 text-code-type"
+          strokeWidth={1.65}
+          aria-hidden="true"
+        />
+      )
+    case "slide":
+      return (
+        <Presentation
+          className="size-3.5 shrink-0 text-office-ppt"
           strokeWidth={1.65}
           aria-hidden="true"
         />
@@ -75,7 +92,9 @@ export function ContextPanel({ className }: ContextPanelProps) {
   >({})
   const [showMoreConnectors, setShowMoreConnectors] = React.useState(false)
 
+  const queryClient = useQueryClient()
   const openCodeFile = useAppStore((s) => s.openCodeFile)
+  const setActiveWorkspacePath = useAppStore((s) => s.setActiveWorkspacePath)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
 
   if (isLoading) {
@@ -143,7 +162,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
           <div className="flex flex-col gap-2.5 text-[13px] text-ink">
             <div className="flex min-w-0 items-center gap-2.5">
               <Monitor
-                className="size-[15px] shrink-0 text-muted-ink"
+                className="size-[15px] shrink-0 text-info"
                 strokeWidth={1.65}
                 aria-hidden="true"
               />
@@ -152,16 +171,25 @@ export function ContextPanel({ className }: ContextPanelProps) {
               </span>
               <button
                 type="button"
-                onClick={() => toast("Saved environment profile")}
+                onClick={() => {
+                  void ipcClient.workspace.pickFolder().then((picked) => {
+                    if (!picked) return
+                    setActiveWorkspacePath(picked.path)
+                    void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+                    void queryClient.invalidateQueries({ queryKey: ["changes"] })
+                    void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+                    toast(`Switched workspace to ${picked.project}`)
+                  })
+                }}
                 className="shrink-0 cursor-pointer text-xs text-body underline underline-offset-3 transition-colors hover:text-ink"
               >
-                Save
+                Switch
               </button>
             </div>
 
             <div className="flex min-w-0 items-center gap-2.5">
               <Folder
-                className="size-[15px] shrink-0 text-muted-ink"
+                className="size-[15px] shrink-0 text-folder"
                 strokeWidth={1.65}
                 aria-hidden="true"
               />
@@ -175,7 +203,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
 
             <div className="flex min-w-0 items-center gap-2.5">
               <GitBranch
-                className="size-[15px] shrink-0 text-muted-ink"
+                className="size-[15px] shrink-0 text-code-type"
                 strokeWidth={1.65}
                 aria-hidden="true"
               />
@@ -364,42 +392,43 @@ export function ContextPanel({ className }: ContextPanelProps) {
           <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
             Connectors
           </h2>
-          <div className="flex flex-col gap-2.5">
-            {visibleConnectors.map((conn) => (
-              <div
-                key={conn.id}
-                className="flex items-center gap-2.5 text-[13px] text-ink"
-              >
-                <span
-                  aria-hidden="true"
-                  className="grid size-5 shrink-0 place-items-center rounded-[5px] bg-active font-mono text-[11px] font-semibold text-body"
+          {visibleConnectors.length === 0 ? (
+            <p className="text-xs text-faint">
+              No MCP connectors configured in{" "}
+              <code className="font-mono text-[11px]">~/.rayu/mcp.json</code>.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2.5">
+              {visibleConnectors.map((conn) => (
+                <div
+                  key={conn.id}
+                  className="flex items-center gap-2.5 text-[13px] text-ink"
                 >
-                  {conn.glyph}
-                </span>
-                <span className="truncate">{conn.name}</span>
-                {conn.status && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      toast(
-                        conn.status === "Reconnect"
-                          ? `Opening ${conn.name} OAuth reconnect...`
-                          : `${conn.name} connector is linked`
-                      )
-                    }
-                    className={cn(
-                      "ml-auto shrink-0 cursor-pointer text-xs font-medium hover:underline",
-                      conn.status === "Linked"
-                        ? "text-brand-text"
-                        : "text-warn"
-                    )}
+                  <span
+                    aria-hidden="true"
+                    className="grid size-5 shrink-0 place-items-center rounded-[5px] bg-active font-mono text-[11px] font-semibold text-body"
                   >
-                    {conn.status}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
+                    {conn.glyph}
+                  </span>
+                  <span className="truncate">{conn.name}</span>
+                  {conn.status && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveRoute("plugins")}
+                      className={cn(
+                        "ml-auto shrink-0 cursor-pointer text-xs font-medium hover:underline",
+                        conn.status === "Linked"
+                          ? "text-brand-text"
+                          : "text-warn"
+                      )}
+                    >
+                      {conn.status}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {secondaryConnectors.length > 0 && (
             <button
@@ -420,21 +449,27 @@ export function ContextPanel({ className }: ContextPanelProps) {
           <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
             Outputs
           </h2>
-          <div className="flex flex-col gap-1">
-            {inspector.outputs.map((out) => (
-              <button
-                key={out.id}
-                type="button"
-                onClick={() =>
-                  useAppStore.getState().openDocPreview(out.kind, out.pillLabel)
-                }
-                className="group -mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2.5 rounded-lg px-1.5 py-[5px] text-left text-xs text-ink transition-colors hover:bg-hover hover:text-brand-text"
-              >
-                <OutputKindIcon kind={out.kind} />
-                <span className="truncate">{out.label}</span>
-              </button>
-            ))}
-          </div>
+          {inspector.outputs.length === 0 ? (
+            <p className="text-xs text-faint">
+              Session previews and artifacts will appear here.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {inspector.outputs.map((out) => (
+                <button
+                  key={out.id}
+                  type="button"
+                  onClick={() =>
+                    useAppStore.getState().openDocPreview(out.kind, out.pillLabel)
+                  }
+                  className="group -mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2.5 rounded-lg px-1.5 py-[5px] text-left text-xs text-ink transition-colors hover:bg-hover hover:text-brand-text"
+                >
+                  <OutputKindIcon kind={out.kind} />
+                  <span className="truncate">{out.label}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
 
         <Separator />
@@ -460,7 +495,14 @@ export function ContextPanel({ className }: ContextPanelProps) {
             </span>
             <button
               type="button"
-              onClick={() => openCodeFile("lookup.rs", 21)}
+              onClick={() => {
+                const firstCodeFile = Object.values(inspector.codeFiles)[0]
+                if (firstCodeFile) {
+                  openCodeFile(firstCodeFile.pill, firstCodeFile.defaultLine)
+                } else {
+                  setActiveRoute("changes")
+                }
+              }}
               className="cursor-pointer text-xs text-muted-ink transition-colors hover:text-ink"
             >
               Inspect
@@ -469,9 +511,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
               type="button"
               variant="default"
               size="xs"
-              onClick={() =>
-                toast("Create PR requires explicit confirmation (Always ask)")
-              }
+              onClick={() => setActiveRoute("changes")}
               className="ml-auto"
             >
               Create PR

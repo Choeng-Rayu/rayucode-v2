@@ -7,8 +7,10 @@ import { cn } from "@/lib/utils"
 
 import type { PreviewTabKind } from "../types"
 import { BrowserPane } from "./browser-pane"
+import { DiagramPane } from "./diagram-pane"
 import { ExcelPane } from "./excel-pane"
 import { MarkdownPane } from "./markdown-pane"
+import { SlidePane } from "./slide-pane"
 
 export interface PreviewsHostProps {
   /** Optional explicit preview tab override; defaults to `useAppStore((s) => s.activeRightTab)`. */
@@ -48,6 +50,10 @@ export function PreviewsHost({ tab, className }: PreviewsHostProps) {
         return <ExcelPane />
       case "markdown":
         return <MarkdownPane />
+      case "slide":
+        return <SlidePane />
+      case "diagram":
+        return <DiagramPane />
       default:
         return null
     }

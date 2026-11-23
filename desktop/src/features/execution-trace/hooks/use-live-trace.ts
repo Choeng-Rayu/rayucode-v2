@@ -25,6 +25,16 @@ function applyTraceEvents(
     ...current,
     notes: [...current.notes],
     groups: current.groups.map((g) => ({ ...g, steps: [...g.steps] })),
+    timeline: current.timeline
+      ? current.timeline.map((entry) =>
+          entry.type === "group"
+            ? {
+                type: "group",
+                group: { ...entry.group, steps: [...entry.group.steps] },
+              }
+            : { ...entry }
+        )
+      : [],
     answerBullets: [...current.answerBullets],
   }
 
@@ -32,6 +42,28 @@ function applyTraceEvents(
     switch (event.type) {
       case "note": {
         next.notes.push(event.text)
+        next.timeline?.push({
+          type: "note",
+          id: `note_${next.timeline.length + 1}`,
+          text: event.text,
+        })
+        break
+      }
+      case "promote-note": {
+        const pendingText = next.answerIntro.trim()
+        if (pendingText) {
+          next.notes.push(pendingText)
+          next.timeline?.push({
+            type: "note",
+            id: `note_${next.timeline.length + 1}`,
+            text: pendingText,
+          })
+          next.answerIntro = ""
+        }
+        break
+      }
+      case "tool-status": {
+        next.activeToolStatus = event.label
         break
       }
       case "step": {
@@ -42,18 +74,40 @@ function applyTraceEvents(
           (g) => g.id === targetGroupId
         )
         if (existingIndex === -1) {
-          next.groups.push({
+          const createdGroup = {
             id: targetGroupId,
             title: targetTitle,
             steps: [event.step],
+          }
+          next.groups.push(createdGroup)
+          next.timeline?.push({
+            type: "group",
+            group: { ...createdGroup, steps: [...createdGroup.steps] },
           })
         } else {
           const group = next.groups[existingIndex]
-          next.groups[existingIndex] = {
+          const updatedGroup = {
             ...group,
             steps: [...group.steps, event.step],
           }
+          next.groups[existingIndex] = updatedGroup
+          if (next.timeline) {
+            const tlIdx = next.timeline.findIndex(
+              (entry) =>
+                entry.type === "group" && entry.group.id === targetGroupId
+            )
+            if (tlIdx !== -1) {
+              next.timeline[tlIdx] = {
+                type: "group",
+                group: { ...updatedGroup, steps: [...updatedGroup.steps] },
+              }
+            }
+          }
         }
+        break
+      }
+      case "artifact": {
+        next.outputArtifact = event.artifact
         break
       }
       case "answer-delta": {
@@ -80,6 +134,7 @@ function applyTraceEvents(
         next = {
           ...next,
           isLive: false,
+          activeToolStatus: null,
           workedDuration: event.workedDuration,
           credits: event.credits ?? next.credits,
           kvCachePct: event.kvCachePct ?? next.kvCachePct,
@@ -198,6 +253,10 @@ export function useLiveTrace(
         isLive: true,
         notes: input.initialNote ? [input.initialNote] : [],
         groups: [],
+        timeline: input.initialNote
+          ? [{ type: "note", id: "note_0", text: input.initialNote }]
+          : [],
+        activeToolStatus: null,
         answerIntro: "",
         answerBullets: [],
         diffCard: EMPTY_DIFF_CARD,
