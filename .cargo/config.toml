@@ -35,3 +35,10 @@ rustc-wrapper = "scripts/rustc-parallel-frontend"
 # memory-safe on a ~15 GiB machine while staying parallel. The adaptive
 # dev_cargo.sh path uses more cores when memory allows.
 jobs = 4
+
+# Statically link the MSVC C runtime (/MT) on Windows so distributed binaries do
+# not import VCRUNTIME140.dll and launch cleanly on fresh Windows 10/11 machines
+# without the Microsoft Visual C++ Redistributable installed. Kept here as the
+# single source of truth for release, preview, CI, smoke, and -BuildFromSource.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

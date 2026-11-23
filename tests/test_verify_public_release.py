@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import tarfile
 import tempfile
 import unittest
@@ -265,6 +266,61 @@ class PublicReleaseTests(unittest.TestCase):
                 verifier.subprocess.check_output = lambda args, r=releases: json.dumps(r).encode()
                 with self.assertRaisesRegex(ValueError, message):
                     verifier.fetch_release_metadata("o/r", TAG, allow_draft=True)
+
+    def test_windows_pe_portability_rejects_vcruntime_and_allows_static_crt(self):
+        def build_minimal_pe64(dll_names):
+            # Minimal PE32+ with 1 section (.rdata) at RVA 0x1000 / file offset 0x200.
+            pe_offset = 0x80
+            opt_size = 240  # PE32+ optional header with 16 data directories
+            sec_rva = 0x1000
+            sec_off = 0x200
+
+            names_blob = bytearray()
+            name_rvas = []
+            desc_table_size = (len(dll_names) + 1) * 20
+            for dll in dll_names:
+                name_rvas.append(sec_rva + desc_table_size + len(names_blob))
+                names_blob.extend(dll.encode("ascii") + b"\x00")
+
+            rdata = bytearray()
+            for name_rva in name_rvas:
+                rdata.extend(struct.pack("<IIIII", 0, 0, 0, name_rva, 0))
+            rdata.extend(b"\x00" * 20)
+            rdata.extend(names_blob)
+
+            buf = bytearray(sec_off + len(rdata))
+            buf[0:2] = b"MZ"
+            struct.pack_into("<I", buf, 0x3C, pe_offset)
+            buf[pe_offset:pe_offset + 4] = b"PE\x00\x00"
+            struct.pack_into("<HHIIIHH", buf, pe_offset + 4, 0x8664, 1, 0, 0, 0, opt_size, 0x22)
+            opt_off = pe_offset + 24
+            struct.pack_into("<H", buf, opt_off, 0x20B)  # PE32+
+            # Import directory is DataDirectory[1] at opt_off + 112 + 8.
+            struct.pack_into("<II", buf, opt_off + 112 + 8, sec_rva, desc_table_size)
+            sec_hdr = opt_off + opt_size
+            buf[sec_hdr:sec_hdr + 6] = b".rdata"
+            struct.pack_into("<IIII", buf, sec_hdr + 8, len(rdata), sec_rva, len(rdata), sec_off)
+            buf[sec_off:sec_off + len(rdata)] = rdata
+            return bytes(buf)
+
+        portable = self.directory / "rayu-static.exe"
+        portable.write_bytes(build_minimal_pe64(["KERNEL32.dll", "bcrypt.dll", "api-ms-win-crt-runtime-l1-1-0.dll"]))
+        self.assertEqual(
+            verifier.verify_windows_pe_portable(portable),
+            ["KERNEL32.dll", "bcrypt.dll", "api-ms-win-crt-runtime-l1-1-0.dll"],
+        )
+
+        dynamic = self.directory / "rayu-dynamic.exe"
+        dynamic.write_bytes(build_minimal_pe64(["KERNEL32.dll", "VCRUNTIME140.dll"]))
+        with self.assertRaisesRegex(ValueError, r"VCRUNTIME140\.dll"):
+            verifier.verify_windows_pe_portable(dynamic)
+
+        # Single source of truth: .cargo/config.toml sets +crt-static for Windows MSVC,
+        # and Windows workflows enforce --check-windows-pe via this script.
+        cargo_cfg = (ROOT / ".cargo/config.toml").read_text()
+        self.assertIn('target-feature=+crt-static', cargo_cfg)
+        for wf in ("release.yml", "ci.yml", "windows-smoke.yml"):
+            self.assertIn("--check-windows-pe", (ROOT / ".github/workflows" / wf).read_text())
 
 
 if __name__ == "__main__":
