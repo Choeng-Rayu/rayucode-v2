@@ -13,6 +13,7 @@ import { AgentInspector } from "./agent-inspector"
 import { AgentRoster } from "./agent-roster"
 import { CoordinationLedger } from "./coordination-ledger"
 import { SpawnWorkerBar } from "./spawn-worker-bar"
+import { SwarmLaunchpad } from "./swarm-launchpad"
 
 export interface SwarmViewProps {
   className?: string
@@ -74,13 +75,31 @@ export function SwarmView({ className }: SwarmViewProps) {
   }
 
   const existingAgentNames = swarm.agents.map((a) => a.name)
+  const isIdle = swarm.agents.length === 0
+
+  if (isIdle) {
+    return (
+      <TooltipProvider delayDuration={120}>
+        <div
+          data-slot="swarm-view"
+          className={cn("flex min-h-full w-full flex-col", className)}
+        >
+          <SwarmLaunchpad
+            existingAgentNames={existingAgentNames}
+            isSubmitting={isSpawning}
+            onSpawnWorker={spawnWorker}
+          />
+        </div>
+      </TooltipProvider>
+    )
+  }
 
   return (
     <TooltipProvider delayDuration={120}>
       <div
         data-slot="swarm-view"
         className={cn(
-          "mx-auto flex w-full max-w-[1120px] flex-col gap-[18px] px-[26px] pt-5 pb-8",
+          "mx-auto flex w-full max-w-[1120px] flex-col gap-4 px-[26px] pt-5 pb-8",
           className
         )}
       >
@@ -95,14 +114,10 @@ export function SwarmView({ className }: SwarmViewProps) {
                 className="size-4 shrink-0 text-brand-text"
                 aria-hidden="true"
               />
-              <h1 className="m-0 truncate text-[15px] font-semibold tracking-tight text-ink">
+              <h1 className="m-0 truncate text-[16px] font-semibold tracking-tight text-ink">
                 {swarm.title}
               </h1>
             </div>
-
-            <span className="rounded-full border border-hairline bg-pane px-2.5 py-0.5 font-mono text-[11px] text-muted-ink">
-              rayucode-swarm-core
-            </span>
 
             <span className="font-mono text-xs text-muted-ink">
               {swarm.swarmId} · {telemetry.planLabel}
@@ -117,6 +132,7 @@ export function SwarmView({ className }: SwarmViewProps) {
               aria-expanded={spawnBarOpen}
               onClick={() => setSpawnBarOpen((prev) => !prev)}
               data-slot="toggle-spawn-worker-btn"
+              data-testid="swarm-toggle-spawn-btn"
             >
               <Plus className="size-3.5" aria-hidden="true" />
               <span>Spawn worker</span>
@@ -145,10 +161,10 @@ export function SwarmView({ className }: SwarmViewProps) {
           </div>
         </div>
 
-        {/* Single-Line Telemetry Strip */}
+        {/* Single-Line Status Bar */}
         <div
           data-slot="swarm-telemetry-strip"
-          className="flex flex-wrap items-center gap-x-[18px] gap-y-2 rounded-[12px] border border-hairline bg-pane px-3.5 py-2.5 text-[12.5px] text-body"
+          className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-[12px] border border-hairline bg-pane px-3.5 py-2 text-[12.5px] text-body"
         >
           <span className="inline-flex items-center gap-2 whitespace-nowrap">
             <span
@@ -165,7 +181,7 @@ export function SwarmView({ className }: SwarmViewProps) {
                 {telemetry.totalAgents} agents
               </strong>{" "}
               · {telemetry.runningCount} running, {telemetry.completedCount}{" "}
-              completed, {telemetry.rootCount} root
+              completed
               {telemetry.stoppedCount > 0
                 ? `, ${telemetry.stoppedCount} stopped`
                 : ""}
@@ -187,12 +203,8 @@ export function SwarmView({ className }: SwarmViewProps) {
             ·
           </span>
 
-          <span className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap text-muted-ink">
-            <span>{telemetry.planLabel}</span>
-            <span aria-hidden="true">·</span>
-            <code className="rounded-sm bg-inset px-1.5 py-px text-body">
-              /effort swarm
-            </code>
+          <span className="font-mono text-xs whitespace-nowrap text-muted-ink">
+            {telemetry.planLabel}
           </span>
 
           <span className="flex-1" />

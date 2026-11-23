@@ -4,6 +4,7 @@ import type {
   PermissionModeId,
   PermissionModeOption,
   ProjectGroup,
+  PromptImageAttachment,
   ReasoningEffort,
   SessionSummary,
 } from "@/lib/ipc-client"
@@ -14,6 +15,7 @@ export type {
   PermissionModeId,
   PermissionModeOption,
   ProjectGroup,
+  PromptImageAttachment,
   ReasoningEffort,
   SessionSummary,
 }
@@ -52,6 +54,7 @@ export interface CreateSessionInput {
 
 export interface ComposerSubmitPayload {
   prompt: string
+  images?: PromptImageAttachment[]
   project: string
   checkout: string
   modelId: string

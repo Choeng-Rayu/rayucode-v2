@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Check, Copy, GitFork, Pin, Play } from "lucide-react"
+import { Check, Copy, GitFork, Pin } from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -32,12 +32,9 @@ export function TurnActions({
   turnId,
   responseMarkdown,
   timestamp,
-  credits,
-  kvCachePct,
   pinned: initialPinned = false,
   onForked,
   onPinToggled,
-  onReplayTrace,
   className,
 }: TurnActionsProps) {
   const [copied, setCopied] = React.useState(false)
@@ -207,23 +204,6 @@ export function TurnActions({
         </Tooltip>
 
         <span className="ml-2 text-[12.5px] text-muted-ink">{timestamp}</span>
-
-        <span className="ml-auto inline-flex items-center gap-2 font-mono text-[11px] text-muted-ink tabular-nums">
-          <span className="text-brand-text">{credits}</span>
-          <span aria-hidden="true">·</span>
-          <span>{kvCachePct}% KV cache</span>
-          {onReplayTrace && (
-            <button
-              type="button"
-              onClick={onReplayTrace}
-              title="Watch live step-by-step execution trace"
-              className="ml-1 inline-flex cursor-pointer items-center gap-1 rounded-full border border-hairline bg-pane px-2.5 py-0.5 font-sans text-[11px] font-medium text-body transition-colors hover:border-premium hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Play className="size-2.5 text-brand-text" aria-hidden="true" />
-              <span>Simulate live run</span>
-            </button>
-          )}
-        </span>
       </div>
     </TooltipProvider>
   )

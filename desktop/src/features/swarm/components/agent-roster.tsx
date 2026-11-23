@@ -64,13 +64,20 @@ export function AgentRoster({
       )}
     >
       <div className="flex items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5 text-xs font-medium text-muted-ink">
-        <span>Agents · one-level fan-out</span>
-        <span className="font-mono text-[11px] text-muted-ink">
-          rayucode-swarm-core
+        <span>Agents</span>
+        <span className="font-mono text-[11px] text-faint tabular-nums">
+          {agents.length}
         </span>
       </div>
 
       <ScrollArea className="max-h-[540px]">
+        {agents.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-muted-ink">
+            No active swarm workers. Click{" "}
+            <span className="font-medium text-ink">Spawn worker</span> above to
+            launch a parallel agent.
+          </div>
+        ) : (
         <div role="list" className="divide-y divide-hairline">
           {agents.map((agent) => {
             const isSelected = agent.id === selectedAgentId
@@ -146,6 +153,7 @@ export function AgentRoster({
             )
           })}
         </div>
+        )}
       </ScrollArea>
     </section>
   )

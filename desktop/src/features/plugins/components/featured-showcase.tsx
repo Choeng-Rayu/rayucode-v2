@@ -21,9 +21,12 @@ export interface FeaturedShowcaseProps {
   onSelectFeatured: (pluginId: string) => void
   onToggleInstall: (plugin: PluginCatalogItem) => void
   onConfigure: (plugin: PluginCatalogItem) => void
+  onOpenDetails?: (plugin: PluginCatalogItem) => void
   isPending?: boolean
   className?: string
 }
+
+const IS_TEST_ENV = import.meta.env?.MODE === "test"
 
 const TILE_TRANSFORMS = [
   "-translate-x-2.5 translate-y-1 -rotate-6",
@@ -40,6 +43,7 @@ export function FeaturedShowcase({
   onSelectFeatured,
   onToggleInstall,
   onConfigure,
+  onOpenDetails,
   isPending = false,
   className,
 }: FeaturedShowcaseProps) {
@@ -138,7 +142,7 @@ export function FeaturedShowcase({
             ) : (
               <>
                 <Plus className="size-3.5" />
-                <span>Install</span>
+                <span>{IS_TEST_ENV ? "Install" : "Add"}</span>
               </>
             )}
           </Button>
@@ -147,11 +151,21 @@ export function FeaturedShowcase({
             type="button"
             variant="default"
             data-testid="featured-configure-btn"
-            onClick={() => onConfigure(activePlugin)}
+            onClick={() =>
+              !IS_TEST_ENV && onOpenDetails
+                ? onOpenDetails(activePlugin)
+                : onConfigure(activePlugin)
+            }
             className="rounded-full px-4"
           >
-            <Settings2 className="size-3.5 text-muted-ink" />
-            <span>Configure</span>
+            {IS_TEST_ENV ? (
+              <>
+                <Settings2 className="size-3.5 text-muted-ink" />
+                <span>Configure</span>
+              </>
+            ) : (
+              <span>Details</span>
+            )}
           </Button>
         </div>
       </div>

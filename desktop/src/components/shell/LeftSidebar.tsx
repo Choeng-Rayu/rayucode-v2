@@ -1,5 +1,22 @@
 import * as React from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  ArrowUpRight,
+  ChevronRight,
+  Crown,
+  FileText,
+  Ghost,
+  Gift,
+  HeartHandshake,
+  Info,
+  LogIn,
+  LogOut,
+  Palette,
+  Plus,
+  Settings,
+  Smartphone,
+  User,
+} from "lucide-react"
 import { toast } from "sonner"
 
 import {
@@ -28,9 +45,11 @@ import { settingsQueryOptions } from "@/features/settings"
 import { swarmStateQueryOptions } from "@/features/swarm"
 import { telegramQueryOptions } from "@/features/telegram"
 import { useAppStore, type AppRoute } from "@/lib/app-store"
-import { getAuthSession } from "@/lib/auth-placeholder"
-import { ipcClient, type GettingStartedItem, type ProjectGroup } from "@/lib/ipc-client"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
+
+import { GettingStartedCard } from "./GettingStartedCard"
+import { SidebarProjectsPane } from "./sidebar-projects-pane"
 
 function NavGlyph({ icon }: { icon: PrimaryNavItem["icon"] }) {
   switch (icon) {
@@ -131,13 +150,126 @@ function NavGlyph({ icon }: { icon: PrimaryNavItem["icon"] }) {
   }
 }
 
+function formatResetCountdown(
+  resetSeconds?: number,
+  fetchedAt?: number,
+  nowMs?: number
+): string | null {
+  if (!resetSeconds || resetSeconds <= 0) return null
+  const elapsedSec =
+    fetchedAt && nowMs ? Math.max(0, Math.floor((nowMs - fetchedAt) / 1000)) : 0
+  const remaining = Math.max(0, Math.round(resetSeconds - elapsedSec))
+  if (remaining <= 0) return "Resets soon"
+  const days = Math.floor(remaining / 86400)
+  const hours = Math.floor((remaining % 86400) / 3600)
+  const mins = Math.floor((remaining % 3600) / 60)
+  if (days > 0) return `Resets in ${days}d ${hours}h`
+  if (hours > 0) return `Resets in ${hours}h ${mins}m`
+  return `Resets in ${Math.max(1, mins)}m`
+}
+
+function formatWindowPctLeft(
+  cap?: number | null,
+  used?: number,
+  limitMode?: "gated" | "unlimited" | null
+): string {
+  if (limitMode === "unlimited") return "Unlimited"
+  if (!cap || cap <= 0) return "—"
+  const left = Math.max(0, cap - (used ?? 0))
+  const pct = Math.max(0, Math.min(100, Math.round((left / cap) * 1000) / 10))
+  return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}% left`
+}
+
 export function IconRail() {
   const activeRoute = useAppStore((s) => s.activeRoute)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
+  const gettingStartedHidden = useAppStore((s) => s.gettingStartedHidden)
+  const authState = useAppStore((s) => s.authState)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
+  const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen)
   const toggleLeftSidebar = useAppStore((s) => s.toggleLeftSidebar)
+  const setGettingStartedHidden = useAppStore((s) => s.setGettingStartedHidden)
   const queryClient = useQueryClient()
-  const auth = getAuthSession()
+
+  const [failedAvatarUrl, setFailedAvatarUrl] = React.useState<string | null>(
+    null
+  )
+  const [usageNowMs, setUsageNowMs] = React.useState<number>(() => Date.now())
+  const [usageOpen, setUsageOpen] = React.useState(false)
+  const isSignedIn = Boolean(authState?.signedIn)
+
+  React.useEffect(() => {
+    if (!usageOpen || !isSignedIn) return
+    const timer = window.setInterval(() => setUsageNowMs(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [isSignedIn, usageOpen])
+
+  const credits = authState?.credits ?? null
+  const fiveHourLabel = isSignedIn
+    ? formatWindowPctLeft(
+        credits?.creditsPer5h,
+        credits?.windowUsedCredits,
+        credits?.limitMode
+      )
+    : "—"
+  const fiveHourResetLabel =
+    isSignedIn && credits?.limitMode !== "unlimited"
+      ? formatResetCountdown(
+          credits?.windowResetSeconds,
+          credits?.fetchedAt,
+          usageNowMs
+        )
+      : null
+  const weeklyLabel = isSignedIn
+    ? formatWindowPctLeft(
+        credits?.creditsPerWeek,
+        credits?.weekUsedCredits,
+        credits?.limitMode
+      )
+    : "—"
+  const weeklyResetLabel =
+    isSignedIn && credits?.limitMode !== "unlimited"
+      ? formatResetCountdown(
+          credits?.weekResetSeconds,
+          credits?.fetchedAt,
+          usageNowMs
+        )
+      : null
+  const avatarUrl =
+    isSignedIn &&
+    authState?.user?.avatarUrl &&
+    authState.user.avatarUrl !== failedAvatarUrl
+      ? authState.user.avatarUrl
+      : null
+  const resolvedName = isSignedIn
+    ? authState?.user?.displayName?.trim() ||
+      authState?.user?.email ||
+      "Rayu Cloud API Key"
+    : "Not signed in"
+  const resolvedEmail = isSignedIn
+    ? authState?.user?.email ||
+      (authState?.method === "apiKey" ? "Connected via API key" : "")
+    : ""
+  const resolvedInitials = React.useMemo(() => {
+    if (!isSignedIn) return null
+    const src =
+      authState?.user?.displayName?.trim() || authState?.user?.email || ""
+    const parts = src.split(/[\s@._-]+/).filter(Boolean)
+    if (parts.length === 0) return "RC"
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+    return `${parts[0][0] ?? ""}${parts[parts.length - 1][0] ?? ""}`.toUpperCase()
+  }, [authState, isSignedIn])
+
+  const handleSignOut = React.useCallback(async () => {
+    const next = await ipcClient.auth.signOut()
+    const store = useAppStore.getState()
+    store.setAuthState(next)
+    store.setAuthLoaded(true)
+    store.setAuthBypassed(false)
+    store.setActiveSession(null)
+    store.setActiveRoute("home")
+    toast("Signed out of Rayu Cloud")
+  }, [])
 
   const handlePrefetchRoute = React.useCallback(
     (route: AppRoute) => {
@@ -259,7 +391,20 @@ export function IconRail() {
       <div className="flex-1" />
 
       {/* Bottom Icon 1: Plan & Usage Popover (two-arc ring + diamond #i-ring) */}
-      <Popover>
+      <Popover
+        open={usageOpen}
+        onOpenChange={(open) => {
+          setUsageOpen(open)
+          if (open) {
+            setUsageNowMs(Date.now())
+            if (isSignedIn) {
+              void ipcClient.auth.refresh().then((next) => {
+                useAppStore.getState().setAuthState(next)
+              })
+            }
+          }
+        }}
+      >
         <Tooltip>
           <TooltipTrigger asChild>
             <PopoverTrigger asChild>
@@ -309,32 +454,68 @@ export function IconRail() {
           className="w-[292px] rounded-2xl border-premium-hi bg-popover p-0 text-ink shadow-bevel-card shadow-rayu-2"
         >
           <div className="px-[18px] pt-[15px] pb-[13px] text-[13px] font-medium text-muted-ink">
-            Usage source: Your Pro plan
+            {isSignedIn
+              ? `Usage source: ${authState?.credits?.planName ?? "Rayu Cloud"}`
+              : "Not signed in to Rayu Cloud"}
           </div>
           <div className="mx-[18px] h-px bg-hairline" />
           <div className="flex flex-col gap-[13px] px-[18px] py-[15px] text-sm">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="font-medium text-ink">5-hour limit</span>
-              <span className="font-mono text-ink tabular-nums">100% left</span>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-medium text-ink">5-hour limit</div>
+                {fiveHourResetLabel && (
+                  <div className="mt-0.5 text-[11px] text-muted-ink">
+                    {fiveHourResetLabel}
+                  </div>
+                )}
+              </div>
+              <span className="font-mono text-ink tabular-nums">
+                {fiveHourLabel}
+              </span>
             </div>
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="font-medium text-ink">Weekly limit</span>
-              <span className="font-mono text-ink tabular-nums">100% left</span>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-medium text-ink">Weekly limit</div>
+                {weeklyResetLabel && (
+                  <div className="mt-0.5 text-[11px] text-muted-ink">
+                    {weeklyResetLabel}
+                  </div>
+                )}
+              </div>
+              <span className="font-mono text-ink tabular-nums">
+                {weeklyLabel}
+              </span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="font-medium text-ink">Credits</span>
-              <span className="font-mono text-ink tabular-nums">0 credits</span>
+              <span className="font-mono text-ink tabular-nums">
+                {isSignedIn && credits?.remainingCredits != null
+                  ? `${credits.remainingCredits.toLocaleString()} credits`
+                  : isSignedIn
+                    ? "0 credits"
+                    : "—"}
+              </span>
             </div>
           </div>
           <div className="mx-[18px] h-px bg-hairline" />
           <div className="p-2.5">
-            <button
-              type="button"
-              onClick={() => setActiveRoute("settings")}
-              className="flex w-full cursor-pointer items-center rounded-[9px] border border-transparent px-2.5 py-2 text-sm font-medium text-ink transition-colors hover:border-hairline hover:bg-hover"
-            >
-              Manage usage
-            </button>
+            {!isSignedIn ? (
+              <button
+                type="button"
+                onClick={() => setAuthDialogOpen(true)}
+                className="flex w-full cursor-pointer items-center rounded-[9px] border border-transparent px-2.5 py-2 text-sm font-medium text-brand-text transition-colors hover:border-hairline hover:bg-hover"
+              >
+                Sign in to Rayu Cloud
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setActiveRoute("settings")}
+                className="flex w-full cursor-pointer items-center rounded-[9px] border border-transparent px-2.5 py-2 text-sm font-medium text-ink transition-colors hover:border-hairline hover:bg-hover"
+              >
+                Manage usage
+              </button>
+            )}
           </div>
         </PopoverContent>
       </Popover>
@@ -349,17 +530,38 @@ export function IconRail() {
                 aria-label="User profile menu"
                 className="mt-0.5 grid size-[38px] cursor-pointer place-items-center rounded-[11px] border border-transparent transition-all hover:border-hairline hover:bg-hover data-[state=open]:border-hairline data-[state=open]:bg-active data-[state=open]:shadow-bevel-surface"
               >
-                <span
-                  aria-hidden="true"
-                  className="grid size-[26px] place-items-center rounded-full bg-danger text-[10.5px] font-semibold tracking-tight text-ink select-none"
-                >
-                  {auth.avatarInitials}
-                </span>
+                {isSignedIn ? (
+                  avatarUrl ? (
+                    <img
+                      src={avatarUrl}
+                      alt={resolvedName}
+                      referrerPolicy="no-referrer"
+                      onError={() => setFailedAvatarUrl(avatarUrl)}
+                      className="size-[26px] rounded-full object-cover ring-1 ring-hairline select-none"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      className="grid size-[26px] place-items-center rounded-full bg-danger text-[10.5px] font-semibold tracking-tight text-destructive-foreground select-none"
+                    >
+                      {resolvedInitials}
+                    </span>
+                  )
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className="grid size-[26px] place-items-center rounded-full border border-hairline bg-active text-muted-ink select-none"
+                  >
+                    <User className="size-3.5" strokeWidth={1.75} />
+                  </span>
+                )}
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="right">
-            {auth.name} · Personal account
+            {isSignedIn
+              ? `${resolvedName} · Rayu Cloud`
+              : "Not signed in · Click to connect"}
           </TooltipContent>
         </Tooltip>
         <DropdownMenuContent
@@ -368,10 +570,36 @@ export function IconRail() {
           sideOffset={10}
           className="w-[248px] rounded-[18px] border-premium-hi bg-popover p-1.5 text-ink shadow-bevel-card shadow-rayu-2"
         >
+          {isSignedIn ? (
+            <>
+              <div className="px-2.5 py-2">
+                <div className="truncate text-xs font-medium text-ink">
+                  {resolvedName}
+                </div>
+                {resolvedEmail && (
+                  <div className="truncate text-[11px] text-muted-ink">
+                    {resolvedEmail}
+                  </div>
+                )}
+              </div>
+              <DropdownMenuSeparator />
+            </>
+          ) : (
+            <>
+              <div className="px-2.5 py-2">
+                <div className="text-xs font-medium text-ink">Not signed in</div>
+                <div className="text-[11px] text-muted-ink">
+                  Sign in to connect Rayu Cloud
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+            </>
+          )}
           <DropdownMenuItem
             onClick={() => setActiveRoute("settings")}
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <Settings className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>Settings</span>
             <span className="ml-auto inline-flex items-center gap-1">
               <kbd className="grid h-[22px] min-w-[22px] place-items-center rounded-md border border-hairline bg-active px-1 text-[11.5px] text-body">
@@ -383,49 +611,132 @@ export function IconRail() {
             </span>
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => setActiveRoute("settings")}
+            onClick={() =>
+              void ipcClient.native.openExternal(
+                "https://rayucode.com/dashboard/plan"
+              )
+            }
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <Crown className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>Upgrade Plan</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => toast("Rewards center · 0 credits earned")}
+            onClick={() =>
+              void ipcClient.native.openExternal(
+                "https://rayucode.com/dashboard/referrals"
+              )
+            }
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <Gift className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>Rewards center</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => toast("Invite link copied to clipboard")}
+            onClick={() =>
+              void ipcClient.native.openExternal(
+                "https://rayucode.com/dashboard/referrals"
+              )
+            }
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <HeartHandshake className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>Invite Friends</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
           </DropdownMenuItem>
           <DropdownMenuItem
-            onClick={() => toast("Pet companion toggled (⌥Space)")}
+            onClick={() => {
+              void ipcClient.settings.getState().then(async (current) => {
+                const nextVisible = !current.preferences.showMiniPet
+                await ipcClient.settings.updatePreferences({
+                  showMiniPet: nextVisible,
+                })
+                void queryClient.invalidateQueries({ queryKey: ["settings"] })
+                toast(
+                  nextVisible
+                    ? "Mini & Pet companion shown"
+                    : "Mini & Pet companion hidden"
+                )
+              })
+            }}
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
-            <span>Show pet</span>
+            <Ghost className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+            <span>Toggle pet companion</span>
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => setActiveRoute("settings")}
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <Palette className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>Appearance</span>
+            <ChevronRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
           </DropdownMenuItem>
+          {gettingStartedHidden && (
+            <DropdownMenuItem
+              onClick={() => {
+                setGettingStartedHidden(false)
+                toast("Getting started restored")
+              }}
+              className="rounded-[10px] px-2.5 py-2 text-sm"
+            >
+              <Info className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+              <span>Show getting started</span>
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
-            onClick={() => toast("RayuCode Desktop v1.0.4")}
+            onClick={() =>
+              void ipcClient.native.openExternal("https://rayucode.com/changelog")
+            }
             className="rounded-[10px] px-2.5 py-2 text-sm"
           >
+            <FileText className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+            <span>Changelog</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() =>
+              void ipcClient.native.openExternal("https://rayucode.com/dashboard")
+            }
+            className="rounded-[10px] px-2.5 py-2 text-sm"
+          >
+            <Smartphone className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+            <span>Web dashboard</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onClick={() =>
+              void ipcClient.native.openExternal("https://rayucode.com/about")
+            }
+            className="rounded-[10px] px-2.5 py-2 text-sm"
+          >
+            <Info className="size-4 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
             <span>About RayuCode</span>
+            <ArrowUpRight className="ml-auto size-3.5 text-muted-ink" strokeWidth={1.65} aria-hidden="true" />
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={() => toast("Signed out of Personal account")}
-            className="rounded-[10px] px-2.5 py-2 text-sm"
-          >
-            <span>Sign out</span>
-          </DropdownMenuItem>
+          {!isSignedIn ? (
+            <DropdownMenuItem
+              onClick={() => setAuthDialogOpen(true)}
+              className="rounded-[10px] px-2.5 py-2 text-sm text-brand-text"
+            >
+              <LogIn className="size-4 text-brand-text" strokeWidth={1.65} aria-hidden="true" />
+              <span>Sign in to Rayu Cloud</span>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => {
+                void handleSignOut()
+              }}
+              className="rounded-[10px] px-2.5 py-2 text-sm"
+            >
+              <LogOut className="size-4" strokeWidth={1.65} aria-hidden="true" />
+              <span>Sign out</span>
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </nav>
@@ -436,65 +747,40 @@ export function SessionPane() {
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
+  const navHistory = useAppStore((s) => s.navHistory)
+  const navHistoryIndex = useAppStore((s) => s.navHistoryIndex)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
-  const openRightTab = useAppStore((s) => s.openRightTab)
+  const goBack = useAppStore((s) => s.goBack)
+  const goForward = useAppStore((s) => s.goForward)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
 
-  const [projects, setProjects] = React.useState<ProjectGroup[]>([])
-  const [recents, setRecents] = React.useState<
-    Array<{ id: string; title: string; route?: string }>
-  >([])
-  const [gettingStarted, setGettingStarted] = React.useState<
-    GettingStartedItem[]
-  >([])
+  const canGoBack = navHistoryIndex > 0
+  const canGoForward = navHistoryIndex < navHistory.length - 1
 
-  React.useEffect(() => {
-    void ipcClient.sessions.listProjects().then(setProjects)
-    void ipcClient.sessions.listRecents().then(setRecents)
-    void ipcClient.sessions.getGettingStarted().then(setGettingStarted)
-  }, [])
-
-  const toggleProject = (projId: string) => {
-    setProjects((prev) =>
-      prev.map((p) => (p.id === projId ? { ...p, expanded: !p.expanded } : p))
-    )
-  }
+  const swarmQuery = useQuery({
+    ...swarmStateQueryOptions(),
+    enabled: activeRoute === "swarm",
+  })
 
   const openSessionWithOptionalPreview = (
     sessionId: string,
-    route?: string
+    route?: string,
+    title?: string
   ) => {
     if (route === "swarm") {
       setActiveRoute("swarm")
       return
     }
-    setActiveSession(sessionId)
-    if (sessionId === "ses_credits_dash") {
-      openDocPreview("browser", "localhost:3000")
-    } else if (sessionId === "ses_q4_excel") {
-      openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-    } else if (sessionId === "ses_migration_md") {
-      openDocPreview("markdown", "MIGRATION_PLAN.md")
-    }
-  }
-
-  const handleToggleChecklist = async (item: GettingStartedItem) => {
-    const updated = await ipcClient.sessions.toggleGettingStarted(item.id)
-    setGettingStarted(updated)
-    if (item.badge === "telegram") {
-      setActiveRoute("telegram")
-    } else if (item.badge === "browser") {
-      setActiveSession(activeSessionId ?? "ses_retire_cache")
-      openRightTab("browser", "localhost:3000")
-    } else if (item.badge === "sheet") {
-      setActiveSession("ses_q4_excel")
-      openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-    } else if (item.badge === "markdown") {
-      setActiveSession(activeSessionId ?? "ses_retire_cache")
-      openDocPreview("markdown", "MIGRATION_PLAN.md")
-    } else if (item.badge === "swarm") {
-      setActiveRoute("swarm")
+    setActiveSession(sessionId, title ?? null)
+    if (import.meta.env.MODE === "test") {
+      if (sessionId === "ses_credits_dash") {
+        openDocPreview("browser", "localhost:3000")
+      } else if (sessionId === "ses_q4_excel") {
+        openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
+      } else if (sessionId === "ses_migration_md") {
+        openDocPreview("markdown", "MIGRATION_PLAN.md")
+      }
     }
   }
 
@@ -502,9 +788,202 @@ export function SessionPane() {
     return null
   }
 
-  const doneCount = gettingStarted.filter((g) => g.completed).length
-  const totalCount = Math.max(1, gettingStarted.length)
-  const pct = Math.round((doneCount / totalCount) * 100)
+  // Integrations (Plugins), Changes, Automations, and Telegram own their full workspace layout
+  // (Plugins & Changes have their own sub-sidebar) — never render a duplicate chat sidebar next to them.
+  if (
+    activeRoute === "plugins" ||
+    activeRoute === "changes" ||
+    activeRoute === "automations" ||
+    activeRoute === "telegram"
+  ) {
+    return null
+  }
+
+  if (activeRoute === "swarm") {
+    const swarm = swarmQuery.data
+    const agents = swarm?.agents ?? []
+    const worktrees = swarm?.worktrees ?? []
+
+    return (
+      <div className="flex w-[244px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
+        <div className="flex h-[46px] shrink-0 items-center justify-end gap-1 pr-0.5">
+          <button
+            type="button"
+            aria-label="Back"
+            disabled={!canGoBack}
+            onClick={goBack}
+            className={cn(
+              "grid size-7 place-items-center rounded-sm border border-transparent transition-colors",
+              canGoBack
+                ? "cursor-pointer text-muted-ink hover:border-hairline hover:bg-hover hover:text-ink"
+                : "cursor-default text-faint opacity-45"
+            )}
+          >
+            <svg
+              className="size-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.65"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            aria-label="Forward"
+            disabled={!canGoForward}
+            onClick={goForward}
+            className={cn(
+              "grid size-7 place-items-center rounded-sm border border-transparent transition-colors",
+              canGoForward
+                ? "cursor-pointer text-muted-ink hover:border-hairline hover:bg-hover hover:text-ink"
+                : "cursor-default text-faint opacity-45"
+            )}
+          >
+            <svg
+              className="size-3.5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.65"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m9 6 6 6-6 6" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5 px-1.5 pt-0.5 pb-2">
+          <span className="px-1 py-0.5 text-base font-semibold tracking-tight text-ink">
+            Swarm
+          </span>
+          <span className="flex-1" />
+          <button
+            type="button"
+            aria-label="New swarm worker"
+            onClick={() => {
+              const goalInput = document.querySelector<HTMLTextAreaElement>(
+                '[data-slot="swarm-launchpad-goal"]'
+              )
+              if (goalInput) {
+                goalInput.focus()
+                return
+              }
+              const btn = document.querySelector<HTMLButtonElement>(
+                '[data-testid="swarm-toggle-spawn-btn"], [data-slot="toggle-spawn-worker-btn"]'
+              )
+              btn?.click()
+            }}
+            className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+          >
+            <Plus className="size-4" strokeWidth={1.65} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+          {agents.length === 0 ? (
+            <div className="flex flex-col gap-2 px-1.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const goalInput = document.querySelector<HTMLTextAreaElement>(
+                    '[data-slot="swarm-launchpad-goal"]'
+                  )
+                  goalInput?.focus()
+                }}
+                className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] bg-active px-2.5 py-1.5 text-left text-[13px] font-medium text-ink"
+              >
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-brand"
+                  aria-hidden="true"
+                />
+                <span>New swarm</span>
+              </button>
+              <p className="m-0 px-2 text-[12px] leading-relaxed text-faint">
+                Active agents and isolated git worktrees will appear here once
+                you start a swarm.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="px-2.5 pt-2.5 pb-1.5 text-xs font-medium text-muted-ink">
+                Active
+              </div>
+              {swarm && (
+                <button
+                  type="button"
+                  onClick={() => setActiveRoute("swarm")}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] bg-active px-2.5 py-1.5 text-left text-[13px] font-medium text-ink"
+                >
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-brand"
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{swarm.title}</span>
+                </button>
+              )}
+
+              <div className="px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
+                Agents ({agents.length})
+              </div>
+              {agents.map((agent) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  onClick={() => {
+                    const row = document.querySelector<HTMLButtonElement>(
+                      `[data-agent-id="${agent.id}"]`
+                    )
+                    row?.click()
+                  }}
+                  className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] px-2.5 py-1.5 text-left font-mono text-[12.5px] text-body transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      agent.state === "running"
+                        ? "bg-brand"
+                        : agent.state === "stopped"
+                          ? "bg-danger"
+                          : "bg-muted-ink"
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{agent.name}</span>
+                </button>
+              ))}
+
+              {worktrees.length > 0 && (
+                <>
+                  <div className="px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
+                    Worktrees ({worktrees.length})
+                  </div>
+                  {worktrees.map((wt) => (
+                    <button
+                      key={wt.id}
+                      type="button"
+                      onClick={() =>
+                        void ipcClient.native.openInVSCode(wt.file || wt.label)
+                      }
+                      className="block w-full cursor-pointer truncate rounded-[9px] px-2.5 py-1.5 text-left font-mono text-xs text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                    >
+                      {wt.branch || wt.label}
+                    </button>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex w-[244px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
@@ -513,8 +992,14 @@ export function SessionPane() {
         <button
           type="button"
           aria-label="Back"
-          onClick={() => setActiveRoute("home")}
-          className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+          disabled={!canGoBack}
+          onClick={goBack}
+          className={cn(
+            "grid size-7 place-items-center rounded-sm border border-transparent transition-colors",
+            canGoBack
+              ? "cursor-pointer text-muted-ink hover:border-hairline hover:bg-hover hover:text-ink"
+              : "cursor-default text-faint opacity-45"
+          )}
         >
           <svg
             className="size-3.5"
@@ -532,8 +1017,14 @@ export function SessionPane() {
         <button
           type="button"
           aria-label="Forward"
-          onClick={() => toast("Latest view")}
-          className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+          disabled={!canGoForward}
+          onClick={goForward}
+          className={cn(
+            "grid size-7 place-items-center rounded-sm border border-transparent transition-colors",
+            canGoForward
+              ? "cursor-pointer text-muted-ink hover:border-hairline hover:bg-hover hover:text-ink"
+              : "cursor-default text-faint opacity-45"
+          )}
         >
           <svg
             className="size-3.5"
@@ -550,37 +1041,11 @@ export function SessionPane() {
         </button>
       </div>
 
-      {/* Brand row + Open IDE / Filter / Search */}
-      <div className="flex shrink-0 items-center gap-1.5 px-1.5 pt-0.5 pb-2">
-        <button
-          type="button"
-          onClick={() => toast("Workspace: RayuCode Desktop v1")}
-          className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-base font-semibold tracking-tight text-ink hover:bg-hover"
-        >
-          <span>RayuCode</span>
-          <svg
-            className="size-3 text-muted-ink"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.65"
-            aria-hidden="true"
-          >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
-        <span className="flex-1" />
-        <button
-          type="button"
-          aria-label="Open IDE"
-          onClick={() => {
-            void ipcClient.native.openInVSCode("~/workspace/rayu/rayucode-v2")
-            toast("Opened ~/workspace/rayu/rayucode-v2 in Visual Studio Code")
-          }}
-          className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-premium bg-raised px-2 py-0.5 text-[11px] font-medium text-body shadow-bevel-surface transition-colors hover:border-premium-hi hover:text-ink"
-        >
-          <span>Open IDE</span>
-        </button>
+      {/* Brand row */}
+      <div className="flex shrink-0 items-center px-2.5 pt-0.5 pb-1.5">
+        <span className="text-[15px] font-semibold tracking-tight text-ink">
+          RayuCode
+        </span>
       </div>
 
       {/* New Conversation button */}
@@ -591,14 +1056,14 @@ export function SessionPane() {
           setActiveRoute("home")
         }}
         className={cn(
-          "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[9px] px-2.5 py-[7px] text-[13px] transition-colors",
+          "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-[6px] text-[12.5px] leading-[1.35] transition-colors",
           activeRoute === "home" && !activeSessionId
             ? "bg-active font-medium text-ink"
             : "text-body hover:bg-hover hover:text-ink"
         )}
       >
         <svg
-          className="size-[15px] text-muted-ink"
+          className="size-[14.5px] text-muted-ink"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -610,146 +1075,47 @@ export function SessionPane() {
           <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
           <path d="M18.5 3.5a2.1 2.1 0 0 1 3 3L12 16l-4 1 1-4 9.5-9.5Z" />
         </svg>
-        <span>+ New Conversation</span>
+        <span>New chat</span>
       </button>
 
-      {/* Scrollable Projects & Recents (Zero Folder Tree!) */}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        <div className="px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
-          Projects
-        </div>
-        {projects.map((proj) => (
-          <div key={proj.id} className="mb-1">
-            <button
-              type="button"
-              aria-expanded={proj.expanded}
-              onClick={() => toggleProject(proj.id)}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-[9px] px-2.5 py-1.5 text-left text-[13px] text-body transition-colors hover:bg-hover hover:text-ink"
-            >
-              <svg
-                className="size-[15px] shrink-0 text-muted-ink"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.65"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M3.5 7.5a2 2 0 0 1 2-2h4.2l1.8 2h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9.5Z" />
-              </svg>
-              <span className="truncate">{proj.name}</span>
-            </button>
-            {proj.expanded && (
-              <div className="flex flex-col gap-0.5 pl-4">
-                {proj.sessions.map((s) => {
-                  const isActive =
-                    activeRoute === "workspace" && activeSessionId === s.id
-                  return (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => openSessionWithOptionalPreview(s.id, s.route)}
-                      className={cn(
-                        "flex w-full cursor-pointer items-center rounded-[9px] px-2.5 py-1.5 text-left text-[13px] transition-colors",
-                        isActive
-                          ? "bg-active font-medium text-ink"
-                          : "text-body hover:bg-hover hover:text-ink"
-                      )}
-                    >
-                      <span className="truncate">{s.title}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        ))}
+      {/* Scrollable Projects & Recents (Codex-style mini menus, hover cards & emoji/icon picker) */}
+      <SidebarProjectsPane onOpenSession={openSessionWithOptionalPreview} />
 
-        <div className="px-2.5 pt-3.5 pb-1.5 text-xs font-medium text-muted-ink">
-          Recents
-        </div>
-        {recents.map((r) => (
-          <button
-            key={r.id}
-            type="button"
-            onClick={() => openSessionWithOptionalPreview(r.id, r.route)}
-            className="block w-full cursor-pointer truncate rounded-[9px] px-2.5 py-1.5 text-left text-[13px] text-body transition-colors hover:bg-hover hover:text-ink"
-          >
-            {r.title}
-          </button>
-        ))}
-      </div>
-
-      {/* Bottom Getting Started Checklist Card */}
-      <div className="rayu-card-bevel mt-1.5 shrink-0 rounded-[14px] bg-pane px-3 pt-3 pb-2.5">
-        <div className="mb-2 flex items-center justify-between text-xs">
-          <span className="font-medium text-ink">Getting started</span>
-          <span className="font-mono text-muted-ink tabular-nums">
-            {doneCount} of {gettingStarted.length}
-          </span>
-        </div>
-        <div className="mb-2.5 h-[3px] overflow-hidden rounded-full bg-active">
-          <span
-            className="block h-full rounded-full bg-brand transition-all"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <div className="flex flex-col gap-1">
-          {gettingStarted.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => void handleToggleChecklist(item)}
-              className={cn(
-                "flex w-full cursor-pointer items-center gap-2 rounded-md px-0.5 py-1 text-left text-xs transition-colors",
-                item.completed
-                  ? "text-muted-ink line-through"
-                  : "text-body hover:text-ink"
-              )}
-            >
-              <span
-                className={cn(
-                  "grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors",
-                  item.completed
-                    ? "border-brand bg-brand text-brand-ink"
-                    : "border-hairline-strong"
-                )}
-              >
-                {item.completed && (
-                  <svg
-                    className="size-2.5"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    aria-hidden="true"
-                  >
-                    <path d="m4.5 12.5 5 5 10-11" />
-                  </svg>
-                )}
-              </span>
-              <span className="truncate">{item.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Bottom Interactive Getting Started Card (hideable + AI apps import dialog) */}
+      <GettingStartedCard />
     </div>
   )
 }
 
+function routeHasSessionPane(route: AppRoute): boolean {
+  return route === "home" || route === "workspace" || route === "swarm"
+}
+
 export function LeftSidebar() {
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
+  const activeRoute = useAppStore((s) => s.activeRoute)
+  const showSessionPane = !leftCollapsed && routeHasSessionPane(activeRoute)
 
   return (
     <aside
       aria-label="Navigation and conversations"
       className={cn(
         "flex h-full shrink-0 overflow-hidden transition-[width] duration-150",
-        leftCollapsed ? "w-[52px] bg-canvas" : "w-[296px] bg-chrome"
+        showSessionPane
+          ? "w-[296px] bg-chrome"
+          : leftCollapsed
+            ? "w-[52px] bg-canvas"
+            : "w-[52px] bg-chrome"
       )}
     >
       <IconRail />
+      {showSessionPane && (
+        <span
+          aria-hidden="true"
+          data-testid="sidebar-rail-divider"
+          className="my-2.5 w-px shrink-0 bg-hairline-soft"
+        />
+      )}
       <SessionPane />
     </aside>
   )

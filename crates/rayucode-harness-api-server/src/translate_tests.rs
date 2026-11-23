@@ -4276,3 +4276,132 @@ fn response_stats_rayu_credits_roundtrips_and_old_payloads_still_parse() {
     );
     assert_eq!(serde_json::to_value(&message).unwrap(), with_credits);
 }
+
+#[test]
+fn set_permission_mode_translates_and_acks() {
+    let mut state = state_with_session();
+    for (wire_mode, expected_legacy) in [
+        ("default", "default"),
+        ("acceptEdits", "accept_edits"),
+        ("accept_edits", "accept_edits"),
+        ("plan", "plan"),
+        ("fullManage", "full_manage"),
+        ("full_manage", "full_manage"),
+        ("orchestrator", "orchestrator"),
+    ] {
+        let out = state.api_request_to_legacy(&json!({
+            "id": 77,
+            "req": "set_permission_mode",
+            "session_id": "s1",
+            "mode": wire_mode,
+        }));
+        let [Outbound::Legacy(legacy)] = out.as_slice() else {
+            panic!("expected legacy set_permission_mode for {wire_mode}, got {out:?}");
+        };
+        assert_eq!(legacy["type"], "set_permission_mode");
+        assert_eq!(legacy["mode"], expected_legacy);
+        let reply = state.legacy_event_to_api(&json!({"type": "ack", "id": legacy["id"]}));
+        assert_eq!(reply, vec![ServerFrame::reply(77, ApiEvent::Ok)]);
+    }
+}
+
+#[test]
+fn permission_request_and_response_roundtrip() {
+    let mut state = BridgeState {
+        session_id: Some("s1".into()),
+        supports_permissions: true,
+        ..Default::default()
+    };
+
+    // Daemon permission_request translates to ApiEvent::PermissionRequest.
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s1",
+        "request_id": "perm_42",
+        "tool_name": "bash",
+        "description": "Run `cargo test`",
+        "input": { "command": "cargo test" },
+    }));
+    assert_eq!(
+        frames,
+        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+            session_id: "s1".into(),
+            request_id: "perm_42".into(),
+            tool_name: "bash".into(),
+            description: "Run `cargo test`".into(),
+        })]
+    );
+
+    // Other session's permission_request is filtered out.
+    let other_frames = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s2",
+        "request_id": "perm_99",
+        "tool_name": "write",
+        "description": "Write file",
+    }));
+    assert!(other_frames.is_empty());
+
+    // Client permission_response translates to daemon permission_response and acks to Ok.
+    for decision in ["allow", "allow_always", "deny"] {
+        let out = state.api_request_to_legacy(&json!({
+            "id": 88,
+            "req": "permission_response",
+            "session_id": "s1",
+            "request_id": "perm_42",
+            "decision": decision,
+        }));
+        let [Outbound::Legacy(legacy)] = out.as_slice() else {
+            panic!("expected legacy permission_response for {decision}, got {out:?}");
+        };
+        assert_eq!(legacy["type"], "permission_response");
+        assert_eq!(legacy["session_id"], "s1");
+        assert_eq!(legacy["request_id"], "perm_42");
+        assert_eq!(legacy["decision"], decision);
+        let reply = state.legacy_event_to_api(&json!({"type": "ack", "id": legacy["id"]}));
+        assert_eq!(reply, vec![ServerFrame::reply(88, ApiEvent::Ok)]);
+    }
+}
+
+#[test]
+fn permission_requests_and_responses_stay_disabled_when_not_negotiated() {
+    let mut state = state_with_session();
+    assert!(!state.supports_permissions);
+
+    // Incoming permission_request is dropped when client did not opt in.
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s1",
+        "request_id": "perm_1",
+        "tool_name": "edit",
+        "description": "Edit file",
+    }));
+    assert!(frames.is_empty());
+
+    // permission_response returns InvalidRequest when supports_permissions is false.
+    let event = only_reply_event(state.api_request_to_legacy(&json!({
+        "id": 12,
+        "req": "permission_response",
+        "session_id": "s1",
+        "request_id": "perm_1",
+        "decision": "allow",
+    })));
+    assert!(matches!(
+        event,
+        ApiEvent::Error {
+            code: ErrorCode::InvalidRequest,
+            ..
+        }
+    ));
+
+    // Subscribe forwards supports_permissions flag accurately.
+    let mut opt_in = BridgeState {
+        supports_permissions: true,
+        ..Default::default()
+    };
+    let out = opt_in.api_request_to_legacy(&json!({"id": 1, "req": "create_session"}));
+    let Outbound::Legacy(sub) = &out[0] else {
+        panic!("expected subscribe")
+    };
+    assert_eq!(sub["supports_permissions"], true);
+}

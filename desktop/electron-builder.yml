@@ -1,0 +1,81 @@
+appId: dev.rayu.rayucode
+productName: RayuCode
+copyright: Copyright © 2026 Rayu
+
+directories:
+  buildResources: build
+  output: release
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/.bin"
+
+asar: true
+
+# Bundle the compiled Rust `rayu` CLI sidecar outside app.asar
+# Staged per platform+arch by `node scripts/stage-rayu-binary.mjs`
+extraResources:
+  - from: resources/bin/${os}-${arch}
+    to: bin
+    filter:
+      - "**/*"
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+
+dmg:
+  title: RayuCode
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+win:
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: RayuCode
+
+linux:
+  icon: build/icon.png
+  category: Development
+  maintainer: Rayu <hello@rayu.dev>
+  target:
+    - target: AppImage
+      arch:
+        - x64
+        - arm64
+    - target: deb
+      arch:
+        - x64
+        - arm64

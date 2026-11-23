@@ -229,15 +229,19 @@ export function ModelEffortPopover({
                 aria-haspopup="dialog"
                 aria-expanded={open}
                 className={cn(
-                  "inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-transparent px-[11px] py-[5px] text-xs font-medium text-ink transition-all outline-none select-none hover:border-premium hover:bg-active hover:shadow-bevel-surface focus:outline-none focus-visible:outline-none data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:shadow-bevel-surface disabled:pointer-events-none disabled:opacity-50",
+                  "inline-flex min-w-0 max-w-full shrink cursor-pointer items-center gap-1.5 overflow-hidden rounded-full border border-transparent px-2 py-[5px] text-xs font-medium whitespace-nowrap text-ink transition-all outline-none select-none hover:border-premium hover:bg-active hover:shadow-bevel-surface focus:outline-none focus-visible:outline-none data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:shadow-bevel-surface disabled:pointer-events-none disabled:opacity-50 @min-[420px]/composer:px-[11px]",
                   className
                 )}
               >
-                <span className="font-medium text-ink">{modelLabel}</span>
-                <span className="font-normal text-muted-ink">{effort}</span>
+                <span className="min-w-0 truncate font-medium text-ink">
+                  {modelLabel}
+                </span>
+                <span className="shrink-0 font-normal text-muted-ink @max-[460px]/composer:hidden">
+                  {effort}
+                </span>
                 <ChevronDown
                   className={cn(
-                    "size-3 text-muted-ink transition-transform duration-150",
+                    "size-3 shrink-0 text-muted-ink transition-transform duration-150",
                     open && "rotate-180 text-body"
                   )}
                   aria-hidden="true"
@@ -245,7 +249,9 @@ export function ModelEffortPopover({
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent side="top">Model &amp; Reasoning Effort</TooltipContent>
+          <TooltipContent side="top">
+            {modelLabel} · {effort}
+          </TooltipContent>
         </Tooltip>
 
         <PopoverContent

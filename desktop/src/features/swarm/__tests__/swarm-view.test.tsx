@@ -651,4 +651,66 @@ describe("SwarmView orchestration surface", () => {
       document.querySelector("[data-slot='swarm-telemetry-strip']")?.textContent
     ).toContain("2 running")
   })
+
+  it("renders a focused SwarmLaunchpad when idle and transitions into the active view upon launching a goal", async () => {
+    state = {
+      swarmId: "idle",
+      title: "No active swarm",
+      planVersion: "plan v1",
+      credits: "0.00 cr",
+      kvCachePct: 0,
+      agents: [],
+      messages: [],
+      planScopes: [],
+      worktrees: [],
+    }
+
+    renderSwarmView()
+
+    // Shows the clean launchpad instead of empty telemetry / ledger chrome
+    await screen.findByRole("heading", { name: "Run parallel agents" })
+    expect(
+      document.querySelector("[data-slot='swarm-telemetry-strip']")
+    ).toBeNull()
+    expect(
+      document.querySelector("[data-slot='coordination-ledger']")
+    ).toBeNull()
+
+    // Clicking Start swarm without a goal shows validation feedback
+    fireEvent.click(screen.getByRole("button", { name: /Start swarm/i }))
+    expect(screen.getByRole("alert")).toHaveTextContent(/at least 4 characters/i)
+    expect(ipcClient.swarm.spawnWorker).not.toHaveBeenCalled()
+
+    // Selecting a template fills the goal and picks the preset
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Build a feature with parallel tests/i,
+      })
+    )
+    const goalInput = screen.getByLabelText("Swarm goal") as HTMLTextAreaElement
+    expect(goalInput.value).toContain("isolated worktree")
+
+    // Custom goal + Single worker preset launches cleanly into active view
+    fireEvent.click(screen.getByRole("radio", { name: /Single worker/i }))
+    fireEvent.change(goalInput, {
+      target: { value: "Refactor auth middleware and add unit tests" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: /Start swarm/i }))
+
+    await waitFor(() => {
+      expect(ipcClient.swarm.spawnWorker).toHaveBeenCalledWith({
+        name: "worker-1",
+        model: "Claude Sonnet 5",
+        worktree: "new git worktree",
+        task: "Refactor auth middleware and add unit tests",
+      })
+    })
+
+    // Transitions out of Launchpad into the live orchestration workbench
+    const roster = await screen.findByRole("region", { name: "Swarm roster" })
+    expect(within(roster).getByText("worker-1")).toBeInTheDocument()
+    expect(
+      document.querySelector("[data-slot='swarm-launchpad']")
+    ).toBeNull()
+  })
 })

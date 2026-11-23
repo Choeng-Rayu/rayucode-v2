@@ -403,6 +403,8 @@ where
                 "session_files",
                 "session_fork",
                 "todo_state",
+                "permissions",
+                "permission_modes",
             ]
             .into_iter()
             .map(str::to_string)
@@ -431,6 +433,7 @@ where
     state.session_tools_supported = session_tools_supported;
     state.supports_user_response = hello["supports_user_response"].as_bool().unwrap_or(false);
     state.supports_user_questions = user_questions_supported && hello["supports_user_questions"] == true;
+    state.supports_permissions = hello["supports_permissions"].as_bool().unwrap_or(false);
     state.client_name = Some(client_name.to_string()).filter(|n| !n.is_empty());
     state.runtime_commands_supported = runtime_commands_supported;
     state.soft_interrupt_ids_supported = soft_interrupt_ids_supported;

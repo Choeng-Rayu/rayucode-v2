@@ -1,3 +1,4 @@
+import "@testing-library/jest-dom/vitest"
 import { QueryClientProvider } from "@tanstack/react-query"
 import {
   act,
@@ -17,6 +18,7 @@ import { createQueryClient } from "@/lib/query-client"
 import {
   ChatStream,
   CiteLink,
+  EditorialMarkdown,
   InlineDiffCard,
   ShellCard,
   TurnActions,
@@ -266,8 +268,8 @@ describe("execution-trace feature", () => {
     )
   })
 
-  it("renders pulsing live Working indicator when isLive is true", () => {
-    render(
+  it("renders animated 8-dot orbital RayuProcessingMark alongside live Working seconds when isLive is true", () => {
+    const { container } = render(
       <WorkTrace
         workedDuration="4s"
         isLive
@@ -278,7 +280,49 @@ describe("execution-trace feature", () => {
 
     const liveToggle = screen.getByRole("button", { name: /Working · 4s/i })
     expect(liveToggle.getAttribute("aria-expanded")).toBe("true")
+    const mark = container.querySelector('[data-slot="rayu-processing-mark"]')
+    expect(mark).toBeTruthy()
+    expect(mark?.getAttribute("data-animated")).toBe("true")
+    expect(mark?.querySelectorAll("circle").length).toBe(8)
     expect(screen.getByText(/Inspecting files/i)).toBeTruthy()
+  })
+
+  it("collapses completed timeline process to Worked for Xs until clicked", () => {
+    render(
+      <WorkTrace
+        workedDuration="4s"
+        isLive={false}
+        notes={[]}
+        groups={[]}
+        timeline={[
+          { id: "tl_note_1", type: "note", text: "Checked workspace files." },
+        ]}
+      />
+    )
+
+    const toggle = screen.getByRole("button", { name: /Worked for 4s/i })
+    expect(toggle.getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText(/Checked workspace files/i)).toBeNull()
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByText(/Checked workspace files/i)).toBeTruthy()
+  })
+
+  it("shows live Thinking micro-interaction while streaming before first tool or note", () => {
+    render(
+      <WorkTrace
+        workedDuration="1s"
+        isLive
+        notes={[]}
+        groups={[]}
+        timeline={[]}
+      />
+    )
+
+    expect(screen.getByTestId("work-thinking-indicator")).toHaveTextContent(
+      /Thinking\.\.\./i
+    )
   })
 
   it("expands ShellCard inline, displays success/failure status, and copies command output", async () => {
@@ -397,8 +441,9 @@ describe("execution-trace feature", () => {
     )
 
     expect(screen.getByText("2m ago")).toBeTruthy()
-    expect(screen.getByText("0.42 cr")).toBeTruthy()
-    expect(screen.getByText("94% KV cache")).toBeTruthy()
+    expect(screen.queryByText("0.42 cr")).toBeNull()
+    expect(screen.queryByText("94% KV cache")).toBeNull()
+    expect(screen.queryByText("Simulate live run")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Copy response" }))
     await waitFor(() => {
@@ -485,5 +530,150 @@ describe("execution-trace feature", () => {
     expect(screen.getByText("Summary of changes")).toBeTruthy()
     expect(screen.getByText("Routed reads through ShardStore.")).toBeTruthy()
     expect(screen.getByTestId("mock-composer")).toBeTruthy()
+  })
+
+  it("renders Computer Use permission approval card for Microsoft PowerPoint and opens Slide Studio on approval", async () => {
+    const queryClient = createQueryClient()
+    useAppStore.getState().setPendingPermission({
+      sessionId: "ses_retire_cache",
+      requestId: "req_ppt_1",
+      toolName: "Computer Use",
+      description: "Allow RayuCode to use Microsoft PowerPoint?",
+    })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatStream turns={[SAMPLE_TURN]} />
+      </QueryClientProvider>
+    )
+
+    const banner = screen.getByTestId("live-permission-banner")
+    expect(banner).toHaveTextContent("Computer Use")
+    expect(banner).toHaveTextContent(
+      "Allow RayuCode to use Microsoft PowerPoint?"
+    )
+    expect(
+      screen.getByTestId("permission-always-allow-btn")
+    ).toHaveTextContent("Always allow")
+    expect(screen.getByTestId("permission-deny-btn")).toHaveTextContent("Deny")
+
+    fireEvent.click(screen.getByTestId("permission-allow-conversation-btn"))
+
+    await waitFor(() => {
+      expect(useAppStore.getState().pendingPermission).toBeNull()
+      expect(useAppStore.getState().activeRightTab).toBe("slide")
+      expect(useAppStore.getState().activeDocPill).toBe("Slide")
+    })
+  })
+
+  it("renders EditorialMarkdown with semantic chromatic code pills, syntax-highlighted code blocks, and GFM tables", () => {
+    const md = [
+      "## Architecture",
+      "",
+      "Inspect `desktop/src/` and `desktop/electron/main.ts` with `RayuDaemonClient` via `pnpm verify`.",
+      "",
+      "| Layer | File |",
+      "| --- | --- |",
+      "| Main | `main.ts` |",
+      "",
+      "```ts",
+      'const status = "ready"',
+      "```",
+    ].join("\n")
+
+    const { container } = render(<EditorialMarkdown content={md} />)
+    expect(container.querySelector('[data-code-kind="folder"]')).toHaveTextContent(
+      "desktop/src/"
+    )
+    expect(container.querySelector('[data-code-kind="file-ts"]')).toHaveTextContent(
+      "desktop/electron/main.ts"
+    )
+    expect(
+      container.querySelector('[data-code-kind="component"]')
+    ).toHaveTextContent("RayuDaemonClient")
+    expect(
+      container.querySelector('[data-code-kind="command"]')
+    ).toHaveTextContent("pnpm verify")
+    expect(container.querySelector('[data-slot="markdown-table"]')).toBeTruthy()
+    expect(
+      container.querySelector('[data-slot="markdown-code-block"]')
+    ).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument()
+  })
+
+  it("renders Mermaid flowchart LR visually in EditorialMarkdown, toggles Preview/Code, opens in right sidebar, and makes file/folder/diagram pills clickable", () => {
+    const md = [
+      "See `desktop/electron/main.ts`, folder `desktop/src/`, and the `flowchart` below:",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      '  subgraph Renderer["Renderer: React 19 + Vite"]',
+      "    UI[Feature views] --> IPC[ipc-client facade]",
+      "    IPC --> Store[Zustand app-store]",
+      "    IPC --> Batch[16ms stream batcher]",
+      "  end",
+      '  subgraph Preload["preload.cjs (sandboxed)"]',
+      '    Bridge["contextBridge: window.rayu"]',
+      "  end",
+      '  subgraph Main["Electron main"]',
+      "    H[56 IPC handlers + Zod]",
+      "    DC[RayuDaemonClient]",
+      "  end",
+      "  UI --> Bridge --> H",
+      "  H --> DC",
+      "  Batch --> UI",
+      "```",
+    ].join("\n")
+
+    const { container } = render(<EditorialMarkdown content={md} />)
+
+    // Mermaid visual SVG renders immediately in Preview mode with subgraphs and nodes
+    const mermaidCard = container.querySelector(
+      '[data-slot="markdown-mermaid-block"]'
+    )
+    expect(mermaidCard).toBeTruthy()
+    expect(mermaidCard?.querySelector('svg[role="img"]')).toBeTruthy()
+    expect(
+      mermaidCard?.querySelector('[data-subgraph-id="Renderer"]')
+    ).toBeTruthy()
+    expect(
+      mermaidCard?.querySelector('[data-subgraph-id="Preload"]')
+    ).toBeTruthy()
+    expect(mermaidCard?.querySelector('[data-subgraph-id="Main"]')).toBeTruthy()
+    expect(mermaidCard?.querySelector('[data-node-id="Bridge"]')).toBeTruthy()
+
+    // Toggle to Code view and back to Preview
+    fireEvent.click(screen.getByTestId("inline-mermaid-code-btn"))
+    expect(mermaidCard).toHaveAttribute("data-view-mode", "code")
+    fireEvent.click(screen.getByTestId("inline-mermaid-preview-btn"))
+    expect(mermaidCard).toHaveAttribute("data-view-mode", "preview")
+
+    // Open diagram in right sidebar
+    fireEvent.click(screen.getByTestId("mermaid-open-sidebar-btn"))
+    expect(useAppStore.getState().activeRightTab).toBe("diagram")
+    expect(useAppStore.getState().rightMode).toBe("document")
+    expect(useAppStore.getState().activeDiagram.source).toContain("flowchart LR")
+
+    // Clicking a highlighted file pill opens that file in Code viewer
+    const filePill = container.querySelector('[data-code-kind="file-ts"]')
+    expect(filePill).toBeTruthy()
+    fireEvent.click(filePill!)
+    expect(useAppStore.getState().activeRightTab).toBe("code")
+    expect(useAppStore.getState().activeCodeFile).toBe(
+      "desktop/electron/main.ts"
+    )
+
+    // Clicking a highlighted folder pill opens the Files sidebar tab
+    const folderPill = container.querySelector('[data-code-kind="folder"]')
+    expect(folderPill).toBeTruthy()
+    fireEvent.click(folderPill!)
+    expect(useAppStore.getState().activeRightTab).toBe("files")
+
+    // Clicking the highlighted diagram pill reopens the Diagram preview with the Mermaid source
+    const diagramPill = container.querySelector('[data-code-kind="diagram"]')
+    expect(diagramPill).toBeTruthy()
+    fireEvent.click(diagramPill!)
+    expect(useAppStore.getState().activeRightTab).toBe("diagram")
+    expect(useAppStore.getState().activeDiagram.source).toContain("Renderer")
   })
 })

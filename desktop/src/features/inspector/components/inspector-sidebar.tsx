@@ -1,5 +1,12 @@
 import * as React from "react"
-import { ArrowLeft, FileSpreadsheet, FileText, Globe } from "lucide-react"
+import {
+  ArrowLeft,
+  FileSpreadsheet,
+  FileText,
+  Globe,
+  Network,
+  Presentation,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { ContextSkeleton } from "@/components/ui/page-skeletons"
@@ -9,15 +16,18 @@ import { cn } from "@/lib/utils"
 
 import type { PreviewDocumentTab } from "../types"
 import { ContextPanel } from "./context-panel"
-import { DiffTabPanel } from "./diff-tab-panel"
-import { FilesTabPanel } from "./files-tab-panel"
 
-const LazyCodeViewer = React.lazy(() =>
-  import("./code-viewer").then((mod) => ({ default: mod.CodeViewer }))
+const CodeViewer = React.lazy(() =>
+  import("./code-viewer").then((m) => ({ default: m.CodeViewer }))
 )
-
-const LazyTerminalPanel = React.lazy(() =>
-  import("./terminal-panel").then((mod) => ({ default: mod.TerminalPanel }))
+const DiffTabPanel = React.lazy(() =>
+  import("./diff-tab-panel").then((m) => ({ default: m.DiffTabPanel }))
+)
+const FilesTabPanel = React.lazy(() =>
+  import("./files-tab-panel").then((m) => ({ default: m.FilesTabPanel }))
+)
+const TerminalPanel = React.lazy(() =>
+  import("./terminal-panel").then((m) => ({ default: m.TerminalPanel }))
 )
 
 export interface InspectorSidebarProps {
@@ -25,7 +35,7 @@ export interface InspectorSidebarProps {
   mode?: RightPaneMode
   /**
    * Optional renderer or ReactNode for document previews (`browser` | `excel` | `markdown`),
-   * supplied by `features/previews` once wired in Wave 2.
+   * supplied by `features/previews`.
    */
   previewFallback?:
     | React.ReactNode
@@ -43,19 +53,29 @@ function DefaultPreviewPlaceholder({ tab }: { tab: PreviewDocumentTab }) {
     { label: string; description: string; Icon: typeof Globe }
   > = {
     browser: {
-      label: activeDocPill ?? "localhost:3000",
+      label: activeDocPill ?? "Browser",
       description: "Live local browser preview pane ready for connection.",
       Icon: Globe,
     },
     excel: {
-      label: activeDocPill ?? "Q4-Token-Cost-Model.xlsx",
+      label: activeDocPill ?? "Spreadsheet",
       description: "Interactive spreadsheet workbook preview pane ready.",
       Icon: FileSpreadsheet,
     },
     markdown: {
-      label: activeDocPill ?? "MIGRATION_PLAN.md",
+      label: activeDocPill ?? "Document",
       description: "Rendered Markdown document preview pane ready.",
       Icon: FileText,
+    },
+    slide: {
+      label: activeDocPill ?? "Slide",
+      description: "Interactive presentation & PowerPoint slide studio ready.",
+      Icon: Presentation,
+    },
+    diagram: {
+      label: activeDocPill ?? "Flowchart",
+      description: "Interactive Mermaid diagram preview & source code editor.",
+      Icon: Network,
     },
   }
 
@@ -112,16 +132,18 @@ export function InspectorSidebar({
 
     switch (activeRightTab) {
       case "code":
-        return <LazyCodeViewer />
+        return <CodeViewer />
       case "terminal":
-        return <LazyTerminalPanel />
+        return <TerminalPanel />
       case "diff":
         return <DiffTabPanel />
       case "files":
         return <FilesTabPanel />
       case "browser":
       case "excel":
-      case "markdown": {
+      case "markdown":
+      case "slide":
+      case "diagram": {
         if (typeof previewFallback === "function") {
           return previewFallback(activeRightTab)
         }

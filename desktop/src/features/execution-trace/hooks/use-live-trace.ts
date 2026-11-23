@@ -1,5 +1,7 @@
 import * as React from "react"
 
+import { formatDurationSeconds } from "@/lib/harness-adapter"
+import type { PromptImageAttachment } from "@/lib/ipc-client"
 import { createStreamBatcher, type StreamBatcher } from "@/lib/stream-batcher"
 
 import type { ExecutionTurn, LiveTraceEvent } from "../types"
@@ -8,10 +10,10 @@ const FRAME_BATCH_WINDOW_MS = 16
 
 const EMPTY_DIFF_CARD = {
   id: "diff_live_pending",
-  file: "src/session/lookup.rs",
+  file: "",
   additions: 0,
   deletions: 0,
-  hint: "Inspecting workspace changes",
+  hint: "",
   lines: [],
 }
 
@@ -25,6 +27,16 @@ function applyTraceEvents(
     ...current,
     notes: [...current.notes],
     groups: current.groups.map((g) => ({ ...g, steps: [...g.steps] })),
+    timeline: current.timeline
+      ? current.timeline.map((entry) =>
+          entry.type === "group"
+            ? {
+                type: "group",
+                group: { ...entry.group, steps: [...entry.group.steps] },
+              }
+            : { ...entry }
+        )
+      : [],
     answerBullets: [...current.answerBullets],
   }
 
@@ -32,6 +44,28 @@ function applyTraceEvents(
     switch (event.type) {
       case "note": {
         next.notes.push(event.text)
+        next.timeline?.push({
+          type: "note",
+          id: `note_${next.timeline.length + 1}`,
+          text: event.text,
+        })
+        break
+      }
+      case "promote-note": {
+        const pendingText = next.answerIntro.trim()
+        if (pendingText) {
+          next.notes.push(pendingText)
+          next.timeline?.push({
+            type: "note",
+            id: `note_${next.timeline.length + 1}`,
+            text: pendingText,
+          })
+          next.answerIntro = ""
+        }
+        break
+      }
+      case "tool-status": {
+        next.activeToolStatus = event.label
         break
       }
       case "step": {
@@ -42,18 +76,40 @@ function applyTraceEvents(
           (g) => g.id === targetGroupId
         )
         if (existingIndex === -1) {
-          next.groups.push({
+          const createdGroup = {
             id: targetGroupId,
             title: targetTitle,
             steps: [event.step],
+          }
+          next.groups.push(createdGroup)
+          next.timeline?.push({
+            type: "group",
+            group: { ...createdGroup, steps: [...createdGroup.steps] },
           })
         } else {
           const group = next.groups[existingIndex]
-          next.groups[existingIndex] = {
+          const updatedGroup = {
             ...group,
             steps: [...group.steps, event.step],
           }
+          next.groups[existingIndex] = updatedGroup
+          if (next.timeline) {
+            const tlIdx = next.timeline.findIndex(
+              (entry) =>
+                entry.type === "group" && entry.group.id === targetGroupId
+            )
+            if (tlIdx !== -1) {
+              next.timeline[tlIdx] = {
+                type: "group",
+                group: { ...updatedGroup, steps: [...updatedGroup.steps] },
+              }
+            }
+          }
         }
+        break
+      }
+      case "artifact": {
+        next.outputArtifact = event.artifact
         break
       }
       case "answer-delta": {
@@ -80,6 +136,7 @@ function applyTraceEvents(
         next = {
           ...next,
           isLive: false,
+          activeToolStatus: null,
           workedDuration: event.workedDuration,
           credits: event.credits ?? next.credits,
           kvCachePct: event.kvCachePct ?? next.kvCachePct,
@@ -101,6 +158,7 @@ export interface UseLiveTraceOptions {
 export interface StartLiveTurnInput {
   sessionId: string
   userPrompt: string
+  userImages?: PromptImageAttachment[]
   userRefFiles?: string
   initialNote?: string
 }
@@ -113,10 +171,6 @@ export interface UseLiveTraceResult {
   pushEvent: (event: LiveTraceEvent) => void
   flushNow: () => void
   resetLiveTurn: () => void
-  simulateLiveRun: (options?: {
-    sessionId?: string
-    prompt?: string
-  }) => void
 }
 
 export function useLiveTrace(
@@ -126,6 +180,12 @@ export function useLiveTrace(
 
   const [liveTurn, setLiveTurn] = React.useState<ExecutionTurn | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0)
+  const liveTurnRef = React.useRef<ExecutionTurn | null>(null)
+  const turnStartedAtRef = React.useRef<number>(0)
+
+  React.useEffect(() => {
+    liveTurnRef.current = liveTurn
+  }, [liveTurn])
 
   const onCompleteRef = React.useRef(onComplete)
   React.useEffect(() => {
@@ -150,6 +210,7 @@ export function useLiveTrace(
       const hasComplete = events.some((ev) => ev.type === "complete")
       setLiveTurn((prev) => {
         const updated = applyTraceEvents(prev, events)
+        liveTurnRef.current = updated
         if (hasComplete && updated && onCompleteRef.current) {
           queueMicrotask(() => {
             onCompleteRef.current?.(updated)
@@ -173,13 +234,15 @@ export function useLiveTrace(
   React.useEffect(() => {
     if (!isStreaming) return
     const timer = setInterval(() => {
-      setElapsedSeconds((prev) => {
-        const nextSec = prev + 1
-        setLiveTurn((curr) =>
-          curr?.isLive ? { ...curr, workedDuration: `${nextSec}s` } : curr
-        )
-        return nextSec
-      })
+      const nextSec = Math.max(
+        1,
+        Math.round((Date.now() - turnStartedAtRef.current) / 1000)
+      )
+      const formatted = formatDurationSeconds(nextSec)
+      setElapsedSeconds(nextSec)
+      setLiveTurn((curr) =>
+        curr?.isLive ? { ...curr, workedDuration: formatted } : curr
+      )
     }, 1000)
     return () => clearInterval(timer)
   }, [isStreaming])
@@ -187,17 +250,38 @@ export function useLiveTrace(
   const startLiveTurn = React.useCallback(
     (input: StartLiveTurnInput): string => {
       clearSimulationTimers()
+      batcherRef.current?.flushNow()
+      const existing = liveTurnRef.current
+      if (existing && existing.isLive) {
+        const finalizedSec = Math.max(
+          1,
+          Math.round((Date.now() - turnStartedAtRef.current) / 1000)
+        )
+        const finalizedTurn: ExecutionTurn = {
+          ...existing,
+          isLive: false,
+          activeToolStatus: null,
+          workedDuration: formatDurationSeconds(finalizedSec),
+        }
+        onCompleteRef.current?.(finalizedTurn)
+      }
       const id = `live_turn_${Date.now()}_${sequenceRef.current++}`
+      turnStartedAtRef.current = Date.now()
       setElapsedSeconds(1)
       const initialTurn: ExecutionTurn = {
         id,
         sessionId: input.sessionId,
         userRefFiles: input.userRefFiles,
         userPrompt: input.userPrompt,
+        userImages: input.userImages,
         workedDuration: "1s",
         isLive: true,
         notes: input.initialNote ? [input.initialNote] : [],
         groups: [],
+        timeline: input.initialNote
+          ? [{ type: "note", id: "note_0", text: input.initialNote }]
+          : [],
+        activeToolStatus: null,
         answerIntro: "",
         answerBullets: [],
         diffCard: EMPTY_DIFF_CARD,
@@ -206,6 +290,7 @@ export function useLiveTrace(
         kvCachePct: 94,
         pinned: false,
       }
+      liveTurnRef.current = initialTurn
       setLiveTurn(initialTurn)
       return id
     },
@@ -222,112 +307,10 @@ export function useLiveTrace(
 
   const resetLiveTurn = React.useCallback(() => {
     clearSimulationTimers()
+    liveTurnRef.current = null
     setLiveTurn(null)
     setElapsedSeconds(0)
   }, [clearSimulationTimers])
-
-  const simulateLiveRun = React.useCallback(
-    (simOptions?: { sessionId?: string; prompt?: string }) => {
-      const sessionId = simOptions?.sessionId ?? "ses_retire_cache"
-      const prompt =
-        simOptions?.prompt ?? "Re-verify session:: tests and ShardStore routing"
-      const uid = startLiveTurn({
-        sessionId,
-        userPrompt: prompt,
-        initialNote:
-          "I'll inspect the relevant files in rayucode-v2 and verify the changes with cargo test before reporting back.",
-      })
-
-      const schedule = (delayMs: number, fn: () => void) => {
-        const handle = setTimeout(fn, delayMs)
-        simulationTimersRef.current.push(handle)
-      }
-
-      schedule(320, () => {
-        pushEvent({
-          type: "step",
-          groupId: `${uid}_wg`,
-          groupTitle: "Read files, ran commands",
-          step: {
-            id: `${uid}_search`,
-            kind: "search",
-            text: "Searched for symbols matching request in",
-            highlight: "crates/rayucode-core",
-          },
-        })
-      })
-
-      schedule(900, () => {
-        pushEvent({
-          type: "step",
-          groupId: `${uid}_wg`,
-          step: {
-            id: `${uid}_read`,
-            kind: "read",
-            label: "Read",
-            files: [
-              {
-                file: "lookup.rs",
-                path: "src/session/lookup.rs",
-                line: 19,
-                rangeLabel: "src/session/lookup.rs:1-64",
-              },
-            ],
-          },
-        })
-      })
-
-      schedule(1550, () => {
-        pushEvent({
-          type: "step",
-          groupId: `${uid}_wg`,
-          step: {
-            id: `${uid}_sh`,
-            kind: "command",
-            command: "cargo test -p rayucode session:: -- --nocapture",
-            displayCommand: "cargo test -p rayucode session:: -- --nocapture",
-            output:
-              "running 14 tests\ntest session::lookup::routes_via_shard_store ... ok\ntest session::budget::preserves_lru_eviction ... ok\ntest result: ok. 14 passed; 0 failed; 0 ignored; finished in 0.42s",
-            exitCode: 0,
-            statusLabel: "Success",
-            isMono: true,
-          },
-        })
-      })
-
-      schedule(2400, () => {
-        pushEvent({
-          type: "answer-delta",
-          delta:
-            "**Done.** Checked the local workspace for your request, verified `session::` tests (14/14 passing), and kept the right-sidebar previews in sync.",
-        })
-        pushEvent({
-          type: "bullet",
-          bullet: {
-            id: `${uid}_b1`,
-            title: "Verified ShardStore lookup path.",
-            body: "All 14 session unit tests pass with 94% warm KV cache hit rate.",
-            citations: [
-              {
-                label: "src/session/lookup.rs (line 19)",
-                kind: "code",
-                file: "lookup.rs",
-                line: 19,
-              },
-            ],
-          },
-        })
-        pushEvent({
-          type: "complete",
-          workedDuration: "3s",
-          credits: "0.08 cr",
-          kvCachePct: 94,
-          timestamp: "Just now",
-        })
-      })
-    },
-    [pushEvent, startLiveTurn]
-  )
 
   return {
     liveTurn,
@@ -337,6 +320,5 @@ export function useLiveTrace(
     pushEvent,
     flushNow,
     resetLiveTurn,
-    simulateLiveRun,
   }
 }

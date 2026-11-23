@@ -57,6 +57,14 @@ description: Calm, high-performance mission-control desktop workspace for RayuCo
 
 ### Semantic & Specular Tokens
 * `--danger: #CF2D56`, `--warn: #DCAE66` (dark) / `#9A6414` (light), `--info: #A9C4EA` (dark) / `#1E5A9E` (light).
+* **Chromatic Semantic Layer (Warm Editorial IDE Palette — never monochrome, never neon slop):**
+  * **Folders & Directories (`--folder`):** Warm Amber-Gold `#E0B366` (dark) / `#B4690E` (light) with subtle `--folder-soft` tint.
+  * **Code / TypeScript / JS / Links (`--code-fn`):** Sky Blue `#A9C4EA` (dark) / `#1E5A9E` (light).
+  * **Keywords / Commands / Brand Actions (`--code-kw`):** Rayu Emerald `#5FD19C` (dark) / `#0D7449` (light).
+  * **Components / Types / Skills / Markdown (`--code-type`):** Soft Lavender `#C9B3E6` (dark) / `#6A3FA0` (light).
+  * **Rust / Numbers / Presentations (`--code-num` / `--office-ppt`):** Warm Coral `#E9B9A2` (dark) / `#B04A2A` (light).
+  * **Strings / JSON / Config (`--code-str`):** Warm Gold `#DCAE66` (dark) / `#9A6414` (light).
+  * **Spreadsheets (`--office-excel`):** Emerald `#5FD19C` (dark) / `#0D7449` (light).
 * Specular bevels (`--bevel-surface`, `--bevel-card`, `--bevel-primary`) give buttons, pills, popovers, and the double-bordered composer subtle tactile depth.
 
 ---

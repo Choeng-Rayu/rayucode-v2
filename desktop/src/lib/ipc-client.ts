@@ -1,5 +1,16 @@
-// Comprehensive typed IPC client & realistic prototype mock fallback
+// Comprehensive typed IPC client with Live Electron + RayuCode Harness SDK wiring
 // Shared contract between Electron window.rayu.*, Vite browser preview, and Vitest
+
+import { findMcpBlueprint, REAL_MCP_BLUEPRINTS } from "./mcp-registry"
+
+import {
+  mapHistoryMessagesToTurns,
+  mapModelRoutesToOptions,
+  mapSessionInfoToSummary,
+  type HarnessHistoryMessageLike,
+  type HarnessModelRouteLike,
+  type HarnessSessionInfoLike,
+} from "./harness-adapter"
 
 export type ReasoningEffort = "Auto" | "Low" | "Medium" | "High" | "Max"
 export type PermissionModeId =
@@ -32,11 +43,60 @@ export interface ProjectGroup {
   sessions: Array<{ id: string; title: string; route?: string }>
 }
 
+export type ProjectIconColor =
+  | "folder"
+  | "brand"
+  | "info"
+  | "type"
+  | "num"
+  | "danger"
+
+export interface SidebarProjectMeta {
+  id: string
+  name: string
+  folders: string[]
+  iconKind: "icon" | "emoji"
+  iconValue: string
+  iconColor: ProjectIconColor
+  pinned?: boolean
+  sectionId?: string | null
+  gitRemote?: string
+  updatedAt: number
+}
+
+export interface SidebarSectionItem {
+  id: string
+  name: string
+  collapsed?: boolean
+}
+
+export interface SidebarState {
+  projects: SidebarProjectMeta[]
+  sections: SidebarSectionItem[]
+  pinnedChatIds: string[]
+  archivedChatIds: string[]
+  organizeBy: "project" | "connection" | "flat"
+  sortBy: "updated" | "manual"
+  showProjectChatsInRecents: boolean
+  manualProjectOrder: string[]
+}
+
 export interface GettingStartedItem {
   id: string
   label: string
   completed: boolean
-  badge?: "telegram" | "browser" | "sheet" | "markdown" | "swarm"
+  badge?:
+    | "claude"
+    | "notifications"
+    | "daily"
+    | "github"
+    | "linear"
+    | "gdrive"
+    | "telegram"
+    | "browser"
+    | "sheet"
+    | "markdown"
+    | "swarm"
 }
 
 export interface ModelOption {
@@ -81,7 +141,7 @@ export interface ListStep {
   highlight?: string
   previews?: Array<{
     id: string
-    kind: "browser" | "excel" | "markdown"
+    kind: "browser" | "excel" | "markdown" | "slide"
     badge: string
     label: string
     pillLabel: string
@@ -94,6 +154,17 @@ export interface TraceGroup {
   id: string
   title: string
   steps: TraceStepItem[]
+}
+
+export type TraceTimelineItem =
+  | { type: "note"; id: string; text: string }
+  | { type: "group"; group: TraceGroup }
+
+export interface TurnOutputArtifact {
+  kind: "slide" | "excel" | "markdown"
+  title: string
+  subtitle: string
+  pillLabel: string
 }
 
 export interface InlineDiffHunkLine {
@@ -115,17 +186,45 @@ export interface InlineDiffCardData {
   lines: InlineDiffHunkLine[]
 }
 
+export interface GitCommitSummary {
+  hash: string
+  message: string
+  author: string
+  relativeTime: string
+}
+
+export interface PromptImageAttachment {
+  name: string
+  mediaType: string
+  dataUrl: string
+}
+
+export function parseImageDataUrl(
+  dataUrl: string
+): [string, string] | null {
+  const match = /^data:([^;,]+);base64,(.+)$/i.exec(dataUrl.trim())
+  if (!match) return null
+  const mediaType = match[1].trim().toLowerCase()
+  const base64 = match[2].trim()
+  if (!mediaType || !base64) return null
+  return [mediaType, base64]
+}
+
 export interface ExecutionTurn {
   id: string
   sessionId: string
   compactedNotice?: string
   userRefFiles?: string
+  userImages?: PromptImageAttachment[]
   userPrompt: string
   userMeta?: string
   workedDuration: string
   isLive?: boolean
   notes: string[]
   groups: TraceGroup[]
+  timeline?: TraceTimelineItem[]
+  activeToolStatus?: string | null
+  outputArtifact?: TurnOutputArtifact
   answerIntro: string
   answerSummaryTitle?: string
   answerBullets: Array<{
@@ -134,7 +233,7 @@ export interface ExecutionTurn {
     body: string
     citations: Array<{
       label: string
-      kind: "code" | "excel" | "markdown" | "browser"
+      kind: "code" | "excel" | "markdown" | "browser" | "slide"
       file: string
       line?: number
     }>
@@ -185,7 +284,7 @@ export interface InspectorState {
   }>
   outputs: Array<{
     id: string
-    kind: "browser" | "markdown" | "excel"
+    kind: "browser" | "markdown" | "excel" | "slide"
     label: string
     pillLabel: string
   }>
@@ -221,6 +320,55 @@ export interface ExcelCell {
   isNumeric?: boolean
   isTotal?: boolean
 }
+
+export interface OfficeExcelRowData {
+  rowNumber: number
+  cells: Record<string, string | number>
+  formulas?: Record<string, string>
+  formats?: Record<string, "currency" | "percent" | "number" | "text">
+  isHeader?: boolean
+  isTotal?: boolean
+}
+
+export interface OfficeExcelSheetPayload {
+  id: string
+  name: string
+  columns: string[]
+  headers: Record<string, string>
+  rows: OfficeExcelRowData[]
+}
+
+export interface OfficeExcelWorkbookData {
+  fileName: string
+  filePath: string
+  sheets: OfficeExcelSheetPayload[]
+}
+
+export type OfficeExcelWorkbookPayload = OfficeExcelWorkbookData
+
+export type DesktopArtifactEvent =
+  | {
+      kind: "slide"
+      sessionId?: string
+      title: string
+      filePath: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }
+  | {
+      kind: "excel"
+      sessionId?: string
+      workbook: OfficeExcelWorkbookPayload
+    }
 
 export interface ExcelSheetData {
   id: string
@@ -370,6 +518,15 @@ export interface PluginCatalogItem {
   infoOnly?: boolean
   infoToast?: string
   searchKeywords: string
+  mcpServerId?: string
+  sourcePath?: string
+  scope?: "global" | "workspace"
+  transport?: "stdio" | "url"
+  command?: string
+  args?: string[]
+  url?: string
+  envKeys?: string[]
+  isCustomMcp?: boolean
 }
 
 export interface SkillItem {
@@ -478,6 +635,7 @@ export interface DaemonStatus {
   socketPath: string
   version: string
   latencyMs: number
+  lastError?: string | null
 }
 
 // ============================================================================
@@ -631,14 +789,53 @@ const MOCK_RECENTS: Array<{ id: string; title: string; route?: string }> = [
   { id: "ses_migration_md", title: "Desktop v1 migration plan MD" },
 ]
 
-let mockGettingStarted: GettingStartedItem[] = [
-  { id: "gs_cli", label: "Import from CLI", completed: true },
-  { id: "gs_tg", label: "Pair Telegram remote", completed: true, badge: "telegram" },
-  { id: "gs_browser", label: "Open Browser preview", completed: false, badge: "browser" },
-  { id: "gs_excel", label: "Preview Microsoft doc", completed: false, badge: "sheet" },
-  { id: "gs_md", label: "Open Preview MD", completed: false, badge: "markdown" },
-  { id: "gs_swarm", label: "Launch parallel Swarm", completed: false, badge: "swarm" },
+const GETTING_STARTED_STORAGE_KEY = "rayu-getting-started-completed-v2"
+
+const DEFAULT_GETTING_STARTED_ITEMS: GettingStartedItem[] = [
+  { id: "gs_import_ai", label: "Import from Claude", completed: false, badge: "claude" },
+  { id: "gs_notify", label: "Enable notifications", completed: false, badge: "notifications" },
+  { id: "gs_daily", label: "Set up a daily update", completed: false, badge: "daily" },
+  { id: "gs_github", label: "Triage GitHub PRs", completed: false, badge: "github" },
+  { id: "gs_linear", label: "Catch me up on Linear", completed: false, badge: "linear" },
+  {
+    id: "gs_decisions",
+    label: "Review the latest project decisions",
+    completed: false,
+    badge: "gdrive",
+  },
 ]
+
+function loadGettingStartedItems(): GettingStartedItem[] {
+  if (typeof window === "undefined") {
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+  }
+  try {
+    const raw = window.localStorage.getItem(GETTING_STARTED_STORAGE_KEY)
+    if (!raw) return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+    const doneIds = new Set<string>(JSON.parse(raw) as string[])
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({
+      ...item,
+      completed: doneIds.has(item.id),
+    }))
+  } catch {
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+  }
+}
+
+function persistGettingStartedItems(items: GettingStartedItem[]): void {
+  if (typeof window === "undefined") return
+  try {
+    const doneIds = items.filter((i) => i.completed).map((i) => i.id)
+    window.localStorage.setItem(
+      GETTING_STARTED_STORAGE_KEY,
+      JSON.stringify(doneIds)
+    )
+  } catch {
+    // ignore storage errors
+  }
+}
+
+let mockGettingStarted: GettingStartedItem[] = loadGettingStartedItems()
 
 let mockTurns: ExecutionTurn[] = [
   {
@@ -1165,8 +1362,7 @@ const mockPreviews: PreviewsState = {
     activeSheetId: "sheet_q4",
     selectedCellRef: "C7",
     selectedFormula: "=SUM(C2:C6)",
-    liveWebUrl:
-      "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx",
+    liveWebUrl: "",
     sheets: [
       {
         id: "sheet_q4",
@@ -2248,16 +2444,484 @@ const mockDaemonStatus: DaemonStatus = {
 // Window Bridge Interface & Typed Client
 // ============================================================================
 
+export interface WorkspaceInfo {
+  host: string
+  project: string
+  path: string
+  branch: string
+}
+
+export interface TerminalCommandResult {
+  id: string
+  prompt: string
+  command: string
+  output: string
+  exitCode: number
+  durationMs: number
+  isOk: boolean
+  isError: boolean
+}
+
+export interface RayuSessionUser {
+  id: number
+  email: string | null
+  displayName: string | null
+  avatarUrl: string | null
+  role: string
+}
+
+export interface RayuCloudCredits {
+  plan: string
+  planName: string
+  creditsPerPeriod: number | null
+  usedCredits: number
+  remainingCredits: number | null
+  resetSeconds: number
+  periodEnd: string | null
+  topupBalance: number
+  topUpEnabled: boolean
+  creditsPerWeek?: number | null
+  weekUsedCredits?: number
+  weekResetSeconds?: number
+  creditsPer5h?: number | null
+  windowUsedCredits?: number
+  windowResetSeconds?: number
+  sessionWindowMinutes?: number
+  limitMode?: "gated" | "unlimited" | null
+  fetchedAt?: number
+}
+
+export interface RayuCloudModelEntry {
+  code: string
+  label?: string
+  description?: string
+  contextWindow?: number
+  supportsReasoning?: boolean
+}
+
+export interface RayuAuthState {
+  signedIn: boolean
+  method: "oauth" | "apiKey" | "none"
+  signingIn: boolean
+  pendingAuthUrl: string | null
+  user: RayuSessionUser | null
+  credits: RayuCloudCredits | null
+  allowedModels: RayuCloudModelEntry[]
+  apiBase: string
+  webBase: string
+  gatewayBase: string
+  error: string | null
+}
+
+export interface CloudChatMessage {
+  role: "user" | "assistant"
+  content: string
+  images?: Array<[string, string]>
+}
+
+export interface PersistedComposerTemplate {
+  id: string
+  kind: "spreadsheet" | "presentation" | "document"
+  name: string
+  description: string
+  promptSpec: string
+  accent: "emerald" | "navy" | "amber" | "forest" | "obsidian"
+  createdAt: number
+}
+
 export interface RayuBridgeApi {
   daemon?: {
-    getStatus?: () => Promise<DaemonStatus>
+    getStatus?: () => Promise<DaemonStatus & { mode?: "live" | "demo" }>
+    launch?: () => Promise<DaemonStatus & { mode?: "live" | "demo" }>
     invoke?: <T = unknown>(method: string, params?: unknown) => Promise<T>
-    onStatusChange?: (cb: (status: DaemonStatus) => void) => () => void
+    onStatusChange?: (
+      cb: (status: DaemonStatus & { mode?: "live" | "demo" }) => void
+    ) => () => void
+  }
+  harness?: {
+    listSessions?: () => Promise<HarnessSessionInfoLike[]>
+    createSession?: (
+      workingDir?: string,
+      title?: string
+    ) => Promise<HarnessSessionInfoLike>
+    renameSession?: (sessionId: string, title: string) => Promise<{ ok: boolean }>
+    attachSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
+    forkSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
+    getHistory?: (sessionId: string) => Promise<{
+      messages: HarnessHistoryMessageLike[]
+      images?: unknown[]
+    }>
+    sendMessage?: (
+      sessionId: string,
+      content: string,
+      images?: Array<[string, string]>
+    ) => Promise<{ ok: boolean }>
+    cancel?: (sessionId: string) => Promise<{ ok: boolean }>
+    respondToPermission?: (
+      sessionId: string,
+      requestId: string,
+      decision: "allow" | "allow_always" | "deny"
+    ) => Promise<{ ok: boolean }>
+    setPermissionMode?: (
+      sessionId: string,
+      mode: PermissionModeId
+    ) => Promise<{ ok: boolean; error?: string }>
+    getRuntimeInfo?: (sessionId: string) => Promise<{
+      provider?: string
+      model?: string
+      routes?: HarnessModelRouteLike[]
+    }>
+    setModel?: (sessionId: string, model: string) => Promise<{ ok: boolean }>
+    setReasoningEffort?: (
+      sessionId: string,
+      effort: string
+    ) => Promise<{ ok: boolean }>
+    runtimeCommand?: (
+      sessionId: string,
+      command: string,
+      args?: string[]
+    ) => Promise<{ command: string; data: unknown; message: string }>
+    onEvent?: (cb: (frame: Record<string, unknown>) => void) => () => void
+  }
+  workspace?: {
+    getInfo?: () => Promise<WorkspaceInfo>
+    setPath?: (targetPath: string) => Promise<WorkspaceInfo>
+    pickFolder?: () => Promise<WorkspaceInfo | null>
+    pickFiles?: () => Promise<
+      Array<{
+        name: string
+        path: string
+        isDirectory: boolean
+        dataUrl?: string
+        mediaType?: string
+      }>
+    >
+    captureAppshot?: () => Promise<{ name: string; dataUrl: string } | null>
+    readFile?: (filePath: string) => Promise<{
+      pill: string
+      path: string
+      language: string
+      startLine: number
+      lines: string[]
+    }>
+    listFiles?: () => Promise<
+      Array<{ path: string; name: string; sizeBytes: number; language: string }>
+    >
+    listRecent?: () => Promise<
+      Array<{ name: string; path: string; lastOpenedAt: number }>
+    >
+  }
+  storage?: {
+    getPreferences?: () => Promise<
+      Partial<SettingsState["preferences"]> & { useAllCredits?: boolean }
+    >
+    updatePreferences?: (
+      patch: Partial<SettingsState["preferences"]> & { useAllCredits?: boolean }
+    ) => Promise<
+      Partial<SettingsState["preferences"]> & { useAllCredits?: boolean }
+    >
+    getSessionStore?: () => Promise<{
+      sessions: SessionSummary[]
+      turns: ExecutionTurn[]
+    }>
+    saveSessionStore?: (store: {
+      sessions: SessionSummary[]
+      turns: ExecutionTurn[]
+    }) => Promise<{ sessions: SessionSummary[]; turns: ExecutionTurn[] }>
+    getTemplates?: () => Promise<PersistedComposerTemplate[]>
+    saveTemplate?: (input: {
+      id?: string
+      kind: "spreadsheet" | "presentation" | "document"
+      name: string
+      description: string
+      promptSpec: string
+      accent?: "emerald" | "navy" | "amber" | "forest" | "obsidian"
+    }) => Promise<PersistedComposerTemplate[]>
+    deleteTemplate?: (id: string) => Promise<PersistedComposerTemplate[]>
+    getSidebarState?: () => Promise<SidebarState>
+    saveSidebarState?: (state: SidebarState) => Promise<SidebarState>
+  }
+  extensions?: {
+    list?: () => Promise<{
+      mcpConfigPath: string
+      mcpServers: Array<{
+        id: string
+        name: string
+        description: string
+        sourcePath: string
+        scope: "global" | "workspace"
+        transport: "stdio" | "url"
+        command?: string
+        args?: string[]
+        url?: string
+        envKeys?: string[]
+        installed: boolean
+      }>
+      skills: SkillItem[]
+      memories: MemoryFileItem[]
+    }>
+    upsertMcp?: (input: {
+      id: string
+      scope?: "global" | "workspace"
+      command?: string
+      args?: string[]
+      url?: string
+      env?: Record<string, string>
+    }) => Promise<{
+      mcpConfigPath: string
+      mcpServers: Array<{
+        id: string
+        name: string
+        description: string
+        sourcePath: string
+        scope: "global" | "workspace"
+        transport: "stdio" | "url"
+        command?: string
+        args?: string[]
+        url?: string
+        envKeys?: string[]
+        installed: boolean
+      }>
+      skills: SkillItem[]
+      memories: MemoryFileItem[]
+    }>
+    removeMcp?: (
+      id: string,
+      scope?: "global" | "workspace"
+    ) => Promise<{
+      mcpConfigPath: string
+      mcpServers: Array<{
+        id: string
+        name: string
+        description: string
+        sourcePath: string
+        scope: "global" | "workspace"
+        transport: "stdio" | "url"
+        command?: string
+        args?: string[]
+        url?: string
+        envKeys?: string[]
+        installed: boolean
+      }>
+      skills: SkillItem[]
+      memories: MemoryFileItem[]
+    }>
+    createSkill?: (input: {
+      name: string
+      description: string
+      instructions?: string
+    }) => Promise<{
+      mcpConfigPath: string
+      mcpServers: Array<{
+        id: string
+        name: string
+        description: string
+        sourcePath: string
+        scope: "global" | "workspace"
+        transport: "stdio" | "url"
+        command?: string
+        args?: string[]
+        url?: string
+        envKeys?: string[]
+        installed: boolean
+      }>
+      skills: SkillItem[]
+      memories: MemoryFileItem[]
+    }>
+    toggleSkill?: (skillId: string) => Promise<{
+      mcpConfigPath: string
+      mcpServers: Array<{
+        id: string
+        name: string
+        description: string
+        sourcePath: string
+        scope: "global" | "workspace"
+        transport: "stdio" | "url"
+        command?: string
+        args?: string[]
+        url?: string
+        envKeys?: string[]
+        installed: boolean
+      }>
+      skills: SkillItem[]
+      memories: MemoryFileItem[]
+    }>
+  }
+  git?: {
+    getChanges?: () => Promise<ChangesState | null>
+    getCommits?: () => Promise<GitCommitSummary[]>
+    listBranches?: () => Promise<{ current: string; branches: string[] }>
+    checkoutBranch?: (
+      branch: string
+    ) => Promise<{ ok: boolean; branch: string; error?: string }>
+    createWorktree?: (baseBranch?: string) => Promise<{
+      ok: boolean
+      path: string
+      branch: string
+      project: string
+      error?: string
+    }>
+    toggleStage?: (
+      filePath: string,
+      staged: boolean
+    ) => Promise<ChangesState | null>
+    stageAll?: (staged: boolean) => Promise<ChangesState | null>
+    discardFile?: (filePath: string) => Promise<ChangesState | null>
+    commit?: (message: string) => Promise<{
+      hash: string
+      branch: string
+      message: string
+      committedCount: number
+      committedAt: string
+    }>
+    createPr?: (input: {
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+    }) => Promise<{
+      id: string
+      url: string
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+      createdAt: string
+    }>
+  }
+  terminal?: {
+    runCommand?: (command: string) => Promise<TerminalCommandResult>
+    ptyCreate?: (input: {
+      sessionId: string
+      cwd?: string
+      cols?: number
+      rows?: number
+    }) => Promise<{ ok: boolean; cwd: string; shell: string }>
+    ptyWrite?: (sessionId: string, data: string) => Promise<{ ok: boolean }>
+    ptyResize?: (
+      sessionId: string,
+      cols: number,
+      rows: number
+    ) => Promise<{ ok: boolean }>
+    ptyKill?: (sessionId: string) => Promise<{ ok: boolean }>
+    onPtyData?: (
+      cb: (payload: { sessionId: string; data: string }) => void
+    ) => () => void
+    onPtyExit?: (
+      cb: (payload: { sessionId: string; exitCode: number }) => void
+    ) => () => void
+  }
+  auth?: {
+    getState?: () => Promise<RayuAuthState>
+    refresh?: () => Promise<RayuAuthState>
+    signInWithBrowser?: () => Promise<RayuAuthState>
+    cancelSignIn?: () => Promise<RayuAuthState>
+    signInWithApiKey?: (apiKey: string) => Promise<RayuAuthState>
+    completeCallback?: (callbackUrl: string) => Promise<RayuAuthState>
+    signOut?: () => Promise<RayuAuthState>
+    onAuthChange?: (cb: (state: RayuAuthState) => void) => () => void
+  }
+  cloud?: {
+    streamChat?: (input: {
+      sessionId: string
+      model: string
+      messages: CloudChatMessage[]
+    }) => Promise<{ ok: boolean }>
+    cancelStream?: (sessionId: string) => Promise<{ ok: boolean }>
   }
   native?: {
     openInExcel?: (filePath: string) => Promise<{ ok: boolean }>
+    openInPowerPoint?: (input: {
+      fileName?: string
+      title: string
+      slides: Array<{
+        id: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        notes?: string
+      }>
+    }) => Promise<{ ok: boolean; filePath: string }>
     openInVSCode?: (targetPath: string, line?: number) => Promise<{ ok: boolean }>
     openExternal?: (url: string) => Promise<{ ok: boolean }>
+    revealInFinder?: (targetPath: string) => Promise<{ ok: boolean }>
+    setKeepAwake?: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean }>
+  }
+  office?: {
+    pickExcelFile?: () => Promise<OfficeExcelWorkbookData | null>
+    readExcel?: (filePath: string) => Promise<OfficeExcelWorkbookData>
+    writeExcel?: (input: {
+      filePath: string
+      sheets: OfficeExcelSheetPayload[]
+    }) => Promise<{
+      ok: boolean
+      filePath: string
+      sheetCount: number
+      rowCount: number
+      workbook?: OfficeExcelWorkbookPayload
+    }>
+    createPowerPoint?: (input: {
+      filePath?: string
+      fileName?: string
+      title: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }) => Promise<{
+      ok: boolean
+      filePath: string
+      slideCount: number
+      title?: string
+      slides?: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }>
+  }
+  desktop?: {
+    onArtifact?: (cb: (artifact: DesktopArtifactEvent) => void) => () => void
+  }
+  browser?: {
+    navigate?: (url: string) => Promise<{ ok: boolean; url: string; title: string; error?: string }>
+    snapshot?: () => Promise<{
+      ok: boolean
+      url: string
+      title: string
+      refCount: number
+      tree: string
+      error?: string
+    }>
+    click?: (ref: string) => Promise<{ ok: boolean; message: string }>
+    type?: (
+      ref: string,
+      text: string,
+      submit?: boolean
+    ) => Promise<{ ok: boolean; message: string }>
+    screenshot?: () => Promise<{
+      ok: boolean
+      url: string
+      title: string
+      dataUrl: string
+      error?: string
+    }>
+    onEnsureOpen?: (cb: (payload: { url?: string }) => void) => () => void
   }
 }
 
@@ -2272,25 +2936,241 @@ function getBridge(): RayuBridgeApi | undefined {
   return window.rayu
 }
 
+const IS_TEST_ENV = import.meta.env.MODE === "test"
+
+const IS_DEV_SERVER =
+  Boolean(import.meta.env.DEV) &&
+  !IS_TEST_ENV &&
+  typeof window !== "undefined" &&
+  window.location.protocol.startsWith("http")
+
+const localHarnessListeners = new Set<
+  (frame: Record<string, unknown>) => void
+>()
+
+function emitLocalHarnessFrame(frame: Record<string, unknown>): void {
+  for (const listener of localHarnessListeners) {
+    listener(frame)
+  }
+}
+
+async function devAuthFetch<T>(
+  route: string,
+  options?: { method?: "GET" | "POST"; body?: unknown }
+): Promise<T> {
+  const res = await fetch(`/__rayu_dev/${route}`, {
+    method: options?.method ?? "GET",
+    headers: options?.body
+      ? { "Content-Type": "application/json" }
+      : undefined,
+    body: options?.body ? JSON.stringify(options.body) : undefined,
+  })
+  const data = (await res.json().catch(() => ({}))) as T & { error?: string }
+  if (!res.ok) {
+    throw new Error(data.error || `Request failed (HTTP ${res.status})`)
+  }
+  return data
+}
+
+let lastKnownDaemonLive = false
+let lastActiveHarnessSessionId: string | null = null
+let lastKnownAuthState: RayuAuthState | null = null
+let runtimeSessions: SessionSummary[] = []
+let runtimeTurns: ExecutionTurn[] = []
+let runtimeSessionsHydrated = false
+const newlyCreatedEmptySessions = new Set<string>()
+let runtimeSwarm: SwarmState = {
+  swarmId: "idle",
+  title: "No active swarm",
+  planVersion: "v1",
+  credits: "0.00 cr",
+  kvCachePct: 0,
+  agents: [],
+  messages: [],
+  planScopes: [],
+  worktrees: [],
+}
+let runtimeAutomations: AutomationsState = {
+  running: [],
+  schedules: [],
+  reports: [],
+}
+let runtimeTelegram: TelegramState = {
+  mode: "hosted",
+  connectedBotHandle: "@rayucode_bot",
+  chatId: "Not paired",
+  drivingSession: "None",
+  mediaDelivery: "Disabled until paired",
+  authPath: "~/.rayu/telegram.json",
+  pairingCommand: "rayu telegram pair",
+  pairingLink: "https://t.me/rayucode_bot",
+  remoteUninstallEnabled: false,
+  approvals: [],
+  commands: mockTelegram.commands,
+}
+
+async function ensureRuntimeSessionsHydrated(): Promise<void> {
+  if (runtimeSessionsHydrated || IS_TEST_ENV) return
+  runtimeSessionsHydrated = true
+  const bridge = getBridge()
+  if (!bridge?.storage?.getSessionStore) return
+  try {
+    const saved = await bridge.storage.getSessionStore()
+    if (Array.isArray(saved.sessions) && runtimeSessions.length === 0) {
+      runtimeSessions = saved.sessions
+    }
+    if (Array.isArray(saved.turns) && runtimeTurns.length === 0) {
+      runtimeTurns = saved.turns
+    }
+  } catch {
+    // ignore storage read error
+  }
+}
+
+function persistRuntimeSessions(): void {
+  if (IS_TEST_ENV) return
+  const bridge = getBridge()
+  if (!bridge?.storage?.saveSessionStore) return
+  void bridge.storage
+    .saveSessionStore({
+      sessions: runtimeSessions.slice(0, 50),
+      turns: runtimeTurns.slice(-500),
+    })
+    .catch(() => {})
+}
+
+const DEFAULT_SIGNED_OUT_AUTH_STATE: RayuAuthState = {
+  signedIn: false,
+  method: "none",
+  signingIn: false,
+  pendingAuthUrl: null,
+  user: null,
+  credits: null,
+  allowedModels: [],
+  apiBase: "https://api.rayucode.com/api",
+  webBase: "https://rayucode.com",
+  gatewayBase: "https://gateway.rayucode.com",
+  error: null,
+}
+
+async function isHarnessLive(): Promise<boolean> {
+  const bridge = getBridge()
+  if (!bridge?.harness || !bridge?.daemon?.getStatus) return false
+  if (lastKnownDaemonLive) return true
+  try {
+    const status = await bridge.daemon.getStatus()
+    lastKnownDaemonLive = Boolean(status.connected && status.mode !== "demo")
+    return lastKnownDaemonLive
+  } catch {
+    lastKnownDaemonLive = false
+    return false
+  }
+}
+
 export const ipcClient = {
   sessions: {
     async list(): Promise<SessionSummary[]> {
+      await ensureRuntimeSessionsHydrated()
+      const bridge = getBridge()
+      if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
+        try {
+          const liveSessions = await bridge.harness.listSessions()
+          lastKnownDaemonLive = true
+          const mappedLive = liveSessions.map((info) => {
+            const summary = mapSessionInfoToSummary(info)
+            const cached = runtimeSessions.find((s) => s.id === summary.id)
+            if (!cached) return summary
+            return {
+              ...summary,
+              title:
+                !info.title || summary.title === "Untitled session"
+                  ? cached.title || summary.title
+                  : summary.title,
+              modelId: cached.modelId ?? summary.modelId,
+              modelLabel: cached.modelLabel ?? summary.modelLabel,
+              effort: cached.effort ?? summary.effort,
+              permissionMode: cached.permissionMode ?? summary.permissionMode,
+            }
+          })
+          const liveIds = new Set(mappedLive.map((s) => s.id))
+          const localOnly = runtimeSessions.filter((s) => !liveIds.has(s.id))
+          return [...mappedLive, ...localOnly]
+        } catch {
+          // Fall through if daemon could not be reached
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return [...runtimeSessions]
+      }
       return [...mockSessions]
     },
     async listProjects(): Promise<ProjectGroup[]> {
+      const bridge = getBridge()
+      const liveSessions = await ipcClient.sessions.list()
+      if (bridge?.workspace?.getInfo) {
+        try {
+          const info = await bridge.workspace.getInfo()
+          return [
+            {
+              id: `proj_${info.project}`,
+              name: info.project,
+              path: info.path,
+              expanded: true,
+              sessions: liveSessions.map((s) => ({
+                id: s.id,
+                title: s.title,
+              })),
+            },
+          ]
+        } catch {
+          // Fall through
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return [
+          {
+            id: "proj_workspace",
+            name: "rayucode-v2",
+            path: "~/workspace/rayu/rayucode-v2",
+            expanded: true,
+            sessions: liveSessions.map((s) => ({
+              id: s.id,
+              title: s.title,
+            })),
+          },
+        ]
+      }
       return MOCK_PROJECTS.map((p) => ({ ...p, sessions: [...p.sessions] }))
     },
     async listRecents(): Promise<Array<{ id: string; title: string; route?: string }>> {
-      return [...MOCK_RECENTS]
+      if (!IS_TEST_ENV) {
+        const liveSessions = await ipcClient.sessions.list()
+        return liveSessions.map((s) => ({ id: s.id, title: s.title }))
+      }
+      const createdRecents = mockSessions
+        .filter((s) => !MOCK_RECENTS.some((r) => r.id === s.id))
+        .map((s) => ({ id: s.id, title: s.title }))
+      return [...createdRecents, ...MOCK_RECENTS]
     },
     async getGettingStarted(): Promise<GettingStartedItem[]> {
-      return [...mockGettingStarted]
+      mockGettingStarted = loadGettingStartedItems()
+      return mockGettingStarted.map((item) => ({ ...item }))
     },
-    async toggleGettingStarted(id: string): Promise<GettingStartedItem[]> {
+    async toggleGettingStarted(
+      id: string,
+      forceCompleted?: boolean
+    ): Promise<GettingStartedItem[]> {
       mockGettingStarted = mockGettingStarted.map((item) =>
-        item.id === id ? { ...item, completed: !item.completed } : item
+        item.id === id
+          ? {
+              ...item,
+              completed:
+                forceCompleted !== undefined ? forceCompleted : !item.completed,
+            }
+          : item
       )
-      return [...mockGettingStarted]
+      persistGettingStartedItems(mockGettingStarted)
+      return mockGettingStarted.map((item) => ({ ...item }))
     },
     async createSession(input: {
       prompt: string
@@ -2301,24 +3181,81 @@ export const ipcClient = {
       effort?: ReasoningEffort
       permissionMode?: PermissionModeId
     }): Promise<SessionSummary> {
+      if (IS_TEST_ENV) {
+        await ensureRuntimeSessionsHydrated()
+      } else {
+        void ensureRuntimeSessionsHydrated()
+      }
+      const bridge = getBridge()
+      const derivedTitle =
+        input.prompt.trim().length > 48
+          ? `${input.prompt.trim().slice(0, 48)}...`
+          : input.prompt.trim() || "New session"
+      if (bridge?.harness?.createSession && !IS_TEST_ENV) {
+        try {
+          const live = await bridge.harness.createSession(
+            undefined,
+            derivedTitle
+          )
+          lastKnownDaemonLive = true
+          lastActiveHarnessSessionId = live.session_id
+          newlyCreatedEmptySessions.add(live.session_id)
+          const hasExplicitStoredModel =
+            typeof window !== "undefined" &&
+            Boolean(window.localStorage.getItem("rayu-model-id"))
+          if (
+            input.modelId &&
+            hasExplicitStoredModel &&
+            bridge.harness.setModel
+          ) {
+            void bridge.harness
+              .setModel(live.session_id, input.modelId)
+              .catch(() => {})
+          }
+          if (input.effort && bridge.harness.setReasoningEffort) {
+            void bridge.harness
+              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+              .catch(() => {})
+          }
+          const mapped = mapSessionInfoToSummary(live)
+          const summary: SessionSummary = {
+            ...mapped,
+            title: derivedTitle || mapped.title,
+            modelId: input.modelId ?? mapped.modelId,
+            modelLabel: input.modelLabel ?? mapped.modelLabel,
+            effort: input.effort ?? mapped.effort,
+            permissionMode: input.permissionMode ?? mapped.permissionMode,
+          }
+          runtimeSessions = [
+            summary,
+            ...runtimeSessions.filter((s) => s.id !== summary.id),
+          ]
+          persistRuntimeSessions()
+          return summary
+        } catch {
+          // Fall through to local offline session creation only if Rust daemon is unavailable
+        }
+      }
+
       const created: SessionSummary = {
         id: `ses_${Date.now()}`,
-        title:
-          input.prompt.length > 48
-            ? `${input.prompt.slice(0, 48)}...`
-            : input.prompt,
+        title: derivedTitle,
         project: input.project ?? "rayucode-v2",
         checkout: input.checkout ?? "Local Checkout",
-        branch: "feat/retire-session-cache",
+        branch: "main",
         updatedAt: "Just now",
         modelId: input.modelId ?? "claude-opus-5-5",
         modelLabel: input.modelLabel ?? "Claude Opus 5.5",
         effort: input.effort ?? "Medium",
         permissionMode: input.permissionMode ?? "default",
-        kvWarmPct: 94,
-        creditsUsed: 0.08,
+        kvWarmPct: 0,
+        creditsUsed: 0,
       }
-      mockSessions = [created, ...mockSessions]
+      runtimeSessions = [created, ...runtimeSessions]
+      persistRuntimeSessions()
+      if (IS_TEST_ENV) {
+        mockSessions = [created, ...mockSessions]
+      }
       return created
     },
     async listPermissionModes(): Promise<PermissionModeOption[]> {
@@ -2328,105 +3265,626 @@ export const ipcClient = {
 
   models: {
     async list(): Promise<ModelOption[]> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.getRuntimeInfo &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        try {
+          const info = await bridge.harness.getRuntimeInfo(
+            lastActiveHarnessSessionId
+          )
+          if (info.routes && info.routes.length > 0) {
+            return mapModelRoutesToOptions(info.routes)
+          }
+        } catch {
+          // Fall back to Rayu Cloud or curated catalog
+        }
+      }
+      if (
+        lastKnownAuthState?.signedIn &&
+        lastKnownAuthState.allowedModels.length > 0
+      ) {
+        const cloudOptions: ModelOption[] = [
+          {
+            id: "default",
+            label: "Default",
+            subtitle: "Recommended Rayu Cloud model",
+            provider: "rayu",
+            recommended: true,
+          },
+          ...lastKnownAuthState.allowedModels.map((m) => ({
+            id: m.code,
+            label: m.label || m.code,
+            subtitle: m.description,
+            provider: "rayu",
+          })),
+        ]
+        return cloudOptions
+      }
       return [...MOCK_MODELS]
     },
     async refresh(): Promise<ModelOption[]> {
-      return [...MOCK_MODELS]
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "refresh_model_list")
+          .catch(() => {})
+      } else if (bridge?.auth?.refresh) {
+        const refreshed = await bridge.auth.refresh().catch(() => null)
+        if (refreshed) lastKnownAuthState = refreshed
+      }
+      return ipcClient.models.list()
     },
   },
 
   trace: {
     async listTurns(sessionId?: string | null): Promise<ExecutionTurn[]> {
-      if (!sessionId) return [...mockTurns]
+      await ensureRuntimeSessionsHydrated()
+      if (sessionId) {
+        const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+        if (cachedTurns.length > 0) {
+          return cachedTurns
+        }
+      }
+      const bridge = getBridge()
+      if (
+        sessionId &&
+        bridge?.harness?.getHistory &&
+        !sessionId.startsWith("ses_") &&
+        !newlyCreatedEmptySessions.has(sessionId) &&
+        !IS_TEST_ENV
+      ) {
+        try {
+          lastActiveHarnessSessionId = sessionId
+          const history = await bridge.harness.getHistory(sessionId)
+          lastKnownDaemonLive = true
+          const turns = mapHistoryMessagesToTurns(sessionId, history.messages)
+          if (turns.length > 0) {
+            runtimeTurns = [
+              ...runtimeTurns.filter((t) => t.sessionId !== sessionId),
+              ...turns,
+            ]
+            persistRuntimeSessions()
+            return turns
+          }
+          return turns
+        } catch {
+          // Fall back to cached local turns
+        }
+      }
+
+      if (!sessionId) {
+        return IS_TEST_ENV ? [...mockTurns] : []
+      }
+      const localTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+      if (localTurns.length > 0) return localTurns
+      if (!IS_TEST_ENV) {
+        return []
+      }
       const filtered = mockTurns.filter((t) => t.sessionId === sessionId)
-      return filtered.length > 0 ? filtered : [...mockTurns]
+      if (filtered.length > 0) return filtered
+      if (
+        sessionId === "ses_retire_cache" ||
+        sessionId === "ses_model_picker" ||
+        sessionId === "ses_q4_excel"
+      ) {
+        return [...mockTurns]
+      }
+      return []
     },
     async sendPrompt(input: {
       sessionId: string
       prompt: string
+      images?: PromptImageAttachment[]
+      modelId?: string
       modelLabel: string
+      history?: CloudChatMessage[]
     }): Promise<ExecutionTurn> {
+      const bridge = getBridge()
+      const imageTuples: Array<[string, string]> = (input.images ?? [])
+        .map((img) => parseImageDataUrl(img.dataUrl))
+        .filter((pair): pair is [string, string] => pair !== null)
+      const effectivePrompt =
+        input.prompt.trim().length > 0
+          ? input.prompt
+          : imageTuples.length > 0
+            ? "Analyze the attached image(s)."
+            : input.prompt
+
+      if (
+        bridge?.harness?.sendMessage &&
+        !input.sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        await bridge.harness.sendMessage(
+          input.sessionId,
+          effectivePrompt,
+          imageTuples.length > 0 ? imageTuples : undefined
+        )
+        lastKnownDaemonLive = true
+        return {
+          id: `live_turn_${Date.now()}`,
+          sessionId: input.sessionId,
+          userImages: input.images,
+          userPrompt: input.prompt,
+          workedDuration: "1s",
+          isLive: true,
+          notes: [],
+          groups: [],
+          answerIntro: "",
+          answerBullets: [],
+          diffCard: {
+            id: `diff_${Date.now()}`,
+            file: "workspace",
+            additions: 0,
+            deletions: 0,
+            hint: "Streaming response from rayu daemon",
+            lines: [],
+          },
+          timestamp: "Just now",
+          credits: "0.00 cr",
+          kvCachePct: 94,
+          pinned: false,
+        }
+      }
+
+      if (
+        (bridge?.cloud?.streamChat || IS_DEV_SERVER) &&
+        lastKnownAuthState?.signedIn
+      ) {
+        const messages: CloudChatMessage[] = [
+          ...(input.history ?? []),
+          {
+            role: "user",
+            content: effectivePrompt,
+            ...(imageTuples.length > 0 ? { images: imageTuples } : {}),
+          },
+        ]
+        await ipcClient.cloud.streamChat({
+          sessionId: input.sessionId,
+          model: input.modelId || "default",
+          messages,
+        })
+        return {
+          id: `cloud_turn_${Date.now()}`,
+          sessionId: input.sessionId,
+          userImages: input.images,
+          userPrompt: input.prompt,
+          workedDuration: "1s",
+          isLive: true,
+          notes: [],
+          groups: [],
+          answerIntro: "",
+          answerBullets: [],
+          diffCard: {
+            id: `diff_${Date.now()}`,
+            file: "workspace",
+            additions: 0,
+            deletions: 0,
+            hint: "Streamed via Rayu Cloud",
+            lines: [],
+          },
+          timestamp: "Just now",
+          credits: "0.00 cr",
+          kvCachePct: 0,
+          pinned: false,
+        }
+      }
+
       const newTurn: ExecutionTurn = {
         id: `turn_${Date.now()}`,
         sessionId: input.sessionId,
         userPrompt: input.prompt,
-        workedDuration: "4s",
-        notes: [
-          "I'll inspect the relevant files in rayucode-v2 and verify the changes with cargo test before reporting back.",
-        ],
-        groups: [
-          {
-            id: `wg_${Date.now()}`,
-            title: "Read files, ran commands",
-            steps: [
-              {
-                id: `ls_${Date.now()}`,
-                kind: "search",
-                text: "Searched for symbols matching request in",
-                highlight: "crates/rayucode-core",
-              },
-              {
-                id: `sh_${Date.now()}`,
-                kind: "command",
-                command: "cargo test -p rayucode session:: -- --nocapture",
-                displayCommand: "cargo test -p rayucode session:: -- --nocapture",
-                output:
-                  "running 14 tests\ntest session::lookup::routes_via_shard_store ... ok\ntest session::budget::preserves_lru_eviction ... ok\ntest result: ok. 14 passed; 0 failed; 0 ignored; finished in 0.42s",
-                exitCode: 0,
-                statusLabel: "Success",
-                isMono: true,
-              },
-            ],
-          },
-        ],
+        workedDuration: "0s",
+        notes: [],
+        groups: [],
         answerIntro:
-          "Done. Checked the local workspace for your request, verified session:: tests (14/14 passing), and kept the right-sidebar previews in sync.",
-        answerBullets: [
-          {
-            id: `b_${Date.now()}`,
-            title: "Verified ShardStore lookup path.",
-            body: "All 14 session unit tests pass with 94% warm KV cache hit rate.",
-            citations: [
-              {
-                label: "src/session/lookup.rs (line 19)",
-                kind: "code",
-                file: "lookup.rs",
-                line: 19,
-              },
-            ],
-          },
-        ],
-        diffCard: mockTurns[0].diffCard,
+          "You are not signed in to Rayu Cloud and the local `rayu` daemon is offline, so this prompt was not sent to **" +
+          input.modelLabel +
+          "**.\n\nClick **Sign in to Rayu Cloud** in the Profile menu or **Settings → Account & Usage** to authenticate and stream live responses immediately.",
+        answerBullets: [],
+        diffCard: {
+          id: `diff_empty_${Date.now()}`,
+          file: "workspace",
+          additions: 0,
+          deletions: 0,
+          hint: "No workspace changes yet",
+          lines: [],
+        },
         timestamp: "Just now",
-        credits: "0.08 cr",
-        kvCachePct: 94,
+        credits: "0.00 cr",
+        kvCachePct: 0,
         pinned: false,
       }
-      mockTurns = [...mockTurns, newTurn]
+      runtimeTurns = [...runtimeTurns, newTurn]
+      persistRuntimeSessions()
+      if (IS_TEST_ENV) {
+        mockTurns = [...mockTurns, newTurn]
+      }
       return newTurn
     },
+    recordTurn(turn: ExecutionTurn): void {
+      if (turn.sessionId) {
+        newlyCreatedEmptySessions.delete(turn.sessionId)
+      }
+      runtimeTurns = [
+        ...runtimeTurns.filter((t) => t.id !== turn.id),
+        turn,
+      ]
+      if (
+        turn.sessionId &&
+        !runtimeSessions.some((s) => s.id === turn.sessionId)
+      ) {
+        const promptTitle =
+          turn.userPrompt.trim().length > 48
+            ? `${turn.userPrompt.trim().slice(0, 48)}...`
+            : turn.userPrompt.trim() || "New session"
+        runtimeSessions = [
+          {
+            id: turn.sessionId,
+            title: promptTitle,
+            project: "rayucode-v2",
+            checkout: "Local Checkout",
+            branch: "main",
+            updatedAt: "Just now",
+            modelId: "claude-opus-5-5",
+            modelLabel: "Claude Opus 5.5",
+            effort: "Medium",
+            permissionMode: "default",
+            kvWarmPct: turn.kvCachePct ?? 0,
+            creditsUsed: 0,
+          },
+          ...runtimeSessions,
+        ]
+      }
+      persistRuntimeSessions()
+    },
     async togglePin(turnId: string): Promise<ExecutionTurn | undefined> {
+      runtimeTurns = runtimeTurns.map((t) =>
+        t.id === turnId ? { ...t, pinned: !t.pinned } : t
+      )
+      persistRuntimeSessions()
+      if (!IS_TEST_ENV) {
+        return runtimeTurns.find((t) => t.id === turnId)
+      }
       mockTurns = mockTurns.map((t) =>
         t.id === turnId ? { ...t, pinned: !t.pinned } : t
       )
       return mockTurns.find((t) => t.id === turnId)
     },
     async forkTurn(turnId: string): Promise<SessionSummary> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.forkSession &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        try {
+          const forked = await bridge.harness.forkSession(
+            lastActiveHarnessSessionId
+          )
+          return mapSessionInfoToSummary(forked)
+        } catch {
+          // Fall back to mock fork
+        }
+      }
       const source = mockTurns.find((t) => t.id === turnId) ?? mockTurns[0]
       return ipcClient.sessions.createSession({
         prompt: `Forked: ${source.userPrompt}`,
       })
     },
+    async cancel(sessionId: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.cloud?.cancelStream) {
+        await bridge.cloud.cancelStream(sessionId).catch(() => {})
+      }
+      if (bridge?.harness?.cancel && (await isHarnessLive())) {
+        return bridge.harness.cancel(sessionId)
+      }
+      return { ok: true }
+    },
+    async respondToPermission(
+      sessionId: string,
+      requestId: string,
+      decision: "allow" | "allow_always" | "deny"
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.respondToPermission) {
+        return bridge.harness.respondToPermission(sessionId, requestId, decision)
+      }
+      return { ok: true }
+    },
   },
 
   inspector: {
     async getState(): Promise<InspectorState> {
-      return structuredClone(MOCK_INSPECTOR)
+      const state: InspectorState = IS_TEST_ENV
+        ? structuredClone(MOCK_INSPECTOR)
+        : {
+            environment: {
+              host: "Local",
+              project: "workspace",
+              path: ".",
+              branch: "main",
+            },
+            context: {
+              usedPctLabel: "0%",
+              tokensSummary: "0 / 200k tokens",
+              rows: [],
+              bufferRow: {
+                id: "ctx_buf",
+                label: "Autocompact buffer",
+                tokensLabel: "0",
+                pctLabel: "0%",
+                colorClass: "bg-muted-ink",
+              },
+              freeRow: {
+                id: "ctx_free",
+                label: "Available window",
+                tokensLabel: "200k",
+                pctLabel: "100%",
+                colorClass: "bg-active",
+              },
+              disclosures: [],
+            },
+            connectors: [],
+            outputs: [],
+            changesSummary: {
+              additions: 0,
+              deletions: 0,
+              changedFilesCount: 0,
+            },
+            codeFiles: {},
+            terminalLines: [],
+          }
+      const bridge = getBridge()
+      if (bridge?.workspace?.getInfo) {
+        try {
+          const info = await bridge.workspace.getInfo()
+          state.environment = {
+            host: info.host,
+            project: info.project,
+            path: info.path,
+            branch: info.branch,
+          }
+        } catch {
+          // Keep default environment metadata
+        }
+      }
+      if (bridge?.git?.getChanges) {
+        try {
+          const gitChanges = await bridge.git.getChanges()
+          if (gitChanges) {
+            state.environment.branch = gitChanges.branch
+            state.changesSummary = {
+              additions: gitChanges.totalAdditions,
+              deletions: gitChanges.totalDeletions,
+              changedFilesCount: gitChanges.files.length,
+            }
+          }
+        } catch {
+          // Keep default changes summary
+        }
+      }
+      if (!IS_TEST_ENV && bridge?.extensions?.list) {
+        try {
+          const ext = await bridge.extensions.list()
+          state.connectors = ext.mcpServers.map((srv) => ({
+            id: srv.id,
+            glyph: srv.name.slice(0, 2).toUpperCase(),
+            name: srv.name,
+            status: "Linked" as const,
+            primary: true,
+          }))
+          if (ext.skills.length > 0 || ext.memories.length > 0) {
+            state.context.disclosures = [
+              ...(ext.skills.length > 0
+                ? [
+                    {
+                      id: "disc_skills",
+                      label: "Loaded skills",
+                      count: ext.skills.length,
+                      items: ext.skills.map((s) => s.name),
+                    },
+                  ]
+                : []),
+              ...(ext.memories.length > 0
+                ? [
+                    {
+                      id: "disc_memory",
+                      label: "Workspace memory files",
+                      count: ext.memories.length,
+                      items: ext.memories.map((m) => m.path),
+                    },
+                  ]
+                : []),
+            ]
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return state
     },
     async getCodeFile(fileKey: string) {
-      return (
-        MOCK_INSPECTOR.codeFiles[fileKey] ?? MOCK_INSPECTOR.codeFiles["lookup.rs"]
-      )
+      const bridge = getBridge()
+      if (bridge?.workspace?.readFile && fileKey) {
+        try {
+          const realFile = await bridge.workspace.readFile(fileKey)
+          if (realFile && realFile.lines.length > 0) {
+            return realFile
+          }
+        } catch {
+          // Fall through to test fixture or empty placeholder
+        }
+      }
+      if (IS_TEST_ENV) {
+        return (
+          MOCK_INSPECTOR.codeFiles[fileKey] ??
+          MOCK_INSPECTOR.codeFiles["lookup.rs"]
+        )
+      }
+      const displayPill = fileKey || "Code"
+      return {
+        pill: displayPill,
+        path: fileKey || "",
+        language: "typescript",
+        startLine: 1,
+        lines: ["// Select a workspace file from Files or Diff to inspect."],
+      }
+    },
+    async runTerminalCommand(command: string): Promise<{
+      id: string
+      prompt: string
+      command: string
+      output: string
+      isOk: boolean
+      isError: boolean
+    } | null> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.runCommand) {
+        const res = await bridge.terminal.runCommand(command)
+        return {
+          id: res.id,
+          prompt: res.prompt,
+          command: res.command,
+          output: res.output,
+          isOk: res.isOk,
+          isError: res.isError,
+        }
+      }
+      return null
+    },
+  },
+
+  workspace: {
+    async getInfo(): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.getInfo) return null
+      try {
+        return await bridge.workspace.getInfo()
+      } catch {
+        return null
+      }
+    },
+    async pickFolder(): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.pickFolder) return null
+      return bridge.workspace.pickFolder()
+    },
+    async pickFiles(): Promise<
+      Array<{
+        name: string
+        path: string
+        isDirectory: boolean
+        dataUrl?: string
+        mediaType?: string
+      }>
+    > {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.pickFiles) return []
+      return bridge.workspace.pickFiles()
+    },
+    async captureAppshot(): Promise<{ name: string; dataUrl: string } | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.captureAppshot) return null
+      return bridge.workspace.captureAppshot()
+    },
+    async setPath(targetPath: string): Promise<WorkspaceInfo | null> {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.setPath) return null
+      return bridge.workspace.setPath(targetPath)
+    },
+    async listFiles(): Promise<
+      Array<{ path: string; name: string; sizeBytes: number; language: string }>
+    > {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.listFiles) return []
+      try {
+        return await bridge.workspace.listFiles()
+      } catch {
+        return []
+      }
+    },
+    async listRecent(): Promise<
+      Array<{ name: string; path: string; lastOpenedAt: number }>
+    > {
+      const bridge = getBridge()
+      if (!bridge?.workspace?.listRecent) return []
+      try {
+        return await bridge.workspace.listRecent()
+      } catch {
+        return []
+      }
+    },
+    async listBranches(): Promise<{ current: string; branches: string[] }> {
+      const bridge = getBridge()
+      if (bridge?.git?.listBranches) {
+        try {
+          const live = await bridge.git.listBranches()
+          if (live && Array.isArray(live.branches) && live.branches.length > 0) {
+            return live
+          }
+        } catch {
+          // Fall through to default branches
+        }
+      }
+      return {
+        current: "feat/desktop-ui",
+        branches: ["feat/desktop-ui", "main", "prototype-ui"],
+      }
+    },
+    async checkoutBranch(
+      branch: string
+    ): Promise<{ ok: boolean; branch: string; error?: string }> {
+      const bridge = getBridge()
+      if (bridge?.git?.checkoutBranch) {
+        try {
+          return await bridge.git.checkoutBranch(branch)
+        } catch (err) {
+          return {
+            ok: false,
+            branch,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
+      return { ok: true, branch }
+    },
+    async createWorktree(baseBranch?: string): Promise<{
+      ok: boolean
+      path: string
+      branch: string
+      project: string
+      error?: string
+    }> {
+      const bridge = getBridge()
+      if (bridge?.git?.createWorktree) {
+        try {
+          return await bridge.git.createWorktree(baseBranch)
+        } catch (err) {
+          return {
+            ok: false,
+            path: "",
+            branch: baseBranch ?? "main",
+            project: "rayucode-v2",
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
+      const shortId = Date.now().toString(36).slice(-4)
+      return {
+        ok: true,
+        path: `~/.rayu/worktrees/rayucode-v2-${shortId}`,
+        branch: `worktree/${baseBranch ?? "main"}-${shortId}`,
+        project: "rayucode-v2",
+      }
     },
   },
 
@@ -2452,7 +3910,6 @@ export const ipcClient = {
               ? numVal
               : input.value
         }
-        // Recalculate totals row if present
         const dataRows = sheet.rows.filter((r) => r.rowNumber >= 2 && !r.isTotal)
         const totalRow = sheet.rows.find((r) => r.isTotal)
         if (totalRow) {
@@ -2475,21 +3932,39 @@ export const ipcClient = {
       return structuredClone(mockPreviews)
     },
     async sendBrowserQuestion(question: string): Promise<PreviewsState> {
-      mockPreviews.browser.chatMessages.push(
-        { id: `u_${Date.now()}`, sender: "user", text: question },
-        {
-          id: `a_${Date.now() + 1}`,
-          sender: "agent",
-          text: "Inspected the live page DOM and updated the active session context.",
-        }
-      )
+      if (IS_TEST_ENV) {
+        mockPreviews.browser.chatMessages.push(
+          { id: `u_${Date.now()}`, sender: "user", text: question },
+          {
+            id: `a_${Date.now() + 1}`,
+            sender: "agent",
+            text: "Inspected the live page DOM and updated the active session context.",
+          }
+        )
+        return structuredClone(mockPreviews)
+      }
+      mockPreviews.browser.chatMessages.push({
+        id: `u_${Date.now()}`,
+        sender: "user",
+        text: question,
+      })
       return structuredClone(mockPreviews)
     },
   },
 
   swarm: {
     async getState(): Promise<SwarmState> {
-      return structuredClone(mockSwarm)
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "swarm", ["status"])
+          .catch(() => {})
+      }
+      return structuredClone(IS_TEST_ENV ? mockSwarm : runtimeSwarm)
     },
     async spawnWorker(input: {
       name: string
@@ -2497,6 +3972,20 @@ export const ipcClient = {
       worktree: string
       task: string
     }): Promise<SwarmState> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "swarm", [
+            "spawn",
+            input.name,
+            input.task,
+          ])
+          .catch(() => {})
+      }
       const worker: SwarmAgent = {
         id: input.name,
         name: input.name,
@@ -2512,26 +4001,43 @@ export const ipcClient = {
           { id: `${input.name}_1`, text: input.task, status: "now" },
           {
             id: `${input.name}_2`,
-            text: "Run cargo test and report diff summary to coordinator",
+            text: "Run verification checks and report diff summary",
             status: "pending",
           },
         ],
-        commands: [
-          {
-            id: `sh_${input.name}`,
-            kind: "command",
-            command: "cargo test --workspace",
-            displayCommand: "cargo test --workspace",
-            output: "Compiling workspace crates...\nrunning test suite...",
-            exitCode: 0,
-            statusLabel: "Running in isolated worktree",
-            isMono: true,
-          },
-        ],
+        commands: [],
       }
-      mockSwarm = {
-        ...mockSwarm,
-        agents: [...mockSwarm.agents, worker],
+      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      const wasIdle = target.agents.length === 0
+      const derivedTitle =
+        input.task.length > 56 ? `${input.task.slice(0, 53)}...` : input.task
+      const nextWorktrees =
+        input.worktree !== "local checkout"
+          ? [
+              ...target.worktrees,
+              {
+                id: `wt_${Date.now()}_${target.worktrees.length + 1}`,
+                label: `wt-${target.worktrees.length + 1}`,
+                branch:
+                  input.worktree === "new git worktree"
+                    ? `wt/${input.name}`
+                    : input.worktree,
+                owner: input.name,
+                file: "workspace",
+                additions: 0,
+                deletions: 0,
+              },
+            ]
+          : target.worktrees
+      const updated: SwarmState = {
+        ...target,
+        swarmId:
+          wasIdle && target.swarmId === "idle"
+            ? `swm_${Math.random().toString(16).slice(2, 6)}`
+            : target.swarmId,
+        title: wasIdle ? derivedTitle : target.title,
+        agents: [...target.agents, worker],
+        worktrees: nextWorktrees,
         messages: [
           {
             id: `msg_${Date.now()}`,
@@ -2542,25 +4048,31 @@ export const ipcClient = {
             tag: "spawned",
             isOk: true,
           },
-          ...mockSwarm.messages,
+          ...target.messages,
         ],
       }
-      return structuredClone(mockSwarm)
+      if (IS_TEST_ENV) mockSwarm = updated
+      else runtimeSwarm = updated
+      return structuredClone(updated)
     },
     async toggleAgentState(agentId: string): Promise<SwarmState> {
-      mockSwarm = {
-        ...mockSwarm,
-        agents: mockSwarm.agents.map((a) => {
+      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      const updated: SwarmState = {
+        ...target,
+        agents: target.agents.map((a) => {
           if (a.id !== agentId) return a
           const nextState = a.state === "stopped" ? "running" : "stopped"
           return { ...a, state: nextState }
         }),
       }
-      return structuredClone(mockSwarm)
+      if (IS_TEST_ENV) mockSwarm = updated
+      else runtimeSwarm = updated
+      return structuredClone(updated)
     },
     async sendDm(input: { agentId: string; message: string }): Promise<SwarmState> {
-      mockSwarm = {
-        ...mockSwarm,
+      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      const updated: SwarmState = {
+        ...target,
         messages: [
           {
             id: `dm_${Date.now()}`,
@@ -2571,16 +4083,18 @@ export const ipcClient = {
             tag: "steering-dm",
             isOk: true,
           },
-          ...mockSwarm.messages,
+          ...target.messages,
         ],
       }
-      return structuredClone(mockSwarm)
+      if (IS_TEST_ENV) mockSwarm = updated
+      else runtimeSwarm = updated
+      return structuredClone(updated)
     },
   },
 
   automations: {
     async getState(): Promise<AutomationsState> {
-      return structuredClone(mockAutomations)
+      return structuredClone(IS_TEST_ENV ? mockAutomations : runtimeAutomations)
     },
     async launchOvernight(input: {
       mission: string
@@ -2588,44 +4102,190 @@ export const ipcClient = {
       maxAgents: string
       permissionMode: string
     }): Promise<AutomationsState> {
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.runtimeCommand &&
+        lastActiveHarnessSessionId &&
+        (await isHarnessLive())
+      ) {
+        await bridge.harness
+          .runtimeCommand(lastActiveHarnessSessionId, "overnight", [
+            "start",
+            input.mission,
+          ])
+          .catch(() => {})
+      }
       const run: OvernightRun = {
         id: `ovn_${Math.random().toString(36).slice(2, 6)}`,
         title: input.mission,
         status: "Running",
-        host: "choeng-rayu-1",
+        host: "local",
         maxAgents: input.maxAgents,
         duration: input.duration,
         wakeTime: "07:00",
         handoffTime: "06:45",
-        taskCardsCount: 2,
+        taskCardsCount: 1,
         validationsGreen: 0,
         eventLog: [
           `Just now  preflight   launched ${input.duration} (${input.permissionMode})`,
-          `Just now  scheduler   queued mission on choeng-rayu-1 (${input.maxAgents})`,
         ],
       }
-      mockAutomations = {
-        ...mockAutomations,
-        running: [run, ...mockAutomations.running],
+      const target = IS_TEST_ENV ? mockAutomations : runtimeAutomations
+      const updated: AutomationsState = {
+        ...target,
+        running: [run, ...target.running],
       }
-      return structuredClone(mockAutomations)
+      if (IS_TEST_ENV) mockAutomations = updated
+      else runtimeAutomations = updated
+      return structuredClone(updated)
     },
     async toggleSchedule(scheduleId: string): Promise<AutomationsState> {
-      mockAutomations = {
-        ...mockAutomations,
-        schedules: mockAutomations.schedules.map((s) =>
+      const target = IS_TEST_ENV ? mockAutomations : runtimeAutomations
+      const updated: AutomationsState = {
+        ...target,
+        schedules: target.schedules.map((s) =>
           s.id === scheduleId ? { ...s, enabled: !s.enabled } : s
         ),
       }
-      return structuredClone(mockAutomations)
+      if (IS_TEST_ENV) mockAutomations = updated
+      else runtimeAutomations = updated
+      return structuredClone(updated)
     },
   },
 
   plugins: {
     async getState(): Promise<PluginsState> {
+      const mapExtensionsSnapshot = (ext: {
+        mcpConfigPath: string
+        mcpServers: Array<{
+          id: string
+          name: string
+          description: string
+          sourcePath: string
+          scope: "global" | "workspace"
+          transport: "stdio" | "url"
+          command?: string
+          args?: string[]
+          url?: string
+          envKeys?: string[]
+          installed: boolean
+        }>
+        skills: SkillItem[]
+        memories: MemoryFileItem[]
+      }): PluginsState => {
+        const installedById = new Map(
+          ext.mcpServers.map((s) => [s.id.toLowerCase(), s])
+        )
+
+        const blueprintPlugins: PluginCatalogItem[] = REAL_MCP_BLUEPRINTS.map(
+          (bp) => {
+            const live =
+              installedById.get(bp.mcpServerId.toLowerCase()) ??
+              installedById.get(bp.id.toLowerCase())
+            return {
+              id: bp.id,
+              mcpServerId: live?.id ?? bp.mcpServerId,
+              name: bp.name,
+              description: live ? live.description : bp.description,
+              category: bp.category,
+              installed: Boolean(live),
+              sourcePath: live?.sourcePath,
+              scope: live?.scope ?? "global",
+              transport: live?.transport ?? bp.transport,
+              command: live?.command ?? bp.command,
+              args: live?.args ?? bp.args,
+              url: live?.url ?? bp.url,
+              envKeys: live?.envKeys,
+              searchKeywords: `${bp.searchKeywords} ${bp.mcpServerId}`.toLowerCase(),
+            }
+          }
+        )
+
+        const matchedServerIds = new Set(
+          blueprintPlugins
+            .filter((p) => p.installed && p.mcpServerId)
+            .map((p) => p.mcpServerId!.toLowerCase())
+        )
+
+        const customMcpPlugins: PluginCatalogItem[] = ext.mcpServers
+          .filter((s) => !matchedServerIds.has(s.id.toLowerCase()))
+          .map((s) => ({
+            id: s.id,
+            mcpServerId: s.id,
+            name: s.name,
+            description: s.description,
+            category: "featured" as const,
+            installed: true,
+            sourcePath: s.sourcePath,
+            scope: s.scope,
+            transport: s.transport,
+            command: s.command,
+            args: s.args,
+            url: s.url,
+            envKeys: s.envKeys,
+            isCustomMcp: true,
+            searchKeywords: `${s.name} mcp custom ${s.description}`.toLowerCase(),
+          }))
+
+        const allPlugins = [...customMcpPlugins, ...blueprintPlugins]
+        return {
+          featuredId: allPlugins[0]?.id ?? "Context7 Docs",
+          plugins: allPlugins,
+          skills: ext.skills,
+          memories: ext.memories,
+        }
+      }
+
+      const bridge = getBridge()
+      if (!IS_TEST_ENV && bridge?.extensions?.list) {
+        try {
+          const ext = await bridge.extensions.list()
+          return mapExtensionsSnapshot(ext)
+        } catch {
+          // Fall through
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return mapExtensionsSnapshot({
+          mcpConfigPath: "~/.rayu/mcp.json",
+          mcpServers: [],
+          skills: [],
+          memories: [],
+        })
+      }
       return structuredClone(mockPlugins)
     },
     async toggleInstall(pluginId: string): Promise<PluginsState> {
+      const bridge = getBridge()
+      if (
+        !IS_TEST_ENV &&
+        bridge?.extensions?.list &&
+        bridge.extensions.upsertMcp &&
+        bridge.extensions.removeMcp
+      ) {
+        const current = await this.getState()
+        const target = current.plugins.find(
+          (p) =>
+            p.id === pluginId ||
+            p.mcpServerId?.toLowerCase() === pluginId.toLowerCase()
+        )
+        const serverId = target?.mcpServerId ?? pluginId
+        if (target?.installed) {
+          await bridge.extensions.removeMcp(serverId, target.scope)
+          return this.getState()
+        }
+        const bp = findMcpBlueprint(pluginId)
+        if (bp) {
+          await bridge.extensions.upsertMcp({
+            id: bp.mcpServerId,
+            scope: "global",
+            command: bp.command,
+            args: bp.args,
+            url: bp.url,
+          })
+          return this.getState()
+        }
+      }
       mockPlugins = {
         ...mockPlugins,
         plugins: mockPlugins.plugins.map((p) =>
@@ -2636,10 +4296,63 @@ export const ipcClient = {
       }
       return structuredClone(mockPlugins)
     },
+    async upsertMcp(input: {
+      id: string
+      scope?: "global" | "workspace"
+      command?: string
+      args?: string[]
+      url?: string
+      env?: Record<string, string>
+    }): Promise<PluginsState> {
+      const bridge = getBridge()
+      if (bridge?.extensions?.upsertMcp) {
+        await bridge.extensions.upsertMcp(input)
+      }
+      return this.getState()
+    },
+    async removeMcp(
+      id: string,
+      scope?: "global" | "workspace"
+    ): Promise<PluginsState> {
+      const bridge = getBridge()
+      if (bridge?.extensions?.removeMcp) {
+        await bridge.extensions.removeMcp(id, scope)
+      }
+      return this.getState()
+    },
+    async createSkill(input: {
+      name: string
+      description: string
+      instructions?: string
+    }): Promise<PluginsState> {
+      const bridge = getBridge()
+      if (bridge?.extensions?.createSkill) {
+        await bridge.extensions.createSkill(input)
+      }
+      return this.getState()
+    },
+    async toggleSkill(skillId: string): Promise<PluginsState> {
+      const bridge = getBridge()
+      if (!IS_TEST_ENV && bridge?.extensions?.toggleSkill) {
+        await bridge.extensions.toggleSkill(skillId)
+        return this.getState()
+      }
+      mockPlugins = {
+        ...mockPlugins,
+        skills: mockPlugins.skills.map((s) =>
+          s.id === skillId ? { ...s, enabled: !s.enabled } : s
+        ),
+      }
+      return structuredClone(mockPlugins)
+    },
     async setFeatured(pluginId: string): Promise<PluginsState> {
       mockPlugins = {
         ...mockPlugins,
         featuredId: pluginId,
+      }
+      if (!IS_TEST_ENV) {
+        const next = await this.getState()
+        return { ...next, featuredId: pluginId }
       }
       return structuredClone(mockPlugins)
     },
@@ -2647,9 +4360,43 @@ export const ipcClient = {
 
   changes: {
     async getState(): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges) {
+        try {
+          const live = await bridge.git.getChanges()
+          // CRITICAL FIX: return live even when files.length === 0 (clean repo!),
+          // never fall back to fake prototype diffs on a clean git worktree.
+          if (live) {
+            return live
+          }
+        } catch {
+          // Fall through when outside a git repository
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return {
+          branch: "main",
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+        }
+      }
       return structuredClone(mockChanges)
     },
     async acceptFile(fileId: string): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.toggleStage) {
+        try {
+          const live = await bridge.git.getChanges()
+          const target = live?.files.find((f) => f.id === fileId)
+          if (target) {
+            const updated = await bridge.git.toggleStage(target.path, false)
+            if (updated) return updated
+          }
+        } catch {
+          // Fall back to mock state
+        }
+      }
       mockChanges = {
         ...mockChanges,
         files: mockChanges.files.map((f) =>
@@ -2659,6 +4406,19 @@ export const ipcClient = {
       return structuredClone(mockChanges)
     },
     async rejectFile(fileId: string): Promise<ChangesState> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.discardFile) {
+        try {
+          const live = await bridge.git.getChanges()
+          const target = live?.files.find((f) => f.id === fileId)
+          if (target) {
+            const updated = await bridge.git.discardFile(target.path)
+            if (updated) return updated
+          }
+        } catch {
+          // Fall back to mock state
+        }
+      }
       mockChanges = {
         ...mockChanges,
         files: mockChanges.files.map((f) =>
@@ -2667,37 +4427,234 @@ export const ipcClient = {
       }
       return structuredClone(mockChanges)
     },
+    async toggleStage(fileId: string): Promise<ChangesState | null> {
+      const bridge = getBridge()
+      if (bridge?.git?.getChanges && bridge?.git?.toggleStage) {
+        const live = await bridge.git.getChanges()
+        const target = live?.files.find((f) => f.id === fileId)
+        if (target) {
+          const updated = await bridge.git.toggleStage(
+            target.path,
+            Boolean(target.staged)
+          )
+          if (updated) return updated
+        }
+      }
+      return null
+    },
+    async stageAll(staged: boolean): Promise<ChangesState | null> {
+      const bridge = getBridge()
+      if (bridge?.git?.stageAll) {
+        const updated = await bridge.git.stageAll(staged)
+        if (updated) return updated
+      }
+      return null
+    },
+    async commitStaged(input: { message: string }) {
+      const bridge = getBridge()
+      if (bridge?.git?.commit) {
+        return bridge.git.commit(input.message)
+      }
+      return null
+    },
+    async createPullRequest(input: {
+      baseBranch: string
+      headBranch: string
+      title: string
+      summary: string
+    }) {
+      const bridge = getBridge()
+      if (bridge?.git?.createPr) {
+        return bridge.git.createPr(input)
+      }
+      return null
+    },
+    async getCommits(): Promise<GitCommitSummary[]> {
+      const bridge = getBridge()
+      if (bridge?.git?.getCommits) {
+        try {
+          const live = await bridge.git.getCommits()
+          if (Array.isArray(live)) {
+            return live
+          }
+        } catch {
+          // Fall back below
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return []
+      }
+      return [
+        {
+          hash: "d28d576f",
+          message: "feat(session): route lookups through ShardStore::lookup",
+          author: "rayu@rayucode.com",
+          relativeTime: "2h ago",
+        },
+        {
+          hash: "42d20e80",
+          message: "refactor(cache): retire legacy RwLock SessionCache path",
+          author: "rayu@rayucode.com",
+          relativeTime: "5h ago",
+        },
+        {
+          hash: "2fe96905",
+          message: "docs(migration): document KV prefix cache rollout plan",
+          author: "rayu@rayucode.com",
+          relativeTime: "1d ago",
+        },
+      ]
+    },
   },
 
   telegram: {
     async getState(): Promise<TelegramState> {
-      return structuredClone(mockTelegram)
+      return structuredClone(IS_TEST_ENV ? mockTelegram : runtimeTelegram)
     },
     async setMode(mode: TelegramState["mode"]): Promise<TelegramState> {
-      mockTelegram = { ...mockTelegram, mode }
-      return structuredClone(mockTelegram)
+      if (IS_TEST_ENV) {
+        mockTelegram = { ...mockTelegram, mode }
+        return structuredClone(mockTelegram)
+      }
+      runtimeTelegram = { ...runtimeTelegram, mode }
+      return structuredClone(runtimeTelegram)
     },
     async resolveApproval(
       approvalId: string,
       decision: "approved" | "denied"
     ): Promise<TelegramState> {
-      mockTelegram = {
-        ...mockTelegram,
-        approvals: mockTelegram.approvals.map((a) =>
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      const updated = {
+        ...target,
+        approvals: target.approvals.map((a) =>
           a.id === approvalId ? { ...a, status: decision } : a
         ),
       }
-      return structuredClone(mockTelegram)
+      if (IS_TEST_ENV) mockTelegram = updated
+      else runtimeTelegram = updated
+      return structuredClone(updated)
     },
     async setRemoteUninstall(enabled: boolean): Promise<TelegramState> {
-      mockTelegram = { ...mockTelegram, remoteUninstallEnabled: enabled }
-      return structuredClone(mockTelegram)
+      if (IS_TEST_ENV) {
+        mockTelegram = { ...mockTelegram, remoteUninstallEnabled: enabled }
+        return structuredClone(mockTelegram)
+      }
+      runtimeTelegram = { ...runtimeTelegram, remoteUninstallEnabled: enabled }
+      return structuredClone(runtimeTelegram)
     },
   },
 
   settings: {
     async getState(): Promise<SettingsState> {
-      return structuredClone(mockSettings)
+      if (IS_TEST_ENV) {
+        return structuredClone(mockSettings)
+      }
+
+      const bridge = getBridge()
+      let persistedPrefs: Partial<SettingsState["preferences"]> & {
+        useAllCredits?: boolean
+      } = {}
+      if (bridge?.storage?.getPreferences) {
+        try {
+          persistedPrefs = await bridge.storage.getPreferences()
+        } catch {
+          // ignore
+        }
+      }
+      const mergedPrefs: SettingsState["preferences"] = {
+        ...mockSettings.preferences,
+        ...persistedPrefs,
+      }
+
+      const signedOutState: SettingsState = {
+        account: {
+          name: "Not signed in",
+          username: "Guest",
+          email: "Sign in to connect your Rayu Cloud account",
+          plan: "Signed out",
+          ageRange: "—",
+          builderProfile: "Not connected",
+          streakDays: 0,
+          sessionsCompleted: runtimeSessions.length,
+          kvSavingsPct: "0%",
+        },
+        usage: {
+          planName: "No active plan",
+          monthlyCreditsAllowance: 0,
+          monthlyCreditsRemaining: 0,
+          fiveHourCap: 0,
+          fiveHourLeft: 0,
+          weeklyCap: 0,
+          weeklyLeft: 0,
+          useAllCredits:
+            persistedPrefs.useAllCredits ?? mockSettings.usage.useAllCredits,
+          paygCredits: 0,
+        },
+        preferences: mergedPrefs,
+      }
+
+      if (!lastKnownAuthState?.signedIn) {
+        return signedOutState
+      }
+
+      const state = structuredClone(signedOutState)
+      const user = lastKnownAuthState.user
+      if (user) {
+        const email = user.email ?? ""
+        const handle = email.includes("@")
+          ? `@${email.split("@")[0]}`
+          : user.role || "member"
+        const displayName = user.displayName?.trim() || email || "Rayu User"
+        state.account = {
+          ...state.account,
+          name: displayName,
+          email: email || "Connected via Rayu Cloud",
+          username: handle,
+          builderProfile: displayName,
+        }
+      } else if (lastKnownAuthState.method === "apiKey") {
+        state.account = {
+          ...state.account,
+          name: "Rayu Cloud API Key",
+          email: "Authenticated via RAYU_API_KEY",
+          username: "api-key",
+          builderProfile: "API Key",
+        }
+      }
+
+      const credits = lastKnownAuthState.credits
+      if (credits) {
+        const fiveHourCap = credits.creditsPer5h ?? 0
+        const fiveHourUsed = credits.windowUsedCredits ?? 0
+        const fiveHourLeft =
+          fiveHourCap > 0
+            ? Math.max(0, Math.round((fiveHourCap - fiveHourUsed) * 100) / 100)
+            : 0
+
+        const weeklyCap = credits.creditsPerWeek ?? 0
+        const weeklyUsed = credits.weekUsedCredits ?? 0
+        const weeklyLeft =
+          weeklyCap > 0
+            ? Math.max(0, Math.round((weeklyCap - weeklyUsed) * 100) / 100)
+            : 0
+
+        state.account.plan = credits.plan || "Rayu Cloud"
+        state.usage = {
+          ...state.usage,
+          planName: credits.planName || credits.plan || "Rayu Cloud",
+          monthlyCreditsAllowance: credits.creditsPerPeriod ?? 0,
+          monthlyCreditsRemaining: credits.remainingCredits ?? 0,
+          fiveHourCap,
+          fiveHourLeft,
+          weeklyCap,
+          weeklyLeft,
+          useAllCredits:
+            credits.limitMode === "unlimited" ||
+            state.usage.useAllCredits,
+          paygCredits: Math.round(credits.topupBalance ?? 0),
+        }
+      }
+      return state
     },
     async updatePreferences(
       patch: Partial<SettingsState["preferences"]>
@@ -2706,35 +4663,339 @@ export const ipcClient = {
         ...mockSettings,
         preferences: { ...mockSettings.preferences, ...patch },
       }
-      return structuredClone(mockSettings)
+      const bridge = getBridge()
+      if (!IS_TEST_ENV && bridge?.storage?.updatePreferences) {
+        await bridge.storage.updatePreferences(patch).catch(() => {})
+      }
+      return ipcClient.settings.getState()
     },
     async setUseAllCredits(useAllCredits: boolean): Promise<SettingsState> {
       mockSettings = {
         ...mockSettings,
         usage: { ...mockSettings.usage, useAllCredits },
       }
-      return structuredClone(mockSettings)
+      const bridge = getBridge()
+      if (!IS_TEST_ENV && bridge?.storage?.updatePreferences) {
+        await bridge.storage.updatePreferences({ useAllCredits }).catch(() => {})
+      }
+      return ipcClient.settings.getState()
+    },
+  },
+
+  harness: {
+    onEvent(cb: (frame: Record<string, unknown>) => void): () => void {
+      localHarnessListeners.add(cb)
+      const bridge = getBridge()
+      const unsubBridge = bridge?.harness?.onEvent
+        ? bridge.harness.onEvent(cb)
+        : () => {}
+      return () => {
+        localHarnessListeners.delete(cb)
+        unsubBridge()
+      }
+    },
+    async setModel(sessionId: string, model: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setModel && (await isHarnessLive())) {
+        return bridge.harness.setModel(sessionId, model)
+      }
+      return { ok: true }
+    },
+    async setReasoningEffort(
+      sessionId: string,
+      effort: string
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
+        return bridge.harness.setReasoningEffort(sessionId, effort)
+      }
+      return { ok: true }
+    },
+    async setPermissionMode(
+      sessionId: string,
+      mode: PermissionModeId
+    ): Promise<{ ok: boolean; error?: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setPermissionMode) {
+        try {
+          return await bridge.harness.setPermissionMode(sessionId, mode)
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
+      return { ok: true }
     },
   },
 
   daemon: {
-    async getStatus(): Promise<DaemonStatus> {
+    async getStatus(): Promise<DaemonStatus & { mode?: "live" | "demo" }> {
       const bridge = getBridge()
       if (bridge?.daemon?.getStatus) {
         try {
-          return await bridge.daemon.getStatus()
+          const status = await bridge.daemon.getStatus()
+          lastKnownDaemonLive = Boolean(
+            status.connected && status.mode !== "demo"
+          )
+          return status
         } catch {
-          // fallback to mock status
+          lastKnownDaemonLive = false
         }
       }
-      return { ...mockDaemonStatus }
+      return { ...mockDaemonStatus, mode: "demo" }
     },
-    onStatusChange(cb: (status: DaemonStatus) => void): () => void {
+    async launch(): Promise<DaemonStatus & { mode?: "live" | "demo" }> {
+      const bridge = getBridge()
+      if (bridge?.daemon?.launch) {
+        const status = await bridge.daemon.launch()
+        lastKnownDaemonLive = Boolean(
+          status.connected && status.mode !== "demo"
+        )
+        return status
+      }
+      return { ...mockDaemonStatus, mode: "demo" }
+    },
+    onStatusChange(
+      cb: (status: DaemonStatus & { mode?: "live" | "demo" }) => void
+    ): () => void {
       const bridge = getBridge()
       if (bridge?.daemon?.onStatusChange) {
-        return bridge.daemon.onStatusChange(cb)
+        return bridge.daemon.onStatusChange((status) => {
+          lastKnownDaemonLive = Boolean(
+            status.connected && status.mode !== "demo"
+          )
+          cb(status)
+        })
       }
       return () => {}
+    },
+  },
+
+  auth: {
+    async getState(): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.getState) {
+        const state = await bridge.auth.getState()
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        try {
+          const state = await devAuthFetch<RayuAuthState>("auth/state")
+          lastKnownAuthState = state
+          return state
+        } catch {
+          // Fall through
+        }
+      }
+      return { ...DEFAULT_SIGNED_OUT_AUTH_STATE }
+    },
+    async refresh(): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.refresh) {
+        const state = await bridge.auth.refresh()
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        try {
+          const state = await devAuthFetch<RayuAuthState>("auth/refresh", {
+            method: "POST",
+          })
+          lastKnownAuthState = state
+          return state
+        } catch {
+          // Fall through
+        }
+      }
+      return { ...DEFAULT_SIGNED_OUT_AUTH_STATE }
+    },
+    async signInWithBrowser(): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.signInWithBrowser) {
+        const state = await bridge.auth.signInWithBrowser()
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        const state = await devAuthFetch<RayuAuthState>(
+          "auth/sign-in-browser",
+          { method: "POST" }
+        )
+        lastKnownAuthState = state
+        return state
+      }
+      throw new Error(
+        "Rayu Cloud sign-in requires the RayuCode Desktop app (Electron)."
+      )
+    },
+    async cancelSignIn(): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.cancelSignIn) {
+        const state = await bridge.auth.cancelSignIn()
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        const state = await devAuthFetch<RayuAuthState>("auth/cancel-sign-in", {
+          method: "POST",
+        })
+        lastKnownAuthState = state
+        return state
+      }
+      return { ...DEFAULT_SIGNED_OUT_AUTH_STATE }
+    },
+    async signInWithApiKey(apiKey: string): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.signInWithApiKey) {
+        const state = await bridge.auth.signInWithApiKey(apiKey)
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        const state = await devAuthFetch<RayuAuthState>("auth/sign-in-apikey", {
+          method: "POST",
+          body: { apiKey },
+        })
+        lastKnownAuthState = state
+        return state
+      }
+      throw new Error(
+        "Saving a Rayu API key requires the RayuCode Desktop app (Electron)."
+      )
+    },
+    async completeCallback(callbackUrl: string): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.completeCallback) {
+        const state = await bridge.auth.completeCallback(callbackUrl)
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        const state = await devAuthFetch<RayuAuthState>(
+          "auth/complete-callback",
+          {
+            method: "POST",
+            body: { callbackUrl },
+          }
+        )
+        lastKnownAuthState = state
+        return state
+      }
+      throw new Error(
+        "Completing Rayu Cloud sign-in requires the RayuCode Desktop app (Electron)."
+      )
+    },
+    async signOut(): Promise<RayuAuthState> {
+      const bridge = getBridge()
+      if (bridge?.auth?.signOut) {
+        const state = await bridge.auth.signOut()
+        lastKnownAuthState = state
+        return state
+      }
+      if (IS_DEV_SERVER) {
+        try {
+          const state = await devAuthFetch<RayuAuthState>("auth/sign-out", {
+            method: "POST",
+          })
+          lastKnownAuthState = state
+          return state
+        } catch {
+          // Fall through
+        }
+      }
+      lastKnownAuthState = { ...DEFAULT_SIGNED_OUT_AUTH_STATE }
+      return lastKnownAuthState
+    },
+    onAuthChange(cb: (state: RayuAuthState) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.auth?.onAuthChange) {
+        return bridge.auth.onAuthChange((state) => {
+          lastKnownAuthState = state
+          cb(state)
+        })
+      }
+      if (IS_DEV_SERVER && typeof EventSource !== "undefined") {
+        const es = new EventSource("/__rayu_dev/auth/events")
+        es.onmessage = (event) => {
+          try {
+            const state = JSON.parse(event.data) as RayuAuthState
+            lastKnownAuthState = state
+            cb(state)
+          } catch {
+            // ignore malformed event
+          }
+        }
+        return () => {
+          es.close()
+        }
+      }
+      return () => {}
+    },
+  },
+
+  cloud: {
+    async streamChat(input: {
+      sessionId: string
+      model: string
+      messages: CloudChatMessage[]
+    }): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.cloud?.streamChat) {
+        return bridge.cloud.streamChat(input)
+      }
+      if (IS_DEV_SERVER) {
+        const res = await fetch("/__rayu_dev/cloud/stream-chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(input),
+        })
+        if (!res.ok || !res.body) {
+          throw new Error(`Rayu Cloud dev stream failed (HTTP ${res.status})`)
+        }
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder("utf-8")
+        let buffer = ""
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const parts = buffer.split(/\r?\n\r?\n/)
+          buffer = parts.pop() ?? ""
+          for (const block of parts) {
+            for (const line of block.split(/\r?\n/)) {
+              const trimmed = line.trim()
+              if (!trimmed.startsWith("data:")) continue
+              try {
+                const frame = JSON.parse(trimmed.slice(5).trim()) as Record<
+                  string,
+                  unknown
+                >
+                emitLocalHarnessFrame(frame)
+              } catch {
+                // ignore malformed frame
+              }
+            }
+          }
+        }
+        return { ok: true }
+      }
+      throw new Error("Rayu Cloud streaming is only available in Desktop.")
+    },
+    async cancelStream(sessionId: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.cloud?.cancelStream) {
+        return bridge.cloud.cancelStream(sessionId)
+      }
+      if (IS_DEV_SERVER) {
+        await devAuthFetch("cloud/cancel-stream", {
+          method: "POST",
+          body: { sessionId },
+        }).catch(() => {})
+      }
+      return { ok: true }
     },
   },
 
@@ -2745,6 +5006,30 @@ export const ipcClient = {
         return bridge.native.openInExcel(filePath)
       }
       return { ok: true }
+    },
+    async openInPowerPoint(input: {
+      fileName?: string
+      title: string
+      slides: Array<{
+        id: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        notes?: string
+      }>
+    }): Promise<{ ok: boolean; filePath: string }> {
+      const bridge = getBridge()
+      if (bridge?.native?.openInPowerPoint) {
+        return bridge.native.openInPowerPoint(input)
+      }
+      return {
+        ok: true,
+        filePath: `~/.rayu/presentations/${(input.fileName ?? input.title)
+          .toLowerCase()
+          .replace(/[^a-z0-9-_]+/g, "-")}.html`,
+      }
     },
     async openInVSCode(
       targetPath: string,
@@ -2761,7 +5046,375 @@ export const ipcClient = {
       if (bridge?.native?.openExternal) {
         return bridge.native.openExternal(url)
       }
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        window.open(url, "_blank", "noopener,noreferrer")
+      }
       return { ok: true }
+    },
+    async revealInFinder(targetPath: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.native?.revealInFinder) {
+        return bridge.native.revealInFinder(targetPath)
+      }
+      return { ok: true }
+    },
+    async setKeepAwake(
+      enabled: boolean
+    ): Promise<{ ok: boolean; enabled: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.native?.setKeepAwake) {
+        return bridge.native.setKeepAwake(enabled)
+      }
+      return { ok: true, enabled }
+    },
+  },
+
+  templates: {
+    async list(): Promise<PersistedComposerTemplate[]> {
+      const bridge = getBridge()
+      if (bridge?.storage?.getTemplates && !IS_TEST_ENV) {
+        try {
+          return await bridge.storage.getTemplates()
+        } catch {
+          // Fall back to localStorage below
+        }
+      }
+      if (typeof window !== "undefined") {
+        try {
+          const raw = window.localStorage.getItem("rayu.customTemplates.v1")
+          if (raw) {
+            const parsed = JSON.parse(raw) as PersistedComposerTemplate[]
+            if (Array.isArray(parsed)) return parsed
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return []
+    },
+    async save(input: {
+      id?: string
+      kind: "spreadsheet" | "presentation" | "document"
+      name: string
+      description: string
+      promptSpec: string
+      accent?: "emerald" | "navy" | "amber" | "forest" | "obsidian"
+    }): Promise<PersistedComposerTemplate[]> {
+      const bridge = getBridge()
+      if (bridge?.storage?.saveTemplate && !IS_TEST_ENV) {
+        return bridge.storage.saveTemplate(input)
+      }
+      const existing = await ipcClient.templates.list()
+      const id =
+        input.id?.trim() ||
+        `tpl_${input.name
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")}_${Date.now().toString(36)}`
+      const entry: PersistedComposerTemplate = {
+        id,
+        kind: input.kind,
+        name: input.name.trim(),
+        description: input.description.trim() || "Custom reusable template",
+        promptSpec: input.promptSpec.trim(),
+        accent:
+          input.accent ??
+          (input.kind === "spreadsheet"
+            ? "emerald"
+            : input.kind === "presentation"
+              ? "navy"
+              : "obsidian"),
+        createdAt: Date.now(),
+      }
+      const next = [entry, ...existing.filter((item) => item.id !== id)].slice(
+        0,
+        50
+      )
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(
+            "rayu.customTemplates.v1",
+            JSON.stringify(next)
+          )
+        } catch {
+          // ignore
+        }
+      }
+      return next
+    },
+    async remove(id: string): Promise<PersistedComposerTemplate[]> {
+      const bridge = getBridge()
+      if (bridge?.storage?.deleteTemplate && !IS_TEST_ENV) {
+        return bridge.storage.deleteTemplate(id)
+      }
+      const existing = await ipcClient.templates.list()
+      const next = existing.filter((item) => item.id !== id)
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(
+            "rayu.customTemplates.v1",
+            JSON.stringify(next)
+          )
+        } catch {
+          // ignore
+        }
+      }
+      return next
+    },
+  },
+
+  sidebar: {
+    async getState(): Promise<SidebarState> {
+      const fallback: SidebarState = {
+        projects: [],
+        sections: [],
+        pinnedChatIds: [],
+        archivedChatIds: [],
+        organizeBy: "project",
+        sortBy: "updated",
+        showProjectChatsInRecents: true,
+        manualProjectOrder: [],
+      }
+      const bridge = getBridge()
+      if (bridge?.storage?.getSidebarState && !IS_TEST_ENV) {
+        try {
+          const loaded = await bridge.storage.getSidebarState()
+          if (loaded && typeof loaded === "object") {
+            return { ...fallback, ...loaded }
+          }
+        } catch {
+          // Fall back to localStorage below
+        }
+      }
+      if (typeof window !== "undefined" && !IS_TEST_ENV) {
+        try {
+          const raw = window.localStorage.getItem("rayu.sidebarState.v1")
+          if (raw) {
+            const parsed = JSON.parse(raw) as Partial<SidebarState>
+            if (parsed && typeof parsed === "object") {
+              return { ...fallback, ...parsed }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return fallback
+    },
+    async saveState(state: SidebarState): Promise<SidebarState> {
+      const bridge = getBridge()
+      if (bridge?.storage?.saveSidebarState && !IS_TEST_ENV) {
+        try {
+          return await bridge.storage.saveSidebarState(state)
+        } catch {
+          // Fall back to localStorage below
+        }
+      }
+      if (typeof window !== "undefined" && !IS_TEST_ENV) {
+        try {
+          window.localStorage.setItem(
+            "rayu.sidebarState.v1",
+            JSON.stringify(state)
+          )
+        } catch {
+          // ignore
+        }
+      }
+      return state
+    },
+  },
+
+  terminal: {
+    hasLivePty(): boolean {
+      const bridge = getBridge()
+      return Boolean(
+        !IS_TEST_ENV &&
+          bridge?.terminal?.ptyCreate &&
+          bridge?.terminal?.ptyWrite &&
+          bridge?.terminal?.onPtyData
+      )
+    },
+    async ptyCreate(input: {
+      sessionId: string
+      cwd?: string
+      cols?: number
+      rows?: number
+    }): Promise<{ ok: boolean; cwd: string; shell: string }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyCreate) {
+        return bridge.terminal.ptyCreate(input)
+      }
+      return { ok: false, cwd: input.cwd ?? "", shell: "" }
+    },
+    async ptyWrite(sessionId: string, data: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyWrite) {
+        return bridge.terminal.ptyWrite(sessionId, data)
+      }
+      return { ok: false }
+    },
+    async ptyResize(
+      sessionId: string,
+      cols: number,
+      rows: number
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyResize) {
+        return bridge.terminal.ptyResize(sessionId, cols, rows)
+      }
+      return { ok: false }
+    },
+    async ptyKill(sessionId: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyKill) {
+        return bridge.terminal.ptyKill(sessionId)
+      }
+      return { ok: false }
+    },
+    onPtyData(
+      cb: (payload: { sessionId: string; data: string }) => void
+    ): () => void {
+      const bridge = getBridge()
+      if (bridge?.terminal?.onPtyData) {
+        return bridge.terminal.onPtyData(cb)
+      }
+      return () => {}
+    },
+    onPtyExit(
+      cb: (payload: { sessionId: string; exitCode: number }) => void
+    ): () => void {
+      const bridge = getBridge()
+      if (bridge?.terminal?.onPtyExit) {
+        return bridge.terminal.onPtyExit(cb)
+      }
+      return () => {}
+    },
+  },
+
+  office: {
+    async pickExcelFile(): Promise<OfficeExcelWorkbookData | null> {
+      const bridge = getBridge()
+      if (bridge?.office?.pickExcelFile) {
+        return bridge.office.pickExcelFile()
+      }
+      return null
+    },
+    async readExcel(filePath: string): Promise<OfficeExcelWorkbookData | null> {
+      const bridge = getBridge()
+      if (bridge?.office?.readExcel) {
+        return bridge.office.readExcel(filePath)
+      }
+      return null
+    },
+    async writeExcel(input: {
+      filePath: string
+      sheets: OfficeExcelSheetPayload[]
+    }): Promise<{ ok: boolean; filePath: string; sheetCount: number; rowCount: number }> {
+      const bridge = getBridge()
+      if (bridge?.office?.writeExcel) {
+        return bridge.office.writeExcel(input)
+      }
+      return {
+        ok: true,
+        filePath: input.filePath,
+        sheetCount: input.sheets.length,
+        rowCount: input.sheets.reduce((sum, s) => sum + s.rows.length, 0),
+      }
+    },
+    async createPowerPoint(input: {
+      filePath?: string
+      fileName?: string
+      title: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }): Promise<{ ok: boolean; filePath: string; slideCount: number }> {
+      const bridge = getBridge()
+      if (bridge?.office?.createPowerPoint) {
+        return bridge.office.createPowerPoint(input)
+      }
+      return {
+        ok: true,
+        filePath: input.filePath ?? "~/.rayu/presentations/deck.pptx",
+        slideCount: input.slides.length,
+      }
+    },
+  },
+
+  desktop: {
+    onArtifact(listener: (artifact: DesktopArtifactEvent) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.desktop?.onArtifact) {
+        return bridge.desktop.onArtifact(listener)
+      }
+      return () => {}
+    },
+  },
+
+  browser: {
+    async navigate(url: string) {
+      const bridge = getBridge()
+      if (bridge?.browser?.navigate) {
+        return bridge.browser.navigate(url)
+      }
+      return { ok: false, url, title: "", error: "Electron browser bridge unavailable" }
+    },
+    async snapshot() {
+      const bridge = getBridge()
+      if (bridge?.browser?.snapshot) {
+        return bridge.browser.snapshot()
+      }
+      return {
+        ok: false,
+        url: "",
+        title: "",
+        refCount: 0,
+        tree: "",
+        error: "Electron browser bridge unavailable",
+      }
+    },
+    async click(ref: string) {
+      const bridge = getBridge()
+      if (bridge?.browser?.click) {
+        return bridge.browser.click(ref)
+      }
+      return { ok: false, message: "Electron browser bridge unavailable" }
+    },
+    async type(ref: string, text: string, submit?: boolean) {
+      const bridge = getBridge()
+      if (bridge?.browser?.type) {
+        return bridge.browser.type(ref, text, submit)
+      }
+      return { ok: false, message: "Electron browser bridge unavailable" }
+    },
+    async screenshot() {
+      const bridge = getBridge()
+      if (bridge?.browser?.screenshot) {
+        return bridge.browser.screenshot()
+      }
+      return {
+        ok: false,
+        url: "",
+        title: "",
+        dataUrl: "",
+        error: "Electron browser bridge unavailable",
+      }
+    },
+    onEnsureOpen(listener: (payload: { url?: string }) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.browser?.onEnsureOpen) {
+        return bridge.browser.onEnsureOpen(listener)
+      }
+      return () => {}
     },
   },
 }

@@ -11,6 +11,29 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Session-level local permission mode enforced by the daemon.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    #[serde(alias = "acceptEdits")]
+    AcceptEdits,
+    Plan,
+    #[serde(alias = "fullManage")]
+    FullManage,
+    Orchestrator,
+}
+
+/// Interactive permission decision returned by a client.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionDecision {
+    Allow,
+    AllowAlways,
+    Deny,
+}
+
 /// SDK-owned session tool declaration. Parameters is a JSON schema object.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionToolDefinition {
@@ -158,6 +181,9 @@ pub enum Request {
         /// This connection can render a questionnaire and submit a human reply.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_questions: bool,
+        /// This connection can render interactive permission prompts and reply with decisions.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_permissions: bool,
         /// The client has no account-router countdown of its own (Desktop,
         /// SDK). On a usage/rate-limit failure the server switches to the next
         /// pool-approved account and retries the turn itself.
@@ -577,6 +603,19 @@ pub enum Request {
         response: rayucode_tool_types::questions::QuestionResponse,
     },
 
+    /// Change the active local permission mode for this session.
+    #[serde(rename = "set_permission_mode")]
+    SetPermissionMode { id: u64, mode: PermissionMode },
+
+    /// Respond to a pending `ServerEvent::PermissionRequest`.
+    #[serde(rename = "permission_response")]
+    PermissionResponse {
+        id: u64,
+        session_id: String,
+        request_id: String,
+        decision: PermissionDecision,
+    },
+
     // === Agent-to-agent communication ===
     /// Register as an external agent
     #[serde(rename = "agent_register")]
@@ -960,5 +999,72 @@ mod session_env_tests {
         assert_eq!(decoded.id(), 42);
         assert!(!format!("{decoded:?}").contains("private-secret"));
         assert!(!format!("{decoded:?}").contains("TOKEN"));
+    }
+
+    #[test]
+    fn permission_wire_types_roundtrip_and_accept_camel_case_aliases() {
+        for (raw, expected) in [
+            ("default", PermissionMode::Default),
+            ("accept_edits", PermissionMode::AcceptEdits),
+            ("acceptEdits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("full_manage", PermissionMode::FullManage),
+            ("fullManage", PermissionMode::FullManage),
+            ("orchestrator", PermissionMode::Orchestrator),
+        ] {
+            let req_json = format!(r#"{{"type":"set_permission_mode","id":5,"mode":"{raw}"}}"#);
+            let decoded: Request = serde_json::from_str(&req_json).unwrap();
+            assert_eq!(decoded.id(), 5);
+            assert!(matches!(decoded, Request::SetPermissionMode { id: 5, mode } if mode == expected));
+        }
+
+        for decision in [
+            PermissionDecision::Allow,
+            PermissionDecision::AllowAlways,
+            PermissionDecision::Deny,
+        ] {
+            let req = Request::PermissionResponse {
+                id: 9,
+                session_id: "s1".into(),
+                request_id: "perm_1".into(),
+                decision,
+            };
+            let json = serde_json::to_string(&req).unwrap();
+            let decoded: Request = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded.id(), 9);
+            assert!(matches!(
+                decoded,
+                Request::PermissionResponse {
+                    id: 9,
+                    session_id,
+                    request_id,
+                    decision: d
+                } if session_id == "s1" && request_id == "perm_1" && d == decision
+            ));
+        }
+
+        let ev = ServerEvent::PermissionRequest {
+            session_id: "s1".into(),
+            request_id: "perm_1".into(),
+            tool_name: "bash".into(),
+            description: "Run bash command".into(),
+            input: serde_json::json!({"command": "ls"}),
+        };
+        let encoded = serde_json::to_string(&ev).unwrap();
+        let decoded: ServerEvent = serde_json::from_str(&encoded).unwrap();
+        assert!(matches!(
+            decoded,
+            ServerEvent::PermissionRequest {
+                session_id,
+                request_id,
+                tool_name,
+                description,
+                input,
+            } if session_id == "s1"
+                && request_id == "perm_1"
+                && tool_name == "bash"
+                && description == "Run bash command"
+                && input == serde_json::json!({"command": "ls"})
+        ));
     }
 }

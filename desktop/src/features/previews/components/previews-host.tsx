@@ -6,9 +6,22 @@ import { useAppStore } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
 
 import type { PreviewTabKind } from "../types"
-import { BrowserPane } from "./browser-pane"
-import { ExcelPane } from "./excel-pane"
-import { MarkdownPane } from "./markdown-pane"
+
+const BrowserPane = React.lazy(() =>
+  import("./browser-pane").then((m) => ({ default: m.BrowserPane }))
+)
+const DiagramPane = React.lazy(() =>
+  import("./diagram-pane").then((m) => ({ default: m.DiagramPane }))
+)
+const ExcelPane = React.lazy(() =>
+  import("./excel-pane").then((m) => ({ default: m.ExcelPane }))
+)
+const MarkdownPane = React.lazy(() =>
+  import("./markdown-pane").then((m) => ({ default: m.MarkdownPane }))
+)
+const SlidePane = React.lazy(() =>
+  import("./slide-pane").then((m) => ({ default: m.SlidePane }))
+)
 
 export interface PreviewsHostProps {
   /** Optional explicit preview tab override; defaults to `useAppStore((s) => s.activeRightTab)`. */
@@ -48,6 +61,10 @@ export function PreviewsHost({ tab, className }: PreviewsHostProps) {
         return <ExcelPane />
       case "markdown":
         return <MarkdownPane />
+      case "slide":
+        return <SlidePane />
+      case "diagram":
+        return <DiagramPane />
       default:
         return null
     }

@@ -663,9 +663,7 @@ function createNormalizedWorkbook(raw: PreviewsState["excel"]): ExcelWorkbookSta
     activeSheetId: normalizedSheets[0].id,
     selectedCellRef: "C7",
     selectedFormula: "=SUM(C2:C6)",
-    liveWebUrl:
-      raw.liveWebUrl ||
-      "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx",
+    liveWebUrl: raw.liveWebUrl || "",
     sheets: normalizedSheets,
   }
 
@@ -817,17 +815,6 @@ export async function syncBrowserBounds(
 
   if (typeof previewsBridge.setBrowserBounds === "function") {
     return previewsBridge.setBrowserBounds(payload)
-  }
-
-  if (typeof window !== "undefined" && window.rayu?.daemon?.invoke) {
-    try {
-      return await window.rayu.daemon.invoke<{ ok: boolean }>(
-        "previews.setBrowserBounds",
-        payload
-      )
-    } catch {
-      return { ok: false }
-    }
   }
 
   return { ok: true }

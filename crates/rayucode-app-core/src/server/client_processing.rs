@@ -217,6 +217,7 @@ pub(super) async fn start_processing_message(
         active_skill,
         server_failover,
         question_client,
+        permission_client,
     } = message;
     if server_reload_starting() {
         crate::logging::info(&format!(
@@ -441,10 +442,10 @@ pub(super) async fn start_processing_message(
                 }
             }),
         );
-        let result = match std::panic::AssertUnwindSafe(crate::tool::ask_user_question::scope(
+        let result = match std::panic::AssertUnwindSafe(crate::tool::permission_gate::scope(
             &question_session,
-            question_client,
-            turn,
+            permission_client,
+            crate::tool::ask_user_question::scope(&question_session, question_client, turn),
         ))
         .catch_unwind()
         .await

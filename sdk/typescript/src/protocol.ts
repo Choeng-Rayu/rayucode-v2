@@ -14,6 +14,15 @@ export type RuntimeCommand = "skills" | "context" | "info" | "cache" | "memory" 
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
+export type PermissionMode =
+  | "default"
+  | "accept_edits"
+  | "acceptEdits"
+  | "plan"
+  | "full_manage"
+  | "fullManage"
+  | "orchestrator";
+
 export type ErrorCode =
   | "unsupported_version"
   | "unknown_request"
@@ -157,7 +166,14 @@ export interface ToolConfiguration {
 }
 
 export type ApiRequest =
-  | { req: "hello"; min_version: number; max_version: number; client: string; supports_user_response?: boolean }
+  | {
+      req: "hello";
+      min_version: number;
+      max_version: number;
+      client: string;
+      supports_user_response?: boolean;
+      supports_permissions?: boolean;
+    }
   | { req: "list_sessions"; include_archived?: boolean; limit?: number }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
@@ -197,6 +213,11 @@ export type ApiRequest =
       session_id: string;
       request_id: string;
       decision: PermissionDecision;
+    }
+  | {
+      req: "set_permission_mode";
+      session_id: string;
+      mode: PermissionMode;
     }
   | { req: "list_models"; session_id: string }
   | { req: "get_runtime_info"; session_id: string }
@@ -550,6 +571,7 @@ export const KNOWN_REQUEST_KINDS = [
   "clear",
   "rewind",
   "permission_response",
+  "set_permission_mode",
   "list_models",
   "get_runtime_info",
   "set_api_key",

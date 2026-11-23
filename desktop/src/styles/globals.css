@@ -169,17 +169,48 @@
   --office-ppt: #e9b9a2;
   --office-ppt-soft: rgba(223, 168, 143, 0.15);
 
-  --diff-add-bg: rgba(61, 189, 132, 0.13);
-  --diff-del-bg: rgba(207, 45, 86, 0.15);
+  --diff-add-bg: rgba(61, 189, 132, 0.14);
+  --diff-del-bg: rgba(207, 45, 86, 0.16);
+  --diff-add-rail: #3dbd84;
+  --diff-del-rail: #cf2d56;
 
-  /* Syntax (Warm Dark) */
-  --code-kw: #5fd19c;
+  /* Syntax & Chromatic Semantic Layer (Warm Editorial Dark — matches Claude Code diff palette) */
+  --folder: #e0b366;
+  --folder-soft: rgba(224, 179, 102, 0.14);
+  --code-kw: #d9826c;
   --code-str: #dcae66;
-  --code-fn: #a9c4ea;
-  --code-type: #c9b3e6;
+  --code-fn: #8ab4f8;
+  --code-type: #b9a4f4;
   --code-num: #e9b9a2;
-  --code-com: #8f8b80;
+  --code-prop: #b6d0f2;
+  --code-com: #807c72;
   --code-plain: #dedbd0;
+
+  /* Technology File Badges (Dark) */
+  --tech-ts-bg: rgba(59, 130, 246, 0.22);
+  --tech-ts-fg: #60a5fa;
+  --tech-react-bg: rgba(56, 189, 248, 0.22);
+  --tech-react-fg: #38bdf8;
+  --tech-js-bg: rgba(234, 179, 8, 0.22);
+  --tech-js-fg: #facc15;
+  --tech-rs-bg: rgba(234, 88, 12, 0.24);
+  --tech-rs-fg: #fb923c;
+  --tech-py-bg: rgba(96, 165, 250, 0.22);
+  --tech-py-fg: #93c5fd;
+  --tech-go-bg: rgba(45, 212, 191, 0.22);
+  --tech-go-fg: #2dd4bf;
+  --tech-json-bg: rgba(217, 119, 6, 0.22);
+  --tech-json-fg: #fbbf24;
+  --tech-md-bg: rgba(168, 85, 247, 0.22);
+  --tech-md-fg: #c084fc;
+  --tech-css-bg: rgba(129, 140, 248, 0.24);
+  --tech-css-fg: #a5b4fc;
+  --tech-html-bg: rgba(249, 115, 22, 0.22);
+  --tech-html-fg: #fb923c;
+  --tech-sh-bg: rgba(61, 189, 132, 0.22);
+  --tech-sh-fg: #5fd19c;
+  --tech-sql-bg: rgba(147, 197, 253, 0.22);
+  --tech-sql-fg: #93c5fd;
 
   --shadow-1: 0 2px 10px rgba(0, 0, 0, 0.42);
   --shadow-2: 0 12px 36px rgba(0, 0, 0, 0.65);
@@ -282,17 +313,48 @@
   --office-ppt: #9a4d24;
   --office-ppt-soft: #f1d9cd;
 
-  --diff-add-bg: rgba(15, 123, 79, 0.08);
-  --diff-del-bg: rgba(207, 45, 86, 0.07);
+  --diff-add-bg: rgba(15, 123, 79, 0.09);
+  --diff-del-bg: rgba(207, 45, 86, 0.08);
+  --diff-add-rail: #0f7b4f;
+  --diff-del-rail: #cf2d56;
 
-  /* Syntax (Warm Paper Light) */
-  --code-kw: #0d7449;
+  /* Syntax & Chromatic Semantic Layer (Warm Paper Light) */
+  --folder: #b4690e;
+  --folder-soft: rgba(180, 105, 14, 0.11);
+  --code-kw: #b5472a;
   --code-str: #9a6414;
   --code-fn: #1e5a9e;
   --code-type: #6a3fa0;
   --code-num: #b04a2a;
+  --code-prop: #27568b;
   --code-com: #77736a;
   --code-plain: #26251e;
+
+  /* Technology File Badges (Light) */
+  --tech-ts-bg: rgba(29, 78, 216, 0.12);
+  --tech-ts-fg: #1d4ed8;
+  --tech-react-bg: rgba(2, 132, 199, 0.12);
+  --tech-react-fg: #0369a1;
+  --tech-js-bg: rgba(161, 98, 7, 0.14);
+  --tech-js-fg: #a16207;
+  --tech-rs-bg: rgba(194, 65, 12, 0.13);
+  --tech-rs-fg: #c2410c;
+  --tech-py-bg: rgba(30, 90, 158, 0.13);
+  --tech-py-fg: #1e5a9e;
+  --tech-go-bg: rgba(15, 118, 110, 0.13);
+  --tech-go-fg: #0f766e;
+  --tech-json-bg: rgba(180, 83, 9, 0.13);
+  --tech-json-fg: #b45309;
+  --tech-md-bg: rgba(107, 33, 168, 0.12);
+  --tech-md-fg: #6b21a8;
+  --tech-css-bg: rgba(67, 56, 202, 0.12);
+  --tech-css-fg: #4338ca;
+  --tech-html-bg: rgba(194, 65, 12, 0.12);
+  --tech-html-fg: #c2410c;
+  --tech-sh-bg: rgba(15, 123, 79, 0.12);
+  --tech-sh-fg: #0f7b4f;
+  --tech-sql-bg: rgba(30, 90, 158, 0.12);
+  --tech-sql-fg: #1e5a9e;
 
   --shadow-1: 0 1px 2px rgba(38, 37, 30, 0.06),
     0 8px 24px -16px rgba(38, 37, 30, 0.22);
@@ -381,6 +443,8 @@
   --color-info-soft: var(--info-soft);
   --color-diff-add: var(--diff-add-bg);
   --color-diff-del: var(--diff-del-bg);
+  --color-diff-add-rail: var(--diff-add-rail);
+  --color-diff-del-rail: var(--diff-del-rail);
   --color-selection: var(--selection-bg);
 
   --color-pill-think-bg: var(--pk-think);
@@ -393,6 +457,48 @@
   --color-pill-edit-fg: var(--pf-edit);
   --color-pill-done-bg: var(--pk-done);
   --color-pill-done-fg: var(--pf-done);
+
+  /* Chromatic Syntax, Folder & Document Utilities */
+  --color-folder: var(--folder);
+  --color-folder-soft: var(--folder-soft);
+  --color-code-kw: var(--code-kw);
+  --color-code-str: var(--code-str);
+  --color-code-fn: var(--code-fn);
+  --color-code-type: var(--code-type);
+  --color-code-num: var(--code-num);
+  --color-code-prop: var(--code-prop);
+  --color-code-com: var(--code-com);
+  --color-code-plain: var(--code-plain);
+  --color-tech-ts-bg: var(--tech-ts-bg);
+  --color-tech-ts-fg: var(--tech-ts-fg);
+  --color-tech-react-bg: var(--tech-react-bg);
+  --color-tech-react-fg: var(--tech-react-fg);
+  --color-tech-js-bg: var(--tech-js-bg);
+  --color-tech-js-fg: var(--tech-js-fg);
+  --color-tech-rs-bg: var(--tech-rs-bg);
+  --color-tech-rs-fg: var(--tech-rs-fg);
+  --color-tech-py-bg: var(--tech-py-bg);
+  --color-tech-py-fg: var(--tech-py-fg);
+  --color-tech-go-bg: var(--tech-go-bg);
+  --color-tech-go-fg: var(--tech-go-fg);
+  --color-tech-json-bg: var(--tech-json-bg);
+  --color-tech-json-fg: var(--tech-json-fg);
+  --color-tech-md-bg: var(--tech-md-bg);
+  --color-tech-md-fg: var(--tech-md-fg);
+  --color-tech-css-bg: var(--tech-css-bg);
+  --color-tech-css-fg: var(--tech-css-fg);
+  --color-tech-html-bg: var(--tech-html-bg);
+  --color-tech-html-fg: var(--tech-html-fg);
+  --color-tech-sh-bg: var(--tech-sh-bg);
+  --color-tech-sh-fg: var(--tech-sh-fg);
+  --color-tech-sql-bg: var(--tech-sql-bg);
+  --color-tech-sql-fg: var(--tech-sql-fg);
+  --color-office-excel: var(--office-excel);
+  --color-office-excel-soft: var(--office-excel-soft);
+  --color-office-ppt: var(--office-ppt);
+  --color-office-ppt-soft: var(--office-ppt-soft);
+  --color-office-word: var(--office-word);
+  --color-office-word-soft: var(--office-word-soft);
 
   /* shadcn/ui Standard Tokens (all backed by Rayu variables) */
   --color-background: var(--background);
@@ -495,4 +601,83 @@
 .rayu-primary-bevel {
   border: 1px solid var(--border-primary);
   box-shadow: var(--bevel-primary);
+}
+
+/* Welcome / Auth Gate choreographed entrance motion */
+@keyframes rayuAuthLogoIn {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rayuAuthRiseIn {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rayu-auth-logo-enter {
+  animation: rayuAuthLogoIn 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.rayu-auth-text-enter {
+  animation: rayuAuthRiseIn 520ms cubic-bezier(0.16, 1, 0.3, 1) 240ms both;
+}
+
+.rayu-auth-actions-enter {
+  animation: rayuAuthRiseIn 520ms cubic-bezier(0.16, 1, 0.3, 1) 460ms both;
+}
+
+.rayu-auth-footer-enter {
+  animation: rayuAuthRiseIn 480ms cubic-bezier(0.16, 1, 0.3, 1) 660ms both;
+}
+
+.rayu-auth-ambient-glow {
+  background:
+    radial-gradient(
+      62% 46% at 50% 106%,
+      var(--accent-soft) 0%,
+      var(--info-soft) 36%,
+      transparent 72%
+    );
+}
+
+@keyframes rayuDotOrbit {
+  0% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  35% {
+    opacity: 0.48;
+    transform: scale(0.92);
+  }
+  70%,
+  100% {
+    opacity: 0.16;
+    transform: scale(0.76);
+  }
+}
+
+.rayu-dot-orbit {
+  animation: rayuDotOrbit 960ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rayu-auth-logo-enter,
+  .rayu-auth-text-enter,
+  .rayu-auth-actions-enter,
+  .rayu-auth-footer-enter,
+  .rayu-dot-orbit {
+    animation: none;
+  }
 }

@@ -2,9 +2,9 @@ import type { ChangedFileDiff, ChangesState } from "@/lib/ipc-client"
 
 export type InspectorConnectorStatus = "Linked" | "Reconnect"
 
-export type InspectorOutputKind = "browser" | "markdown" | "excel"
+export type InspectorOutputKind = "browser" | "markdown" | "excel" | "slide"
 
-export type PreviewDocumentTab = "browser" | "excel" | "markdown"
+export type PreviewDocumentTab = "browser" | "excel" | "markdown" | "slide" | "diagram"
 
 export interface ContextBreakdownSubItem {
   key: string

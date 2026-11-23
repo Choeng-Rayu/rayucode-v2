@@ -42,4 +42,6 @@ captures/
 # RayuCode Desktop build outputs & swarm verification logs
 desktop/dist/
 desktop/dist-electron/
+desktop/release/
+desktop/resources/bin/
 .swarm-logs/
