@@ -62,10 +62,6 @@ export function CoordinationLedger({
               Worktrees ({worktrees.length})
             </TabsTrigger>
           </TabsList>
-
-          <span className="text-[11.5px] text-muted-ink">
-            Daemon snapshot persisted · survives reload
-          </span>
         </div>
 
         {/* Tab 1: Message Board */}

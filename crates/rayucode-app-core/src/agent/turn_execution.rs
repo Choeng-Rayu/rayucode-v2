@@ -501,10 +501,11 @@ impl Agent {
         if self.session.is_canary {
             self.registry.register_selfdev_tools().await;
         }
-        let tools = match &self.locked_tools {
+        let mut tools = match &self.locked_tools {
             Some(tools) => tools.clone(),
             None => self.build_filtered_tool_definitions().await,
         };
+        crate::tool::permission_gate::filter_tool_definitions(self.session_id(), &mut tools);
         let prompt = self.build_system_prompt_split(None);
         self.provider.prewarm(&tools, &prompt.static_part).await;
     }
@@ -512,6 +513,7 @@ impl Agent {
     pub(super) async fn tool_definitions(&mut self) -> Vec<ToolDefinition> {
         let mut tools = self.turn_tool_definitions().await;
         self.add_question_definition(&mut tools);
+        crate::tool::permission_gate::filter_tool_definitions(self.session_id(), &mut tools);
         tools
     }
 
@@ -1069,6 +1071,7 @@ impl Agent {
         }
         let mut tools = self.build_filtered_tool_definitions().await;
         self.add_question_definition(&mut tools);
+        crate::tool::permission_gate::filter_tool_definitions(self.session_id(), &mut tools);
         tools
     }
 
@@ -1152,6 +1155,7 @@ impl Agent {
         } else {
             Registry::resolve_tool_name(unqualified_name)
         };
+        crate::tool::permission_gate::validate_mode_allows(&self.session.id, name)?;
         let mut sdk_enabled = false;
         if let Some(config) = crate::tool::sdk::config(&self.session.id) {
             let disabled = config.disabled.into_iter().collect();

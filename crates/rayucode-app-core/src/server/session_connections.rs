@@ -41,6 +41,8 @@ pub(super) async fn connection_presence_pong(
             "soft_interrupt_ids".into(),
             "runtime_commands".into(),
             "session_connections".into(),
+            "permissions".into(),
+            "permission_modes".into(),
             crate::telegram_remote::DAEMON_CAPABILITY.into(),
         ],
         user_connected_session_ids: Some(user_connected_session_ids),

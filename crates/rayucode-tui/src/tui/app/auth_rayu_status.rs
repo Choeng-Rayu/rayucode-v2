@@ -114,24 +114,51 @@ pub(super) fn rayu_identity_line(
 /// without a network or an App.
 pub(super) fn rayu_credits_status_lines(credits: &crate::rayu::RayuCredits) -> Vec<String> {
     let mut lines = Vec::new();
-    let plan = if credits.plan_name.trim().is_empty() {
-        credits.plan.as_str()
-    } else {
-        credits.plan_name.as_str()
-    };
+    let plan = credits.display_plan_name();
     lines.push(format!("Plan: {plan}"));
-    match (credits.used_credits, credits.credits_per_period) {
-        (used, Some(per_period)) => {
+    if credits.is_team_scope() {
+        if let Some(team) = &credits.team {
+            let role = team.role.trim();
+            if !role.is_empty() {
+                lines.push(format!("Scope: team ({role})"));
+            } else {
+                lines.push("Scope: team".to_string());
+            }
+        } else {
+            lines.push("Scope: team".to_string());
+        }
+    }
+    let used_period = credits.used_credits.max(0.0);
+    match credits
+        .credits_per_period
+        .filter(|value| value.is_finite() && *value > 0.0)
+    {
+        Some(per_period) => {
             lines.push(format!(
-                "Credits: {used:.2} of {per_period:.2} used this period"
+                "Credits: {used_period:.2} of {per_period:.2} used this period"
             ));
         }
-        (used, None) => lines.push(format!("Credits used this period: {used:.2}")),
+        None => lines.push(format!("Credits used this period: {used_period:.2}")),
     }
-    if let Some(remaining) = credits.remaining_credits {
+    if let Some(remaining) = credits.remaining_credits.filter(|value| value.is_finite()) {
         lines.push(format!("Remaining: {remaining:.2} credits"));
     }
-    if credits.topup_balance > 0.0 {
+    if let Some(team) = &credits.team {
+        if team.bucket_quota.is_finite() && team.bucket_quota > 0.0 {
+            lines.push(format!(
+                "Team seat remaining: {:.2} of {:.2} credits",
+                team.bucket_remaining.max(0.0),
+                team.bucket_quota
+            ));
+        }
+        if team.purchased_remaining.is_finite() && team.purchased_remaining > 0.0 {
+            lines.push(format!(
+                "Team extra credits: {:.2} remaining",
+                team.purchased_remaining
+            ));
+        }
+    }
+    if credits.topup_balance.is_finite() && credits.topup_balance > 0.0 {
         lines.push(format!(
             "Top-up balance: {:.2} credits",
             credits.topup_balance
@@ -144,6 +171,50 @@ pub(super) fn rayu_credits_status_lines(credits: &crate::rayu::RayuCredits) -> V
         ));
     } else if let Some(end) = credits.period_end.as_deref() {
         lines.push(format!("Period ends: {end}"));
+    }
+    if credits.is_pacing_enforced() {
+        if let Some(cap) = credits
+            .credits_per_5h
+            .filter(|v| v.is_finite() && *v > 0.0)
+        {
+            let used = credits.window_used_credits.max(0.0);
+            let reset = if credits.window_reset_seconds > 0 {
+                format!(
+                    " (resets in {})",
+                    format_reset_countdown(credits.window_reset_seconds)
+                )
+            } else {
+                String::new()
+            };
+            lines.push(format!("Session window: {used:.2} / {cap:.2} used{reset}"));
+        }
+        if let Some(cap) = credits
+            .credits_per_week
+            .filter(|v| v.is_finite() && *v > 0.0)
+        {
+            let used = credits.week_used_credits.max(0.0);
+            let reset = if credits.week_reset_seconds > 0 {
+                format!(
+                    " (resets in {})",
+                    format_reset_countdown(credits.week_reset_seconds)
+                )
+            } else {
+                String::new()
+            };
+            lines.push(format!("Weekly window: {used:.2} / {cap:.2} used{reset}"));
+        }
+    }
+    if let Some(max_turns) = credits.max_daily_turns.filter(|&v| v > 0) {
+        let used = credits.turns_used_today.max(0);
+        let reset = if credits.turns_reset_seconds > 0 {
+            format!(
+                " (resets in {})",
+                format_reset_countdown(credits.turns_reset_seconds)
+            )
+        } else {
+            String::new()
+        };
+        lines.push(format!("Daily turns: {used} / {max_turns} used{reset}"));
     }
     if let Some(mode) = credits
         .limit_mode

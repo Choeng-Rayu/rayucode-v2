@@ -454,7 +454,10 @@ impl AuthChanged {
 pub type ReloadRecoverySnapshot = rayucode_selfdev_types::ReloadRecoveryDirective;
 
 mod wire;
-pub use wire::{AccountUsageSnapshot, AccountUsageWindow, Request, ServerEvent, TurnIdentity};
+pub use wire::{
+    AccountUsageSnapshot, AccountUsageWindow, PermissionDecision, PermissionMode, Request,
+    ServerEvent, TurnIdentity,
+};
 pub use wire::{SessionToolConfig, SessionToolDefinition};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -957,7 +960,10 @@ impl Request {
             Request::AccountUsage { id } => *id,
             Request::InvalidateOpenAiUsage { id, .. } => *id,
             Request::InvalidateAnthropicUsage { id, .. } => *id,
-            Request::StdinResponse { id, .. } | Request::QuestionResponse { id, .. } => *id,
+            Request::StdinResponse { id, .. }
+            | Request::QuestionResponse { id, .. }
+            | Request::SetPermissionMode { id, .. }
+            | Request::PermissionResponse { id, .. } => *id,
             Request::AgentRegister { id, .. } => *id,
             Request::AgentTask { id, .. } => *id,
             Request::AgentCapabilities { id } => *id,

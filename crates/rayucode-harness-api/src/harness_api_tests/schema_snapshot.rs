@@ -263,6 +263,7 @@ fn request_roundtrip() {
             client: "test/0".into(),
             supports_user_response: false,
             supports_user_questions: false,
+            supports_permissions: false,
         },
         ApiRequest::ListSessions {
             include_archived: false,
@@ -291,6 +292,10 @@ fn request_roundtrip() {
             session_id: "s1".into(),
             request_id: "p1".into(),
             decision: PermissionDecision::Allow,
+        },
+        ApiRequest::SetPermissionMode {
+            session_id: "s1".into(),
+            mode: PermissionMode::AcceptEdits,
         },
         ApiRequest::GetRuntimeInfo {
             session_id: "s1".into(),
@@ -789,4 +794,78 @@ fn turn_stopped_schema_and_future_reason_compatibility() {
         serde_json::from_value(serde_json::json!({"v":1,"ev":"turn_done","session_id":"s1"}))
             .unwrap();
     assert!(matches!(done.event, ApiEvent::TurnDone { .. }));
+}
+
+#[test]
+fn permission_mode_and_permission_frames_wire_shapes_and_aliases() {
+    use serde_json::json;
+    for (raw, expected, canonical) in [
+        ("default", PermissionMode::Default, "default"),
+        ("accept_edits", PermissionMode::AcceptEdits, "accept_edits"),
+        ("acceptEdits", PermissionMode::AcceptEdits, "accept_edits"),
+        ("plan", PermissionMode::Plan, "plan"),
+        ("full_manage", PermissionMode::FullManage, "full_manage"),
+        ("fullManage", PermissionMode::FullManage, "full_manage"),
+        ("orchestrator", PermissionMode::Orchestrator, "orchestrator"),
+    ] {
+        let frame: ClientFrame = serde_json::from_value(json!({
+            "v": 1, "id": 10, "req": "set_permission_mode", "session_id": "s1", "mode": raw
+        }))
+        .unwrap();
+        assert_eq!(
+            frame.request,
+            ApiRequest::SetPermissionMode {
+                session_id: "s1".into(),
+                mode: expected,
+            }
+        );
+        let wire = serde_json::to_value(&frame).unwrap();
+        assert_eq!(wire["mode"], canonical);
+    }
+
+    // Legacy hello without supports_permissions defaults to false and omits it when false.
+    let legacy_hello: ClientFrame = serde_json::from_value(json!({
+        "v": 1, "id": 1, "req": "hello", "min_version": 1, "max_version": 1, "client": "legacy"
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_hello.request,
+        ApiRequest::Hello {
+            supports_permissions: false,
+            ..
+        }
+    ));
+    let wire_legacy = serde_json::to_value(&legacy_hello).unwrap();
+    assert!(wire_legacy.get("supports_permissions").is_none());
+
+    let perm_hello = ClientFrame::new(
+        2,
+        ApiRequest::Hello {
+            min_version: 1,
+            max_version: 1,
+            client: "desktop/1".into(),
+            supports_user_response: false,
+            supports_user_questions: false,
+            supports_permissions: true,
+        },
+    );
+    let wire_perm = serde_json::to_value(&perm_hello).unwrap();
+    assert_eq!(wire_perm["supports_permissions"], true);
+    assert_eq!(
+        serde_json::from_value::<ClientFrame>(wire_perm).unwrap(),
+        perm_hello
+    );
+
+    let event = ServerFrame::event(ApiEvent::PermissionRequest {
+        session_id: "s1".into(),
+        request_id: "perm_1".into(),
+        tool_name: "bash".into(),
+        description: "Run bash command".into(),
+    });
+    let wire = serde_json::to_value(&event).unwrap();
+    assert_eq!(wire["ev"], "permission_request");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(wire).unwrap(),
+        event
+    );
 }

@@ -46,6 +46,8 @@ const REQUIRES_ATTACH: &[&str] = &[
     "list_tools",
     "tool_result",
     "question_response",
+    "permission_response",
+    "set_permission_mode",
     "send_message",
     "cancel",
     "soft_interrupt",
@@ -140,6 +142,8 @@ pub struct BridgeState {
     /// Client-side inline response renderer, negotiated in Hello.
     pub supports_user_response: bool,
     pub supports_user_questions: bool,
+    /// Client handles interactive `permission_request` prompts, negotiated in Hello.
+    pub supports_permissions: bool,
     /// Client name from Hello, forwarded on subscribe (e.g. `rayu-ios/0.3.0`).
     pub client_name: Option<String>,
     /// Session id assigned by the daemon for this connection.
@@ -596,6 +600,7 @@ impl BridgeState {
                     "supports_pdf_panels": true,
                     "supports_user_response": self.supports_user_response,
                     "supports_user_questions": self.supports_user_questions,
+                    "supports_permissions": self.supports_permissions,
                     // API clients have no account-router countdown of their
                     // own, so the daemon switches pool accounts and retries
                     // usage-limited turns for them, like the TUI does.
@@ -1391,22 +1396,83 @@ impl BridgeState {
                     "session_id": session_id, "request_id": request_id, "response": response,
                 }))]
             }
+            "set_permission_mode" => {
+                let Ok(rayucode_harness_api::ApiRequest::SetPermissionMode { session_id, mode }) =
+                    serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Invalid set_permission_mode request",
+                    );
+                };
+                if session_id.is_empty() {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "session_id must not be empty",
+                    );
+                }
+                if let Some((_, _, Some(target))) = &self.pending_attach_id
+                    && self.session_id.is_none()
+                    && session_id != *target
+                {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::UnknownSession,
+                        "request does not match the pending attachment",
+                    );
+                }
+                let id = self.legacy_id();
+                self.pending_simple
+                    .push((id, api_id, SimpleKind::ToolControl));
+                vec![Outbound::Legacy(json!({
+                    "type": "set_permission_mode",
+                    "id": id,
+                    "mode": mode,
+                }))]
+            }
             "permission_response" => {
-                // The legacy protocol does not surface permission prompts on
-                // this path, so the bridge never emits `permission_request`
-                // and there is nothing for a response to answer. Say that,
-                // rather than "not supported", which reads like a bug the
-                // caller should work around. Clients discover this up front
-                // via the absence of the `permissions` capability in `hello`.
-                vec![Outbound::Reply(ServerFrame::reply(
-                    api_id,
-                    ApiEvent::Error {
-                        code: ErrorCode::InvalidRequest,
-                        message: "this server does not issue permission prompts \
-                                  (no `permissions` capability), so there is nothing to respond to"
-                            .into(),
-                    },
-                ))]
+                if !self.supports_permissions {
+                    return vec![Outbound::Reply(ServerFrame::reply(
+                        api_id,
+                        ApiEvent::Error {
+                            code: ErrorCode::InvalidRequest,
+                            message: "permission prompts are not enabled on this connection \
+                                      (set `supports_permissions: true` in `hello`)"
+                                .into(),
+                        },
+                    ))];
+                }
+                let Ok(rayucode_harness_api::ApiRequest::PermissionResponse {
+                    session_id,
+                    request_id,
+                    decision,
+                }) = serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Invalid permission response",
+                    );
+                };
+                if self.session_id.as_deref() != Some(&session_id) {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Permission request belongs to another session",
+                    );
+                }
+                let id = self.legacy_id();
+                self.pending_simple
+                    .push((id, api_id, SimpleKind::ToolControl));
+                vec![Outbound::Legacy(json!({
+                    "type": "permission_response",
+                    "id": id,
+                    "session_id": session_id,
+                    "request_id": request_id,
+                    "decision": decision,
+                }))]
             }
             other => vec![Outbound::Reply(ServerFrame::reply(
                 api_id,
@@ -1811,6 +1877,27 @@ impl BridgeState {
                 payload["ev"] = json!(kind);
                 serde_json::from_value::<ApiEvent>(payload).ok()
                     .map(ServerFrame::event).into_iter().collect()
+            }
+            "permission_request" => {
+                if !self.supports_permissions
+                    || event["session_id"].as_str() != self.session_id.as_deref()
+                {
+                    return vec![];
+                }
+                let (Some(session_id), Some(request_id), Some(tool_name), Some(description)) = (
+                    event["session_id"].as_str(),
+                    event["request_id"].as_str(),
+                    event["tool_name"].as_str(),
+                    event["description"].as_str(),
+                ) else {
+                    return vec![];
+                };
+                vec![ServerFrame::event(ApiEvent::PermissionRequest {
+                    session_id: session_id.to_string(),
+                    request_id: request_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    description: description.to_string(),
+                })]
             }
             "tool_call" => {
                 // A custom call is an execution request, not a tool-start update.

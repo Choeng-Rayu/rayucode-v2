@@ -13,9 +13,13 @@ export function DaemonBanner() {
     }
   }, [])
 
-  if (!status || (status.connected && !status.reconnecting)) {
+  if (!status || !status.reconnecting) {
     return null
   }
+
+  const displaySocket = status.socketPath.includes("/.rayu/")
+    ? `~/.rayu/${status.socketPath.split("/.rayu/")[1]}`
+    : status.socketPath.split("/").slice(-2).join("/")
 
   return (
     <div
@@ -26,7 +30,7 @@ export function DaemonBanner() {
       <div className="flex items-center gap-2">
         <span className="size-2 animate-pulse rounded-full bg-warn" />
         <span className="font-medium">
-          Reconnecting to shared Rayu daemon ({status.socketPath})...
+          Reconnecting to Rayu daemon ({displaySocket})...
         </span>
       </div>
       <span className="font-mono text-[11px] text-muted-ink">

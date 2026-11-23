@@ -928,27 +928,37 @@ pub(super) async fn fetch_rayu_usage_report() -> Option<ProviderUsage> {
 }
 
 pub(crate) fn rayu_usage_report(credits: &crate::rayu::RayuCredits) -> ProviderUsage {
-    let plan_label = if credits.plan_name.trim().is_empty() {
-        credits.plan.clone()
-    } else {
-        credits.plan_name.clone()
-    };
+    let plan_label = credits.display_plan_name().to_string();
     let mut limits = Vec::new();
     let mut extra_info = vec![("Plan".to_string(), plan_label)];
     let mut hard_limit_reached = false;
+    let has_team_purchased = credits
+        .team
+        .as_ref()
+        .is_some_and(|team| team.purchased_remaining.is_finite() && team.purchased_remaining > 0.0);
+    let has_topup = credits.topup_balance.is_finite() && credits.topup_balance > 0.0;
+
     if let Some(per_period) = credits
         .credits_per_period
         .filter(|value| value.is_finite() && *value > 0.0)
     {
         let used = credits.used_credits.max(0.0);
+        let period_label = if credits.is_team_scope() {
+            "Team credits (period)"
+        } else {
+            "Plan credits (period)"
+        };
         limits.push(UsageLimit {
-            name: "Plan credits (period)".to_string(),
+            name: period_label.to_string(),
             usage_percent: usage_percent_from_used_limit(used, per_period),
-            resets_at: credits.period_end.clone(),
+            resets_at: credits
+                .period_end
+                .clone()
+                .or_else(|| rfc3339_after_seconds(credits.reset_seconds)),
         });
         // An exhausted plan allowance is only a hard stop when there is no
-        // top-up balance left to draw from.
-        hard_limit_reached = used >= per_period && credits.topup_balance <= 0.0;
+        // top-up / purchased pool balance left to draw from.
+        hard_limit_reached = used >= per_period && !has_topup && !has_team_purchased;
         let remaining = credits
             .remaining_credits
             .filter(|value| value.is_finite())
@@ -959,6 +969,90 @@ pub(crate) fn rayu_usage_report(credits: &crate::rayu::RayuCredits) -> ProviderU
             format!("{used:.2} / {per_period:.2}"),
         ));
     }
+
+    // Pacing windows (session & weekly) — mirrors gateway /v1/credits contract.
+    let has_window_caps = credits
+        .credits_per_5h
+        .is_some_and(|v| v.is_finite() && v > 0.0)
+        || credits
+            .credits_per_week
+            .is_some_and(|v| v.is_finite() && v > 0.0);
+    if credits.is_pacing_enforced() {
+        if let Some(session_cap) = credits
+            .credits_per_5h
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            let used = credits.window_used_credits.max(0.0);
+            let label = match credits.session_window_minutes.filter(|&m| m > 0) {
+                Some(mins) if mins % 60 == 0 => format!("Session window ({}h)", mins / 60),
+                Some(mins) => format!("Session window ({mins}m)"),
+                None => "Session window (5h)".to_string(),
+            };
+            limits.push(UsageLimit {
+                name: label,
+                usage_percent: usage_percent_from_used_limit(used, session_cap),
+                resets_at: rfc3339_after_seconds(credits.window_reset_seconds),
+            });
+            if used >= session_cap {
+                hard_limit_reached = true;
+            }
+        }
+        if let Some(week_cap) = credits
+            .credits_per_week
+            .filter(|value| value.is_finite() && *value > 0.0)
+        {
+            let used = credits.week_used_credits.max(0.0);
+            limits.push(UsageLimit {
+                name: "Weekly window".to_string(),
+                usage_percent: usage_percent_from_used_limit(used, week_cap),
+                resets_at: rfc3339_after_seconds(credits.week_reset_seconds),
+            });
+            if used >= week_cap {
+                hard_limit_reached = true;
+            }
+        }
+    } else if has_window_caps {
+        extra_info.push((
+            "Pacing".to_string(),
+            "off (using all credits)".to_string(),
+        ));
+    }
+
+    if let Some(max_turns) = credits.max_daily_turns.filter(|&v| v > 0) {
+        let used = credits.turns_used_today.max(0);
+        limits.push(UsageLimit {
+            name: "Daily turns".to_string(),
+            usage_percent: usage_percent_from_used_limit(used as f64, max_turns as f64),
+            resets_at: rfc3339_after_seconds(credits.turns_reset_seconds),
+        });
+        if used >= max_turns {
+            hard_limit_reached = true;
+        }
+        extra_info.push((
+            "Daily turns".to_string(),
+            format!("{used} / {max_turns} used"),
+        ));
+    }
+
+    if let Some(team) = &credits.team {
+        if team.bucket_quota.is_finite() && team.bucket_quota > 0.0 {
+            extra_info.push((
+                "Team seat".to_string(),
+                format!(
+                    "{:.2} / {:.2} remaining",
+                    team.bucket_remaining.max(0.0),
+                    team.bucket_quota
+                ),
+            ));
+        }
+        if team.purchased_remaining.is_finite() && team.purchased_remaining > 0.0 {
+            extra_info.push((
+                "Team extra credits".to_string(),
+                format!("{:.2} remaining", team.purchased_remaining),
+            ));
+        }
+    }
+
     if credits.topup_balance.is_finite() && credits.topup_balance > 0.0 {
         extra_info.push((
             "Top-up balance".to_string(),
@@ -992,4 +1086,13 @@ pub(crate) fn rayu_usage_report(credits: &crate::rayu::RayuCredits) -> ProviderU
         hard_limit_reached,
         ..Default::default()
     }
+}
+
+fn rfc3339_after_seconds(seconds: i64) -> Option<String> {
+    if seconds <= 0 {
+        return None;
+    }
+    let delta = chrono::Duration::try_seconds(seconds)?;
+    let target = chrono::Utc::now().checked_add_signed(delta)?;
+    Some(target.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }

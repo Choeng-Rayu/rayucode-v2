@@ -7,11 +7,28 @@ import type {
 export const PLUGIN_CATEGORY_SECTIONS: ReadonlyArray<{
   id: PluginCategory
   label: string
+  subtitle: string
 }> = [
-  { id: "featured", label: "Featured" },
-  { id: "popular", label: "Popular" },
-  { id: "noteworthy", label: "New & Noteworthy" },
-  { id: "business", label: "Small Business" },
+  {
+    id: "featured",
+    label: "Featured",
+    subtitle: "Core MCP integrations for docs, issues, repos, wikis, and databases.",
+  },
+  {
+    id: "popular",
+    label: "Developer & Browser",
+    subtitle: "Browser automation, Chrome DevTools debugging, and error monitoring.",
+  },
+  {
+    id: "noteworthy",
+    label: "Design & Infrastructure",
+    subtitle: "Design tokens, PostgreSQL schema inspection, and edge deployments.",
+  },
+  {
+    id: "business",
+    label: "Business",
+    subtitle: "Payments, subscriptions, billing, and workflow automation.",
+  },
 ]
 
 export const CUSTOMIZE_NAV_ITEMS: ReadonlyArray<{

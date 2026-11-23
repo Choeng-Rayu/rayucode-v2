@@ -1,0 +1,76 @@
+name: Desktop Release Build (macOS / Windows / Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            builder_os: mac
+            arch: arm64
+            flag: --mac --arm64
+          - os: windows-latest
+            builder_os: win
+            arch: x64
+            flag: --win --x64
+          - os: ubuntu-latest
+            builder_os: linux
+            arch: x64
+            flag: --linux --x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build Rust rayu release binary
+        run: cargo build --release --bin rayu
+
+      - name: Install desktop dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript SDK
+        run: pnpm --filter @rayu-dev/rayucode-sdk build
+
+      - name: Stage rayu sidecar binary
+        working-directory: desktop
+        run: node scripts/stage-rayu-binary.mjs --target-os ${{ matrix.builder_os }} --target-arch ${{ matrix.arch }}
+
+      - name: Build renderer & Electron main
+        working-directory: desktop
+        run: pnpm build
+
+      - name: Package desktop installer
+        working-directory: desktop
+        run: pnpm dlx electron-builder --config electron-builder.yml ${{ matrix.flag }} --publish=never
+
+      - name: Upload desktop installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: rayucode-desktop-${{ matrix.builder_os }}-${{ matrix.arch }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb
+          if-no-files-found: error

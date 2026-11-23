@@ -1,9 +1,10 @@
 import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { toast } from "sonner"
 
 import { AppProviders } from "@/components/providers/app-providers"
 import { AppShell } from "@/components/shell/AppShell"
+import { AuthSignInDialog } from "@/components/shell/AuthSignInDialog"
+import { AuthWelcomeScreen } from "@/components/shell/AuthWelcomeScreen"
 import {
   AutomationsSkeleton,
   ChangesSkeleton,
@@ -14,52 +15,74 @@ import {
   TelegramSkeleton,
 } from "@/components/ui/page-skeletons"
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
-import { AutomationsView } from "@/features/automations"
-import { ChangesView } from "@/features/changes"
-import {
-  ChatStream,
-  sendTracePrompt,
-  traceKeys,
-  type ExecutionTurn,
-} from "@/features/execution-trace"
-import { PluginsView } from "@/features/plugins"
-import { PreviewsHost } from "@/features/previews"
+import { ChatStream } from "@/features/execution-trace"
 import {
   HomeView,
   SessionComposer,
   type ComposerSubmitPayload,
 } from "@/features/sessions"
-import { SettingsView } from "@/features/settings"
-import { SwarmView } from "@/features/swarm"
-import { TelegramView } from "@/features/telegram"
 import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
+
+const AutomationsView = React.lazy(() =>
+  import("@/features/automations").then((m) => ({ default: m.AutomationsView }))
+)
+const ChangesView = React.lazy(() =>
+  import("@/features/changes").then((m) => ({ default: m.ChangesView }))
+)
+const PluginsView = React.lazy(() =>
+  import("@/features/plugins").then((m) => ({ default: m.PluginsView }))
+)
+const PreviewsHost = React.lazy(() =>
+  import("@/features/previews").then((m) => ({ default: m.PreviewsHost }))
+)
+const SettingsView = React.lazy(() =>
+  import("@/features/settings").then((m) => ({ default: m.SettingsView }))
+)
+const SwarmView = React.lazy(() =>
+  import("@/features/swarm").then((m) => ({ default: m.SwarmView }))
+)
+const TelegramView = React.lazy(() =>
+  import("@/features/telegram").then((m) => ({ default: m.TelegramView }))
+)
 
 function ActiveWorkspaceStage() {
-  const activeSessionId =
-    useAppStore((s) => s.activeSessionId) ?? "ses_retire_cache"
   const queryClient = useQueryClient()
-  const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
+  const isStreamActive = useAppStore((s) => s.isStreamActive)
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
-      setIsSubmitting(true)
-      try {
-        const result = await sendTracePrompt({
-          sessionId: activeSessionId,
-          prompt: payload.prompt,
+      let targetSessionId = activeSessionId
+      if (!targetSessionId) {
+        const sessionTitlePrompt =
+          payload.prompt ||
+          (payload.images?.length
+            ? `Image: ${payload.images[0]?.name ?? "attachment"}`
+            : "")
+        const created = await ipcClient.sessions.createSession({
+          prompt: sessionTitlePrompt,
+          modelId: payload.modelId,
           modelLabel: payload.modelLabel,
+          effort: payload.effort,
+          permissionMode: payload.permissionMode,
         })
-        if (!result.ok) {
-          toast.error(result.error)
-          return
-        }
-        queryClient.setQueryData<ExecutionTurn[]>(
-          traceKeys.turns(activeSessionId),
-          (prev) => (prev ? [...prev, result.data] : [result.data])
+        targetSessionId = created.id
+        queryClient.setQueryData(
+          ["execution-trace", "turns", created.id],
+          []
         )
-      } finally {
-        setIsSubmitting(false)
+        useAppStore.getState().setActiveSession(created.id, created.title)
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] })
       }
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: targetSessionId,
+        prompt: payload.prompt,
+        images: payload.images,
+        modelId: payload.modelId,
+        modelLabel: payload.modelLabel,
+      })
     },
     [activeSessionId, queryClient]
   )
@@ -71,7 +94,14 @@ function ActiveWorkspaceStage() {
         <SessionComposer
           mode="workspace"
           onSubmit={handleWorkspaceSubmit}
-          isSubmitting={isSubmitting}
+          onStop={() => {
+            useAppStore.getState().setPendingStreamPrompt(null)
+            useAppStore.getState().setIsStreamActive(false)
+            if (activeSessionId) {
+              void ipcClient.trace.cancel(activeSessionId)
+            }
+          }}
+          isSubmitting={Boolean(pendingStreamPrompt) || isStreamActive}
         />
       }
     />
@@ -149,7 +179,36 @@ function ActiveRouteCanvas() {
   }
 }
 
+function AuthQuerySync() {
+  const queryClient = useQueryClient()
+  const authState = useAppStore((s) => s.authState)
+  const daemonMode = useAppStore((s) => s.daemonMode)
+  const signedIn = authState?.signedIn ?? false
+  const method = authState?.method ?? "none"
+  const remainingCredits = authState?.credits?.remainingCredits ?? null
+  const allowedModelsCount = authState?.allowedModels.length ?? 0
+
+  React.useEffect(() => {
+    void queryClient.invalidateQueries({ queryKey: ["settings"] })
+    void queryClient.invalidateQueries({ queryKey: ["models"] })
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+  }, [
+    queryClient,
+    signedIn,
+    method,
+    remainingCredits,
+    allowedModelsCount,
+    daemonMode,
+  ])
+
+  return null
+}
+
 export function App() {
+  const authState = useAppStore((s) => s.authState)
+  const authLoaded = useAppStore((s) => s.authLoaded)
+  const authBypassed = useAppStore((s) => s.authBypassed)
+
   React.useEffect(() => {
     if (window.location.search) {
       applyUrlQueryParamsToStore(window.location.search)
@@ -158,14 +217,73 @@ export function App() {
       applyUrlQueryParamsToStore(window.location.search)
     }
     window.addEventListener("popstate", handlePopState)
-    return () => window.removeEventListener("popstate", handlePopState)
+
+    // Sync real Rayu Cloud auth and daemon status (leave activeWorkspacePath null until user selects a project)
+    void ipcClient.auth.getState().then((auth) => {
+      useAppStore.getState().setAuthState(auth)
+      useAppStore.getState().setAuthLoaded(true)
+      if (auth.signedIn) {
+        void ipcClient.auth.refresh().then((refreshed) => {
+          useAppStore.getState().setAuthState(refreshed)
+        })
+      }
+    })
+    const unsubAuth = ipcClient.auth.onAuthChange((auth) => {
+      const store = useAppStore.getState()
+      store.setAuthState(auth)
+      store.setAuthLoaded(true)
+      if (auth.signedIn) {
+        store.setAuthBypassed(false)
+      }
+    })
+    void ipcClient.daemon.getStatus().then((status) => {
+      useAppStore
+        .getState()
+        .setDaemonMode(status.connected && status.mode !== "demo" ? "live" : "demo")
+    })
+    const unsubStatus = ipcClient.daemon.onStatusChange((status) => {
+      useAppStore
+        .getState()
+        .setDaemonMode(status.connected && status.mode !== "demo" ? "live" : "demo")
+    })
+    const unsubHarness = ipcClient.harness.onEvent((frame) => {
+      if (frame.ev === "permission_request") {
+        useAppStore.getState().setPendingPermission({
+          sessionId: String(frame.session_id ?? ""),
+          requestId: String(frame.request_id ?? ""),
+          toolName: String(frame.tool_name ?? "tool"),
+          description: String(frame.description ?? "Tool execution requested"),
+        })
+      } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
+        useAppStore.getState().setPendingPermission(null)
+      }
+    })
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState)
+      unsubAuth()
+      unsubStatus()
+      unsubHarness()
+    }
   }, [])
+
+  const isTestEnv =
+    typeof import.meta !== "undefined" &&
+    (import.meta as { env?: { MODE?: string } }).env?.MODE === "test"
+  const showWelcomeGate =
+    !isTestEnv && authLoaded && !authState?.signedIn && !authBypassed
 
   return (
     <AppProviders>
-      <AppShell previewFallback={<PreviewsHost />}>
-        <ActiveRouteCanvas />
-      </AppShell>
+      <AuthQuerySync />
+      <AuthSignInDialog />
+      {showWelcomeGate ? (
+        <AuthWelcomeScreen />
+      ) : (
+        <AppShell previewFallback={<PreviewsHost />}>
+          <ActiveRouteCanvas />
+        </AppShell>
+      )}
     </AppProviders>
   )
 }

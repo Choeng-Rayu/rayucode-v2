@@ -1306,7 +1306,7 @@ pub(super) fn render_compact_pinned_tasks(
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" "),
-                title,
+                title.bold(),
             ),
         ]);
         if blocked(todo) && crate::todo::is_incomplete_todo(todo) {
@@ -1589,6 +1589,14 @@ fn todo_card_line(
         &Line::from(prefixed),
         inner_width.saturating_add(base_indent.width()),
     )
+}
+
+pub(super) fn bold_todo_row(mut line: Line<'static>) -> Line<'static> {
+    // Transcript wrapping rebuilds lines from spans.
+    for span in &mut line.spans {
+        span.style = span.style.bold();
+    }
+    line
 }
 
 fn todo_card_goal_for_group<'a>(
@@ -2501,7 +2509,7 @@ fn todo_card_item_spans(todo: &crate::todo::TodoItem, with_confidence: bool) -> 
     let mut spans = vec![
         Span::raw("  "),
         Span::styled(format!("{} ", glyph), Style::default().fg(glyph_color)),
-        Span::styled(todo.content.clone(), Style::default().fg(text_color)),
+        Span::styled(todo.content.clone(), Style::default().fg(text_color).bold()),
     ];
     if crate::todo::is_incomplete_todo(todo)
         && let Some(blocker) = &todo.external_blocker

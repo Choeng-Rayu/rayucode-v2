@@ -36,9 +36,16 @@ pub(crate) struct SseParser {
     blocks: Vec<Option<BlockKind>>,
     has_input_from_start: bool,
     message_ended: bool,
+    model: Option<String>,
 }
 
 impl SseParser {
+    pub(crate) fn with_model(model: Option<String>) -> Self {
+        Self {
+            model,
+            ..Default::default()
+        }
+    }
     pub(crate) fn push_bytes(&mut self, chunk: &[u8]) {
         let text = self.decoder.decode(chunk);
         self.buffer.push_str(&text);
@@ -264,12 +271,12 @@ impl SseParser {
                 }));
             }
             "error" => {
-                let message = serde_json::from_str::<ErrorEvent>(data)
-                    .ok()
-                    .and_then(|parsed| parsed.error.message)
-                    .unwrap_or_else(|| data.to_string());
+                let err = rayucode_base::rayu::RayuGatewayError::from_sse_error_data(
+                    data,
+                    self.model.as_deref(),
+                );
                 self.queue.push_back(Ok(StreamEvent::Error {
-                    message: format!("Rayu gateway stream error: {message}"),
+                    message: err.message,
                     retry_after_secs: None,
                 }));
             }
@@ -367,18 +374,6 @@ struct Usage {
     cache_creation_input_tokens: Option<u64>,
 }
 
-#[derive(Deserialize)]
-struct ErrorEvent {
-    #[serde(default)]
-    error: ErrorBody,
-}
-
-#[derive(Default, Deserialize)]
-struct ErrorBody {
-    #[serde(default)]
-    message: Option<String>,
-}
-
 /// Correlation facts about one gateway response, attached to transport
 /// errors so a client failure can be matched to gateway and edge logs.
 #[derive(Clone, Debug, Default)]
@@ -443,9 +438,10 @@ pub(crate) fn stream_events(
     response: reqwest::Response,
     trace: ResponseTrace,
     idle_timeout: std::time::Duration,
+    model: Option<String>,
 ) -> EventStream {
     let inner = response.bytes_stream();
-    let parser = SseParser::default();
+    let parser = SseParser::with_model(model);
     let started = std::time::Instant::now();
     let trace = std::sync::Arc::new(trace);
     Box::pin(futures::stream::unfold(

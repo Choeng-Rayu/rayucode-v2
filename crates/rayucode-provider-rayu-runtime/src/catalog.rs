@@ -16,7 +16,7 @@
 //! persistent cache is scoped to the endpoint (and credential route) that
 //! produced it, under the shared `rayu` namespace.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -634,21 +634,58 @@ async fn fetch_gateway_models_with_bearer(
 ) -> Result<(Vec<RayuCatalogModel>, Option<serde_json::Value>)> {
     let url = format!("{}/v1/models", gateway_base.trim_end_matches('/'));
     crate::ensure_safe_bearer_endpoint(&url)?;
-    let response = crate::http_client()
+    let auth_kind = rayucode_base::rayu::RayuAuthKind::from_credential(bearer);
+    let product = rayucode_base::rayu::client_product();
+    let mut response = crate::http_client()
         .get(&url)
         .bearer_auth(bearer)
-        .header("x-rayu-client", "cli")
+        .header("x-rayu-client", product)
         .timeout(CATALOG_TIMEOUT)
         .send()
         .await
         .with_context(|| format!("Failed to send Rayu model catalog request\n  endpoint: {url}"))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        && auth_kind == rayucode_base::rayu::RayuAuthKind::AccountJwt
+        && rayucode_base::rayu::has_usable_session()
+        && let Some(fresh) = rayucode_base::rayu::refresh_access_token(Some(bearer)).await
+    {
+        response = crate::http_client()
+            .get(&url)
+            .bearer_auth(&fresh)
+            .header("x-rayu-client", product)
+            .timeout(CATALOG_TIMEOUT)
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to send Rayu model catalog request\n  endpoint: {url}")
+            })?;
+    }
     let status = response.status();
     if !status.is_success() {
+        let limit_header = rayucode_base::rayu::extract_rayu_limit_header(response.headers());
+        let retry_after_secs = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .filter(|&s| s > 0);
         let body = rayucode_provider_core::http_error_body(response, "Rayu catalog").await;
-        bail!(
-            "Rayu model catalog request failed (HTTP {status}): {}",
+        rayucode_base::logging::warn(&format!(
+            "Rayu model catalog request failed (HTTP {status}, endpoint={url}): {}",
             rayucode_base::util::truncate_str(body.trim(), 400)
-        );
+        ));
+        return Err(rayucode_base::rayu::RayuGatewayError::from_http_response(
+            status.as_u16(),
+            &body,
+            limit_header.as_deref(),
+            retry_after_secs,
+            rayucode_base::rayu::RayuErrorContext {
+                auth: auth_kind,
+                model: None,
+                request_id: None,
+            },
+        )
+        .into());
     }
     let body = response
         .text()

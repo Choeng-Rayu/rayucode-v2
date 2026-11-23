@@ -19,14 +19,14 @@ import type {
 } from "../types"
 
 type ChangesIpcExtension = typeof ipcClient.changes & {
-  toggleStage?: (fileId: string) => Promise<ChangesState>
+  toggleStage?: (fileId: string) => Promise<ChangesState | null>
   reviewFile?: (
     fileId: string,
     decision: FileReviewDecision
   ) => Promise<ChangesState>
-  stageAll?: (staged: boolean) => Promise<ChangesState>
-  commitStaged?: (input: CommitStagedInput) => Promise<CommitReceipt>
-  createPullRequest?: (input: CreatePrInput) => Promise<CreatePrReceipt>
+  stageAll?: (staged: boolean) => Promise<ChangesState | null>
+  commitStaged?: (input: CommitStagedInput) => Promise<CommitReceipt | null>
+  createPullRequest?: (input: CreatePrInput) => Promise<CreatePrReceipt | null>
 }
 
 function getChangesBridge(): ChangesIpcExtension {
@@ -131,7 +131,9 @@ export async function toggleChangedFileStage(
     const bridge = getChangesBridge()
     if (bridge.toggleStage) {
       const raw = await bridge.toggleStage(fileId)
-      return ok(changesStateSchema.parse(raw))
+      if (raw) {
+        return ok(changesStateSchema.parse(raw))
+      }
     }
 
     const baseState = currentState ?? (await fetchChangesState())
@@ -160,7 +162,9 @@ export async function setAllFilesStaged(
     const bridge = getChangesBridge()
     if (bridge.stageAll) {
       const raw = await bridge.stageAll(staged)
-      return ok(changesStateSchema.parse(raw))
+      if (raw) {
+        return ok(changesStateSchema.parse(raw))
+      }
     }
 
     const baseState = currentState ?? (await fetchChangesState())
@@ -202,7 +206,9 @@ export async function commitStagedFiles(
     const bridge = getChangesBridge()
     if (bridge.commitStaged) {
       const receipt = await bridge.commitStaged(parsed.data)
-      return ok(receipt)
+      if (receipt) {
+        return ok(receipt)
+      }
     }
 
     return ok({
@@ -237,7 +243,9 @@ export async function createPullRequestWithGuardrail(
     const bridge = getChangesBridge()
     if (bridge.createPullRequest) {
       const receipt = await bridge.createPullRequest(parsed.data)
-      return ok(receipt)
+      if (receipt) {
+        return ok(receipt)
+      }
     }
 
     return ok({

@@ -591,6 +591,24 @@ const LOGO_SPECS: Record<string, LogoSpec> = {
       </svg>
     ),
   },
+  "chrome-devtools": {
+    tileBg: DARK_TILE,
+    renderSvg: () => (
+      <svg viewBox="0 0 40 40" className="size-full" aria-hidden="true">
+        <circle cx="20" cy="20" r="13.5" fill="rgb(234, 67, 53)" />
+        <path
+          fill="rgb(251, 188, 5)"
+          d="M20 13.5h12.2a13.5 13.5 0 0 1-11.2 20l6-10.4A6.5 6.5 0 0 0 20 13.5Z"
+        />
+        <path
+          fill="rgb(52, 168, 83)"
+          d="M21 33.5a13.5 13.5 0 0 1-13.2-18l6.1 10.6A6.5 6.5 0 0 0 21 33.5Z"
+        />
+        <circle cx="20" cy="20" r="6.8" fill={WHITE} />
+        <circle cx="20" cy="20" r="5" fill="rgb(66, 133, 244)" />
+      </svg>
+    ),
+  },
   canva: {
     isCircular: true,
     renderSvg: (uid) => (

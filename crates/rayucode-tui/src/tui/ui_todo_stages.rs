@@ -932,8 +932,8 @@ pub(crate) fn push_stage_lines(
         .min(inner_width / 3);
 
     for (phase, lane) in lanes {
-        // A lane wears its phase's colour: bold while its phase is active,
-        // dimmed (with its titles and dots) while the phase has not started.
+        // A lane keeps its phase's colour, dimmed with its titles and dots
+        // while the phase has not started.
         let items = items_of(lane);
         let prerequisites = lane_prerequisite_progress(&items, todos);
         let later = prerequisites.map_or_else(
@@ -1029,7 +1029,7 @@ pub(crate) fn push_stage_lines(
             if later {
                 row = row.into_iter().map(dim_span).collect();
             }
-            lines.push(todo_card_line(row, base_indent, inner_width));
+            lines.push(bold_todo_row(todo_card_line(row, base_indent, inner_width)));
             continue;
         }
         let mut row = lane_strip_spans(&statuses, strip_width);
@@ -1080,7 +1080,7 @@ pub(crate) fn push_stage_lines(
         if later {
             row = row.into_iter().map(dim_span).collect();
         }
-        lines.push(todo_card_line(row, base_indent, inner_width));
+        lines.push(bold_todo_row(todo_card_line(row, base_indent, inner_width)));
     }
 }
 
@@ -1256,13 +1256,13 @@ fn push_lane_status_lines_inner(
             }
         }
         row.extend(status.spans);
-        lines.push(todo_card_line(row, indent, width));
+        lines.push(bold_todo_row(todo_card_line(row, indent, width)));
     }
 }
 
 /// Grey out a span for a phase that has not started yet, keeping emoji intact.
 fn dim_span(span: Span<'static>) -> Span<'static> {
-    let style = span.style.fg(later_phase_color()).not_bold();
+    let style = span.style.fg(later_phase_color());
     Span::styled(span.content, style)
 }
 

@@ -554,6 +554,7 @@ impl RayucodeClient {
                 client: options.client_name.clone(),
                 supports_user_response: options.supports_user_response,
                 supports_user_questions: options.supports_user_questions,
+                supports_permissions: false,
             },
             hello_timeout,
         )?;

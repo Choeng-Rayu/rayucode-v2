@@ -140,14 +140,34 @@ export const HOME_CHECKOUTS: readonly string[] = [
 
 export const SLASH_COMMANDS: readonly SlashCommandItem[] = [
   {
-    command: "/model",
-    insertText: "/model",
-    description: "Switch route in Rayu-first gateway order",
+    command: "/goal",
+    insertText: "/goal",
+    description: "Set an autonomous goal to pursue until complete",
+  },
+  {
+    command: "/plan",
+    insertText: "/plan",
+    description: "Investigate and write a step-by-step plan before editing",
   },
   {
     command: "/swarm",
     insertText: "/swarm",
     description: "Spawn parallel workers in this repo",
+  },
+  {
+    command: "/review",
+    insertText: "/review",
+    description: "Run an engineering & diff review pass",
+  },
+  {
+    command: "/compact",
+    insertText: "/compact",
+    description: "Summarize conversation history to free context",
+  },
+  {
+    command: "/model",
+    insertText: "/model",
+    description: "Switch route in Rayu-first gateway order",
   },
   {
     command: "/preview",

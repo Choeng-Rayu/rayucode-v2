@@ -5,7 +5,6 @@ import {
   ChevronUp,
   FileSpreadsheet,
   Globe,
-  Mic,
   Minus,
   Plus,
 } from "lucide-react"
@@ -123,57 +122,29 @@ export function FloatingAskChat({
         <>
           <ScrollArea className="max-h-[290px] min-h-[150px] flex-1 bg-popover-solid">
             <div className="flex flex-col gap-3 px-4 py-3 text-xs leading-relaxed text-body">
-              {contextKind === "browser" ? (
-                <div className="space-y-2">
-                  <p>
-                    Verified live telemetry after routing{" "}
-                    <code className="rounded border border-hairline bg-inset px-1 py-0.5 font-mono text-[11px] text-ink">
-                      SessionLookup::get
-                    </code>{" "}
-                    through{" "}
-                    <code className="rounded border border-hairline bg-inset px-1 py-0.5 font-mono text-[11px] text-ink">
-                      ShardStore::lookup
-                    </code>
-                    :
-                  </p>
-                  <table className="w-full border-collapse text-[11px] tabular-nums">
-                    <thead>
-                      <tr className="border-b border-hairline text-left text-ink">
-                        <th className="py-1 pr-2 font-semibold">Metric</th>
-                        <th className="py-1 pr-2 font-semibold">Change</th>
-                        <th className="py-1 font-semibold">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr className="border-b border-hairline-soft">
-                        <td className="py-1.5 pr-2 font-medium text-brand-text">
-                          Memory RSS
-                        </td>
-                        <td className="py-1.5 pr-2 text-body">
-                          114 MB → 71 MB across coordinator
-                        </td>
-                        <td className="py-1.5 text-body">−38%</td>
-                      </tr>
-                      <tr>
-                        <td className="py-1.5 pr-2 font-medium text-brand-text">
-                          Session tests
-                        </td>
-                        <td className="py-1.5 pr-2 text-body">
-                          14 / 14 session:: green
-                        </td>
-                        <td className="py-1.5 text-body">Ready</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p>
-                  Inspecting{" "}
-                  <strong className="font-semibold text-ink">{contextLabel}</strong>{" "}
-                  in Full View. Ask RayuCode to verify totals, add formulas, or compare
-                  provider rates.
+              {messages.length === 0 ? (
+                <p className="text-muted-ink">
+                  {contextKind === "browser" ? (
+                    <>
+                      Connected to{" "}
+                      <strong className="font-semibold text-ink">
+                        {contextLabel}
+                      </strong>
+                      . Ask RayuCode to inspect elements, debug errors, or act on
+                      this page.
+                    </>
+                  ) : (
+                    <>
+                      Inspecting{" "}
+                      <strong className="font-semibold text-ink">
+                        {contextLabel}
+                      </strong>{" "}
+                      in Full View. Ask RayuCode to verify totals, add formulas, or
+                      update cells.
+                    </>
+                  )}
                 </p>
-              )}
+              ) : null}
 
               {messages.map((msg) => (
                 <div
@@ -209,8 +180,8 @@ export function FloatingAskChat({
               onClick={() =>
                 toast(
                   contextKind === "excel"
-                    ? "Attached active Excel range A1:E7"
-                    : "Attached live page DOM snapshot"
+                    ? "Attached active Excel range"
+                    : "Attached live page context"
                 )
               }
             >
@@ -230,16 +201,6 @@ export function FloatingAskChat({
               aria-label="Ask RayuCode message"
               className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs text-ink outline-none placeholder:text-muted-ink"
             />
-
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Voice input"
-              onClick={() => toast("Voice input ready")}
-            >
-              <Mic className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
-            </Button>
 
             <Button
               type="submit"

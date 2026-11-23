@@ -121,6 +121,7 @@ struct ProcessingMessage {
     /// Retry on the next pool account after a usage limit (API clients).
     server_failover: bool,
     question_client: Option<Arc<crate::tool::ask_user_question::QuestionConnection>>,
+    permission_client: Option<Arc<crate::tool::permission_gate::PermissionConnection>>,
 }
 
 // A client request ID is not a turn identity: clients can reuse it after cancel.
@@ -412,6 +413,7 @@ pub(super) async fn handle_client(
     let mut recent_history_messages = None;
     let mut supports_user_response = false;
     let mut supports_user_questions = false;
+    let mut supports_permissions = false;
     let mut supports_server_failover = false;
     // Client selfdev status is determined by Subscribe request, not server's env
     let mut client_selfdev = false;
@@ -630,6 +632,11 @@ pub(super) async fn handle_client(
     }
 
     let mut question_client = Arc::new(crate::tool::ask_user_question::QuestionConnection::new(client_event_tx.clone()));
+    let mut permission_client = Arc::new(
+        crate::tool::permission_gate::PermissionConnection::new_non_interactive(
+            client_event_tx.clone(),
+        ),
+    );
     let stdin_responses: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -1009,7 +1016,15 @@ pub(super) async fn handle_client(
 
         // SDK controls reply only after validation. Callback results must never
         // wait for the Agent mutex held by the turn awaiting that callback.
-        if matches!(&request, Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. } | Request::QuestionResponse { .. }) {
+        if matches!(
+            &request,
+            Request::ConfigureTools { .. }
+                | Request::ListTools { .. }
+                | Request::ToolResult { .. }
+                | Request::QuestionResponse { .. }
+                | Request::PermissionResponse { .. }
+                | Request::SetPermissionMode { .. }
+        ) {
             let id = request.id();
             let response: anyhow::Result<ServerEvent> = match request {
                 Request::QuestionResponse { session_id, request_id, response, .. } => {
@@ -1019,6 +1034,22 @@ pub(super) async fn handle_client(
                         question_client.respond(&session_id, &request_id, response)
                             .map(|()| ServerEvent::Ack { id })
                     }
+                }
+                Request::PermissionResponse { session_id, request_id, decision, .. } => {
+                    if session_id != client_session_id {
+                        Err(anyhow::anyhow!("Permission request belongs to another session"))
+                    } else {
+                        permission_client
+                            .respond(&session_id, &request_id, decision)
+                            .map(|()| ServerEvent::Ack { id })
+                    }
+                }
+                Request::SetPermissionMode { mode, .. } => {
+                    permission_client.set_mode(mode);
+                    if let Ok(mut locked) = agent.try_lock() {
+                        locked.invalidate_sdk_tools();
+                    }
+                    Ok(ServerEvent::Ack { id })
                 }
                 Request::ToolResult { call_id, output, error, .. } => {
                     crate::tool::sdk::complete(&client_connection_id, &client_session_id, &call_id, output, error)
@@ -1041,9 +1072,14 @@ pub(super) async fn handle_client(
                 Request::ListTools { .. } => {
                     if let Ok(locked) = agent.try_lock() {
                         Ok(ServerEvent::Tools { id, tools: crate::tool::sdk::wire_definitions(
-                            crate::tool::ask_user_question::scope(
-                                &client_session_id, supports_user_questions.then(|| question_client.clone()),
-                                locked.tool_definitions_for_debug(),
+                            crate::tool::permission_gate::scope(
+                                &client_session_id,
+                                Some(permission_client.clone()),
+                                crate::tool::ask_user_question::scope(
+                                    &client_session_id,
+                                    supports_user_questions.then(|| question_client.clone()),
+                                    locked.tool_definitions_for_debug(),
+                                ),
                             ).await
                         ) })
                     } else { Err(anyhow::anyhow!("Session is busy")) }
@@ -1060,7 +1096,7 @@ pub(super) async fn handle_client(
         // Keep the owning connection attached through the turn. Attachment
         // changes can wait for the Agent lock while the turn is waiting for a
         // reply on this same connection.
-        if client_is_processing && supports_user_questions && matches!(
+        if client_is_processing && (supports_user_questions || supports_permissions) && matches!(
             &request,
             Request::ResumeSession { .. } | Request::Subscribe { .. }
         ) {
@@ -1150,7 +1186,12 @@ pub(super) async fn handle_client(
         }
         let sdk_session_before_request = client_session_id.clone();
         match request {
-            Request::ConfigureTools { .. } | Request::ListTools { .. } | Request::ToolResult { .. } | Request::QuestionResponse { .. } => unreachable!("SDK controls dispatched before acknowledgment"),
+            Request::ConfigureTools { .. }
+            | Request::ListTools { .. }
+            | Request::ToolResult { .. }
+            | Request::QuestionResponse { .. }
+            | Request::PermissionResponse { .. }
+            | Request::SetPermissionMode { .. } => unreachable!("SDK controls dispatched before acknowledgment"),
             Request::Message {
                 id,
                 content,
@@ -1202,6 +1243,7 @@ pub(super) async fn handle_client(
                         active_skill,
                         server_failover: supports_server_failover,
                         question_client: supports_user_questions.then(|| question_client.clone()),
+                        permission_client: Some(permission_client.clone()),
                     },
                     &client_session_id,
                     &mut ProcessingState {
@@ -1313,6 +1355,7 @@ pub(super) async fn handle_client(
                             active_skill: None,
                             server_failover: supports_server_failover,
                             question_client: supports_user_questions.then(|| question_client.clone()),
+                            permission_client: Some(permission_client.clone()),
                         },
                         &client_session_id,
                         &mut ProcessingState {
@@ -1428,6 +1471,7 @@ pub(super) async fn handle_client(
                     &soft_interrupt_queues,
                 )
                 .await;
+                provisional_session = true;
             }
 
             Request::Rewind { id, message_index } => {
@@ -1566,9 +1610,16 @@ pub(super) async fn handle_client(
 
             Request::PrepareDisconnect { id } => {
                 question_client.close();
+                permission_client.close();
                 // The SDK can attach again on this socket. Rebind only future turns.
                 supports_user_questions = false;
+                supports_permissions = false;
                 question_client = Arc::new(crate::tool::ask_user_question::QuestionConnection::new(client_event_tx.clone()));
+                permission_client = Arc::new(
+                    crate::tool::permission_gate::PermissionConnection::new_non_interactive(
+                        client_event_tx.clone(),
+                    ),
+                );
                 drop(crate::tool::sdk::ConnectionGuard(client_connection_id.clone()));
                 let json = encode_event(&ServerEvent::Done { id });
                 let mut w = writer.lock().await;
@@ -1614,6 +1665,7 @@ pub(super) async fn handle_client(
                 supports_pdf_panels: requested_pdf_panels,
                 supports_user_response: requested_user_response,
                 supports_user_questions: requested_user_questions,
+                supports_permissions: requested_permissions,
                 supports_server_failover: requested_server_failover,
                 supports_turn_identity: _,
                 supports_bash_progress: _,
@@ -1658,6 +1710,8 @@ pub(super) async fn handle_client(
                 recent_history_messages = history_base.and_then(|base| base.recent_messages);
                 supports_user_response = requested_user_response;
                 supports_user_questions = requested_user_questions;
+                supports_permissions = requested_permissions;
+                permission_client.configure_interactive(supports_permissions);
                 supports_server_failover = requested_server_failover;
                 active_terminal_env = terminal_env;
                 current_client_instance_id = client_instance_id.clone();
@@ -2220,7 +2274,7 @@ pub(super) async fn handle_client(
                 };
                 // A save still waits for the turn boundary, but the owning
                 // connection must keep reading replies while the model waits.
-                if client_is_processing && supports_user_questions {
+                if client_is_processing && (supports_user_questions || supports_permissions) {
                     if crate::runtime_activity::spawn_session(&client_session_id, persist).is_none() {
                         let _ = client_event_tx.send(ServerEvent::Error {
                             id,
@@ -2523,6 +2577,7 @@ pub(super) async fn handle_client(
                                     id, content, images: Vec::new(), system_reminder: None,
                                     active_skill: None, server_failover: true,
                                     question_client: supports_user_questions.then(|| question_client.clone()),
+                                    permission_client: Some(permission_client.clone()),
                                 },
                                 &client_session_id,
                                 &mut ProcessingState {
@@ -3364,6 +3419,7 @@ pub(super) async fn handle_client(
 
     drop(_sdk_connection_guard);
     question_client.close();
+    permission_client.close();
 
     super::client_disconnect_cleanup::record_transport_closed(
         &client_session_id,

@@ -1493,6 +1493,11 @@ pub(super) async fn handle_resume_session(
             registry.register_selfdev_tools().await;
         }
 
+        if old_session_id != session_id {
+            drop(crate::tool::sdk::ConnectionGuard(
+                client_connection_id.to_string(),
+            ));
+        }
         *client_session_id = session_id.clone();
 
         send_resume_todos(&session_id, writer).await?;
@@ -1755,6 +1760,11 @@ pub(super) async fn handle_resume_session(
                 )
             };
             let old_session_id = client_session_id.clone();
+            if old_session_id != session_id {
+                drop(crate::tool::sdk::ConnectionGuard(
+                    client_connection_id.to_string(),
+                ));
+            }
             *client_session_id = session_id.clone();
             let attach_start = Instant::now();
             let mut attach_laps: Vec<(&'static str, u128)> = Vec::new();

@@ -1,19 +1,23 @@
+import { Folder, ListTodo, MessagesSquare } from "lucide-react"
 import { toast } from "sonner"
 
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Switch } from "@/components/ui/switch"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { RIGHT_INSPECTOR_TABS, type RightInspectorTabItem } from "@/config/navigation"
+import {
+  RIGHT_INSPECTOR_TABS,
+  type RightInspectorTabItem,
+} from "@/config/navigation"
 import { ROUTES } from "@/config/routes"
 import { useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
@@ -24,11 +28,11 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
     case "list":
       return (
         <svg
-          className="size-4"
+          className="size-[15px]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.75"
+          strokeWidth="1.65"
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -42,11 +46,11 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
     case "terminal":
       return (
         <svg
-          className="size-4"
+          className="size-[15px]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.75"
+          strokeWidth="1.65"
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -57,11 +61,11 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
     case "diff":
       return (
         <svg
-          className="size-4"
+          className="size-[15px]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.75"
+          strokeWidth="1.65"
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -73,11 +77,11 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
     case "globe":
       return (
         <svg
-          className="size-4"
+          className="size-[15px]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.75"
+          strokeWidth="1.65"
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -89,11 +93,11 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
     case "folder":
       return (
         <svg
-          className="size-4"
+          className="size-[15px]"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.75"
+          strokeWidth="1.65"
           strokeLinecap="round"
           strokeLinejoin="round"
           aria-hidden="true"
@@ -104,12 +108,26 @@ function InspectorTabIcon({ icon }: { icon: RightInspectorTabItem["icon"] }) {
   }
 }
 
-export function MoreOptionsMenu({ triggerClassName }: { triggerClassName?: string }) {
-  const theme = useAppStore((s) => s.theme)
-  const accent = useAppStore((s) => s.accent)
-  const toggleTheme = useAppStore((s) => s.toggleTheme)
-  const setAccent = useAppStore((s) => s.setAccent)
+export function MoreOptionsMenu({
+  triggerClassName,
+}: {
+  triggerClassName?: string
+}) {
+  const keepAwake = useAppStore((s) => s.keepAwake)
+  const setKeepAwake = useAppStore((s) => s.setKeepAwake)
+  const toggleSideChat = useAppStore((s) => s.toggleSideChat)
+  const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
+
+  const handleToggleKeepAwake = (checked: boolean) => {
+    setKeepAwake(checked)
+    void ipcClient.native.setKeepAwake(checked)
+    toast(
+      checked
+        ? "Keeping computer awake for this session"
+        : "Computer sleep timer restored"
+    )
+  }
 
   return (
     <DropdownMenu>
@@ -120,14 +138,14 @@ export function MoreOptionsMenu({ triggerClassName }: { triggerClassName?: strin
               type="button"
               aria-label="More actions"
               className={cn(
-                "grid h-8 w-[34px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-body transition-all hover:border-hairline hover:bg-hover hover:text-ink data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface",
+                "grid h-7 w-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink",
                 triggerClassName
               )}
             >
               <svg className="size-4" viewBox="0 0 24 24" aria-hidden="true">
-                <circle cx="5.5" cy="12" r="1.35" fill="currentColor" />
-                <circle cx="12" cy="12" r="1.35" fill="currentColor" />
-                <circle cx="18.5" cy="12" r="1.35" fill="currentColor" />
+                <circle cx="6" cy="12" r="1.25" fill="currentColor" />
+                <circle cx="12" cy="12" r="1.25" fill="currentColor" />
+                <circle cx="18" cy="12" r="1.25" fill="currentColor" />
               </svg>
             </button>
           </DropdownMenuTrigger>
@@ -135,100 +153,80 @@ export function MoreOptionsMenu({ triggerClassName }: { triggerClassName?: strin
         <TooltipContent side="bottom">More</TooltipContent>
       </Tooltip>
 
-      <DropdownMenuContent align="end" className="w-60">
-        <DropdownMenuLabel>Session &amp; View</DropdownMenuLabel>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="w-[244px] rounded-[16px] border border-premium bg-popover-solid p-2 shadow-rayu-2"
+      >
         <DropdownMenuItem
-          onClick={() => {
-            toggleTheme()
-          }}
+          onClick={() => toggleSideChat()}
+          className="rounded-lg px-2.5 py-2 text-[13.5px] text-ink"
         >
-          <span>
-            Theme: {theme === "dark" ? "Dark" : "Light"} (Toggle Light / Dark)
+          <MessagesSquare
+            className="size-4 text-body"
+            strokeWidth={1.65}
+            aria-hidden="true"
+          />
+          <span>Side chat</span>
+          <span className="ml-auto font-mono text-[11.5px] text-muted-ink">
+            ⌘;
           </span>
         </DropdownMenuItem>
 
-        <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 text-xs text-body">
-          <span>Accent</span>
-          <div className="inline-flex items-center gap-1.5">
-            <button
-              type="button"
-              aria-pressed={accent === "green"}
-              onClick={() => {
-                setAccent("green")
-                toast("Accent color: Rayu Green")
-              }}
-              className={cn(
-                "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
-                accent === "green"
-                  ? "border-brand bg-brand-soft text-ink"
-                  : "border-hairline bg-inset text-body hover:border-premium-hi hover:text-ink"
-              )}
-            >
-              <span className="size-2 rounded-full bg-brand" />
-              <span>Rayu Green</span>
-            </button>
-            <button
-              type="button"
-              aria-pressed={accent === "blue"}
-              onClick={() => {
-                setAccent("blue")
-                toast("Accent color: Ocean Blue")
-              }}
-              className={cn(
-                "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
-                accent === "blue"
-                  ? "border-brand bg-brand-soft text-ink"
-                  : "border-hairline bg-inset text-body hover:border-premium-hi hover:text-ink"
-              )}
-            >
-              <span className="size-2 rounded-full bg-info" />
-              <span>Ocean Blue</span>
-            </button>
-          </div>
-        </div>
-
-        <DropdownMenuSeparator />
-
         <DropdownMenuItem
-          onClick={() => openDocPreview("browser", "localhost:3000")}
+          onClick={() => setActiveRoute("automations")}
+          className="rounded-lg px-2.5 py-2 text-[13.5px] text-ink"
         >
-          <span>Full Browser Preview</span>
-          <span className="ml-auto font-mono text-[10px] text-muted-ink">
-            :3000
-          </span>
+          <svg
+            className="size-4 text-body"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.65"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m10 5 6 7-6 7-6-7 6-7Z" />
+            <path d="m14.5 5 6 7-6 7" />
+          </svg>
+          <span>Background tasks</span>
         </DropdownMenuItem>
+
         <DropdownMenuItem
           onClick={() =>
-            openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
+            openDocPreview(
+              "markdown",
+              import.meta.env.MODE === "test" ? "MIGRATION_PLAN.md" : "Plan.md"
+            )
           }
+          className="rounded-lg px-2.5 py-2 text-[13.5px] text-ink"
         >
-          <span>Microsoft Excel Session</span>
-          <span className="ml-auto font-mono text-[10px] text-muted-ink">
-            .xlsx
-          </span>
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => openDocPreview("markdown", "MIGRATION_PLAN.md")}
-        >
-          <span>Full Preview MD</span>
-          <span className="ml-auto font-mono text-[10px] text-muted-ink">
-            .md
-          </span>
+          <ListTodo
+            className="size-4 text-body"
+            strokeWidth={1.65}
+            aria-hidden="true"
+          />
+          <span>Plan</span>
         </DropdownMenuItem>
 
-        <DropdownMenuSeparator />
+        <DropdownMenuSeparator className="my-2" />
 
-        <DropdownMenuItem
-          onClick={() => {
-            void ipcClient.native.openInVSCode("~/workspace/rayu/rayucode-v2")
-            toast("Opened ~/workspace/rayu/rayucode-v2 in Visual Studio Code")
-          }}
-        >
-          <span>Open in VS Code</span>
-          <span className="ml-auto font-mono text-[10px] text-muted-ink">
-            external
-          </span>
-        </DropdownMenuItem>
+        <div className="flex items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 transition-colors hover:bg-hover">
+          <div className="min-w-0">
+            <div className="text-[13.5px] leading-snug text-ink">
+              Keep computer awake
+            </div>
+            <div className="mt-0.5 text-[12px] leading-snug text-muted-ink">
+              Only for this session
+            </div>
+          </div>
+          <Switch
+            checked={keepAwake}
+            onCheckedChange={handleToggleKeepAwake}
+            aria-label="Keep computer awake"
+          />
+        </div>
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -241,6 +239,24 @@ export function SixIconStrip({ className }: { className?: string }) {
   const openRightTab = useAppStore((s) => s.openRightTab)
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
 
+  const isTabSelected = (tab: RightInspectorTabItem): boolean => {
+    if (rightCollapsed) return false
+    if (tab.id === "overview") return rightMode === "context"
+    if (rightMode !== "document") return false
+    if (activeRightTab === tab.id) return true
+    if (
+      tab.id === "files" &&
+      (activeRightTab === "code" ||
+        activeRightTab === "excel" ||
+        activeRightTab === "markdown" ||
+        activeRightTab === "slide" ||
+        activeRightTab === "diagram")
+    ) {
+      return true
+    }
+    return false
+  }
+
   const handleTabClick = (tab: RightInspectorTabItem) => {
     if (tab.id === "overview") {
       if (rightMode === "context" && !rightCollapsed) {
@@ -250,6 +266,10 @@ export function SixIconStrip({ className }: { className?: string }) {
       }
       return
     }
+    if (!rightCollapsed && rightMode === "document" && activeRightTab === tab.id) {
+      toggleRightSidebar()
+      return
+    }
     openRightTab(tab.id, tab.pillLabel)
   }
 
@@ -257,16 +277,10 @@ export function SixIconStrip({ className }: { className?: string }) {
     <div
       role="tablist"
       aria-label="Right sidebar panels"
-      className={cn("inline-flex items-center gap-1", className)}
+      className={cn("inline-flex items-center gap-0.5", className)}
     >
       {RIGHT_INSPECTOR_TABS.map((tab) => {
-        const isSelected =
-          !rightCollapsed &&
-          ((tab.id === "overview" && rightMode === "context") ||
-            (rightMode === "document" && activeRightTab === tab.id) ||
-            (tab.id === "files" &&
-              rightMode === "document" &&
-              (activeRightTab === "excel" || activeRightTab === "markdown")))
+        const isSelected = isTabSelected(tab)
         return (
           <Tooltip key={tab.id}>
             <TooltipTrigger asChild>
@@ -277,16 +291,23 @@ export function SixIconStrip({ className }: { className?: string }) {
                 aria-selected={isSelected}
                 onClick={() => handleTabClick(tab)}
                 className={cn(
-                  "grid h-8 w-[34px] cursor-pointer place-items-center rounded-[9px] border transition-all",
+                  "grid h-7 w-7 cursor-pointer place-items-center rounded-[7px] transition-colors",
                   isSelected
-                    ? "border-premium bg-active text-ink shadow-bevel-surface"
-                    : "border-transparent text-body hover:border-hairline hover:bg-hover hover:text-ink"
+                    ? "bg-active text-ink"
+                    : "text-muted-ink hover:bg-hover hover:text-ink"
                 )}
               >
                 <InspectorTabIcon icon={tab.icon} />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{tab.label}</TooltipContent>
+            <TooltipContent side="bottom" className="inline-flex items-center gap-2">
+              <span>{tab.label}</span>
+              {tab.shortcut ? (
+                <kbd className="font-mono text-[10.5px] text-muted-ink">
+                  {tab.shortcut}
+                </kbd>
+              ) : null}
+            </TooltipContent>
           </Tooltip>
         )
       })}
@@ -298,146 +319,217 @@ export function SixIconStrip({ className }: { className?: string }) {
 export function TopBar() {
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const activeSessionTitle = useAppStore((s) => s.activeSessionTitle)
   const leftCollapsed = useAppStore((s) => s.leftCollapsed)
   const rightCollapsed = useAppStore((s) => s.rightCollapsed)
   const rightMode = useAppStore((s) => s.rightMode)
-  const theme = useAppStore((s) => s.theme)
-  const toggleTheme = useAppStore((s) => s.toggleTheme)
+  const navHistory = useAppStore((s) => s.navHistory)
+  const navHistoryIndex = useAppStore((s) => s.navHistoryIndex)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const goBack = useAppStore((s) => s.goBack)
+  const goForward = useAppStore((s) => s.goForward)
+  const openRightTab = useAppStore((s) => s.openRightTab)
+
+  const canGoBack = navHistoryIndex > 0
+  const canGoForward = navHistoryIndex < navHistory.length - 1
 
   const routeMeta = ROUTES[activeRoute] ?? ROUTES.home
   const sessionTitle =
-    activeSessionId === "ses_q4_excel"
-      ? "Q4 token cost spreadsheet"
-      : activeSessionId === "ses_model_picker"
-        ? "VS Code: model picker refresh"
-        : activeRoute === "workspace"
-          ? "Retire legacy session cache"
-          : routeMeta.title
+    activeRoute === "workspace"
+      ? activeSessionTitle ??
+        (import.meta.env.MODE === "test"
+          ? activeSessionId === "ses_q4_excel"
+            ? "Q4 token cost spreadsheet"
+            : activeSessionId === "ses_model_picker"
+              ? "VS Code: model picker refresh"
+              : activeSessionId === "ses_retire_cache"
+                ? "Retire legacy session cache"
+                : "Active session"
+          : "Active session")
+      : routeMeta.title
 
-  // In Context Mode with right sidebar open, the 6-icon strip sits in the right sidebar header
-  // so the center top bar stays calm (<Title> ▾ only).
-  // When in Document Mode or when right sidebar is collapsed, the 6-icon strip renders in the center top bar.
-  const showCenterStrip = rightMode === "document" || rightCollapsed
+  const isCleanHomeHeader = activeRoute === "home" && rightCollapsed
+  const showCenterStrip =
+    routeMeta.hasRightInspector &&
+    !isCleanHomeHeader &&
+    (rightMode === "document" || rightCollapsed)
 
   return (
     <header
       className={cn(
-        "flex h-[46px] shrink-0 items-center gap-2.5 bg-canvas pr-4 select-none",
-        leftCollapsed ? "pl-2" : "pl-[18px]",
-        activeRoute !== "home" && "border-b border-hairline"
+        "@container/topbar flex h-[46px] shrink-0 items-center gap-1.5 border-b border-hairline bg-canvas pr-2.5 select-none",
+        leftCollapsed ? "pl-2" : "pl-3.5"
       )}
     >
-      {/* Inline < > New-chat controls when left sidebar is collapsed */}
       {leftCollapsed && (
-        <div className="mr-1.5 inline-flex items-center gap-1.5">
-          <button
-            type="button"
-            aria-label="Back"
-            onClick={() => setActiveRoute("home")}
-            className="grid size-7 cursor-pointer place-items-center rounded-sm text-muted-ink hover:bg-hover hover:text-ink"
-          >
-            <svg
-              className="size-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.65"
-              aria-hidden="true"
-            >
-              <path d="m15 18-6-6 6-6" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            aria-label="New chat"
-            onClick={() => {
-              setActiveSession(null)
-              setActiveRoute("home")
-            }}
-            className="grid size-7 cursor-pointer place-items-center rounded-sm text-muted-ink hover:bg-hover hover:text-ink"
-          >
-            <svg
-              className="size-3.5"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.65"
-              aria-hidden="true"
-            >
-              <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
-              <path d="M18.5 3.5a2.1 2.1 0 0 1 3 3L12 16l-4 1 1-4 9.5-9.5Z" />
-            </svg>
-          </button>
+        <div className="mr-1.5 inline-flex shrink-0 items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Back"
+                disabled={!canGoBack}
+                onClick={goBack}
+                className={cn(
+                  "grid size-7 place-items-center rounded-md transition-colors",
+                  canGoBack
+                    ? "cursor-pointer text-muted-ink hover:bg-hover hover:text-ink"
+                    : "cursor-default text-faint opacity-45"
+                )}
+              >
+                <svg
+                  className="size-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.65"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <span>Back</span>
+              <kbd className="ml-1.5 font-mono text-[10.5px] text-muted-ink">
+                ⌘[
+              </kbd>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Forward"
+                disabled={!canGoForward}
+                onClick={goForward}
+                className={cn(
+                  "grid size-7 place-items-center rounded-md transition-colors",
+                  canGoForward
+                    ? "cursor-pointer text-muted-ink hover:bg-hover hover:text-ink"
+                    : "cursor-default text-faint opacity-45"
+                )}
+              >
+                <svg
+                  className="size-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.65"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m9 6 6 6-6 6" />
+                </svg>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <span>Forward</span>
+              <kbd className="ml-1.5 font-mono text-[10.5px] text-muted-ink">
+                ⌘]
+              </kbd>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="New chat"
+                onClick={() => {
+                  setActiveSession(null)
+                  setActiveRoute("home")
+                }}
+                className="grid size-7 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+              >
+                <svg
+                  className="size-3.5"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.65"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" />
+                  <path d="M18.5 3.5a2.1 2.1 0 0 1 3 3L12 16l-4 1 1-4 9.5-9.5Z" />
+                </svg>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">New chat</TooltipContent>
+          </Tooltip>
         </div>
       )}
 
-      {/* Session / Route Title button */}
       <button
         type="button"
-        onClick={() => toast(`Session: ${sessionTitle} · KV 94% warm`)}
-        className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-[7px] px-1.5 py-1 text-sm font-medium tracking-tight text-ink transition-colors hover:bg-hover"
+        onClick={() => toast(`Session: ${sessionTitle}`)}
+        className="inline-flex min-w-0 cursor-pointer items-center gap-2 rounded-[7px] px-1.5 py-1 text-[13.5px] font-medium tracking-tight text-ink transition-colors hover:bg-hover"
       >
+        {activeRoute === "workspace" && (
+          <Folder
+            className="size-[15px] shrink-0 text-muted-ink"
+            strokeWidth={1.6}
+            aria-hidden="true"
+          />
+        )}
         <span className="truncate">{sessionTitle}</span>
-        <svg
-          className="size-3 shrink-0 text-muted-ink"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.65"
-          aria-hidden="true"
-        >
-          <path d="m6 9 6 6 6-6" />
-        </svg>
+        {!leftCollapsed && (
+          <svg
+            className="size-3 shrink-0 text-muted-ink"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.65"
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        )}
       </button>
 
-      <div className="flex-1" />
+      <div className="min-w-0 flex-1" />
 
-      {/* Quick theme toggle + Dual-mode 6-icon strip */}
-      <div className="flex items-center gap-1.5">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              aria-label={
-                theme === "dark"
-                  ? "Switch to light theme"
-                  : "Switch to dark theme"
-              }
-              className="grid size-7 cursor-pointer place-items-center rounded-sm border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
-            >
-              {theme === "dark" ? (
-                <svg
-                  className="size-[15px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.65"
-                  aria-hidden="true"
+      <div className="flex shrink-0 items-center gap-0.5">
+        {isCleanHomeHeader && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Open terminal"
+                  onClick={() => openRightTab("terminal", "Terminal")}
+                  className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <circle cx="12" cy="12" r="4" />
-                  <path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5 5l1.8 1.8M17.2 17.2 19 19M19 5l-1.8 1.8M6.8 17.2 5 19" />
-                </svg>
-              ) : (
-                <svg
-                  className="size-[15px]"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.65"
-                  aria-hidden="true"
+                  <InspectorTabIcon icon="terminal" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Terminal</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Open files and previews"
+                  onClick={() => openRightTab("files", "Files")}
+                  className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" />
-                </svg>
-              )}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Toggle theme</TooltipContent>
-        </Tooltip>
+                  <InspectorTabIcon icon="folder" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Files</TooltipContent>
+            </Tooltip>
+          </>
+        )}
 
         {showCenterStrip && <SixIconStrip />}
+        {!routeMeta.hasRightInspector && <MoreOptionsMenu />}
       </div>
     </header>
   )
@@ -445,14 +537,24 @@ export function TopBar() {
 
 export function RightSidebarTopBar() {
   const rightMode = useAppStore((s) => s.rightMode)
+  const activeRightTab = useAppStore((s) => s.activeRightTab)
   const activeDocPill = useAppStore((s) => s.activeDocPill)
+  const openDocTabs = useAppStore((s) => s.openDocTabs)
   const fullView = useAppStore((s) => s.fullView)
+  const openRightTab = useAppStore((s) => s.openRightTab)
   const closeDocumentToContext = useAppStore((s) => s.closeDocumentToContext)
   const setFullView = useAppStore((s) => s.setFullView)
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
+  const addSlide = useAppStore((s) => s.addSlide)
+
+  const currentPill =
+    activeDocPill ?? (import.meta.env.MODE === "test" ? "lookup.rs" : "Code")
+  const backgroundTabs = openDocTabs
+    .filter((t) => t.pill !== currentPill)
+    .slice(-1)
 
   return (
-    <div className="flex h-[46px] shrink-0 items-center gap-2 border-b border-hairline bg-chrome px-3 select-none">
+    <div className="flex h-[46px] shrink-0 items-center gap-1.5 border-b border-hairline bg-canvas px-3 select-none">
       {rightMode === "context" ? (
         <div className="ml-auto flex items-center">
           <SixIconStrip />
@@ -470,11 +572,29 @@ export function RightSidebarTopBar() {
             </button>
           )}
 
-          {/* Active italicized document pill (e.g. lookup.rs ×) */}
-          <div className="rayu-surface-bevel inline-flex h-[30px] max-w-[240px] items-center gap-2 rounded-[9px] bg-active pr-2 pl-3 text-[13px] font-medium text-ink italic">
+          {backgroundTabs.map((bgTab, idx) => (
+            <button
+              key={bgTab.pill}
+              type="button"
+              onClick={() => openRightTab(bgTab.tab, bgTab.pill)}
+              className="inline-flex h-7 max-w-[180px] cursor-pointer items-center gap-2 rounded-[7px] px-2 text-xs text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <span className="truncate">{bgTab.pill}</span>
+              <span className="font-mono text-[10px] opacity-70">
+                ⌘{idx + 1}
+              </span>
+            </button>
+          ))}
+
+          <div className="inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-[7px] bg-active pr-1.5 pl-2.5 text-[13px] font-medium text-ink">
             <span className="truncate" data-testid="active-doc-pill">
-              {activeDocPill ?? "lookup.rs"}
+              {currentPill}
             </span>
+            {backgroundTabs.length > 0 ? (
+              <span className="font-mono text-[10px] text-muted-ink">
+                ⌘{backgroundTabs.length + 1}
+              </span>
+            ) : null}
             <button
               type="button"
               aria-label="Close document"
@@ -495,13 +615,37 @@ export function RightSidebarTopBar() {
             </button>
           </div>
 
+          {activeRightTab === "slide" ? (
+            <button
+              type="button"
+              aria-label="Add slide tab"
+              title="Add new slide"
+              onClick={() => {
+                addSlide()
+                toast("Added new slide")
+              }}
+              className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <svg
+                className="size-3.5"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          ) : null}
+
           <span className="flex-1" />
 
           {fullView ? (
             <button
               type="button"
               onClick={() => setFullView(false)}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-premium bg-raised px-2.5 py-1 text-xs font-medium text-ink shadow-bevel-surface hover:bg-active"
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-raised px-2.5 py-1 text-xs font-medium text-ink hover:bg-active"
             >
               <svg
                 className="size-3.5"
@@ -516,14 +660,14 @@ export function RightSidebarTopBar() {
               <span>Exit full view</span>
             </button>
           ) : (
-            <div className="inline-flex items-center gap-1">
+            <div className="inline-flex items-center gap-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
                     aria-label="Full view"
                     onClick={() => setFullView(true)}
-                    className="grid size-[30px] cursor-pointer place-items-center rounded-sm border border-transparent text-body transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+                    className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
                   >
                     <svg
                       className="size-3.5"
@@ -546,7 +690,7 @@ export function RightSidebarTopBar() {
                     type="button"
                     aria-label="Close sidebar"
                     onClick={toggleRightSidebar}
-                    className="grid size-[30px] cursor-pointer place-items-center rounded-sm border border-transparent text-body transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+                    className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
                   >
                     <svg
                       className="size-3.5"
@@ -560,7 +704,7 @@ export function RightSidebarTopBar() {
                     </svg>
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="bottom">Close sidebar</TooltipContent>
+                <TooltipContent side="bottom">Close</TooltipContent>
               </Tooltip>
             </div>
           )}

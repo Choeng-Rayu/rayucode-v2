@@ -43,6 +43,7 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
       activeCodeFile: "lookup.rs",
       activeCodeLine: 21,
       fullView: false,
+      liveExcelWorkbook: null,
     })
   })
 
@@ -126,9 +127,24 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
     fireEvent.click(liveWebToggle)
     expect(liveWebToggle).toHaveAttribute("aria-pressed", "true")
     expect(screen.getByTestId("excel-live-web-viewer")).toBeInTheDocument()
+
+    // No hardcoded demo embed URL: viewer stays empty until the user loads a real URL
     expect(
-      screen.getByTitle("Microsoft Excel Online Live Embed")
-    ).toBeInTheDocument()
+      screen.queryByTitle("Microsoft Excel Online Live Embed")
+    ).not.toBeInTheDocument()
+    expect(screen.getByTestId("excel-live-web-empty")).toBeInTheDocument()
+    const embedInput = screen.getByLabelText("Office Web Viewer URL")
+    expect(embedInput).toHaveValue("")
+    fireEvent.change(embedInput, {
+      target: { value: "https://example.com/budget.xlsx" },
+    })
+    fireEvent.submit(embedInput.closest("form")!)
+    const embedFrame = screen.getByTitle("Microsoft Excel Online Live Embed")
+    expect(embedFrame).toBeInTheDocument()
+    expect(embedFrame.getAttribute("src")).toContain(
+      encodeURIComponent("https://example.com/budget.xlsx")
+    )
+    expect(embedFrame.getAttribute("src")).not.toContain("rayucode.com/demo")
 
     // Switch back to interactive grid
     fireEvent.click(screen.getByRole("button", { name: /Local workbook/i }))
@@ -138,6 +154,134 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
     fireEvent.click(screen.getByRole("button", { name: "Context" }))
     expect(useAppStore.getState().rightMode).toBe("context")
     expect(useAppStore.getState().activeRightTab).toBe("overview")
+  })
+
+  it("shows a clean empty state in production mode until hydrated by write_excel or Open .xlsx", async () => {
+    useAppStore.getState().setLiveExcelWorkbook(null)
+    renderWithProviders(<ExcelPane allowDemoFallback={false} />)
+
+    expect(screen.getByTestId("excel-empty-state")).toHaveTextContent(
+      "No workbook open yet"
+    )
+    expect(screen.getByTestId("excel-pane")).toHaveTextContent("No workbook open")
+    expect(screen.getByTestId("excel-pane")).not.toHaveTextContent(
+      "Q4-Token-Cost-Model.xlsx"
+    )
+
+    await act(async () => {
+      useAppStore.getState().setLiveExcelWorkbook({
+        fileName: "prod-model.xlsx",
+        filePath: "/tmp/prod-model.xlsx",
+        sheets: [
+          {
+            id: "sheet_prod",
+            name: "Summary",
+            columns: ["A", "B"],
+            headers: { A: "Metric", B: "Value" },
+            rows: [{ rowNumber: 2, cells: { A: "Latency", B: 144 } }],
+          },
+        ],
+      })
+    })
+
+    expect(screen.queryByTestId("excel-empty-state")).not.toBeInTheDocument()
+    expect(screen.getByTestId("excel-sheet-sheet_prod")).toBeInTheDocument()
+    expect(screen.getByTestId("excel-pane")).toHaveTextContent("prod-model.xlsx")
+  })
+
+  it("hydrates ExcelPane live from a freshly written workbook (write_excel artifact)", async () => {
+    renderWithProviders(<ExcelPane />)
+    await screen.findByTestId("excel-sheet-sheet_q4")
+
+    await act(async () => {
+      useAppStore.getState().setLiveExcelWorkbook({
+        fileName: "live-costs.xlsx",
+        filePath: "/tmp/live-costs.xlsx",
+        sheets: [
+          {
+            id: "sheet_live",
+            name: "Live Costs",
+            columns: ["A", "B"],
+            headers: { A: "Item", B: "Cost" },
+            rows: [{ rowNumber: 2, cells: { A: "Widget", B: 42 } }],
+          },
+        ],
+      })
+    })
+
+    expect(await screen.findByRole("tab", { name: "Live Costs" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    )
+    expect(screen.getByTestId("excel-sheet-sheet_live")).toBeInTheDocument()
+    expect(screen.getByLabelText("Cell B2")).toHaveValue("42")
+    expect(screen.getByTestId("excel-pane")).toHaveTextContent("live-costs.xlsx")
+    expect(
+      screen.queryByRole("tab", { name: "Provider Unit Costs" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("renders a clean SlidePane empty state and sends real follow-up prompts for Request edits", async () => {
+    const baseDeck = useAppStore.getState().slideDeck
+    useAppStore.setState({ slideDeck: null, activeSessionId: "ses_retire_cache" })
+    const { unmount } = renderWithProviders(<PreviewsHost />)
+    await act(async () => {
+      useAppStore.setState({ activeRightTab: "slide" })
+    })
+
+    const emptyPane = await screen.findByTestId("slide-pane")
+    expect(emptyPane).toHaveAttribute("data-empty", "true")
+    expect(emptyPane).toHaveTextContent("No presentation open yet")
+    expect(emptyPane).not.toHaveTextContent("Enterprise Quarterly Business Review")
+    unmount()
+
+    useAppStore.setState({
+      slideDeck: {
+        title: "Roadmap 2027",
+        templateName: "roadmap.pptx",
+        filePath: "/tmp/roadmap.pptx",
+        activeSlideIndex: 1,
+        slides: [
+          {
+            id: "s1",
+            kicker: "",
+            title: "Cover",
+            subtitle: "",
+            body: "Intro body",
+          },
+          {
+            id: "s2",
+            kicker: "",
+            title: "Milestones",
+            subtitle: "",
+            body: "Milestone body",
+          },
+        ],
+      },
+    })
+    renderWithProviders(<PreviewsHost />)
+    expect(await screen.findByTestId("slide-pane")).toHaveTextContent(
+      "Milestones"
+    )
+
+    fireEvent.click(screen.getByTestId("slide-request-edits-btn"))
+    fireEvent.change(await screen.findByTestId("slide-request-edits-input"), {
+      target: { value: "make the headline punchier" },
+    })
+    fireEvent.submit(screen.getByTestId("slide-request-edits-input").closest("form")!)
+
+    const queued = useAppStore.getState().pendingStreamPrompt
+    expect(queued?.sessionId).toBe("ses_retire_cache")
+    expect(queued?.prompt).toContain("/tmp/roadmap.pptx")
+    expect(queued?.prompt).toContain("Slide 2")
+    expect(queued?.prompt).toContain("Milestones")
+    expect(queued?.prompt).toContain("make the headline punchier")
+    // Local bullet-append hack is gone: the slide body is untouched
+    expect(useAppStore.getState().slideDeck?.slides[1]?.body).toBe(
+      "Milestone body"
+    )
+
+    useAppStore.setState({ slideDeck: baseDeck, pendingStreamPrompt: null })
   })
 
   it("handles BrowserPane zoom, device toolbar toggle, and Full View FloatingAskChat drawer", async () => {
@@ -187,6 +331,16 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
     fireEvent.click(screen.getByRole("button", { name: "Exit full view" }))
     expect(useAppStore.getState().fullView).toBe(false)
     expect(screen.queryByTestId("floating-ask-chat")).not.toBeInTheDocument()
+
+    // Navigate via centered pill URL bar & open a second browser tab
+    const urlInput = screen.getByTestId("browser-url-input")
+    fireEvent.focus(urlInput)
+    fireEvent.change(urlInput, { target: { value: "jigsaw.w3.org" } })
+    fireEvent.submit(urlInput.closest("form")!)
+    expect(urlInput).toHaveValue("jigsaw.w3.org")
+
+    fireEvent.click(screen.getByTestId("browser-new-tab-btn"))
+    expect(screen.getAllByTestId("browser-tab-pill")).toHaveLength(2)
   })
 
   it("toggles MarkdownPane between Rendered and Raw views and opens in VS Code", async () => {
@@ -243,5 +397,39 @@ describe("Previews feature (ExcelPane, BrowserPane, FloatingAskChat, MarkdownPan
       useAppStore.getState().openRightTab("markdown")
     })
     await screen.findByTestId("markdown-pane")
+
+    await act(async () => {
+      useAppStore.getState().openRightTab("slide", "Slide")
+    })
+    const slidePane = await screen.findByTestId("slide-pane")
+    expect(slidePane).toHaveTextContent("Enterprise Quarterly Business Review")
+    expect(screen.getByTestId("slide-request-edits-btn")).toBeInTheDocument()
+
+    // Navigate to Slide 2 via vertical slide tick rail
+    fireEvent.click(screen.getByRole("tab", { name: "Slide 2" }))
+    expect(slidePane).toHaveTextContent(
+      "Platform Capabilities & Operational Readiness"
+    )
+
+    // Open Diagram Studio preview and toggle between Preview & Code
+    await act(async () => {
+      useAppStore
+        .getState()
+        .openDiagramPreview(
+          "flowchart LR\n  A[Renderer] --> B[Preload] --> C[Main]",
+          "Electron Bridge Flow"
+        )
+    })
+    const diagramPane = await screen.findByTestId("diagram-pane")
+    expect(diagramPane).toHaveTextContent("Electron Bridge Flow")
+    expect(screen.getByTestId("diagram-preview-stage")).toBeInTheDocument()
+
+    const codeTab = screen.getByTestId("diagram-mode-code")
+    fireEvent.mouseDown(codeTab)
+    fireEvent.click(codeTab)
+    const editor = await screen.findByTestId("diagram-code-editor")
+    expect(editor).toHaveValue(
+      "flowchart LR\n  A[Renderer] --> B[Preload] --> C[Main]"
+    )
   })
 })

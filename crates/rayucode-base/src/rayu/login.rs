@@ -270,10 +270,28 @@ pub(super) async fn exchange_code(code: &str, state: &str) -> Result<RayuSession
         .map_err(|_| anyhow!("Could not reach the Rayu account service to finish sign-in."))?;
     let status = response.status();
     if !status.is_success() {
-        bail!(
-            "Token exchange failed (HTTP {}). Please try /login again.",
-            status.as_u16()
+        let (code, limit_header, retry_after_secs, body) =
+            super::error::read_http_error_parts(response).await;
+        crate::logging::warn(&format!(
+            "Rayu /cli/token exchange failed (HTTP {code}): {}",
+            crate::util::truncate_str(body.trim(), 400)
+        ));
+        let parsed = super::error::ParsedRayuError::parse(
+            Some(code),
+            &body,
+            limit_header.as_deref(),
+            retry_after_secs,
         );
+        if let Some(detail) = parsed
+            .message
+            .as_deref()
+            .map(super::error::sanitize_custom_error_message)
+            .map(|s| s.trim_end_matches('.').trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            bail!("Token exchange failed (HTTP {code}): {detail}. Please try /login rayu again.");
+        }
+        bail!("Token exchange failed (HTTP {code}). Please try /login rayu again.");
     }
     let session: RayuSession = response
         .json()

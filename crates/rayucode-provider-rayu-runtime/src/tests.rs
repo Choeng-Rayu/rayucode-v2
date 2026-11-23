@@ -12,6 +12,7 @@ const RAYU_ENV_KEYS: &[&str] = &[
     "RAYU_AUTH_CONFIG_DIR",
     "RAYU_CONFIG_DIR",
     "RAYU_HOME",
+    "RAYU_CLIENT_PRODUCT",
 ];
 
 struct EnvGuard {
@@ -76,6 +77,7 @@ fn test_env() -> TestEnv {
     env.remove("RAYU_API_KEY");
     env.remove("RAYU_API_URL");
     env.remove("RAYU_GATEWAY_URL");
+    env.remove("RAYU_CLIENT_PRODUCT");
     TestEnv {
         env,
         _config: config,
@@ -136,11 +138,34 @@ fn spawn_mock(
     std::net::SocketAddr,
     std::thread::JoinHandle<Vec<CapturedRequest>>,
 ) {
+    let with_default_headers = responses
+        .into_iter()
+        .map(|(status, body)| {
+            // Capacity answers carry a short Retry-After, as the gateway sends.
+            let extra = if status.starts_with("429") || status.starts_with("503") {
+                "Retry-After: 1\r\n"
+            } else {
+                ""
+            };
+            (status, extra, body)
+        })
+        .collect();
+    spawn_mock_with_headers(with_default_headers)
+}
+
+/// Variant of [`spawn_mock`] allowing custom response headers (e.g.
+/// `X-Rayu-Limit`, `x-should-retry`, `Retry-After`) per response.
+fn spawn_mock_with_headers(
+    responses: Vec<(&'static str, &'static str, String)>,
+) -> (
+    std::net::SocketAddr,
+    std::thread::JoinHandle<Vec<CapturedRequest>>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let handle = std::thread::spawn(move || {
         let mut captured = Vec::new();
-        for (status, body) in responses {
+        for (status, extra_headers, body) in responses {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(10)))
@@ -198,15 +223,9 @@ fn spawn_mock(
                 stream.flush().unwrap();
                 continue;
             }
-            // Capacity answers carry a short Retry-After, as the gateway sends.
-            let retry_after = if status.starts_with("429") || status.starts_with("503") {
-                "Retry-After: 1\r\n"
-            } else {
-                ""
-            };
             write!(
                 stream,
-                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\n{retry_after}Connection: close\r\n\r\n"
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {body_len}\r\n{extra_headers}Connection: close\r\n\r\n"
             )
             .unwrap();
             stream.write_all(body.as_bytes()).unwrap();
@@ -1075,6 +1094,17 @@ fn only_short_capacity_denials_are_waited_out() {
         r#"{"reason":"api_key_rpm_limit"}"#,
         Some(Duration::from_secs(60))
     ));
+    // Admin-authored custom model notices (`rayu_custom: true`) surface immediately.
+    assert!(!t(
+        503,
+        r#"{"type":"error","error":{"type":"provider_unavailable","message":"Maintenance until 15:00 UTC","rayu_custom":true}}"#,
+        short
+    ));
+    assert!(!t(
+        429,
+        r#"{"error":{"type":"provider_unavailable","message":"Model paused by admin","rayu_custom":true}}"#,
+        None
+    ));
     // A long Retry-After is a quota window even without a reason.
     assert!(!t(429, "{}", Some(Duration::from_secs(45))));
     // Never for other statuses.
@@ -1258,4 +1288,327 @@ async fn rayu_provider_uses_admin_max_input_tokens_for_context_budget_while_keep
     let captured = server.join().unwrap();
     let sent: serde_json::Value = serde_json::from_str(&captured[1].body).unwrap();
     assert_eq!(sent["max_tokens"], 96_000);
+}
+
+#[tokio::test]
+async fn gateway_errors_surface_exact_structured_messages_for_rayu_auth_and_api_key() {
+    let test = test_env();
+    // 1. API key 403 scope restriction vs 429 credit cap vs 503 custom notice (x-should-retry: false)
+    let (address, server) = spawn_mock_with_headers(vec![
+        (
+            "403 Forbidden",
+            "",
+            r#"{"error":{"message":"model not allowed for this API key: claude-opus-4-6","type":"permission_error"}}"#
+                .to_string(),
+        ),
+        (
+            "429 Too Many Requests",
+            "Retry-After: 3600\r\n",
+            r#"{"error":{"message":"API key credit limit reached for this billing period","type":"rate_limit_exceeded"},"reason":"api_key_credit_limit","creditLimit":25}"#
+                .to_string(),
+        ),
+        (
+            "503 Service Unavailable",
+            "x-should-retry: false\r\n",
+            r#"{"type":"error","error":{"type":"provider_unavailable","message":"Maintenance window active.","rayu_custom":true}}"#
+                .to_string(),
+        ),
+        (
+            "400 Bad Request",
+            "",
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"Model \"deepseek-test\" cannot read images.","rayu_code":"model_no_image_support"}}"#
+                .to_string(),
+        ),
+    ]);
+    let provider = api_key_provider(&test, address);
+
+    let err_scope = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_scope.contains("claude-opus-4-6") && err_scope.contains("/dashboard/api-keys"),
+        "{err_scope}"
+    );
+    assert!(!err_scope.contains("/plans"), "{err_scope}");
+
+    let err_cap = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_cap.contains("25 credits") && err_cap.contains("/dashboard/api-keys"),
+        "{err_cap}"
+    );
+
+    let err_custom = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_custom.contains("Maintenance window active.") && err_custom.contains("/model"),
+        "{err_custom}"
+    );
+
+    let err_img = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_img.contains("cannot read images") && err_img.contains("/model"),
+        "{err_img}"
+    );
+    assert_eq!(server.join().unwrap().len(), 4);
+
+    // 2. Rayu Auth (JWT): 402 team_plan_required, 403 plan gate, 429 personal weekly_limit,
+    //    429 team weekly_limit, 429 period_limit with X-Rayu-Limit header (no retry).
+    test.env.remove("RAYU_API_KEY");
+    write_test_session();
+    let (address2, server2) = spawn_mock_with_headers(vec![
+        (
+            "402 Payment Required",
+            "",
+            r#"{"error":{"message":"This team has no credit until you buy a team plan.","type":"team_plan_required"}}"#
+                .to_string(),
+        ),
+        (
+            "403 Forbidden",
+            "",
+            r#"{"error":{"message":"model not available on your plan: deepseek-test","type":"permission_error"}}"#
+                .to_string(),
+        ),
+        (
+            "429 Too Many Requests",
+            "X-Rayu-Limit: weekly_limit\r\nRetry-After: 86400\r\n",
+            r#"{"error":{"message":"you've used this week's credit allowance","type":"rate_limit_exceeded"},"reason":"weekly_limit","transient":false,"resetSeconds":86400}"#
+                .to_string(),
+        ),
+        (
+            "429 Too Many Requests",
+            "X-Rayu-Limit: weekly_limit\r\nRetry-After: 86400\r\n",
+            r#"{"error":{"message":"you've used your share","type":"rate_limit_exceeded"},"reason":"weekly_limit","transient":false,"resetSeconds":86400,"scope":"team"}"#
+                .to_string(),
+        ),
+        (
+            "429 Too Many Requests",
+            "X-Rayu-Limit: period_limit\r\nRetry-After: 2\r\n",
+            r#"{"error":{"message":"credit limit reached: period_limit","type":"rate_limit_exceeded"}}"#
+                .to_string(),
+        ),
+    ]);
+    test.env
+        .set("RAYU_GATEWAY_URL", format!("http://{address2}"));
+    let jwt_provider = RayuProvider::new();
+    jwt_provider.set_model("deepseek-test").unwrap();
+
+    let err_402 = jwt_provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_402.contains("HTTP 402") && err_402.contains("/plans"),
+        "{err_402}"
+    );
+
+    let err_plan = jwt_provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_plan.contains("not available on your current Rayu plan")
+            && err_plan.contains("/plans"),
+        "{err_plan}"
+    );
+
+    let err_weekly = jwt_provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_weekly.contains("use all credits")
+            && err_weekly.contains("one-way until weekly reset"),
+        "{err_weekly}"
+    );
+
+    let err_team_weekly = jwt_provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_team_weekly.contains("team admin") && !err_team_weekly.contains("use all credits"),
+        "{err_team_weekly}"
+    );
+
+    // Even with a short Retry-After: 2, X-Rayu-Limit: period_limit must NOT retry.
+    let err_period = jwt_provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err_period.contains("credit limit for this billing period")
+            && err_period.contains("/plans"),
+        "{err_period}"
+    );
+    assert_eq!(server2.join().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn gateway_ingress_and_auth_unavailable_503_are_retried_cleanly() {
+    let test = test_env();
+    let (address, server) = spawn_mock_with_headers(vec![
+        (
+            "503 Service Unavailable",
+            "Retry-After: 1\r\n",
+            r#"{"error":{"type":"provider_unavailable","message":"Too many requests. Please retry shortly."},"reason":"authentication_unavailable"}"#
+                .to_string(),
+        ),
+        (
+            "429 Too Many Requests",
+            "Retry-After: 1\r\n",
+            r#"{"error":{"type":"rate_limit_exceeded","message":"Too many requests. Please retry shortly."},"reason":"ingress_rate_limit"}"#
+                .to_string(),
+        ),
+        ("200 OK", "", complete_sse("recovered after ingress")),
+    ]);
+    let provider = api_key_provider(&test, address);
+    let stream = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .unwrap();
+    let events: Vec<StreamEvent> = stream
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|item| item.unwrap())
+        .collect();
+    assert_eq!(text_after_rollback(&events), "recovered after ingress");
+    assert_eq!(server.join().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn gateway_headers_honor_client_product_and_401_refresh_distinguishes_outage_from_expiry() {
+    let test = test_env();
+    write_test_session();
+    test.env.set("RAYU_CLIENT_PRODUCT", "rayucode");
+
+    // Case 1: gateway 401 -> backend /cli/refresh 503 (transient outage) keeps session
+    // intact and must NOT tell the user their session expired.
+    let (addr1, server1) = spawn_mock_with_headers(vec![
+        (
+            "401 Unauthorized",
+            "",
+            r#"{"error":{"type":"authentication_error","message":"invalid token"}}"#.to_string(),
+        ),
+        (
+            "503 Service Unavailable",
+            "",
+            r#"{"error":{"message":"backend restarting"}}"#.to_string(),
+        ),
+    ]);
+    test.env.set("RAYU_GATEWAY_URL", format!("http://{addr1}"));
+    test.env.set("RAYU_API_URL", format!("http://{addr1}"));
+    let provider = RayuProvider::new();
+    provider.set_model("deepseek-test").unwrap();
+
+    let err = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err.contains("Could not renew your Rayu session"),
+        "transient refresh outage must not blame expired session: {err}"
+    );
+    assert!(
+        rayucode_base::rayu::has_usable_session(),
+        "transient refresh outage must preserve session file"
+    );
+    let captured1 = server1.join().unwrap();
+    assert_eq!(captured1[0].header("x-rayu-client"), Some("rayucode"));
+    assert_eq!(
+        captured1[0].header("x-rayu-resolved-model"),
+        Some("deepseek-test")
+    );
+    assert!(captured1[0].header("x-rayu-client-app-version").is_some());
+
+    // Case 2: gateway 401 -> backend /cli/refresh 200 -> gateway still 401
+    // must report "gateway rejected your renewed session" and keep the fresh session.
+    let refreshed = format!(
+        r#"{{"accessToken":"jwt-fresh-2","refreshToken":"refresh-2","expiresAt":{}}}"#,
+        now_ms() + 3_600_000
+    );
+    let (addr2, server2) = spawn_mock_with_headers(vec![
+        (
+            "401 Unauthorized",
+            "",
+            r#"{"error":{"type":"authentication_error","message":"invalid token"}}"#.to_string(),
+        ),
+        ("200 OK", "", refreshed),
+        (
+            "401 Unauthorized",
+            "",
+            r#"{"error":{"type":"authentication_error","message":"invalid token"}}"#.to_string(),
+        ),
+    ]);
+    test.env.set("RAYU_GATEWAY_URL", format!("http://{addr2}"));
+    test.env.set("RAYU_API_URL", format!("http://{addr2}"));
+    let err2 = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err2.contains("gateway rejected your renewed session"),
+        "{err2}"
+    );
+    assert!(rayucode_base::rayu::has_usable_session());
+    assert_eq!(server2.join().unwrap().len(), 3);
+
+    // Case 3: gateway 401 -> backend /cli/refresh 401 clears session and reports expired.
+    let (addr3, server3) = spawn_mock_with_headers(vec![
+        (
+            "401 Unauthorized",
+            "",
+            r#"{"error":{"type":"authentication_error","message":"invalid token"}}"#.to_string(),
+        ),
+        (
+            "401 Unauthorized",
+            "",
+            r#"{"statusCode":401,"message":"Invalid refresh token"}"#.to_string(),
+        ),
+    ]);
+    test.env.set("RAYU_GATEWAY_URL", format!("http://{addr3}"));
+    test.env.set("RAYU_API_URL", format!("http://{addr3}"));
+    let err3 = provider
+        .complete(&user_message("hi"), &[], "", None)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        err3.contains("session has expired") && err3.contains("/login rayu"),
+        "{err3}"
+    );
+    assert!(!rayucode_base::rayu::has_usable_session());
+    assert_eq!(server3.join().unwrap().len(), 2);
 }

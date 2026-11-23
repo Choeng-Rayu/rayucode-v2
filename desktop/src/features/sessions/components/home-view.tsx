@@ -1,24 +1,18 @@
 import * as React from "react"
-import { useVirtualizer } from "@tanstack/react-virtual"
-import {
-  Clock,
-  Code2,
-  GitBranch,
-  Globe,
-  Network,
-  Table2,
-} from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
+import { LogIn } from "lucide-react"
 import { toast } from "sonner"
 
+import { RayuProcessingMark } from "@/components/ui/rayu-processing-mark"
 import { useAppStore } from "@/lib/app-store"
 import { getAuthSession } from "@/lib/auth-placeholder"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
-import { QUICK_START_SUGGESTIONS } from "../constants/models"
-import { useCreateSession, useSessions } from "../hooks/use-sessions"
+import { useCreateSession } from "../hooks/use-sessions"
 import type {
   ComposerSubmitPayload,
-  QuickStartSuggestion,
+  PromptImageAttachment,
   SessionSummary,
 } from "../types"
 import { SessionComposer } from "./composer"
@@ -30,168 +24,88 @@ export interface HomeViewProps {
   className?: string
 }
 
-function resolveDisplayName(explicitName?: string): string {
+function resolveDisplayName(
+  explicitName?: string,
+  cloudDisplayName?: string | null,
+  cloudEmail?: string | null
+): string | null {
   if (explicitName && explicitName.trim().length > 0) {
     return explicitName.trim()
   }
-  const auth = getAuthSession()
-  const parts = auth.name.trim().split(/\s+/).filter(Boolean)
+  const source =
+    cloudDisplayName?.trim() ||
+    (cloudEmail?.includes("@") ? cloudEmail.split("@")[0] : "") ||
+    getAuthSession().name
+  const parts = source.trim().split(/\s+/).filter(Boolean)
   const last = parts[parts.length - 1]
-  if (!last) return "Khai"
+  if (!last) return null
   return last.charAt(0).toUpperCase() + last.slice(1)
-}
-
-function SuggestionIcon({ kind }: { kind: QuickStartSuggestion["kind"] }) {
-  switch (kind) {
-    case "code":
-      return <Code2 className="size-[13px] text-brand-text" aria-hidden="true" />
-    case "swarm":
-      return (
-        <Network className="size-[13px] text-brand-text" aria-hidden="true" />
-      )
-    case "sheet":
-      return (
-        <Table2 className="size-[13px] text-brand-text" aria-hidden="true" />
-      )
-    case "preview":
-      return <Globe className="size-[13px] text-brand-text" aria-hidden="true" />
-  }
-}
-
-interface VirtualizedRecentSessionsProps {
-  sessions: readonly SessionSummary[]
-  onSelect: (sessionId: string) => void
-}
-
-function VirtualizedRecentSessions({
-  sessions,
-  onSelect,
-}: VirtualizedRecentSessionsProps) {
-  const scrollRef = React.useRef<HTMLDivElement>(null)
-
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const rowVirtualizer = useVirtualizer({
-    count: sessions.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 46,
-    overscan: 4,
-    initialRect: { width: 732, height: 150 },
-  })
-
-  if (sessions.length === 0) return null
-
-  const virtualItems = rowVirtualizer.getVirtualItems()
-  const renderedRows =
-    virtualItems.length > 0
-      ? virtualItems.map((virtualRow) => ({
-          index: virtualRow.index,
-          size: virtualRow.size,
-          start: virtualRow.start,
-        }))
-      : sessions.slice(0, 6).map((_, index) => ({
-          index,
-          size: 46,
-          start: index * 46,
-        }))
-  const totalHeight = Math.max(
-    rowVirtualizer.getTotalSize(),
-    renderedRows.length * 46
-  )
-
-  return (
-    <section
-      aria-label="Recent sessions"
-      data-testid="home-recent-sessions"
-      className="mx-auto mt-2 w-full max-w-[732px]"
-    >
-      <div className="mb-1.5 flex items-center justify-between px-1 text-[11px] font-medium tracking-[0.04em] text-muted-ink uppercase">
-        <span>Recent sessions</span>
-        <span className="font-mono tabular-nums">{sessions.length}</span>
-      </div>
-      <div
-        ref={scrollRef}
-        className="rayu-card-bevel max-h-[146px] overflow-y-auto rounded-[14px] bg-pane/75 p-1"
-      >
-        <div
-          style={{
-            height: `${totalHeight}px`,
-            width: "100%",
-            position: "relative",
-          }}
-        >
-          {renderedRows.map((virtualRow) => {
-            const session = sessions[virtualRow.index]
-            if (!session) return null
-            return (
-              <div
-                key={session.id}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  left: 0,
-                  width: "100%",
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-                className="py-0.5"
-              >
-                <button
-                  type="button"
-                  data-testid={`recent-session-row-${session.id}`}
-                  onClick={() => onSelect(session.id)}
-                  className="flex h-full w-full cursor-pointer items-center justify-between gap-3 rounded-[10px] border border-transparent px-3 text-left transition-colors hover:border-hairline hover:bg-hover"
-                >
-                  <div className="flex min-w-0 items-center gap-2.5">
-                    <span className="truncate text-[13px] font-medium text-ink">
-                      {session.title}
-                    </span>
-                    <span className="hidden shrink-0 items-center gap-1 rounded-full border border-hairline bg-inset px-2 py-0.5 font-mono text-[10.5px] text-muted-ink sm:inline-flex">
-                      <GitBranch className="size-2.5" aria-hidden="true" />
-                      <span>{session.project}</span>
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2.5 text-[11.5px] text-muted-ink">
-                    <span className="hidden sm:inline">{session.modelLabel}</span>
-                    <span className="inline-flex items-center gap-1 font-mono tabular-nums">
-                      <Clock className="size-3" aria-hidden="true" />
-                      <span>{session.updatedAt}</span>
-                    </span>
-                  </div>
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    </section>
-  )
 }
 
 export function HomeView({
   userName,
-  onSelectSession,
   onSessionCreated,
   className,
 }: HomeViewProps) {
-  const displayName = resolveDisplayName(userName)
+  const authState = useAppStore((s) => s.authState)
+  const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen)
+  const displayName = resolveDisplayName(
+    userName,
+    authState?.signedIn ? authState.user?.displayName : null,
+    authState?.signedIn ? authState.user?.email : null
+  )
+  const showCloudSignIn = !authState?.signedIn && !userName
   const [composerValue, setComposerValue] = React.useState("")
+  const [pendingSubmit, setPendingSubmit] = React.useState<{
+    prompt: string
+    images?: PromptImageAttachment[]
+    startedAtMs: number
+  } | null>(null)
+  const [pendingElapsedSec, setPendingElapsedSec] = React.useState(0)
+  const submitAttemptRef = React.useRef(0)
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
+  const queryClient = useQueryClient()
 
-  const { data: sessions = [] } = useSessions()
   const createSessionMutation = useCreateSession()
 
-  const handleOpenSession = React.useCallback(
-    (sessionId: string) => {
-      useAppStore.getState().setActiveSession(sessionId)
-      onSelectSession?.(sessionId)
-    },
-    [onSelectSession]
-  )
+  React.useEffect(() => {
+    if (!pendingSubmit) return
+    const timer = setInterval(() => {
+      setPendingElapsedSec(
+        Math.max(1, Math.floor((Date.now() - pendingSubmit.startedAtMs) / 1000))
+      )
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [pendingSubmit])
+
+  const handleStopPending = React.useCallback(() => {
+    submitAttemptRef.current += 1
+    if (pendingSubmit) {
+      setComposerValue(pendingSubmit.prompt)
+    }
+    setPendingSubmit(null)
+    setPendingElapsedSec(0)
+  }, [pendingSubmit])
 
   const handleSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
-      const result = await createSessionMutation.mutateAsync({
+      const attemptId = ++submitAttemptRef.current
+      setPendingSubmit({
         prompt: payload.prompt,
+        images: payload.images,
+        startedAtMs: Date.now(),
+      })
+      setPendingElapsedSec(0)
+      setComposerValue("")
+
+      const sessionTitlePrompt =
+        payload.prompt ||
+        (payload.images?.length
+          ? `Image: ${payload.images[0]?.name ?? "attachment"}`
+          : "")
+
+      const result = await createSessionMutation.mutateAsync({
+        prompt: sessionTitlePrompt,
         project: payload.project,
         checkout: payload.checkout,
         modelId: payload.modelId,
@@ -200,76 +114,136 @@ export function HomeView({
         permissionMode: payload.permissionMode,
       })
 
+      if (submitAttemptRef.current !== attemptId) {
+        return
+      }
+
       if (!result.ok) {
+        setPendingSubmit(null)
+        setPendingElapsedSec(0)
+        setComposerValue(payload.prompt)
         toast.error(result.error)
         return
       }
 
-      useAppStore.getState().setActiveSession(result.data.id)
+      setPendingSubmit(null)
+      setPendingElapsedSec(0)
+      queryClient.setQueryData(
+        ["execution-trace", "turns", result.data.id],
+        []
+      )
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+
+      // Sync the chosen Local Permissions mode to the Rust core before the first turn runs
+      void ipcClient.harness
+        .setPermissionMode(result.data.id, payload.permissionMode)
+        .then((res) => {
+          if (!res.ok) {
+            toast.error(
+              res.error ?? "RayuCode core rejected the permission mode"
+            )
+          }
+        })
+        .catch((error: unknown) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Failed to set permission mode for the new session"
+          )
+        })
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: result.data.id,
+        prompt: payload.prompt,
+        images: payload.images,
+        modelId: payload.modelId,
+        modelLabel: payload.modelLabel,
+      })
+      useAppStore
+        .getState()
+        .setActiveSession(result.data.id, result.data.title)
       onSessionCreated?.(result.data)
     },
-    [createSessionMutation, onSessionCreated]
+    [createSessionMutation, onSessionCreated, queryClient]
   )
-
-  const handlePickSuggestion = (suggestion: QuickStartSuggestion) => {
-    setComposerValue(suggestion.prompt)
-    textareaRef.current?.focus()
-  }
 
   return (
     <div
       data-testid="home-view"
       className={cn("flex min-h-0 flex-1 flex-col", className)}
     >
-      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 pb-8 text-center">
-        {/* Quiet Rayu Geometric Emblem */}
-        <div
-          aria-hidden="true"
-          className="grid size-[60px] place-items-center text-muted-ink/75 transition-colors hover:text-brand-text"
-        >
-          <svg
-            className="size-[52px]"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 2.5 20.5 7v10L12 21.5 3.5 17V7L12 2.5Z" />
-            <path d="m9 9.5-2.5 2.5L9 14.5M15 9.5l2.5 2.5-2.5 2.5" />
-          </svg>
-        </div>
+      {pendingSubmit ? (
+        <>
+          <div
+            role="presentation"
+            aria-hidden="true"
+            className="h-[1.5px] shrink-0 animate-pulse bg-brand"
+          />
+          <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col gap-5 overflow-y-auto px-6 pt-8 pb-6">
+            <div className="flex max-w-[82%] flex-col items-end gap-1.5 self-end">
+              {pendingSubmit.images && pendingSubmit.images.length > 0 ? (
+                <div className="flex flex-wrap justify-end gap-2">
+                  {pendingSubmit.images.map((img, idx) => (
+                    <img
+                      key={`${img.name}_${idx}`}
+                      src={img.dataUrl}
+                      alt={img.name}
+                      className="h-24 max-w-[180px] rounded-xl border border-hairline bg-inset object-cover shadow-bevel-surface"
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {pendingSubmit.prompt.trim().length > 0 ? (
+                <div
+                  data-testid="home-optimistic-prompt"
+                  className="max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14.5px] leading-[1.6] text-ink whitespace-pre-wrap"
+                >
+                  {pendingSubmit.prompt}
+                </div>
+              ) : null}
+            </div>
 
-        {/* Editorial Welcome Greeting (Instrument Serif italic accent word) */}
-        <h1 className="m-0 text-2xl font-medium tracking-[-0.025em] text-ink">
-          Good to see you, {displayName}. What&apos;s{" "}
-          <em className="font-serif text-[1.08em] font-normal tracking-[-0.005em] text-brand-text italic">
-            next?
-          </em>
-        </h1>
-
-        {/* Quick-start suggestion pills */}
-        <div className="mt-0.5 flex max-w-[732px] flex-wrap items-center justify-center gap-2">
-          {QUICK_START_SUGGESTIONS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => handlePickSuggestion(item)}
-              className="rayu-surface-bevel inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-pane px-3 py-1.5 text-xs text-body transition-colors hover:border-brand/45 hover:bg-brand-softer hover:text-ink"
+            <div
+              data-testid="home-starting-indicator"
+              className="flex flex-col gap-1.5"
             >
-              <SuggestionIcon kind={item.kind} />
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
+              <div className="inline-flex items-center gap-1.5 text-[13.5px] font-medium text-ink">
+                <RayuProcessingMark animated className="size-[17px]" />
+                <span className="tabular-nums">
+                  {`Working · ${Math.max(1, pendingElapsedSec)}s`}
+                </span>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 pb-10 text-center">
+          <img
+            src="./rayu-fox.png"
+            alt="Rayu Code"
+            className="h-[74px] w-auto object-contain select-none"
+          />
 
-        {/* Virtualized Recent Sessions */}
-        <VirtualizedRecentSessions
-          sessions={sessions}
-          onSelect={handleOpenSession}
-        />
-      </div>
+          <h1 className="m-0 text-2xl font-medium tracking-[-0.025em] text-ink">
+            {displayName ? `Good to see you, ${displayName}.` : "Good to see you."}{" "}
+            What&apos;s{" "}
+            <em className="font-serif text-[1.08em] font-normal tracking-[-0.005em] text-brand-text italic">
+              next?
+            </em>
+          </h1>
+
+          {showCloudSignIn && (
+            <button
+              type="button"
+              data-testid="home-cloud-signin-btn"
+              onClick={() => setAuthDialogOpen(true)}
+              className="mt-1 inline-flex cursor-pointer items-center gap-2 rounded-full border border-premium bg-raised px-3.5 py-1.5 text-xs font-medium text-ink shadow-bevel-surface transition-colors hover:border-brand hover:text-brand-text"
+            >
+              <LogIn className="size-3.5 text-brand-text" aria-hidden="true" />
+              <span>Sign in to Rayu Cloud</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Floating 732px Composer in Home Mode (shows Project & Checkout top tray) */}
       <SessionComposer
@@ -278,7 +252,8 @@ export function HomeView({
         onValueChange={setComposerValue}
         inputRef={textareaRef}
         onSubmit={handleSubmit}
-        isSubmitting={createSessionMutation.isPending}
+        onStop={handleStopPending}
+        isSubmitting={Boolean(pendingSubmit) || createSessionMutation.isPending}
       />
     </div>
   )

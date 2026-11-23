@@ -4,6 +4,7 @@ mod agentgrep;
 pub mod ambient;
 mod apply_patch;
 pub(crate) mod ask_user_question;
+pub(crate) mod permission_gate;
 mod bash;
 pub mod bash_progress;
 mod batch;

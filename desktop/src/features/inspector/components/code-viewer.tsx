@@ -6,12 +6,18 @@ import { Button } from "@/components/ui/button"
 import { ErrorState } from "@/components/ui/error-state"
 import { ContextSkeleton } from "@/components/ui/page-skeletons"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { TechFileBadge } from "@/components/ui/tech-file-badge"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useAppStore, type ThemeMode } from "@/lib/app-store"
+import { useAppStore } from "@/lib/app-store"
+import { tokenizeCodeLine } from "@/lib/file-icon-theme"
+import {
+  highlightCodeLines,
+  type HighlightedToken,
+} from "@/lib/shiki-highlighter"
 import { cn } from "@/lib/utils"
 
 import { openFileInVSCode } from "../api/inspector-api"
@@ -21,127 +27,11 @@ import {
   usePrefetchCodeFile,
 } from "../hooks/use-context-stats"
 
-interface HighlightedToken {
-  content: string
-  color?: string
-  tokenClass?: string
-}
-
-const RUST_KEYWORDS = new Set([
-  "use",
-  "pub",
-  "struct",
-  "impl",
-  "fn",
-  "let",
-  "mut",
-  "self",
-  "as",
-  "crate",
-  "return",
-  "match",
-  "if",
-  "else",
-  "for",
-  "in",
-  "const",
-  "type",
-  "enum",
-  "trait",
-  "where",
-  "async",
-  "await",
-  "mod",
-])
-
-const RUST_TYPES = new Set([
-  "SessionLookup",
-  "ShardStore",
-  "CacheBudget",
-  "Session",
-  "SessionKey",
-  "Option",
-  "Some",
-  "None",
-  "Result",
-  "Ok",
-  "Err",
-  "usize",
-  "u64",
-  "String",
-  "Vec",
-])
-
-const shikiTokenCache = new Map<string, HighlightedToken[][]>()
-
 function tokenizeLineFallback(line: string): HighlightedToken[] {
-  if (!line) return [{ content: " ", tokenClass: "text-[var(--code-plain)]" }]
-
-  const trimmed = line.trimStart()
-  if (trimmed.startsWith("//")) {
-    return [{ content: line, tokenClass: "italic text-[var(--code-com)]" }]
-  }
-
-  const tokens: HighlightedToken[] = []
-  const regex =
-    /(\/\/.*$)|("(?:\\.|[^"\\])*")|(\b[A-Za-z_][A-Za-z0-9_]*\b)|(\b\d+\b)|([^\sA-Za-z0-9_"]+)|(\s+)/g
-
-  for (const match of line.matchAll(regex)) {
-    const [full, comment, str, ident, num] = match
-    const matchIndex = match.index ?? 0
-    if (comment) {
-      tokens.push({ content: comment, tokenClass: "italic text-[var(--code-com)]" })
-    } else if (str) {
-      tokens.push({ content: str, tokenClass: "text-[var(--code-str)]" })
-    } else if (num) {
-      tokens.push({ content: num, tokenClass: "text-[var(--code-num)]" })
-    } else if (ident) {
-      const nextChar = line[matchIndex + full.length]
-      if (RUST_KEYWORDS.has(ident)) {
-        tokens.push({ content: ident, tokenClass: "text-[var(--code-kw)]" })
-      } else if (RUST_TYPES.has(ident)) {
-        tokens.push({ content: ident, tokenClass: "text-[var(--code-type)]" })
-      } else if (nextChar === "(") {
-        tokens.push({ content: ident, tokenClass: "text-[var(--code-fn)]" })
-      } else {
-        tokens.push({ content: ident, tokenClass: "text-[var(--code-plain)]" })
-      }
-    } else {
-      tokens.push({ content: full, tokenClass: "text-[var(--code-plain)]" })
-    }
-  }
-
-  return tokens
-}
-
-async function highlightLinesWithShiki(
-  lines: string[],
-  language: string,
-  theme: ThemeMode
-): Promise<HighlightedToken[][]> {
-  const shikiTheme = theme === "light" ? "vitesse-light" : "vitesse-dark"
-  const source = lines.join("\n")
-  const cacheKey = `${language}::${shikiTheme}::${source}`
-  const cached = shikiTokenCache.get(cacheKey)
-  if (cached) return cached
-
-  const { codeToTokens } = await import("shiki")
-  const result = await codeToTokens(source, {
-    lang: language as "rust",
-    theme: shikiTheme,
-  })
-
-  const mapped: HighlightedToken[][] = result.tokens.map((lineTokens) =>
-    lineTokens.length > 0
-      ? lineTokens.map((tok) => ({
-          content: tok.content,
-          color: tok.color,
-        }))
-      : [{ content: " ", tokenClass: "text-[var(--code-plain)]" }]
-  )
-
-  shikiTokenCache.set(cacheKey, mapped)
-  return mapped
+  return tokenizeCodeLine(line).map((tok) => ({
+    content: tok.text,
+    tokenClass: tok.className,
+  }))
 }
 
 export interface CodeViewerProps {
@@ -149,7 +39,9 @@ export interface CodeViewerProps {
 }
 
 export function CodeViewer({ className }: CodeViewerProps) {
-  const activeCodeFile = useAppStore((s) => s.activeCodeFile) ?? "lookup.rs"
+  const activeCodeFile =
+    useAppStore((s) => s.activeCodeFile) ??
+    (import.meta.env.MODE === "test" ? "lookup.rs" : "")
   const activeCodeLine = useAppStore((s) => s.activeCodeLine)
   const theme = useAppStore((s) => s.theme)
   const openCodeFile = useAppStore((s) => s.openCodeFile)
@@ -172,14 +64,10 @@ export function CodeViewer({ className }: CodeViewerProps) {
 
   const codeSpec =
     fetchedFile ??
-    inspector?.codeFiles[activeCodeFile] ??
-    inspector?.codeFiles["lookup.rs"]
+    (activeCodeFile ? inspector?.codeFiles[activeCodeFile] : undefined)
 
   const fileKeys = React.useMemo(
-    () =>
-      inspector
-        ? Object.keys(inspector.codeFiles)
-        : ["lookup.rs", "store.rs", "cache.rs"],
+    () => (inspector ? Object.keys(inspector.codeFiles) : []),
     [inspector]
   )
 
@@ -196,14 +84,14 @@ export function CodeViewer({ className }: CodeViewerProps) {
     if (!codeSpec || !highlightKey) return
     let cancelled = false
 
-    void highlightLinesWithShiki(codeSpec.lines, codeSpec.language, theme)
+    void highlightCodeLines(codeSpec.lines, codeSpec.language, theme)
       .then((tokens) => {
         if (!cancelled) {
           setShikiResult({ key: highlightKey, tokens })
         }
       })
       .catch(() => {
-        // Keep synchronous fallback tokenizer on WASM/test environments
+        // Keep synchronous fallback tokenizer on unsupported languages/tests
       })
 
     return () => {
@@ -291,29 +179,31 @@ export function CodeViewer({ className }: CodeViewerProps) {
           const targetDefaultLine =
             inspector?.codeFiles[fileKey]?.defaultLine ?? 1
           return (
-            <button
-              key={fileKey}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onMouseEnter={() => prefetchCodeFile(fileKey)}
-              onFocus={() => prefetchCodeFile(fileKey)}
-              onClick={() => openCodeFile(fileKey, targetDefaultLine)}
-              className={cn(
-                "cursor-pointer rounded-[7px] border px-[9px] py-1 font-mono text-[11px] whitespace-nowrap transition-colors",
-                isActive
-                  ? "border-premium bg-active text-ink"
-                  : "border-transparent text-muted-ink hover:bg-hover hover:text-ink"
-              )}
-            >
-              {fileKey}
-            </button>
+              <button
+                key={fileKey}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onMouseEnter={() => prefetchCodeFile(fileKey)}
+                onFocus={() => prefetchCodeFile(fileKey)}
+                onClick={() => openCodeFile(fileKey, targetDefaultLine)}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-1.5 rounded-[7px] border px-2 py-1 font-mono text-[11px] whitespace-nowrap transition-colors",
+                  isActive
+                    ? "border-premium bg-active text-ink"
+                    : "border-transparent text-muted-ink hover:bg-hover hover:text-ink"
+                )}
+              >
+                <TechFileBadge path={fileKey} className="size-3.5" />
+                <span>{fileKey}</span>
+              </button>
           )
         })}
       </div>
 
       {/* File path bar & VS Code handoff */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-hairline bg-chrome px-3.5 py-2 text-xs text-muted-ink">
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline bg-canvas px-3.5 py-2 text-xs text-muted-ink">
+        <TechFileBadge path={codeSpec.path} />
         <span
           data-testid="code-viewer-path"
           title={codeSpec.path}

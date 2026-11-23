@@ -1605,7 +1605,7 @@ pub(super) fn prepare_pinned_todo_band(
                 &Line::styled(metrics, style),
                 width.saturating_sub(1) as usize,
             );
-            lines.insert(insertion + index, line);
+            lines.insert(insertion + index, super::messages::bold_todo_row(line));
             if let Some(position) = &mut more {
                 *position += 1;
             }

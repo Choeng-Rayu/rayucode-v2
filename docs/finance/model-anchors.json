@@ -1,0 +1,92 @@
+{
+  "workbook": "docs/finance/RayuCode_Financial_Budget_FY2027.xlsx",
+  "assumptions": {
+    "scenario_index": "B11",
+    "opening_cash": "B12",
+    "tax_rate": "B13",
+    "tier_mix_total": "C20",
+    "blended_arpu": "B21",
+    "routing_total": "E40",
+    "cogs_per_seat": "B51",
+    "gross_margin": "B52",
+    "tiers": {
+      "first": 17,
+      "last": 19
+    },
+    "drivers": {
+      "first": 25,
+      "last": 32
+    },
+    "usage": {
+      "first": 46,
+      "last": 49
+    }
+  },
+  "headcount": {
+    "plan_first": 6,
+    "plan_last": 17,
+    "fte_first": 25,
+    "fte_total": 37,
+    "cost_first": 42,
+    "cost_total": 54,
+    "scenario_base": 56,
+    "scenario_upside": 57,
+    "scenario_downside": 58
+  },
+  "model": {
+    "blocks": {
+      "base": 6,
+      "upside": 36,
+      "downside": 66
+    },
+    "rows": {
+      "idx": 1,
+      "start": 2,
+      "new": 3,
+      "churn": 4,
+      "end": 5,
+      "arpu": 6,
+      "book": 7,
+      "rev": 8,
+      "cogs_inf": 9,
+      "cogs_cred": 10,
+      "cogs": 11,
+      "gp": 12,
+      "gm": 13,
+      "people": 14,
+      "sm": 15,
+      "ga": 16,
+      "opex": 17,
+      "ebitda": 18,
+      "ebitda_m": 19,
+      "tax": 20,
+      "coll": 21,
+      "capex": 22,
+      "net": 23,
+      "open": 24,
+      "end_cash": 25
+    }
+  },
+  "summary": {
+    "outlook_first": 14,
+    "outlook_last": 25,
+    "outlook_total": 26,
+    "comparison_section": 28,
+    "checks_first": 35,
+    "checks_count": 8
+  },
+  "months": [
+    "Jan-27",
+    "Feb-27",
+    "Mar-27",
+    "Apr-27",
+    "May-27",
+    "Jun-27",
+    "Jul-27",
+    "Aug-27",
+    "Sep-27",
+    "Oct-27",
+    "Nov-27",
+    "Dec-27"
+  ]
+}

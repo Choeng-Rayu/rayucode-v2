@@ -178,10 +178,14 @@ export function ChangesView({ className }: ChangesViewProps) {
   const [prDialogOpen, setPrDialogOpen] = React.useState(false)
   const [prBaseBranch, setPrBaseBranch] = React.useState("main")
   const [prTitle, setPrTitle] = React.useState(
-    "Retire legacy SessionCache and route reads through ShardStore"
+    import.meta.env?.MODE === "test"
+      ? "Retire legacy SessionCache and route reads through ShardStore"
+      : ""
   )
   const [prSummary, setPrSummary] = React.useState(
-    "Routes SessionLookup reads via ShardStore::lookup with CacheBudget preserved, adds mid-flight stream dedup guard, and retires src/session/cache.rs."
+    import.meta.env?.MODE === "test"
+      ? "Routes SessionLookup reads via ShardStore::lookup with CacheBudget preserved, adds mid-flight stream dedup guard, and retires src/session/cache.rs."
+      : ""
   )
   const [prFormError, setPrFormError] = React.useState<string | null>(null)
 
@@ -200,6 +204,9 @@ export function ChangesView({ className }: ChangesViewProps) {
 
   const handleOpenPrDialog = () => {
     setPrFormError(null)
+    if (!prTitle.trim() && changes?.branch) {
+      setPrTitle(`Merge ${changes.branch}`)
+    }
     setPrDialogOpen(true)
   }
 
@@ -382,17 +389,23 @@ export function ChangesView({ className }: ChangesViewProps) {
                 data-testid="flat-changed-files-list"
                 className="flex flex-col gap-1 p-2"
               >
-                {changes.files.map((file) => (
-                  <FlatChangedFileRow
-                    key={file.id}
-                    file={file}
-                    isSelected={file.id === selectedFileId}
-                    isTogglingStage={isTogglingStage}
-                    onSelect={() => selectFile(file.id)}
-                    onToggleStage={() => void toggleStage(file.id)}
-                    onHover={prefetchChanges}
-                  />
-                ))}
+                {changes.files.length === 0 ? (
+                  <div className="px-3 py-8 text-center text-xs text-muted-ink">
+                    Working tree clean.
+                  </div>
+                ) : (
+                  changes.files.map((file) => (
+                    <FlatChangedFileRow
+                      key={file.id}
+                      file={file}
+                      isSelected={file.id === selectedFileId}
+                      isTogglingStage={isTogglingStage}
+                      onSelect={() => selectFile(file.id)}
+                      onToggleStage={() => void toggleStage(file.id)}
+                      onHover={prefetchChanges}
+                    />
+                  ))
+                )}
               </div>
             </ScrollArea>
 

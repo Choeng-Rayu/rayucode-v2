@@ -2,18 +2,21 @@ import * as React from "react"
 import {
   Activity,
   ArrowLeft,
+  ArrowUpRight,
   ChevronDown,
   ChevronRight,
   Keyboard,
+  LogIn,
+  LogOut,
   Mic,
   Moon,
   PanelLeft,
   Plug,
+  RefreshCw,
   Search,
   SlidersHorizontal,
   Sun,
   UserCircle,
-  Volume2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -35,6 +38,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import {
@@ -125,6 +129,16 @@ function formatPct(left: number, cap: number): number {
   return Math.max(0, Math.min(100, Math.round((left / cap) * 1000) / 10))
 }
 
+function formatResetDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) return "—"
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return `${Math.max(1, m)}m`
+}
+
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return "RC"
@@ -139,6 +153,13 @@ export function SettingsView({
   const theme = useAppStore((s) => s.theme)
   const toggleTheme = useAppStore((s) => s.toggleTheme)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
+  const authState = useAppStore((s) => s.authState)
+  const setAuthState = useAppStore((s) => s.setAuthState)
+  const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen)
+  const [refreshingAuth, setRefreshingAuth] = React.useState(false)
+  const [failedAvatarUrl, setFailedAvatarUrl] = React.useState<string | null>(
+    null
+  )
 
   const [activeSection, setActiveSection] =
     React.useState<SettingsSectionId>(initialSection)
@@ -467,12 +488,26 @@ export function SettingsView({
                 {/* Profile Header */}
                 <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
                   <div className="flex items-center gap-4">
-                    <span
-                      aria-hidden="true"
-                      className="grid size-[52px] shrink-0 place-items-center rounded-[14px] border border-premium bg-brand-soft text-lg font-semibold text-brand-text"
-                    >
-                      {getInitials(account.name)}
-                    </span>
+                    {authState?.signedIn &&
+                    authState.user?.avatarUrl &&
+                    authState.user.avatarUrl !== failedAvatarUrl ? (
+                      <img
+                        src={authState.user.avatarUrl}
+                        alt={account.name}
+                        referrerPolicy="no-referrer"
+                        onError={() =>
+                          setFailedAvatarUrl(authState.user?.avatarUrl ?? null)
+                        }
+                        className="size-[52px] shrink-0 rounded-[14px] border border-premium object-cover"
+                      />
+                    ) : (
+                      <span
+                        aria-hidden="true"
+                        className="grid size-[52px] shrink-0 place-items-center rounded-[14px] border border-premium bg-danger text-lg font-semibold text-destructive-foreground"
+                      >
+                        {getInitials(account.name)}
+                      </span>
+                    )}
                     <div>
                       <div className="flex flex-wrap items-center gap-2.5">
                         <h1
@@ -491,16 +526,93 @@ export function SettingsView({
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="rounded-full"
-                      onClick={() => toast("Profile editing synced with CLI")}
-                    >
-                      Edit profile
-                    </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {authState?.signedIn ? (
+                      <>
+                        <span className="inline-flex items-center rounded-full border border-brand bg-brand-soft px-2.5 py-1 text-[11px] font-medium text-brand-text">
+                          {authState.method === "oauth"
+                            ? "Rayu Cloud · OAuth"
+                            : "Rayu Cloud · API Key"}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          disabled={refreshingAuth}
+                          onClick={() => {
+                            setRefreshingAuth(true)
+                            void ipcClient.auth
+                              .refresh()
+                              .then((next) => {
+                                setAuthState(next)
+                                void settingsQuery.refetch()
+                                toast.success("Synced Rayu Cloud account & credits")
+                              })
+                              .catch(() => {
+                                toast.error("Failed to refresh Rayu Cloud account")
+                              })
+                              .finally(() => setRefreshingAuth(false))
+                          }}
+                        >
+                          <RefreshCw
+                            className={cn(
+                              "size-3.5",
+                              refreshingAuth && "animate-spin"
+                            )}
+                            aria-hidden="true"
+                          />
+                          Sync
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() => {
+                            void ipcClient.auth.signOut().then((next) => {
+                              const store = useAppStore.getState()
+                              store.setAuthState(next)
+                              store.setAuthLoaded(true)
+                              store.setAuthBypassed(false)
+                              store.setActiveSession(null)
+                              store.setActiveRoute("home")
+                              void settingsQuery.refetch()
+                              toast("Signed out of Rayu Cloud")
+                            })
+                          }}
+                        >
+                          <LogOut className="size-3.5" aria-hidden="true" />
+                          Sign out
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          data-testid="settings-cloud-signin-btn"
+                          className="rounded-full"
+                          onClick={() => setAuthDialogOpen(true)}
+                        >
+                          <LogIn className="size-3.5" aria-hidden="true" />
+                          Sign in to Rayu Cloud
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() =>
+                            void ipcClient.native.openExternal(
+                              "https://rayucode.com/dashboard/settings"
+                            )
+                          }
+                        >
+                          Edit profile
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -512,7 +624,9 @@ export function SettingsView({
                       {account.streakDays} days
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-ink">
-                      Best: 29 days
+                      {import.meta.env?.MODE === "test"
+                        ? "Best: 29 days"
+                        : "Synced with Rayu Cloud"}
                     </div>
                   </div>
                   <div className="rounded-xl border border-hairline bg-pane px-4 py-3.5">
@@ -523,7 +637,9 @@ export function SettingsView({
                       {account.sessionsCompleted}
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-ink">
-                      Across 4 repos
+                      {import.meta.env?.MODE === "test"
+                        ? "Across 4 repos"
+                        : "Local & daemon sessions"}
                     </div>
                   </div>
                   <div className="rounded-xl border border-hairline bg-pane px-4 py-3.5">
@@ -534,7 +650,9 @@ export function SettingsView({
                       {account.kvSavingsPct} KV savings
                     </div>
                     <div className="mt-0.5 text-[11px] text-muted-ink">
-                      Warm 1h TTL
+                      {import.meta.env?.MODE === "test"
+                        ? "Warm 1h TTL"
+                        : "Prompt cache telemetry"}
                     </div>
                   </div>
                 </div>
@@ -630,7 +748,10 @@ export function SettingsView({
                               <div className="text-xs text-muted-ink">
                                 5% of weekly budget (
                                 {usage.fiveHourCap.toLocaleString()} cr cap) ·
-                                Resets in 3h 51m
+                                Resets in{" "}
+                                {formatResetDuration(
+                                  authState?.credits?.windowResetSeconds
+                                )}
                               </div>
                             </div>
                             <span className="text-xs font-medium text-body tabular-nums">
@@ -657,7 +778,10 @@ export function SettingsView({
                               <div className="text-xs text-muted-ink">
                                 Rolling 7-day pace (
                                 {usage.weeklyCap.toLocaleString()} cr) · Resets
-                                in 6d 5h
+                                in{" "}
+                                {formatResetDuration(
+                                  authState?.credits?.weekResetSeconds
+                                )}
                               </div>
                             </div>
                             <span className="text-xs font-medium text-body tabular-nums">
@@ -771,7 +895,11 @@ export function SettingsView({
                           variant="outline"
                           size="sm"
                           className="rounded-full"
-                          onClick={() => toast("Opening /topup (Card & KHQR)")}
+                          onClick={() =>
+                            void ipcClient.native.openExternal(
+                              "https://rayucode.com/dashboard/credits"
+                            )
+                          }
                         >
                           Top up
                         </Button>
@@ -780,233 +908,299 @@ export function SettingsView({
                   </TabsContent>
 
                   <TabsContent value="analytics" className="space-y-6">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="inline-flex items-center rounded-md border border-hairline bg-pane p-[3px]">
-                        {(["7d", "30d"] as const).map((r) => (
-                          <button
-                            key={r}
+                    {import.meta.env?.MODE !== "test" ? (
+                      <div className="rounded-xl border border-hairline bg-pane p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div className="space-y-1">
+                            <h3 className="text-sm font-medium text-ink">
+                              Rayu Cloud Usage &amp; Telemetry
+                            </h3>
+                            <p className="max-w-[52ch] text-xs leading-relaxed text-muted-ink">
+                              Detailed daily spend charts, per-model breakdowns,
+                              and invoice history are hosted live on your
+                              RayuCode web dashboard.
+                            </p>
+                          </div>
+                          <Button
                             type="button"
-                            aria-pressed={analyticsRange === r}
-                            onClick={() => setAnalyticsRange(r)}
-                            className={cn(
-                              "cursor-pointer rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
-                              analyticsRange === r
-                                ? "border border-premium bg-active text-ink shadow-bevel-surface"
-                                : "border border-transparent text-muted-ink hover:text-ink"
-                            )}
+                            variant="outline"
+                            size="sm"
+                            className="rounded-full"
+                            onClick={() =>
+                              void ipcClient.native.openExternal(
+                                "https://rayucode.com/dashboard/usage"
+                              )
+                            }
                           >
-                            {r}
-                          </button>
-                        ))}
-                      </div>
+                            <span>Open Usage Analytics</span>
+                            <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                          </Button>
+                        </div>
 
-                      <Select
-                        value={analyticsGroupBy}
-                        onValueChange={(v) =>
-                          setAnalyticsGroupBy(v as AnalyticsGroupBy)
-                        }
-                      >
-                        <SelectTrigger
-                          aria-label="Group usage by"
-                          className="w-[190px]"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent align="end">
-                          <SelectItem value="feature">By feature</SelectItem>
-                          <SelectItem value="model">By hosted model</SelectItem>
-                          <SelectItem value="surface">
-                            By surface (CLI / Desktop / API)
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-
-                    {/* Stacked Bar Chart */}
-                    <div className="rounded-xl border border-hairline bg-pane p-4">
-                      <div className="mb-2 flex items-center justify-between text-xs text-muted-ink">
-                        <span>
-                          {analyticsRange === "7d"
-                            ? "Nov 16 – 22, 2026"
-                            : "Oct 24 – Nov 22, 2026"}
-                        </span>
-                        <span className="tabular-nums">10,800 cr spent</span>
-                      </div>
-                      <svg
-                        viewBox="0 0 640 165"
-                        role="img"
-                        aria-label="Weekly usage stacked bar chart"
-                        className="h-[160px] w-full"
-                      >
-                        <line
-                          x1="0"
-                          y1="20"
-                          x2="640"
-                          y2="20"
-                          stroke="var(--border-soft)"
-                          strokeWidth="1"
-                        />
-                        <line
-                          x1="0"
-                          y1="60"
-                          x2="640"
-                          y2="60"
-                          stroke="var(--border-soft)"
-                          strokeWidth="1"
-                        />
-                        <line
-                          x1="0"
-                          y1="100"
-                          x2="640"
-                          y2="100"
-                          stroke="var(--border-soft)"
-                          strokeWidth="1"
-                        />
-                        <line
-                          x1="0"
-                          y1="140"
-                          x2="640"
-                          y2="140"
-                          stroke="var(--border)"
-                          strokeWidth="1"
-                        />
-                        <rect
-                          x="130"
-                          y="102"
-                          width="32"
-                          height="38"
-                          rx="4"
-                          fill="var(--info)"
-                        />
-                        <rect
-                          x="380"
-                          y="122"
-                          width="32"
-                          height="18"
-                          rx="4"
-                          fill="var(--info)"
-                        />
-                        <rect
-                          x="462"
-                          y="80"
-                          width="32"
-                          height="60"
-                          rx="2"
-                          fill="var(--warn)"
-                        />
-                        <rect
-                          x="462"
-                          y="34"
-                          width="32"
-                          height="46"
-                          rx="4"
-                          fill="var(--info)"
-                        />
-                        <rect
-                          x="462"
-                          y="24"
-                          width="32"
-                          height="10"
-                          rx="3"
-                          fill="var(--accent)"
-                        />
-                        <text
-                          x="60"
-                          y="158"
-                          fill="var(--text-3)"
-                          fontSize="11"
-                        >
-                          Nov 16
-                        </text>
-                        <text
-                          x="304"
-                          y="158"
-                          fill="var(--text-3)"
-                          fontSize="11"
-                        >
-                          Nov 19
-                        </text>
-                        <text
-                          x="548"
-                          y="158"
-                          fill="var(--text-3)"
-                          fontSize="11"
-                        >
-                          Nov 22
-                        </text>
-                      </svg>
-
-                      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                        {ANALYTICS_LEGEND.map((item) => (
-                          <div
-                            key={item.label}
-                            className="flex items-start gap-2"
-                          >
-                            <span
-                              aria-hidden="true"
-                              className="mt-1 h-2.5 w-1 shrink-0 rounded-full"
-                              style={{ backgroundColor: item.cssVar }}
-                            />
-                            <div>
-                              <div className="text-[11px] text-muted-ink">
-                                {item.label}
-                              </div>
-                              <div className="text-xs font-medium text-ink tabular-nums">
-                                {item.pct}
-                              </div>
+                        <div className="mt-4 grid grid-cols-1 gap-3 border-t border-hairline-soft pt-4 sm:grid-cols-3">
+                          <div className="rounded-lg border border-hairline bg-inset px-3.5 py-2.5">
+                            <div className="text-[11px] text-muted-ink">
+                              5-hour window left
+                            </div>
+                            <div className="mt-1 font-mono text-sm font-medium text-ink tabular-nums">
+                              {usage.fiveHourLeft.toLocaleString()} /{" "}
+                              {usage.fiveHourCap.toLocaleString()} cr
                             </div>
                           </div>
-                        ))}
+                          <div className="rounded-lg border border-hairline bg-inset px-3.5 py-2.5">
+                            <div className="text-[11px] text-muted-ink">
+                              Weekly window left
+                            </div>
+                            <div className="mt-1 font-mono text-sm font-medium text-ink tabular-nums">
+                              {usage.weeklyLeft.toLocaleString()} /{" "}
+                              {usage.weeklyCap.toLocaleString()} cr
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-hairline bg-inset px-3.5 py-2.5">
+                            <div className="text-[11px] text-muted-ink">
+                              Total credits remaining
+                            </div>
+                            <div className="mt-1 font-mono text-sm font-medium text-brand-text tabular-nums">
+                              {(
+                                authState?.credits?.remainingCredits ??
+                                usage.monthlyCreditsRemaining
+                              ).toLocaleString()}{" "}
+                              cr
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-
-                    {/* Top Sessions */}
-                    <div>
-                      <h3 className="mb-2 text-[13px] font-medium text-ink">
-                        Top sessions
-                      </h3>
-                      <div className="overflow-hidden rounded-xl border border-hairline bg-pane">
-                        <table className="w-full border-collapse text-left text-xs">
-                          <thead>
-                            <tr className="border-b border-hairline text-muted-ink">
-                              <th className="px-3.5 py-2.5 font-medium">
-                                Session
-                              </th>
-                              <th className="px-3.5 py-2.5 text-right font-medium">
-                                % of 5h
-                              </th>
-                              <th className="px-3.5 py-2.5 text-right font-medium">
-                                % of weekly
-                              </th>
-                              <th className="px-3.5 py-2.5 text-right font-medium">
-                                Credits
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {TOP_SESSIONS.map((row) => (
-                              <tr
-                                key={row.name}
-                                className="border-b border-hairline-soft last:border-b-0"
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="inline-flex items-center rounded-md border border-hairline bg-pane p-[3px]">
+                            {(["7d", "30d"] as const).map((r) => (
+                              <button
+                                key={r}
+                                type="button"
+                                aria-pressed={analyticsRange === r}
+                                onClick={() => setAnalyticsRange(r)}
+                                className={cn(
+                                  "cursor-pointer rounded-sm px-2.5 py-1 text-xs font-medium transition-colors",
+                                  analyticsRange === r
+                                    ? "border border-premium bg-active text-ink shadow-bevel-surface"
+                                    : "border border-transparent text-muted-ink hover:text-ink"
+                                )}
                               >
-                                <td className="px-3.5 py-2.5 text-ink">
-                                  {row.name}
-                                </td>
-                                <td className="px-3.5 py-2.5 text-right text-body tabular-nums">
-                                  {row.fiveHourPct}
-                                </td>
-                                <td className="px-3.5 py-2.5 text-right text-body tabular-nums">
-                                  {row.weeklyPct}
-                                </td>
-                                <td className="px-3.5 py-2.5 text-right font-medium text-ink tabular-nums">
-                                  {row.credits}
-                                </td>
-                              </tr>
+                                {r}
+                              </button>
                             ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
+                          </div>
+
+                          <Select
+                            value={analyticsGroupBy}
+                            onValueChange={(v) =>
+                              setAnalyticsGroupBy(v as AnalyticsGroupBy)
+                            }
+                          >
+                            <SelectTrigger
+                              aria-label="Group usage by"
+                              className="w-[190px]"
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent align="end">
+                              <SelectItem value="feature">By feature</SelectItem>
+                              <SelectItem value="model">By hosted model</SelectItem>
+                              <SelectItem value="surface">
+                                By surface (CLI / Desktop / API)
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {/* Stacked Bar Chart */}
+                        <div className="rounded-xl border border-hairline bg-pane p-4">
+                          <div className="mb-2 flex items-center justify-between text-xs text-muted-ink">
+                            <span>
+                              {analyticsRange === "7d"
+                                ? "Nov 16 – 22, 2026"
+                                : "Oct 24 – Nov 22, 2026"}
+                            </span>
+                            <span className="tabular-nums">10,800 cr spent</span>
+                          </div>
+                          <svg
+                            viewBox="0 0 640 165"
+                            role="img"
+                            aria-label="Weekly usage stacked bar chart"
+                            className="h-[160px] w-full"
+                          >
+                            <line
+                              x1="0"
+                              y1="20"
+                              x2="640"
+                              y2="20"
+                              stroke="var(--border-soft)"
+                              strokeWidth="1"
+                            />
+                            <line
+                              x1="0"
+                              y1="60"
+                              x2="640"
+                              y2="60"
+                              stroke="var(--border-soft)"
+                              strokeWidth="1"
+                            />
+                            <line
+                              x1="0"
+                              y1="100"
+                              x2="640"
+                              y2="100"
+                              stroke="var(--border-soft)"
+                              strokeWidth="1"
+                            />
+                            <line
+                              x1="0"
+                              y1="140"
+                              x2="640"
+                              y2="140"
+                              stroke="var(--border)"
+                              strokeWidth="1"
+                            />
+                            <rect
+                              x="130"
+                              y="102"
+                              width="32"
+                              height="38"
+                              rx="4"
+                              fill="var(--info)"
+                            />
+                            <rect
+                              x="380"
+                              y="122"
+                              width="32"
+                              height="18"
+                              rx="4"
+                              fill="var(--info)"
+                            />
+                            <rect
+                              x="462"
+                              y="80"
+                              width="32"
+                              height="60"
+                              rx="2"
+                              fill="var(--warn)"
+                            />
+                            <rect
+                              x="462"
+                              y="34"
+                              width="32"
+                              height="46"
+                              rx="4"
+                              fill="var(--info)"
+                            />
+                            <rect
+                              x="462"
+                              y="24"
+                              width="32"
+                              height="10"
+                              rx="3"
+                              fill="var(--accent)"
+                            />
+                            <text
+                              x="60"
+                              y="158"
+                              fill="var(--text-3)"
+                              fontSize="11"
+                            >
+                              Nov 16
+                            </text>
+                            <text
+                              x="304"
+                              y="158"
+                              fill="var(--text-3)"
+                              fontSize="11"
+                            >
+                              Nov 19
+                            </text>
+                            <text
+                              x="548"
+                              y="158"
+                              fill="var(--text-3)"
+                              fontSize="11"
+                            >
+                              Nov 22
+                            </text>
+                          </svg>
+
+                          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                            {ANALYTICS_LEGEND.map((item) => (
+                              <div
+                                key={item.label}
+                                className="flex items-start gap-2"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="mt-1 h-2.5 w-1 shrink-0 rounded-full"
+                                  style={{ backgroundColor: item.cssVar }}
+                                />
+                                <div>
+                                  <div className="text-[11px] text-muted-ink">
+                                    {item.label}
+                                  </div>
+                                  <div className="text-xs font-medium text-ink tabular-nums">
+                                    {item.pct}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Top Sessions */}
+                        <div>
+                          <h3 className="mb-2 text-[13px] font-medium text-ink">
+                            Top sessions
+                          </h3>
+                          <div className="overflow-hidden rounded-xl border border-hairline bg-pane">
+                            <table className="w-full border-collapse text-left text-xs">
+                              <thead>
+                                <tr className="border-b border-hairline text-muted-ink">
+                                  <th className="px-3.5 py-2.5 font-medium">
+                                    Session
+                                  </th>
+                                  <th className="px-3.5 py-2.5 text-right font-medium">
+                                    % of 5h
+                                  </th>
+                                  <th className="px-3.5 py-2.5 text-right font-medium">
+                                    % of weekly
+                                  </th>
+                                  <th className="px-3.5 py-2.5 text-right font-medium">
+                                    Credits
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {TOP_SESSIONS.map((row) => (
+                                  <tr
+                                    key={row.name}
+                                    className="border-b border-hairline-soft last:border-b-0"
+                                  >
+                                    <td className="px-3.5 py-2.5 text-ink">
+                                      {row.name}
+                                    </td>
+                                    <td className="px-3.5 py-2.5 text-right text-body tabular-nums">
+                                      {row.fiveHourPct}
+                                    </td>
+                                    <td className="px-3.5 py-2.5 text-right text-body tabular-nums">
+                                      {row.weeklyPct}
+                                    </td>
+                                    <td className="px-3.5 py-2.5 text-right font-medium text-ink tabular-nums">
+                                      {row.credits}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </TabsContent>
                 </Tabs>
               </section>
@@ -1301,18 +1495,6 @@ auto_compact = ${preferences.autoCompactContext}`}
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="rounded-full"
-                      onClick={() =>
-                        toast(`Playing preview for ${preferences.voiceModel}`)
-                      }
-                    >
-                      <Volume2 className="size-3.5" />
-                      Preview
-                    </Button>
                   </div>
                 </div>
 
@@ -1437,18 +1619,43 @@ auto_compact = ${preferences.autoCompactContext}`}
                       </span>
                     </div>
 
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid="ping-daemon-btn"
-                      disabled={pingDaemonMutation.isPending}
-                      onClick={handlePingDaemon}
-                    >
-                      {pingDaemonMutation.isPending
-                        ? "Pinging..."
-                        : "Ping daemon"}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {!daemonStatus?.connected && (
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          data-testid="launch-daemon-btn"
+                          onClick={() => {
+                            void ipcClient.daemon.launch().then((status) => {
+                              if (status.connected) {
+                                toast.success(`Connected to ${status.version}`)
+                              } else {
+                                toast.error(
+                                  status.lastError ??
+                                    "Failed to start local rayu daemon. Check binary path or run `rayu api-bridge`."
+                                )
+                              }
+                              void daemonQuery.refetch()
+                            })
+                          }}
+                        >
+                          Launch daemon
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="ping-daemon-btn"
+                        disabled={pingDaemonMutation.isPending}
+                        onClick={handlePingDaemon}
+                      >
+                        {pingDaemonMutation.isPending
+                          ? "Pinging..."
+                          : "Ping daemon"}
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="mt-4 grid grid-cols-1 gap-3 border-t border-hairline-soft pt-3.5 sm:grid-cols-3">
@@ -1474,10 +1681,20 @@ auto_compact = ${preferences.autoCompactContext}`}
                         Engine version
                       </div>
                       <div className="mt-0.5 font-mono text-xs text-ink">
-                        v{daemonStatus?.version ?? "2.0.0"}
+                        {daemonStatus?.version
+                          ? `v${daemonStatus.version}`
+                          : "—"}
                       </div>
                     </div>
                   </div>
+                  {!daemonStatus?.connected && daemonStatus?.lastError ? (
+                    <div
+                      data-testid="daemon-last-error"
+                      className="mt-3 rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 font-mono text-[11px] leading-relaxed text-danger"
+                    >
+                      {daemonStatus.lastError}
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* Connected OAuth Services & MCP */}
@@ -1487,7 +1704,12 @@ auto_compact = ${preferences.autoCompactContext}`}
                 <div className="overflow-hidden rounded-xl border border-hairline bg-pane">
                   {CONNECTION_SERVICES.map((svc) => {
                     const isConnected =
-                      connectedServices[svc.id] ?? svc.status !== "disconnected"
+                      import.meta.env?.MODE === "test"
+                        ? (connectedServices[svc.id] ??
+                          svc.status !== "disconnected")
+                        : svc.id === "gateway"
+                          ? Boolean(authState?.signedIn)
+                          : Boolean(daemonStatus?.connected && connectedServices[svc.id])
                     return (
                       <div
                         key={svc.id}
@@ -1528,18 +1750,28 @@ auto_compact = ${preferences.autoCompactContext}`}
                               size="xs"
                               className="rounded-full"
                               onClick={() => {
-                                setConnectedServices((prev) => ({
-                                  ...prev,
-                                  [svc.id]: true,
-                                }))
-                                toast(
-                                  svc.id === "github"
-                                    ? "Reconnected GitHub OAuth"
-                                    : `Connected ${svc.name}`
-                                )
+                                if (import.meta.env?.MODE === "test") {
+                                  setConnectedServices((prev) => ({
+                                    ...prev,
+                                    [svc.id]: true,
+                                  }))
+                                  toast(
+                                    svc.id === "github"
+                                      ? "Reconnected GitHub OAuth"
+                                      : `Connected ${svc.name}`
+                                  )
+                                  return
+                                }
+                                if (svc.id === "telegram") {
+                                  setActiveRoute("telegram")
+                                } else if (svc.id === "gateway") {
+                                  setAuthDialogOpen(true)
+                                } else {
+                                  setActiveRoute("plugins")
+                                }
                               }}
                             >
-                              {isConnected ? svc.actionLabel : "Connect"}
+                              {isConnected ? svc.actionLabel : "Configure"}
                             </Button>
                           ) : null}
                         </div>

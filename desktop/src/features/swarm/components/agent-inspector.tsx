@@ -255,7 +255,7 @@ export function AgentInspector({
         >
           <div className="mb-0.5 flex items-center justify-between text-[11.5px] font-medium text-muted-ink">
             <span>
-              {isCoordinator ? "Coordinator state" : "Assigned todo lane"}
+              {isCoordinator ? "Coordinator checklist" : "Task checklist"}
             </span>
             <span className="font-mono tabular-nums">
               {isCoordinator

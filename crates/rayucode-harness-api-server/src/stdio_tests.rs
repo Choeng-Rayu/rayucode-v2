@@ -31,6 +31,7 @@ async fn stdio_stream_handshake_ping_and_eof_release_daemon_connection() {
                 client: "stdio-test".into(),
                 supports_user_response: false,
                 supports_user_questions: false,
+                supports_permissions: false,
             },
         ),
     )
@@ -40,7 +41,12 @@ async fn stdio_stream_handshake_ping_and_eof_release_daemon_connection() {
     read_frame(&mut read, &mut line).await.unwrap();
     let hello: ServerFrame = serde_json::from_str(&line).unwrap();
     assert_eq!(hello.reply_to, Some(1));
-    assert!(matches!(hello.event, ApiEvent::HelloOk { .. }));
+    assert!(matches!(
+        &hello.event,
+        ApiEvent::HelloOk { capabilities, .. }
+            if capabilities.iter().any(|c| c == "permissions")
+                && capabilities.iter().any(|c| c == "permission_modes")
+    ));
     let (mut daemon, _) = listener.accept().await.unwrap();
     write_json_line(&mut write, &ClientFrame::new(2, ApiRequest::Ping))
         .await

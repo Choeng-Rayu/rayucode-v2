@@ -19,6 +19,15 @@ export const pluginCatalogItemSchema = z.object({
   infoOnly: z.boolean().optional(),
   infoToast: z.string().optional(),
   searchKeywords: z.string(),
+  mcpServerId: z.string().optional(),
+  sourcePath: z.string().optional(),
+  scope: z.enum(["global", "workspace"]).optional(),
+  transport: z.enum(["stdio", "url"]).optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  url: z.string().optional(),
+  envKeys: z.array(z.string()).optional(),
+  isCustomMcp: z.boolean().optional(),
 })
 
 export const skillItemSchema = z.object({

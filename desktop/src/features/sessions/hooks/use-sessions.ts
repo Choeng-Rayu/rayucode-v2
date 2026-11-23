@@ -1,5 +1,9 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
+
+import { useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 
 import {
   createSession,
@@ -61,6 +65,15 @@ function readStoredPermissionMode(): PermissionModeId {
     return parsed.success ? parsed.data : DEFAULT_PERMISSION_MODE_ID
   } catch {
     return DEFAULT_PERMISSION_MODE_ID
+  }
+}
+
+function persistPermissionMode(mode: PermissionModeId): void {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(PERMISSION_MODE_STORAGE_KEY, mode)
+  } catch {
+    // ignore storage errors
   }
 }
 
@@ -160,16 +173,43 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
     }
   }, [])
 
-  const setPermissionMode = React.useCallback((nextMode: PermissionModeId) => {
-    setPermissionModeState(nextMode)
-    if (typeof window !== "undefined") {
-      try {
-        window.localStorage.setItem(PERMISSION_MODE_STORAGE_KEY, nextMode)
-      } catch {
-        // ignore storage errors
+  const permissionModeRef = React.useRef<PermissionModeId>(permissionMode)
+
+  const setPermissionMode = React.useCallback(
+    (nextMode: PermissionModeId, onRevert?: (previous: PermissionModeId) => void) => {
+      const previousMode = permissionModeRef.current
+      permissionModeRef.current = nextMode
+      setPermissionModeState(nextMode)
+      persistPermissionMode(nextMode)
+
+      const activeSessionId = useAppStore.getState().activeSessionId
+      if (!activeSessionId) return
+
+      const revert = (message: string) => {
+        permissionModeRef.current = previousMode
+        setPermissionModeState(previousMode)
+        persistPermissionMode(previousMode)
+        onRevert?.(previousMode)
+        toast.error(message)
       }
-    }
-  }, [])
+
+      void ipcClient.harness
+        .setPermissionMode(activeSessionId, nextMode)
+        .then((res) => {
+          if (!res.ok) {
+            revert(res.error ?? "RayuCode core rejected the permission mode")
+          }
+        })
+        .catch((error: unknown) => {
+          revert(
+            error instanceof Error
+              ? error.message
+              : "Failed to update permission mode"
+          )
+        })
+    },
+    []
+  )
 
   return {
     modelId: selectedModel.id,

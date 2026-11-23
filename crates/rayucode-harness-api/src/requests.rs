@@ -42,6 +42,9 @@ pub enum ApiRequest {
         /// Rust SDK opt-in for clients that can collect live human answers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         supports_user_questions: bool,
+        /// Opt-in for clients that render interactive `permission_request` prompts.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        supports_permissions: bool,
     },
 
     /// List sessions visible to this client.
@@ -181,6 +184,12 @@ pub enum ApiRequest {
         session_id: String,
         request_id: String,
         decision: PermissionDecision,
+    },
+
+    /// Change the active local permission mode for the attached session.
+    SetPermissionMode {
+        session_id: String,
+        mode: PermissionMode,
     },
 
     /// List the models this session can switch to.
@@ -362,6 +371,20 @@ pub enum ApiRequest {
     /// Forward-compatibility catch-all. Servers reply with an error frame.
     #[serde(other)]
     Unknown,
+}
+
+/// Local permission mode enforced by the Rust core engine for a session.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    #[serde(alias = "acceptEdits")]
+    AcceptEdits,
+    Plan,
+    #[serde(alias = "fullManage")]
+    FullManage,
+    Orchestrator,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

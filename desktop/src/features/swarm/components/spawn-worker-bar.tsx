@@ -47,7 +47,8 @@ export interface SpawnWorkerBarProps {
 }
 
 function getDefaultWorkerName(existingNames: string[]): string {
-  let index = 3
+  const start = existingNames.length === 0 ? 1 : 3
+  let index = start
   while (existingNames.includes(`worker-${index}`)) {
     index += 1
   }

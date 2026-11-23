@@ -508,8 +508,8 @@ export function AutomationsView({ className }: AutomationsViewProps) {
             <h2 className="m-0 text-sm font-semibold tracking-[-0.015em] text-ink">
               Running Now
             </h2>
-            <span className="text-[11px] text-muted-ink">
-              Illustrative overnight manifest (demo)
+            <span className="font-mono text-[11px] text-muted-ink tabular-nums">
+              {running.length} active
             </span>
           </div>
 
@@ -552,18 +552,24 @@ export function AutomationsView({ className }: AutomationsViewProps) {
             data-testid="ovn-schedules-list"
             className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-[14px] border border-premium bg-pane"
           >
-            {schedules.map((schedule) => (
-              <ScheduleRow
-                key={schedule.id}
-                schedule={schedule}
-                triggeredRecently={Boolean(triggeredSchedules[schedule.id])}
-                isToggling={toggleScheduleMutation.isPending}
-                onRunNow={() => handleTriggerScheduleNow(schedule)}
-                onToggle={() => {
-                  void handleToggleSchedule(schedule)
-                }}
-              />
-            ))}
+            {schedules.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-muted-ink">
+                No recurring schedules configured yet.
+              </div>
+            ) : (
+              schedules.map((schedule) => (
+                <ScheduleRow
+                  key={schedule.id}
+                  schedule={schedule}
+                  triggeredRecently={Boolean(triggeredSchedules[schedule.id])}
+                  isToggling={toggleScheduleMutation.isPending}
+                  onRunNow={() => handleTriggerScheduleNow(schedule)}
+                  onToggle={() => {
+                    void handleToggleSchedule(schedule)
+                  }}
+                />
+              ))
+            )}
           </div>
         </section>
 
@@ -582,13 +588,19 @@ export function AutomationsView({ className }: AutomationsViewProps) {
             data-testid="ovn-reports-list"
             className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-[14px] border border-premium bg-pane"
           >
-            {reports.map((report) => (
-              <MorningReportRow
-                key={report.id}
-                report={report}
-                onNavigate={setActiveRoute}
-              />
-            ))}
+            {reports.length === 0 ? (
+              <div className="px-4 py-6 text-center text-xs text-muted-ink">
+                Completed overnight handoff reports will appear here.
+              </div>
+            ) : (
+              reports.map((report) => (
+                <MorningReportRow
+                  key={report.id}
+                  report={report}
+                  onNavigate={setActiveRoute}
+                />
+              ))
+            )}
           </div>
         </section>
       </div>

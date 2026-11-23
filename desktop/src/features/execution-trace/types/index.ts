@@ -8,6 +8,8 @@ import type {
   ShellCommandStep,
   TraceGroup,
   TraceStepItem,
+  TraceTimelineItem,
+  TurnOutputArtifact,
 } from "@/lib/ipc-client"
 
 export type {
@@ -20,9 +22,11 @@ export type {
   ShellCommandStep,
   TraceGroup,
   TraceStepItem,
+  TraceTimelineItem,
+  TurnOutputArtifact,
 }
 
-export type CitationKind = "code" | "excel" | "markdown" | "browser"
+export type CitationKind = "code" | "excel" | "markdown" | "browser" | "slide"
 
 export interface CitationItem {
   label: string
@@ -42,12 +46,15 @@ export type DiffDecision = "pending" | "accepted" | "rejected"
 
 export type LiveTraceEvent =
   | { type: "note"; text: string }
+  | { type: "promote-note" }
+  | { type: "tool-status"; label: string | null }
   | {
       type: "step"
       groupId?: string
       groupTitle?: string
       step: TraceStepItem
     }
+  | { type: "artifact"; artifact: TurnOutputArtifact }
   | { type: "answer-delta"; delta: string }
   | { type: "summary-title"; title: string }
   | { type: "bullet"; bullet: AnswerBullet }

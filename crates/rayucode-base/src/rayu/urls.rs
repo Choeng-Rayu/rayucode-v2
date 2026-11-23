@@ -51,6 +51,11 @@ pub fn account_url() -> String {
     format!("{}/dashboard", web_base())
 }
 
+/// The API key management page on rayu-web.
+pub fn api_keys_url() -> String {
+    format!("{}/dashboard/api-keys", web_base())
+}
+
 /// The plans/pricing page, offered wherever a limit is hit.
 pub fn pricing_url() -> String {
     format!("{}/plans", web_base())
@@ -189,6 +194,7 @@ mod tests {
         let prev = std::env::var_os("RAYU_WEB_URL");
         crate::env::set_var("RAYU_WEB_URL", "http://localhost:3000/");
         assert_eq!(account_url(), "http://localhost:3000/dashboard");
+        assert_eq!(api_keys_url(), "http://localhost:3000/dashboard/api-keys");
         assert_eq!(pricing_url(), "http://localhost:3000/plans");
         match prev {
             Some(value) => crate::env::set_var("RAYU_WEB_URL", value),
