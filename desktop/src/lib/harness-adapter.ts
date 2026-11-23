@@ -7,6 +7,7 @@ import type {
   SessionSummary,
   ShellCommandStep,
   TraceStepItem,
+  TurnOutputArtifact,
 } from "./ipc-client"
 
 export interface HarnessSessionInfoLike {
@@ -51,6 +52,14 @@ export type MappedLiveTraceEvent =
   | { type: "promote-note" }
   | { type: "tool-status"; label: string | null }
   | { type: "step"; groupId?: string; groupTitle?: string; step: TraceStepItem }
+  | { type: "artifact"; artifact: TurnOutputArtifact }
+  | {
+      type: "permission-request"
+      sessionId: string
+      requestId: string
+      toolName: string
+      description: string
+    }
   | { type: "answer-delta"; delta: string }
   | { type: "duration"; workedDuration: string }
   | {
@@ -123,6 +132,44 @@ function describeActiveTool(
   }
   if (lower === "run_command" || lower === "bash" || lower === "shell") {
     return "Running command..."
+  }
+  if (lower === "create_powerpoint") {
+    const title = typeof args.title === "string" ? args.title.trim() : ""
+    return title ? `Building presentation "${title}"...` : "Building presentation..."
+  }
+  if (lower === "write_excel") {
+    const p =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.filePath === "string"
+          ? args.filePath
+          : ""
+    return p ? `Writing ${basenameOf(p)}...` : "Writing spreadsheet..."
+  }
+  if (lower === "read_excel") {
+    const p =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.filePath === "string"
+          ? args.filePath
+          : ""
+    return p ? `Reading ${basenameOf(p)}...` : "Reading spreadsheet..."
+  }
+  if (lower.startsWith("browser_")) {
+    if (lower === "browser_navigate") {
+      const url = typeof args.url === "string" ? args.url.trim() : ""
+      return url ? `Opening ${url}...` : "Navigating browser..."
+    }
+    if (lower === "browser_snapshot") {
+      return "Inspecting browser page..."
+    }
+    return "Using the browser..."
+  }
+  if (lower === "list_templates") {
+    return "Checking templates..."
+  }
+  if (lower === "save_template") {
+    return "Saving template..."
   }
   return `Using ${name}...`
 }
@@ -492,6 +539,146 @@ export function mapHarnessFrameToLiveEvents(
         ]
       }
 
+      // Map create_powerpoint into visual slide preview thumbnail card with real deck metadata
+      if (lower === "create_powerpoint" && !error) {
+        const deckTitle =
+          typeof args.title === "string" && args.title.trim()
+            ? args.title.trim()
+            : "Presentation"
+        const rawPath =
+          typeof args.file_path === "string"
+            ? args.file_path
+            : typeof args.filePath === "string"
+              ? args.filePath
+              : ""
+        const slideCount = Array.isArray(args.slides)
+          ? args.slides.length
+          : undefined
+        const pillLabel = deckTitle || "Slide"
+        const previewStep: ListStep = {
+          id: callId,
+          kind: "previews",
+          text: "",
+          previews: [
+            {
+              id: `slide_${callId}`,
+              kind: "slide",
+              badge: ".pptx",
+              label: deckTitle,
+              pillLabel,
+            },
+          ],
+        }
+        return [
+          { type: "tool-status", label: null },
+          {
+            type: "step",
+            groupId: `codex_slide_${epoch}`,
+            groupTitle: "Built presentation",
+            step: previewStep,
+          },
+          {
+            type: "artifact",
+            artifact: {
+              kind: "slide",
+              title: deckTitle,
+              subtitle: slideCount
+                ? `${slideCount} slide${slideCount === 1 ? "" : "s"} · ${rawPath ? basenameOf(rawPath) : ".pptx"}`
+                : rawPath
+                  ? basenameOf(rawPath)
+                  : "PowerPoint deck (.pptx)",
+              pillLabel,
+            },
+          },
+        ]
+      }
+
+      // Map write_excel / read_excel into real Excel artifact step card
+      if ((lower === "write_excel" || lower === "read_excel") && !error) {
+        const rawPath =
+          typeof args.file_path === "string"
+            ? args.file_path
+            : typeof args.filePath === "string"
+              ? args.filePath
+              : typeof args.path === "string"
+                ? args.path
+                : "workbook.xlsx"
+        const fileName = basenameOf(rawPath)
+        const excelStep: ListStep = {
+          id: callId,
+          kind: "previews",
+          text:
+            lower === "write_excel"
+              ? `Updated ${fileName}`
+              : `Read ${fileName}`,
+          previews: [
+            {
+              id: `excel_${callId}`,
+              kind: "excel",
+              badge: ".xlsx",
+              label: fileName,
+              pillLabel: fileName,
+            },
+          ],
+        }
+        const events: MappedLiveTraceEvent[] = [
+          { type: "tool-status", label: null },
+          {
+            type: "step",
+            groupId: `codex_excel_${epoch}`,
+            groupTitle:
+              lower === "write_excel" ? "Updated spreadsheet" : "Read spreadsheet",
+            step: excelStep,
+          },
+        ]
+        if (lower === "write_excel") {
+          events.push({
+            type: "artifact",
+            artifact: {
+              kind: "excel",
+              title: fileName,
+              subtitle: rawPath || "Excel workbook (.xlsx)",
+              pillLabel: fileName,
+            },
+          })
+        }
+        return events
+      }
+
+      // Map browser_* tools under "Used the browser" step group
+      if (lower.startsWith("browser_")) {
+        let browserCmd = name
+        if (lower === "browser_navigate" && typeof args.url === "string") {
+          browserCmd = `Navigate to ${args.url}`
+        } else if (lower === "browser_snapshot") {
+          browserCmd = "Inspect page snapshot"
+        } else if (lower === "browser_click" && typeof args.ref === "string") {
+          browserCmd = `Click ${args.ref}`
+        } else if (lower === "browser_type" && typeof args.ref === "string") {
+          browserCmd = `Type into ${args.ref}`
+        }
+        const browserStep: ShellCommandStep = {
+          id: callId,
+          kind: "command",
+          command: browserCmd,
+          displayCommand: browserCmd,
+          output: (error ?? output).slice(0, 2400) || "(no output)",
+          exitCode: error ? 1 : 0,
+          statusLabel: error ? "Failed" : "Success",
+          isFailed: Boolean(error),
+          isMono: false,
+        }
+        return [
+          { type: "tool-status", label: null },
+          {
+            type: "step",
+            groupId: `codex_browser_${epoch}`,
+            groupTitle: "Used the browser",
+            step: browserStep,
+          },
+        ]
+      }
+
       // Commands & other tool calls
       let displayCommand = name
       if (typeof args.command === "string") {
@@ -527,6 +714,26 @@ export function mapHarnessFrameToLiveEvents(
             : `codex_tool_${epoch}`,
           groupTitle: isShell ? "Ran a command" : `Loaded a tool, ${name}`,
           step,
+        },
+      ]
+    }
+    case "permission_request": {
+      const requestId = String(frame.request_id ?? "")
+      if (!requestId) return []
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      const toolName = String(frame.tool_name ?? "tool")
+      const description =
+        typeof frame.description === "string" && frame.description.trim()
+          ? frame.description.trim()
+          : `Allow RayuCode to run ${toolName}?`
+      return [
+        {
+          type: "permission-request",
+          sessionId,
+          requestId,
+          toolName,
+          description,
         },
       ]
     }

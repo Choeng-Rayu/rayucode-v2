@@ -92,6 +92,7 @@ const CODE_KEYWORDS = new Set([
   "export",
   "from",
   "default",
+  "as",
   "const",
   "let",
   "var",
@@ -118,6 +119,11 @@ const CODE_KEYWORDS = new Set([
   "interface",
   "type",
   "enum",
+  "readonly",
+  "private",
+  "public",
+  "protected",
+  "static",
   "true",
   "false",
   "null",
@@ -134,6 +140,17 @@ const CODE_KEYWORDS = new Set([
   "ref",
   "self",
   "Self",
+  "where",
+  "crate",
+  "def",
+  "pass",
+  "in",
+  "of",
+  "package",
+  "func",
+  "defer",
+  "go",
+  "chan",
   "subgraph",
   "end",
   "flowchart",
@@ -142,7 +159,7 @@ const CODE_KEYWORDS = new Set([
 ])
 
 const TOKEN_PATTERN =
-  /(\/\/.*$|#.*$|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][A-Za-z0-9_$]*\b(?=\s*\()|\b[A-Z][A-Za-z0-9_]*\b|\b[a-z_][A-Za-z0-9_]*\b)/g
+  /(\/\/.*$|#\[[^\]]+\]|#.*$|@[A-Za-z_][A-Za-z0-9_]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][A-Za-z0-9_$]*\b(?=\s*\()|\b[a-z_$][A-Za-z0-9_$]*\b(?=\s*:)|\b[A-Z][A-Za-z0-9_]*\b|\b[a-z_][A-Za-z0-9_]*\b)/g
 
 export function tokenizeCodeLine(line: string): CodeSyntaxToken[] {
   if (!line) return [{ text: " ", className: "text-code-plain" }]
@@ -163,8 +180,12 @@ export function tokenizeCodeLine(line: string): CodeSyntaxToken[] {
     const raw = match[0]
     let className = "text-code-plain"
 
-    if (raw.startsWith("//") || raw.startsWith("#")) {
+    if (raw.startsWith("#[")) {
+      className = "text-code-fn"
+    } else if (raw.startsWith("//") || raw.startsWith("#")) {
       className = "text-code-com italic"
+    } else if (raw.startsWith("@")) {
+      className = "text-code-fn font-medium"
     } else if (
       raw.startsWith('"') ||
       raw.startsWith("'") ||
@@ -174,13 +195,15 @@ export function tokenizeCodeLine(line: string): CodeSyntaxToken[] {
     } else if (/^\d/.test(raw)) {
       className = "text-code-num"
     } else if (CODE_KEYWORDS.has(raw)) {
-      className = "text-code-kw font-medium"
+      className = "text-code-kw"
     } else if (/^[A-Z]/.test(raw)) {
       className = "text-code-type"
     } else {
-      const nextChar = line[match.index + raw.length]
-      if (nextChar === "(") {
+      const nextSlice = line.slice(match.index + raw.length)
+      if (/^\s*\(/.test(nextSlice)) {
         className = "text-code-fn"
+      } else if (/^\s*:/.test(nextSlice)) {
+        className = "text-code-prop"
       }
     }
 

@@ -37,6 +37,14 @@ export const OpenExternalPayloadSchema = z.object({
   url: z.string().url(),
 })
 
+export const RevealInFinderPayloadSchema = z.object({
+  targetPath: z.string().trim().min(1).max(2048),
+})
+
+export const KeepAwakePayloadSchema = z.object({
+  enabled: z.boolean(),
+})
+
 export const WorkspaceSetPayloadSchema = z.object({
   path: z.string().min(1),
 })
@@ -47,6 +55,28 @@ export const WorkspaceReadFilePayloadSchema = z.object({
 
 export const TerminalRunPayloadSchema = z.object({
   command: z.string().trim().min(1).max(4000),
+})
+
+export const TerminalPtyCreatePayloadSchema = z.object({
+  sessionId: z.string().min(1).max(120),
+  cwd: z.string().max(2048).optional(),
+  cols: z.number().int().min(20).max(400).optional(),
+  rows: z.number().int().min(5).max(200).optional(),
+})
+
+export const TerminalPtyWritePayloadSchema = z.object({
+  sessionId: z.string().min(1).max(120),
+  data: z.string().max(65_536),
+})
+
+export const TerminalPtyResizePayloadSchema = z.object({
+  sessionId: z.string().min(1).max(120),
+  cols: z.number().int().min(20).max(400),
+  rows: z.number().int().min(5).max(200),
+})
+
+export const TerminalPtyKillPayloadSchema = z.object({
+  sessionId: z.string().min(1).max(120),
 })
 
 export const GitToggleStagePayloadSchema = z.object({
@@ -87,15 +117,37 @@ export const HarnessRenameSessionSchema = z.object({
   title: z.string().trim().min(1).max(200),
 })
 
-export const HarnessSendMessageSchema = z.object({
-  sessionId: z.string().min(1),
-  content: z.string().trim().min(1).max(100_000),
-})
+const ImageAttachmentTupleSchema = z.tuple([
+  z.string().min(1).max(128),
+  z.string().min(1),
+])
+
+export const HarnessSendMessageSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    content: z.string().max(100_000),
+    images: z.array(ImageAttachmentTupleSchema).max(10).optional(),
+  })
+  .refine(
+    (v) => v.content.trim().length > 0 || (v.images?.length ?? 0) > 0,
+    "Message content or at least one image is required"
+  )
 
 export const HarnessPermissionResponseSchema = z.object({
   sessionId: z.string().min(1),
   requestId: z.string().min(1),
   decision: z.enum(["allow", "allow_always", "deny"]),
+})
+
+export const HarnessSetPermissionModeSchema = z.object({
+  sessionId: z.string().min(1),
+  mode: z.enum([
+    "default",
+    "acceptEdits",
+    "plan",
+    "fullManage",
+    "orchestrator",
+  ]),
 })
 
 export const HarnessSetModelSchema = z.object({
@@ -130,6 +182,7 @@ export const CloudStreamChatPayloadSchema = z.object({
       z.object({
         role: z.enum(["user", "assistant"]),
         content: z.string(),
+        images: z.array(ImageAttachmentTupleSchema).max(10).optional(),
       })
     )
     .min(1),
@@ -172,6 +225,40 @@ export const StorageDeleteTemplateSchema = z.object({
   id: z.string().trim().min(1).max(120),
 })
 
+export const StorageSidebarStateSchema = z.object({
+  projects: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(120),
+        name: z.string().trim().min(1).max(120),
+        folders: z.array(z.string().min(1).max(2048)).max(20),
+        iconKind: z.enum(["icon", "emoji"]),
+        iconValue: z.string().min(1).max(32),
+        iconColor: z.enum(["folder", "brand", "info", "type", "num", "danger"]),
+        pinned: z.boolean().optional(),
+        sectionId: z.string().max(120).nullable().optional(),
+        gitRemote: z.string().max(240).optional(),
+        updatedAt: z.number(),
+      })
+    )
+    .max(60),
+  sections: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(120),
+        name: z.string().trim().min(1).max(120),
+        collapsed: z.boolean().optional(),
+      })
+    )
+    .max(30),
+  pinnedChatIds: z.array(z.string().max(160)).max(100),
+  archivedChatIds: z.array(z.string().max(160)).max(200),
+  organizeBy: z.enum(["project", "connection", "flat"]),
+  sortBy: z.enum(["updated", "manual"]),
+  showProjectChatsInRecents: z.boolean(),
+  manualProjectOrder: z.array(z.string().max(120)).max(60),
+})
+
 export const ExtensionUpsertMcpSchema = z.object({
   id: z.string().trim().min(1).max(80),
   scope: z.enum(["global", "workspace"]).optional(),
@@ -194,6 +281,84 @@ export const ExtensionCreateSkillSchema = z.object({
 
 export const ExtensionToggleSkillSchema = z.object({
   skillId: z.string().trim().min(1).max(160),
+})
+
+export const OfficeReadExcelPayloadSchema = z.object({
+  filePath: z.string().trim().min(1).max(2048),
+})
+
+export const OfficeWriteExcelPayloadSchema = z.object({
+  filePath: z.string().trim().min(1).max(2048),
+  sheets: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(64),
+        columns: z.array(z.string().min(1).max(4)).optional(),
+        headers: z.record(z.string(), z.string()),
+        rows: z
+          .array(
+            z.object({
+              rowNumber: z.number().int().positive().optional(),
+              cells: z.record(z.string(), z.union([z.string(), z.number()])),
+              formulas: z.record(z.string(), z.string()).optional(),
+              formats: z
+                .record(
+                  z.string(),
+                  z.enum(["currency", "percent", "number", "text"])
+                )
+                .optional(),
+              isTotal: z.boolean().optional(),
+            })
+          )
+          .max(500),
+      })
+    )
+    .min(1)
+    .max(20),
+})
+
+export const OfficeCreatePptxPayloadSchema = z.object({
+  filePath: z.string().trim().min(1).max(2048).optional(),
+  fileName: z.string().max(160).optional(),
+  title: z.string().min(1).max(240),
+  slides: z
+    .array(
+      z.object({
+        id: z.string().optional(),
+        kicker: z.string().optional(),
+        title: z.string().min(1),
+        subtitle: z.string().optional(),
+        body: z.string(),
+        bullets: z.array(z.string()).optional(),
+        metrics: z
+          .array(
+            z.object({
+              label: z.string(),
+              value: z.string(),
+              note: z.string().optional(),
+            })
+          )
+          .optional(),
+        notes: z.string().optional(),
+        layout: z.enum(["cover", "scorecard", "bullets"]).optional(),
+      })
+    )
+    .min(1)
+    .max(60),
+})
+
+export const BrowserCdpNavigateSchema = z.object({
+  url: z.string().trim().min(1).max(4096),
+})
+
+export const BrowserCdpClickSchema = z.object({
+  ref: z.string().trim().min(1).max(32),
+})
+
+export const BrowserCdpTypeSchema = z.object({
+  ref: z.string().trim().min(1).max(32),
+  text: z.string().max(4000),
+  submit: z.boolean().optional(),
 })
 
 export type DaemonInvokePayload = z.infer<typeof DaemonInvokePayloadSchema>

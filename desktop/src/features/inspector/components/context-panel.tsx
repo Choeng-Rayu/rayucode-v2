@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button"
 import { ErrorState } from "@/components/ui/error-state"
 import { ContextSkeleton } from "@/components/ui/page-skeletons"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import {
   Tooltip,
   TooltipContent,
@@ -133,15 +132,12 @@ export function ContextPanel({ className }: ContextPanelProps) {
     : primaryConnectors
 
   return (
-    <ScrollArea className={cn("min-h-0 flex-1", className)}>
-      <div className="flex flex-col">
+    <ScrollArea className={cn("min-h-0 flex-1 bg-canvas", className)}>
+      <div className="flex flex-col divide-y divide-hairline-soft">
         {/* Environment */}
-        <section
-          aria-label="Environment"
-          className="px-[18px] py-4"
-        >
+        <section aria-label="Environment" className="px-[18px] py-4">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-[13px] font-medium tracking-tight text-muted-ink">
+            <h2 className="text-[12.5px] font-medium text-muted-ink">
               Environment
             </h2>
             <Tooltip>
@@ -150,9 +146,13 @@ export function ContextPanel({ className }: ContextPanelProps) {
                   type="button"
                   aria-label="Environment settings"
                   onClick={() => setActiveRoute("settings")}
-                  className="grid size-6 cursor-pointer place-items-center rounded-sm text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                  className="grid size-6 cursor-pointer place-items-center rounded-md text-faint transition-colors hover:bg-hover hover:text-ink"
                 >
-                  <Settings className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+                  <Settings
+                    className="size-3.5"
+                    strokeWidth={1.65}
+                    aria-hidden="true"
+                  />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom">Environment settings</TooltipContent>
@@ -162,8 +162,8 @@ export function ContextPanel({ className }: ContextPanelProps) {
           <div className="flex flex-col gap-2.5 text-[13px] text-ink">
             <div className="flex min-w-0 items-center gap-2.5">
               <Monitor
-                className="size-[15px] shrink-0 text-info"
-                strokeWidth={1.65}
+                className="size-[15px] shrink-0 text-muted-ink"
+                strokeWidth={1.6}
                 aria-hidden="true"
               />
               <span className="min-w-0 flex-1 truncate">
@@ -181,7 +181,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
                     toast(`Switched workspace to ${picked.project}`)
                   })
                 }}
-                className="shrink-0 cursor-pointer text-xs text-body underline underline-offset-3 transition-colors hover:text-ink"
+                className="shrink-0 cursor-pointer text-xs text-muted-ink underline decoration-hairline-strong underline-offset-4 transition-colors hover:text-ink"
               >
                 Switch
               </button>
@@ -189,11 +189,11 @@ export function ContextPanel({ className }: ContextPanelProps) {
 
             <div className="flex min-w-0 items-center gap-2.5">
               <Folder
-                className="size-[15px] shrink-0 text-folder"
-                strokeWidth={1.65}
+                className="size-[15px] shrink-0 text-muted-ink"
+                strokeWidth={1.6}
                 aria-hidden="true"
               />
-              <span className="min-w-0 flex-1 truncate">
+              <span className="min-w-0 flex-1 truncate text-ink">
                 {inspector.environment.project}{" "}
                 <span className="text-muted-ink">
                   · {inspector.environment.path}
@@ -203,22 +203,20 @@ export function ContextPanel({ className }: ContextPanelProps) {
 
             <div className="flex min-w-0 items-center gap-2.5">
               <GitBranch
-                className="size-[15px] shrink-0 text-code-type"
-                strokeWidth={1.65}
+                className="size-[15px] shrink-0 text-muted-ink"
+                strokeWidth={1.6}
                 aria-hidden="true"
               />
-              <span className="truncate font-mono text-xs text-body">
+              <span className="truncate font-mono text-[12.5px] text-body">
                 {inspector.environment.branch}
               </span>
             </div>
           </div>
         </section>
 
-        <Separator />
-
         {/* Context */}
         <section aria-label="Context" className="px-[18px] py-4">
-          <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
+          <h2 className="mb-3 text-[12.5px] font-medium text-muted-ink">
             Context
           </h2>
 
@@ -235,29 +233,29 @@ export function ContextPanel({ className }: ContextPanelProps) {
           <div
             role="img"
             aria-label={`Context window breakdown: ${inspector.context.usedPctLabel} (${inspector.context.tokensSummary})`}
-            className="mb-3.5 flex h-[5px] items-center gap-0.5 overflow-hidden rounded-full bg-active"
+            className="mb-4 flex h-[4px] items-center gap-[2px] overflow-hidden rounded-full bg-active"
           >
             {segments.map((seg) => (
               <span
                 key={seg.id}
                 title={seg.label}
                 style={{ width: `${seg.widthPct}%` }}
-                className={cn("h-full min-w-[3px] rounded-[2px]", seg.colorClass)}
+                className={cn("h-full min-w-[3px] rounded-full", seg.colorClass)}
               />
             ))}
           </div>
 
           {/* Primary breakdown rows (interactive dotted-underline triggers) */}
-          <div className="flex flex-col gap-[7px]">
+          <div className="flex flex-col gap-2">
             {inspector.context.rows.map((row) => {
               const isExpanded = Boolean(expandedRowIds[row.id])
               const panelId = `ctx-detail-${row.id}`
               return (
                 <React.Fragment key={row.id}>
-                  <div className="grid grid-cols-[10px_minmax(0,1fr)_auto_44px] items-center gap-2.5 text-xs text-body">
+                  <div className="grid grid-cols-[10px_minmax(0,1fr)_auto_44px] items-center gap-2.5 text-[12.5px] text-body">
                     <span
                       className={cn(
-                        "size-[9px] shrink-0 rounded-[2.5px]",
+                        "size-[8px] shrink-0 rounded-[2px]",
                         row.colorClass
                       )}
                       aria-hidden="true"
@@ -272,18 +270,18 @@ export function ContextPanel({ className }: ContextPanelProps) {
                           "cursor-pointer justify-self-start truncate border-b border-dotted pb-px text-left transition-colors",
                           isExpanded
                             ? "border-brand-text text-ink"
-                            : "border-faint text-body hover:border-brand-text hover:text-ink"
+                            : "border-faint text-body hover:border-muted-ink hover:text-ink"
                         )}
                       >
                         {row.label}
                       </button>
                     ) : (
-                      <span className="truncate">{row.label}</span>
+                      <span className="truncate text-body">{row.label}</span>
                     )}
                     <span className="text-right font-mono text-xs text-muted-ink tabular-nums">
                       {row.tokensLabel}
                     </span>
-                    <span className="text-right font-mono text-xs text-body tabular-nums">
+                    <span className="text-right font-mono text-xs text-ink tabular-nums">
                       {row.pctLabel}
                     </span>
                   </div>
@@ -292,7 +290,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
                     <div
                       id={panelId}
                       data-testid={`ctx-breakdown-${row.id}`}
-                      className="my-1 ml-[19px] flex flex-col gap-[5px] rounded-[9px] border border-hairline bg-inset px-2.5 py-[7px] text-[11.5px]"
+                      className="my-1 ml-[19px] flex flex-col gap-1.5 rounded-lg border border-hairline bg-inset px-2.5 py-2 text-[11.5px]"
                     >
                       {row.items.map((sub) => (
                         <div
@@ -313,16 +311,16 @@ export function ContextPanel({ className }: ContextPanelProps) {
           </div>
 
           {/* Buffer & Free space */}
-          <div className="mt-3.5 flex flex-col gap-[7px]">
+          <div className="mt-4 flex flex-col gap-2">
             {[inspector.context.bufferRow, inspector.context.freeRow].map(
               (row) => (
                 <div
                   key={row.id}
-                  className="grid grid-cols-[10px_minmax(0,1fr)_auto_44px] items-center gap-2.5 text-xs text-body"
+                  className="grid grid-cols-[10px_minmax(0,1fr)_auto_44px] items-center gap-2.5 text-[12.5px] text-muted-ink"
                 >
                   <span
                     className={cn(
-                      "size-[9px] shrink-0 rounded-[2.5px]",
+                      "size-[8px] shrink-0 rounded-[2px]",
                       row.colorClass
                     )}
                     aria-hidden="true"
@@ -340,7 +338,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
           </div>
 
           {/* Bottom disclosures */}
-          <div className="mt-3.5 flex flex-col gap-0.5">
+          <div className="mt-4 flex flex-col gap-0.5">
             {inspector.context.disclosures.map((disc) => {
               const isOpen = Boolean(expandedDiscIds[disc.id])
               const bodyId = `ctx-disc-body-${disc.id}`
@@ -352,11 +350,11 @@ export function ContextPanel({ className }: ContextPanelProps) {
                     aria-controls={bodyId}
                     aria-label={`${disc.label} (${disc.count})`}
                     onClick={() => toggleDisc(disc.id)}
-                    className="flex w-full cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-left text-xs text-body transition-colors hover:bg-hover hover:text-ink"
+                    className="-mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-[12.5px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
                   >
                     <ChevronRight
                       className={cn(
-                        "size-3 shrink-0 text-muted-ink transition-transform duration-150",
+                        "size-3 shrink-0 text-faint transition-transform duration-150",
                         isOpen && "rotate-90"
                       )}
                       strokeWidth={1.75}
@@ -385,11 +383,9 @@ export function ContextPanel({ className }: ContextPanelProps) {
           </div>
         </section>
 
-        <Separator />
-
         {/* Connectors */}
         <section aria-label="Connectors" className="px-[18px] py-4">
-          <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
+          <h2 className="mb-3 text-[12.5px] font-medium text-muted-ink">
             Connectors
           </h2>
           {visibleConnectors.length === 0 ? (
@@ -406,7 +402,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
                 >
                   <span
                     aria-hidden="true"
-                    className="grid size-5 shrink-0 place-items-center rounded-[5px] bg-active font-mono text-[11px] font-semibold text-body"
+                    className="grid size-5 shrink-0 place-items-center rounded-[5px] bg-active font-mono text-[10.5px] font-medium text-muted-ink"
                   >
                     {conn.glyph}
                   </span>
@@ -435,18 +431,16 @@ export function ContextPanel({ className }: ContextPanelProps) {
               type="button"
               aria-expanded={showMoreConnectors}
               onClick={() => setShowMoreConnectors((prev) => !prev)}
-              className="mt-2.5 cursor-pointer text-xs text-muted-ink transition-colors hover:text-ink"
+              className="mt-3 cursor-pointer text-xs text-muted-ink transition-colors hover:text-ink"
             >
               {showMoreConnectors ? "Show less" : "Show more"}
             </button>
           )}
         </section>
 
-        <Separator />
-
         {/* Outputs */}
         <section aria-label="Outputs" className="px-[18px] py-4">
-          <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
+          <h2 className="mb-3 text-[12.5px] font-medium text-muted-ink">
             Outputs
           </h2>
           {inspector.outputs.length === 0 ? (
@@ -454,7 +448,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
               Session previews and artifacts will appear here.
             </p>
           ) : (
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-col gap-0.5">
               {inspector.outputs.map((out) => (
                 <button
                   key={out.id}
@@ -462,7 +456,7 @@ export function ContextPanel({ className }: ContextPanelProps) {
                   onClick={() =>
                     useAppStore.getState().openDocPreview(out.kind, out.pillLabel)
                   }
-                  className="group -mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2.5 rounded-lg px-1.5 py-[5px] text-left text-xs text-ink transition-colors hover:bg-hover hover:text-brand-text"
+                  className="group -mx-1.5 flex w-[calc(100%+12px)] cursor-pointer items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left text-xs text-ink transition-colors hover:bg-hover hover:text-brand-text"
                 >
                   <OutputKindIcon kind={out.kind} />
                   <span className="truncate">{out.label}</span>
@@ -472,17 +466,15 @@ export function ContextPanel({ className }: ContextPanelProps) {
           )}
         </section>
 
-        <Separator />
-
         {/* Changes */}
         <section aria-label="Changes" className="px-[18px] py-4">
-          <h2 className="mb-3 text-[13px] font-medium tracking-tight text-muted-ink">
+          <h2 className="mb-3 text-[12.5px] font-medium text-muted-ink">
             Changes
           </h2>
           <div className="flex items-center gap-2.5">
             <FileDiff
               className="size-4 shrink-0 text-muted-ink"
-              strokeWidth={1.65}
+              strokeWidth={1.6}
               aria-hidden="true"
             />
             <span className="font-mono text-[13px] font-medium tabular-nums">

@@ -73,6 +73,13 @@ export interface GitCreatePrReceipt {
   createdAt: string
 }
 
+export interface GitCommitSummary {
+  hash: string
+  message: string
+  author: string
+  relativeTime: string
+}
+
 async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
@@ -368,6 +375,35 @@ export async function commitGitStaged(
     message,
     committedCount: stagedCount,
     committedAt: "Just now",
+  }
+}
+
+export async function getGitCommits(
+  cwd: string,
+  limit = 30
+): Promise<GitCommitSummary[]> {
+  try {
+    const out = await runGit(cwd, [
+      "log",
+      `-n`,
+      String(Math.max(1, Math.min(limit, 100))),
+      "--format=%h%x1f%s%x1f%ae%x1f%ar",
+    ])
+    const commits: GitCommitSummary[] = []
+    for (const line of out.split("\n")) {
+      if (!line.trim()) continue
+      const [hash, message, author, relativeTime] = line.split("\x1f")
+      if (!hash || !message) continue
+      commits.push({
+        hash: hash.trim(),
+        message: message.trim(),
+        author: (author ?? "").trim(),
+        relativeTime: (relativeTime ?? "").trim(),
+      })
+    }
+    return commits
+  } catch {
+    return []
   }
 }
 

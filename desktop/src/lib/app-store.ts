@@ -1,6 +1,10 @@
 import { create } from "zustand"
 
-import type { RayuAuthState } from "./ipc-client"
+import type {
+  OfficeExcelWorkbookData,
+  PromptImageAttachment,
+  RayuAuthState,
+} from "./ipc-client"
 
 export type ThemeMode = "dark" | "light"
 export type AccentColor = "green" | "blue"
@@ -53,12 +57,13 @@ export interface SlideItem {
   bullets?: string[]
   metrics?: Array<{ label: string; value: string; note: string }>
   notes?: string
-  layout?: "cover" | "scorecard" | "two-col" | "decisions"
+  layout?: "cover" | "scorecard" | "two-col" | "decisions" | "bullets"
 }
 
 export interface SlideDeckState {
   title: string
   templateName: string
+  filePath?: string
   activeSlideIndex: number
   slides: SlideItem[]
 }
@@ -66,6 +71,12 @@ export interface SlideDeckState {
 export interface OpenDocTabItem {
   tab: RightTabId
   pill: string
+}
+
+export interface NavHistoryEntry {
+  route: AppRoute
+  sessionId: string | null
+  sessionTitle: string | null
 }
 
 export interface PendingPermission {
@@ -78,6 +89,7 @@ export interface PendingPermission {
 export interface PendingStreamPrompt {
   sessionId: string
   prompt: string
+  images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
 }
@@ -88,6 +100,8 @@ export interface AppStoreState {
   activeRoute: AppRoute
   activeSessionId: string | null
   activeSessionTitle: string | null
+  navHistory: NavHistoryEntry[]
+  navHistoryIndex: number
   activeWorkspacePath: string | null
   daemonMode: DaemonRuntimeMode
   authState: RayuAuthState | null
@@ -104,8 +118,16 @@ export interface AppStoreState {
   activeCodeFile: string | null
   activeCodeLine: number | null
   fullView: boolean
+  keepAwake: boolean
+  sideChatOpen: boolean
+  rightWidthPx: number | null
+  chatCollapsedByRight: boolean
+  gettingStartedHidden: boolean
+  openFilesActiveFile: string | null
   openDocTabs: OpenDocTabItem[]
-  slideDeck: SlideDeckState
+  slideDeck: SlideDeckState | null
+  liveExcelWorkbook: OfficeExcelWorkbookData | null
+  liveExcelWorkbookVersion: number
   activeDiagram: ActiveDiagramState
 
   setTheme: (theme: ThemeMode) => void
@@ -114,6 +136,8 @@ export interface AppStoreState {
   setActiveRoute: (route: AppRoute) => void
   setActiveSession: (sessionId: string | null, title?: string | null) => void
   setActiveSessionTitle: (title: string | null) => void
+  goBack: () => void
+  goForward: () => void
   setActiveWorkspacePath: (workspacePath: string | null) => void
   setDaemonMode: (mode: DaemonRuntimeMode) => void
   setAuthState: (state: RayuAuthState | null) => void
@@ -132,7 +156,15 @@ export interface AppStoreState {
   closeDocTab: (pill: string) => void
   closeDocumentToContext: () => void
   setFullView: (fullView: boolean) => void
-  setSlideDeck: (deck: SlideDeckState) => void
+  setKeepAwake: (keepAwake: boolean) => void
+  setSideChatOpen: (open: boolean) => void
+  toggleSideChat: () => void
+  setRightWidthPx: (width: number | null) => void
+  setChatCollapsedByRight: (collapsed: boolean) => void
+  setGettingStartedHidden: (hidden: boolean) => void
+  setOpenFilesActiveFile: (file: string | null) => void
+  setSlideDeck: (deck: SlideDeckState | null) => void
+  setLiveExcelWorkbook: (workbook: OfficeExcelWorkbookData | null) => void
   setActiveSlideIndex: (index: number) => void
   updateSlide: (slideId: string, patch: Partial<SlideItem>) => void
   addSlide: (slide?: Partial<SlideItem>) => void
@@ -276,6 +308,15 @@ function readInitialAccent(): AccentColor {
   }
 }
 
+function readInitialGettingStartedHidden(): boolean {
+  if (typeof window === "undefined") return false
+  try {
+    return window.localStorage.getItem("rayu-getting-started-hidden") === "true"
+  } catch {
+    return false
+  }
+}
+
 export function syncThemeToDom(theme: ThemeMode): void {
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("data-theme", theme)
@@ -302,12 +343,18 @@ export function syncAccentToDom(accent: AccentColor): void {
   }
 }
 
+const IS_TEST_ENV =
+  typeof import.meta !== "undefined" &&
+  (import.meta as { env?: { MODE?: string } }).env?.MODE === "test"
+
 export const useAppStore = create<AppStoreState>((set, get) => ({
   theme: readInitialTheme(),
   accent: readInitialAccent(),
   activeRoute: "home",
   activeSessionId: null,
   activeSessionTitle: null,
+  navHistory: [{ route: "home", sessionId: null, sessionTitle: null }],
+  navHistoryIndex: 0,
   activeWorkspacePath: null,
   daemonMode: "demo",
   authState: null,
@@ -324,11 +371,21 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   activeCodeFile: "lookup.rs",
   activeCodeLine: 21,
   fullView: false,
-  openDocTabs: [
-    { tab: "markdown", pill: "template_following.md" },
-    { tab: "slide", pill: "Slide" },
-  ],
-  slideDeck: DEFAULT_SLIDE_DECK,
+  keepAwake: false,
+  sideChatOpen: false,
+  rightWidthPx: null,
+  chatCollapsedByRight: false,
+  gettingStartedHidden: readInitialGettingStartedHidden(),
+  openFilesActiveFile: null,
+  openDocTabs: IS_TEST_ENV
+    ? [
+        { tab: "markdown", pill: "template_following.md" },
+        { tab: "slide", pill: "Slide" },
+      ]
+    : [],
+  slideDeck: IS_TEST_ENV ? DEFAULT_SLIDE_DECK : null,
+  liveExcelWorkbook: null,
+  liveExcelWorkbookVersion: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
 
   setTheme: (theme) => {
@@ -348,32 +405,110 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   },
 
   setActiveRoute: (activeRoute) => {
-    set((state) => ({
-      activeRoute,
-      rightCollapsed: activeRoute === "home" ? true : state.rightCollapsed,
-    }))
+    set((state) => {
+      const nextEntry: NavHistoryEntry = {
+        route: activeRoute,
+        sessionId: activeRoute === "workspace" ? state.activeSessionId : null,
+        sessionTitle:
+          activeRoute === "workspace" ? state.activeSessionTitle : null,
+      }
+      const current = state.navHistory[state.navHistoryIndex]
+      const isSame =
+        current &&
+        current.route === nextEntry.route &&
+        current.sessionId === nextEntry.sessionId
+      const nextHistory = isSame
+        ? state.navHistory
+        : [
+            ...state.navHistory.slice(0, state.navHistoryIndex + 1),
+            nextEntry,
+          ].slice(-50)
+      return {
+        activeRoute,
+        navHistory: nextHistory,
+        navHistoryIndex: nextHistory.length - 1,
+        rightCollapsed: activeRoute === "home" ? true : state.rightCollapsed,
+      }
+    })
   },
 
   setActiveSession: (activeSessionId, title) => {
-    set({
-      activeSessionId,
-      activeSessionTitle:
+    set((state) => {
+      const resolvedRoute: AppRoute = activeSessionId ? "workspace" : "home"
+      const resolvedTitle =
         activeSessionId === null
           ? null
           : title !== undefined
             ? title
-            : null,
-      activeRoute: activeSessionId ? "workspace" : "home",
-      rightCollapsed: !activeSessionId,
-      rightMode: "context",
-      activeRightTab: "overview",
-      activeDocPill: null,
-      fullView: false,
+            : null
+      const nextEntry: NavHistoryEntry = {
+        route: resolvedRoute,
+        sessionId: activeSessionId,
+        sessionTitle: resolvedTitle,
+      }
+      const current = state.navHistory[state.navHistoryIndex]
+      const isSame =
+        current &&
+        current.route === nextEntry.route &&
+        current.sessionId === nextEntry.sessionId
+      const nextHistory = isSame
+        ? state.navHistory
+        : [
+            ...state.navHistory.slice(0, state.navHistoryIndex + 1),
+            nextEntry,
+          ].slice(-50)
+      return {
+        activeSessionId,
+        activeSessionTitle: resolvedTitle,
+        activeRoute: resolvedRoute,
+        navHistory: nextHistory,
+        navHistoryIndex: nextHistory.length - 1,
+        rightCollapsed: !activeSessionId,
+        rightMode: "context",
+        activeRightTab: "overview",
+        activeDocPill: null,
+        fullView: false,
+        chatCollapsedByRight: false,
+      }
     })
   },
 
   setActiveSessionTitle: (activeSessionTitle) => {
     set({ activeSessionTitle })
+  },
+
+  goBack: () => {
+    set((state) => {
+      if (state.navHistoryIndex <= 0) return state
+      const nextIndex = state.navHistoryIndex - 1
+      const target = state.navHistory[nextIndex]
+      if (!target) return state
+      return {
+        navHistoryIndex: nextIndex,
+        activeRoute: target.route,
+        activeSessionId: target.sessionId,
+        activeSessionTitle: target.sessionTitle,
+        rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
+        chatCollapsedByRight: false,
+      }
+    })
+  },
+
+  goForward: () => {
+    set((state) => {
+      if (state.navHistoryIndex >= state.navHistory.length - 1) return state
+      const nextIndex = state.navHistoryIndex + 1
+      const target = state.navHistory[nextIndex]
+      if (!target) return state
+      return {
+        navHistoryIndex: nextIndex,
+        activeRoute: target.route,
+        activeSessionId: target.sessionId,
+        activeSessionTitle: target.sessionTitle,
+        rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
+        chatCollapsedByRight: false,
+      }
+    })
   },
 
   setActiveWorkspacePath: (activeWorkspacePath) => {
@@ -420,6 +555,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set((state) => ({
       rightCollapsed: !state.rightCollapsed,
       fullView: state.rightCollapsed ? state.fullView : false,
+      chatCollapsedByRight: state.rightCollapsed
+        ? state.chatCollapsedByRight
+        : false,
     }))
   },
 
@@ -427,6 +565,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set((state) => ({
       rightCollapsed,
       fullView: rightCollapsed ? false : state.fullView,
+      chatCollapsedByRight: rightCollapsed ? false : state.chatCollapsedByRight,
     }))
   },
 
@@ -531,6 +670,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       activeRightTab: "overview",
       activeDocPill: null,
       fullView: false,
+      chatCollapsedByRight: false,
     })
   },
 
@@ -541,41 +681,98 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }))
   },
 
+  setKeepAwake: (keepAwake) => {
+    set({ keepAwake })
+  },
+
+  setSideChatOpen: (sideChatOpen) => {
+    set({ sideChatOpen })
+  },
+
+  toggleSideChat: () => {
+    set((state) => ({ sideChatOpen: !state.sideChatOpen }))
+  },
+
+  setRightWidthPx: (rightWidthPx) => {
+    set({ rightWidthPx })
+  },
+
+  setChatCollapsedByRight: (chatCollapsedByRight) => {
+    set({ chatCollapsedByRight })
+  },
+
+  setGettingStartedHidden: (gettingStartedHidden) => {
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(
+          "rayu-getting-started-hidden",
+          gettingStartedHidden ? "true" : "false"
+        )
+      } catch {
+        // ignore storage errors
+      }
+    }
+    set({ gettingStartedHidden })
+  },
+
+  setOpenFilesActiveFile: (openFilesActiveFile) => {
+    set({ openFilesActiveFile })
+  },
+
   setSlideDeck: (slideDeck) => {
     set({ slideDeck })
   },
 
-  setActiveSlideIndex: (activeSlideIndex) => {
+  setLiveExcelWorkbook: (liveExcelWorkbook) => {
     set((state) => ({
-      slideDeck: {
-        ...state.slideDeck,
-        activeSlideIndex: Math.max(
-          0,
-          Math.min(activeSlideIndex, state.slideDeck.slides.length - 1)
-        ),
-      },
+      liveExcelWorkbook,
+      liveExcelWorkbookVersion: state.liveExcelWorkbookVersion + 1,
     }))
   },
 
+  setActiveSlideIndex: (activeSlideIndex) => {
+    set((state) => {
+      if (!state.slideDeck || state.slideDeck.slides.length === 0) return state
+      return {
+        slideDeck: {
+          ...state.slideDeck,
+          activeSlideIndex: Math.max(
+            0,
+            Math.min(activeSlideIndex, state.slideDeck.slides.length - 1)
+          ),
+        },
+      }
+    })
+  },
+
   updateSlide: (slideId, patch) => {
-    set((state) => ({
-      slideDeck: {
-        ...state.slideDeck,
-        slides: state.slideDeck.slides.map((s) =>
-          s.id === slideId ? { ...s, ...patch } : s
-        ),
-      },
-    }))
+    set((state) => {
+      if (!state.slideDeck) return state
+      return {
+        slideDeck: {
+          ...state.slideDeck,
+          slides: state.slideDeck.slides.map((s) =>
+            s.id === slideId ? { ...s, ...patch } : s
+          ),
+        },
+      }
+    })
   },
 
   addSlide: (partial) => {
     set((state) => {
-      const nextNum = state.slideDeck.slides.length + 1
+      const baseDeck: SlideDeckState = state.slideDeck ?? {
+        title: partial?.title ?? "Untitled Presentation",
+        templateName: "Custom Deck",
+        activeSlideIndex: 0,
+        slides: [],
+      }
+      const nextNum = baseDeck.slides.length + 1
       const newSlide: SlideItem = {
         id: `slide_${Date.now()}`,
-        kicker: partial?.kicker ?? `${state.slideDeck.templateName} · Slide ${nextNum}`,
+        kicker: partial?.kicker ?? `${baseDeck.templateName} · Slide ${nextNum}`,
         title: partial?.title ?? `Slide ${nextNum} Title`,
-        subtitle: partial?.subtitle ?? "Q3 2026",
+        subtitle: partial?.subtitle ?? "",
         body:
           partial?.body ??
           "Click any text on this slide or use Request edits to customize the layout and key takeaways.",
@@ -584,10 +781,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         notes: partial?.notes ?? "Speaker notes for this slide.",
         layout: partial?.layout ?? "cover",
       }
-      const nextSlides = [...state.slideDeck.slides, newSlide]
+      const nextSlides = [...baseDeck.slides, newSlide]
       return {
         slideDeck: {
-          ...state.slideDeck,
+          ...baseDeck,
           slides: nextSlides,
           activeSlideIndex: nextSlides.length - 1,
         },

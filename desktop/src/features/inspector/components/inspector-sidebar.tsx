@@ -15,17 +15,11 @@ import { useAppStore, type RightPaneMode } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
 
 import type { PreviewDocumentTab } from "../types"
+import { CodeViewer } from "./code-viewer"
 import { ContextPanel } from "./context-panel"
 import { DiffTabPanel } from "./diff-tab-panel"
 import { FilesTabPanel } from "./files-tab-panel"
-
-const LazyCodeViewer = React.lazy(() =>
-  import("./code-viewer").then((mod) => ({ default: mod.CodeViewer }))
-)
-
-const LazyTerminalPanel = React.lazy(() =>
-  import("./terminal-panel").then((mod) => ({ default: mod.TerminalPanel }))
-)
+import { TerminalPanel } from "./terminal-panel"
 
 export interface InspectorSidebarProps {
   /** Optional explicit override; defaults to `useAppStore((s) => s.rightMode)`. */
@@ -129,9 +123,9 @@ export function InspectorSidebar({
 
     switch (activeRightTab) {
       case "code":
-        return <LazyCodeViewer />
+        return <CodeViewer />
       case "terminal":
-        return <LazyTerminalPanel />
+        return <TerminalPanel />
       case "diff":
         return <DiffTabPanel />
       case "files":

@@ -52,10 +52,10 @@ export function SlidePane({ className }: SlidePaneProps) {
     "title" | "subtitle" | "body" | null
   >(null)
 
-  const slides = slideDeck.slides
+  const slides = React.useMemo(() => slideDeck?.slides ?? [], [slideDeck])
   const activeIndex = Math.max(
     0,
-    Math.min(slideDeck.activeSlideIndex, slides.length - 1)
+    Math.min(slideDeck?.activeSlideIndex ?? 0, slides.length - 1)
   )
   const activeSlide: SlideItem | undefined = slides[activeIndex]
 
@@ -86,6 +86,7 @@ export function SlidePane({ className }: SlidePaneProps) {
   }, [goNext, goPrev, isPresenting])
 
   const handleOpenInPowerPoint = async () => {
+    if (!slideDeck) return
     const res = await ipcClient.native.openInPowerPoint({
       title: slideDeck.title,
       slides: slideDeck.slides,
@@ -100,29 +101,34 @@ export function SlidePane({ className }: SlidePaneProps) {
   const handleRequestEditSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     const trimmed = editPrompt.trim()
-    if (!trimmed || !activeSlide) return
+    if (!trimmed || !activeSlide || !slideDeck) return
 
-    // Immediately reflect requested edit on the active slide AND forward to active chat session
-    if (/title/i.test(trimmed)) {
-      const cleaned = trimmed.replace(/^change\s+title\s+to\s+/i, "").trim()
-      updateSlide(activeSlide.id, { title: cleaned || trimmed })
-    } else {
-      updateSlide(activeSlide.id, {
-        body: `${activeSlide.body}\n\n• ${trimmed}`,
-      })
+    if (!activeSessionId) {
+      toast.error("Open a conversation first so RayuCode can edit this deck")
+      return
     }
 
-    if (activeSessionId) {
-      setPendingStreamPrompt({
-        sessionId: activeSessionId,
-        prompt: `[Slide ${activeIndex + 1} (${activeSlide.title}) edit request]: ${trimmed}`,
-        modelLabel: "Claude Opus 5.5",
-      })
-    }
+    const target = slideDeck.filePath
+      ? `the PowerPoint file at ${slideDeck.filePath}`
+      : `the presentation "${slideDeck.title}"`
+    const prompt = [
+      `Edit ${target} (deck title: "${slideDeck.title}").`,
+      `Slide ${activeIndex + 1} of ${slides.length}, currently titled "${activeSlide.title}".`,
+      `Requested change: ${trimmed}`,
+      slideDeck.filePath
+        ? `Apply the change, then call create_powerpoint again with file_path "${slideDeck.filePath}" so the updated deck is saved and the Slide Studio refreshes.`
+        : "Apply the change, then call create_powerpoint so the updated deck is saved and the Slide Studio refreshes.",
+    ].join("\n")
+
+    setPendingStreamPrompt({
+      sessionId: activeSessionId,
+      prompt,
+      modelLabel: "Claude Opus 5.5",
+    })
 
     setEditPrompt("")
     setRequestEditsOpen(false)
-    toast(`Applied edit to Slide ${activeIndex + 1}`)
+    toast(`Sent edit request for Slide ${activeIndex + 1} to RayuCode`)
   }
 
   const zoomScale =
@@ -132,7 +138,29 @@ export function SlidePane({ className }: SlidePaneProps) {
         ? 1.08
         : 1
 
-  if (!activeSlide) return null
+  if (!slideDeck || !activeSlide) {
+    return (
+      <div
+        data-testid="slide-pane"
+        data-empty="true"
+        className={cn(
+          "relative flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-canvas px-8 text-center text-ink select-none",
+          className
+        )}
+      >
+        <span className="grid size-10 place-items-center rounded-xl border border-hairline bg-inset text-muted-ink">
+          <Presentation className="size-5" aria-hidden="true" />
+        </span>
+        <div className="text-[14px] font-medium text-ink">
+          No presentation open yet
+        </div>
+        <p className="max-w-[320px] text-xs leading-relaxed text-muted-ink">
+          Ask RayuCode to create slides or open a .pptx. The deck appears here
+          as soon as it is generated.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div

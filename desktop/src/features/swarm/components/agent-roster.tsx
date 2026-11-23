@@ -64,9 +64,9 @@ export function AgentRoster({
       )}
     >
       <div className="flex items-center justify-between gap-2 border-b border-hairline px-3.5 py-2.5 text-xs font-medium text-muted-ink">
-        <span>Agents · one-level fan-out</span>
-        <span className="font-mono text-[11px] text-muted-ink">
-          rayucode-swarm-core
+        <span>Agents</span>
+        <span className="font-mono text-[11px] text-faint tabular-nums">
+          {agents.length}
         </span>
       </div>
 

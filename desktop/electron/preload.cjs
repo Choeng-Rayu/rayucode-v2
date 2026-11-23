@@ -33,8 +33,12 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:harness:fork-session", { sessionId }),
     getHistory: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:get-history", { sessionId }),
-    sendMessage: (sessionId, content) =>
-      ipcRenderer.invoke("rayu:harness:send-message", { sessionId, content }),
+    sendMessage: (sessionId, content, images) =>
+      ipcRenderer.invoke("rayu:harness:send-message", {
+        sessionId,
+        content,
+        ...(images && images.length > 0 ? { images } : {}),
+      }),
     cancel: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:cancel", { sessionId }),
     respondToPermission: (sessionId, requestId, decision) =>
@@ -42,6 +46,11 @@ const rayuApi = {
         sessionId,
         requestId,
         decision,
+      }),
+    setPermissionMode: (sessionId, mode) =>
+      ipcRenderer.invoke("rayu:harness:set-permission-mode", {
+        sessionId,
+        mode,
       }),
     getRuntimeInfo: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:runtime-info", { sessionId }),
@@ -89,6 +98,10 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:storage:save-template", input),
     deleteTemplate: (id) =>
       ipcRenderer.invoke("rayu:storage:delete-template", { id }),
+    getSidebarState: () =>
+      ipcRenderer.invoke("rayu:storage:get-sidebar-state"),
+    saveSidebarState: (state) =>
+      ipcRenderer.invoke("rayu:storage:save-sidebar-state", state),
   },
   extensions: {
     list: () => ipcRenderer.invoke("rayu:extensions:list"),
@@ -102,6 +115,7 @@ const rayuApi = {
   },
   git: {
     getChanges: () => ipcRenderer.invoke("rayu:git:changes"),
+    getCommits: () => ipcRenderer.invoke("rayu:git:commits"),
     toggleStage: (filePath, staged) =>
       ipcRenderer.invoke("rayu:git:toggle-stage", { filePath, staged }),
     stageAll: (staged) =>
@@ -115,6 +129,32 @@ const rayuApi = {
   terminal: {
     runCommand: (command) =>
       ipcRenderer.invoke("rayu:terminal:run", { command }),
+    ptyCreate: (input) =>
+      ipcRenderer.invoke("rayu:terminal:pty-create", input),
+    ptyWrite: (sessionId, data) =>
+      ipcRenderer.invoke("rayu:terminal:pty-write", { sessionId, data }),
+    ptyResize: (sessionId, cols, rows) =>
+      ipcRenderer.invoke("rayu:terminal:pty-resize", { sessionId, cols, rows }),
+    ptyKill: (sessionId) =>
+      ipcRenderer.invoke("rayu:terminal:pty-kill", { sessionId }),
+    onPtyData: (callback) => {
+      const listener = (_event, payload) => {
+        callback(payload)
+      }
+      ipcRenderer.on("rayu:terminal:pty-data", listener)
+      return () => {
+        ipcRenderer.removeListener("rayu:terminal:pty-data", listener)
+      }
+    },
+    onPtyExit: (callback) => {
+      const listener = (_event, payload) => {
+        callback(payload)
+      }
+      ipcRenderer.on("rayu:terminal:pty-exit", listener)
+      return () => {
+        ipcRenderer.removeListener("rayu:terminal:pty-exit", listener)
+      }
+    },
   },
   auth: {
     getState: () => ipcRenderer.invoke("rayu:auth:state"),
@@ -150,6 +190,46 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:native:open-vscode", { targetPath, line }),
     openExternal: (url) =>
       ipcRenderer.invoke("rayu:native:open-external", { url }),
+    revealInFinder: (targetPath) =>
+      ipcRenderer.invoke("rayu:native:reveal-in-finder", { targetPath }),
+    setKeepAwake: (enabled) =>
+      ipcRenderer.invoke("rayu:native:keep-awake", { enabled }),
+  },
+  office: {
+    pickExcelFile: () => ipcRenderer.invoke("rayu:office:pick-excel"),
+    readExcel: (filePath) =>
+      ipcRenderer.invoke("rayu:office:read-excel", { filePath }),
+    writeExcel: (input) => ipcRenderer.invoke("rayu:office:write-excel", input),
+    createPowerPoint: (input) =>
+      ipcRenderer.invoke("rayu:office:create-pptx", input),
+  },
+  desktop: {
+    onArtifact: (callback) => {
+      const listener = (_event, artifact) => {
+        callback(artifact)
+      }
+      ipcRenderer.on("rayu:desktop:artifact", listener)
+      return () => {
+        ipcRenderer.removeListener("rayu:desktop:artifact", listener)
+      }
+    },
+  },
+  browser: {
+    navigate: (url) => ipcRenderer.invoke("rayu:browser:cdp-navigate", { url }),
+    snapshot: () => ipcRenderer.invoke("rayu:browser:cdp-snapshot"),
+    click: (ref) => ipcRenderer.invoke("rayu:browser:cdp-click", { ref }),
+    type: (ref, text, submit) =>
+      ipcRenderer.invoke("rayu:browser:cdp-type", { ref, text, submit }),
+    screenshot: () => ipcRenderer.invoke("rayu:browser:cdp-screenshot"),
+    onEnsureOpen: (callback) => {
+      const listener = (_event, payload) => {
+        callback(payload)
+      }
+      ipcRenderer.on("rayu:browser:ensure-open", listener)
+      return () => {
+        ipcRenderer.removeListener("rayu:browser:ensure-open", listener)
+      }
+    },
   },
 }
 

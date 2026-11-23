@@ -6,6 +6,13 @@ import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 
+import type { BrowserCdpController } from "./browser-cdp.js"
+import {
+  DESKTOP_CLOUD_TOOL_SCHEMAS,
+  executeDesktopTool,
+  type DesktopArtifactEvent,
+} from "./desktop-tools.js"
+
 const DEFAULT_API_BASE = "https://api.rayucode.com/api"
 const DEFAULT_WEB_BASE = "https://rayucode.com"
 const DEFAULT_GATEWAY_BASE = "https://gateway.rayucode.com"
@@ -80,6 +87,7 @@ export interface RayuAuthState {
 export interface CloudChatMessage {
   role: "user" | "assistant"
   content: string
+  images?: Array<[string, string]>
 }
 
 export interface CloudStreamEvent {
@@ -271,7 +279,12 @@ async function executeRunCommandTool(
 async function runWorkspaceAgentTool(
   workspaceDir: string,
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: {
+    browserCdp?: BrowserCdpController
+    onArtifact?: (artifact: DesktopArtifactEvent) => void
+    sessionId?: string
+  }
 ): Promise<{ output: string; error?: string }> {
   try {
     switch (name) {
@@ -283,8 +296,22 @@ async function runWorkspaceAgentTool(
         return { output: executeSearchFilesTool(workspaceDir, args) }
       case "run_command":
         return { output: await executeRunCommandTool(workspaceDir, args) }
-      default:
+      default: {
+        const desktopResult = await executeDesktopTool(
+          {
+            getWorkspaceDir: () => workspaceDir,
+            browserCdp: options?.browserCdp,
+            onArtifact: options?.onArtifact,
+          },
+          name,
+          args,
+          options?.sessionId
+        )
+        if (desktopResult !== null) {
+          return desktopResult
+        }
         return { output: "", error: `Unknown tool: ${name}` }
+      }
     }
   } catch (err) {
     return {
@@ -294,7 +321,7 @@ async function runWorkspaceAgentTool(
   }
 }
 
-const CLOUD_WORKSPACE_TOOLS = [
+const BASE_CLOUD_WORKSPACE_TOOLS = [
   {
     name: "list_files",
     description:
@@ -356,6 +383,10 @@ const CLOUD_WORKSPACE_TOOLS = [
     },
   },
 ]
+
+function getCloudWorkspaceTools() {
+  return [...BASE_CLOUD_WORKSPACE_TOOLS, ...DESKTOP_CLOUD_TOOL_SCHEMAS]
+}
 
 export function isSafeRayuBaseUrl(base: string): boolean {
   try {
@@ -1046,6 +1077,8 @@ export class RayuAuthManager extends EventEmitter {
     model: string
     messages: CloudChatMessage[]
     workspaceDir?: string
+    browserCdp?: BrowserCdpController
+    onArtifact?: (artifact: DesktopArtifactEvent) => void
     onEvent: (event: CloudStreamEvent) => void
   }): Promise<void> {
     let credential = await this.getGatewayCredential()
@@ -1070,7 +1103,7 @@ export class RayuAuthManager extends EventEmitter {
       ? [
           `You are RayuCode, an autonomous local engineering assistant running inside RayuCode Desktop.`,
           `Active workspace directory: ${workspaceDir}`,
-          `You have real local tools (list_files, read_file, search_files, run_command) to inspect this repository directly.`,
+          `You have real local tools (list_files, read_file, search_files, run_command), real Microsoft Office tools (read_excel, write_excel, create_powerpoint for genuine .xlsx/.pptx files on disk), template library tools (list_templates, save_template), and live embedded browser CDP tools (browser_navigate, browser_snapshot, browser_click, browser_type).`,
           `When the user asks about this codebase, project, or RayuCode Desktop, ALWAYS use your tools first to read the actual files (such as README.md, package.json, and key source files) before answering. Never claim you cannot see the repository.`,
           `Before each tool batch, write 1–2 concise sentences explaining what you are checking or what you just confirmed so the user can follow your progress.`,
         ].join("\n")
@@ -1079,10 +1112,32 @@ export class RayuAuthManager extends EventEmitter {
     const conversationMessages: Array<{
       role: "user" | "assistant"
       content: string | Array<Record<string, unknown>>
-    }> = input.messages.map((m) => ({
-      role: m.role,
-      content: m.content,
-    }))
+    }> = input.messages.map((m) => {
+      if (m.role === "user" && m.images && m.images.length > 0) {
+        const blocks: Array<Record<string, unknown>> = m.images.map(
+          ([mediaType, base64Data]) => ({
+            type: "image",
+            source: {
+              type: "base64",
+              media_type: mediaType,
+              data: base64Data,
+            },
+          })
+        )
+        blocks.push({
+          type: "text",
+          text: m.content.trim() || "Analyze the attached image(s).",
+        })
+        return {
+          role: m.role,
+          content: blocks,
+        }
+      }
+      return {
+        role: m.role,
+        content: m.content,
+      }
+    })
 
     const makeRequest = (bearer: string) => {
       const payload: Record<string, unknown> = {
@@ -1095,7 +1150,7 @@ export class RayuAuthManager extends EventEmitter {
         payload.system = systemPrompt
       }
       if (hasTools) {
-        payload.tools = CLOUD_WORKSPACE_TOOLS
+        payload.tools = getCloudWorkspaceTools()
       }
       return fetch(`${getRayuGatewayBase()}/anthropic/v1/messages`, {
         method: "POST",
@@ -1341,7 +1396,12 @@ export class RayuAuthManager extends EventEmitter {
             const { output, error } = await runWorkspaceAgentTool(
               workspaceDir,
               tc.name,
-              tc.input
+              tc.input,
+              {
+                browserCdp: input.browserCdp,
+                onArtifact: input.onArtifact,
+                sessionId: input.sessionId,
+              }
             )
 
             input.onEvent({

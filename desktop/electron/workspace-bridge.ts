@@ -118,7 +118,19 @@ export interface PickedWorkspaceEntry {
   name: string
   path: string
   isDirectory: boolean
+  dataUrl?: string
+  mediaType?: string
 }
+
+const IMAGE_EXT_TO_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+}
+
+const MAX_PICKED_IMAGE_BYTES = 10 * 1024 * 1024
 
 export async function pickWorkspaceFiles(
   parentWindow: BrowserWindow | null,
@@ -141,16 +153,27 @@ export async function pickWorkspaceFiles(
   const entries: PickedWorkspaceEntry[] = []
   for (const filePath of result.filePaths) {
     let isDirectory = false
+    let dataUrl: string | undefined
+    let mediaType: string | undefined
     try {
       const stat = await fs.stat(filePath)
       isDirectory = stat.isDirectory()
+      if (!isDirectory && stat.size > 0 && stat.size <= MAX_PICKED_IMAGE_BYTES) {
+        const mime = IMAGE_EXT_TO_MIME[path.extname(filePath).toLowerCase()]
+        if (mime) {
+          const bytes = await fs.readFile(filePath)
+          mediaType = mime
+          dataUrl = `data:${mime};base64,${bytes.toString("base64")}`
+        }
+      }
     } catch {
-      // ignore stat errors
+      // ignore stat/read errors
     }
     entries.push({
       name: path.basename(filePath) || filePath,
       path: filePath,
       isDirectory,
+      ...(dataUrl ? { dataUrl, mediaType } : {}),
     })
   }
   return entries

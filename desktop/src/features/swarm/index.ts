@@ -24,6 +24,10 @@ export {
   SpawnWorkerBar,
   type SpawnWorkerBarProps,
 } from "./components/spawn-worker-bar"
+export {
+  SwarmLaunchpad,
+  type SwarmLaunchpadProps,
+} from "./components/swarm-launchpad"
 export { SwarmView, type SwarmViewProps } from "./components/swarm-view"
 export {
   computeSwarmTelemetry,

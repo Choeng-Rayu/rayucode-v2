@@ -10,6 +10,7 @@ import {
   within,
 } from "@testing-library/react"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
@@ -279,6 +280,111 @@ describe("PermissionPopover (5 Local Permission Modes & Shift+Tab Cycling)", () 
   })
 })
 
+describe("Local Permissions sync to the Rust core engine", () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: "ses_perm_sync",
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    useAppStore.setState({ activeRoute: "home", activeSessionId: null })
+  })
+
+  it("calls ipcClient.harness.setPermissionMode(activeSessionId, mode) when a mode is selected", async () => {
+    const setModeSpy = vi
+      .spyOn(ipcClient.harness, "setPermissionMode")
+      .mockResolvedValue({ ok: true })
+    renderWithProviders(<SessionComposer mode="workspace" />)
+
+    fireEvent.click(screen.getByTestId("permission-mode-trigger"))
+    const listbox = screen.getByRole("listbox", { name: "Local Permissions" })
+    fireEvent.click(within(listbox).getAllByRole("option")[2])
+    expect(setModeSpy).toHaveBeenCalledWith("ses_perm_sync", "plan")
+
+    fireEvent.click(screen.getByTestId("permission-mode-trigger"))
+    const listbox2 = screen.getByRole("listbox", { name: "Local Permissions" })
+    fireEvent.click(within(listbox2).getAllByRole("option")[4])
+    expect(setModeSpy).toHaveBeenLastCalledWith("ses_perm_sync", "orchestrator")
+  })
+
+  it("syncs Shift+Tab cycling to the active session", () => {
+    const setModeSpy = vi
+      .spyOn(ipcClient.harness, "setPermissionMode")
+      .mockResolvedValue({ ok: true })
+    renderWithProviders(<SessionComposer mode="workspace" />)
+
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true })
+    expect(setModeSpy).toHaveBeenCalledWith("ses_perm_sync", "acceptEdits")
+    expect(screen.getByTestId("permission-mode-trigger")).toHaveTextContent(
+      "Auto-edit"
+    )
+  })
+
+  it("reverts the mode and shows toast.error when the daemon rejects the change", async () => {
+    vi.spyOn(ipcClient.harness, "setPermissionMode").mockResolvedValue({
+      ok: false,
+      error: "Session is busy",
+    })
+    const toastErrorSpy = vi.spyOn(toast, "error").mockImplementation(() => "")
+    renderWithProviders(<SessionComposer mode="workspace" />)
+
+    const trigger = screen.getByTestId("permission-mode-trigger")
+    expect(trigger).toHaveTextContent("Ask")
+    fireEvent.click(trigger)
+    const listbox = screen.getByRole("listbox", { name: "Local Permissions" })
+    fireEvent.click(within(listbox).getAllByRole("option")[3])
+
+    await waitFor(() => {
+      expect(toastErrorSpy).toHaveBeenCalledWith("Session is busy")
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("permission-mode-trigger")).toHaveTextContent(
+        "Ask"
+      )
+    })
+    expect(window.localStorage.getItem("rayu-permission-mode")).toBe("default")
+  })
+
+  it("does not call the daemon when no session is active (home)", () => {
+    useAppStore.setState({ activeSessionId: null, activeRoute: "home" })
+    const setModeSpy = vi
+      .spyOn(ipcClient.harness, "setPermissionMode")
+      .mockResolvedValue({ ok: true })
+    renderWithProviders(<SessionComposer mode="home" />)
+
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true })
+    expect(setModeSpy).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem("rayu-permission-mode")).toBe(
+      "acceptEdits"
+    )
+  })
+
+  it("syncs the chosen permission mode to the newly created session from HomeView", async () => {
+    useAppStore.setState({ activeSessionId: null, activeRoute: "home" })
+    const setModeSpy = vi
+      .spyOn(ipcClient.harness, "setPermissionMode")
+      .mockResolvedValue({ ok: true })
+    renderWithProviders(<HomeView />)
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message RayuCode" }), {
+      target: { value: "Plan the migration" },
+    })
+    fireEvent.click(screen.getByTestId("composer-send-btn"))
+
+    await waitFor(() => {
+      expect(setModeSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/^ses_/),
+        "default"
+      )
+    })
+  })
+})
+
 describe("SessionComposer & HomeView", () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -455,5 +561,80 @@ describe("SessionComposer & HomeView", () => {
     expect(screen.getByText("Analytics Dashboard")).toBeInTheDocument()
     expect(screen.getByText("Financial Budget")).toBeInTheDocument()
     expect(screen.getByText("Operating Calendar")).toBeInTheDocument()
+  })
+
+  it("supports pasting and dropping images with thumbnail previews and submits real image attachments", async () => {
+    const onSubmit = vi.fn()
+    renderWithProviders(<SessionComposer mode="workspace" onSubmit={onSubmit} />)
+
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+    const pastedFile = new File([pngBytes], "clipboard-shot.png", {
+      type: "image/png",
+    })
+    const droppedFile = new File([pngBytes], "dropped-ui.png", {
+      type: "image/png",
+    })
+
+    const textarea = screen.getByRole("textbox", { name: "Reply to RayuCode" })
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [
+          {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => pastedFile,
+          },
+        ],
+        files: [pastedFile],
+        getData: () => "",
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByAltText("clipboard-shot.png")).toBeInTheDocument()
+    })
+
+    const inner = screen.getByTestId("composer-inner")
+    fireEvent.dragEnter(inner, {
+      dataTransfer: { types: ["Files"] },
+    })
+    expect(screen.getByTestId("composer-drop-overlay")).toBeInTheDocument()
+
+    fireEvent.drop(inner, {
+      dataTransfer: {
+        types: ["Files"],
+        files: [droppedFile],
+      },
+    })
+
+    await waitFor(() => {
+      expect(screen.getByAltText("dropped-ui.png")).toBeInTheDocument()
+      expect(screen.getAllByTestId("composer-image-attachment")).toHaveLength(2)
+    })
+
+    fireEvent.change(textarea, {
+      target: { value: "Inspect these two screenshots" },
+    })
+    fireEvent.click(screen.getByTestId("composer-send-btn"))
+
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: "Inspect these two screenshots",
+          images: [
+            expect.objectContaining({
+              name: "clipboard-shot.png",
+              mediaType: "image/png",
+              dataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+            }),
+            expect.objectContaining({
+              name: "dropped-ui.png",
+              mediaType: "image/png",
+              dataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+            }),
+          ],
+        })
+      )
+    })
   })
 })

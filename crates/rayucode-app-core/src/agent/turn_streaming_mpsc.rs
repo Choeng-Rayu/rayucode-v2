@@ -1538,6 +1538,32 @@ impl Agent {
                 // the tool itself later fails: it resets the malformed-round
                 // bound in handle_malformed_tool_round below.
                 executed_valid_call = true;
+                if let Err(err) =
+                    crate::tool::permission_gate::validate_mode_allows(&self.session.id, &tc.name)
+                {
+                    let err_msg = err.to_string();
+                    logging::info(&format!(
+                        "Tool '{}' blocked by permission mode: {}",
+                        tc.name, err_msg
+                    ));
+                    let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: Some(0),
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: err_msg.clone(),
+                        error: Some(err_msg.clone()),
+                    });
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: err_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
                 self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = RAYU_NATIVE_TOOLS.contains(&tc.name.as_str());
@@ -1561,6 +1587,38 @@ impl Agent {
                         continue;
                     }
                     // Fall through to local execution for native tools with SDK errors
+                }
+
+                // Interactive permission approval runs in the foreground on the turn
+                // task (inside permission_gate::scope) and is never auto-backgrounded.
+                let permission_auth = tokio::select! {
+                    biased;
+                    _ = self.graceful_shutdown.notified() => Err(anyhow::anyhow!("Tool call interrupted")),
+                    res = crate::tool::permission_gate::authorize(&self.session.id, &tc.name, &tc.input) => res,
+                };
+                if let Err(err) = permission_auth {
+                    let err_msg = err.to_string();
+                    logging::info(&format!(
+                        "Tool '{}' denied by permission gate: {}",
+                        tc.name, err_msg
+                    ));
+                    let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: Some(0),
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: err_msg.clone(),
+                        error: Some(err_msg.clone()),
+                    });
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: err_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
                 }
 
                 let ctx = ToolContext {

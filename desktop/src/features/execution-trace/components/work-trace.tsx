@@ -14,6 +14,7 @@ import {
   Wrench,
 } from "lucide-react"
 
+import { RayuProcessingMark } from "@/components/ui/rayu-processing-mark"
 import { useAppStore } from "@/lib/app-store"
 import { getFileColorClass } from "@/lib/file-icon-theme"
 import { cn } from "@/lib/utils"
@@ -214,10 +215,10 @@ function renderListOrPreviewStep(
                   >
                     <div>
                       <div
-                        className="truncate text-[5.5px] font-medium"
+                        className="truncate text-[6px] font-medium uppercase"
                         style={{ color: "rgb(148, 163, 184)" }}
                       >
-                        Company or team name
+                        {thumb.badge || ".pptx"}
                       </div>
                       <div
                         className="mt-0.5 line-clamp-2 text-[9px] leading-tight font-bold"
@@ -230,20 +231,11 @@ function renderListOrPreviewStep(
                       className="my-1 h-px w-full"
                       style={{ backgroundColor: "rgb(203, 213, 225)" }}
                     />
-                    <div>
-                      <div
-                        className="text-[5.5px] font-bold"
-                        style={{ color: "rgb(37, 71, 169)" }}
-                      >
-                        Q3 2026
-                      </div>
-                      <div
-                        className="line-clamp-2 text-[5px] leading-tight"
-                        style={{ color: "rgb(100, 116, 139)" }}
-                      >
-                        Structured review of performance, scorecard &amp; next
-                        quarter decisions.
-                      </div>
+                    <div
+                      className="truncate text-[5.5px] font-medium"
+                      style={{ color: "rgb(100, 116, 139)" }}
+                    >
+                      Open in Slide Studio
                     </div>
                   </button>
                 )
@@ -417,8 +409,9 @@ export function WorkTrace({
   const bodyId = React.useId()
 
   const hasTimeline = Boolean(timeline && timeline.length > 0)
-  const expanded =
-    userExpanded ?? defaultExpanded ?? Boolean(isLive || hasTimeline)
+  // Show live process while streaming; collapse to "Worked for Xs" once finished
+  // unless the user clicks to inspect the steps.
+  const expanded = userExpanded ?? defaultExpanded ?? Boolean(isLive)
 
   const defaultOpenShellSet = React.useMemo(
     () => new Set(defaultOpenShellIds),
@@ -467,11 +460,7 @@ export function WorkTrace({
         )}
       >
         {isLive && (
-          <span
-            data-slot="work-live-dot"
-            aria-hidden="true"
-            className="size-1.5 animate-pulse rounded-full bg-brand-bright ring-3 ring-brand-soft"
-          />
+          <RayuProcessingMark animated className="size-[17px]" />
         )}
         <span className="tabular-nums">
           {isLive
@@ -558,6 +547,16 @@ export function WorkTrace({
                 aria-hidden="true"
               />
               <span className="animate-pulse">{activeToolStatus}</span>
+            </div>
+          ) : isLive &&
+            notes.length === 0 &&
+            groups.length === 0 &&
+            !hasTimeline ? (
+            <div
+              data-testid="work-thinking-indicator"
+              className="py-0.5 pl-[25px] text-[12.5px] text-muted-ink"
+            >
+              Thinking...
             </div>
           ) : null}
         </div>

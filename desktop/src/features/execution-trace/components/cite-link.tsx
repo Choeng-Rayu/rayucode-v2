@@ -521,20 +521,44 @@ function renderMdastNode(
     case "table": {
       const rows = node.children ?? []
       const [headerRow, ...bodyRows] = rows
+      const alignList = node.align ?? []
+      const isNumericCell = (cell?: MdastNode): boolean => {
+        if (!cell?.children?.length) return false
+        const text = cell.children
+          .map((c) => c.value ?? "")
+          .join("")
+          .trim()
+        return /^[$€£¥+\-−]?\d[\d,._]*%?$/.test(text)
+      }
+      const numericCols = (headerRow?.children ?? []).map((_, cIdx) => {
+        if (alignList[cIdx] === "right") return true
+        if (alignList[cIdx] === "left" || alignList[cIdx] === "center") {
+          return false
+        }
+        return (
+          bodyRows.length > 0 &&
+          bodyRows.every((r) => isNumericCell(r.children?.[cIdx]))
+        )
+      })
       return (
         <div
           key={key}
           data-slot="markdown-table"
           className="my-2 overflow-x-auto"
         >
-          <table className="w-full border-collapse text-left text-[13.5px] leading-[1.6]">
+          <table className="w-full border-collapse text-left text-[13.5px] leading-[1.6] tabular-nums">
             {headerRow ? (
               <thead>
                 <tr className="border-b border-hairline">
                   {(headerRow.children ?? []).map((cell, cIdx) => (
                     <th
                       key={`${key}-th-${cIdx}`}
-                      className="py-2.5 pr-5 pl-0 text-[13px] font-semibold text-ink last:pr-0"
+                      className={cn(
+                        "py-2.5 pr-5 pl-0 text-[13px] font-semibold text-ink last:pr-0",
+                        (alignList[cIdx] === "right" || numericCols[cIdx]) &&
+                          "text-right",
+                        alignList[cIdx] === "center" && "text-center"
+                      )}
                     >
                       {renderMdastChildren(
                         cell.children,
@@ -553,7 +577,12 @@ function renderMdastNode(
                     {(row.children ?? []).map((cell, cIdx) => (
                       <td
                         key={`${key}-td-${rIdx}-${cIdx}`}
-                        className="py-3.5 pr-5 pl-0 align-top text-body last:pr-0"
+                        className={cn(
+                          "py-3 pr-5 pl-0 align-top text-body last:pr-0",
+                          (alignList[cIdx] === "right" || numericCols[cIdx]) &&
+                            "text-right font-mono text-[13px] text-ink",
+                          alignList[cIdx] === "center" && "text-center"
+                        )}
                       >
                         {renderMdastChildren(
                           cell.children,

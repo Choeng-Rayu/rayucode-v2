@@ -1,5 +1,6 @@
 import * as React from "react"
 
+import type { PromptImageAttachment } from "@/lib/ipc-client"
 import { createStreamBatcher, type StreamBatcher } from "@/lib/stream-batcher"
 
 import type { ExecutionTurn, LiveTraceEvent } from "../types"
@@ -156,6 +157,7 @@ export interface UseLiveTraceOptions {
 export interface StartLiveTurnInput {
   sessionId: string
   userPrompt: string
+  userImages?: PromptImageAttachment[]
   userRefFiles?: string
   initialNote?: string
 }
@@ -249,6 +251,7 @@ export function useLiveTrace(
         sessionId: input.sessionId,
         userRefFiles: input.userRefFiles,
         userPrompt: input.userPrompt,
+        userImages: input.userImages,
         workedDuration: "1s",
         isLive: true,
         notes: input.initialNote ? [input.initialNote] : [],

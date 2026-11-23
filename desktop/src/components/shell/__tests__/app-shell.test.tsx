@@ -25,7 +25,7 @@ describe("AppShell & IconRail", () => {
     })
   })
 
-  it("renders exactly the 6 primary RayuCode navigation items", () => {
+  it("renders the 5 primary RayuCode navigation items without Swarm in the sidebar rail", () => {
     render(
       <AppProviders>
         <IconRail />
@@ -34,7 +34,6 @@ describe("AppShell & IconRail", () => {
 
     for (const label of [
       "Home",
-      "Swarm",
       "Automations",
       "Plugins",
       "Changes",
@@ -44,6 +43,10 @@ describe("AppShell & IconRail", () => {
     }
 
     expect(
+      screen.queryByRole("button", { name: "Swarm" })
+    ).not.toBeInTheDocument()
+
+    expect(
       screen.getByRole("button", { name: "Plan & usage limits" })
     ).toBeInTheDocument()
     expect(
@@ -51,7 +54,7 @@ describe("AppShell & IconRail", () => {
     ).toBeInTheDocument()
   })
 
-  it("switches dual-mode top bar between Context Mode and Document Mode", async () => {
+  it("switches dual-mode top bar between Context Mode, Diff/Files/Terminal panels, and Code Document Mode", async () => {
     await act(async () => {
       render(<App />)
     })
@@ -59,16 +62,33 @@ describe("AppShell & IconRail", () => {
     // In default Context Mode, active-doc-pill is not shown
     expect(screen.queryByTestId("active-doc-pill")).not.toBeInTheDocument()
 
-    // Click "Code & Changes" tab in the 6-icon strip to switch to Document Mode
-    const codeTabBtn = screen.getByRole("tab", { name: "Code & Changes" })
+    // Click "Changes & Diff" tab (±) in the 6-icon strip -> opens two-column Diff panel
+    const diffTabBtn = screen.getByRole("tab", { name: "Changes & Diff" })
     await act(async () => {
-      fireEvent.click(codeTabBtn)
+      fireEvent.click(diffTabBtn)
     })
 
     expect(useAppStore.getState().rightMode).toBe("document")
+    expect(useAppStore.getState().activeRightTab).toBe("diff")
+    expect(await screen.findByTestId("inspector-diff-panel")).toBeInTheDocument()
+
+    // Click "Files" tab (folder) -> opens two-column Files panel with empty viewer state
+    const filesTabBtn = screen.getByRole("tab", { name: "Files" })
+    await act(async () => {
+      fireEvent.click(filesTabBtn)
+    })
+
+    expect(useAppStore.getState().activeRightTab).toBe("files")
+    expect(await screen.findByTestId("inspector-files-panel")).toBeInTheDocument()
+    expect(screen.getByText("Open files appear here")).toBeInTheDocument()
+
+    // Opening a cited code file displays active-doc-pill and closes back to Context Mode
+    await act(async () => {
+      useAppStore.getState().openCodeFile("lookup.rs", 21)
+    })
+
     expect(screen.getByTestId("active-doc-pill")).toHaveTextContent("lookup.rs")
 
-    // Clicking the × close button on the document pill returns to Context Mode
     const closeDocBtn = screen.getByRole("button", { name: "Close document" })
     await act(async () => {
       fireEvent.click(closeDocBtn)
@@ -76,6 +96,18 @@ describe("AppShell & IconRail", () => {
 
     expect(useAppStore.getState().rightMode).toBe("context")
     expect(screen.queryByTestId("active-doc-pill")).not.toBeInTheDocument()
+
+    // Clipping chat session via right-panel drag-left shows restore-chat-bar and restores cleanly
+    await act(async () => {
+      useAppStore.getState().openRightTab("diff", "Changes")
+      useAppStore.getState().setChatCollapsedByRight(true)
+    })
+    const restoreBar = await screen.findByTestId("restore-chat-bar")
+    expect(restoreBar).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Show chat session/i }))
+    })
+    expect(useAppStore.getState().chatCollapsedByRight).toBe(false)
   })
 
   it("toggles Dark/Light theme and Rayu Green / Ocean Blue accent", async () => {
@@ -204,6 +236,95 @@ describe("AppShell & IconRail", () => {
       useAppStore.getState().setActiveRoute("settings")
     })
     expect(await screen.findByTestId("settings-view")).toBeInTheDocument()
+  })
+
+  it("shows vertical rail divider when sidebar is open, hides it when collapsed, and navigates history with Back/Forward", async () => {
+    useAppStore.setState({
+      navHistory: [{ route: "home", sessionId: null, sessionTitle: null }],
+      navHistoryIndex: 0,
+    })
+    await act(async () => {
+      render(<App />)
+    })
+
+    // Sidebar open -> vertical rail divider present
+    expect(screen.getByTestId("sidebar-rail-divider")).toBeInTheDocument()
+
+    // Navigate to a workspace session so history has [home, workspace]
+    await act(async () => {
+      useAppStore
+        .getState()
+        .setActiveSession("ses_retire_cache", "Find Khmer WAV datasets")
+    })
+    expect(useAppStore.getState().activeRoute).toBe("workspace")
+
+    // Collapse left sidebar -> no vertical divider, clean TopBar shows Back (<) and Forward (>)
+    await act(async () => {
+      useAppStore.getState().setLeftCollapsed(true)
+    })
+    expect(
+      screen.queryByTestId("sidebar-rail-divider")
+    ).not.toBeInTheDocument()
+
+    const backBtn = screen.getByRole("button", { name: "Back" })
+    const forwardBtn = screen.getByRole("button", { name: "Forward" })
+    expect(backBtn).toBeEnabled()
+    expect(forwardBtn).toBeDisabled()
+
+    await act(async () => {
+      fireEvent.click(backBtn)
+    })
+    expect(useAppStore.getState().activeRoute).toBe("home")
+    expect(screen.getByRole("button", { name: "Forward" })).toBeEnabled()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Forward" }))
+    })
+    expect(useAppStore.getState().activeRoute).toBe("workspace")
+    expect(useAppStore.getState().activeSessionId).toBe("ses_retire_cache")
+  })
+
+  it("opens Import from other AI apps dialog, completes step on Continue, and supports hiding Getting started", async () => {
+    window.localStorage.removeItem("rayu-getting-started-hidden")
+    window.localStorage.removeItem("rayu-getting-started-completed-v2")
+    useAppStore.setState({ gettingStartedHidden: false })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    const card = await screen.findByTestId("getting-started-card")
+    expect(card).toBeInTheDocument()
+
+    // Clicking "Import from Claude" opens the "Import from other AI apps" dialog
+    const importRow = await screen.findByRole("button", {
+      name: /Import from Claude/i,
+    })
+    await act(async () => {
+      fireEvent.click(importRow)
+    })
+
+    const dialog = await screen.findByTestId("import-ai-apps-dialog")
+    expect(dialog).toBeInTheDocument()
+    expect(screen.getByText("Claude Code")).toBeInTheDocument()
+    expect(screen.getByText("Claude Cowork")).toBeInTheDocument()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+    })
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("import-ai-apps-dialog")
+      ).not.toBeInTheDocument()
+    })
+
+    // Hiding setup removes Getting started card cleanly
+    await act(async () => {
+      useAppStore.getState().setGettingStartedHidden(true)
+    })
+    expect(
+      screen.queryByTestId("getting-started-card")
+    ).not.toBeInTheDocument()
   })
 })
 

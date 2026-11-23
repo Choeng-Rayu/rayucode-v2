@@ -484,6 +484,7 @@ impl RemoteConnection {
             supports_pdf_panels: false,
             supports_user_response: false,
             supports_user_questions: true,
+            supports_permissions: false,
             supports_server_failover: false,
             supports_turn_identity: true,
             supports_bash_progress: true,

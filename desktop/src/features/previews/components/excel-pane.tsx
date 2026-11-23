@@ -2,9 +2,11 @@ import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ExternalLink,
+  FolderOpen,
   Globe,
   List,
   Plus,
+  Save,
   Sigma,
   Table2,
 } from "lucide-react"
@@ -17,6 +19,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAppStore } from "@/lib/app-store"
+import {
+  ipcClient,
+  type OfficeExcelSheetPayload,
+} from "@/lib/ipc-client"
+import { officeSheetsToExcelSheets } from "@/lib/office-workbook"
 import { cn } from "@/lib/utils"
 
 import {
@@ -35,7 +42,12 @@ import { FloatingAskChat } from "./floating-ask-chat"
 
 export interface ExcelPaneProps {
   className?: string
+  allowDemoFallback?: boolean
 }
+
+const IS_TEST_ENV =
+  typeof import.meta !== "undefined" &&
+  (import.meta as { env?: { MODE?: string } }).env?.MODE === "test"
 
 function getDefaultCellForSheet(sheet: ExcelSheetData): {
   ref: string
@@ -71,40 +83,76 @@ function buildOfficeEmbedSrc(rawUrl: string): string {
   return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(rawUrl)}`
 }
 
-export function ExcelPane({ className }: ExcelPaneProps) {
+export function ExcelPane({
+  className,
+  allowDemoFallback = IS_TEST_ENV,
+}: ExcelPaneProps) {
   const queryClient = useQueryClient()
   const fullView = useAppStore((s) => s.fullView)
   const closeDocumentToContext = useAppStore((s) => s.closeDocumentToContext)
+  const liveWorkbook = useAppStore((s) => s.liveExcelWorkbook)
+  const liveWorkbookVersion = useAppStore((s) => s.liveExcelWorkbookVersion)
 
-  const { data } = useQuery(previewsQueryOptions())
-  const serverWorkbook = data?.excel
+  const { data } = useQuery({
+    ...previewsQueryOptions(),
+    enabled: allowDemoFallback,
+  })
+  const serverWorkbook = allowDemoFallback ? data?.excel : undefined
 
   const [sheetsState, setSheetsState] = React.useState<ExcelSheetData[] | null>(
     null
   )
-  const [activeSheetId, setActiveSheetId] = React.useState<string>("sheet_q4")
-  const [selectedCellRef, setSelectedCellRef] = React.useState<string>("C7")
-  const [formulaBarValue, setFormulaBarValue] = React.useState<string>(
-    "=SUM(C2:C6)"
-  )
+  const [loadedFileName, setLoadedFileName] = React.useState<string | null>(null)
+  const [loadedFilePath, setLoadedFilePath] = React.useState<string | null>(null)
+  const [activeSheetId, setActiveSheetId] = React.useState<string | null>(null)
+  const [selectedCellOverride, setSelectedCellRef] = React.useState<
+    string | null
+  >(null)
+  const [formulaBarOverride, setFormulaBarValue] = React.useState<
+    string | null
+  >(null)
   const [focusedCellRef, setFocusedCellRef] = React.useState<string | null>(null)
   const [isLiveWebMode, setIsLiveWebMode] = React.useState<boolean>(false)
-  const [embedUrlInput, setEmbedUrlInput] = React.useState<string>(
-    "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx"
-  )
-  const [activeEmbedSrc, setActiveEmbedSrc] = React.useState<string>(
-    "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx"
-  )
+  const [embedUrlInput, setEmbedUrlInput] = React.useState<string>("")
+  const [activeEmbedSrc, setActiveEmbedSrc] = React.useState<string>("")
   const [chatMinimized, setChatMinimized] = React.useState(false)
+  const [appliedLiveVersion, setAppliedLiveVersion] = React.useState(0)
+
+  // Smoothly adopt freshly generated workbooks (write_excel -> desktop artifact event)
+  if (liveWorkbookVersion !== appliedLiveVersion) {
+    setAppliedLiveVersion(liveWorkbookVersion)
+    if (liveWorkbook && liveWorkbook.sheets.length > 0) {
+      const converted = officeSheetsToExcelSheets(liveWorkbook.sheets)
+      setSheetsState(converted)
+      setLoadedFileName(liveWorkbook.fileName)
+      setLoadedFilePath(liveWorkbook.filePath)
+      setActiveSheetId(converted[0]?.id ?? null)
+      setSelectedCellRef(null)
+      setFormulaBarValue(null)
+      setIsLiveWebMode(false)
+    } else if (!liveWorkbook) {
+      setSheetsState(null)
+      setLoadedFileName(null)
+      setLoadedFilePath(null)
+      setActiveSheetId(null)
+      setSelectedCellRef(null)
+      setFormulaBarValue(null)
+    }
+  }
 
   const sheets = sheetsState ?? serverWorkbook?.sheets ?? []
-  const fileName = serverWorkbook?.fileName ?? "Q4-Token-Cost-Model.xlsx"
-  const filePath =
-    serverWorkbook?.filePath ??
-    "~/workspace/rayu/specs-and-docs/Q4-Token-Cost-Model.xlsx"
+  const fileName =
+    loadedFileName ?? serverWorkbook?.fileName ?? "No workbook open"
+  const filePath = loadedFilePath ?? serverWorkbook?.filePath ?? ""
 
   const activeSheet =
     sheets.find((sheet) => sheet.id === activeSheetId) ?? sheets[0]
+
+  const defaultCell = activeSheet
+    ? getDefaultCellForSheet(activeSheet)
+    : { ref: "A1", formula: "" }
+  const selectedCellRef = selectedCellOverride ?? defaultCell.ref
+  const formulaBarValue = formulaBarOverride ?? defaultCell.formula
 
   const updateCellMutation = useMutation({
     mutationFn: updateExcelCell,
@@ -204,7 +252,88 @@ export function ExcelPane({ className }: ExcelPaneProps) {
     }
   }
 
+  const toOfficeSheetPayloads = (
+    list: ExcelSheetData[]
+  ): OfficeExcelSheetPayload[] =>
+    list.map((sheet) => {
+      const headerRow = sheet.rows.find((r) => r.isHeader)
+      const headers: Record<string, string> = {}
+      for (const col of sheet.columns) {
+        headers[col] = String(headerRow?.cells[col] ?? col)
+      }
+      return {
+        id: sheet.id,
+        name: sheet.name,
+        columns: sheet.columns,
+        headers,
+        rows: sheet.rows
+          .filter((r) => !r.isHeader)
+          .map((r) => {
+            const mappedFormats:
+              | Record<string, "currency" | "percent" | "number" | "text">
+              | undefined = r.formats
+              ? Object.fromEntries(
+                  Object.entries(r.formats).map(([k, v]) => [
+                    k,
+                    v === "currency" || v === "percent" || v === "text"
+                      ? v
+                      : "number",
+                  ])
+                )
+              : undefined
+            return {
+              rowNumber: r.rowNumber,
+              cells: r.cells,
+              formulas: r.formulas,
+              formats: mappedFormats,
+              isTotal: r.isTotal,
+            }
+          }),
+      }
+    })
+
+  const fromOfficeSheetPayloads = officeSheetsToExcelSheets
+
+  const handleOpenRealExcelFile = async () => {
+    const wb = await ipcClient.office.pickExcelFile()
+    if (!wb || wb.sheets.length === 0) return
+    const converted = fromOfficeSheetPayloads(wb.sheets)
+    setLoadedFileName(wb.fileName)
+    setLoadedFilePath(wb.filePath)
+    setSheetsState(converted)
+    setActiveSheetId(converted[0].id)
+    setSelectedCellRef(null)
+    setFormulaBarValue(null)
+    setIsLiveWebMode(false)
+    toast(`Opened real workbook: ${wb.fileName}`)
+  }
+
+  const handleSaveRealExcelFile = async () => {
+    if (sheets.length === 0) return
+    const target = loadedFilePath ?? (filePath || `~/.rayu/workbooks/${fileName}`)
+    const res = await ipcClient.office.writeExcel({
+      filePath: target,
+      sheets: toOfficeSheetPayloads(sheets),
+    })
+    if (res.ok) {
+      setLoadedFilePath(res.filePath)
+      toast(`Saved ${fileName} (${res.sheetCount} sheets)`)
+    } else {
+      toast.error("Failed to save Excel workbook")
+    }
+  }
+
   const handleOpenInExcelApp = async () => {
+    if (!filePath) {
+      toast("No workbook open yet - ask RayuCode to create one or use Open .xlsx")
+      return
+    }
+    if (loadedFilePath && sheets.length > 0) {
+      await ipcClient.office.writeExcel({
+        filePath: loadedFilePath,
+        sheets: toOfficeSheetPayloads(sheets),
+      })
+    }
     await openExcelInNativeApp(filePath)
     toast(`Opened ${fileName} in Microsoft Excel`)
   }
@@ -291,6 +420,30 @@ export function ExcelPane({ className }: ExcelPaneProps) {
         </span>
 
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            data-testid="excel-open-file-btn"
+            onClick={() => void handleOpenRealExcelFile()}
+            className="h-6 px-2 text-[11px]"
+          >
+            <FolderOpen className="size-3" strokeWidth={1.65} aria-hidden="true" />
+            <span>Open .xlsx</span>
+          </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            data-testid="excel-save-file-btn"
+            onClick={() => void handleSaveRealExcelFile()}
+            className="h-6 px-2 text-[11px]"
+          >
+            <Save className="size-3" strokeWidth={1.65} aria-hidden="true" />
+            <span>Save .xlsx</span>
+          </Button>
+
           <Button
             type="button"
             variant={isLiveWebMode ? "primary" : "outline"}
@@ -434,12 +587,22 @@ export function ExcelPane({ className }: ExcelPaneProps) {
           </form>
 
           <div className="relative flex min-h-0 flex-1 flex-col">
-            <iframe
-              title="Microsoft Excel Online Live Embed"
-              src={activeEmbedSrc}
-              referrerPolicy="no-referrer"
-              className="min-h-0 w-full flex-1 border-0 bg-canvas"
-            />
+            {activeEmbedSrc ? (
+              <iframe
+                title="Microsoft Excel Online Live Embed"
+                src={activeEmbedSrc}
+                referrerPolicy="no-referrer"
+                className="min-h-0 w-full flex-1 border-0 bg-canvas"
+              />
+            ) : (
+              <div
+                data-testid="excel-live-web-empty"
+                className="grid min-h-0 flex-1 place-items-center px-6 text-center text-xs text-muted-ink"
+              >
+                Paste a OneDrive, SharePoint, or public HTTPS .xlsx URL above to
+                preview it with Microsoft Office Web Viewer.
+              </div>
+            )}
           </div>
         </div>
       ) : (
@@ -447,7 +610,7 @@ export function ExcelPane({ className }: ExcelPaneProps) {
           data-testid="excel-grid-scroll"
           className="min-h-0 flex-1 overflow-auto bg-canvas"
         >
-          {activeSheet && (
+          {activeSheet ? (
             <table
               data-testid={`excel-sheet-${activeSheet.id}`}
               className="w-max min-w-full border-collapse text-xs tabular-nums"
@@ -574,6 +737,14 @@ export function ExcelPane({ className }: ExcelPaneProps) {
                 })}
               </tbody>
             </table>
+          ) : (
+            <div
+              data-testid="excel-empty-state"
+              className="grid h-full min-h-[160px] place-items-center px-6 text-center text-xs text-muted-ink"
+            >
+              No workbook open yet. Ask RayuCode to create a spreadsheet or use
+              Open .xlsx.
+            </div>
           )}
         </div>
       )}

@@ -3,9 +3,12 @@ import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { RayucodeClient } from "@rayu-dev/rayucode-sdk"
+import { RayucodeClient, type SdkTool, type Transport } from "@rayu-dev/rayucode-sdk"
 
-import { RayuDaemonClient } from "../daemon-client"
+import {
+  RayuDaemonClient,
+  wrapTransportWithSupportsPermissions,
+} from "../daemon-client"
 
 describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
   const originalEnv = { ...process.env }
@@ -154,6 +157,19 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       { waitForAccept: true }
     )
 
+    // Multimodal image attachments forward directly to Rust core sendMessage({ images })
+    await daemon.sendMessage("session_first", "Inspect this screenshot", [
+      ["image/png", "iVBORw0KGgo="],
+    ])
+    expect(client1.sendMessage).toHaveBeenLastCalledWith(
+      "session_first",
+      "Inspect this screenshot",
+      {
+        waitForAccept: true,
+        images: [["image/png", "iVBORw0KGgo="]],
+      }
+    )
+
     // 2nd session creation: opens a fresh socket so the Rust daemon mints a new session_id
     const created2 = await daemon.createSession("/tmp/proj", "Second session")
     expect(connectSpy).toHaveBeenCalledTimes(2)
@@ -163,5 +179,184 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       "session_second",
       "Second session"
     )
+  })
+
+  it("registers Desktop SdkTools via configureTools on BOTH createSession and attachSession", async () => {
+    const configureTools = vi.fn().mockResolvedValue(undefined)
+    const request = vi.fn().mockResolvedValue({ v: 1, ev: "ok" })
+    const fakeClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permissions", "permission_modes"],
+      supports: (cap: string) =>
+        ["session_tools", "permissions", "permission_modes"].includes(cap),
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_created",
+        working_dir: "/tmp/ws",
+        status: "idle",
+      }),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_attached",
+        working_dir: "/tmp/ws",
+        status: "idle",
+      }),
+      configureTools,
+      request,
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(fakeClient)
+
+    const daemon = new RayuDaemonClient("/tmp/tools-test-rayu.sock")
+    daemon.configureDesktopRuntime({
+      getWorkspaceDir: () => "/tmp/ws",
+    })
+
+    await daemon.createSession("/tmp/ws")
+    expect(configureTools).toHaveBeenCalledTimes(1)
+    const [firstSessionId, firstOpts] = configureTools.mock.calls[0] as [
+      string,
+      { custom: SdkTool[] },
+    ]
+    expect(firstSessionId).toBe("sess_created")
+    const toolNames = firstOpts.custom.map((t) => t.name)
+    expect(toolNames).toEqual(
+      expect.arrayContaining([
+        "read_excel",
+        "write_excel",
+        "create_powerpoint",
+        "list_templates",
+        "save_template",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+      ])
+    )
+
+    await daemon.attachSession("sess_attached")
+    expect(configureTools).toHaveBeenCalledTimes(2)
+    expect(configureTools.mock.calls[1]?.[0]).toBe("sess_attached")
+  })
+
+  it("syncs setPermissionMode, retries busy sessions on turn_done, and re-syncs on attach", async () => {
+    const configureTools = vi.fn().mockResolvedValue(undefined)
+    const request = vi
+      .fn()
+      // 1st call: plan succeeds immediately
+      .mockResolvedValueOnce({ v: 1, ev: "ok" })
+      // 2nd call: acceptEdits returns busy
+      .mockResolvedValueOnce({
+        v: 1,
+        ev: "error",
+        code: "invalid_request",
+        message: "Session is busy",
+      })
+      // 3rd call (retry on turn_done): succeeds
+      .mockResolvedValueOnce({ v: 1, ev: "ok" })
+      // 4th call (re-sync on attachSession): succeeds
+      .mockResolvedValueOnce({ v: 1, ev: "ok" })
+      // 5th call (hard error): returns error
+      .mockResolvedValueOnce({
+        v: 1,
+        ev: "error",
+        code: "invalid_request",
+        message: "Unsupported permission mode",
+      })
+
+    const fakeClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permissions", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_perm_1",
+        working_dir: "/tmp/ws",
+        status: "idle",
+      }),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_perm_2",
+        working_dir: "/tmp/ws",
+        status: "idle",
+      }),
+      configureTools,
+      request,
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(fakeClient)
+
+    const daemon = new RayuDaemonClient("/tmp/perm-test-rayu.sock")
+    await daemon.createSession("/tmp/ws")
+
+    const res1 = await daemon.setPermissionMode("sess_perm_1", "plan")
+    expect(res1).toEqual({ ok: true })
+    expect(request).toHaveBeenNthCalledWith(1, {
+      req: "set_permission_mode",
+      session_id: "sess_perm_1",
+      mode: "plan",
+    })
+
+    // Busy response queues retry until turn_done
+    const res2 = await daemon.setPermissionMode("sess_perm_1", "acceptEdits")
+    expect(res2).toEqual({ ok: true })
+    expect(request).toHaveBeenNthCalledWith(2, {
+      req: "set_permission_mode",
+      session_id: "sess_perm_1",
+      mode: "accept_edits",
+    })
+
+    fakeClient.emit("event", {
+      v: 1,
+      ev: "turn_done",
+      session_id: "sess_perm_1",
+    })
+    await new Promise((r) => setTimeout(r, 15))
+    expect(request).toHaveBeenNthCalledWith(3, {
+      req: "set_permission_mode",
+      session_id: "sess_perm_1",
+      mode: "accept_edits",
+    })
+
+    // Attaching another session re-syncs desiredPermissionMode ("acceptEdits")
+    await daemon.attachSession("sess_perm_2")
+    expect(request).toHaveBeenNthCalledWith(4, {
+      req: "set_permission_mode",
+      session_id: "sess_perm_2",
+      mode: "accept_edits",
+    })
+
+    // Hard rejection surfaces { ok: false, error }
+    const resErr = await daemon.setPermissionMode("sess_perm_2", "orchestrator")
+    expect(resErr).toEqual({ ok: false, error: "Unsupported permission mode" })
+  })
+
+  it("injects supports_permissions: true into outgoing hello frames via transport wrapper", () => {
+    const written: string[] = []
+    const base: Transport = {
+      write: (data) => written.push(data),
+      onData: () => {},
+      onClose: () => {},
+      close: () => {},
+    }
+    const wrapped = wrapTransportWithSupportsPermissions(base)
+    wrapped.write(
+      `${JSON.stringify({
+        v: 1,
+        id: 1,
+        req: "hello",
+        min_version: 1,
+        max_version: 1,
+        client: "rayucode-desktop/0.1.0",
+        supports_user_response: true,
+      })}\n`
+    )
+    wrapped.write(`${JSON.stringify({ v: 1, id: 2, req: "ping" })}\n`)
+
+    const first = JSON.parse(written[0]!.trim()) as Record<string, unknown>
+    const second = JSON.parse(written[1]!.trim()) as Record<string, unknown>
+    expect(first.supports_permissions).toBe(true)
+    expect(first.supports_user_response).toBe(true)
+    expect(second).toEqual({ v: 1, id: 2, req: "ping" })
   })
 })

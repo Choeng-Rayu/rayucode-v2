@@ -63,7 +63,7 @@ import {
   type ComposerTemplateItem,
   type ComposerTemplateKind,
 } from "@/lib/composer-templates"
-import { ipcClient } from "@/lib/ipc-client"
+import { ipcClient, parseImageDataUrl } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import {
@@ -83,6 +83,7 @@ import type {
   ComposerSubmitPayload,
   ModelOption,
   PermissionModeId,
+  PromptImageAttachment,
   ReasoningEffort,
 } from "../types"
 import { ClarifyingQuestionCard } from "./clarifying-question-card"
@@ -97,7 +98,69 @@ interface ComposerAttachment {
   name: string
   path?: string
   dataUrl?: string
+  mediaType?: string
   sessionId?: string
+}
+
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+])
+const MAX_IMAGE_FILE_BYTES = 10 * 1024 * 1024
+const MAX_ATTACHED_IMAGES = 10
+
+function inferImageMediaType(file: File): string | null {
+  const rawType = file.type.toLowerCase().trim()
+  if (rawType === "image/jpg") return "image/jpeg"
+  if (SUPPORTED_IMAGE_MEDIA_TYPES.has(rawType)) return rawType
+  const lowerName = file.name.toLowerCase()
+  if (lowerName.endsWith(".png")) return "image/png"
+  if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")) {
+    return "image/jpeg"
+  }
+  if (lowerName.endsWith(".webp")) return "image/webp"
+  if (lowerName.endsWith(".gif")) return "image/gif"
+  return null
+}
+
+function readImageFileAsAttachment(
+  file: File
+): Promise<ComposerAttachment | null> {
+  const mediaType = inferImageMediaType(file)
+  if (!mediaType) return Promise.resolve(null)
+  if (file.size > MAX_IMAGE_FILE_BYTES) {
+    toast.error(`"${file.name || "Image"}" exceeds the 10 MB image limit`)
+    return Promise.resolve(null)
+  }
+
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === "string" ? reader.result : ""
+      if (!dataUrl.startsWith("data:image/")) {
+        resolve(null)
+        return
+      }
+      const ext = mediaType.split("/")[1] || "png"
+      const fallbackName = `screenshot-${Date.now()}.${ext}`
+      const filePath = (file as File & { path?: string }).path
+      resolve({
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        kind: "image",
+        name: file.name || fallbackName,
+        ...(filePath ? { path: filePath } : {}),
+        dataUrl,
+        mediaType,
+      })
+    }
+    reader.onerror = () => {
+      toast.error(`Could not read image "${file.name || "attachment"}"`)
+      resolve(null)
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 type SkillTokenIconId =
@@ -431,6 +494,8 @@ export function SessionComposer({
   const [sketchOpen, setSketchOpen] = React.useState(false)
   const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([])
   const [skillTokens, setSkillTokens] = React.useState<ActiveSkillToken[]>([])
+  const [isDraggingOver, setIsDraggingOver] = React.useState(false)
+  const dragDepthRef = React.useRef(0)
 
   // Template carousel, creator dialog, and clarifying question card
   const [activeTemplateKind, setActiveTemplateKind] =
@@ -631,7 +696,11 @@ export function SessionComposer({
 
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
-      persisted.setPermissionMode(nextMode)
+      // Persists locally, then syncs to the Rust core engine for the active session
+      // (reverts + toast.error when the daemon rejects the mode)
+      persisted.setPermissionMode(nextMode, (previousMode) => {
+        onPermissionModeChange?.(previousMode)
+      })
       onPermissionModeChange?.(nextMode)
     },
     [onPermissionModeChange, persisted]
@@ -655,6 +724,148 @@ export function SessionComposer({
     toast(nextProject ? `Project: ${nextProject}` : "Cleared project selection")
   }
 
+  const attachDroppedOrPastedFiles = React.useCallback(async (files: File[]) => {
+    if (files.length === 0) return
+    const imageCandidates: File[] = []
+    const otherFiles: File[] = []
+    for (const file of files) {
+      if (inferImageMediaType(file) !== null) {
+        imageCandidates.push(file)
+      } else {
+        otherFiles.push(file)
+      }
+    }
+
+    const readImages = (
+      await Promise.all(imageCandidates.map((file) => readImageFileAsAttachment(file)))
+    ).filter((att): att is ComposerAttachment => att !== null)
+
+    let addedImageCount = 0
+    let addedFileCount = 0
+    let skippedLimit = false
+
+    setAttachments((prev) => {
+      const next = [...prev]
+      let currentImages = next.filter((a) => a.kind === "image").length
+
+      for (const img of readImages) {
+        if (currentImages >= MAX_ATTACHED_IMAGES) {
+          skippedLimit = true
+          break
+        }
+        next.push(img)
+        currentImages += 1
+        addedImageCount += 1
+      }
+
+      for (const file of otherFiles) {
+        const filePath = (file as File & { path?: string }).path ?? file.name
+        if (next.some((a) => a.path === filePath)) continue
+        next.push({
+          id: `drop_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          kind: "file",
+          name: file.name || "file",
+          path: filePath,
+        })
+        addedFileCount += 1
+      }
+
+      return next
+    })
+
+    if (skippedLimit) {
+      toast.error(`You can attach up to ${MAX_ATTACHED_IMAGES} images per turn`)
+    }
+    const totalAdded = addedImageCount + addedFileCount
+    if (totalAdded > 0) {
+      if (addedImageCount > 0 && addedFileCount === 0) {
+        toast(
+          addedImageCount === 1
+            ? `Attached image (${readImages[0]?.name ?? "image"})`
+            : `Attached ${addedImageCount} images`
+        )
+      } else {
+        toast(`Attached ${totalAdded} item${totalAdded === 1 ? "" : "s"}`)
+      }
+      localTextareaRef.current?.focus()
+    }
+  }, [])
+
+  const handlePaste = React.useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const clipboard = event.clipboardData
+      if (!clipboard) return
+
+      const imageFiles: File[] = []
+      if (clipboard.items && clipboard.items.length > 0) {
+        for (const item of Array.from(clipboard.items)) {
+          if (item.kind === "file" && item.type.startsWith("image/")) {
+            const file = item.getAsFile()
+            if (file) imageFiles.push(file)
+          }
+        }
+      }
+      if (imageFiles.length === 0 && clipboard.files && clipboard.files.length > 0) {
+        for (const file of Array.from(clipboard.files)) {
+          if (inferImageMediaType(file) !== null) {
+            imageFiles.push(file)
+          }
+        }
+      }
+
+      if (imageFiles.length === 0) return
+
+      const plainText = clipboard.getData("text/plain")
+      if (!plainText) {
+        event.preventDefault()
+      }
+      void attachDroppedOrPastedFiles(imageFiles)
+    },
+    [attachDroppedOrPastedFiles]
+  )
+
+  const handleDragEnter = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer?.types?.includes("Files")) return
+      event.preventDefault()
+      dragDepthRef.current += 1
+      setIsDraggingOver(true)
+    },
+    []
+  )
+
+  const handleDragOver = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer?.types?.includes("Files")) return
+      event.preventDefault()
+      event.dataTransfer.dropEffect = "copy"
+    },
+    []
+  )
+
+  const handleDragLeave = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!event.dataTransfer?.types?.includes("Files")) return
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+      if (dragDepthRef.current === 0) {
+        setIsDraggingOver(false)
+      }
+    },
+    []
+  )
+
+  const handleDrop = React.useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const files = Array.from(event.dataTransfer?.files ?? [])
+      dragDepthRef.current = 0
+      setIsDraggingOver(false)
+      if (files.length === 0) return
+      event.preventDefault()
+      void attachDroppedOrPastedFiles(files)
+    },
+    [attachDroppedOrPastedFiles]
+  )
+
   const handleAttachFiles = async () => {
     setSlashOpen(false)
     const picked = await ipcClient.workspace.pickFiles()
@@ -663,12 +874,23 @@ export function SessionComposer({
       const next = [...prev]
       for (const item of picked) {
         if (next.some((a) => a.path === item.path)) continue
-        next.push({
-          id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          kind: item.isDirectory ? "folder" : "file",
-          name: item.name,
-          path: item.path,
-        })
+        if (item.dataUrl) {
+          next.push({
+            id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            kind: "image",
+            name: item.name,
+            path: item.path,
+            dataUrl: item.dataUrl,
+            mediaType: item.mediaType,
+          })
+        } else {
+          next.push({
+            id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            kind: item.isDirectory ? "folder" : "file",
+            name: item.name,
+            path: item.path,
+          })
+        }
       }
       return next
     })
@@ -733,6 +955,7 @@ export function SessionComposer({
         kind: "image",
         name: shot.name,
         dataUrl: shot.dataUrl,
+        mediaType: "image/png",
       },
     ])
     toast(`Attached appshot (${shot.name})`)
@@ -858,16 +1081,32 @@ export function SessionComposer({
       return
     }
 
+    const images: PromptImageAttachment[] = attachments
+      .filter(
+        (a): a is ComposerAttachment & { dataUrl: string } =>
+          a.kind === "image" && Boolean(a.dataUrl)
+      )
+      .map((a) => ({
+        name: a.name,
+        mediaType:
+          a.mediaType ?? parseImageDataUrl(a.dataUrl)?.[0] ?? "image/png",
+        dataUrl: a.dataUrl,
+      }))
+
+    const nonImageAttachments = attachments.filter(
+      (a) => !(a.kind === "image" && Boolean(a.dataUrl))
+    )
+
     const attachmentPrefix =
-      attachments.length > 0
-        ? `${attachments
+      nonImageAttachments.length > 0
+        ? `${nonImageAttachments
             .map((a) => {
               if (a.kind === "conversation") {
                 return `[Referenced RayuCode conversation: "${a.name}" (${a.sessionId ?? "session"})]`
               }
               return a.path
                 ? `[Attached ${a.kind}: ${a.path}]`
-                : `[Attached image: ${a.name}]`
+                : `[Attached file: ${a.name}]`
             })
             .join("\n")}\n\n`
         : ""
@@ -882,6 +1121,7 @@ export function SessionComposer({
     setActiveClarifyingTemplate(null)
     const payload: ComposerSubmitPayload = {
       prompt: `${attachmentPrefix}${skillPrefix}${trimmed}`.trim(),
+      ...(images.length > 0 ? { images } : {}),
       project: activeProject || "No Project",
       checkout: activeCheckout,
       modelId: activeModelId,
@@ -1039,7 +1279,7 @@ export function SessionComposer({
         data-testid="session-composer-dock"
         data-composer-mode={mode}
         className={cn(
-          "flex w-full shrink-0 flex-col items-center px-6",
+          "@container/dock flex w-full shrink-0 flex-col items-center px-3 @min-[480px]/dock:px-6",
           mode === "home" ? "pb-[22px]" : "pb-3.5",
           className
         )}
@@ -1082,7 +1322,7 @@ export function SessionComposer({
 
         <div
           data-testid="composer-shell"
-          className="rayu-card-bevel relative w-full max-w-[732px] rounded-[22px] bg-shell p-[5px] focus:shadow-none focus:outline-none"
+          className="rayu-card-bevel @container/composer relative w-full max-w-[732px] overflow-hidden rounded-[22px] bg-shell p-[5px] focus:shadow-none focus:outline-none"
         >
           {/* Project & Checkout Top Tray — ONLY rendered on Home (New Session) */}
           {mode === "home" ? (
@@ -1250,53 +1490,90 @@ export function SessionComposer({
           {/* Inner Elevated Composer Surface */}
           <div
             data-testid="composer-inner"
-            className="flex flex-col rounded-[17px] border border-premium-hi bg-raised shadow-rayu-1 focus-within:ring-0 focus-within:outline-none"
+            data-dragging={isDraggingOver ? "true" : "false"}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={cn(
+              "relative flex flex-col rounded-[17px] border border-premium-hi bg-raised shadow-rayu-1 transition-colors focus-within:ring-0 focus-within:outline-none",
+              isDraggingOver && "border-brand bg-brand-softer/25"
+            )}
           >
+            {isDraggingOver ? (
+              <div
+                data-testid="composer-drop-overlay"
+                className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-[17px] bg-raised/75 backdrop-blur-[1px]"
+              >
+                <span className="inline-flex items-center gap-2 rounded-full border border-brand bg-popover-solid px-3.5 py-1.5 text-xs font-medium text-brand-text shadow-rayu-1">
+                  <Paperclip className="size-3.5" aria-hidden="true" />
+                  <span>Drop images or files to attach</span>
+                </span>
+              </div>
+            ) : null}
+
             {attachments.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-3">
-                {attachments.map((att) => (
-                  <span
-                    key={att.id}
-                    className="inline-flex max-w-[260px] items-center gap-1.5 rounded-lg border border-hairline bg-inset px-2 py-1 text-xs text-ink"
-                  >
-                    {att.kind === "image" && att.dataUrl ? (
+              <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
+                {attachments.map((att) =>
+                  att.kind === "image" && att.dataUrl ? (
+                    <div
+                      key={att.id}
+                      data-testid="composer-image-attachment"
+                      title={att.name}
+                      className="group relative size-12 shrink-0 overflow-hidden rounded-lg border border-hairline bg-inset shadow-bevel-surface"
+                    >
                       <img
                         src={att.dataUrl}
                         alt={att.name}
-                        className="size-4 rounded object-cover"
+                        className="size-full object-cover"
                       />
-                    ) : att.kind === "folder" ? (
-                      <Folder
-                        className="size-3.5 shrink-0 text-folder"
-                        aria-hidden="true"
-                      />
-                    ) : att.kind === "conversation" ? (
-                      <Circle
-                        className="size-3 shrink-0 text-code-type"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Paperclip
-                        className={cn(
-                          "size-3.5 shrink-0",
-                          getFileColorClass(att.name)
-                        )}
-                        aria-hidden="true"
-                      />
-                    )}
-                    <span className="truncate font-mono text-[11px]">
-                      {att.name}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${att.name}`}
-                      onClick={() => handleRemoveAttachment(att.id)}
-                      className="ml-0.5 grid size-4 shrink-0 cursor-pointer place-items-center rounded text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                      <button
+                        type="button"
+                        aria-label={`Remove ${att.name}`}
+                        onClick={() => handleRemoveAttachment(att.id)}
+                        className="absolute top-0.5 right-0.5 grid size-4 cursor-pointer place-items-center rounded-full bg-popover-solid/90 text-ink transition-colors hover:bg-hover"
+                      >
+                        <X className="size-2.5" aria-hidden="true" />
+                      </button>
+                    </div>
+                  ) : (
+                    <span
+                      key={att.id}
+                      className="inline-flex max-w-[260px] items-center gap-1.5 rounded-lg border border-hairline bg-inset px-2 py-1 text-xs text-ink"
                     >
-                      <X className="size-3" aria-hidden="true" />
-                    </button>
-                  </span>
-                ))}
+                      {att.kind === "folder" ? (
+                        <Folder
+                          className="size-3.5 shrink-0 text-folder"
+                          aria-hidden="true"
+                        />
+                      ) : att.kind === "conversation" ? (
+                        <Circle
+                          className="size-3 shrink-0 text-code-type"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Paperclip
+                          className={cn(
+                            "size-3.5 shrink-0",
+                            getFileColorClass(att.name)
+                          )}
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span className="truncate font-mono text-[11px]">
+                        {att.name}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${att.name}`}
+                        onClick={() => handleRemoveAttachment(att.id)}
+                        className="ml-0.5 grid size-4 shrink-0 cursor-pointer place-items-center rounded text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                      >
+                        <X className="size-3" aria-hidden="true" />
+                      </button>
+                    </span>
+                  )
+                )}
               </div>
             ) : null}
 
@@ -1323,7 +1600,7 @@ export function SessionComposer({
                         : undefined
                   }
                   className={cn(
-                    "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-[15px] leading-none font-medium tracking-[-0.01em] transition-colors hover:bg-hover",
+                    "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1 py-0.5 text-[15px] leading-[1.5] font-medium tracking-[-0.01em] transition-colors hover:bg-hover",
                     !token.tone && "text-ink",
                     token.tone === "info" && "text-info",
                     token.tone === "brand" && "text-brand-text"
@@ -1341,15 +1618,16 @@ export function SessionComposer({
                 disabled={disabled || isSubmitting}
                 onChange={handleInputChange}
                 onKeyDown={handleInputKeyDown}
+                onPaste={handlePaste}
                 placeholder={effectivePlaceholder}
                 aria-label={
                   mode === "home" ? "Message RayuCode" : "Reply to RayuCode"
                 }
-                className="block max-h-[180px] min-h-[24px] min-w-[140px] flex-1 resize-none border-none bg-transparent p-0 text-sm leading-normal text-ink placeholder:text-muted-ink focus:ring-0 focus:shadow-none focus:outline-none focus-visible:ring-0 focus-visible:outline-none disabled:opacity-60"
+                className="block max-h-[180px] min-h-[26px] min-w-[140px] flex-1 resize-none border-none bg-transparent p-0 text-[15px] leading-[1.5] text-ink placeholder:text-muted-ink focus:ring-0 focus:shadow-none focus:outline-none focus-visible:ring-0 focus-visible:outline-none disabled:opacity-60"
               />
             </div>
 
-            <div className="flex items-center gap-1.5 px-3 pt-1.5 pb-[11px]">
+            <div className="flex min-w-0 items-center gap-1 px-2.5 pt-1.5 pb-[11px] @min-[420px]/composer:gap-1.5 @min-[420px]/composer:px-3">
               {/* Left + Codex-style Add, Plugins, Apps, Conversations & @ Mention Trigger */}
               <Popover
                 open={slashOpen}
@@ -1384,7 +1662,7 @@ export function SessionComposer({
                             setPlusMenuView("add")
                           }
                         }}
-                        className="grid size-7 cursor-pointer place-items-center rounded-full border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none data-[state=open]:border-hairline data-[state=open]:bg-active data-[state=open]:text-ink"
+                        className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-full border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none data-[state=open]:border-hairline data-[state=open]:bg-active data-[state=open]:text-ink"
                       >
                         <Plus className="size-[15px]" aria-hidden="true" />
                       </button>
@@ -2154,18 +2432,18 @@ export function SessionComposer({
               {/* Voice Input Button */}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    aria-label="Voice input"
-                    aria-pressed={voiceActive}
-                    onClick={handleVoiceToggle}
-                    className={cn(
-                      "grid size-7 cursor-pointer place-items-center rounded-lg border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none",
-                      voiceActive &&
-                        "border-brand/40 bg-brand-softer text-brand-text"
-                    )}
-                  >
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      aria-label="Voice input"
+                      aria-pressed={voiceActive}
+                      onClick={handleVoiceToggle}
+                      className={cn(
+                        "grid size-7 shrink-0 cursor-pointer place-items-center rounded-lg border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none",
+                        voiceActive &&
+                          "border-brand/40 bg-brand-softer text-brand-text"
+                      )}
+                    >
                     <Mic className="size-[15px]" aria-hidden="true" />
                   </button>
                 </TooltipTrigger>
@@ -2231,6 +2509,7 @@ export function SessionComposer({
               kind: "image",
               name: sketch.name,
               dataUrl: sketch.dataUrl,
+              mediaType: "image/png",
             },
           ])
           toast(`Attached sketch (${sketch.name})`)

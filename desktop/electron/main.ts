@@ -1,22 +1,36 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import { app, BrowserWindow, ipcMain, Menu, nativeImage } from "electron"
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  powerSaveBlocker,
+} from "electron"
 import type { RuntimeCommand, ServerFrame } from "@rayu-dev/rayucode-sdk"
 
 import { RayuAuthManager, type RayuAuthState } from "./auth-bridge.js"
+import { BrowserCdpController } from "./browser-cdp.js"
 import { RayuDaemonClient } from "./daemon-client.js"
+import type { DesktopArtifactEvent } from "./desktop-tools.js"
 import {
   commitGitStaged,
   createGitPullRequest,
   discardGitFile,
   getGitChanges,
+  getGitCommits,
   setAllGitStaged,
   toggleGitStage,
 } from "./git-bridge.js"
 import {
   AuthApiKeyPayloadSchema,
   AuthCallbackUrlPayloadSchema,
+  BrowserCdpClickSchema,
+  BrowserCdpNavigateSchema,
+  BrowserCdpTypeSchema,
   CloudCancelStreamPayloadSchema,
   CloudStreamChatPayloadSchema,
   DaemonInvokePayloadSchema,
@@ -37,14 +51,25 @@ import {
   HarnessSessionIdSchema,
   HarnessSetEffortSchema,
   HarnessSetModelSchema,
+  HarnessSetPermissionModeSchema,
+  KeepAwakePayloadSchema,
+  OfficeCreatePptxPayloadSchema,
+  OfficeReadExcelPayloadSchema,
+  OfficeWriteExcelPayloadSchema,
   OpenExternalPayloadSchema,
   OpenInExcelPayloadSchema,
   OpenInPowerPointPayloadSchema,
   OpenInVSCodePayloadSchema,
+  RevealInFinderPayloadSchema,
   StorageDeleteTemplateSchema,
   StoragePreferencesPatchSchema,
   StorageSaveTemplateSchema,
   StorageSessionStoreSchema,
+  StorageSidebarStateSchema,
+  TerminalPtyCreatePayloadSchema,
+  TerminalPtyKillPayloadSchema,
+  TerminalPtyResizePayloadSchema,
+  TerminalPtyWritePayloadSchema,
   TerminalRunPayloadSchema,
   WorkspaceReadFilePayloadSchema,
   WorkspaceSetPayloadSchema,
@@ -54,7 +79,13 @@ import {
   openInExcel,
   openInPowerPoint,
   openInVSCode,
+  revealInFinder,
 } from "./native-bridge.js"
+import {
+  createRealPowerPointDeck,
+  readRealExcelWorkbook,
+  writeRealExcelWorkbook,
+} from "./office-bridge.js"
 import {
   createLocalSkill,
   deleteCustomTemplate,
@@ -64,6 +95,7 @@ import {
   readDesktopPreferences,
   readDesktopSessionStore,
   readRecentWorkspaces,
+  readSidebarState,
   recordRecentWorkspace,
   removeLocalMcpServer,
   saveCustomTemplate,
@@ -71,8 +103,9 @@ import {
   upsertLocalMcpServer,
   writeDesktopPreferences,
   writeDesktopSessionStore,
+  writeSidebarState,
 } from "./storage-bridge.js"
-import { runTerminalCommand } from "./terminal-bridge.js"
+import { runTerminalCommand, TerminalPtyManager } from "./terminal-bridge.js"
 import {
   getWorkspaceInfo,
   pickWorkspaceFiles,
@@ -83,6 +116,8 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const daemonClient = new RayuDaemonClient()
 const authManager = new RayuAuthManager()
+const terminalPty = new TerminalPtyManager()
+const browserCdp = new BrowserCdpController()
 
 function resolveAppIconPath(): string {
   const candidates = [
@@ -98,6 +133,25 @@ app.setName("RayuCode")
 let activeWorkspaceDir =
   process.env.RAYU_WORKSPACE_DIR ?? path.resolve(__dirname, "..", "..")
 let mainWindow: BrowserWindow | null = null
+let keepAwakeBlockerId: number | null = null
+
+function emitDesktopArtifact(artifact: DesktopArtifactEvent): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("rayu:desktop:artifact", artifact)
+  }
+}
+
+browserCdp.setEnsureBrowserOpen(async (url?: string) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("rayu:browser:ensure-open", { url })
+  }
+})
+
+daemonClient.configureDesktopRuntime({
+  getWorkspaceDir: () => activeWorkspaceDir,
+  browserCdp,
+  onArtifact: emitDesktopArtifact,
+})
 
 function registerIpcHandlers(): void {
   // Daemon lifecycle
@@ -116,7 +170,15 @@ function registerIpcHandlers(): void {
 
   // Real RayuCode Harness API (@rayu-dev/rayucode-sdk)
   ipcMain.handle("rayu:harness:list-sessions", async () => {
-    return daemonClient.listSessions(false)
+    const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+    if (!status.connected) {
+      return []
+    }
+    try {
+      return await daemonClient.listSessions(false)
+    } catch {
+      return []
+    }
   })
 
   ipcMain.handle(
@@ -167,7 +229,11 @@ function registerIpcHandlers(): void {
     "rayu:harness:send-message",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSendMessageSchema.parse(rawPayload)
-      await daemonClient.sendMessage(parsed.sessionId, parsed.content)
+      await daemonClient.sendMessage(
+        parsed.sessionId,
+        parsed.content,
+        parsed.images
+      )
       return { ok: true }
     }
   )
@@ -188,6 +254,14 @@ function registerIpcHandlers(): void {
         parsed.decision
       )
       return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:set-permission-mode",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessSetPermissionModeSchema.parse(rawPayload)
+      return daemonClient.setPermissionMode(parsed.sessionId, parsed.mode)
     }
   )
 
@@ -325,6 +399,18 @@ function registerIpcHandlers(): void {
     }
   )
 
+  ipcMain.handle("rayu:storage:get-sidebar-state", async () => {
+    return readSidebarState()
+  })
+
+  ipcMain.handle(
+    "rayu:storage:save-sidebar-state",
+    async (_event, rawPayload: unknown) => {
+      const parsed = StorageSidebarStateSchema.parse(rawPayload)
+      return writeSidebarState(parsed)
+    }
+  )
+
   // Real Local Extensions (MCP servers, Skills, Memory files)
   ipcMain.handle("rayu:extensions:list", async () => {
     return listLocalExtensions(activeWorkspaceDir)
@@ -406,11 +492,69 @@ function registerIpcHandlers(): void {
     return createGitPullRequest(activeWorkspaceDir, parsed)
   })
 
-  // Real Local Shell Terminal Runner
+  ipcMain.handle("rayu:git:commits", async () => {
+    return getGitCommits(activeWorkspaceDir, 30)
+  })
+
+  // Real Local Shell Terminal Runner & Interactive OS PTY Sessions
   ipcMain.handle("rayu:terminal:run", async (_event, rawPayload: unknown) => {
     const parsed = TerminalRunPayloadSchema.parse(rawPayload)
     return runTerminalCommand(activeWorkspaceDir, parsed.command)
   })
+
+  ipcMain.handle(
+    "rayu:terminal:pty-create",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TerminalPtyCreatePayloadSchema.parse(rawPayload)
+      return terminalPty.create({
+        sessionId: parsed.sessionId,
+        cwd: parsed.cwd,
+        fallbackCwd: activeWorkspaceDir,
+        cols: parsed.cols,
+        rows: parsed.rows,
+        onData: (data) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("rayu:terminal:pty-data", {
+              sessionId: parsed.sessionId,
+              data,
+            })
+          }
+        },
+        onExit: (exitCode) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("rayu:terminal:pty-exit", {
+              sessionId: parsed.sessionId,
+              exitCode,
+            })
+          }
+        },
+      })
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:terminal:pty-write",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TerminalPtyWritePayloadSchema.parse(rawPayload)
+      return terminalPty.write(parsed.sessionId, parsed.data)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:terminal:pty-resize",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TerminalPtyResizePayloadSchema.parse(rawPayload)
+      return terminalPty.resize(parsed.sessionId, parsed.cols, parsed.rows)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:terminal:pty-kill",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TerminalPtyKillPayloadSchema.parse(rawPayload)
+      return terminalPty.kill(parsed.sessionId)
+    }
+  )
 
   // Real Rayu Cloud Authentication (OAuth loopback + API key + live credits/models)
   ipcMain.handle("rayu:auth:state", async () => {
@@ -470,6 +614,8 @@ function registerIpcHandlers(): void {
           model: parsed.model,
           messages: parsed.messages,
           workspaceDir: activeWorkspaceDir,
+          browserCdp,
+          onArtifact: emitDesktopArtifact,
           onEvent: (frame) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send("rayu:harness:event", frame)
@@ -505,7 +651,7 @@ function registerIpcHandlers(): void {
     "rayu:native:open-excel",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenInExcelPayloadSchema.parse(rawPayload)
-      return openInExcel(parsed.filePath)
+      return openInExcel(parsed.filePath, activeWorkspaceDir)
     }
   )
 
@@ -513,7 +659,7 @@ function registerIpcHandlers(): void {
     "rayu:native:open-powerpoint",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenInPowerPointPayloadSchema.parse(rawPayload)
-      return openInPowerPoint(parsed)
+      return openInPowerPoint(parsed, activeWorkspaceDir)
     }
   )
 
@@ -532,6 +678,115 @@ function registerIpcHandlers(): void {
       return openExternal(parsed.url)
     }
   )
+
+  ipcMain.handle(
+    "rayu:native:reveal-in-finder",
+    async (_event, rawPayload: unknown) => {
+      const parsed = RevealInFinderPayloadSchema.parse(rawPayload)
+      return revealInFinder(parsed.targetPath)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:native:keep-awake",
+    async (_event, rawPayload: unknown) => {
+      const parsed = KeepAwakePayloadSchema.parse(rawPayload)
+      if (parsed.enabled) {
+        if (
+          keepAwakeBlockerId === null ||
+          !powerSaveBlocker.isStarted(keepAwakeBlockerId)
+        ) {
+          keepAwakeBlockerId = powerSaveBlocker.start("prevent-display-sleep")
+        }
+        return { ok: true, enabled: true }
+      }
+      if (
+        keepAwakeBlockerId !== null &&
+        powerSaveBlocker.isStarted(keepAwakeBlockerId)
+      ) {
+        powerSaveBlocker.stop(keepAwakeBlockerId)
+      }
+      keepAwakeBlockerId = null
+      return { ok: true, enabled: false }
+    }
+  )
+
+  // Real Microsoft Office (.xlsx / .pptx) Engine
+  ipcMain.handle("rayu:office:pick-excel", async () => {
+    const win = mainWindow ?? undefined
+    const result = win
+      ? await dialog.showOpenDialog(win, {
+          title: "Open Excel Workbook",
+          properties: ["openFile"],
+          filters: [{ name: "Excel Workbooks", extensions: ["xlsx", "xlsm"] }],
+        })
+      : await dialog.showOpenDialog({
+          title: "Open Excel Workbook",
+          properties: ["openFile"],
+          filters: [{ name: "Excel Workbooks", extensions: ["xlsx", "xlsm"] }],
+        })
+    if (result.canceled || result.filePaths.length === 0) {
+      return null
+    }
+    return readRealExcelWorkbook(activeWorkspaceDir, result.filePaths[0])
+  })
+
+  ipcMain.handle(
+    "rayu:office:read-excel",
+    async (_event, rawPayload: unknown) => {
+      const parsed = OfficeReadExcelPayloadSchema.parse(rawPayload)
+      return readRealExcelWorkbook(activeWorkspaceDir, parsed.filePath)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:office:write-excel",
+    async (_event, rawPayload: unknown) => {
+      const parsed = OfficeWriteExcelPayloadSchema.parse(rawPayload)
+      return writeRealExcelWorkbook(activeWorkspaceDir, parsed)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:office:create-pptx",
+    async (_event, rawPayload: unknown) => {
+      const parsed = OfficeCreatePptxPayloadSchema.parse(rawPayload)
+      return createRealPowerPointDeck(activeWorkspaceDir, parsed)
+    }
+  )
+
+  // Native Electron CDP Browser Automation (controls the live right-sidebar <webview>)
+  ipcMain.handle(
+    "rayu:browser:cdp-navigate",
+    async (_event, rawPayload: unknown) => {
+      const parsed = BrowserCdpNavigateSchema.parse(rawPayload)
+      return browserCdp.navigate(parsed.url)
+    }
+  )
+
+  ipcMain.handle("rayu:browser:cdp-snapshot", async () => {
+    return browserCdp.snapshot()
+  })
+
+  ipcMain.handle(
+    "rayu:browser:cdp-click",
+    async (_event, rawPayload: unknown) => {
+      const parsed = BrowserCdpClickSchema.parse(rawPayload)
+      return browserCdp.click(parsed.ref)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:browser:cdp-type",
+    async (_event, rawPayload: unknown) => {
+      const parsed = BrowserCdpTypeSchema.parse(rawPayload)
+      return browserCdp.type(parsed.ref, parsed.text, parsed.submit)
+    }
+  )
+
+  ipcMain.handle("rayu:browser:cdp-screenshot", async () => {
+    return browserCdp.screenshot()
+  })
 
   // Push events -> Renderer
   daemonClient.on("status", (status) => {
@@ -591,6 +846,7 @@ async function createMainWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
     },
   })
 
@@ -657,6 +913,7 @@ app.whenReady().then(async () => {
 })
 
 app.on("before-quit", () => {
+  terminalPty.killAll()
   authManager.dispose()
   daemonClient.dispose()
 })

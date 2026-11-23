@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils"
 
 import { traceKeys, traceTurnsQueryOptions } from "../api/trace-api"
 import { useLiveTrace } from "../hooks/use-live-trace"
-import type { ExecutionTurn, SessionSummary } from "../types"
+import type { ExecutionTurn, LiveTraceEvent, SessionSummary } from "../types"
 import { CiteLink, EditorialMarkdown } from "./cite-link"
 import { InlineDiffCard } from "./inline-diff-card"
 import { TurnActions } from "./turn-actions"
@@ -113,17 +113,35 @@ function TurnView({
           </div>
         )}
 
-        <div
-          data-slot="msg-user"
-          className="rayu-surface-bevel max-w-full rounded-2xl bg-raised px-[15px] py-[10px] text-[14px] leading-relaxed text-ink whitespace-pre-wrap"
-        >
-          {turn.userPrompt}
-          {turn.userMeta && (
-            <div className="mt-1.5 font-mono text-[10px] text-muted-ink">
-              {turn.userMeta}
-            </div>
-          )}
-        </div>
+        {turn.userImages && turn.userImages.length > 0 && (
+          <div
+            data-slot="user-image-attachments"
+            className="flex flex-wrap justify-end gap-2"
+          >
+            {turn.userImages.map((img, idx) => (
+              <img
+                key={`${img.name}_${idx}`}
+                src={img.dataUrl}
+                alt={img.name}
+                className="h-24 max-w-[180px] rounded-xl border border-hairline bg-inset object-cover shadow-bevel-surface"
+              />
+            ))}
+          </div>
+        )}
+
+        {(turn.userPrompt.trim().length > 0 || Boolean(turn.userMeta)) && (
+          <div
+            data-slot="msg-user"
+            className="max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14.5px] leading-[1.6] text-ink whitespace-pre-wrap"
+          >
+            {turn.userPrompt}
+            {turn.userMeta && (
+              <div className="mt-1.5 font-mono text-[10px] text-muted-ink">
+                {turn.userMeta}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div data-slot="msg-agent" className="flex flex-col gap-3">
@@ -269,6 +287,10 @@ function TurnView({
                   <DropdownMenuItem
                     onClick={() => {
                       const deck = useAppStore.getState().slideDeck
+                      if (!deck || deck.slides.length === 0) {
+                        toast.error("No presentation deck loaded yet")
+                        return
+                      }
                       void ipcClient.native
                         .openInPowerPoint({
                           title: deck.title,
@@ -369,245 +391,6 @@ export function ChatStream({
   const authState = useAppStore((s) => s.authState)
   const activeLiveTurnRef = React.useRef(false)
   const turnsForHistoryRef = React.useRef<ExecutionTurn[]>([])
-  const pendingSlideContinuationRef = React.useRef<(() => void) | null>(null)
-
-  const runPresentationAgentFlow = React.useCallback(
-    (promptText: string) => {
-      const uid = startLiveTurn({
-        sessionId: effectiveSessionId,
-        userPrompt: promptText,
-        initialNote:
-          "I'll treat the attached README as the source material for the review, and treat its contents as information rather than instructions that override your request. I'll check what it supports, then build the deck in the retained template.",
-      })
-
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g1`,
-        groupTitle: "Read files",
-        step: {
-          id: `${uid}_read_readme`,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: "README.md",
-              path: "README.md",
-              line: 1,
-              rangeLabel: "README.md",
-            },
-          ],
-        },
-      })
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g1`,
-        groupTitle: "Read files",
-        step: {
-          id: `${uid}_list_pres`,
-          kind: "list",
-          text: "Listed files in",
-          highlight: "presentations",
-        },
-      })
-
-      pushEvent({
-        type: "note",
-        text: "I've confirmed the README describes the product, capabilities, architecture, deployment, and CI checks, but contains no adoption, revenue, or period-over-period results. I'll frame the deck as a product and operating review, label business KPIs as unavailable, and avoid inventing performance outcomes. I'm applying the brainstorming and Presentations workflows while preserving the Business Review template.",
-      })
-
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g2`,
-        groupTitle: "Loaded a tool, read files",
-        step: {
-          id: `${uid}_read_cover`,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: "cover_art_direction.md",
-              path: "presentations/cover_art_direction.md",
-              line: 1,
-              rangeLabel: "cover_art_direction.md",
-            },
-          ],
-        },
-      })
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g2`,
-        groupTitle: "Loaded a tool, read files",
-        step: {
-          id: `${uid}_read_brainstorm`,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: "Brainstorming skill",
-              path: ".agents/skills/brainstorming/SKILL.md",
-              line: 1,
-              rangeLabel: "Brainstorming skill",
-            },
-          ],
-        },
-      })
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g2`,
-        groupTitle: "Loaded a tool, read files",
-        step: {
-          id: `${uid}_read_tpl_follow`,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: "template_following.md",
-              path: "presentations/template_following.md",
-              line: 1,
-              rangeLabel: "template_following.md",
-            },
-          ],
-        },
-      })
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g2`,
-        groupTitle: "Loaded a tool, read files",
-        step: {
-          id: `${uid}_read_artifacts`,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: "artifact_sessions.md",
-              path: "presentations/artifact_sessions.md",
-              line: 1,
-              rangeLabel: "artifact_sessions.md",
-            },
-            {
-              file: "finalization.md",
-              path: "presentations/finalization.md",
-              line: 1,
-              rangeLabel: "finalization.md",
-            },
-          ],
-        },
-      })
-
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g3`,
-        groupTitle: "Viewed an image",
-        step: {
-          id: `${uid}_preview_slide`,
-          kind: "previews",
-          text: "",
-          previews: [
-            {
-              id: "slide_cover_thumb",
-              kind: "slide",
-              badge: ".pptx",
-              label: "Enterprise Quarterly Business Review",
-              pillLabel: "Slide",
-            },
-          ],
-        },
-      })
-
-      pushEvent({
-        type: "step",
-        groupId: `${uid}_g4`,
-        groupTitle: "Used the browser and Computer Use, ran a command",
-        step: {
-          id: `${uid}_cmd_ppt_probe`,
-          kind: "command",
-          command: "rayu presentations inspect-template --deck business-review",
-          displayCommand:
-            "rayu presentations inspect-template --deck business-review",
-          output:
-            "Found template: Enterprise Quarterly Business Review (16:9, 4 master layouts)",
-          exitCode: 0,
-          statusLabel: "Success",
-          isMono: true,
-        },
-      })
-
-      const completeDeckImport = () => {
-        pushEvent({
-          type: "step",
-          groupId: `${uid}_g5`,
-          groupTitle: "Requested permission",
-          step: {
-            id: `${uid}_perm_granted`,
-            kind: "list",
-            text: "Approved Computer Use for",
-            highlight: "Microsoft PowerPoint",
-          },
-        })
-        pushEvent({
-          type: "step",
-          groupId: `${uid}_g6`,
-          groupTitle: "Inspecting template layouts",
-          step: {
-            id: `${uid}_import_tpl`,
-            kind: "command",
-            command: "Importing the Business Review template",
-            displayCommand: "Importing the Business Review template",
-            output: `    },\n    {\n      editable: false,\n      id: 'ly/bqdgbyxk',\n      kind: 'layout',\n      name: 'Blank',\n      type: ''\n    }\n  ],\n  status: 'pending',\n  truncated: false\n},`,
-            exitCode: 0,
-            statusLabel: "Success",
-            isMono: false,
-          },
-        })
-        useAppStore.getState().openDocPreview("slide", "Slide")
-        pushEvent({
-          type: "answer-delta",
-          delta:
-            "**Built the Enterprise Quarterly Business Review deck** in the Slide studio on the right. Every slide is grounded in repository materials with unverified business metrics explicitly marked as unavailable.",
-        })
-        pushEvent({
-          type: "bullet",
-          bullet: {
-            id: `${uid}_b_slide`,
-            title: "Opened live Slide Studio.",
-            body: "Click any slide text to edit inline, use Request edits, or click Open → Open in Microsoft PowerPoint.",
-            citations: [
-              {
-                label: "Slide (Q3 2026 Review)",
-                kind: "slide",
-                file: "Slide",
-              },
-            ],
-          },
-        })
-        pushEvent({
-          type: "artifact",
-          artifact: {
-            kind: "slide",
-            title: "Slide",
-            subtitle: "Slide",
-            pillLabel: "Slide",
-          },
-        })
-        pushEvent({
-          type: "complete",
-          workedDuration: "4s",
-          credits: "0.18 cr",
-          kvCachePct: 95,
-          timestamp: "Just now",
-        })
-      }
-
-      pendingSlideContinuationRef.current = completeDeckImport
-      setPendingPermission({
-        sessionId: effectiveSessionId,
-        requestId: `req_ppt_${Date.now()}`,
-        toolName: "Computer Use",
-        description: "Allow RayuCode to use Microsoft PowerPoint?",
-      })
-    },
-    [effectiveSessionId, pushEvent, setPendingPermission, startLiveTurn]
-  )
 
   // Stream live RayuCode harness frames directly into the rAF-batched trace
   React.useEffect(() => {
@@ -621,6 +404,22 @@ export function ChatStream({
       const mapped = mapHarnessFrameToLiveEvents(frame, tracker)
       if (mapped.length === 0) return
 
+      const traceEvents: LiveTraceEvent[] = []
+      for (const ev of mapped) {
+        if (ev.type === "permission-request") {
+          setPendingPermission({
+            sessionId: ev.sessionId || effectiveSessionId,
+            requestId: ev.requestId,
+            toolName: ev.toolName,
+            description: ev.description,
+          })
+        } else {
+          traceEvents.push(ev)
+        }
+      }
+
+      if (traceEvents.length === 0) return
+
       if (!activeLiveTurnRef.current) {
         activeLiveTurnRef.current = true
         startLiveTurn({
@@ -629,16 +428,17 @@ export function ChatStream({
         })
       }
 
-      for (const ev of mapped) {
+      for (const ev of traceEvents) {
         pushEvent(ev)
         if (ev.type === "complete") {
           activeLiveTurnRef.current = false
+          setPendingPermission(null)
         }
       }
     })
 
     return unsubscribe
-  }, [effectiveSessionId, pushEvent, startLiveTurn])
+  }, [effectiveSessionId, pushEvent, setPendingPermission, startLiveTurn])
 
   // Dispatch queued prompt AFTER ChatStream mounts its live event listener (0 dropped tokens)
   React.useEffect(() => {
@@ -647,15 +447,6 @@ export function ChatStream({
 
     const promptToSend = pendingStreamPrompt
     setPendingStreamPrompt(null)
-
-    const isPresentationRequest =
-      /\/presentations\b/i.test(promptToSend.prompt) ||
-      /\(presentation\)\]/i.test(promptToSend.prompt)
-
-    if (isPresentationRequest) {
-      runPresentationAgentFlow(promptToSend.prompt)
-      return
-    }
 
     const isLiveDaemon =
       daemonMode === "live" && !effectiveSessionId.startsWith("ses_")
@@ -681,11 +472,13 @@ export function ChatStream({
       startLiveTurn({
         sessionId: effectiveSessionId,
         userPrompt: promptToSend.prompt,
+        userImages: promptToSend.images,
       })
       void ipcClient.trace
         .sendPrompt({
           sessionId: effectiveSessionId,
           prompt: promptToSend.prompt,
+          images: promptToSend.images,
           modelId: promptToSend.modelId,
           modelLabel: promptToSend.modelLabel,
           history,
@@ -706,6 +499,7 @@ export function ChatStream({
       .sendPrompt({
         sessionId: effectiveSessionId,
         prompt: promptToSend.prompt,
+        images: promptToSend.images,
         modelId: promptToSend.modelId,
         modelLabel: promptToSend.modelLabel,
       })
@@ -727,7 +521,6 @@ export function ChatStream({
     pendingStreamPrompt,
     queryClient,
     resetLiveTurn,
-    runPresentationAgentFlow,
     setPendingStreamPrompt,
     startLiveTurn,
   ])
@@ -737,28 +530,6 @@ export function ChatStream({
       if (!pendingPermission) return
       const req = pendingPermission
       setPendingPermission(null)
-
-      if (pendingSlideContinuationRef.current) {
-        const cont = pendingSlideContinuationRef.current
-        pendingSlideContinuationRef.current = null
-        if (decision === "deny") {
-          pushEvent({
-            type: "answer-delta",
-            delta:
-              "Skipped Microsoft PowerPoint automation per your permission choice.",
-          })
-          pushEvent({
-            type: "complete",
-            workedDuration: "2s",
-            timestamp: "Just now",
-          })
-          toast("Denied Microsoft PowerPoint access")
-          return
-        }
-        cont()
-        toast("Approved Microsoft PowerPoint for this conversation")
-        return
-      }
 
       try {
         await ipcClient.trace.respondToPermission(
@@ -783,7 +554,7 @@ export function ChatStream({
         toast.error("Failed to send permission decision to daemon")
       }
     },
-    [pendingPermission, pushEvent, setPendingPermission]
+    [pendingPermission, setPendingPermission]
   )
 
   const allTurns = React.useMemo(() => {

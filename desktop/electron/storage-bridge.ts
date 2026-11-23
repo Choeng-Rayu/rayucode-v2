@@ -97,6 +97,36 @@ export interface PersistedComposerTemplate {
   createdAt: number
 }
 
+export interface PersistedSidebarProject {
+  id: string
+  name: string
+  folders: string[]
+  iconKind: "icon" | "emoji"
+  iconValue: string
+  iconColor: "folder" | "brand" | "info" | "type" | "num" | "danger"
+  pinned?: boolean
+  sectionId?: string | null
+  gitRemote?: string
+  updatedAt: number
+}
+
+export interface PersistedSidebarSection {
+  id: string
+  name: string
+  collapsed?: boolean
+}
+
+export interface PersistedSidebarState {
+  projects: PersistedSidebarProject[]
+  sections: PersistedSidebarSection[]
+  pinnedChatIds: string[]
+  archivedChatIds: string[]
+  organizeBy: "project" | "connection" | "flat"
+  sortBy: "updated" | "manual"
+  showProjectChatsInRecents: boolean
+  manualProjectOrder: string[]
+}
+
 const DEFAULT_PREFERENCES: PersistedDesktopPreferences = {
   notificationsEnabled: true,
   voiceModel: "Rayu Natural Voice",
@@ -651,4 +681,66 @@ export function deleteCustomTemplate(id: string): PersistedComposerTemplate[] {
   const next = readCustomTemplates().filter((item) => item.id !== target)
   writeJsonFile(customTemplatesPath(), next)
   return next
+}
+
+const DEFAULT_SIDEBAR_STATE: PersistedSidebarState = {
+  projects: [],
+  sections: [],
+  pinnedChatIds: [],
+  archivedChatIds: [],
+  organizeBy: "project",
+  sortBy: "updated",
+  showProjectChatsInRecents: true,
+  manualProjectOrder: [],
+}
+
+function sidebarStatePath(): string {
+  return path.join(getRayuAppConfigDir(), "desktop-sidebar.json")
+}
+
+export function readSidebarState(): PersistedSidebarState {
+  const stored = readJsonFile<Partial<PersistedSidebarState>>(
+    sidebarStatePath(),
+    {}
+  )
+  return {
+    projects: Array.isArray(stored.projects) ? stored.projects.slice(0, 60) : [],
+    sections: Array.isArray(stored.sections) ? stored.sections.slice(0, 30) : [],
+    pinnedChatIds: Array.isArray(stored.pinnedChatIds)
+      ? stored.pinnedChatIds.slice(0, 100)
+      : [],
+    archivedChatIds: Array.isArray(stored.archivedChatIds)
+      ? stored.archivedChatIds.slice(0, 200)
+      : [],
+    organizeBy:
+      stored.organizeBy === "connection" || stored.organizeBy === "flat"
+        ? stored.organizeBy
+        : DEFAULT_SIDEBAR_STATE.organizeBy,
+    sortBy:
+      stored.sortBy === "manual" ? "manual" : DEFAULT_SIDEBAR_STATE.sortBy,
+    showProjectChatsInRecents:
+      typeof stored.showProjectChatsInRecents === "boolean"
+        ? stored.showProjectChatsInRecents
+        : DEFAULT_SIDEBAR_STATE.showProjectChatsInRecents,
+    manualProjectOrder: Array.isArray(stored.manualProjectOrder)
+      ? stored.manualProjectOrder.slice(0, 60)
+      : [],
+  }
+}
+
+export function writeSidebarState(
+  next: PersistedSidebarState
+): PersistedSidebarState {
+  const bounded: PersistedSidebarState = {
+    projects: next.projects.slice(0, 60),
+    sections: next.sections.slice(0, 30),
+    pinnedChatIds: next.pinnedChatIds.slice(0, 100),
+    archivedChatIds: next.archivedChatIds.slice(0, 200),
+    organizeBy: next.organizeBy,
+    sortBy: next.sortBy,
+    showProjectChatsInRecents: next.showProjectChatsInRecents,
+    manualProjectOrder: next.manualProjectOrder.slice(0, 60),
+  }
+  writeJsonFile(sidebarStatePath(), bounded)
+  return bounded
 }

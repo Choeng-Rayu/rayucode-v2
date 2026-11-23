@@ -1114,6 +1114,17 @@ pub enum ServerEvent {
         reason: rayucode_tool_types::questions::QuestionCloseReason,
     },
 
+    /// Interactive permission request emitted before executing a gated tool.
+    #[serde(rename = "permission_request")]
+    PermissionRequest {
+        session_id: String,
+        request_id: String,
+        tool_name: String,
+        description: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
+
     /// A running command is waiting for stdin input from the user
     #[serde(rename = "stdin_request")]
     StdinRequest {

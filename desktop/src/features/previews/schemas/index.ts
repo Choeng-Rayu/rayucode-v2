@@ -91,7 +91,7 @@ export const excelWorkbookStateSchema = z.object({
   activeSheetId: z.string().min(1),
   selectedCellRef: z.string().min(2),
   selectedFormula: z.string(),
-  liveWebUrl: z.string().url(),
+  liveWebUrl: z.union([z.literal(""), z.string().url()]),
   sheets: z.array(excelSheetDataSchema).min(1),
 })
 

@@ -4,6 +4,7 @@ import { Terminal, type ITheme } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 
 import type { AccentColor, ThemeMode } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 import { createStreamBatcher } from "@/lib/stream-batcher"
 
 import type { InspectorTerminalLine } from "../types"
@@ -13,6 +14,10 @@ export interface XtermViewportProps {
   theme: ThemeMode
   accent: AccentColor
   clearGeneration: number
+  interactive?: boolean
+  sessionId?: string
+  cwd?: string
+  onCwdResolved?: (cwd: string) => void
 }
 
 function readCssToken(name: string): string | undefined {
@@ -25,7 +30,7 @@ function readCssToken(name: string): string | undefined {
 }
 
 function buildXtermTheme(): ITheme {
-  const background = readCssToken("--bg-inset")
+  const background = readCssToken("--bg-canvas") ?? readCssToken("--bg-inset")
   const foreground = readCssToken("--text-1")
   const muted = readCssToken("--text-3")
   const brand = readCssToken("--accent")
@@ -77,26 +82,38 @@ export default function XtermViewport({
   theme,
   accent,
   clearGeneration,
+  interactive = false,
+  sessionId,
+  cwd,
+  onCwdResolved,
 }: XtermViewportProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<Terminal | null>(null)
   const fitRef = React.useRef<FitAddon | null>(null)
   const writtenCountRef = React.useRef(0)
+  const onCwdResolvedRef = React.useRef(onCwdResolved)
   const batcherRef = React.useRef<ReturnType<
     typeof createStreamBatcher<string>
   > | null>(null)
+
+  React.useEffect(() => {
+    onCwdResolvedRef.current = onCwdResolved
+  }, [onCwdResolved])
 
   React.useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
     const terminal = new Terminal({
-      convertEol: true,
+      convertEol: !interactive,
       cursorBlink: true,
-      disableStdin: true,
-      fontFamily: readCssToken("--font-mono") ?? "monospace",
-      fontSize: 12,
-      lineHeight: 1.55,
+      disableStdin: !interactive,
+      fontFamily:
+        readCssToken("--font-mono") ??
+        "'JetBrains Mono', 'SF Mono', Menlo, monospace",
+      fontSize: 12.5,
+      lineHeight: 1.45,
+      scrollback: 5000,
       theme: buildXtermTheme(),
     })
 
@@ -104,11 +121,22 @@ export default function XtermViewport({
     terminal.loadAddon(fitAddon)
     terminal.open(container)
 
-    try {
-      fitAddon.fit()
-    } catch {
-      // Ignore fit errors before layout settles
+    const fitAndNotify = () => {
+      try {
+        fitAddon.fit()
+        if (interactive && sessionId && terminal.cols > 0 && terminal.rows > 0) {
+          void ipcClient.terminal.ptyResize(
+            sessionId,
+            terminal.cols,
+            terminal.rows
+          )
+        }
+      } catch {
+        // Ignore fit errors before layout settles
+      }
     }
+
+    fitAndNotify()
 
     const batcher = createStreamBatcher<string>((chunks) => {
       if (chunks.length === 0) return
@@ -120,20 +148,57 @@ export default function XtermViewport({
     batcherRef.current = batcher
     writtenCountRef.current = 0
 
+    let disposeOnData: { dispose: () => void } | null = null
+    let unsubPtyData: (() => void) | null = null
+    let unsubPtyExit: (() => void) | null = null
+
+    if (interactive && sessionId) {
+      unsubPtyData = ipcClient.terminal.onPtyData((payload) => {
+        if (payload.sessionId !== sessionId) return
+        terminal.write(payload.data)
+      })
+      unsubPtyExit = ipcClient.terminal.onPtyExit((payload) => {
+        if (payload.sessionId !== sessionId) return
+        terminal.writeln(
+          `\r\n\x1b[90m[process exited with code ${payload.exitCode}]\x1b[0m`
+        )
+      })
+      disposeOnData = terminal.onData((data) => {
+        void ipcClient.terminal.ptyWrite(sessionId, data)
+      })
+
+      void ipcClient.terminal
+        .ptyCreate({
+          sessionId,
+          cwd,
+          cols: Math.max(20, terminal.cols || 96),
+          rows: Math.max(5, terminal.rows || 28),
+        })
+        .then((res) => {
+          if (res.ok && res.cwd) {
+            onCwdResolvedRef.current?.(res.cwd)
+          }
+          fitAndNotify()
+          terminal.focus()
+        })
+    }
+
     let observer: ResizeObserver | null = null
     if (typeof ResizeObserver !== "undefined") {
       observer = new ResizeObserver(() => {
-        try {
-          fitAddon.fit()
-        } catch {
-          // Ignore transient resize errors
-        }
+        fitAndNotify()
       })
       observer.observe(container)
     }
 
     return () => {
       observer?.disconnect()
+      disposeOnData?.dispose()
+      unsubPtyData?.()
+      unsubPtyExit?.()
+      if (interactive && sessionId) {
+        void ipcClient.terminal.ptyKill(sessionId)
+      }
       batcher.dispose()
       terminal.dispose()
       termRef.current = null
@@ -141,7 +206,7 @@ export default function XtermViewport({
       batcherRef.current = null
       writtenCountRef.current = 0
     }
-  }, [])
+  }, [cwd, interactive, sessionId])
 
   React.useEffect(() => {
     if (!termRef.current) return
@@ -149,13 +214,19 @@ export default function XtermViewport({
   }, [theme, accent])
 
   React.useEffect(() => {
-    if (!termRef.current) return
+    if (!termRef.current || clearGeneration === 0) return
+    if (interactive && sessionId) {
+      termRef.current.clear()
+      void ipcClient.terminal.ptyWrite(sessionId, "\x0c")
+      return
+    }
     termRef.current.clear()
     termRef.current.reset()
     writtenCountRef.current = 0
-  }, [clearGeneration])
+  }, [clearGeneration, interactive, sessionId])
 
   React.useEffect(() => {
+    if (interactive) return
     const batcher = batcherRef.current
     if (!batcher) return
 
@@ -172,12 +243,13 @@ export default function XtermViewport({
       }
     }
     writtenCountRef.current = lines.length
-  }, [lines, clearGeneration])
+  }, [lines, clearGeneration, interactive])
 
   return (
     <div
       ref={containerRef}
       data-testid="xterm-canvas-host"
+      onClick={() => termRef.current?.focus()}
       className="min-h-0 flex-1 overflow-hidden px-3 py-2.5"
     />
   )

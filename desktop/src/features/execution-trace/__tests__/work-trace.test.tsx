@@ -268,8 +268,8 @@ describe("execution-trace feature", () => {
     )
   })
 
-  it("renders pulsing live Working indicator when isLive is true", () => {
-    render(
+  it("renders animated 8-dot orbital RayuProcessingMark alongside live Working seconds when isLive is true", () => {
+    const { container } = render(
       <WorkTrace
         workedDuration="4s"
         isLive
@@ -280,7 +280,49 @@ describe("execution-trace feature", () => {
 
     const liveToggle = screen.getByRole("button", { name: /Working · 4s/i })
     expect(liveToggle.getAttribute("aria-expanded")).toBe("true")
+    const mark = container.querySelector('[data-slot="rayu-processing-mark"]')
+    expect(mark).toBeTruthy()
+    expect(mark?.getAttribute("data-animated")).toBe("true")
+    expect(mark?.querySelectorAll("circle").length).toBe(8)
     expect(screen.getByText(/Inspecting files/i)).toBeTruthy()
+  })
+
+  it("collapses completed timeline process to Worked for Xs until clicked", () => {
+    render(
+      <WorkTrace
+        workedDuration="4s"
+        isLive={false}
+        notes={[]}
+        groups={[]}
+        timeline={[
+          { id: "tl_note_1", type: "note", text: "Checked workspace files." },
+        ]}
+      />
+    )
+
+    const toggle = screen.getByRole("button", { name: /Worked for 4s/i })
+    expect(toggle.getAttribute("aria-expanded")).toBe("false")
+    expect(screen.queryByText(/Checked workspace files/i)).toBeNull()
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByText(/Checked workspace files/i)).toBeTruthy()
+  })
+
+  it("shows live Thinking micro-interaction while streaming before first tool or note", () => {
+    render(
+      <WorkTrace
+        workedDuration="1s"
+        isLive
+        notes={[]}
+        groups={[]}
+        timeline={[]}
+      />
+    )
+
+    expect(screen.getByTestId("work-thinking-indicator")).toHaveTextContent(
+      /Thinking\.\.\./i
+    )
   })
 
   it("expands ShellCard inline, displays success/failure status, and copies command output", async () => {

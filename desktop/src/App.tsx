@@ -40,8 +40,13 @@ function ActiveWorkspaceStage() {
     async (payload: ComposerSubmitPayload) => {
       let targetSessionId = activeSessionId
       if (!targetSessionId) {
+        const sessionTitlePrompt =
+          payload.prompt ||
+          (payload.images?.length
+            ? `Image: ${payload.images[0]?.name ?? "attachment"}`
+            : "")
         const created = await ipcClient.sessions.createSession({
-          prompt: payload.prompt,
+          prompt: sessionTitlePrompt,
           modelId: payload.modelId,
           modelLabel: payload.modelLabel,
           effort: payload.effort,
@@ -54,6 +59,7 @@ function ActiveWorkspaceStage() {
       useAppStore.getState().setPendingStreamPrompt({
         sessionId: targetSessionId,
         prompt: payload.prompt,
+        images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
       })

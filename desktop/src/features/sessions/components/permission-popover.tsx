@@ -130,21 +130,23 @@ export function PermissionPopover({
                 aria-haspopup="listbox"
                 aria-expanded={open}
                 className={cn(
-                  "inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-transparent px-2.5 py-[5px] text-xs font-medium text-body transition-all outline-none select-none hover:border-premium hover:bg-active hover:text-ink hover:shadow-bevel-surface focus:outline-none focus-visible:outline-none data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface disabled:pointer-events-none disabled:opacity-50",
+                  "inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-transparent px-2 py-[5px] text-xs font-medium whitespace-nowrap text-body transition-all outline-none select-none hover:border-premium hover:bg-active hover:text-ink hover:shadow-bevel-surface focus:outline-none focus-visible:outline-none data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface disabled:pointer-events-none disabled:opacity-50 @min-[420px]/composer:px-2.5",
                   className
                 )}
               >
                 <PermissionModeIcon
                   iconName={activeMode.iconName}
                   className={cn(
-                    "size-3.5 text-body",
+                    "size-3.5 shrink-0 text-body",
                     open && "text-ink"
                   )}
                 />
-                <span>{activeMode.label}</span>
+                <span className="whitespace-nowrap @max-[390px]/composer:hidden">
+                  {activeMode.label}
+                </span>
                 <ChevronDown
                   className={cn(
-                    "size-3 text-muted-ink transition-transform duration-150",
+                    "size-3 shrink-0 text-muted-ink transition-transform duration-150 @max-[340px]/composer:hidden",
                     open && "rotate-180 text-body"
                   )}
                   aria-hidden="true"
@@ -153,7 +155,7 @@ export function PermissionPopover({
             </PopoverTrigger>
           </TooltipTrigger>
           <TooltipContent side="top">
-            <span>Local Permissions</span>
+            <span>{activeMode.label}</span>
             <kbd className="inline-flex items-center rounded-full border border-hairline bg-active px-1.5 py-0.5 text-[10.5px] font-medium text-body">
               ⇧Tab
             </kbd>

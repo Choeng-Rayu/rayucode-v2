@@ -243,7 +243,15 @@ describe("Inspector feature (ContextPanel, CodeViewer, TerminalPanel, InspectorS
     await act(async () => {
       useAppStore.getState().openRightTab("diff")
     })
-    await screen.findByTestId("inspector-diff-panel")
+    const diffPanel = await screen.findByTestId("inspector-diff-panel")
+    expect(within(diffPanel).getByText("Changed files")).toBeInTheDocument()
+    expect(within(diffPanel).getByText("Commit changes")).toBeInTheDocument()
+
+    // Open inline Commit changes drawer in diff panel
+    fireEvent.click(within(diffPanel).getByRole("button", { name: /Commit changes/i }))
+    expect(
+      within(diffPanel).getByRole("textbox", { name: "Commit message" })
+    ).toBeInTheDocument()
 
     await act(async () => {
       useAppStore.getState().openRightTab("files")

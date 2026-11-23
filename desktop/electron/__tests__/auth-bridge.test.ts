@@ -292,4 +292,86 @@ describe("auth-bridge Wave 1 guarantees", () => {
 
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
+
+  it("delegates create_powerpoint in Cloud fallback to desktop-tools and emits slide artifact", async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-cloud-pptx-"))
+    const tmpHome = path.join(tmpRoot, "home")
+    const tmpWs = path.join(tmpRoot, "workspace")
+    process.env.RAYU_HOME = tmpHome
+    const appDir = getRayuAppConfigDir()
+    fs.mkdirSync(appDir, { recursive: true })
+    fs.mkdirSync(tmpWs, { recursive: true })
+    fs.writeFileSync(
+      path.join(appDir, "rayu.env"),
+      "RAYU_API_KEY=rayu_sk_live_testkey1234567890\n",
+      { mode: 0o600 }
+    )
+
+    const encoder = new TextEncoder()
+    let callCount = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (_url: string, init?: { body?: string }) => {
+        callCount += 1
+        if (callCount === 1) {
+          const parsedBody = JSON.parse(String(init?.body ?? "{}")) as {
+            tools?: Array<{ name: string }>
+          }
+          expect(parsedBody.tools?.some((t) => t.name === "create_powerpoint")).toBe(true)
+          expect(parsedBody.tools?.some((t) => t.name === "list_templates")).toBe(true)
+          const toolArgs = JSON.stringify({
+            title: "Cloud Fallback Deck",
+            file_path: "cloud-deck.pptx",
+            slides: [{ title: "Cover", body: "Generated via shared desktop-tools" }],
+          })
+          const round1 = new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_pptx","name":"create_powerpoint","input":{}}}\n\n' +
+                    `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":${JSON.stringify(toolArgs)}}}\n\n` +
+                    'data: {"type":"content_block_stop","index":0}\n\n'
+                )
+              )
+              controller.close()
+            },
+          })
+          return { ok: true, status: 200, body: round1 }
+        }
+
+        const round2 = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Deck created."}}\n\n'
+              )
+            )
+            controller.close()
+          },
+        })
+        return { ok: true, status: 200, body: round2 }
+      })
+    )
+
+    const manager = new RayuAuthManager()
+    const artifacts: Array<{ kind: string; title?: string; filePath?: string }> = []
+    await manager.streamCloudChat({
+      sessionId: "ses_cloud_pptx",
+      messages: [{ role: "user", content: "Create a deck" }],
+      model: "claude-sonnet-4-6",
+      workspaceDir: tmpWs,
+      onArtifact: (artifact) => artifacts.push(artifact),
+      onEvent: () => {},
+    })
+
+    expect(fs.existsSync(path.join(tmpWs, "cloud-deck.pptx"))).toBe(true)
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      kind: "slide",
+      title: "Cloud Fallback Deck",
+      filePath: path.join(tmpWs, "cloud-deck.pptx"),
+    })
+
+    fs.rmSync(tmpRoot, { recursive: true, force: true })
+  })
 })

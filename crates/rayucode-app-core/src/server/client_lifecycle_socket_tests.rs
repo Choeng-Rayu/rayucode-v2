@@ -1139,3 +1139,275 @@ impl Provider for QuestionSocketProvider {
 async fn question_socket_round_trip_reaches_the_model_and_enforces_ownership() {
     sdk_socket_cancel_workflow(false, false, false, false, false, false, true).await;
 }
+
+#[derive(Clone, Default)]
+struct PermissionSocketProvider {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for PermissionSocketProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<EventStream> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let events = match call {
+            // Turn 1 (Plan mode): edit/bash must be hidden from definitions; model tries bash anyway.
+            0 => {
+                assert!(
+                    !tools.iter().any(|t| matches!(t.name.as_str(), "edit" | "write" | "bash")),
+                    "Plan mode must hide edit/write/bash from tool definitions"
+                );
+                assert!(
+                    tools.iter().any(|t| t.name == "read"),
+                    "Plan mode must keep read tool"
+                );
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "perm-call-plan".into(),
+                        name: "bash".into(),
+                    },
+                    StreamEvent::ToolInputDelta(r#"{"command":"echo nope"}"#.into()),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("tool_use".into()),
+                    },
+                ]
+            }
+            1 => {
+                assert!(messages.iter().flat_map(|m| &m.content).any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult { tool_use_id, content, is_error }
+                            if tool_use_id == "perm-call-plan"
+                                && *is_error == Some(true)
+                                && content.contains("Blocked by Plan mode (read-only)")
+                    )
+                }));
+                vec![
+                    StreamEvent::TextDelta("plan blocked bash".into()),
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("end_turn".into()),
+                    },
+                ]
+            }
+            // Turn 2 (Default mode): bash is visible again, prompts, and is denied via fast path.
+            2 => {
+                assert!(
+                    tools.iter().any(|t| t.name == "bash"),
+                    "Default mode must restore bash tool definition"
+                );
+                vec![
+                    StreamEvent::ToolUseStart {
+                        id: "perm-call-deny".into(),
+                        name: "bash".into(),
+                    },
+                    StreamEvent::ToolInputDelta(r#"{"command":"echo denied"}"#.into()),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("tool_use".into()),
+                    },
+                ]
+            }
+            3 => {
+                assert!(messages.iter().flat_map(|m| &m.content).any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolResult { tool_use_id, content, is_error }
+                            if tool_use_id == "perm-call-deny"
+                                && *is_error == Some(true)
+                                && content.contains("Denied by user")
+                    )
+                }));
+                vec![
+                    StreamEvent::TextDelta("ask denied bash".into()),
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("end_turn".into()),
+                    },
+                ]
+            }
+            _ => vec![
+                StreamEvent::TextDelta("done".into()),
+                StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".into()),
+                },
+            ],
+        };
+        Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+    }
+
+    fn name(&self) -> &str {
+        "permission-socket-test"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(self.clone())
+    }
+}
+
+#[tokio::test]
+async fn permission_socket_round_trip_enforces_modes_and_fast_path_response() {
+    use serde_json::json;
+
+    let _lock = crate::storage::lock_test_env();
+    let home = IsolatedReloadRecoveryEnv::new();
+    let provider_template: Arc<dyn Provider> = Arc::new(PermissionSocketProvider::default());
+    let sessions: SessionAgents =
+        Arc::new(crate::server::SessionManager::from_agents(HashMap::new()));
+    let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+    let server_task = tokio::spawn(handle_client(
+        server_stream,
+        Arc::clone(&sessions),
+        broadcast::channel(8).0,
+        provider_template,
+        Arc::new(RwLock::new(false)),
+        Arc::new(RwLock::new(String::new())),
+        Arc::new(RwLock::new(0usize)),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        FileTouchService::new(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(ClientDebugState::default())),
+        broadcast::channel(8).0,
+        Arc::new(RwLock::new(std::collections::VecDeque::new())),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        broadcast::channel(8).0,
+        "rayu-test".to_string(),
+        "T".to_string(),
+        Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        AwaitMembersRuntime::default(),
+        SwarmMutationRuntime::default(),
+    ));
+
+    let (client_reader, mut client_writer) = client_stream.into_split();
+    let mut client_reader = BufReader::new(client_reader);
+
+    async fn send(writer: &mut crate::transport::WriteHalf, value: serde_json::Value) {
+        writer
+            .write_all(format!("{value}\n").as_bytes())
+            .await
+            .unwrap();
+    }
+    async fn until(
+        reader: &mut BufReader<crate::transport::ReadHalf>,
+        predicate: impl Fn(&ServerEvent) -> bool,
+    ) -> ServerEvent {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                let event: ServerEvent = serde_json::from_str(&line).unwrap();
+                if predicate(&event) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("daemon event timeout")
+    }
+
+    send(
+        &mut client_writer,
+        json!({
+            "type": "subscribe",
+            "id": 1,
+            "working_dir": home._home.path(),
+            "supports_permissions": true,
+        }),
+    )
+    .await;
+    until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 1 })).await;
+
+    // 1. Switch to Plan mode via fast path and verify ListTools hides mutating tools.
+    send(
+        &mut client_writer,
+        json!({"type": "set_permission_mode", "id": 2, "mode": "plan"}),
+    )
+    .await;
+    until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 2 })).await;
+
+    send(&mut client_writer, json!({"type": "list_tools", "id": 3})).await;
+    let ServerEvent::Tools { tools, .. } =
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Tools { id: 3, .. })).await
+    else {
+        unreachable!();
+    };
+    assert!(tools.iter().any(|t| t.name == "read"));
+    assert!(!tools.iter().any(|t| matches!(t.name.as_str(), "edit" | "write" | "bash")));
+
+    // Plan mode blocks bash without emitting PermissionRequest.
+    send(
+        &mut client_writer,
+        json!({"type": "message", "id": 4, "content": "try bash in plan mode"}),
+    )
+    .await;
+    until(&mut client_reader, |e| {
+        assert!(
+            !matches!(e, ServerEvent::PermissionRequest { .. }),
+            "Plan mode must block immediately without prompting"
+        );
+        matches!(e, ServerEvent::Done { id: 4 })
+    })
+    .await;
+
+    // 2. Switch to Default (Ask) mode; bash is restored, prompts, and unblocks via fast path.
+    send(
+        &mut client_writer,
+        json!({"type": "set_permission_mode", "id": 5, "mode": "default"}),
+    )
+    .await;
+    until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 5 })).await;
+
+    send(
+        &mut client_writer,
+        json!({"type": "message", "id": 6, "content": "try bash in default mode"}),
+    )
+    .await;
+    let ServerEvent::PermissionRequest {
+        session_id,
+        request_id,
+        tool_name,
+        ..
+    } = until(&mut client_reader, |e| {
+        matches!(e, ServerEvent::PermissionRequest { .. })
+    })
+    .await
+    else {
+        unreachable!();
+    };
+    assert_eq!(tool_name, "bash");
+
+    // Respond on the SAME connection while the turn holds the Agent lock.
+    send(
+        &mut client_writer,
+        json!({
+            "type": "permission_response",
+            "id": 7,
+            "session_id": session_id,
+            "request_id": request_id,
+            "decision": "deny",
+        }),
+    )
+    .await;
+    until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 7 })).await;
+    until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 6 })).await;
+
+    drop(client_writer);
+    drop(client_reader);
+    tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server task shutdown")
+        .unwrap()
+        .unwrap();
+}

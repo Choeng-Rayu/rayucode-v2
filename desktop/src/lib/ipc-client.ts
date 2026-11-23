@@ -43,11 +43,60 @@ export interface ProjectGroup {
   sessions: Array<{ id: string; title: string; route?: string }>
 }
 
+export type ProjectIconColor =
+  | "folder"
+  | "brand"
+  | "info"
+  | "type"
+  | "num"
+  | "danger"
+
+export interface SidebarProjectMeta {
+  id: string
+  name: string
+  folders: string[]
+  iconKind: "icon" | "emoji"
+  iconValue: string
+  iconColor: ProjectIconColor
+  pinned?: boolean
+  sectionId?: string | null
+  gitRemote?: string
+  updatedAt: number
+}
+
+export interface SidebarSectionItem {
+  id: string
+  name: string
+  collapsed?: boolean
+}
+
+export interface SidebarState {
+  projects: SidebarProjectMeta[]
+  sections: SidebarSectionItem[]
+  pinnedChatIds: string[]
+  archivedChatIds: string[]
+  organizeBy: "project" | "connection" | "flat"
+  sortBy: "updated" | "manual"
+  showProjectChatsInRecents: boolean
+  manualProjectOrder: string[]
+}
+
 export interface GettingStartedItem {
   id: string
   label: string
   completed: boolean
-  badge?: "telegram" | "browser" | "sheet" | "markdown" | "swarm"
+  badge?:
+    | "claude"
+    | "notifications"
+    | "daily"
+    | "github"
+    | "linear"
+    | "gdrive"
+    | "telegram"
+    | "browser"
+    | "sheet"
+    | "markdown"
+    | "swarm"
 }
 
 export interface ModelOption {
@@ -137,11 +186,36 @@ export interface InlineDiffCardData {
   lines: InlineDiffHunkLine[]
 }
 
+export interface GitCommitSummary {
+  hash: string
+  message: string
+  author: string
+  relativeTime: string
+}
+
+export interface PromptImageAttachment {
+  name: string
+  mediaType: string
+  dataUrl: string
+}
+
+export function parseImageDataUrl(
+  dataUrl: string
+): [string, string] | null {
+  const match = /^data:([^;,]+);base64,(.+)$/i.exec(dataUrl.trim())
+  if (!match) return null
+  const mediaType = match[1].trim().toLowerCase()
+  const base64 = match[2].trim()
+  if (!mediaType || !base64) return null
+  return [mediaType, base64]
+}
+
 export interface ExecutionTurn {
   id: string
   sessionId: string
   compactedNotice?: string
   userRefFiles?: string
+  userImages?: PromptImageAttachment[]
   userPrompt: string
   userMeta?: string
   workedDuration: string
@@ -246,6 +320,55 @@ export interface ExcelCell {
   isNumeric?: boolean
   isTotal?: boolean
 }
+
+export interface OfficeExcelRowData {
+  rowNumber: number
+  cells: Record<string, string | number>
+  formulas?: Record<string, string>
+  formats?: Record<string, "currency" | "percent" | "number" | "text">
+  isHeader?: boolean
+  isTotal?: boolean
+}
+
+export interface OfficeExcelSheetPayload {
+  id: string
+  name: string
+  columns: string[]
+  headers: Record<string, string>
+  rows: OfficeExcelRowData[]
+}
+
+export interface OfficeExcelWorkbookData {
+  fileName: string
+  filePath: string
+  sheets: OfficeExcelSheetPayload[]
+}
+
+export type OfficeExcelWorkbookPayload = OfficeExcelWorkbookData
+
+export type DesktopArtifactEvent =
+  | {
+      kind: "slide"
+      sessionId?: string
+      title: string
+      filePath: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }
+  | {
+      kind: "excel"
+      sessionId?: string
+      workbook: OfficeExcelWorkbookPayload
+    }
 
 export interface ExcelSheetData {
   id: string
@@ -666,14 +789,53 @@ const MOCK_RECENTS: Array<{ id: string; title: string; route?: string }> = [
   { id: "ses_migration_md", title: "Desktop v1 migration plan MD" },
 ]
 
-let mockGettingStarted: GettingStartedItem[] = [
-  { id: "gs_cli", label: "Import from CLI", completed: true },
-  { id: "gs_tg", label: "Pair Telegram remote", completed: true, badge: "telegram" },
-  { id: "gs_browser", label: "Open Browser preview", completed: false, badge: "browser" },
-  { id: "gs_excel", label: "Preview Microsoft doc", completed: false, badge: "sheet" },
-  { id: "gs_md", label: "Open Preview MD", completed: false, badge: "markdown" },
-  { id: "gs_swarm", label: "Launch parallel Swarm", completed: false, badge: "swarm" },
+const GETTING_STARTED_STORAGE_KEY = "rayu-getting-started-completed-v2"
+
+const DEFAULT_GETTING_STARTED_ITEMS: GettingStartedItem[] = [
+  { id: "gs_import_ai", label: "Import from Claude", completed: false, badge: "claude" },
+  { id: "gs_notify", label: "Enable notifications", completed: false, badge: "notifications" },
+  { id: "gs_daily", label: "Set up a daily update", completed: false, badge: "daily" },
+  { id: "gs_github", label: "Triage GitHub PRs", completed: false, badge: "github" },
+  { id: "gs_linear", label: "Catch me up on Linear", completed: false, badge: "linear" },
+  {
+    id: "gs_decisions",
+    label: "Review the latest project decisions",
+    completed: false,
+    badge: "gdrive",
+  },
 ]
+
+function loadGettingStartedItems(): GettingStartedItem[] {
+  if (typeof window === "undefined") {
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+  }
+  try {
+    const raw = window.localStorage.getItem(GETTING_STARTED_STORAGE_KEY)
+    if (!raw) return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+    const doneIds = new Set<string>(JSON.parse(raw) as string[])
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({
+      ...item,
+      completed: doneIds.has(item.id),
+    }))
+  } catch {
+    return DEFAULT_GETTING_STARTED_ITEMS.map((item) => ({ ...item }))
+  }
+}
+
+function persistGettingStartedItems(items: GettingStartedItem[]): void {
+  if (typeof window === "undefined") return
+  try {
+    const doneIds = items.filter((i) => i.completed).map((i) => i.id)
+    window.localStorage.setItem(
+      GETTING_STARTED_STORAGE_KEY,
+      JSON.stringify(doneIds)
+    )
+  } catch {
+    // ignore storage errors
+  }
+}
+
+let mockGettingStarted: GettingStartedItem[] = loadGettingStartedItems()
 
 let mockTurns: ExecutionTurn[] = [
   {
@@ -1200,8 +1362,7 @@ const mockPreviews: PreviewsState = {
     activeSheetId: "sheet_q4",
     selectedCellRef: "C7",
     selectedFormula: "=SUM(C2:C6)",
-    liveWebUrl:
-      "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx",
+    liveWebUrl: "",
     sheets: [
       {
         id: "sheet_q4",
@@ -2355,6 +2516,7 @@ export interface RayuAuthState {
 export interface CloudChatMessage {
   role: "user" | "assistant"
   content: string
+  images?: Array<[string, string]>
 }
 
 export interface PersistedComposerTemplate {
@@ -2389,13 +2551,21 @@ export interface RayuBridgeApi {
       messages: HarnessHistoryMessageLike[]
       images?: unknown[]
     }>
-    sendMessage?: (sessionId: string, content: string) => Promise<{ ok: boolean }>
+    sendMessage?: (
+      sessionId: string,
+      content: string,
+      images?: Array<[string, string]>
+    ) => Promise<{ ok: boolean }>
     cancel?: (sessionId: string) => Promise<{ ok: boolean }>
     respondToPermission?: (
       sessionId: string,
       requestId: string,
       decision: "allow" | "allow_always" | "deny"
     ) => Promise<{ ok: boolean }>
+    setPermissionMode?: (
+      sessionId: string,
+      mode: PermissionModeId
+    ) => Promise<{ ok: boolean; error?: string }>
     getRuntimeInfo?: (sessionId: string) => Promise<{
       provider?: string
       model?: string
@@ -2418,7 +2588,13 @@ export interface RayuBridgeApi {
     setPath?: (targetPath: string) => Promise<WorkspaceInfo>
     pickFolder?: () => Promise<WorkspaceInfo | null>
     pickFiles?: () => Promise<
-      Array<{ name: string; path: string; isDirectory: boolean }>
+      Array<{
+        name: string
+        path: string
+        isDirectory: boolean
+        dataUrl?: string
+        mediaType?: string
+      }>
     >
     captureAppshot?: () => Promise<{ name: string; dataUrl: string } | null>
     readFile?: (filePath: string) => Promise<{
@@ -2462,6 +2638,8 @@ export interface RayuBridgeApi {
       accent?: "emerald" | "navy" | "amber" | "forest" | "obsidian"
     }) => Promise<PersistedComposerTemplate[]>
     deleteTemplate?: (id: string) => Promise<PersistedComposerTemplate[]>
+    getSidebarState?: () => Promise<SidebarState>
+    saveSidebarState?: (state: SidebarState) => Promise<SidebarState>
   }
   extensions?: {
     list?: () => Promise<{
@@ -2571,6 +2749,7 @@ export interface RayuBridgeApi {
   }
   git?: {
     getChanges?: () => Promise<ChangesState | null>
+    getCommits?: () => Promise<GitCommitSummary[]>
     toggleStage?: (
       filePath: string,
       staged: boolean
@@ -2601,6 +2780,25 @@ export interface RayuBridgeApi {
   }
   terminal?: {
     runCommand?: (command: string) => Promise<TerminalCommandResult>
+    ptyCreate?: (input: {
+      sessionId: string
+      cwd?: string
+      cols?: number
+      rows?: number
+    }) => Promise<{ ok: boolean; cwd: string; shell: string }>
+    ptyWrite?: (sessionId: string, data: string) => Promise<{ ok: boolean }>
+    ptyResize?: (
+      sessionId: string,
+      cols: number,
+      rows: number
+    ) => Promise<{ ok: boolean }>
+    ptyKill?: (sessionId: string) => Promise<{ ok: boolean }>
+    onPtyData?: (
+      cb: (payload: { sessionId: string; data: string }) => void
+    ) => () => void
+    onPtyExit?: (
+      cb: (payload: { sessionId: string; exitCode: number }) => void
+    ) => () => void
   }
   auth?: {
     getState?: () => Promise<RayuAuthState>
@@ -2637,6 +2835,82 @@ export interface RayuBridgeApi {
     }) => Promise<{ ok: boolean; filePath: string }>
     openInVSCode?: (targetPath: string, line?: number) => Promise<{ ok: boolean }>
     openExternal?: (url: string) => Promise<{ ok: boolean }>
+    revealInFinder?: (targetPath: string) => Promise<{ ok: boolean }>
+    setKeepAwake?: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean }>
+  }
+  office?: {
+    pickExcelFile?: () => Promise<OfficeExcelWorkbookData | null>
+    readExcel?: (filePath: string) => Promise<OfficeExcelWorkbookData>
+    writeExcel?: (input: {
+      filePath: string
+      sheets: OfficeExcelSheetPayload[]
+    }) => Promise<{
+      ok: boolean
+      filePath: string
+      sheetCount: number
+      rowCount: number
+      workbook?: OfficeExcelWorkbookPayload
+    }>
+    createPowerPoint?: (input: {
+      filePath?: string
+      fileName?: string
+      title: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }) => Promise<{
+      ok: boolean
+      filePath: string
+      slideCount: number
+      title?: string
+      slides?: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }>
+  }
+  desktop?: {
+    onArtifact?: (cb: (artifact: DesktopArtifactEvent) => void) => () => void
+  }
+  browser?: {
+    navigate?: (url: string) => Promise<{ ok: boolean; url: string; title: string; error?: string }>
+    snapshot?: () => Promise<{
+      ok: boolean
+      url: string
+      title: string
+      refCount: number
+      tree: string
+      error?: string
+    }>
+    click?: (ref: string) => Promise<{ ok: boolean; message: string }>
+    type?: (
+      ref: string,
+      text: string,
+      submit?: boolean
+    ) => Promise<{ ok: boolean; message: string }>
+    screenshot?: () => Promise<{
+      ok: boolean
+      url: string
+      title: string
+      dataUrl: string
+      error?: string
+    }>
+    onEnsureOpen?: (cb: (payload: { url?: string }) => void) => () => void
   }
 }
 
@@ -2789,7 +3063,7 @@ export const ipcClient = {
     async list(): Promise<SessionSummary[]> {
       await ensureRuntimeSessionsHydrated()
       const bridge = getBridge()
-      if (bridge?.harness?.listSessions && !IS_TEST_ENV) {
+      if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
         try {
           const liveSessions = await bridge.harness.listSessions()
           lastKnownDaemonLive = true
@@ -2870,13 +3144,24 @@ export const ipcClient = {
       return [...createdRecents, ...MOCK_RECENTS]
     },
     async getGettingStarted(): Promise<GettingStartedItem[]> {
-      return [...mockGettingStarted]
+      mockGettingStarted = loadGettingStartedItems()
+      return mockGettingStarted.map((item) => ({ ...item }))
     },
-    async toggleGettingStarted(id: string): Promise<GettingStartedItem[]> {
+    async toggleGettingStarted(
+      id: string,
+      forceCompleted?: boolean
+    ): Promise<GettingStartedItem[]> {
       mockGettingStarted = mockGettingStarted.map((item) =>
-        item.id === id ? { ...item, completed: !item.completed } : item
+        item.id === id
+          ? {
+              ...item,
+              completed:
+                forceCompleted !== undefined ? forceCompleted : !item.completed,
+            }
+          : item
       )
-      return [...mockGettingStarted]
+      persistGettingStartedItems(mockGettingStarted)
+      return mockGettingStarted.map((item) => ({ ...item }))
     },
     async createSession(input: {
       prompt: string
@@ -2901,13 +3186,28 @@ export const ipcClient = {
           )
           lastKnownDaemonLive = true
           lastActiveHarnessSessionId = live.session_id
+          const setupTasks: Array<Promise<unknown>> = []
           if (input.modelId && bridge.harness.setModel) {
-            await bridge.harness.setModel(live.session_id, input.modelId).catch(() => {})
+            setupTasks.push(
+              bridge.harness.setModel(live.session_id, input.modelId).catch(() => {})
+            )
           }
           if (input.effort && bridge.harness.setReasoningEffort) {
-            await bridge.harness
-              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
-              .catch(() => {})
+            setupTasks.push(
+              bridge.harness
+                .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+                .catch(() => {})
+            )
+          }
+          if (input.permissionMode && bridge.harness.setPermissionMode) {
+            setupTasks.push(
+              bridge.harness
+                .setPermissionMode(live.session_id, input.permissionMode)
+                .catch(() => {})
+            )
+          }
+          if (setupTasks.length > 0) {
+            await Promise.allSettled(setupTasks)
           }
           const mapped = mapSessionInfoToSummary(live)
           const summary: SessionSummary = {
@@ -3065,21 +3365,37 @@ export const ipcClient = {
     async sendPrompt(input: {
       sessionId: string
       prompt: string
+      images?: PromptImageAttachment[]
       modelId?: string
       modelLabel: string
       history?: CloudChatMessage[]
     }): Promise<ExecutionTurn> {
       const bridge = getBridge()
+      const imageTuples: Array<[string, string]> = (input.images ?? [])
+        .map((img) => parseImageDataUrl(img.dataUrl))
+        .filter((pair): pair is [string, string] => pair !== null)
+      const effectivePrompt =
+        input.prompt.trim().length > 0
+          ? input.prompt
+          : imageTuples.length > 0
+            ? "Analyze the attached image(s)."
+            : input.prompt
+
       if (
         bridge?.harness?.sendMessage &&
         !input.sessionId.startsWith("ses_") &&
         !IS_TEST_ENV
       ) {
-        await bridge.harness.sendMessage(input.sessionId, input.prompt)
+        await bridge.harness.sendMessage(
+          input.sessionId,
+          effectivePrompt,
+          imageTuples.length > 0 ? imageTuples : undefined
+        )
         lastKnownDaemonLive = true
         return {
           id: `live_turn_${Date.now()}`,
           sessionId: input.sessionId,
+          userImages: input.images,
           userPrompt: input.prompt,
           workedDuration: "1s",
           isLive: true,
@@ -3108,7 +3424,11 @@ export const ipcClient = {
       ) {
         const messages: CloudChatMessage[] = [
           ...(input.history ?? []),
-          { role: "user", content: input.prompt },
+          {
+            role: "user",
+            content: effectivePrompt,
+            ...(imageTuples.length > 0 ? { images: imageTuples } : {}),
+          },
         ]
         await ipcClient.cloud.streamChat({
           sessionId: input.sessionId,
@@ -3118,6 +3438,7 @@ export const ipcClient = {
         return {
           id: `cloud_turn_${Date.now()}`,
           sessionId: input.sessionId,
+          userImages: input.images,
           userPrompt: input.prompt,
           workedDuration: "1s",
           isLive: true,
@@ -3428,7 +3749,13 @@ export const ipcClient = {
       return bridge.workspace.pickFolder()
     },
     async pickFiles(): Promise<
-      Array<{ name: string; path: string; isDirectory: boolean }>
+      Array<{
+        name: string
+        path: string
+        isDirectory: boolean
+        dataUrl?: string
+        mediaType?: string
+      }>
     > {
       const bridge = getBridge()
       if (!bridge?.workspace?.pickFiles) return []
@@ -3580,11 +3907,36 @@ export const ipcClient = {
         commands: [],
       }
       const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      const wasIdle = target.agents.length === 0
+      const derivedTitle =
+        input.task.length > 56 ? `${input.task.slice(0, 53)}...` : input.task
+      const nextWorktrees =
+        input.worktree !== "local checkout"
+          ? [
+              ...target.worktrees,
+              {
+                id: `wt_${Date.now()}_${target.worktrees.length + 1}`,
+                label: `wt-${target.worktrees.length + 1}`,
+                branch:
+                  input.worktree === "new git worktree"
+                    ? `wt/${input.name}`
+                    : input.worktree,
+                owner: input.name,
+                file: "workspace",
+                additions: 0,
+                deletions: 0,
+              },
+            ]
+          : target.worktrees
       const updated: SwarmState = {
         ...target,
-        title:
-          target.agents.length === 0 ? `Swarm · ${input.name}` : target.title,
+        swarmId:
+          wasIdle && target.swarmId === "idle"
+            ? `swm_${Math.random().toString(16).slice(2, 6)}`
+            : target.swarmId,
+        title: wasIdle ? derivedTitle : target.title,
         agents: [...target.agents, worker],
+        worktrees: nextWorktrees,
         messages: [
           {
             id: `msg_${Date.now()}`,
@@ -4016,6 +4368,42 @@ export const ipcClient = {
       }
       return null
     },
+    async getCommits(): Promise<GitCommitSummary[]> {
+      const bridge = getBridge()
+      if (bridge?.git?.getCommits) {
+        try {
+          const live = await bridge.git.getCommits()
+          if (Array.isArray(live)) {
+            return live
+          }
+        } catch {
+          // Fall back below
+        }
+      }
+      if (!IS_TEST_ENV) {
+        return []
+      }
+      return [
+        {
+          hash: "d28d576f",
+          message: "feat(session): route lookups through ShardStore::lookup",
+          author: "rayu@rayucode.com",
+          relativeTime: "2h ago",
+        },
+        {
+          hash: "42d20e80",
+          message: "refactor(cache): retire legacy RwLock SessionCache path",
+          author: "rayu@rayucode.com",
+          relativeTime: "5h ago",
+        },
+        {
+          hash: "2fe96905",
+          message: "docs(migration): document KV prefix cache rollout plan",
+          author: "rayu@rayucode.com",
+          relativeTime: "1d ago",
+        },
+      ]
+    },
   },
 
   telegram: {
@@ -4219,6 +4607,23 @@ export const ipcClient = {
       const bridge = getBridge()
       if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
         return bridge.harness.setReasoningEffort(sessionId, effort)
+      }
+      return { ok: true }
+    },
+    async setPermissionMode(
+      sessionId: string,
+      mode: PermissionModeId
+    ): Promise<{ ok: boolean; error?: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.setPermissionMode) {
+        try {
+          return await bridge.harness.setPermissionMode(sessionId, mode)
+        } catch (err) {
+          return {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
       }
       return { ok: true }
     },
@@ -4545,6 +4950,22 @@ export const ipcClient = {
       }
       return { ok: true }
     },
+    async revealInFinder(targetPath: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.native?.revealInFinder) {
+        return bridge.native.revealInFinder(targetPath)
+      }
+      return { ok: true }
+    },
+    async setKeepAwake(
+      enabled: boolean
+    ): Promise<{ ok: boolean; enabled: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.native?.setKeepAwake) {
+        return bridge.native.setKeepAwake(enabled)
+      }
+      return { ok: true, enabled }
+    },
   },
 
   templates: {
@@ -4639,6 +5060,260 @@ export const ipcClient = {
         }
       }
       return next
+    },
+  },
+
+  sidebar: {
+    async getState(): Promise<SidebarState> {
+      const fallback: SidebarState = {
+        projects: [],
+        sections: [],
+        pinnedChatIds: [],
+        archivedChatIds: [],
+        organizeBy: "project",
+        sortBy: "updated",
+        showProjectChatsInRecents: true,
+        manualProjectOrder: [],
+      }
+      const bridge = getBridge()
+      if (bridge?.storage?.getSidebarState && !IS_TEST_ENV) {
+        try {
+          const loaded = await bridge.storage.getSidebarState()
+          if (loaded && typeof loaded === "object") {
+            return { ...fallback, ...loaded }
+          }
+        } catch {
+          // Fall back to localStorage below
+        }
+      }
+      if (typeof window !== "undefined" && !IS_TEST_ENV) {
+        try {
+          const raw = window.localStorage.getItem("rayu.sidebarState.v1")
+          if (raw) {
+            const parsed = JSON.parse(raw) as Partial<SidebarState>
+            if (parsed && typeof parsed === "object") {
+              return { ...fallback, ...parsed }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return fallback
+    },
+    async saveState(state: SidebarState): Promise<SidebarState> {
+      const bridge = getBridge()
+      if (bridge?.storage?.saveSidebarState && !IS_TEST_ENV) {
+        try {
+          return await bridge.storage.saveSidebarState(state)
+        } catch {
+          // Fall back to localStorage below
+        }
+      }
+      if (typeof window !== "undefined" && !IS_TEST_ENV) {
+        try {
+          window.localStorage.setItem(
+            "rayu.sidebarState.v1",
+            JSON.stringify(state)
+          )
+        } catch {
+          // ignore
+        }
+      }
+      return state
+    },
+  },
+
+  terminal: {
+    hasLivePty(): boolean {
+      const bridge = getBridge()
+      return Boolean(
+        !IS_TEST_ENV &&
+          bridge?.terminal?.ptyCreate &&
+          bridge?.terminal?.ptyWrite &&
+          bridge?.terminal?.onPtyData
+      )
+    },
+    async ptyCreate(input: {
+      sessionId: string
+      cwd?: string
+      cols?: number
+      rows?: number
+    }): Promise<{ ok: boolean; cwd: string; shell: string }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyCreate) {
+        return bridge.terminal.ptyCreate(input)
+      }
+      return { ok: false, cwd: input.cwd ?? "", shell: "" }
+    },
+    async ptyWrite(sessionId: string, data: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyWrite) {
+        return bridge.terminal.ptyWrite(sessionId, data)
+      }
+      return { ok: false }
+    },
+    async ptyResize(
+      sessionId: string,
+      cols: number,
+      rows: number
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyResize) {
+        return bridge.terminal.ptyResize(sessionId, cols, rows)
+      }
+      return { ok: false }
+    },
+    async ptyKill(sessionId: string): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.terminal?.ptyKill) {
+        return bridge.terminal.ptyKill(sessionId)
+      }
+      return { ok: false }
+    },
+    onPtyData(
+      cb: (payload: { sessionId: string; data: string }) => void
+    ): () => void {
+      const bridge = getBridge()
+      if (bridge?.terminal?.onPtyData) {
+        return bridge.terminal.onPtyData(cb)
+      }
+      return () => {}
+    },
+    onPtyExit(
+      cb: (payload: { sessionId: string; exitCode: number }) => void
+    ): () => void {
+      const bridge = getBridge()
+      if (bridge?.terminal?.onPtyExit) {
+        return bridge.terminal.onPtyExit(cb)
+      }
+      return () => {}
+    },
+  },
+
+  office: {
+    async pickExcelFile(): Promise<OfficeExcelWorkbookData | null> {
+      const bridge = getBridge()
+      if (bridge?.office?.pickExcelFile) {
+        return bridge.office.pickExcelFile()
+      }
+      return null
+    },
+    async readExcel(filePath: string): Promise<OfficeExcelWorkbookData | null> {
+      const bridge = getBridge()
+      if (bridge?.office?.readExcel) {
+        return bridge.office.readExcel(filePath)
+      }
+      return null
+    },
+    async writeExcel(input: {
+      filePath: string
+      sheets: OfficeExcelSheetPayload[]
+    }): Promise<{ ok: boolean; filePath: string; sheetCount: number; rowCount: number }> {
+      const bridge = getBridge()
+      if (bridge?.office?.writeExcel) {
+        return bridge.office.writeExcel(input)
+      }
+      return {
+        ok: true,
+        filePath: input.filePath,
+        sheetCount: input.sheets.length,
+        rowCount: input.sheets.reduce((sum, s) => sum + s.rows.length, 0),
+      }
+    },
+    async createPowerPoint(input: {
+      filePath?: string
+      fileName?: string
+      title: string
+      slides: Array<{
+        id?: string
+        kicker?: string
+        title: string
+        subtitle?: string
+        body: string
+        bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
+        notes?: string
+        layout?: "cover" | "scorecard" | "bullets"
+      }>
+    }): Promise<{ ok: boolean; filePath: string; slideCount: number }> {
+      const bridge = getBridge()
+      if (bridge?.office?.createPowerPoint) {
+        return bridge.office.createPowerPoint(input)
+      }
+      return {
+        ok: true,
+        filePath: input.filePath ?? "~/.rayu/presentations/deck.pptx",
+        slideCount: input.slides.length,
+      }
+    },
+  },
+
+  desktop: {
+    onArtifact(listener: (artifact: DesktopArtifactEvent) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.desktop?.onArtifact) {
+        return bridge.desktop.onArtifact(listener)
+      }
+      return () => {}
+    },
+  },
+
+  browser: {
+    async navigate(url: string) {
+      const bridge = getBridge()
+      if (bridge?.browser?.navigate) {
+        return bridge.browser.navigate(url)
+      }
+      return { ok: false, url, title: "", error: "Electron browser bridge unavailable" }
+    },
+    async snapshot() {
+      const bridge = getBridge()
+      if (bridge?.browser?.snapshot) {
+        return bridge.browser.snapshot()
+      }
+      return {
+        ok: false,
+        url: "",
+        title: "",
+        refCount: 0,
+        tree: "",
+        error: "Electron browser bridge unavailable",
+      }
+    },
+    async click(ref: string) {
+      const bridge = getBridge()
+      if (bridge?.browser?.click) {
+        return bridge.browser.click(ref)
+      }
+      return { ok: false, message: "Electron browser bridge unavailable" }
+    },
+    async type(ref: string, text: string, submit?: boolean) {
+      const bridge = getBridge()
+      if (bridge?.browser?.type) {
+        return bridge.browser.type(ref, text, submit)
+      }
+      return { ok: false, message: "Electron browser bridge unavailable" }
+    },
+    async screenshot() {
+      const bridge = getBridge()
+      if (bridge?.browser?.screenshot) {
+        return bridge.browser.screenshot()
+      }
+      return {
+        ok: false,
+        url: "",
+        title: "",
+        dataUrl: "",
+        error: "Electron browser bridge unavailable",
+      }
+    },
+    onEnsureOpen(listener: (payload: { url?: string }) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.browser?.onEnsureOpen) {
+        return bridge.browser.onEnsureOpen(listener)
+      }
+      return () => {}
     },
   },
 }

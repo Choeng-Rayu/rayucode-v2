@@ -663,9 +663,7 @@ function createNormalizedWorkbook(raw: PreviewsState["excel"]): ExcelWorkbookSta
     activeSheetId: normalizedSheets[0].id,
     selectedCellRef: "C7",
     selectedFormula: "=SUM(C2:C6)",
-    liveWebUrl:
-      raw.liveWebUrl ||
-      "https://view.officeapps.live.com/op/embed.aspx?src=https://rayucode.com/demo/Q4-Token-Cost-Model.xlsx",
+    liveWebUrl: raw.liveWebUrl || "",
     sheets: normalizedSheets,
   }
 
