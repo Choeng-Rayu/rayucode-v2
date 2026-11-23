@@ -817,17 +817,6 @@ export async function syncBrowserBounds(
     return previewsBridge.setBrowserBounds(payload)
   }
 
-  if (typeof window !== "undefined" && window.rayu?.daemon?.invoke) {
-    try {
-      return await window.rayu.daemon.invoke<{ ok: boolean }>(
-        "previews.setBrowserBounds",
-        payload
-      )
-    } catch {
-      return { ok: false }
-    }
-  }
-
   return { ok: true }
 }
 

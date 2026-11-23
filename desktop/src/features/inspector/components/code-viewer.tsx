@@ -12,8 +12,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { useAppStore, type ThemeMode } from "@/lib/app-store"
+import { useAppStore } from "@/lib/app-store"
 import { tokenizeCodeLine } from "@/lib/file-icon-theme"
+import {
+  highlightCodeLines,
+  type HighlightedToken,
+} from "@/lib/shiki-highlighter"
 import { cn } from "@/lib/utils"
 
 import { openFileInVSCode } from "../api/inspector-api"
@@ -23,14 +27,6 @@ import {
   usePrefetchCodeFile,
 } from "../hooks/use-context-stats"
 
-interface HighlightedToken {
-  content: string
-  color?: string
-  tokenClass?: string
-}
-
-const shikiTokenCache = new Map<string, HighlightedToken[][]>()
-
 function tokenizeLineFallback(line: string): HighlightedToken[] {
   return tokenizeCodeLine(line).map((tok) => ({
     content: tok.text,
@@ -38,42 +34,14 @@ function tokenizeLineFallback(line: string): HighlightedToken[] {
   }))
 }
 
-async function highlightLinesWithShiki(
-  lines: string[],
-  language: string,
-  theme: ThemeMode
-): Promise<HighlightedToken[][]> {
-  const shikiTheme = theme === "light" ? "vitesse-light" : "vitesse-dark"
-  const source = lines.join("\n")
-  const cacheKey = `${language}::${shikiTheme}::${source}`
-  const cached = shikiTokenCache.get(cacheKey)
-  if (cached) return cached
-
-  const { codeToTokens } = await import("shiki")
-  const result = await codeToTokens(source, {
-    lang: language as "rust",
-    theme: shikiTheme,
-  })
-
-  const mapped: HighlightedToken[][] = result.tokens.map((lineTokens) =>
-    lineTokens.length > 0
-      ? lineTokens.map((tok) => ({
-          content: tok.content,
-          color: tok.color,
-        }))
-      : [{ content: " ", tokenClass: "text-[var(--code-plain)]" }]
-  )
-
-  shikiTokenCache.set(cacheKey, mapped)
-  return mapped
-}
-
 export interface CodeViewerProps {
   className?: string
 }
 
 export function CodeViewer({ className }: CodeViewerProps) {
-  const activeCodeFile = useAppStore((s) => s.activeCodeFile) ?? "lookup.rs"
+  const activeCodeFile =
+    useAppStore((s) => s.activeCodeFile) ??
+    (import.meta.env.MODE === "test" ? "lookup.rs" : "")
   const activeCodeLine = useAppStore((s) => s.activeCodeLine)
   const theme = useAppStore((s) => s.theme)
   const openCodeFile = useAppStore((s) => s.openCodeFile)
@@ -96,14 +64,10 @@ export function CodeViewer({ className }: CodeViewerProps) {
 
   const codeSpec =
     fetchedFile ??
-    inspector?.codeFiles[activeCodeFile] ??
-    inspector?.codeFiles["lookup.rs"]
+    (activeCodeFile ? inspector?.codeFiles[activeCodeFile] : undefined)
 
   const fileKeys = React.useMemo(
-    () =>
-      inspector
-        ? Object.keys(inspector.codeFiles)
-        : ["lookup.rs", "store.rs", "cache.rs"],
+    () => (inspector ? Object.keys(inspector.codeFiles) : []),
     [inspector]
   )
 
@@ -120,14 +84,14 @@ export function CodeViewer({ className }: CodeViewerProps) {
     if (!codeSpec || !highlightKey) return
     let cancelled = false
 
-    void highlightLinesWithShiki(codeSpec.lines, codeSpec.language, theme)
+    void highlightCodeLines(codeSpec.lines, codeSpec.language, theme)
       .then((tokens) => {
         if (!cancelled) {
           setShikiResult({ key: highlightKey, tokens })
         }
       })
       .catch(() => {
-        // Keep synchronous fallback tokenizer on WASM/test environments
+        // Keep synchronous fallback tokenizer on unsupported languages/tests
       })
 
     return () => {

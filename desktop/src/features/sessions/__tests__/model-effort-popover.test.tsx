@@ -410,6 +410,22 @@ describe("SessionComposer & HomeView", () => {
     )
     expect(screen.getByTestId("composer-shell")).toHaveClass("max-w-[732px]")
 
+    // Opening branch popover shows project header, branch options, and "Work in a New Worktree"
+    fireEvent.click(screen.getByTestId("composer-checkout-trigger"))
+    expect(screen.getByText("feat/desktop-ui")).toBeInTheDocument()
+    expect(screen.getByText("main")).toBeInTheDocument()
+    expect(screen.getByText("prototype-ui")).toBeInTheDocument()
+    expect(
+      screen.getByTestId("composer-new-worktree-btn")
+    ).toHaveTextContent("Work in a New Worktree")
+    expect(
+      screen.getByText("Keeps your checkout untouched")
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByText("feat/desktop-ui"))
+    expect(screen.getByTestId("composer-checkout-trigger")).toHaveTextContent(
+      "feat/desktop-ui"
+    )
+
     rerender(
       <QueryClientProvider client={createQueryClient()}>
         <TooltipProvider delayDuration={0}>

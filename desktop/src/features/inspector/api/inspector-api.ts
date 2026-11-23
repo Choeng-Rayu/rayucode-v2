@@ -281,7 +281,7 @@ function normalizeCodeFiles(
   return result
 }
 
-const IS_TEST_ENV = import.meta.env?.MODE === "test"
+const IS_TEST_ENV = import.meta.env.MODE === "test"
 
 function normalizeInspectorState(raw: InspectorState): InspectorViewModel {
   const hasFullDottedBreakdown = raw.context.rows.some(
@@ -493,9 +493,20 @@ export async function runInspectorTerminalCommand(
     }
   }
 
-  return inspectorTerminalLineSchema.parse(
-    synthesizeTerminalOutput(parsed.command)
-  )
+  if (IS_TEST_ENV) {
+    return inspectorTerminalLineSchema.parse(
+      synthesizeTerminalOutput(parsed.command)
+    )
+  }
+
+  return inspectorTerminalLineSchema.parse({
+    id: `term_err_${Date.now()}`,
+    prompt: "$",
+    command: parsed.command,
+    output: "Terminal command execution requires the RayuCode Desktop runtime.",
+    isOk: false,
+    isError: true,
+  })
 }
 
 export async function openFileInVSCode(

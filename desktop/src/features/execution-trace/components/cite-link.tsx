@@ -451,10 +451,10 @@ function renderMdastNode(
                 store.openDocPreview("diagram", value)
               }
             }}
-            className="inline-flex cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] align-baseline font-mono text-[0.88em] font-medium text-code-type transition-colors hover:bg-pill-edit-bg/60 hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all text-code-type transition-colors hover:bg-pill-edit-bg/60 hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Network className="size-3 shrink-0" aria-hidden="true" />
-            <span>{value}</span>
+            <span className="min-w-0 break-all">{value}</span>
           </button>
         )
       }
@@ -486,14 +486,14 @@ function renderMdastNode(
               }
             }}
             className={cn(
-              "inline-flex cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] align-baseline font-mono text-[0.88em] font-medium transition-colors hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all transition-colors hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               getInlineCodeClasses(category)
             )}
           >
             {category === "folder" ? (
               <Folder className="size-3 shrink-0" aria-hidden="true" />
             ) : null}
-            <span>{value}</span>
+            <span className="min-w-0 break-all">{value}</span>
           </button>
         )
       }
@@ -503,11 +503,11 @@ function renderMdastNode(
           key={key}
           data-code-kind={category}
           className={cn(
-            "inline-flex items-center rounded px-1 py-[0.5px] align-baseline font-mono text-[0.88em]",
+            "inline-flex max-w-full items-center rounded px-1 py-[0.5px] align-baseline font-mono text-[0.88em] break-all",
             getInlineCodeClasses(category)
           )}
         >
-          <span>{value}</span>
+          <span className="min-w-0 break-all">{value}</span>
         </code>
       )
     }
@@ -703,7 +703,7 @@ export function EditorialMarkdown({
   }
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    <div className={cn("flex min-w-0 flex-col gap-3 break-words", className)}>
       {renderMdastNode(tree, "md-root", contextDiagramSource)}
     </div>
   )

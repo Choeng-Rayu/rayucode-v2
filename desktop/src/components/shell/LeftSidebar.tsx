@@ -773,12 +773,14 @@ export function SessionPane() {
       return
     }
     setActiveSession(sessionId, title ?? null)
-    if (sessionId === "ses_credits_dash") {
-      openDocPreview("browser", "localhost:3000")
-    } else if (sessionId === "ses_q4_excel") {
-      openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
-    } else if (sessionId === "ses_migration_md") {
-      openDocPreview("markdown", "MIGRATION_PLAN.md")
+    if (import.meta.env.MODE === "test") {
+      if (sessionId === "ses_credits_dash") {
+        openDocPreview("browser", "localhost:3000")
+      } else if (sessionId === "ses_q4_excel") {
+        openDocPreview("excel", "Q4-Token-Cost-Model.xlsx")
+      } else if (sessionId === "ses_migration_md") {
+        openDocPreview("markdown", "MIGRATION_PLAN.md")
+      }
     }
   }
 

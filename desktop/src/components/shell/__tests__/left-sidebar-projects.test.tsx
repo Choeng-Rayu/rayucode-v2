@@ -114,6 +114,36 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
     })
   })
 
+  it("creates a project from the Projects header + button with name and source folder", async () => {
+    vi.spyOn(ipcClient.workspace, "pickFolder").mockResolvedValue({
+      host: "localhost",
+      path: "/Users/dev/workspace/brand-new-app",
+      project: "brand-new-app",
+      branch: "main",
+    })
+    vi.spyOn(ipcClient.workspace, "setPath").mockResolvedValue(null)
+
+    renderPane()
+    await screen.findAllByTestId("sidebar-project-row")
+    expect(screen.queryByText("+ Open")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("sidebar-create-project-btn"))
+    expect(await screen.findByTestId("create-project-dialog")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("create-project-add-folder-btn"))
+    await screen.findByTestId("create-project-folder-row")
+
+    fireEvent.change(screen.getByTestId("create-project-name-input"), {
+      target: { value: "Launchpad" },
+    })
+    fireEvent.click(screen.getByTestId("create-project-submit-btn"))
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("create-project-dialog")).not.toBeInTheDocument()
+      expect(screen.getByText("Launchpad")).toBeInTheDocument()
+    })
+  })
+
   it("supports creating custom sections and switching Organize sidebar modes", async () => {
     renderPane()
     await screen.findAllByTestId("sidebar-project-row")

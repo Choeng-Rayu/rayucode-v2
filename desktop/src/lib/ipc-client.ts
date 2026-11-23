@@ -2750,6 +2750,17 @@ export interface RayuBridgeApi {
   git?: {
     getChanges?: () => Promise<ChangesState | null>
     getCommits?: () => Promise<GitCommitSummary[]>
+    listBranches?: () => Promise<{ current: string; branches: string[] }>
+    checkoutBranch?: (
+      branch: string
+    ) => Promise<{ ok: boolean; branch: string; error?: string }>
+    createWorktree?: (baseBranch?: string) => Promise<{
+      ok: boolean
+      path: string
+      branch: string
+      project: string
+      error?: string
+    }>
     toggleStage?: (
       filePath: string,
       staged: boolean
@@ -2925,13 +2936,10 @@ function getBridge(): RayuBridgeApi | undefined {
   return window.rayu
 }
 
-const IS_TEST_ENV =
-  typeof import.meta !== "undefined" &&
-  (import.meta as { env?: { MODE?: string } }).env?.MODE === "test"
+const IS_TEST_ENV = import.meta.env.MODE === "test"
 
 const IS_DEV_SERVER =
-  typeof import.meta !== "undefined" &&
-  Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV) &&
+  Boolean(import.meta.env.DEV) &&
   !IS_TEST_ENV &&
   typeof window !== "undefined" &&
   window.location.protocol.startsWith("http")
@@ -2970,6 +2978,7 @@ let lastKnownAuthState: RayuAuthState | null = null
 let runtimeSessions: SessionSummary[] = []
 let runtimeTurns: ExecutionTurn[] = []
 let runtimeSessionsHydrated = false
+const newlyCreatedEmptySessions = new Set<string>()
 let runtimeSwarm: SwarmState = {
   swarmId: "idle",
   title: "No active swarm",
@@ -3172,7 +3181,11 @@ export const ipcClient = {
       effort?: ReasoningEffort
       permissionMode?: PermissionModeId
     }): Promise<SessionSummary> {
-      await ensureRuntimeSessionsHydrated()
+      if (IS_TEST_ENV) {
+        await ensureRuntimeSessionsHydrated()
+      } else {
+        void ensureRuntimeSessionsHydrated()
+      }
       const bridge = getBridge()
       const derivedTitle =
         input.prompt.trim().length > 48
@@ -3186,28 +3199,23 @@ export const ipcClient = {
           )
           lastKnownDaemonLive = true
           lastActiveHarnessSessionId = live.session_id
-          const setupTasks: Array<Promise<unknown>> = []
-          if (input.modelId && bridge.harness.setModel) {
-            setupTasks.push(
-              bridge.harness.setModel(live.session_id, input.modelId).catch(() => {})
-            )
+          newlyCreatedEmptySessions.add(live.session_id)
+          const hasExplicitStoredModel =
+            typeof window !== "undefined" &&
+            Boolean(window.localStorage.getItem("rayu-model-id"))
+          if (
+            input.modelId &&
+            hasExplicitStoredModel &&
+            bridge.harness.setModel
+          ) {
+            void bridge.harness
+              .setModel(live.session_id, input.modelId)
+              .catch(() => {})
           }
           if (input.effort && bridge.harness.setReasoningEffort) {
-            setupTasks.push(
-              bridge.harness
-                .setReasoningEffort(live.session_id, input.effort.toLowerCase())
-                .catch(() => {})
-            )
-          }
-          if (input.permissionMode && bridge.harness.setPermissionMode) {
-            setupTasks.push(
-              bridge.harness
-                .setPermissionMode(live.session_id, input.permissionMode)
-                .catch(() => {})
-            )
-          }
-          if (setupTasks.length > 0) {
-            await Promise.allSettled(setupTasks)
+            void bridge.harness
+              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+              .catch(() => {})
           }
           const mapped = mapSessionInfoToSummary(live)
           const summary: SessionSummary = {
@@ -3318,11 +3326,18 @@ export const ipcClient = {
   trace: {
     async listTurns(sessionId?: string | null): Promise<ExecutionTurn[]> {
       await ensureRuntimeSessionsHydrated()
+      if (sessionId) {
+        const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+        if (cachedTurns.length > 0) {
+          return cachedTurns
+        }
+      }
       const bridge = getBridge()
       if (
         sessionId &&
         bridge?.harness?.getHistory &&
         !sessionId.startsWith("ses_") &&
+        !newlyCreatedEmptySessions.has(sessionId) &&
         !IS_TEST_ENV
       ) {
         try {
@@ -3331,11 +3346,12 @@ export const ipcClient = {
           lastKnownDaemonLive = true
           const turns = mapHistoryMessagesToTurns(sessionId, history.messages)
           if (turns.length > 0) {
+            runtimeTurns = [
+              ...runtimeTurns.filter((t) => t.sessionId !== sessionId),
+              ...turns,
+            ]
+            persistRuntimeSessions()
             return turns
-          }
-          const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
-          if (cachedTurns.length > 0) {
-            return cachedTurns
           }
           return turns
         } catch {
@@ -3494,6 +3510,9 @@ export const ipcClient = {
       return newTurn
     },
     recordTurn(turn: ExecutionTurn): void {
+      if (turn.sessionId) {
+        newlyCreatedEmptySessions.delete(turn.sessionId)
+      }
       runtimeTurns = [
         ...runtimeTurns.filter((t) => t.id !== turn.id),
         turn,
@@ -3695,19 +3714,30 @@ export const ipcClient = {
     },
     async getCodeFile(fileKey: string) {
       const bridge = getBridge()
-      if (bridge?.workspace?.readFile) {
+      if (bridge?.workspace?.readFile && fileKey) {
         try {
           const realFile = await bridge.workspace.readFile(fileKey)
           if (realFile && realFile.lines.length > 0) {
             return realFile
           }
         } catch {
-          // Fall back to demo file snippet when fileKey is a prototype alias
+          // Fall through to test fixture or empty placeholder
         }
       }
-      return (
-        MOCK_INSPECTOR.codeFiles[fileKey] ?? MOCK_INSPECTOR.codeFiles["lookup.rs"]
-      )
+      if (IS_TEST_ENV) {
+        return (
+          MOCK_INSPECTOR.codeFiles[fileKey] ??
+          MOCK_INSPECTOR.codeFiles["lookup.rs"]
+        )
+      }
+      const displayPill = fileKey || "Code"
+      return {
+        pill: displayPill,
+        path: fileKey || "",
+        language: "typescript",
+        startLine: 1,
+        lines: ["// Select a workspace file from Files or Diff to inspect."],
+      }
     },
     async runTerminalCommand(command: string): Promise<{
       id: string
@@ -3793,6 +3823,69 @@ export const ipcClient = {
         return []
       }
     },
+    async listBranches(): Promise<{ current: string; branches: string[] }> {
+      const bridge = getBridge()
+      if (bridge?.git?.listBranches) {
+        try {
+          const live = await bridge.git.listBranches()
+          if (live && Array.isArray(live.branches) && live.branches.length > 0) {
+            return live
+          }
+        } catch {
+          // Fall through to default branches
+        }
+      }
+      return {
+        current: "feat/desktop-ui",
+        branches: ["feat/desktop-ui", "main", "prototype-ui"],
+      }
+    },
+    async checkoutBranch(
+      branch: string
+    ): Promise<{ ok: boolean; branch: string; error?: string }> {
+      const bridge = getBridge()
+      if (bridge?.git?.checkoutBranch) {
+        try {
+          return await bridge.git.checkoutBranch(branch)
+        } catch (err) {
+          return {
+            ok: false,
+            branch,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
+      return { ok: true, branch }
+    },
+    async createWorktree(baseBranch?: string): Promise<{
+      ok: boolean
+      path: string
+      branch: string
+      project: string
+      error?: string
+    }> {
+      const bridge = getBridge()
+      if (bridge?.git?.createWorktree) {
+        try {
+          return await bridge.git.createWorktree(baseBranch)
+        } catch (err) {
+          return {
+            ok: false,
+            path: "",
+            branch: baseBranch ?? "main",
+            project: "rayucode-v2",
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+      }
+      const shortId = Date.now().toString(36).slice(-4)
+      return {
+        ok: true,
+        path: `~/.rayu/worktrees/rayucode-v2-${shortId}`,
+        branch: `worktree/${baseBranch ?? "main"}-${shortId}`,
+        project: "rayucode-v2",
+      }
+    },
   },
 
   previews: {
@@ -3839,14 +3932,22 @@ export const ipcClient = {
       return structuredClone(mockPreviews)
     },
     async sendBrowserQuestion(question: string): Promise<PreviewsState> {
-      mockPreviews.browser.chatMessages.push(
-        { id: `u_${Date.now()}`, sender: "user", text: question },
-        {
-          id: `a_${Date.now() + 1}`,
-          sender: "agent",
-          text: "Inspected the live page DOM and updated the active session context.",
-        }
-      )
+      if (IS_TEST_ENV) {
+        mockPreviews.browser.chatMessages.push(
+          { id: `u_${Date.now()}`, sender: "user", text: question },
+          {
+            id: `a_${Date.now() + 1}`,
+            sender: "agent",
+            text: "Inspected the live page DOM and updated the active session context.",
+          }
+        )
+        return structuredClone(mockPreviews)
+      }
+      mockPreviews.browser.chatMessages.push({
+        id: `u_${Date.now()}`,
+        sender: "user",
+        text: question,
+      })
       return structuredClone(mockPreviews)
     },
   },

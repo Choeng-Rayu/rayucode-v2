@@ -49,6 +49,7 @@ import {
 } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
+import { CreateProjectDialog } from "./create-project-dialog"
 import { EditProjectDialog } from "./edit-project-dialog"
 import { ProjectIconGlyph } from "./project-icon-picker"
 
@@ -118,6 +119,7 @@ export function SidebarProjectsPane({
   const [projectsCollapsed, setProjectsCollapsed] = React.useState(false)
   const [editingProject, setEditingProject] =
     React.useState<SidebarProjectMeta | null>(null)
+  const [creatingProject, setCreatingProject] = React.useState(false)
   const [creatingSection, setCreatingSection] = React.useState(false)
   const [newSectionName, setNewSectionName] = React.useState("")
   const [hoverCard, setHoverCard] = React.useState<ActiveHoverCard | null>(null)
@@ -394,39 +396,25 @@ export function SidebarProjectsPane({
     [persistSidebarState]
   )
 
-  const handleOpenFolderAsProject = async () => {
-    const info = await ipcClient.workspace.pickFolder()
-    if (!info) return
-    useAppStore.getState().setActiveWorkspacePath(info.path)
-    const id = `proj_${info.project}`
-    persistSidebarState((prev) => {
-      if (prev.projects.some((p) => p.id === id || p.folders.includes(info.path))) {
-        return prev
-      }
-      const nextProj: SidebarProjectMeta = {
-        id,
-        name: info.project,
-        folders: [info.path],
-        iconKind: "icon",
-        iconValue: "folder",
-        iconColor: "folder",
-        pinned: false,
-        sectionId: null,
-        updatedAt: Date.now(),
-      }
-      return {
-        ...prev,
-        projects: [nextProj, ...prev.projects],
-        manualProjectOrder: [
-          id,
-          ...prev.manualProjectOrder.filter((x) => x !== id),
-        ],
-      }
-    })
-    void ipcClient.sessions.listProjects().then(setBaseProjects)
+  const handleCreateProject = (project: SidebarProjectMeta) => {
+    const primary = project.folders[0]
+    persistSidebarState((prev) => ({
+      ...prev,
+      projects: [project, ...prev.projects],
+      manualProjectOrder: [
+        project.id,
+        ...prev.manualProjectOrder.filter((x) => x !== project.id),
+      ],
+    }))
+    setExpandedMap((prev) => ({ ...prev, [project.id]: true }))
+    setProjectsCollapsed(false)
+    if (primary) {
+      useAppStore.getState().setActiveWorkspacePath(primary)
+      void ipcClient.workspace.setPath(primary)
+    }
     void queryClient.invalidateQueries({ queryKey: ["changes"] })
     void queryClient.invalidateQueries({ queryKey: ["inspector"] })
-    toast(`Opened workspace: ${info.project}`)
+    toast(`Created project ${project.name}`)
   }
 
   const handleToggleProjectPin = (proj: MergedProject) => {
@@ -894,6 +882,159 @@ export function SidebarProjectsPane({
     return Array.from(map.values())
   }, [mergedProjects, recentChats])
 
+  const organizeMenu = (
+      <DropdownMenu onOpenChange={handleMenuOpenChange}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Organize sidebar"
+            data-testid="sidebar-organize-trigger"
+            className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
+          >
+            <SlidersHorizontal
+              className="size-3.5"
+              strokeWidth={1.65}
+              aria-hidden="true"
+            />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="right"
+          align="start"
+          sideOffset={8}
+          data-testid="sidebar-organize-menu"
+          className="w-[216px] rounded-xl"
+        >
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger data-testid="organize-submenu-trigger">
+              <PanelLeft className="size-3.5" aria-hidden="true" />
+              <span>Organize sidebar</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-[186px] rounded-xl">
+              <DropdownMenuItem
+                data-testid="organize-by-project"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    organizeBy: "project",
+                  }))
+                }
+              >
+                <Folder className="size-3.5" aria-hidden="true" />
+                <span>By project</span>
+                {sidebarState.organizeBy === "project" ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="organize-by-connection"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    organizeBy: "connection",
+                  }))
+                }
+              >
+                <Monitor className="size-3.5" aria-hidden="true" />
+                <span>By connection</span>
+                {sidebarState.organizeBy === "connection" ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="organize-in-one-list"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    organizeBy: "flat",
+                  }))
+                }
+              >
+                <List className="size-3.5" aria-hidden="true" />
+                <span>In one list</span>
+                {sidebarState.organizeBy === "flat" ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger data-testid="sort-submenu-trigger">
+              <ArrowUpDown className="size-3.5" aria-hidden="true" />
+              <span>Sort chats by</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-[180px] rounded-xl">
+              <DropdownMenuItem
+                data-testid="sort-by-updated"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    sortBy: "updated",
+                  }))
+                }
+              >
+                <Calendar className="size-3.5" aria-hidden="true" />
+                <span>Last updated</span>
+                {sidebarState.sortBy === "updated" ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid="sort-by-manual"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    sortBy: "manual",
+                  }))
+                }
+              >
+                <GripVertical className="size-3.5" aria-hidden="true" />
+                <span>Manual order</span>
+                {sidebarState.sortBy === "manual" ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger data-testid="show-submenu-trigger">
+              <Eye className="size-3.5" aria-hidden="true" />
+              <span>Show</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-[180px] rounded-xl">
+              <DropdownMenuItem
+                data-testid="show-project-chats-toggle"
+                onClick={() =>
+                  persistSidebarState((prev) => ({
+                    ...prev,
+                    showProjectChatsInRecents:
+                      !prev.showProjectChatsInRecents,
+                  }))
+                }
+              >
+                <span>Project chats</span>
+                {sidebarState.showProjectChatsInRecents ? (
+                  <Check className="ml-auto size-3.5" aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSeparator />
+
+          <DropdownMenuItem
+            data-testid="sidebar-new-section-btn"
+            onClick={() => setCreatingSection(true)}
+          >
+            <Plus className="size-3.5" aria-hidden="true" />
+            <span>New section</span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+  )
+
   return (
     <>
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
@@ -913,14 +1054,18 @@ export function SidebarProjectsPane({
                   <ChevronDown className="size-3" aria-hidden="true" />
                 )}
               </button>
-              <button
-                type="button"
-                aria-label="Open workspace folder"
-                onClick={() => void handleOpenFolderAsProject()}
-                className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-normal text-muted-ink transition-colors hover:bg-hover hover:text-ink"
-              >
-                + Open
-              </button>
+              <div className="flex items-center gap-0.5">
+                {organizeMenu}
+                <button
+                  type="button"
+                  aria-label="Create project"
+                  data-testid="sidebar-create-project-btn"
+                  onClick={() => setCreatingProject(true)}
+                  className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <Plus className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+                </button>
+              </div>
             </div>
 
             {!projectsCollapsed ? (
@@ -1015,156 +1160,7 @@ export function SidebarProjectsPane({
           </span>
 
           <div className="flex items-center gap-0.5">
-            <DropdownMenu onOpenChange={handleMenuOpenChange}>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label="Organize sidebar"
-                  data-testid="sidebar-organize-trigger"
-                  className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
-                >
-                  <SlidersHorizontal
-                    className="size-3.5"
-                    strokeWidth={1.65}
-                    aria-hidden="true"
-                  />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                side="right"
-                align="start"
-                sideOffset={8}
-                data-testid="sidebar-organize-menu"
-                className="w-[216px] rounded-xl"
-              >
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger data-testid="organize-submenu-trigger">
-                    <PanelLeft className="size-3.5" aria-hidden="true" />
-                    <span>Organize sidebar</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-[186px] rounded-xl">
-                    <DropdownMenuItem
-                      data-testid="organize-by-project"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          organizeBy: "project",
-                        }))
-                      }
-                    >
-                      <Folder className="size-3.5" aria-hidden="true" />
-                      <span>By project</span>
-                      {sidebarState.organizeBy === "project" ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      data-testid="organize-by-connection"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          organizeBy: "connection",
-                        }))
-                      }
-                    >
-                      <Monitor className="size-3.5" aria-hidden="true" />
-                      <span>By connection</span>
-                      {sidebarState.organizeBy === "connection" ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      data-testid="organize-in-one-list"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          organizeBy: "flat",
-                        }))
-                      }
-                    >
-                      <List className="size-3.5" aria-hidden="true" />
-                      <span>In one list</span>
-                      {sidebarState.organizeBy === "flat" ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger data-testid="sort-submenu-trigger">
-                    <ArrowUpDown className="size-3.5" aria-hidden="true" />
-                    <span>Sort by</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-[180px] rounded-xl">
-                    <DropdownMenuItem
-                      data-testid="sort-by-updated"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          sortBy: "updated",
-                        }))
-                      }
-                    >
-                      <Calendar className="size-3.5" aria-hidden="true" />
-                      <span>Last updated</span>
-                      {sidebarState.sortBy === "updated" ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      data-testid="sort-by-manual"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          sortBy: "manual",
-                        }))
-                      }
-                    >
-                      <GripVertical className="size-3.5" aria-hidden="true" />
-                      <span>Manual order</span>
-                      {sidebarState.sortBy === "manual" ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger data-testid="show-submenu-trigger">
-                    <Eye className="size-3.5" aria-hidden="true" />
-                    <span>Show</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="w-[180px] rounded-xl">
-                    <DropdownMenuItem
-                      data-testid="show-project-chats-toggle"
-                      onClick={() =>
-                        persistSidebarState((prev) => ({
-                          ...prev,
-                          showProjectChatsInRecents:
-                            !prev.showProjectChatsInRecents,
-                        }))
-                      }
-                    >
-                      <span>Project chats</span>
-                      {sidebarState.showProjectChatsInRecents ? (
-                        <Check className="ml-auto size-3.5" aria-hidden="true" />
-                      ) : null}
-                    </DropdownMenuItem>
-                  </DropdownMenuSubContent>
-                </DropdownMenuSub>
-
-                <DropdownMenuSeparator />
-
-                <DropdownMenuItem
-                  data-testid="sidebar-new-section-btn"
-                  onClick={() => setCreatingSection(true)}
-                >
-                  <Plus className="size-3.5" aria-hidden="true" />
-                  <span>New section</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {sidebarState.organizeBy !== "project" ? organizeMenu : null}
 
             <button
               type="button"
@@ -1357,6 +1353,13 @@ export function SidebarProjectsPane({
           )}
         </div>
       ) : null}
+
+      {/* Create Project Dialog */}
+      <CreateProjectDialog
+        open={creatingProject}
+        onOpenChange={setCreatingProject}
+        onCreate={handleCreateProject}
+      />
 
       {/* Edit Project Dialog */}
       <EditProjectDialog

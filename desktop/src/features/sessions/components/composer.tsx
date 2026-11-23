@@ -14,14 +14,14 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  GitBranch,
+  GitFork,
   Globe,
   Laptop,
   LayoutGrid,
   Lightbulb,
   ListTodo,
-  Mic,
   Minimize2,
-  Monitor,
   Network,
   Paperclip,
   PawPrint,
@@ -69,7 +69,6 @@ import { cn } from "@/lib/utils"
 import {
   DEFAULT_CHECKOUT,
   DEFAULT_PROJECT,
-  HOME_CHECKOUTS,
   HOME_PROJECTS,
   SLASH_COMMANDS,
 } from "../constants/models"
@@ -482,6 +481,12 @@ export function SessionComposer({
   )
   const [internalCheckout, setInternalCheckout] =
     React.useState(DEFAULT_CHECKOUT)
+  const userPickedCheckoutRef = React.useRef<string | null>(null)
+  const [branchOptions, setBranchOptions] = React.useState<string[]>([
+    "feat/desktop-ui",
+    "main",
+    "prototype-ui",
+  ])
   const [workspaceOptions, setWorkspaceOptions] = React.useState<
     Array<{ name: string; path?: string }>
   >(() => (isTestEnv ? HOME_PROJECTS.map((name) => ({ name })) : []))
@@ -490,7 +495,6 @@ export function SessionComposer({
   const [slashTipOpen, setSlashTipOpen] = React.useState(false)
   const [projectOpen, setProjectOpen] = React.useState(false)
   const [checkoutOpen, setCheckoutOpen] = React.useState(false)
-  const [voiceActive, setVoiceActive] = React.useState(false)
   const [sketchOpen, setSketchOpen] = React.useState(false)
   const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([])
   const [skillTokens, setSkillTokens] = React.useState<ActiveSkillToken[]>([])
@@ -574,7 +578,8 @@ export function SessionComposer({
     void Promise.all([
       ipcClient.workspace.getInfo(),
       ipcClient.workspace.listRecent(),
-    ]).then(([info, recent]) => {
+      ipcClient.workspace.listBranches(),
+    ]).then(([info, recent, branchData]) => {
       if (cancelled) return
       const seen = new Map<string, { name: string; path?: string }>()
       for (const item of recent ?? []) {
@@ -586,6 +591,9 @@ export function SessionComposer({
         seen.set(info.path, { name: info.project, path: info.path })
       }
       setWorkspaceOptions(Array.from(seen.values()))
+      if (branchData?.branches?.length) {
+        setBranchOptions(branchData.branches)
+      }
 
       if (activeWorkspacePath) {
         const matched = seen.get(activeWorkspacePath)
@@ -596,8 +604,13 @@ export function SessionComposer({
         if (!controlledProject && name) {
           setInternalProject(name)
         }
-        if (info?.branch && !controlledCheckout) {
-          setInternalCheckout(info.branch)
+        const liveBranch = branchData?.current || info?.branch
+        if (
+          liveBranch &&
+          !controlledCheckout &&
+          !userPickedCheckoutRef.current
+        ) {
+          setInternalCheckout(liveBranch)
         }
       } else if (!controlledProject) {
         setInternalProject("")
@@ -707,12 +720,23 @@ export function SessionComposer({
   )
 
   const handleProjectSelect = (nextProject: string, nextPath?: string) => {
+    userPickedCheckoutRef.current = null
     setInternalProject(nextProject)
     if (!nextProject) {
       setActiveWorkspacePath(null)
     } else if (nextPath) {
       setActiveWorkspacePath(nextPath)
-      void ipcClient.workspace.setPath(nextPath).then(() => {
+      void ipcClient.workspace.setPath(nextPath).then(async (info) => {
+        if (info?.branch && !controlledCheckout) {
+          setInternalCheckout(info.branch)
+        }
+        const branchData = await ipcClient.workspace.listBranches()
+        if (branchData?.branches?.length) {
+          setBranchOptions(branchData.branches)
+          if (branchData.current && !controlledCheckout) {
+            setInternalCheckout(branchData.current)
+          }
+        }
         void queryClient.invalidateQueries({ queryKey: ["changes"] })
         void queryClient.invalidateQueries({ queryKey: ["inspector"] })
         void queryClient.invalidateQueries({ queryKey: ["plugins"] })
@@ -1043,6 +1067,13 @@ export function SessionComposer({
     if (picked.branch) {
       setInternalCheckout(picked.branch)
     }
+    const branchData = await ipcClient.workspace.listBranches()
+    if (branchData?.branches?.length) {
+      setBranchOptions(branchData.branches)
+      if (branchData.current) {
+        setInternalCheckout(branchData.current)
+      }
+    }
     onProjectChange?.(picked.project)
     void queryClient.invalidateQueries({ queryKey: ["changes"] })
     void queryClient.invalidateQueries({ queryKey: ["inspector"] })
@@ -1052,11 +1083,48 @@ export function SessionComposer({
     toast(`Opened workspace: ${picked.project}`)
   }
 
-  const handleCheckoutSelect = (nextCheckout: string) => {
+  const handleCheckoutSelect = async (nextCheckout: string) => {
+    userPickedCheckoutRef.current = nextCheckout
     setInternalCheckout(nextCheckout)
     onCheckoutChange?.(nextCheckout)
     setCheckoutOpen(false)
-    toast(`Checkout: ${nextCheckout}`)
+    if (!isTestEnv) {
+      const res = await ipcClient.workspace.checkoutBranch(nextCheckout)
+      if (!res.ok) {
+        toast.error(res.error || `Failed to switch to ${nextCheckout}`)
+        if (res.branch) {
+          setInternalCheckout(res.branch)
+          onCheckoutChange?.(res.branch)
+        }
+        return
+      }
+      if (res.branch) {
+        userPickedCheckoutRef.current = res.branch
+        setInternalCheckout(res.branch)
+        onCheckoutChange?.(res.branch)
+      }
+      void queryClient.invalidateQueries({ queryKey: ["changes"] })
+      void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+    }
+  }
+
+  const handleCreateWorktree = async () => {
+    setCheckoutOpen(false)
+    const created = await ipcClient.workspace.createWorktree(activeCheckout)
+    if (!created.ok) {
+      toast.error(created.error || "Could not create git worktree")
+      return
+    }
+    userPickedCheckoutRef.current = created.branch
+    setBranchOptions((prev) =>
+      prev.includes(created.branch) ? prev : [created.branch, ...prev]
+    )
+    setInternalCheckout(created.branch)
+    onCheckoutChange?.(created.branch)
+    void queryClient.invalidateQueries({ queryKey: ["changes"] })
+    void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+    void queryClient.invalidateQueries({ queryKey: ["workspace", "files"] })
+    toast(`Working in new worktree (${created.branch})`)
   }
 
   const adjustTextareaHeight = React.useCallback(
@@ -1265,14 +1333,6 @@ export function SessionComposer({
     localTextareaRef.current?.focus()
   }
 
-  const handleVoiceToggle = () => {
-    setVoiceActive((prev) => {
-      const next = !prev
-      toast(next ? "Voice input listening..." : "Voice input stopped")
-      return next
-    })
-  }
-
   return (
     <TooltipProvider delayDuration={120}>
       <div
@@ -1293,8 +1353,6 @@ export function SessionComposer({
             onSubmitCustom={handleClarifyingCustom}
             onSkip={handleClarifyingSkip}
             onClose={() => setActiveClarifyingTemplate(null)}
-            voiceActive={voiceActive}
-            onVoiceToggle={handleVoiceToggle}
           />
         ) : null}
 
@@ -1339,7 +1397,7 @@ export function SessionComposer({
                   >
                     {hasSelectedProject ? (
                       <Folder
-                        className="size-[13px] text-folder"
+                        className="size-[13px] text-muted-ink"
                         aria-hidden="true"
                       />
                     ) : null}
@@ -1396,7 +1454,7 @@ export function SessionComposer({
                     >
                       <span className="inline-flex min-w-0 items-center gap-2">
                         <Folder
-                          className="size-3.5 shrink-0 text-folder"
+                          className="size-3.5 shrink-0 text-muted-ink"
                           aria-hidden="true"
                         />
                         <span className="truncate">{proj.name}</span>
@@ -1429,14 +1487,26 @@ export function SessionComposer({
               </Popover>
 
               {hasSelectedProject ? (
-                <Popover open={checkoutOpen} onOpenChange={setCheckoutOpen}>
+                <Popover
+                  open={checkoutOpen}
+                  onOpenChange={(open) => {
+                    setCheckoutOpen(open)
+                    if (open && !isTestEnv) {
+                      void ipcClient.workspace.listBranches().then((data) => {
+                        if (data?.branches?.length) {
+                          setBranchOptions(data.branches)
+                        }
+                      })
+                    }
+                  }}
+                >
                   <PopoverTrigger asChild>
                     <button
                       type="button"
                       data-testid="composer-checkout-trigger"
                       className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-transparent px-1.5 py-[3px] text-xs font-normal text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-body focus:outline-none"
                     >
-                      <Monitor
+                      <GitBranch
                         className="size-[13px] text-muted-ink"
                         aria-hidden="true"
                       />
@@ -1451,36 +1521,75 @@ export function SessionComposer({
                     side="top"
                     align="start"
                     sideOffset={8}
-                    className="rayu-card-bevel w-52 rounded-xl border border-premium-hi bg-popover-solid p-1.5 shadow-rayu-2"
+                    className="rayu-card-bevel w-64 rounded-2xl border border-premium-hi bg-popover-solid p-1.5 shadow-rayu-2"
                   >
-                    <div className="px-2.5 pt-1 pb-1.5 text-[10px] font-semibold tracking-wider text-muted-ink uppercase">
-                      Checkout
+                    <div className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-muted-ink">
+                      <Folder
+                        className="size-3.5 shrink-0 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{activeProject}</span>
                     </div>
-                    {HOME_CHECKOUTS.map((co) => (
-                      <button
-                        key={co}
-                        type="button"
-                        onClick={() => handleCheckoutSelect(co)}
-                        className={cn(
-                          "flex w-full cursor-pointer items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs text-ink transition-colors hover:bg-hover",
-                          co === activeCheckout && "bg-active"
-                        )}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <Monitor
-                            className="size-3.5 text-muted-ink"
-                            aria-hidden="true"
-                          />
-                          <span>{co}</span>
+                    <div className="max-h-56 overflow-y-auto">
+                      {Array.from(
+                        new Set(
+                          activeCheckout &&
+                            activeCheckout !== DEFAULT_CHECKOUT &&
+                            !branchOptions.includes(activeCheckout)
+                            ? [activeCheckout, ...branchOptions]
+                            : branchOptions
+                        )
+                      ).map((branchName) => {
+                        const isSelected = branchName === activeCheckout
+                        return (
+                          <button
+                            key={branchName}
+                            type="button"
+                            onClick={() => void handleCheckoutSelect(branchName)}
+                            className={cn(
+                              "flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-hover",
+                              isSelected
+                                ? "font-medium text-ink"
+                                : "text-body hover:text-ink"
+                            )}
+                          >
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <GitBranch
+                                className="size-3.5 shrink-0 text-muted-ink"
+                                aria-hidden="true"
+                              />
+                              <span className="truncate">{branchName}</span>
+                            </span>
+                            {isSelected ? (
+                              <Check
+                                className="size-3.5 shrink-0 text-ink"
+                                aria-hidden="true"
+                              />
+                            ) : null}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    <div className="my-1 h-px bg-hairline" />
+                    <button
+                      type="button"
+                      data-testid="composer-new-worktree-btn"
+                      onClick={() => void handleCreateWorktree()}
+                      className="flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-hover"
+                    >
+                      <GitFork
+                        className="size-3.5 shrink-0 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                      <span className="flex min-w-0 flex-col">
+                        <span className="text-[12.5px] leading-tight font-medium text-ink">
+                          Work in a New Worktree
                         </span>
-                        {co === activeCheckout ? (
-                          <Check
-                            className="size-3.5 text-ink"
-                            aria-hidden="true"
-                          />
-                        ) : null}
-                      </button>
-                    ))}
+                        <span className="mt-0.5 text-[11px] leading-tight text-muted-ink">
+                          Keeps your checkout untouched
+                        </span>
+                      </span>
+                    </button>
                   </PopoverContent>
                 </Popover>
               ) : null}
@@ -2429,27 +2538,6 @@ export function SessionComposer({
                 disabled={disabled}
               />
 
-              {/* Voice Input Button */}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      aria-label="Voice input"
-                      aria-pressed={voiceActive}
-                      onClick={handleVoiceToggle}
-                      className={cn(
-                        "grid size-7 shrink-0 cursor-pointer place-items-center rounded-lg border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none",
-                        voiceActive &&
-                          "border-brand/40 bg-brand-softer text-brand-text"
-                      )}
-                    >
-                    <Mic className="size-[15px]" aria-hidden="true" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Voice input</TooltipContent>
-              </Tooltip>
-
               {/* Primary Send Orb Button OR Stop Generation Button (Screenshot 2) */}
               {isSubmitting ? (
                 <Tooltip>
@@ -2462,11 +2550,11 @@ export function SessionComposer({
                         onStop?.()
                         toast("Stopped active generation")
                       }}
-                      className="ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-info text-ink transition-all outline-none hover:scale-[1.04] focus:outline-none active:scale-[0.98]"
+                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98]"
                     >
                       <span
                         aria-hidden="true"
-                        className="block size-2.5 rounded-[2px] bg-ink"
+                        className="block size-2.5 rounded-[2px] bg-brand-ink"
                       />
                     </button>
                   </TooltipTrigger>

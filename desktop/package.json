@@ -7,7 +7,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite --port 5173",
-    "dev:electron": "pnpm build:electron && node scripts/brand-dev-electron-mac.mjs && electron .",
+    "dev:electron": "pnpm build && node scripts/brand-dev-electron-mac.mjs && electron .",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "lint": "eslint src electron",
     "lint:fix": "eslint --fix src electron",

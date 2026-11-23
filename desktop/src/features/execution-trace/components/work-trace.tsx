@@ -16,7 +16,6 @@ import {
 
 import { RayuProcessingMark } from "@/components/ui/rayu-processing-mark"
 import { useAppStore } from "@/lib/app-store"
-import { getFileColorClass } from "@/lib/file-icon-theme"
 import { cn } from "@/lib/utils"
 
 import type {
@@ -47,43 +46,25 @@ export interface WorkTraceProps {
 
 function TraceGroupIcon({ title }: { title: string }) {
   const lower = title.toLowerCase()
+  const iconClass = "size-[15px] shrink-0 text-muted-ink"
   if (lower.includes("loaded a tool") || lower.includes("skill")) {
-    return (
-      <Wrench
-        className="size-[15px] shrink-0 text-pill-edit-fg"
-        aria-hidden="true"
-      />
-    )
+    return <Wrench className={iconClass} aria-hidden="true" />
   }
   if (lower.includes("searched")) {
-    return (
-      <Search
-        className="size-[15px] shrink-0 text-pill-grep-fg"
-        aria-hidden="true"
-      />
-    )
+    return <Search className={iconClass} aria-hidden="true" />
   }
   if (
     lower.includes("viewed an image") ||
     lower.includes("viewed ") ||
     lower.includes("preview")
   ) {
-    return (
-      <ImageIcon
-        className="size-[15px] shrink-0 text-pill-think-fg"
-        aria-hidden="true"
-      />
-    )
+    return <ImageIcon className={iconClass} aria-hidden="true" />
   }
   if (lower.includes("browser") || lower.includes("computer use")) {
-    return (
-      <Monitor className="size-[15px] shrink-0 text-info" aria-hidden="true" />
-    )
+    return <Monitor className={iconClass} aria-hidden="true" />
   }
   if (lower.includes("permission")) {
-    return (
-      <Hand className="size-[15px] shrink-0 text-warn" aria-hidden="true" />
-    )
+    return <Hand className={iconClass} aria-hidden="true" />
   }
   if (
     lower.includes("inspect") ||
@@ -91,27 +72,12 @@ function TraceGroupIcon({ title }: { title: string }) {
     lower.includes("artifact session") ||
     lower.includes("integration")
   ) {
-    return (
-      <LayoutGrid
-        className="size-[15px] shrink-0 text-pill-edit-fg"
-        aria-hidden="true"
-      />
-    )
+    return <LayoutGrid className={iconClass} aria-hidden="true" />
   }
   if (lower.includes("ran a command") || lower.includes("ran command")) {
-    return (
-      <Monitor
-        className="size-[15px] shrink-0 text-brand-text"
-        aria-hidden="true"
-      />
-    )
+    return <Monitor className={iconClass} aria-hidden="true" />
   }
-  return (
-    <BookOpen
-      className="size-[15px] shrink-0 text-pill-read-fg"
-      aria-hidden="true"
-    />
-  )
+  return <BookOpen className={iconClass} aria-hidden="true" />
 }
 
 function renderFileReadStep(
@@ -129,12 +95,12 @@ function renderFileReadStep(
     >
       {isSkillStep ? (
         <Wrench
-          className="size-3.5 shrink-0 text-pill-edit-fg"
+          className="size-3.5 shrink-0 text-muted-ink"
           aria-hidden="true"
         />
       ) : (
         <BookOpen
-          className="size-3.5 shrink-0 text-pill-read-fg"
+          className="size-3.5 shrink-0 text-muted-ink"
           aria-hidden="true"
         />
       )}
@@ -162,10 +128,7 @@ function renderFileReadStep(
                     onOpenCodeFile(target.file, target.line)
                   }
                 }}
-                className={cn(
-                  "cursor-pointer underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  getFileColorClass(target.file)
-                )}
+                className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {target.rangeLabel}
               </button>
@@ -251,27 +214,27 @@ function renderListOrPreviewStep(
                   <span className="flex items-center gap-1 font-mono text-[10px] text-muted-ink">
                     {thumb.kind === "browser" && (
                       <Globe
-                        className="size-[11px] shrink-0 text-brand-text"
+                        className="size-[11px] shrink-0 text-muted-ink"
                         aria-hidden="true"
                       />
                     )}
                     {thumb.kind === "excel" && (
                       <FileSpreadsheet
-                        className="size-[11px] shrink-0 text-brand-text"
+                        className="size-[11px] shrink-0 text-muted-ink"
                         aria-hidden="true"
                       />
                     )}
                     {thumb.kind === "markdown" && (
                       <FileText
-                        className="size-[11px] shrink-0 text-brand-text"
+                        className="size-[11px] shrink-0 text-muted-ink"
                         aria-hidden="true"
                       />
                     )}
                     <span>{thumb.badge}</span>
                   </span>
                   <span className="flex flex-col gap-[3px]" aria-hidden="true">
-                    <span className="block h-1 w-[78%] rounded-[2px] bg-brand-soft" />
-                    <span className="block h-1 w-[54%] rounded-[2px] bg-active" />
+                    <span className="block h-1 w-[78%] rounded-[2px] bg-active" />
+                    <span className="block h-1 w-[54%] rounded-[2px] bg-hover" />
                   </span>
                   <span className="truncate text-[10.5px] font-medium text-body">
                     {thumb.label}
@@ -293,24 +256,19 @@ function renderListOrPreviewStep(
     >
       {step.kind === "search" ? (
         <Search
-          className="size-3.5 shrink-0 text-pill-grep-fg"
+          className="size-3.5 shrink-0 text-muted-ink"
           aria-hidden="true"
         />
       ) : (
         <Folder
-          className="size-3.5 shrink-0 text-folder"
+          className="size-3.5 shrink-0 text-muted-ink"
           aria-hidden="true"
         />
       )}
       <span>
         {step.text}{" "}
         {step.highlight && (
-          <strong
-            className={cn(
-              "font-semibold",
-              step.kind === "search" ? "text-pill-grep-fg" : "text-folder"
-            )}
-          >
+          <strong className="font-semibold text-body">
             {step.highlight}
           </strong>
         )}
@@ -364,15 +322,17 @@ function TraceGroupSection({
         aria-expanded={groupOpen}
         aria-controls={railId}
         onClick={() => setGroupOpen((prev) => !prev)}
-        className="inline-flex cursor-pointer items-center gap-2 self-start rounded-lg py-0.5 pr-2 pl-0.5 text-[13px] font-normal text-muted-ink transition-colors hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="group/work-group inline-flex cursor-pointer items-center gap-2 self-start rounded-lg py-0.5 pr-2 pl-0.5 text-[13.5px] font-normal text-muted-ink transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <TraceGroupIcon title={group.title} />
         <span>{group.title}</span>
         {hasSteps ? (
           <ChevronRight
             className={cn(
-              "size-3 shrink-0 text-muted-ink transition-transform duration-150",
-              groupOpen && "rotate-90"
+              "size-3 shrink-0 text-muted-ink transition-all duration-150",
+              groupOpen
+                ? "rotate-90 opacity-80"
+                : "opacity-0 group-hover/work-group:opacity-80"
             )}
             aria-hidden="true"
           />
@@ -543,7 +503,7 @@ export function WorkTrace({
               className="inline-flex items-center gap-2 py-0.5 text-[13px] text-muted-ink"
             >
               <LayoutGrid
-                className="size-[15px] shrink-0 animate-pulse text-brand-text"
+                className="size-[15px] shrink-0 animate-pulse text-muted-ink"
                 aria-hidden="true"
               />
               <span className="animate-pulse">{activeToolStatus}</span>

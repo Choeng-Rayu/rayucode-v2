@@ -15,18 +15,27 @@ import { useAppStore, type RightPaneMode } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
 
 import type { PreviewDocumentTab } from "../types"
-import { CodeViewer } from "./code-viewer"
 import { ContextPanel } from "./context-panel"
-import { DiffTabPanel } from "./diff-tab-panel"
-import { FilesTabPanel } from "./files-tab-panel"
-import { TerminalPanel } from "./terminal-panel"
+
+const CodeViewer = React.lazy(() =>
+  import("./code-viewer").then((m) => ({ default: m.CodeViewer }))
+)
+const DiffTabPanel = React.lazy(() =>
+  import("./diff-tab-panel").then((m) => ({ default: m.DiffTabPanel }))
+)
+const FilesTabPanel = React.lazy(() =>
+  import("./files-tab-panel").then((m) => ({ default: m.FilesTabPanel }))
+)
+const TerminalPanel = React.lazy(() =>
+  import("./terminal-panel").then((m) => ({ default: m.TerminalPanel }))
+)
 
 export interface InspectorSidebarProps {
   /** Optional explicit override; defaults to `useAppStore((s) => s.rightMode)`. */
   mode?: RightPaneMode
   /**
    * Optional renderer or ReactNode for document previews (`browser` | `excel` | `markdown`),
-   * supplied by `features/previews` once wired in Wave 2.
+   * supplied by `features/previews`.
    */
   previewFallback?:
     | React.ReactNode
@@ -44,17 +53,17 @@ function DefaultPreviewPlaceholder({ tab }: { tab: PreviewDocumentTab }) {
     { label: string; description: string; Icon: typeof Globe }
   > = {
     browser: {
-      label: activeDocPill ?? "localhost:3000",
+      label: activeDocPill ?? "Browser",
       description: "Live local browser preview pane ready for connection.",
       Icon: Globe,
     },
     excel: {
-      label: activeDocPill ?? "Q4-Token-Cost-Model.xlsx",
+      label: activeDocPill ?? "Spreadsheet",
       description: "Interactive spreadsheet workbook preview pane ready.",
       Icon: FileSpreadsheet,
     },
     markdown: {
-      label: activeDocPill ?? "MIGRATION_PLAN.md",
+      label: activeDocPill ?? "Document",
       description: "Rendered Markdown document preview pane ready.",
       Icon: FileText,
     },

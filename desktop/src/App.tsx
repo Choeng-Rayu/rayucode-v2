@@ -15,26 +15,42 @@ import {
   TelegramSkeleton,
 } from "@/components/ui/page-skeletons"
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
-import { AutomationsView } from "@/features/automations"
-import { ChangesView } from "@/features/changes"
 import { ChatStream } from "@/features/execution-trace"
-import { PluginsView } from "@/features/plugins"
-import { PreviewsHost } from "@/features/previews"
 import {
   HomeView,
   SessionComposer,
   type ComposerSubmitPayload,
 } from "@/features/sessions"
-import { SettingsView } from "@/features/settings"
-import { SwarmView } from "@/features/swarm"
-import { TelegramView } from "@/features/telegram"
 import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
+
+const AutomationsView = React.lazy(() =>
+  import("@/features/automations").then((m) => ({ default: m.AutomationsView }))
+)
+const ChangesView = React.lazy(() =>
+  import("@/features/changes").then((m) => ({ default: m.ChangesView }))
+)
+const PluginsView = React.lazy(() =>
+  import("@/features/plugins").then((m) => ({ default: m.PluginsView }))
+)
+const PreviewsHost = React.lazy(() =>
+  import("@/features/previews").then((m) => ({ default: m.PreviewsHost }))
+)
+const SettingsView = React.lazy(() =>
+  import("@/features/settings").then((m) => ({ default: m.SettingsView }))
+)
+const SwarmView = React.lazy(() =>
+  import("@/features/swarm").then((m) => ({ default: m.SwarmView }))
+)
+const TelegramView = React.lazy(() =>
+  import("@/features/telegram").then((m) => ({ default: m.TelegramView }))
+)
 
 function ActiveWorkspaceStage() {
   const queryClient = useQueryClient()
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
+  const isStreamActive = useAppStore((s) => s.isStreamActive)
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
@@ -53,6 +69,10 @@ function ActiveWorkspaceStage() {
           permissionMode: payload.permissionMode,
         })
         targetSessionId = created.id
+        queryClient.setQueryData(
+          ["execution-trace", "turns", created.id],
+          []
+        )
         useAppStore.getState().setActiveSession(created.id, created.title)
         void queryClient.invalidateQueries({ queryKey: ["sessions"] })
       }
@@ -76,11 +96,12 @@ function ActiveWorkspaceStage() {
           onSubmit={handleWorkspaceSubmit}
           onStop={() => {
             useAppStore.getState().setPendingStreamPrompt(null)
+            useAppStore.getState().setIsStreamActive(false)
             if (activeSessionId) {
-              void ipcClient.cloud.cancelStream(activeSessionId)
+              void ipcClient.trace.cancel(activeSessionId)
             }
           }}
-          isSubmitting={Boolean(pendingStreamPrompt)}
+          isSubmitting={Boolean(pendingStreamPrompt) || isStreamActive}
         />
       }
     />

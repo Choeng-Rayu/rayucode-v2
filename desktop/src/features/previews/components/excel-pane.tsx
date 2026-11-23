@@ -497,13 +497,6 @@ export function ExcelPane({
         >
           Home
         </span>
-        <button
-          type="button"
-          onClick={() => toast("Formulas: SUM, AVERAGE, MIN, MAX, COUNT active")}
-          className="cursor-pointer rounded px-1.5 py-0.5 hover:bg-hover hover:text-ink"
-        >
-          Formulas
-        </button>
         <span className="h-3.5 w-px bg-hairline" aria-hidden="true" />
         <button
           type="button"

@@ -110,6 +110,7 @@ export interface AppStoreState {
   authDialogOpen: boolean
   pendingPermission: PendingPermission | null
   pendingStreamPrompt: PendingStreamPrompt | null
+  isStreamActive: boolean
   leftCollapsed: boolean
   rightCollapsed: boolean
   rightMode: RightPaneMode
@@ -146,6 +147,7 @@ export interface AppStoreState {
   setAuthDialogOpen: (open: boolean) => void
   setPendingPermission: (permission: PendingPermission | null) => void
   setPendingStreamPrompt: (prompt: PendingStreamPrompt | null) => void
+  setIsStreamActive: (active: boolean) => void
   toggleLeftSidebar: () => void
   setLeftCollapsed: (collapsed: boolean) => void
   toggleRightSidebar: () => void
@@ -248,13 +250,13 @@ const DEFAULT_SLIDE_DECK: SlideDeckState = {
 
 const DEFAULT_TAB_PILLS: Record<RightTabId, string | null> = {
   overview: null,
-  terminal: "rayu daemon",
-  diff: "3 changed files",
+  terminal: "Terminal",
+  diff: "Changes",
   browser: "localhost:3000",
-  files: "MIGRATION_PLAN.md",
-  code: "lookup.rs",
-  excel: "Q4-Token-Cost-Model.xlsx",
-  markdown: "MIGRATION_PLAN.md",
+  files: "Files",
+  code: "Code",
+  excel: "Excel",
+  markdown: "Markdown",
   slide: "Slide",
   diagram: "Flowchart",
 }
@@ -343,9 +345,7 @@ export function syncAccentToDom(accent: AccentColor): void {
   }
 }
 
-const IS_TEST_ENV =
-  typeof import.meta !== "undefined" &&
-  (import.meta as { env?: { MODE?: string } }).env?.MODE === "test"
+const IS_TEST_ENV = import.meta.env.MODE === "test"
 
 export const useAppStore = create<AppStoreState>((set, get) => ({
   theme: readInitialTheme(),
@@ -363,13 +363,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   authDialogOpen: false,
   pendingPermission: null,
   pendingStreamPrompt: null,
+  isStreamActive: false,
   leftCollapsed: false,
   rightCollapsed: true,
   rightMode: "context",
   activeRightTab: "overview",
   activeDocPill: null,
-  activeCodeFile: "lookup.rs",
-  activeCodeLine: 21,
+  activeCodeFile: IS_TEST_ENV ? "lookup.rs" : null,
+  activeCodeLine: IS_TEST_ENV ? 21 : null,
   fullView: false,
   keepAwake: false,
   sideChatOpen: false,
@@ -541,6 +542,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setPendingStreamPrompt: (pendingStreamPrompt) => {
     set({ pendingStreamPrompt })
+  },
+
+  setIsStreamActive: (isStreamActive) => {
+    set({ isStreamActive })
   },
 
   toggleLeftSidebar: () => {
@@ -876,7 +881,11 @@ export function applyUrlQueryParamsToStore(search?: string): void {
     if (routeParam === "workspace") {
       const defaultSession =
         sessionParam ??
-        (tabParam === "excel" ? "ses_q4_excel" : "ses_retire_cache")
+        (IS_TEST_ENV
+          ? tabParam === "excel"
+            ? "ses_q4_excel"
+            : "ses_retire_cache"
+          : store.activeSessionId)
       useAppStore.setState({
         activeRoute: "workspace",
         activeSessionId: defaultSession,
@@ -898,12 +907,15 @@ export function applyUrlQueryParamsToStore(search?: string): void {
     const rightTab = tabParam as RightTabId
     const pillParam = params.get("pill")
     if (rightTab === "code") {
-      const fileParam = params.get("file") ?? pillParam ?? "lookup.rs"
+      const fileParam =
+        params.get("file") ?? pillParam ?? (IS_TEST_ENV ? "lookup.rs" : "")
       const lineParam = params.get("line")
-      store.openCodeFile(
-        fileParam,
-        lineParam !== null ? Number(lineParam) : 21
-      )
+      if (fileParam) {
+        store.openCodeFile(
+          fileParam,
+          lineParam !== null ? Number(lineParam) : null
+        )
+      }
     } else {
       store.openRightTab(
         rightTab,
@@ -911,12 +923,14 @@ export function applyUrlQueryParamsToStore(search?: string): void {
       )
     }
   } else if (params.has("file")) {
-    const fileParam = params.get("file") ?? "lookup.rs"
+    const fileParam = params.get("file")
     const lineParam = params.get("line")
-    store.openCodeFile(
-      fileParam,
-      lineParam !== null ? Number(lineParam) : 21
-    )
+    if (fileParam) {
+      store.openCodeFile(
+        fileParam,
+        lineParam !== null ? Number(lineParam) : null
+      )
+    }
   }
 
   const fullviewParam = params.get("fullview")

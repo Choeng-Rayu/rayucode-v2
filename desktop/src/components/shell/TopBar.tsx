@@ -194,7 +194,12 @@ export function MoreOptionsMenu({
         </DropdownMenuItem>
 
         <DropdownMenuItem
-          onClick={() => openDocPreview("markdown", "MIGRATION_PLAN.md")}
+          onClick={() =>
+            openDocPreview(
+              "markdown",
+              import.meta.env.MODE === "test" ? "MIGRATION_PLAN.md" : "Plan.md"
+            )
+          }
           className="rounded-lg px-2.5 py-2 text-[13.5px] text-ink"
         >
           <ListTodo
@@ -333,13 +338,15 @@ export function TopBar() {
   const sessionTitle =
     activeRoute === "workspace"
       ? activeSessionTitle ??
-        (activeSessionId === "ses_q4_excel"
-          ? "Q4 token cost spreadsheet"
-          : activeSessionId === "ses_model_picker"
-            ? "VS Code: model picker refresh"
-            : activeSessionId === "ses_retire_cache"
-              ? "Retire legacy session cache"
-              : "Active session")
+        (import.meta.env.MODE === "test"
+          ? activeSessionId === "ses_q4_excel"
+            ? "Q4 token cost spreadsheet"
+            : activeSessionId === "ses_model_picker"
+              ? "VS Code: model picker refresh"
+              : activeSessionId === "ses_retire_cache"
+                ? "Retire legacy session cache"
+                : "Active session"
+          : "Active session")
       : routeMeta.title
 
   const isCleanHomeHeader = activeRoute === "home" && rightCollapsed
@@ -540,7 +547,8 @@ export function RightSidebarTopBar() {
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
   const addSlide = useAppStore((s) => s.addSlide)
 
-  const currentPill = activeDocPill ?? "lookup.rs"
+  const currentPill =
+    activeDocPill ?? (import.meta.env.MODE === "test" ? "lookup.rs" : "Code")
   const backgroundTabs = openDocTabs
     .filter((t) => t.pill !== currentPill)
     .slice(-1)

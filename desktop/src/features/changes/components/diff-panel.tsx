@@ -15,6 +15,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAppStore, type ThemeMode } from "@/lib/app-store"
+import {
+  detectLanguageFromPath,
+  highlightCodeLines,
+  type HighlightedToken,
+} from "@/lib/shiki-highlighter"
 import { cn } from "@/lib/utils"
 
 import {
@@ -24,12 +29,6 @@ import {
   type DiffViewMode,
   type FileReviewDecision,
 } from "../types"
-
-interface HighlightedToken {
-  content: string
-  color?: string
-  tokenClass?: string
-}
 
 const CODE_KEYWORDS = new Set([
   "use",
@@ -85,21 +84,6 @@ const CODE_TYPES = new Set([
   "Vec",
 ])
 
-const shikiTokenCache = new Map<string, HighlightedToken[][]>()
-
-function detectShikiLanguage(filePath: string): string {
-  const lower = filePath.toLowerCase()
-  if (lower.endsWith(".rs")) return "rust"
-  if (lower.endsWith(".md") || lower.endsWith(".mdx")) return "markdown"
-  if (lower.endsWith(".tsx")) return "tsx"
-  if (lower.endsWith(".ts")) return "typescript"
-  if (lower.endsWith(".jsx")) return "jsx"
-  if (lower.endsWith(".js")) return "javascript"
-  if (lower.endsWith(".json")) return "json"
-  if (lower.endsWith(".css")) return "css"
-  return "rust"
-}
-
 function tokenizeLineFallback(line: string): HighlightedToken[] {
   if (!line) {
     return [{ content: " ", tokenClass: "text-[var(--code-plain)]" }]
@@ -150,30 +134,12 @@ async function highlightDiffLinesWithShiki(
   filePath: string,
   theme: ThemeMode
 ): Promise<HighlightedToken[][]> {
-  const language = detectShikiLanguage(filePath)
-  const shikiTheme = theme === "light" ? "vitesse-light" : "vitesse-dark"
-  const source = lines.map((line) => line.content).join("\n")
-  const cacheKey = `${language}::${shikiTheme}::${source}`
-  const cached = shikiTokenCache.get(cacheKey)
-  if (cached) return cached
-
-  const { codeToTokens } = await import("shiki")
-  const result = await codeToTokens(source, {
-    lang: language as "rust",
-    theme: shikiTheme,
-  })
-
-  const mapped: HighlightedToken[][] = result.tokens.map((lineTokens) =>
-    lineTokens.length > 0
-      ? lineTokens.map((tok) => ({
-          content: tok.content,
-          color: tok.color,
-        }))
-      : [{ content: " ", tokenClass: "text-[var(--code-plain)]" }]
+  const language = detectLanguageFromPath(filePath)
+  return highlightCodeLines(
+    lines.map((line) => line.content),
+    language,
+    theme
   )
-
-  shikiTokenCache.set(cacheKey, mapped)
-  return mapped
 }
 
 interface IndexedDiffLine {

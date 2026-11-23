@@ -103,6 +103,14 @@ export const GitCreatePrPayloadSchema = z.object({
   summary: z.string().trim().min(5),
 })
 
+export const GitCheckoutBranchPayloadSchema = z.object({
+  branch: z.string().trim().min(1).max(240),
+})
+
+export const GitCreateWorktreePayloadSchema = z.object({
+  baseBranch: z.string().trim().min(1).max(240).optional(),
+})
+
 export const HarnessSessionIdSchema = z.object({
   sessionId: z.string().min(1),
 })

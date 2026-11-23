@@ -79,7 +79,7 @@ const EMPTY_DIFF: InlineDiffCardData = {
   lines: [],
 }
 
-function formatDurationSeconds(secs?: number): string {
+export function formatDurationSeconds(secs?: number): string {
   if (!secs || secs <= 0) return "1s"
   if (secs < 60) return `${Math.max(1, Math.round(secs))}s`
   const mins = Math.floor(secs / 60)
@@ -367,6 +367,7 @@ export function mapHistoryMessagesToTurns(
 export interface HarnessStreamTracker {
   toolInputs: Map<string, string>
   startedAtMs: number
+  turnActive: boolean
   batchEpoch: number
   lastCredits?: string
   lastKvCachePct?: number
@@ -376,6 +377,7 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
   return {
     toolInputs: new Map(),
     startedAtMs: Date.now(),
+    turnActive: false,
     batchEpoch: 1,
   }
 }
@@ -385,6 +387,25 @@ export function mapHarnessFrameToLiveEvents(
   tracker: HarnessStreamTracker
 ): MappedLiveTraceEvent[] {
   const ev = typeof frame.ev === "string" ? frame.ev : ""
+
+  if (ev === "turn_start") {
+    tracker.startedAtMs = Date.now()
+    tracker.turnActive = true
+    tracker.batchEpoch = 1
+    tracker.toolInputs.clear()
+    return []
+  }
+
+  if (
+    !tracker.turnActive &&
+    (ev === "text_delta" ||
+      ev === "reasoning_delta" ||
+      ev === "tool_start" ||
+      ev === "tool_call")
+  ) {
+    tracker.startedAtMs = Date.now()
+    tracker.turnActive = true
+  }
 
   switch (ev) {
     case "text_delta": {
@@ -400,9 +421,8 @@ export function mapHarnessFrameToLiveEvents(
       return []
     }
     case "reasoning_done": {
-      const secs =
-        typeof frame.duration_secs === "number" ? frame.duration_secs : 1
-      return [{ type: "duration", workedDuration: formatDurationSeconds(secs) }]
+      // Keep the cumulative turn elapsed timer ticking rather than overwriting with single reasoning block duration.
+      return []
     }
     case "tool_start": {
       const callId = String(frame.call_id ?? "")
@@ -784,6 +804,7 @@ export function mapHarnessFrameToLiveEvents(
         timestamp: "Just now",
       })
       tracker.batchEpoch = 1
+      tracker.turnActive = false
       return events
     }
     default:

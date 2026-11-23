@@ -182,10 +182,7 @@ export function ShellCard({
         onClick={handleToggle}
         className={cn(
           "-ml-2 inline-flex max-w-full cursor-pointer items-center gap-2 self-start rounded-[9px] border border-transparent px-2.5 py-1 text-left text-[13px] leading-[1.4] text-muted-ink transition-colors hover:bg-hover hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          isExpanded &&
-            (isPlaintextTool
-              ? "border-info bg-inset text-ink"
-              : "border-brand/45 bg-brand-softer text-ink")
+          isExpanded && "border-hairline bg-inset text-ink"
         )}
       >
         <RowIcon

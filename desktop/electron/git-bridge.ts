@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process"
 import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { promisify } from "node:util"
 
 import { resolveSafeWorkspacePath } from "./workspace-bridge.js"
@@ -179,6 +181,161 @@ export async function getGitBranch(cwd: string): Promise<string | null> {
     return out.trim() || null
   } catch {
     return null
+  }
+}
+
+export interface GitBranchesPayload {
+  current: string
+  branches: string[]
+}
+
+export async function listGitBranches(
+  cwd: string
+): Promise<GitBranchesPayload> {
+  const current = (await getGitBranch(cwd)) ?? "main"
+  try {
+    const out = await runGit(cwd, [
+      "branch",
+      "--format=%(refname:short)",
+    ])
+    const seen = new Set<string>()
+    if (current) seen.add(current)
+    for (const line of out.split("\n")) {
+      const name = line.trim()
+      if (name && !name.startsWith("(")) {
+        seen.add(name)
+      }
+    }
+    return {
+      current,
+      branches: Array.from(seen),
+    }
+  } catch {
+    return {
+      current,
+      branches: [current],
+    }
+  }
+}
+
+function summarizeGitError(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  const lines = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(
+      (l) =>
+        l.length > 0 &&
+        !l.startsWith("Command failed:") &&
+        !l.startsWith("Aborting")
+    )
+  const fatalOrError = lines.find(
+    (l) =>
+      l.startsWith("fatal:") ||
+      l.startsWith("error:") ||
+      l.startsWith("Please ")
+  )
+  const chosen = (fatalOrError ?? lines[0] ?? fallback)
+    .replace(/^(fatal|error):\s*/i, "")
+    .trim()
+  return chosen.length > 140 ? `${chosen.slice(0, 137)}...` : chosen || fallback
+}
+
+export async function checkoutGitBranch(
+  cwd: string,
+  branch: string
+): Promise<{
+  ok: boolean
+  branch: string
+  keptWorkingTree?: boolean
+  error?: string
+}> {
+  const target = branch.trim()
+  if (!target) {
+    return { ok: false, branch: "main", error: "Branch name is required" }
+  }
+  const currentBefore = await getGitBranch(cwd)
+  if (currentBefore === target) {
+    return { ok: true, branch: target }
+  }
+  try {
+    await runGit(cwd, ["checkout", target])
+    const current = (await getGitBranch(cwd)) ?? target
+    return { ok: true, branch: current }
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err)
+    // When the working tree has uncommitted changes that would be overwritten by
+    // an in-place checkout, keep the user's selected target branch for the session
+    // without clobbering uncommitted files or throwing a multi-line file dump.
+    if (
+      raw.includes("would be overwritten by checkout") ||
+      raw.includes("Please commit your changes or stash them")
+    ) {
+      return {
+        ok: true,
+        branch: target,
+        keptWorkingTree: true,
+      }
+    }
+    const current = (await getGitBranch(cwd)) ?? target
+    return {
+      ok: false,
+      branch: current,
+      error: summarizeGitError(err, `Could not switch to ${target}`),
+    }
+  }
+}
+
+export async function createGitWorktree(
+  cwd: string,
+  baseBranch?: string
+): Promise<{
+  ok: boolean
+  path: string
+  branch: string
+  project: string
+  error?: string
+}> {
+  const resolved = path.resolve(cwd)
+  const project = path.basename(resolved)
+  const currentBranch = (await getGitBranch(resolved)) ?? "main"
+  const requestedBase =
+    baseBranch &&
+    baseBranch !== "Local Checkout" &&
+    !baseBranch.startsWith("worktree/")
+      ? baseBranch.trim()
+      : currentBranch
+  const shortId = Date.now().toString(36).slice(-4)
+  const safeBase = requestedBase.replace(/[^a-zA-Z0-9._-]+/g, "-")
+  const newBranch = `worktree/${safeBase}-${shortId}`
+  const worktreesRoot = path.join(os.homedir(), ".rayu", "worktrees")
+  const worktreePath = path.join(worktreesRoot, `${project}-${shortId}`)
+  try {
+    await fs.mkdir(worktreesRoot, { recursive: true })
+    await runGit(resolved, [
+      "worktree",
+      "add",
+      "-b",
+      newBranch,
+      worktreePath,
+      requestedBase,
+    ]).catch(async () => {
+      await runGit(resolved, ["worktree", "add", "-b", newBranch, worktreePath])
+    })
+    return {
+      ok: true,
+      path: worktreePath,
+      branch: newBranch,
+      project,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      path: resolved,
+      branch: currentBranch,
+      project,
+      error: summarizeGitError(err, "Could not create git worktree"),
+    }
   }
 }
 

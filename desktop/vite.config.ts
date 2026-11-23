@@ -222,7 +222,7 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: Boolean(process.env.RAYU_SOURCEMAP),
     chunkSizeWarningLimit: 1500,
   },
 })

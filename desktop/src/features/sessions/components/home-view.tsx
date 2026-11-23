@@ -128,8 +128,11 @@ export function HomeView({
 
       setPendingSubmit(null)
       setPendingElapsedSec(0)
+      queryClient.setQueryData(
+        ["execution-trace", "turns", result.data.id],
+        []
+      )
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
-      void queryClient.invalidateQueries({ queryKey: ["execution-trace"] })
 
       // Sync the chosen Local Permissions mode to the Rust core before the first turn runs
       void ipcClient.harness
@@ -203,16 +206,11 @@ export function HomeView({
               data-testid="home-starting-indicator"
               className="flex flex-col gap-1.5"
             >
-              <div className="inline-flex items-center gap-2 text-[13.5px] font-medium text-ink">
-                <RayuProcessingMark animated className="size-[18px]" />
+              <div className="inline-flex items-center gap-1.5 text-[13.5px] font-medium text-ink">
+                <RayuProcessingMark animated className="size-[17px]" />
                 <span className="tabular-nums">
-                  {pendingElapsedSec > 0
-                    ? `Working · ${pendingElapsedSec}s`
-                    : "Starting session · 0s"}
+                  {`Working · ${Math.max(1, pendingElapsedSec)}s`}
                 </span>
-              </div>
-              <div className="pl-[26px] text-[12.5px] text-muted-ink">
-                Connecting to RayuCode engine...
               </div>
             </div>
           </div>

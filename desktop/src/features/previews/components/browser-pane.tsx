@@ -29,7 +29,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -66,20 +65,21 @@ const MIN_ZOOM = 50
 const MAX_ZOOM = 200
 const ZOOM_STEP = 10
 const IS_TEST_ENV = import.meta.env.MODE === "test"
-const DEFAULT_INTERNET_URL = "https://www.google.com"
+const DEFAULT_INTERNET_URL = "https://www.google.com/"
 const DEFAULT_DEMO_URL = "http://localhost:3000/credits-dashboard"
 
 const QUICK_SITES = [
-  { label: "Google", url: "https://www.google.com" },
-  { label: "GitHub", url: "https://github.com" },
-  { label: "RayuCode", url: "https://rayucode.com" },
+  { label: "Google", url: "https://www.google.com/" },
+  { label: "GitHub", url: "https://github.com/" },
+  { label: "RayuCode", url: "https://rayucode.com/" },
   { label: "W3C Validator", url: "https://jigsaw.w3.org/css-validator/" },
-  { label: "localhost:3000", url: "http://localhost:3000" },
-  { label: "localhost:5173", url: "http://localhost:5173" },
+  { label: "localhost:3000", url: "http://localhost:3000/" },
+  { label: "localhost:5173", url: "http://localhost:5173/" },
 ]
 
 interface BrowserTabItem {
   id: string
+  initialUrl: string
   url: string
   title: string
   favicon?: string
@@ -113,6 +113,7 @@ function normalizeAddressInput(raw: string): string {
 function createInitialTab(url: string, title?: string): BrowserTabItem {
   return {
     id: `btab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    initialUrl: url,
     url,
     title: title ?? formatUrlHost(url),
     history: [url],
@@ -156,7 +157,7 @@ export function BrowserPane({ className }: BrowserPaneProps) {
   const [inspectMode, setInspectMode] = React.useState(false)
   const [findOpen, setFindOpen] = React.useState(false)
   const [findQuery, setFindQuery] = React.useState("")
-  const [liveWebMode, setLiveWebMode] = React.useState<boolean>(!IS_TEST_ENV)
+  const [liveWebMode] = React.useState<boolean>(!IS_TEST_ENV)
   const [visitedHistory, setVisitedHistory] = React.useState<string[]>([
     initialUrl,
   ])
@@ -940,34 +941,6 @@ export function BrowserPane({ className }: BrowserPaneProps) {
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuItem
-              onClick={() =>
-                toast("Browser uses isolated Rayu session partition")
-              }
-            >
-              <span>Import cookies and passwords...</span>
-            </DropdownMenuItem>
-
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <span>Passwords and autofill</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-48 rounded-xl">
-                <DropdownMenuLabel>Rayu Browser Vault</DropdownMenuLabel>
-                <DropdownMenuItem
-                  onClick={() => toast("Autofill stays local to this device")}
-                >
-                  <span>Local autofill enabled</span>
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            <DropdownMenuItem
-              onClick={() => toast("No active browser downloads")}
-            >
-              <span>Downloads</span>
-            </DropdownMenuItem>
-
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <span>History</span>
@@ -991,45 +964,22 @@ export function BrowserPane({ className }: BrowserPaneProps) {
             <DropdownMenuItem
               onClick={() => {
                 setVisitedHistory([currentUrl])
-                toast("Cleared browsing history and cache")
+                toast("Cleared tab history")
               }}
             >
-              <span>Clear browsing data</span>
+              <span>Clear tab history</span>
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
 
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <span>Browser settings</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-52 rounded-xl">
-                <DropdownMenuItem
-                  onClick={() => {
-                    setLiveWebMode((prev) => !prev)
-                    toast(
-                      liveWebMode
-                        ? "Switched to local dashboard preview"
-                        : "Switched to live internet browser"
-                    )
-                  }}
-                >
-                  <span>
-                    {liveWebMode
-                      ? "Switch to demo preview"
-                      : "Switch to live internet"}
-                  </span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    void openUrlInSystemBrowser(currentUrl)
-                    toast(`Opened ${currentUrl} in system browser`)
-                  }}
-                >
-                  <span>Open in system browser</span>
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
+            <DropdownMenuItem
+              onClick={() => {
+                void openUrlInSystemBrowser(currentUrl)
+                toast(`Opened ${currentUrl} in system browser`)
+              }}
+            >
+              <span>Open in system browser</span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
@@ -1109,7 +1059,7 @@ export function BrowserPane({ className }: BrowserPaneProps) {
                 <webview
                   ref={webviewRef}
                   key={activeTab.id}
-                  src={activeTab.url}
+                  src={activeTab.initialUrl}
                   partition="persist:rayu-browser"
                   allowpopups
                   className="h-full w-full flex-1 border-0 bg-canvas"

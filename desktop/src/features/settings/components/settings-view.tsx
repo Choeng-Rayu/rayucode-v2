@@ -17,7 +17,6 @@ import {
   SlidersHorizontal,
   Sun,
   UserCircle,
-  Volume2,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -1496,18 +1495,6 @@ auto_compact = ${preferences.autoCompactContext}`}
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="rounded-full"
-                      onClick={() =>
-                        toast(`Playing preview for ${preferences.voiceModel}`)
-                      }
-                    >
-                      <Volume2 className="size-3.5" />
-                      Preview
-                    </Button>
                   </div>
                 </div>
 

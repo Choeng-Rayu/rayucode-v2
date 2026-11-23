@@ -737,20 +737,31 @@ export class RayuDaemonClient extends EventEmitter {
   private async ensureAttached(
     client: RayucodeClient,
     sessionId: string
-  ): Promise<void> {
+  ): Promise<RayucodeClient> {
     if (!sessionId) {
-      return
+      return client
     }
     if (this.attachedSessionId === sessionId) {
       if (!this.configuredToolSessions.has(sessionId)) {
         await this.syncSessionTools(client, sessionId)
       }
-      return
+      return client
     }
-    const info = await client.attachSession(sessionId)
+    // Just like `vscode/host/harnessSession.ts`, a socket connection in the
+    // Rust daemon is bound to the first session it subscribes to. When
+    // switching to a different sessionId, open a fresh socket connection so
+    // `attach_session` replies immediately instead of timing out after 15s.
+    let targetClient = client
+    if (this.attachedSessionId !== null) {
+      targetClient = await this.dialSocket(this.socketPath)
+    }
+    const info = await targetClient.attachSession(sessionId)
     this.attachedSessionId = info.session_id
-    await this.syncSessionTools(client, info.session_id)
-    await this.syncDesiredPermissionMode(client, info.session_id)
+    await Promise.allSettled([
+      this.syncSessionTools(targetClient, info.session_id),
+      this.syncDesiredPermissionMode(targetClient, info.session_id),
+    ])
+    return targetClient
   }
 
   async listSessions(includeArchived = false): Promise<SessionInfo[]> {
@@ -775,18 +786,23 @@ export class RayuDaemonClient extends EventEmitter {
       }
       const info = await client.createSession({ workingDir })
       this.attachedSessionId = info.session_id
-      await this.syncSessionTools(client, info.session_id)
-      await this.syncDesiredPermissionMode(client, info.session_id)
       const normalizedTitle = title?.trim()
-      if (normalizedTitle) {
-        try {
-          await client.renameSession(info.session_id, normalizedTitle)
-          return {
-            ...info,
-            title: normalizedTitle,
-          }
-        } catch {
-          // Non-fatal if rename fails; session is still attached
+      let renamed = false
+      await Promise.allSettled([
+        this.syncSessionTools(client, info.session_id),
+        this.syncDesiredPermissionMode(client, info.session_id),
+        normalizedTitle
+          ? client
+              .renameSession(info.session_id, normalizedTitle)
+              .then(() => {
+                renamed = true
+              })
+          : Promise.resolve(),
+      ])
+      if (normalizedTitle && renamed) {
+        return {
+          ...info,
+          title: normalizedTitle,
         }
       }
       return info
@@ -795,7 +811,7 @@ export class RayuDaemonClient extends EventEmitter {
 
   async attachSession(sessionId: string): Promise<SessionInfo> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
+      let client = await this.connect()
       if (this.attachedSessionId === sessionId) {
         if (!this.configuredToolSessions.has(sessionId)) {
           await this.syncSessionTools(client, sessionId)
@@ -807,26 +823,31 @@ export class RayuDaemonClient extends EventEmitter {
         const matched = list.find((s) => s.session_id === sessionId)
         if (matched) return matched
       }
+      if (this.attachedSessionId !== null && this.attachedSessionId !== sessionId) {
+        client = await this.dialSocket(this.socketPath)
+      }
       const info = await client.attachSession(sessionId)
       this.attachedSessionId = info.session_id
-      await this.syncSessionTools(client, info.session_id)
-      await this.syncDesiredPermissionMode(client, info.session_id)
+      await Promise.allSettled([
+        this.syncSessionTools(client, info.session_id),
+        this.syncDesiredPermissionMode(client, info.session_id),
+      ])
       return info
     })
   }
 
   async forkSession(sessionId: string): Promise<SessionInfo> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return client.forkSession(sessionId)
     })
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       await client.renameSession(sessionId, title)
     })
   }
@@ -835,8 +856,8 @@ export class RayuDaemonClient extends EventEmitter {
     sessionId: string
   ): Promise<{ messages: HistoryMessage[]; images: RenderedImage[] }> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return client.getHistoryWithImages(sessionId)
     })
   }
@@ -847,8 +868,8 @@ export class RayuDaemonClient extends EventEmitter {
     images?: ImageAttachment[]
   ): Promise<void> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       const trimmed = content.trim()
       const finalContent =
         trimmed.length > 0 ? content : "Analyze the attached image(s)."
@@ -885,16 +906,16 @@ export class RayuDaemonClient extends EventEmitter {
       return { ok: true }
     }
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return this.sendPermissionModeToClient(client, sessionId, mode)
     })
   }
 
   async getRuntimeInfo(sessionId: string): Promise<RuntimeInfo> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return client.getRuntimeInfo(sessionId)
     })
   }
@@ -903,25 +924,43 @@ export class RayuDaemonClient extends EventEmitter {
     sessionId: string
   ): Promise<{ models: string[]; current?: string }> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return client.listModels(sessionId)
     })
   }
 
   async setModel(sessionId: string, model: string): Promise<void> {
+    if (!sessionId || sessionId.startsWith("ses_")) return
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
-      await client.setModel(sessionId, model)
+      try {
+        let client = await this.connect()
+        client = await this.ensureAttached(client, sessionId)
+        await client.setModel(sessionId, model)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/not support|invalid_request|busy|unknown model/i.test(msg)) {
+          return
+        }
+        throw err
+      }
     })
   }
 
   async setReasoningEffort(sessionId: string, effort: string): Promise<void> {
+    if (!sessionId || sessionId.startsWith("ses_")) return
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
-      await client.setReasoningEffort(sessionId, effort)
+      try {
+        let client = await this.connect()
+        client = await this.ensureAttached(client, sessionId)
+        await client.setReasoningEffort(sessionId, effort)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/not support|reasoning effort|invalid_request|busy/i.test(msg)) {
+          return
+        }
+        throw err
+      }
     })
   }
 
@@ -936,8 +975,8 @@ export class RayuDaemonClient extends EventEmitter {
     args: string[] = []
   ): Promise<{ command: RuntimeCommand; data: unknown; message: string }> {
     return this.runSerialized(async () => {
-      const client = await this.connect()
-      await this.ensureAttached(client, sessionId)
+      let client = await this.connect()
+      client = await this.ensureAttached(client, sessionId)
       return client.runtimeCommand(sessionId, command, args)
     })
   }
@@ -1007,8 +1046,10 @@ export class RayuDaemonClient extends EventEmitter {
           p.command as RuntimeCommand,
           Array.isArray(p.args) ? p.args.map(String) : []
         )) as T
+      case "previews.setBrowserBounds":
+        return { ok: true } as T
       default:
-        throw new Error(`Unsupported daemon invoke method: ${method}`)
+        return { ok: false, error: `Unsupported daemon invoke method: ${method}` } as T
     }
   }
 

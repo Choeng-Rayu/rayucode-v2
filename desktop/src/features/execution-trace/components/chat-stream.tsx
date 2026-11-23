@@ -87,7 +87,7 @@ function TurnView({
     <article
       data-slot="execution-turn"
       data-turn-id={turn.id}
-      className="flex flex-col gap-5"
+      className="flex min-w-0 flex-col gap-5"
     >
       {turn.compactedNotice && (
         <div
@@ -144,7 +144,7 @@ function TurnView({
         )}
       </div>
 
-      <div data-slot="msg-agent" className="flex flex-col gap-3">
+      <div data-slot="msg-agent" className="flex min-w-0 flex-col gap-3">
         {(turn.isLive ||
           turn.notes.length > 0 ||
           turn.groups.length > 0 ||
@@ -162,7 +162,7 @@ function TurnView({
         {hasAnswer && (
           <div
             data-slot="agent-answer"
-            className="flex flex-col gap-3.5 text-[14.5px] leading-[1.64] text-body"
+            className="flex min-w-0 flex-col gap-3.5 text-[14.5px] leading-[1.64] break-words text-body"
           >
             {turn.answerIntro.trim().length > 0 && (
               <EditorialMarkdown content={turn.answerIntro} />
@@ -214,7 +214,7 @@ function TurnView({
         {turn.outputArtifact ? (
           <div
             data-testid="turn-output-artifact-card"
-            className="flex items-center justify-between gap-3 rounded-[14px] border border-hairline bg-raised px-3.5 py-2.5 shadow-bevel-surface"
+            className="flex min-w-0 items-center justify-between gap-3 rounded-[14px] border border-hairline bg-raised px-3.5 py-2.5 shadow-bevel-surface"
           >
             <button
               type="button"
@@ -352,12 +352,15 @@ export function ChatStream({
 }: ChatStreamProps) {
   const storeSessionId = useAppStore((s) => s.activeSessionId)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
-  const effectiveSessionId = sessionIdProp ?? storeSessionId ?? "ses_retire_cache"
+  const effectiveSessionId =
+    sessionIdProp ??
+    storeSessionId ??
+    (import.meta.env.MODE === "test" ? "ses_retire_cache" : "")
 
   const queryClient = useQueryClient()
   const { data: fetchedTurns, isLoading } = useQuery({
     ...traceTurnsQueryOptions(effectiveSessionId),
-    enabled: controlledTurns === undefined,
+    enabled: controlledTurns === undefined && effectiveSessionId.length > 0,
   })
 
   const [completedSimulatedTurns, setCompletedSimulatedTurns] = React.useState<
@@ -370,7 +373,6 @@ export function ChatStream({
     isStreaming,
     startLiveTurn,
     pushEvent,
-    simulateLiveRun,
     resetLiveTurn,
   } = useLiveTrace({
     onComplete: (completedTurn) => {
@@ -387,10 +389,21 @@ export function ChatStream({
   const setPendingPermission = useAppStore((s) => s.setPendingPermission)
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
+  const setIsStreamActive = useAppStore((s) => s.setIsStreamActive)
   const daemonMode = useAppStore((s) => s.daemonMode)
   const authState = useAppStore((s) => s.authState)
   const activeLiveTurnRef = React.useRef(false)
   const turnsForHistoryRef = React.useRef<ExecutionTurn[]>([])
+
+  React.useEffect(() => {
+    setIsStreamActive(isStreaming)
+  }, [isStreaming, setIsStreamActive])
+
+  React.useEffect(() => {
+    return () => {
+      useAppStore.getState().setIsStreamActive(false)
+    }
+  }, [])
 
   // Stream live RayuCode harness frames directly into the rAF-batched trace
   React.useEffect(() => {
@@ -449,7 +462,10 @@ export function ChatStream({
     setPendingStreamPrompt(null)
 
     const isLiveDaemon =
-      daemonMode === "live" && !effectiveSessionId.startsWith("ses_")
+      !effectiveSessionId.startsWith("ses_") &&
+      (daemonMode === "live" ||
+        (typeof window !== "undefined" &&
+          Boolean(window.rayu?.harness?.sendMessage)))
     const isCloudLive = Boolean(
       authState?.signedIn &&
         typeof window !== "undefined" &&
@@ -565,6 +581,36 @@ export function ChatStream({
     const merged = [...baseTurns, ...sessionCompleted]
     if (liveTurn && liveTurn.sessionId === effectiveSessionId) {
       merged.push(liveTurn)
+    } else if (
+      pendingStreamPrompt &&
+      pendingStreamPrompt.sessionId === effectiveSessionId
+    ) {
+      merged.push({
+        id: `optimistic_turn_${effectiveSessionId}`,
+        sessionId: effectiveSessionId,
+        userPrompt: pendingStreamPrompt.prompt,
+        userImages: pendingStreamPrompt.images,
+        workedDuration: "1s",
+        isLive: true,
+        notes: [],
+        groups: [],
+        timeline: [],
+        activeToolStatus: null,
+        answerIntro: "",
+        answerBullets: [],
+        diffCard: {
+          id: "diff_optimistic",
+          file: "",
+          additions: 0,
+          deletions: 0,
+          hint: "",
+          lines: [],
+        },
+        timestamp: "Just now",
+        credits: "0.00 cr",
+        kvCachePct: 0,
+        pinned: false,
+      })
     }
     return merged
   }, [
@@ -573,6 +619,7 @@ export function ChatStream({
     completedSimulatedTurns,
     effectiveSessionId,
     liveTurn,
+    pendingStreamPrompt,
   ])
 
   React.useEffect(() => {
@@ -610,18 +657,13 @@ export function ChatStream({
     [effectiveSessionId, queryClient]
   )
 
-  const handleReplayTrace = React.useCallback(() => {
-    if (isStreaming) return
-    simulateLiveRun({ sessionId: effectiveSessionId })
-  }, [effectiveSessionId, isStreaming, simulateLiveRun])
-
   const bottomComposer = composerSlot ?? children
 
   return (
     <div
       ref={ref}
       data-slot="chat-stream"
-      className={cn("flex min-h-0 flex-1 flex-col", className)}
+      className={cn("@container/chat flex min-h-0 min-w-0 flex-1 flex-col", className)}
     >
       {isStreaming && (
         <div
@@ -631,12 +673,14 @@ export function ChatStream({
         />
       )}
 
-      <ScrollArea className="min-h-0 flex-1">
+      <ScrollArea className="min-h-0 min-w-0 flex-1">
         <div
           data-slot="stream-container"
-          className="mx-auto flex w-full max-w-[780px] flex-col gap-6 px-6 pt-5 pb-10"
+          className="mx-auto flex w-full max-w-[780px] min-w-0 flex-col gap-6 px-3.5 pt-5 pb-10 @min-[520px]/chat:px-6"
         >
-          {controlledTurns === undefined && isLoading ? (
+          {controlledTurns === undefined &&
+          isLoading &&
+          allTurns.length === 0 ? (
             <ChatSkeleton />
           ) : (
             allTurns.map((turn) => (
@@ -645,7 +689,6 @@ export function ChatStream({
                 turn={turn}
                 onForked={handleForked}
                 onPinToggled={handlePinToggled}
-                onReplayTrace={handleReplayTrace}
               />
             ))
           )}

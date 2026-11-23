@@ -116,6 +116,11 @@ const rayuApi = {
   git: {
     getChanges: () => ipcRenderer.invoke("rayu:git:changes"),
     getCommits: () => ipcRenderer.invoke("rayu:git:commits"),
+    listBranches: () => ipcRenderer.invoke("rayu:git:branches"),
+    checkoutBranch: (branch) =>
+      ipcRenderer.invoke("rayu:git:checkout", { branch }),
+    createWorktree: (baseBranch) =>
+      ipcRenderer.invoke("rayu:git:create-worktree", { baseBranch }),
     toggleStage: (filePath, staged) =>
       ipcRenderer.invoke("rayu:git:toggle-stage", { filePath, staged }),
     stageAll: (staged) =>

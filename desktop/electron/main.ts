@@ -17,11 +17,14 @@ import { BrowserCdpController } from "./browser-cdp.js"
 import { RayuDaemonClient } from "./daemon-client.js"
 import type { DesktopArtifactEvent } from "./desktop-tools.js"
 import {
+  checkoutGitBranch,
   commitGitStaged,
   createGitPullRequest,
+  createGitWorktree,
   discardGitFile,
   getGitChanges,
   getGitCommits,
+  listGitBranches,
   setAllGitStaged,
   toggleGitStage,
 } from "./git-bridge.js"
@@ -38,8 +41,10 @@ import {
   ExtensionRemoveMcpSchema,
   ExtensionToggleSkillSchema,
   ExtensionUpsertMcpSchema,
+  GitCheckoutBranchPayloadSchema,
   GitCommitPayloadSchema,
   GitCreatePrPayloadSchema,
+  GitCreateWorktreePayloadSchema,
   GitDiscardFilePayloadSchema,
   GitStageAllPayloadSchema,
   GitToggleStagePayloadSchema,
@@ -221,7 +226,11 @@ function registerIpcHandlers(): void {
     "rayu:harness:get-history",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
-      return daemonClient.getHistory(parsed.sessionId)
+      try {
+        return await daemonClient.getHistory(parsed.sessionId)
+      } catch {
+        return { messages: [], images: [] }
+      }
     }
   )
 
@@ -277,7 +286,11 @@ function registerIpcHandlers(): void {
     "rayu:harness:set-model",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetModelSchema.parse(rawPayload)
-      await daemonClient.setModel(parsed.sessionId, parsed.model)
+      try {
+        await daemonClient.setModel(parsed.sessionId, parsed.model)
+      } catch {
+        // Non-fatal when provider has a fixed model route
+      }
       return { ok: true }
     }
   )
@@ -286,7 +299,11 @@ function registerIpcHandlers(): void {
     "rayu:harness:set-effort",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetEffortSchema.parse(rawPayload)
-      await daemonClient.setReasoningEffort(parsed.sessionId, parsed.effort)
+      try {
+        await daemonClient.setReasoningEffort(parsed.sessionId, parsed.effort)
+      } catch {
+        // Non-fatal when provider does not support reasoning effort
+      }
       return { ok: true }
     }
   )
@@ -495,6 +512,34 @@ function registerIpcHandlers(): void {
   ipcMain.handle("rayu:git:commits", async () => {
     return getGitCommits(activeWorkspaceDir, 30)
   })
+
+  ipcMain.handle("rayu:git:branches", async () => {
+    return listGitBranches(activeWorkspaceDir)
+  })
+
+  ipcMain.handle(
+    "rayu:git:checkout",
+    async (_event, rawPayload: unknown) => {
+      const parsed = GitCheckoutBranchPayloadSchema.parse(rawPayload)
+      return checkoutGitBranch(activeWorkspaceDir, parsed.branch)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:git:create-worktree",
+    async (_event, rawPayload: unknown) => {
+      const parsed = GitCreateWorktreePayloadSchema.parse(rawPayload ?? {})
+      const created = await createGitWorktree(
+        activeWorkspaceDir,
+        parsed.baseBranch
+      )
+      if (created.ok && created.path) {
+        activeWorkspaceDir = path.resolve(created.path)
+        recordRecentWorkspace(activeWorkspaceDir)
+      }
+      return created
+    }
+  )
 
   // Real Local Shell Terminal Runner & Interactive OS PTY Sessions
   ipcMain.handle("rayu:terminal:run", async (_event, rawPayload: unknown) => {
