@@ -15,10 +15,30 @@ pub const RAYU_PROVIDER_DISPLAY_NAME: &str = "Rayu";
 pub const RAYU_ROUTE_API_METHOD: &str = "rayu";
 pub const RAYU_API_KEY_ENV: &str = "RAYU_API_KEY";
 pub const RAYU_FALLBACK_MODEL_ENV: &str = "RAYU_FALLBACK_MODEL";
+pub const RAYU_CLIENT_PRODUCT_ENV: &str = "RAYU_CLIENT_PRODUCT";
 pub const RAYU_CACHE_NAMESPACE: &str = "rayu";
+
+/// Resolve the `X-Rayu-Client` product header sent to the Rayu gateway.
+///
+/// Mirrors `rayu-gateway-rust`'s `auth::request_attribution` (`cli`, `rayucode`,
+/// `studio`, `api`) and legacy `rayu-cli`'s `resolveRayuClientProduct`: defaults
+/// to `"cli"` for terminal usage and honors `RAYU_CLIENT_PRODUCT` when spawned
+/// by VS Code (`rayucode`) or Desktop (`studio`).
+pub fn client_product() -> &'static str {
+    let Ok(raw) = std::env::var(RAYU_CLIENT_PRODUCT_ENV) else {
+        return "cli";
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "rayucode" => "rayucode",
+        "studio" => "studio",
+        "api" => "api",
+        _ => "cli",
+    }
+}
 
 mod api;
 mod apikey;
+mod error;
 mod login;
 mod onboarding;
 mod refresh;
@@ -26,13 +46,18 @@ mod session;
 mod urls;
 
 pub use api::{
-    RayuApiKeyLimits, RayuCredits, RayuEntitlements, RayuMe, RayuModelEntry, fetch_credits,
-    fetch_entitlements, fetch_me, gateway_credential, has_credentials,
+    RayuApiKeyLimits, RayuCredits, RayuEntitlements, RayuMe, RayuModelEntry, RayuTeamCredits,
+    fetch_credits, fetch_entitlements, fetch_me, gateway_credential, has_credentials,
 };
 pub use apikey::{
     ApiKeyVerdict, api_key_verdict_message, clear_apikey_state, clear_saved_api_key,
     configured_api_key, ensure_api_key_validated_once, has_api_key, has_validated_api_key,
     relaunch_api_key_issue, save_api_key, validate_api_key,
+};
+pub use error::{
+    ParsedRayuError, RAYU_LIMIT_HEADER, RayuAuthKind, RayuErrorContext, RayuErrorKind,
+    RayuGatewayError, extract_rayu_limit_header, format_reset_eta, is_rayu_account_wide_failure,
+    is_self_contained_rayu_guidance, sanitize_custom_error_message,
 };
 pub use login::{PreparedRayuLogin, RayuLoginOptions, exchange_callback_url, login};
 pub use onboarding::{has_completed_first_run_onboarding, mark_first_run_onboarding_completed};
@@ -50,7 +75,9 @@ pub use session::{
     RayuSession, RayuSessionUser, clear_session, has_usable_session, logout, read_session,
     write_session,
 };
-pub use urls::{account_url, api_base, config_dir, gateway_base, pricing_url, web_base};
+pub use urls::{
+    account_url, api_base, api_keys_url, config_dir, gateway_base, pricing_url, web_base,
+};
 
 /// Error guidance shown whenever a non-Rayu provider is requested in a build
 /// compiled with `ENABLE_OTHER_PROVIDER=false`.
@@ -198,6 +225,7 @@ pub(super) mod test_support {
         "RAYU_GATEWAY_URL",
         "RAYU_API_KEY",
         "RAYU_FALLBACK_MODEL",
+        "RAYU_CLIENT_PRODUCT",
         "USE_RAYU_OAUTH",
     ];
 

@@ -24,7 +24,12 @@ impl App {
                 .and_then(serde_json::Value::as_str)?;
             Some(format!("{}{}", &reason[..start], message))
         });
-        crate::util::truncate_str(compact.as_deref().unwrap_or(&reason), 240).to_string()
+        let limit = if compact.is_none() && crate::rayu::is_self_contained_rayu_guidance(&reason) {
+            360
+        } else {
+            240
+        };
+        crate::util::truncate_str(compact.as_deref().unwrap_or(&reason), limit).to_string()
     }
 
     /// Shared post-switch bookkeeping for every local model/provider switch
@@ -709,24 +714,7 @@ impl App {
         ) || current_provider
             .trim()
             .eq_ignore_ascii_case(crate::rayu::RAYU_PROVIDER_DISPLAY_NAME);
-        let lower_error = error.to_ascii_lowercase();
-        let has_status_code = |code: &str| {
-            let bytes = lower_error.as_bytes();
-            lower_error.match_indices(code).any(|(start, _)| {
-                let before_ok = start == 0 || !bytes[start - 1].is_ascii_digit();
-                let end = start + code.len();
-                let after_ok = end == bytes.len() || !bytes[end].is_ascii_digit();
-                before_ok && after_ok
-            })
-        };
-        let rayu_account_wide_failure = crate::provider::error_looks_like_credential_failure(error)
-            || rayucode_provider_core::is_definitive_usage_exhaustion(error)
-            || lower_error.contains("payment required")
-            || lower_error.contains("billing")
-            || lower_error.contains("forbidden")
-            || has_status_code("401")
-            || has_status_code("402")
-            || has_status_code("403");
+        let rayu_account_wide_failure = crate::rayu::is_rayu_account_wide_failure(error);
         let options = crate::provider::FallbackPickOptions {
             credential_failure: if is_rayu_route {
                 rayu_account_wide_failure
@@ -1480,7 +1468,7 @@ impl App {
             let offered = self.offer_fallback_after_error(&error);
             if offered && self.pending_provider_failover.is_some() {
                 // The countdown notice already includes the compact cause.
-            } else if offered {
+            } else if offered || crate::rayu::is_self_contained_rayu_guidance(&error) {
                 self.push_display_message(DisplayMessage::error(format!(
                     "Error: {}",
                     visible_error

@@ -1013,6 +1013,115 @@ fn rayu_usage_replaces_placeholder_card() {
 }
 
 #[test]
+fn rayu_usage_surfaces_pacing_windows_daily_turns_and_team_pool() {
+    let credits: crate::rayu::RayuCredits = serde_json::from_value(serde_json::json!({
+        "plan": "team",
+        "planName": "Team",
+        "creditsPerPeriod": 500.0,
+        "usedCredits": 500.0,
+        "remainingCredits": 0.0,
+        "resetSeconds": 86400,
+        "topupBalance": 0.0,
+        "topUpEnabled": false,
+        "limitMode": "gated",
+        "scope": "team",
+        "creditsPer5h": 50.0,
+        "windowUsedCredits": 25.0,
+        "windowResetSeconds": 3600,
+        "sessionWindowMinutes": 300,
+        "creditsPerWeek": 200.0,
+        "weekUsedCredits": 100.0,
+        "weekResetSeconds": 172800,
+        "maxDailyTurns": 100,
+        "turnsUsedToday": 40,
+        "turnsResetSeconds": 7200,
+        "team": {
+            "organizationId": 9,
+            "role": "member",
+            "poolCredits": 500.0,
+            "poolUsedCredits": 500.0,
+            "bucketQuota": 150.0,
+            "bucketRemaining": 80.0,
+            "purchasedCredits": 200.0,
+            "purchasedRemaining": 150.0
+        }
+    }))
+    .unwrap();
+    let report = rayu_usage_report(&credits);
+    let names: Vec<&str> = report.limits.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "Team credits (period)",
+            "Session window (5h)",
+            "Weekly window",
+            "Daily turns",
+        ]
+    );
+    // Period exhausted, but team purchased credits remain and windows/turns are below cap.
+    assert!(!report.hard_limit_reached);
+    assert!(
+        report
+            .extra_info
+            .contains(&("Team seat".into(), "80.00 / 150.00 remaining".into()))
+    );
+    assert!(
+        report
+            .extra_info
+            .contains(&("Team extra credits".into(), "150.00 remaining".into()))
+    );
+
+    // Exhausting an enforced pacing window triggers hard_limit_reached, while
+    // `limitMode: "full_credits"` turns pacing windows off.
+    let mut paced_hit = credits.clone();
+    paced_hit.window_used_credits = 50.0;
+    assert!(rayu_usage_report(&paced_hit).hard_limit_reached);
+
+    let mut full_credits = paced_hit;
+    full_credits.limit_mode = Some("full_credits".into());
+    let full_report = rayu_usage_report(&full_credits);
+    assert!(!full_report.hard_limit_reached);
+    assert!(
+        full_report
+            .extra_info
+            .contains(&("Pacing".into(), "off (using all credits)".into()))
+    );
+}
+
+#[test]
+fn rayu_usage_report_handles_overflowing_resets_and_non_finite_balances() {
+    let credits = crate::rayu::RayuCredits {
+        plan: "pro".into(),
+        plan_name: "Pro".into(),
+        credits_per_period: Some(100.0),
+        used_credits: 100.0,
+        remaining_credits: Some(0.0),
+        reset_seconds: i64::MAX,
+        topup_balance: f64::NAN,
+        credits_per_5h: Some(50.0),
+        window_used_credits: 10.0,
+        window_reset_seconds: i64::MAX,
+        credits_per_week: Some(80.0),
+        week_used_credits: 20.0,
+        week_reset_seconds: i64::MAX,
+        max_daily_turns: Some(10),
+        turns_used_today: 2,
+        turns_reset_seconds: i64::MAX,
+        team: Some(crate::rayu::RayuTeamCredits {
+            purchased_remaining: f64::NAN,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let report = rayu_usage_report(&credits);
+    assert!(
+        report.hard_limit_reached,
+        "NaN top-up/purchased balances must not clear hard_limit_reached"
+    );
+    assert!(report.limits.iter().all(|limit| limit.resets_at.is_none()));
+}
+
+#[test]
 fn kimi_usage_limits_shape_parses_windowed_quotas() {
     let json = serde_json::json!({
         "limits": [

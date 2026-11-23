@@ -1092,3 +1092,127 @@ fn preferred_fallback_model_precedence_and_disable_sentinel() {
 
     drop(env);
 }
+
+#[tokio::test]
+async fn account_and_credits_reads_surface_exact_gateway_and_backend_errors() {
+    let env = RayuTestEnv::new();
+    write_stored_session(&env, future_ms());
+    let (base, _requests) = mock_server(vec![
+        (
+            403,
+            r#"{"error":{"message":"account is suspended","type":"permission_error"}}"#.into(),
+            Duration::ZERO,
+        ),
+        (
+            401,
+            r#"{"error":{"message":"invalid API key","type":"authentication_error"}}"#.into(),
+            Duration::ZERO,
+        ),
+        (
+            401,
+            r#"{"statusCode":401,"message":"Invalid or expired code","error":"Unauthorized"}"#
+                .into(),
+            Duration::ZERO,
+        ),
+    ]);
+    crate::env::set_var("RAYU_API_URL", &base);
+    crate::env::set_var("RAYU_GATEWAY_URL", &base);
+
+    let suspended = fetch_me().await.unwrap_err().to_string();
+    assert!(
+        suspended.contains("suspended") && suspended.contains("HTTP 403"),
+        "{suspended}"
+    );
+
+    let bad_key = fetch_credits("rayu_sk_live_revoked_test")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bad_key.contains("API key rejected") && bad_key.contains("/login rayu-api"),
+        "{bad_key}"
+    );
+
+    let bad_code = exchange_callback_url("http://127.0.0.1:43210/callback?code=bad&state=st")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bad_code.contains("Token exchange failed (HTTP 401)")
+            && bad_code.contains("Invalid or expired code"),
+        "{bad_code}"
+    );
+
+    drop(env);
+}
+
+#[tokio::test]
+async fn fetch_me_and_credits_refresh_jwt_once_on_401_and_respect_client_product() {
+    let env = RayuTestEnv::new();
+    write_stored_session(&env, future_ms());
+    crate::env::set_var(RAYU_CLIENT_PRODUCT_ENV, "rayucode");
+    assert_eq!(client_product(), "rayucode");
+
+    let refreshed = serde_json::json!({
+        "accessToken": "access-renewed-me",
+        "refreshToken": "refresh-2",
+        "expiresAt": future_ms()
+    })
+    .to_string();
+    let me_ok = serde_json::json!({
+        "user": {"id": 7, "email": "seven@example.invalid", "displayName": "Seven", "avatarUrl": null, "role": "user"},
+        "status": "active"
+    })
+    .to_string();
+    let credits_ok = serde_json::json!({
+        "plan": "team", "planName": "Team",
+        "creditsPerPeriod": 500.0, "usedCredits": 100.0, "remainingCredits": 400.0,
+        "resetSeconds": 3600, "topupBalance": 0.0, "topUpEnabled": false,
+        "scope": "team", "limitMode": "gated",
+        "creditsPer5h": 50.0, "windowUsedCredits": 10.0, "windowResetSeconds": 1800,
+        "creditsPerWeek": 200.0, "weekUsedCredits": 40.0, "weekResetSeconds": 86400,
+        "maxDailyTurns": 100, "turnsUsedToday": 12, "turnsRemaining": 88, "turnsResetSeconds": 7200,
+        "team": {
+            "organizationId": 9, "role": "member",
+            "poolCredits": 500.0, "poolUsedCredits": 100.0,
+            "bucketQuota": 150.0, "bucketRemaining": 120.0,
+            "purchasedCredits": 250.0, "purchasedRemaining": 200.0
+        }
+    })
+    .to_string();
+
+    let (base, requests) = mock_server(vec![
+        (401, r#"{"error":{"message":"invalid token"}}"#.into(), Duration::ZERO),
+        (200, refreshed, Duration::ZERO),
+        (200, me_ok, Duration::ZERO),
+        (200, credits_ok, Duration::ZERO),
+    ]);
+    crate::env::set_var("RAYU_API_URL", &base);
+    crate::env::set_var("RAYU_GATEWAY_URL", &base);
+
+    let profile = fetch_me().await.unwrap();
+    assert_eq!(profile.user.id, 7);
+    let credits = fetch_credits("access-renewed-me").await.unwrap();
+    assert!(credits.is_team_scope());
+    assert!(credits.is_pacing_enforced());
+    assert!(credits.has_spendable_credits());
+    assert_eq!(credits.credits_per_5h, Some(50.0));
+    assert_eq!(credits.credits_per_week, Some(200.0));
+    assert_eq!(credits.max_daily_turns, Some(100));
+    assert_eq!(credits.team.as_ref().unwrap().purchased_remaining, 200.0);
+
+    let reqs: Vec<String> = requests.try_iter().collect();
+    assert_eq!(reqs.len(), 4);
+    assert!(reqs[0].starts_with("GET /me "));
+    assert!(reqs[1].starts_with("POST /cli/refresh "));
+    assert!(reqs[2].starts_with("GET /me "));
+    assert!(reqs[3].starts_with("GET /v1/credits "));
+    assert!(
+        reqs[3]
+            .to_ascii_lowercase()
+            .contains("x-rayu-client: rayucode\r\n"),
+        "{}",
+        reqs[3]
+    );
+    drop(env);
+}

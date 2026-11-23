@@ -16,7 +16,7 @@ use super::urls::{config_dir, gateway_base};
 
 const STATE_FILE: &str = "rayu-apikey-state.json";
 const ENV_FILE: &str = "rayu.env";
-const KEY_PREFIX: &str = "rayu_sk_live_";
+pub(super) const KEY_PREFIX: &str = "rayu_sk_live_";
 
 static VALIDATED_FINGERPRINT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
@@ -118,17 +118,9 @@ pub enum ApiKeyVerdict {
     Unavailable,
 }
 
-fn has_spendable_credits(credits: &super::api::RayuCredits) -> bool {
-    match credits.remaining_credits {
-        None => true,
-        Some(remaining) if remaining > 0.0 => true,
-        Some(_) => credits.topup_balance > 0.0,
-    }
-}
-
 /// Validate a key against `GET {gateway}/v1/credits` and record the verdict.
 /// 200 (spendable) → Valid, 200 (0 remaining & 0 topup) → NoCredit, 401 → Invalid,
-/// anything else (offline, 5xx, …) → Unavailable.
+/// anything else (offline, 403, 5xx, …) → Unavailable (fail open).
 pub async fn validate_api_key(key: &str) -> ApiKeyVerdict {
     let key = key.trim();
     if key.is_empty() {
@@ -137,6 +129,7 @@ pub async fn validate_api_key(key: &str) -> ApiKeyVerdict {
     let response = super::http_client()
         .get(format!("{}/v1/credits", gateway_base()))
         .bearer_auth(key)
+        .header("x-rayu-client", super::client_product())
         .send()
         .await;
     let Ok(response) = response else {
@@ -149,7 +142,7 @@ pub async fn validate_api_key(key: &str) -> ApiKeyVerdict {
             Ok(credits) => {
                 let plan_name =
                     (!credits.plan_name.is_empty()).then_some(credits.plan_name.clone());
-                if has_spendable_credits(&credits) {
+                if credits.has_spendable_credits() {
                     record_verdict(key, "valid", plan_name);
                     ApiKeyVerdict::Valid
                 } else {
@@ -163,10 +156,20 @@ pub async fn validate_api_key(key: &str) -> ApiKeyVerdict {
             }
         }
     } else if status.as_u16() == 401 {
+        let (_, _, _, body) = super::error::read_http_error_parts(response).await;
+        crate::logging::warn(&format!(
+            "Rayu API key validation rejected (HTTP 401): {}",
+            crate::util::truncate_str(body.trim(), 200)
+        ));
         record_verdict(key, "invalid", None);
         ApiKeyVerdict::Invalid
     } else {
-        // 5xx / proxy errors are not a verdict on the key.
+        // 403/429/5xx / proxy errors are not a verdict on the key. Fail open.
+        let (code, _, _, body) = super::error::read_http_error_parts(response).await;
+        crate::logging::warn(&format!(
+            "Rayu API key validation unavailable (HTTP {code}): {}",
+            crate::util::truncate_str(body.trim(), 200)
+        ));
         ApiKeyVerdict::Unavailable
     }
 }

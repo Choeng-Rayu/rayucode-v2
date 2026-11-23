@@ -57,6 +57,10 @@ const QUERY_SOURCE: &str = "rayucode_v2_agent";
 const SESSION_ID_HEADER: &str = "x-rayu-session-id";
 /// Intended Rayu model code, logged by the gateway for routing observability.
 const INTENDED_MODEL_HEADER: &str = "x-rayu-intended-model";
+/// Model code placed on the wire, matched by the gateway against `intended`.
+const RESOLVED_MODEL_HEADER: &str = "x-rayu-resolved-model";
+/// Client app version hint read by gateway middleware (`CLIENT_CONTEXT.md`).
+const CLIENT_APP_VERSION_HEADER: &str = "x-rayu-client-app-version";
 
 fn new_request_id() -> String {
     format!("rv2_{}", uuid::Uuid::new_v4().simple())
@@ -200,11 +204,13 @@ impl RayuProvider {
                 "anthropic-version",
                 rayucode_base::provider_catalog::ANTHROPIC_VERSION_HEADER_VALUE,
             )
-            .header("x-rayu-client", "cli")
+            .header("x-rayu-client", rayucode_base::rayu::client_product())
+            .header(CLIENT_APP_VERSION_HEADER, env!("CARGO_PKG_VERSION"))
             .header(REQUEST_ID_HEADER, &request_id)
             .header(LOGICAL_REQUEST_ID_HEADER, logical_request_id)
             .header(QUERY_SOURCE_HEADER, QUERY_SOURCE)
-            .header(INTENDED_MODEL_HEADER, &model);
+            .header(INTENDED_MODEL_HEADER, &model)
+            .header(RESOLVED_MODEL_HEADER, &model);
         if let Some(session_id) = self.lock_session_id().clone().filter(|s| !s.is_empty()) {
             req_builder = req_builder.header(SESSION_ID_HEADER, session_id);
         }
@@ -222,33 +228,52 @@ impl RayuProvider {
         if !status.is_success() {
             // Captured before the body is consumed: the gateway queues a burst
             // and only answers 429/503 once capacity did not free in time, with
-            // the wait it expects in `Retry-After`.
+            // the wait it expects in `Retry-After` and the machine-readable
+            // denial tag in `X-Rayu-Limit`.
             let retry_after = rayucode_provider_core::retry_after::retry_after(response.headers());
+            let retry_after_secs = retry_after
+                .map(|r| {
+                    let d = r.remaining();
+                    let secs = d.as_secs().saturating_add(u64::from(d.subsec_nanos() > 0));
+                    secs.min(i64::MAX as u64) as i64
+                })
+                .filter(|&s| s > 0);
+            let limit_header = rayucode_base::rayu::extract_rayu_limit_header(response.headers());
             let should_retry = response
                 .headers()
                 .get("x-should-retry")
                 .and_then(|v| v.to_str().ok())
                 .is_none_or(|v| !v.eq_ignore_ascii_case("false"));
             let body = rayucode_provider_core::http_error_body(response, "Rayu gateway").await;
-            let brief = extract_gateway_error_summary(&body);
-            let message = format!(
-                "Rayu gateway request failed (HTTP {status}): {brief}\n  endpoint: {url}\n  request_id: {request_id}\n  status: {status}\n  response: {}",
+            rayucode_base::logging::warn(&format!(
+                "Rayu gateway request failed (HTTP {status}, endpoint={url}, request_id={request_id}, x_rayu_limit={limit_header:?}, retry_after={retry_after_secs:?}, should_retry={should_retry}): {}",
                 rayucode_base::util::truncate_str(body.trim(), 600)
+            ));
+            let gateway_error = rayucode_base::rayu::RayuGatewayError::from_http_response(
+                status.as_u16(),
+                &body,
+                limit_header.as_deref(),
+                retry_after_secs,
+                rayucode_base::rayu::RayuErrorContext {
+                    auth: rayucode_base::rayu::RayuAuthKind::from_credential(credential),
+                    model: Some(&model),
+                    request_id: Some(&request_id),
+                },
             );
             if should_retry
-                && retry::is_transient_capacity(
+                && retry::is_transient_capacity_for_parsed(
                     status.as_u16(),
-                    &body,
+                    &gateway_error.parsed,
                     retry_after.map(|r| r.remaining()),
                 )
             {
-                return Err(retry::CapacityError::new(message, retry_after).into());
+                return Err(retry::CapacityError::new(gateway_error.to_string(), retry_after).into());
             }
-            bail!(message);
+            return Err(gateway_error.into());
         }
         let trace = sse::ResponseTrace::from_response(&response, request_id);
         rayucode_base::logging::debug(&format!("Rayu gateway stream opened: {}", trace.describe()));
-        Ok(sse::stream_events(response, trace, idle_timeout))
+        Ok(sse::stream_events(response, trace, idle_timeout, Some(model)))
     }
 
     /// One full attempt: send, and on a 401 before output refresh the JWT and
@@ -263,7 +288,8 @@ impl RayuProvider {
     ) -> Result<EventStream> {
         let credential = rayucode_base::rayu::gateway_credential()
             .await
-            .context("No Rayu credentials available: sign in with /login or set RAYU_API_KEY")?;
+            .context("No Rayu credentials available: sign in with /login rayu or set RAYU_API_KEY")?;
+        let auth_kind = rayucode_base::rayu::RayuAuthKind::from_credential(&credential);
         let first = self
             .complete_once(
                 &credential,
@@ -275,24 +301,31 @@ impl RayuProvider {
             )
             .await;
         // Only a JWT session can be refreshed; an API-key 401 surfaces as-is.
-        if !rayucode_base::rayu::has_usable_session() {
+        if auth_kind != rayucode_base::rayu::RayuAuthKind::AccountJwt
+            || !rayucode_base::rayu::has_usable_session()
+        {
             return first;
         }
         let provider = self.clone();
         let retry = move || -> RetryFuture {
             Box::pin(async move {
-                if rayucode_base::rayu::refresh_access_token(Some(&credential))
-                    .await
-                    .is_none()
-                {
+                let Some(fresh) =
+                    rayucode_base::rayu::refresh_access_token(Some(&credential)).await
+                else {
+                    if !rayucode_base::rayu::has_usable_session() {
+                        // Refresh token was definitively rejected (400/401) and cleared.
+                        return Err(rayucode_base::rayu::RayuGatewayError::session_expired(
+                            "Your Rayu session has expired (HTTP 401). Sign in again with /login rayu.",
+                        )
+                        .into());
+                    }
+                    // Session file survived -> renewal failed due to a transient backend
+                    // or network error. Do not misreport it as an expired session.
                     bail!(
-                        "Rayu session expired and could not be refreshed; sign in again with /login"
+                        "Could not renew your Rayu session (account service temporarily unreachable). Check your connection and try again."
                     );
-                }
-                let fresh = rayucode_base::rayu::gateway_credential()
-                    .await
-                    .context("No Rayu credentials available after refresh")?;
-                provider
+                };
+                match provider
                     .complete_once(
                         &fresh,
                         &messages,
@@ -302,12 +335,25 @@ impl RayuProvider {
                         &logical_request_id,
                     )
                     .await
+                {
+                    Ok(stream) => Ok(stream),
+                    Err(err)
+                        if is_unauthorized_error(&err)
+                            && rayucode_base::rayu::has_usable_session() =>
+                    {
+                        Err(rayucode_base::rayu::RayuGatewayError::session_expired(
+                            "Rayu gateway rejected your renewed session (HTTP 401). Run /login rayu to sign in again; if this persists, the gateway may be misconfigured.",
+                        )
+                        .into())
+                    }
+                    Err(err) => Err(err),
+                }
             })
         };
         let inner = match first {
             Ok(stream) => stream,
             // Already retried once: return the replayed stream as-is.
-            Err(error) if is_unauthorized_text(&format!("{error:#}")) => return retry().await,
+            Err(error) if is_unauthorized_error(&error) => return retry().await,
             Err(error) => return Err(error),
         };
         Ok(Box::pin(AuthRetryStream {
@@ -529,26 +575,6 @@ fn format_context_tokens(ctx: u64) -> String {
     }
 }
 
-fn extract_gateway_error_summary(body: &str) -> String {
-    let trimmed = body.trim();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(msg) = value
-            .pointer("/error/message")
-            .and_then(|v| v.as_str())
-            .or_else(|| value.get("error").and_then(|v| v.as_str()))
-            .or_else(|| value.get("message").and_then(|v| v.as_str()))
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return rayucode_base::util::truncate_str(msg, 180).to_string();
-        }
-    }
-    if trimmed.is_empty() {
-        return "empty error response".to_string();
-    }
-    rayucode_base::util::truncate_str(trimmed.lines().next().unwrap_or(trimmed), 180).to_string()
-}
-
 /// Formats Rayu hosted model metadata to match `rayu-cli`
 /// (e.g. `Credits x0.5(discount 30%) · rayu-hosted · DeepSeek-V4.1-flash:lastest · 1M ctx`).
 fn format_rayu_route_detail(model: &catalog::RayuCatalogModel) -> String {
@@ -650,16 +676,32 @@ pub(crate) fn ensure_safe_bearer_endpoint(url: &str) -> Result<()> {
 fn is_unauthorized_text(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
     text.contains("status: 401")
+        || text.contains("http 401")
         || text.contains("authentication_error")
         || (text.contains("401")
             && (text.contains("unauthorized")
                 || text.contains("unauthenticated")
-                || text.contains("invalid or expired credentials")))
+                || text.contains("invalid or expired credentials")
+                || text.contains("api key rejected")
+                || text.contains("session expired")
+                || text.contains("invalid token")
+                || text.contains("invalid api key")
+                || text.contains("missing bearer token")))
+}
+
+fn is_unauthorized_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|e| {
+            e.downcast_ref::<rayucode_base::rayu::RayuGatewayError>()
+                .is_some_and(rayucode_base::rayu::RayuGatewayError::is_unauthorized)
+        })
+        || is_unauthorized_text(&format!("{error:#}"))
 }
 
 fn is_unauthorized_item(item: &Result<StreamEvent>) -> bool {
     match item {
-        Err(error) => is_unauthorized_text(&format!("{error:#}")),
+        Err(error) => is_unauthorized_error(error),
         Ok(StreamEvent::Error { message, .. }) => is_unauthorized_text(message),
         _ => false,
     }

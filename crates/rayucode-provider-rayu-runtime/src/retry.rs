@@ -47,6 +47,9 @@ const CAPACITY_MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 const TRANSIENT_REASONS: &[&str] = &[
     "concurrency",
     "requests",
+    "ingress_rate_limit",
+    "ingress_capacity",
+    "authentication_unavailable",
     "account_rate_limit",
     "api_key_rate_limit",
     "metadata_rate_limit",
@@ -56,16 +59,20 @@ const TRANSIENT_REASONS: &[&str] = &[
     "body_capacity",
 ];
 
-/// Whether a gateway 429/503 is a short capacity wait worth retrying.
+/// Whether a parsed gateway 429/503 is a short capacity wait worth retrying.
 ///
 /// * A `Retry-After` above [`CAPACITY_MAX_RETRY_AFTER`] is never transient.
-/// * `"transient": true` in the body (the gateway's own flag) is transient.
-/// * A body naming a `reason` is transient only for [`TRANSIENT_REASONS`].
+/// * Admin-authored per-model outage notices (`rayu_custom: true`) are never
+///   transient (the gateway already exhausted its own routes).
+/// * `"transient": true` in the body (the gateway's own flag) is transient;
+///   `"transient": false` is never transient.
+/// * An explicit `X-Rayu-Limit` header or body `reason` is transient only for
+///   [`TRANSIENT_REASONS`].
 /// * Otherwise (a 503 "no usable route right now", or a provider rate limit
 ///   relayed without a reason) it is transient, bounded by the wait budget.
-pub(crate) fn is_transient_capacity(
+pub(crate) fn is_transient_capacity_for_parsed(
     status: u16,
-    body: &str,
+    parsed: &rayucode_base::rayu::ParsedRayuError,
     retry_after: Option<Duration>,
 ) -> bool {
     if !is_capacity_status(status) {
@@ -74,15 +81,37 @@ pub(crate) fn is_transient_capacity(
     if retry_after.is_some_and(|d| d > CAPACITY_MAX_RETRY_AFTER) {
         return false;
     }
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim()) {
-        if value.get("transient").and_then(|v| v.as_bool()) == Some(true) {
-            return true;
-        }
-        if let Some(reason) = value.get("reason").and_then(|v| v.as_str()) {
-            return TRANSIENT_REASONS.contains(&reason);
-        }
+    if parsed.rayu_custom {
+        return false;
+    }
+    if let Some(transient) = parsed.transient {
+        return transient;
+    }
+    if let Some(reason) = parsed.reason.as_deref() {
+        return TRANSIENT_REASONS.contains(&reason);
     }
     true
+}
+
+#[cfg(test)]
+pub(crate) fn is_transient_capacity_with_header(
+    status: u16,
+    body: &str,
+    limit_header: Option<&str>,
+    retry_after: Option<Duration>,
+) -> bool {
+    let parsed =
+        rayucode_base::rayu::ParsedRayuError::parse(Some(status), body, limit_header, None);
+    is_transient_capacity_for_parsed(status, &parsed, retry_after)
+}
+
+#[cfg(test)]
+pub(crate) fn is_transient_capacity(
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> bool {
+    is_transient_capacity_with_header(status, body, None, retry_after)
 }
 
 /// A 429/503 the gateway marked retryable, with its requested wait.
@@ -141,6 +170,12 @@ const GATEWAY_UPSTREAM_ENDED: &str = "ended the response unexpectedly";
 
 /// Whether a send/stream error is a transient transport fault worth replaying.
 pub(crate) fn is_retryable_error(error: &anyhow::Error) -> bool {
+    if error
+        .chain()
+        .any(|e| e.is::<rayucode_base::rayu::RayuGatewayError>() || e.is::<CapacityError>())
+    {
+        return false;
+    }
     let text = format!("{error:#}");
     !text.starts_with(HTTP_STATUS_ERROR_PREFIX)
         && rayucode_provider_core::is_transient_transport_error(&text)

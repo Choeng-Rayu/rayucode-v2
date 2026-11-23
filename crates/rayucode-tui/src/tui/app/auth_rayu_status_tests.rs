@@ -58,6 +58,7 @@ fn credits_lines_report_plan_usage_and_remaining_without_billing_copy() {
         top_up_enabled: true,
         limit_mode: Some("soft".to_string()),
         api_key: None,
+        ..Default::default()
     };
     let lines = rayu_credits_status_lines(&credits);
     let joined = lines.join("\n");
@@ -109,4 +110,51 @@ fn credits_lines_handle_uncapped_key_and_zero_reset() {
     assert!(joined.contains("API key limit: uncapped"));
     assert!(joined.contains("Period ends: 2026-12-01"));
     assert!(!joined.contains("Resets in"));
+}
+
+#[test]
+fn credits_lines_render_team_pacing_windows_and_daily_turns() {
+    let credits = crate::rayu::RayuCredits {
+        plan: "team".to_string(),
+        plan_name: "Team".to_string(),
+        credits_per_period: Some(1000.0),
+        used_credits: 200.0,
+        remaining_credits: Some(800.0),
+        max_daily_turns: Some(100),
+        turns_used_today: 25,
+        turns_reset_seconds: 7_200,
+        credits_per_5h: Some(100.0),
+        window_used_credits: 40.0,
+        window_reset_seconds: 3_600,
+        credits_per_week: Some(300.0),
+        week_used_credits: 120.0,
+        week_reset_seconds: 172_800,
+        limit_mode: Some("gated".to_string()),
+        scope: Some("team".to_string()),
+        team: Some(crate::rayu::RayuTeamCredits {
+            organization_id: 9,
+            role: "member".to_string(),
+            pool_credits: 1000.0,
+            pool_used_credits: 200.0,
+            bucket_quota: 250.0,
+            bucket_remaining: 190.0,
+            purchased_credits: 500.0,
+            purchased_remaining: 450.0,
+        }),
+        ..Default::default()
+    };
+    let joined = rayu_credits_status_lines(&credits).join("\n");
+    assert!(joined.contains("Scope: team (member)"), "{joined}");
+    assert!(
+        joined.contains("Team seat remaining: 190.00 of 250.00 credits"),
+        "{joined}"
+    );
+    assert!(
+        joined.contains("Team extra credits: 450.00 remaining"),
+        "{joined}"
+    );
+    assert!(joined.contains("Session window: 40.00 / 100.00 used"), "{joined}");
+    assert!(joined.contains("Weekly window: 120.00 / 300.00 used"), "{joined}");
+    assert!(joined.contains("Daily turns: 25 / 100 used"), "{joined}");
+    assert!(!joined.to_ascii_lowercase().contains("billing"));
 }
