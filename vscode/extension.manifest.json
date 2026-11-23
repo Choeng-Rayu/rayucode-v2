@@ -1,10 +1,10 @@
 {
   "name": "rayucode",
-  "displayName": "Rayucode",
-  "description": "Chat with the RayuCode Rust runtime from VS Code.",
+  "displayName": "RayuCode",
+  "description": "RayuCode Rust AI coding engine and multi-agent mission control for VS Code.",
   "version": "3.0.0-preview.3",
   "publisher": "RayuCode",
-  "icon": "media/icon.png",
+  "icon": "media/app-icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/Choeng-Rayu/rayucode-v2"
@@ -13,49 +13,199 @@
   "engines": {
     "vscode": "^1.101.0"
   },
-  "categories": ["AI", "Chat"],
+  "categories": ["AI", "Chat", "Programming Languages"],
   "type": "commonjs",
   "main": "./extension.js",
-  "files": ["extension.js", "media", "LICENSE"],
+  "files": ["extension.js", "media", "LICENSE", "README.md"],
   "extensionKind": ["workspace"],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "Rayucode connects to the Rayu runtime on the workspace host."
+      "description": "RayuCode connects to the local Rayu Rust runtime on the workspace host."
     },
     "virtualWorkspaces": false
   },
   "contributes": {
     "configuration": {
-      "title": "Rayucode",
+      "title": "RayuCode",
       "properties": {
+        "rayucode.apiSocketPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "description": "Absolute path to the Rayu Harness API socket (rayu-api.sock). Leave empty to use RAYU_API_SOCKET or the platform runtime default."
+        },
+        "rayucode.binaryPath": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "description": "Absolute path to the rayu CLI binary. Leave empty to auto-discover from ~/.local/bin/rayu, ~/.rayu/builds/current/rayu, or PATH."
+        },
+        "rayucode.autoStartBridge": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "description": "Automatically start `rayu --no-update api-bridge` when no running bridge is listening on the API socket."
+        },
+        "rayucode.theme": {
+          "type": "string",
+          "enum": ["auto", "dark", "light", "vscode"],
+          "default": "auto",
+          "description": "RayuCode theme polarity: follow VS Code dark/light polarity (auto), Warm Graphite Dark (dark), Warm Paper Light (light), or inherit VS Code theme tokens directly (vscode)."
+        },
+        "rayucode.accent": {
+          "type": "string",
+          "enum": ["green", "blue"],
+          "default": "green",
+          "description": "Primary brand accent color: Rayu Green (green) or Ocean Blue (blue)."
+        },
+        "rayucode.defaultPermissionMode": {
+          "type": "string",
+          "enum": ["default", "acceptEdits", "plan", "fullManage", "orchestrator"],
+          "default": "default",
+          "description": "Default permission mode for new RayuCode sessions."
+        },
         "rayucode.runtime.socketPath": {
           "type": "string",
           "scope": "machine",
           "default": "",
-          "description": "Absolute path to the Rayu Harness socket on the workspace host. Leave empty to use the Rayu runtime default."
+          "description": "Legacy alias for rayucode.apiSocketPath."
         }
       }
     },
     "viewsContainers": {
       "activitybar": [
-        { "id": "rayucode", "title": "Rayucode", "icon": "media/icon.svg" }
+        {
+          "id": "rayucode",
+          "title": "RayuCode",
+          "icon": "media/icon.svg"
+        }
       ]
     },
     "views": {
       "rayucode": [
-        { "id": "rayucode.chat", "name": "Sessions", "type": "webview" }
+        {
+          "id": "rayucode.chat",
+          "name": "Workspace",
+          "type": "webview"
+        }
       ]
     },
     "commands": [
-      { "command": "rayucode.newSession", "title": "New Session", "category": "Rayucode", "icon": "$(add)" },
-      { "command": "rayucode.resumeSession", "title": "Resume Session", "category": "Rayucode", "icon": "$(history)" }
+      {
+        "command": "rayucode.newSession",
+        "title": "New Session",
+        "category": "RayuCode",
+        "icon": "$(add)"
+      },
+      {
+        "command": "rayucode.resumeSession",
+        "title": "Resume Session",
+        "category": "RayuCode",
+        "icon": "$(history)"
+      },
+      {
+        "command": "rayucode.openSidebar",
+        "title": "Focus Sidebar",
+        "category": "RayuCode",
+        "icon": "$(layout-sidebar-left)"
+      },
+      {
+        "command": "rayucode.openWorkspacePanel",
+        "title": "Open Mission Control Panel",
+        "category": "RayuCode",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "rayucode.openSwarm",
+        "title": "Open Swarm Mission Control",
+        "category": "RayuCode",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "rayucode.openBackgroundProcesses",
+        "title": "Open Background Processes",
+        "category": "RayuCode",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "rayucode.openChanges",
+        "title": "Open Changes & Diff Review",
+        "category": "RayuCode",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "rayucode.openSettings",
+        "title": "Open RayuCode Settings",
+        "category": "RayuCode",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "rayucode.sendSelection",
+        "title": "Send Selection to RayuCode",
+        "category": "RayuCode",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "rayucode.reloadDaemon",
+        "title": "Reload Daemon / Restart API Bridge",
+        "category": "RayuCode",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "rayucode.statusBarAction",
+        "title": "RayuCode Status Action",
+        "category": "RayuCode"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "rayucode.newSession", "when": "view == rayucode.chat", "group": "navigation@1" },
-        { "command": "rayucode.resumeSession", "when": "view == rayucode.chat", "group": "navigation@2" }
+        {
+          "command": "rayucode.newSession",
+          "when": "view == rayucode.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "rayucode.openWorkspacePanel",
+          "when": "view == rayucode.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "rayucode.openSettings",
+          "when": "view == rayucode.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "rayucode.reloadDaemon",
+          "when": "view == rayucode.chat",
+          "group": "1_runtime@1"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "rayucode.sendSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@1"
+        }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "rayucode.openWorkspacePanel",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r"
+      },
+      {
+        "command": "rayucode.sendSelection",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "rayucode.openBackgroundProcesses",
+        "key": "alt+shift+b",
+        "mac": "alt+shift+b"
+      }
+    ]
   }
 }

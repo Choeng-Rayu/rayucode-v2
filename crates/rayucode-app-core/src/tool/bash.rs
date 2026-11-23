@@ -660,6 +660,28 @@ fn configure_tool_scratch(command: &mut TokioCommand) {
 }
 
 #[cfg(unix)]
+fn kill_process_group_pid(pid: u32) {
+    let _ = crate::platform::signal_detached_process_group(pid, libc::SIGKILL);
+}
+
+/// Kill a tokio child and (on Unix, where `build_shell_command` runs in its own
+/// session via `setsid`) its entire process group so descendants cannot survive.
+fn kill_tokio_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            kill_process_group_pid(pid);
+        } else {
+            let _ = child.start_kill();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.start_kill();
+    }
+}
+
+#[cfg(unix)]
 struct ProcessGroupKillGuard {
     pid: Option<u32>,
 }
@@ -679,7 +701,7 @@ impl ProcessGroupKillGuard {
 impl Drop for ProcessGroupKillGuard {
     fn drop(&mut self) {
         if let Some(pid) = self.pid {
-            let _ = crate::platform::signal_detached_process_group(pid, libc::SIGKILL);
+            kill_process_group_pid(pid);
         }
     }
 }
@@ -785,6 +807,8 @@ struct BashInput {
     intent: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_bool_or_default::<_, false>")]
+    kill_on_timeout: bool,
     #[serde(default)]
     run_in_background: Option<bool>,
     #[serde(
@@ -958,6 +982,8 @@ impl BashTool {
             command.current_dir(dir);
         }
         let mut child = command.spawn()?;
+        #[cfg(unix)]
+        let child_pid = child.id();
 
         let stdin_handle = child.stdin.take();
         use super::bash_progress::{BashPreview, PreviewReader};
@@ -1028,6 +1054,33 @@ impl BashTool {
                 Ok(Err(e)) => Err(anyhow::anyhow!("Command failed: {}", e)),
                 Err(join_err) => Err(anyhow::anyhow!("Command task panicked: {}", join_err)),
             },
+            Err(_) if params.kill_on_timeout => {
+                // Hard kill requested: terminate the entire process group so
+                // child processes (e.g. `sleep` inside `bash -c`) cannot
+                // continue writing after timeout, briefly allow `child.wait()`
+                // to reap the killed child cleanly, then return exit code 124.
+                #[cfg(unix)]
+                if let Some(pid) = child_pid {
+                    kill_process_group_pid(pid);
+                }
+                if tokio::time::timeout(Duration::from_millis(200), &mut work_handle)
+                    .await
+                    .is_err()
+                {
+                    work_handle.abort();
+                    let _ = work_handle.await;
+                }
+                let msg = timeout_message(timeout_ms);
+                Ok(
+                    ToolOutput::new(format_command_output(msg, Some(124)))
+                        .with_title(title)
+                        .with_metadata(json!({
+                            "timed_out": true,
+                            "exit_code": 124,
+                            "timeout_ms": timeout_ms,
+                        })),
+                )
+            }
             Err(_) => {
                 // Timed out, but the command is still running. Instead of killing
                 // it, promote it to a background task so it keeps running, renders
@@ -1140,6 +1193,33 @@ impl BashTool {
             }
 
             if started.elapsed() >= timeout_duration {
+                if params.kill_on_timeout {
+                    kill_process_group_pid(pid);
+                    let _ = child.wait();
+                    let mut output = tokio::fs::read_to_string(&info.output_file)
+                        .await
+                        .unwrap_or_default();
+                    let _ = tokio::fs::remove_file(&info.output_file).await;
+                    let _ = tokio::fs::remove_file(&info.status_file).await;
+                    if !output.is_empty() && !output.ends_with('\n') {
+                        output.push('\n');
+                    }
+                    output.push_str(&timeout_message(timeout_ms));
+                    return Ok(ToolOutput::new(format_command_output(output, Some(124)))
+                        .with_title(
+                            params
+                                .intent
+                                .clone()
+                                .unwrap_or_else(|| params.command.clone()),
+                        )
+                        .with_metadata(json!({
+                            "timed_out": true,
+                            "exit_code": 124,
+                            "timeout_ms": timeout_ms,
+                            "pid": pid,
+                        })));
+                }
+
                 let elapsed = started.elapsed();
                 manager
                     .register_detached_task(
@@ -1313,18 +1393,7 @@ impl BashTool {
 	                                }
 	                            }, if timeout_duration.is_some() => {
 	                                timed_out = true;
-	                                #[cfg(unix)]
-	                                {
-	                                    if let Some(pid) = child.id() {
-	                                        let _ = crate::platform::signal_detached_process_group(pid, libc::SIGKILL);
-	                                    } else {
-	                                        let _ = child.start_kill();
-	                                    }
-	                                }
-	                                #[cfg(not(unix))]
-	                                {
-	                                    let _ = child.start_kill();
-	                                }
+	                                kill_tokio_child(&mut child);
 	                                break;
 	                            }
                             line = async {

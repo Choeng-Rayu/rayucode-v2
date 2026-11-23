@@ -54,6 +54,15 @@ pub(crate) fn lock_store(home: &Path, store_name: &str) -> Result<StoreLockGuard
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'),
         "Unsafe account store name"
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(home)?;
+    }
+    #[cfg(not(unix))]
     std::fs::create_dir_all(home)?;
     let metadata = std::fs::symlink_metadata(home)?;
     anyhow::ensure!(
@@ -99,7 +108,7 @@ fn open_store_lock(home: &Path, path: &Path) -> Result<std::fs::File> {
         .open(home)?;
     let metadata = directory.metadata()?;
     anyhow::ensure!(
-        metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
+        directory_has_safe_owner_permissions(&metadata),
         "Unsafe account store directory ownership or permissions"
     );
     let name = std::ffi::CString::new(path.file_name().unwrap().as_bytes())?;
@@ -134,6 +143,99 @@ fn open_store_lock(home: &Path, path: &Path) -> Result<std::fs::File> {
         }
     }
     Ok(file)
+}
+
+#[cfg(unix)]
+pub(crate) fn directory_has_safe_owner_permissions(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let euid = unsafe { libc::geteuid() };
+    if metadata.uid() != euid {
+        return false;
+    }
+    let mode = metadata.mode();
+    mode & 0o022 == 0
+        || (mode & 0o002 == 0 && directory_group_is_private_to_user(euid, metadata.gid()))
+}
+
+#[cfg(unix)]
+fn directory_group_is_private_to_user(uid: libc::uid_t, gid: libc::gid_t) -> bool {
+    use std::ffi::CStr;
+    use std::mem::MaybeUninit;
+
+    if gid != unsafe { libc::getegid() } {
+        return false;
+    }
+
+    // Resolve the effective user's login name via thread-safe `getpwuid_r`.
+    let mut pwd = MaybeUninit::<libc::passwd>::uninit();
+    let mut pwd_buf = vec![0u8; 1024];
+    let mut pwd_result: *mut libc::passwd = std::ptr::null_mut();
+    let user_name = loop {
+        let rc = unsafe {
+            libc::getpwuid_r(
+                uid,
+                pwd.as_mut_ptr(),
+                pwd_buf.as_mut_ptr().cast::<libc::c_char>(),
+                pwd_buf.len(),
+                &mut pwd_result,
+            )
+        };
+        if rc == libc::ERANGE && pwd_buf.len() < 65_536 {
+            pwd_buf.resize(pwd_buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || pwd_result.is_null() {
+            return false;
+        }
+        let pwd = unsafe { pwd.assume_init_ref() };
+        if pwd.pw_name.is_null() {
+            return false;
+        }
+        break unsafe { CStr::from_ptr(pwd.pw_name) }.to_bytes().to_vec();
+    };
+
+    // Resolve the directory's group via thread-safe `getgrgid_r` and verify it
+    // is a User Private Group (same name as the user, with no other members).
+    let mut grp = MaybeUninit::<libc::group>::uninit();
+    let mut grp_buf = vec![0u8; 1024];
+    let mut grp_result: *mut libc::group = std::ptr::null_mut();
+    loop {
+        let rc = unsafe {
+            libc::getgrgid_r(
+                gid,
+                grp.as_mut_ptr(),
+                grp_buf.as_mut_ptr().cast::<libc::c_char>(),
+                grp_buf.len(),
+                &mut grp_result,
+            )
+        };
+        if rc == libc::ERANGE && grp_buf.len() < 65_536 {
+            grp_buf.resize(grp_buf.len() * 2, 0);
+            continue;
+        }
+        if rc != 0 || grp_result.is_null() {
+            return false;
+        }
+        let grp = unsafe { grp.assume_init_ref() };
+        if grp.gr_name.is_null() {
+            return false;
+        }
+        let group_name = unsafe { CStr::from_ptr(grp.gr_name) }.to_bytes();
+        if group_name != user_name.as_slice() {
+            return false;
+        }
+        if !grp.gr_mem.is_null() {
+            let mut member_ptr = grp.gr_mem;
+            while unsafe { !(*member_ptr).is_null() } {
+                let member = unsafe { CStr::from_ptr(*member_ptr) }.to_bytes();
+                if member != user_name.as_slice() {
+                    return false;
+                }
+                member_ptr = unsafe { member_ptr.add(1) };
+            }
+        }
+        return true;
+    }
 }
 
 #[cfg(not(unix))]

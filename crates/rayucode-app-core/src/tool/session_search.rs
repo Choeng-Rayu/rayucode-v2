@@ -465,14 +465,45 @@ impl Tool for SessionSearchTool {
         })
         .await??;
 
+        let structured_matches: Vec<Value> = report
+            .results
+            .iter()
+            .map(|hit| {
+                json!({
+                    "session_id": hit.session_id,
+                    "short_name": hit.short_name,
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                    "source": hit.source,
+                    "working_dir": hit.working_dir,
+                    "provider": hit.provider_key,
+                    "model": hit.model,
+                    "role": hit.role,
+                    "updated_at": hit.updated_at.to_rfc3339(),
+                    "score": hit.score,
+                    "exact_match": hit.exact_match,
+                    "matched_terms": hit.matched_terms,
+                })
+            })
+            .collect();
+        let metadata = json!({
+            "matches": structured_matches,
+            "total": report.results.len(),
+            "scanned_rayu_sessions": report.scanned_rayu_sessions,
+            "scanned_external_sessions": report.scanned_external_sessions,
+            "truncated": report.truncated,
+        });
+
         if report.results.is_empty() {
             return Ok(ToolOutput::new(no_results_message(&params.query, &options))
-                .with_title("session_search"));
+                .with_title("session_search")
+                .with_metadata(metadata));
         }
 
         Ok(
             ToolOutput::new(format_results(&params.query, &report, &options))
-                .with_title("session_search"),
+                .with_title("session_search")
+                .with_metadata(metadata),
         )
     }
 }

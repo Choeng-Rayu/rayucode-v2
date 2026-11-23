@@ -1049,6 +1049,7 @@ mod session_env_tests {
             tool_name: "bash".into(),
             description: "Run bash command".into(),
             input: serde_json::json!({"command": "ls"}),
+            risk_tier: Some("safe".into()),
         };
         let encoded = serde_json::to_string(&ev).unwrap();
         let decoded: ServerEvent = serde_json::from_str(&encoded).unwrap();
@@ -1060,11 +1061,13 @@ mod session_env_tests {
                 tool_name,
                 description,
                 input,
+                risk_tier,
             } if session_id == "s1"
                 && request_id == "perm_1"
                 && tool_name == "bash"
                 && description == "Run bash command"
                 && input == serde_json::json!({"command": "ls"})
+                && risk_tier.as_deref() == Some("safe")
         ));
     }
 }

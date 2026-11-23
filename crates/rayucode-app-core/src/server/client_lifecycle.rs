@@ -1048,6 +1048,7 @@ pub(super) async fn handle_client(
                     permission_client.set_mode(mode);
                     if let Ok(mut locked) = agent.try_lock() {
                         locked.invalidate_sdk_tools();
+                        permission_client.clear_tools_invalidated();
                     }
                     Ok(ServerEvent::Ack { id })
                 }
@@ -2516,7 +2517,16 @@ pub(super) async fn handle_client(
                         return Ok((data, "Provider model catalog refreshed.".into()));
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::Swarm {
-                        if let Some(enabled) = super::runtime_commands::boolean_action(&args, swarm_enabled, false)? {
+                        let first_arg = args.first().map(|a| a.to_ascii_lowercase());
+                        let is_toggle_mutation = args.len() == 1
+                            && matches!(
+                                first_arg.as_deref(),
+                                Some("on" | "enable" | "enabled" | "off" | "disable" | "disabled" | "toggle")
+                            );
+                        let view = if is_toggle_mutation {
+                            let Some(enabled) = super::runtime_commands::boolean_action(&args, swarm_enabled, false)? else {
+                                unreachable!("toggle mutation always yields Some(bool)");
+                            };
                             if reject_if_agent_busy_for_request(id, "runtime_command", &client_session_id, client_is_processing, &agent, &client_event_tx) {
                                 return Ok((serde_json::Value::Null, String::new()));
                             }
@@ -2527,17 +2537,69 @@ pub(super) async fn handle_client(
                             while let Ok(event) = rx.try_recv() {
                                 if let ServerEvent::Error { message, .. } = event { anyhow::bail!("{message}"); }
                             }
-                        }
-                        let members = swarm_members.read().await;
-                        let member = members.get(&client_session_id);
-                        let data = serde_json::json!({"enabled": swarm_enabled, "config_default": crate::config::config().features.swarm,
-                            "swarm_id": member.and_then(|m| m.swarm_id.as_deref()), "role": member.map(|m| &m.role)});
+                            first_arg.as_deref().unwrap_or("status")
+                        } else {
+                            let sub = first_arg.as_deref().unwrap_or("status");
+                            if !matches!(sub, "status" | "show" | "stats" | "list" | "board") || args.len() > 1 {
+                                anyhow::bail!("Usage: /swarm [status|show|list|board|on|off|toggle]");
+                            }
+                            sub
+                        };
+                        let data = build_live_swarm_snapshot(
+                            view,
+                            &client_session_id,
+                            swarm_enabled,
+                            &swarm_members,
+                            &swarms_by_id,
+                            &swarm_coordinators,
+                            &swarm_plans,
+                            &event_history,
+                        )
+                        .await;
                         return Ok((data.clone(), serde_json::to_string_pretty(&data)?));
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::Subscription {
                         if !args.is_empty() && args != ["status".to_string()] { anyhow::bail!("Usage: subscription [status]"); }
                         let data = super::runtime_commands::rayu_credits_data().await?;
                         return Ok((data.clone(), serde_json::to_string_pretty(&data)?));
+                    }
+                    // Dispatch lock-free runtime commands BEFORE `agent.try_lock()` so
+                    // background polling, approvals, schedules, MCP, features, doctor,
+                    // session search, and overnight inspection never fail with
+                    // `"Session is busy"` while an active turn holds the Agent mutex.
+                    if super::runtime_special_commands::is_lock_free(parsed, &args) {
+                        let lock_free_ctx = if let Ok(guard) = agent.try_lock() {
+                            super::runtime_special_commands::LockFreeCommandContext::from_agent(&guard)
+                        } else {
+                            let cached_dir = swarm_members
+                                .read()
+                                .await
+                                .get(&client_session_id)
+                                .and_then(|m| m.working_dir.clone())
+                                .or_else(|| Some(std::path::PathBuf::from(&initial_working_dir)));
+                            let active_provider = session_control
+                                .provider_handle()
+                                .unwrap_or_else(|| Arc::clone(&provider));
+                            super::runtime_special_commands::LockFreeCommandContext {
+                                session_id: client_session_id.clone(),
+                                working_dir: cached_dir,
+                                registry: Some(registry.clone()),
+                                provider_name: active_provider.name().to_string(),
+                                provider_model: active_provider.model(),
+                                provider_context_window: active_provider.context_window(),
+                                provider_transport: active_provider.transport(),
+                                route_counts: None,
+                            }
+                        };
+                        if let Some(res) = super::runtime_special_commands::try_execute_lock_free(
+                            &lock_free_ctx,
+                            parsed,
+                            &args,
+                        )
+                        .await
+                        {
+                            return res;
+                        }
                     }
                     let mut guard = agent.try_lock().map_err(|_| anyhow::anyhow!("Session is busy. Retry this runtime command after the current turn."))?;
                     super::runtime_commands::execute(&mut guard, parsed, &args, swarm_enabled, serde_json::Value::Null).await
@@ -3648,6 +3710,210 @@ pub(super) async fn process_reserved_message_streaming_mpsc(
     result
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "live swarm snapshot merges in-memory swarm maps with durable snapshots"
+)]
+async fn build_live_swarm_snapshot(
+    view: &str,
+    client_session_id: &str,
+    swarm_enabled: bool,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+) -> serde_json::Value {
+    let snapshots = super::runtime_commands::load_durable_swarm_snapshots_async().await;
+    let config_default = crate::config::config().features.swarm;
+
+    let (current_swarm_id, current_role, live_members_by_swarm, all_live_members) = {
+        let members = swarm_members.read().await;
+        let current = members.get(client_session_id);
+        let current_swarm_id = current.and_then(|m| m.swarm_id.clone());
+        let current_role = current.map(|m| m.role.clone());
+
+        let mut by_swarm: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+        let mut all_members: Vec<serde_json::Value> = Vec::with_capacity(members.len());
+        let mut sorted: Vec<&SwarmMember> = members.values().collect();
+        sorted.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+
+        for m in sorted {
+            let member_json = serde_json::json!({
+                "session_id": m.session_id,
+                "swarm_id": m.swarm_id,
+                "friendly_name": m.friendly_name,
+                "role": m.role,
+                "status": m.status,
+                "detail": m.detail,
+                "task_label": m.task_label,
+                "working_dir": m.working_dir.as_ref().map(|p| p.display().to_string()),
+                "swarm_enabled": m.swarm_enabled,
+                "is_headless": m.is_headless,
+                "report_back_to_session_id": m.report_back_to_session_id,
+                "latest_completion_report": m.latest_completion_report,
+                "output_tail": m.output_tail,
+                "todo_progress": m.todo_progress,
+            });
+            if let Some(ref sid) = m.swarm_id {
+                by_swarm.entry(sid.clone()).or_default().push(member_json.clone());
+            }
+            all_members.push(member_json);
+        }
+        (current_swarm_id, current_role, by_swarm, all_members)
+    };
+
+    let coordinators = swarm_coordinators.read().await.clone();
+    let live_plans_map: HashMap<String, serde_json::Value> = {
+        let plans = swarm_plans.read().await;
+        plans
+            .iter()
+            .map(|(swarm_id, plan)| {
+                let mut participants: Vec<&String> = plan.participants.iter().collect();
+                participants.sort();
+                (
+                    swarm_id.clone(),
+                    serde_json::json!({
+                        "swarm_id": swarm_id,
+                        "version": plan.version,
+                        "items": plan.items,
+                        "participants": participants,
+                        "task_progress": plan.task_progress,
+                    }),
+                )
+            })
+            .collect()
+    };
+
+    // Merge live swarms with durable snapshots keyed by swarm_id.
+    let mut swarm_ids: Vec<String> = {
+        let mut ids: HashSet<String> = swarms_by_id.read().await.keys().cloned().collect();
+        ids.extend(live_members_by_swarm.keys().cloned());
+        ids.extend(live_plans_map.keys().cloned());
+        for snap in &snapshots {
+            if let Some(sid) = snap.get("swarm_id").and_then(serde_json::Value::as_str) {
+                ids.insert(sid.to_string());
+            }
+        }
+        ids.into_iter().collect()
+    };
+    swarm_ids.sort();
+
+    let mut snap_by_id: HashMap<String, serde_json::Value> = HashMap::new();
+    for snap in snapshots {
+        if let Some(sid) = snap.get("swarm_id").and_then(serde_json::Value::as_str) {
+            snap_by_id.insert(sid.to_string(), snap);
+        }
+    }
+
+    let mut merged_swarms = Vec::with_capacity(swarm_ids.len());
+    let mut plans_list: Vec<serde_json::Value> = Vec::new();
+    let mut board_events: Vec<serde_json::Value> = Vec::new();
+
+    for sid in &swarm_ids {
+        let snap = snap_by_id.get(sid);
+        let live_members = live_members_by_swarm.get(sid).cloned();
+        let is_live = live_members.as_ref().is_some_and(|v| !v.is_empty());
+        let members_val = live_members.unwrap_or_else(|| {
+            snap.and_then(|s| s.get("members").and_then(serde_json::Value::as_array))
+                .cloned()
+                .unwrap_or_default()
+        });
+        let plan_val = live_plans_map
+            .get(sid)
+            .cloned()
+            .or_else(|| snap.and_then(|s| s.get("plan").cloned()).filter(|v| !v.is_null()));
+        if let Some(ref p) = plan_val {
+            plans_list.push(p.clone());
+        }
+        if let Some(snap_board) = snap
+            .and_then(|s| s.get("messages").or_else(|| s.get("board")))
+            .and_then(serde_json::Value::as_array)
+        {
+            board_events.extend(snap_board.iter().cloned());
+        }
+        let coordinator_session_id = coordinators.get(sid).cloned().or_else(|| {
+            snap.and_then(|s| {
+                s.get("coordinator_session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+        });
+        let updated_at_unix_ms = snap
+            .and_then(|s| s.get("updated_at_unix_ms").and_then(serde_json::Value::as_u64));
+        merged_swarms.push(serde_json::json!({
+            "swarm_id": sid,
+            "coordinator_session_id": coordinator_session_id,
+            "members": members_val,
+            "plan": plan_val,
+            "updated_at_unix_ms": updated_at_unix_ms,
+            "live": is_live,
+        }));
+    }
+
+    // Append live in-memory board events from `event_history` (most recent 200).
+    {
+        let history = event_history.read().await;
+        let filtered: Vec<&SwarmEvent> = history
+            .iter()
+            .filter(|ev| match (&current_swarm_id, &ev.swarm_id) {
+                (Some(cur), Some(ev_sid)) => cur == ev_sid,
+                _ => true,
+            })
+            .collect();
+        let start = filtered.len().saturating_sub(200);
+        for ev in &filtered[start..] {
+            let timestamp_ms = ev
+                .absolute_time
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            board_events.push(serde_json::json!({
+                "id": ev.id,
+                "seq": ev.id,
+                "session_id": ev.session_id,
+                "session_name": ev.session_name,
+                "swarm_id": ev.swarm_id,
+                "event": ev.event,
+                "timestamp_ms": timestamp_ms,
+            }));
+        }
+    }
+
+    // Active members list: prefer current swarm's members if attached to a swarm,
+    // else all live members, else durable snapshot members.
+    let members_payload: Vec<serde_json::Value> = if let Some(ref sid) = current_swarm_id
+        && let Some(swarm_m) = live_members_by_swarm.get(sid)
+    {
+        swarm_m.clone()
+    } else if !all_live_members.is_empty() {
+        all_live_members
+    } else {
+        merged_swarms
+            .iter()
+            .flat_map(|s| {
+                s.get("members")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+
+    serde_json::json!({
+        "view": view,
+        "enabled": swarm_enabled,
+        "config_default": config_default,
+        "default_enabled": config_default,
+        "swarm_id": current_swarm_id,
+        "role": current_role,
+        "members": members_payload,
+        "swarms": merged_swarms,
+        "board": board_events,
+        "plans": plans_list,
+    })
+}
+
 #[cfg(test)]
 #[path = "client_lifecycle_tests.rs"]
 mod tests;
@@ -3655,3 +3921,356 @@ mod tests;
 #[cfg(test)]
 #[path = "client_target_attach_tests.rs"]
 mod target_attach_tests;
+
+#[cfg(test)]
+mod v1_14_socket_tests {
+    use super::*;
+    use crate::message::{ContentBlock, Message, StreamEvent, ToolDefinition};
+    use crate::provider::EventStream;
+    use async_trait::async_trait;
+    use futures::stream;
+    use std::sync::atomic::AtomicUsize;
+
+    #[derive(Clone, Default)]
+    struct MidTurnAndSubcallProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for MidTurnAndSubcallProvider {
+        async fn complete(
+            &self,
+            messages: &[Message],
+            tools: &[ToolDefinition],
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<EventStream> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = match call {
+                // Round 0: emit a `batch` tool call with a `bash` subcall while the turn holds
+                // the Agent mutex. While waiting on the permission response, the test will poll
+                // lock-free runtime commands AND switch PermissionMode to Plan mid-turn!
+                0 => {
+                    assert!(
+                        tools.iter().any(|t| t.name == "bash"),
+                        "Round 0 in AcceptEdits mode must expose bash"
+                    );
+                    vec![
+                        StreamEvent::ToolUseStart {
+                            id: "call:colon:parent".into(),
+                            name: "batch".into(),
+                        },
+                        StreamEvent::ToolInputDelta(
+                            r#"{"intent":"subcall check","tool_calls":[{"tool":"bash","intent":"danger","parameters":{"command":"rm -rf ~","intent":"danger"}}]}"#
+                                .into(),
+                        ),
+                        StreamEvent::ToolUseEnd,
+                        StreamEvent::MessageEnd {
+                            stop_reason: Some("tool_use".into()),
+                        },
+                    ]
+                }
+                // Round 1: after mid-turn `SetPermissionMode(Plan)`, `locked_tools` must have been
+                // invalidated so `bash`/`edit`/`write` are hidden on the very next model round!
+                1 => {
+                    assert!(
+                        !tools
+                            .iter()
+                            .any(|t| matches!(t.name.as_str(), "bash" | "edit" | "write")),
+                        "Mid-turn SetPermissionMode(Plan) must invalidate locked_tools before next round"
+                    );
+                    assert!(
+                        messages.iter().flat_map(|m| &m.content).any(|block| {
+                            matches!(
+                                block,
+                                ContentBlock::ToolResult { tool_use_id, content, .. }
+                                    if tool_use_id == "call:colon:parent"
+                                        && content.contains("Denied by user")
+                            )
+                        }),
+                        "batch subcall denial must be returned in tool result"
+                    );
+                    vec![
+                        StreamEvent::TextDelta("subcall gated and mode updated".into()),
+                        StreamEvent::MessageEnd {
+                            stop_reason: Some("end_turn".into()),
+                        },
+                    ]
+                }
+                _ => vec![
+                    StreamEvent::TextDelta("done".into()),
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("end_turn".into()),
+                    },
+                ],
+            };
+            Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+        }
+
+        fn name(&self) -> &str {
+            "v1-14-socket-test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    struct TempHomeGuard {
+        _dir: tempfile::TempDir,
+        prev_home: Option<std::ffi::OsString>,
+    }
+
+    impl TempHomeGuard {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let prev_home = std::env::var_os("RAYU_HOME");
+            crate::env::set_var("RAYU_HOME", dir.path());
+            Self {
+                _dir: dir,
+                prev_home,
+            }
+        }
+    }
+
+    impl Drop for TempHomeGuard {
+        fn drop(&mut self) {
+            if let Some(val) = &self.prev_home {
+                crate::env::set_var("RAYU_HOME", val);
+            } else {
+                crate::env::remove_var("RAYU_HOME");
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn live_turn_enforces_batch_subcall_risk_tier_allows_lock_free_runtime_commands_and_invalidates_tools_mid_turn()
+    {
+        use serde_json::json;
+
+        let _lock = crate::storage::lock_test_env();
+        let home = TempHomeGuard::new();
+        let provider_template: Arc<dyn Provider> = Arc::new(MidTurnAndSubcallProvider::default());
+        let sessions: SessionAgents =
+            Arc::new(crate::server::SessionManager::from_agents(HashMap::new()));
+        let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+        let server_task = tokio::spawn(handle_client(
+            server_stream,
+            Arc::clone(&sessions),
+            broadcast::channel(8).0,
+            provider_template,
+            Arc::new(RwLock::new(false)),
+            Arc::new(RwLock::new(String::new())),
+            Arc::new(RwLock::new(0usize)),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            FileTouchService::new(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(ClientDebugState::default())),
+            broadcast::channel(8).0,
+            Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            broadcast::channel(8).0,
+            "rayu-test".to_string(),
+            "T".to_string(),
+            Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            AwaitMembersRuntime::default(),
+            SwarmMutationRuntime::default(),
+        ));
+
+        let (client_reader, mut client_writer) = client_stream.into_split();
+        let mut client_reader = BufReader::new(client_reader);
+
+        async fn send(writer: &mut crate::transport::WriteHalf, value: serde_json::Value) {
+            writer
+                .write_all(format!("{value}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        async fn until(
+            reader: &mut BufReader<crate::transport::ReadHalf>,
+            predicate: impl Fn(&ServerEvent) -> bool,
+        ) -> ServerEvent {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                    let event: ServerEvent = serde_json::from_str(&line).unwrap();
+                    if predicate(&event) {
+                        return event;
+                    }
+                }
+            })
+            .await
+            .expect("daemon event timeout")
+        }
+
+        // Subscribe with supports_permissions=true and switch to AcceptEdits.
+        send(
+            &mut client_writer,
+            json!({
+                "type": "subscribe",
+                "id": 1,
+                "working_dir": home._dir.path(),
+                "supports_permissions": true,
+            }),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 1 })).await;
+
+        send(
+            &mut client_writer,
+            json!({"type": "set_permission_mode", "id": 2, "mode": "accept_edits"}),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 2 })).await;
+
+        // Start a live turn that executes `batch` -> `bash(rm -rf ~)`.
+        send(
+            &mut client_writer,
+            json!({"type": "message", "id": 3, "content": "run batch"}),
+        )
+        .await;
+
+        // First prompt is for top-level `batch` (AllowAlways).
+        let ServerEvent::PermissionRequest {
+            session_id,
+            request_id: batch_req_id,
+            tool_name: batch_tool_name,
+            ..
+        } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::PermissionRequest { .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(batch_tool_name, "batch");
+        send(
+            &mut client_writer,
+            json!({
+                "type": "permission_response",
+                "id": 4,
+                "session_id": session_id,
+                "request_id": batch_req_id,
+                "decision": "allow_always",
+            }),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 4 })).await;
+
+        // Even after AllowAlways on `batch` AND across `spawn_session`, the nested `bash`
+        // subcall MUST still emit a PermissionRequest with daemon-populated `risk_tier`.
+        let ServerEvent::PermissionRequest {
+            session_id: sub_sid,
+            request_id: bash_req_id,
+            tool_name: bash_tool_name,
+            risk_tier,
+            ..
+        } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::PermissionRequest { .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(bash_tool_name, "bash");
+        assert_eq!(risk_tier.as_deref(), Some("catastrophic"));
+
+        // While the turn STILL holds the Agent mutex waiting for `bash_req_id`:
+        // 1. Poll lock-free runtime commands — NONE may fail with "Session is busy"!
+        for (req_id, cmd, args) in [
+            (10u64, "background", json!(["list"])),
+            (11, "swarm", json!(["status"])),
+            (12, "swarm", json!(["list"])),
+            (13, "swarm", json!(["board"])),
+            (14, "features", json!(["status"])),
+            (15, "telegram", json!(["status"])),
+            (16, "ambient", json!(["status"])),
+            (17, "schedules", json!(["list"])),
+            (18, "mcp", json!(["list"])),
+            (19, "doctor", json!(["auth"])),
+            (20, "overnight", json!(["list"])),
+            (21, "session_search", json!(["nonexistent_token_xyz"])),
+        ] {
+            send(
+                &mut client_writer,
+                json!({
+                    "type": "runtime_command",
+                    "id": req_id,
+                    "command": cmd,
+                    "args": args,
+                }),
+            )
+            .await;
+            let ev = until(&mut client_reader, |e| {
+                matches!(
+                    e,
+                    ServerEvent::RuntimeCommandResult { id, .. }
+                        | ServerEvent::Error { id, .. }
+                        if *id == req_id
+                )
+            })
+            .await;
+            match ev {
+                ServerEvent::RuntimeCommandResult { data, .. } => {
+                    assert!(data.is_object(), "{cmd} should return JSON object mid-turn");
+                    if cmd == "swarm" {
+                        assert!(data.get("members").is_some(), "swarm must expose members");
+                        assert!(data.get("swarms").is_some(), "swarm must expose swarms");
+                        assert!(data.get("board").is_some(), "swarm must expose board");
+                        assert!(data.get("plans").is_some(), "swarm must expose plans");
+                    }
+                    if cmd == "session_search" {
+                        assert!(data.get("matches").is_some(), "session_search must expose matches");
+                        assert!(data.get("results").is_some(), "session_search must expose results");
+                    }
+                }
+                ServerEvent::Error { message, .. } => {
+                    panic!("lock-free runtime_command `{cmd}` failed mid-turn: {message}");
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        // 2. Switch permission mode mid-turn to `plan` (while Agent mutex is held).
+        //    Round 1 in `MidTurnAndSubcallProvider` asserts that `locked_tools` was invalidated!
+        send(
+            &mut client_writer,
+            json!({"type": "set_permission_mode", "id": 30, "mode": "plan"}),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 30 })).await;
+
+        // 3. Deny the pending bash subcall and verify the turn finishes cleanly through Round 1.
+        send(
+            &mut client_writer,
+            json!({
+                "type": "permission_response",
+                "id": 31,
+                "session_id": sub_sid,
+                "request_id": bash_req_id,
+                "decision": "deny",
+            }),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 31 })).await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 3 })).await;
+
+        drop(client_writer);
+        drop(client_reader);
+        tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("server task shutdown")
+            .unwrap()
+            .unwrap();
+    }
+}

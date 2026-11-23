@@ -32,6 +32,11 @@ pub(super) enum SimpleKind {
     BackgroundTool,
     /// Awaiting `soft_interrupts_cancelled`.
     SoftInterruptCancel,
+    /// Awaiting `ack` for `set_permission_mode`, then emits `PermissionModeChanged`.
+    SetPermissionMode {
+        session_id: String,
+        mode: rayucode_harness_api::PermissionMode,
+    },
     Credential {
         provider: String,
         configured: bool,
@@ -51,6 +56,7 @@ impl BridgeState {
                         kind,
                         SimpleKind::Tools
                             | SimpleKind::ToolControl
+                            | SimpleKind::SetPermissionMode { .. }
                             | SimpleKind::OkOnDone
                             | SimpleKind::OkOnHistory
                     )

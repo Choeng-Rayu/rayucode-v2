@@ -591,6 +591,49 @@ async fn run_dependency_waits_any_but_does_not_resume_still_blocked_todo() {
 }
 
 #[tokio::test]
+async fn run_dependency_reports_all_simultaneously_resolved_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = crate::background::BackgroundTaskManager::with_output_dir(temp.path().into());
+    let (finish_a, wait_a) = tokio::sync::oneshot::channel();
+    let a = manager
+        .spawn("test", "cli", |_| async move {
+            let _ = wait_a.await;
+            Ok(crate::background::TaskResult::completed(Some(0)))
+        })
+        .await;
+    let (finish_b, wait_b) = tokio::sync::oneshot::channel();
+    let b = manager
+        .spawn("test", "cli", |_| async move {
+            let _ = wait_b.await;
+            Ok(crate::background::TaskResult::failed(
+                Some(1),
+                "boom-b".to_string(),
+            ))
+        })
+        .await;
+    let todos = vec![dependency_todo("both", &[&a.task_id, &b.task_id])];
+    let mut followup = std::pin::pin!(prepare_run_todo_follow_up(&manager, "cli", &todos, true));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), &mut followup)
+            .await
+            .is_err()
+    );
+    // Resolve both back-to-back without yielding so the second completes
+    // before the loop re-enters `waits.next()`.
+    finish_a.send(()).unwrap();
+    finish_b.send(()).unwrap();
+    let (_, resumed) = tokio::time::timeout(std::time::Duration::from_secs(3), &mut followup)
+        .await
+        .unwrap();
+    let message = resumed.unwrap();
+    assert!(
+        message.contains(&a.task_id) && message.contains(&b.task_id),
+        "both simultaneously resolved dependencies must be reported: {message}"
+    );
+    assert!(message.contains("boom-b"), "missing failure detail: {message}");
+}
+
+#[tokio::test]
 async fn run_dependency_unknown_stale_and_cancelled_do_not_wait_forever() {
     let temp = tempfile::tempdir().unwrap();
     let manager = crate::background::BackgroundTaskManager::with_output_dir(temp.path().into());

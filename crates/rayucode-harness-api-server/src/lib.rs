@@ -409,7 +409,20 @@ where
             .into_iter()
             .map(str::to_string)
             .chain(user_connections_supported.then(|| "session_connections".to_string()))
-            .chain(runtime_commands_supported.then(|| "runtime_commands".to_string()))
+            .chain(
+                [
+                    "runtime_commands",
+                    "background_tasks",
+                    "swarm_control",
+                    "mcp_control",
+                    "telegram_control",
+                    "config_features",
+                    "doctor",
+                ]
+                .into_iter()
+                .filter(|_| runtime_commands_supported)
+                .map(str::to_string),
+            )
             .chain(session_tools_supported.then(|| "session_tools".to_string()))
             .chain(user_questions_supported.then(|| rayucode_harness_api::QUESTION_CAPABILITY.to_string()))
             .chain(

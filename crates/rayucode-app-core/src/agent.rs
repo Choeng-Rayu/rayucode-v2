@@ -455,10 +455,17 @@ impl Agent {
         let agents_md_snapshot = crate::prompt::load_agents_md_files_from_dir(working_dir);
         let agents_md_ms = t.elapsed().as_millis();
         let initial_provider_model = provider.model();
-        let tool_policy_registration = crate::tool::register_session_tool_policy(
+        let is_desktop = working_dir
+            .and_then(rayucode_selfdev_types::desktop_repo_root)
+            .is_some();
+        let selfdev_surface =
+            crate::tool::SessionSelfDevSurface::from_flags(session.is_canary, is_desktop);
+        let tool_policy_registration = crate::tool::register_session_runtime_policy(
             &session.id,
             allowed_tools.clone(),
             disabled_tools.clone(),
+            Some(registry.compaction()),
+            selfdev_surface,
         );
         let mut agent = Self {
             turn_ownership: Default::default(),
@@ -1193,6 +1200,27 @@ impl Agent {
             .is_some()
     }
 
+    pub(super) fn selfdev_surface(&self) -> crate::tool::SessionSelfDevSurface {
+        crate::tool::SessionSelfDevSurface::from_flags(
+            self.session.is_canary,
+            self.is_desktop_selfdev(),
+        )
+    }
+
+    /// Re-register this session's tool policy, live compaction handle, and
+    /// self-dev surface in the registry so `codemode`, `batch`, and
+    /// `conversation_search` always see the exact same state as `Agent`.
+    pub(super) fn sync_session_tool_policy(&mut self) {
+        let surface = self.selfdev_surface();
+        self._tool_policy_registration = crate::tool::register_session_runtime_policy(
+            &self.session.id,
+            self.allowed_tools.clone(),
+            self.disabled_tools.clone(),
+            Some(self.registry.compaction()),
+            surface,
+        );
+    }
+
     pub(crate) fn set_working_dir_for_pending_context(&mut self, working_dir: Option<String>) {
         if working_dir.is_some() {
             if self.session.original_working_dir.is_none()
@@ -1206,6 +1234,7 @@ impl Agent {
                 self.session.original_working_dir = self.session.working_dir.clone();
             }
             self.session.working_dir = working_dir;
+            self.sync_session_tool_policy();
             self.unlock_tools();
             self.session.refresh_initial_session_context_message();
         }

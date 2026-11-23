@@ -1424,8 +1424,11 @@ impl BridgeState {
                     );
                 }
                 let id = self.legacy_id();
-                self.pending_simple
-                    .push((id, api_id, SimpleKind::ToolControl));
+                self.pending_simple.push((
+                    id,
+                    api_id,
+                    SimpleKind::SetPermissionMode { session_id, mode },
+                ));
                 vec![Outbound::Legacy(json!({
                     "type": "set_permission_mode",
                     "id": id,
@@ -1493,6 +1496,151 @@ impl BridgeState {
             name: data["name"].as_str().unwrap_or("").to_string(),
             input: data["input"].clone(),
         })
+    }
+
+    /// Infer a stable risk tier (`"safe"`, `"bounded"`, `"confirm"`, or `"catastrophic"`)
+    /// when a legacy daemon wire `permission_request` does not carry an explicit one.
+    fn infer_permission_risk_tier(tool_name: &str, input: &Value) -> Option<String> {
+        let name = tool_name.strip_prefix("functions.").unwrap_or(tool_name);
+        let tier = match name {
+            "read"
+            | "read_file"
+            | "glob"
+            | "grep"
+            | "agentgrep"
+            | "search_files"
+            | "ls"
+            | "list_files"
+            | "read_excel"
+            | "session_search"
+            | "conversation_search"
+            | "memory"
+            | "todo" => "safe",
+            "edit"
+            | "multiedit"
+            | "write"
+            | "patch"
+            | "apply_patch"
+            | "write_excel"
+            | "create_powerpoint"
+            | "save_template" => "bounded",
+            "bash" | "shell" | "run_command" => {
+                let Some(cmd) = input.get("command").and_then(Value::as_str) else {
+                    return Some("confirm".into());
+                };
+                let trimmed = cmd.trim();
+                let lower = trimmed.to_ascii_lowercase();
+                let normalized_ws = lower.split_whitespace().collect::<Vec<_>>().join(" ");
+                let is_catastrophic = [
+                    "rm -rf /",
+                    "rm -fr /",
+                    "rm -rf ~",
+                    "rm -fr ~",
+                    "rm -rf $home",
+                    "rm -fr $home",
+                    "rm -rf /*",
+                    "rm -fr /*",
+                    "mkfs",
+                    "wipefs",
+                    "fdisk",
+                    "parted",
+                    ":(){ :|:& };:",
+                    "chmod -r 777 /",
+                    "chmod -r 000 /",
+                    ">/dev/sd",
+                    "> /dev/sd",
+                    ">/dev/nvme",
+                    "> /dev/nvme",
+                    "of=/dev/sd",
+                    "of=/dev/nvme",
+                    "of=/dev/disk",
+                ]
+                .iter()
+                .any(|needle| {
+                    if *needle == "rm -rf /" || *needle == "rm -fr /" {
+                        normalized_ws == *needle
+                            || normalized_ws.ends_with(&format!(" {needle}"))
+                            || normalized_ws.contains(&format!("{needle} "))
+                            || normalized_ws.contains(&format!("{needle};"))
+                            || normalized_ws.contains(&format!("{needle}&"))
+                    } else {
+                        normalized_ws.contains(needle) || lower.contains(needle)
+                    }
+                });
+                let is_confirm = [
+                    "rm ",
+                    "rm\t",
+                    "rmdir ",
+                    "sudo ",
+                    "doas ",
+                    "dd ",
+                    "shred ",
+                    "truncate ",
+                    "chmod -r",
+                    "chown -r",
+                    "git push --force",
+                    "git push -f",
+                    "git reset --hard",
+                    "git clean",
+                    "sh -c",
+                    "bash -c",
+                    "| sh",
+                    "| bash",
+                    ">/dev/",
+                    "eval ",
+                    "$(",
+                    "`",
+                    " -delete",
+                    " -exec ",
+                    " -execdir ",
+                ]
+                .iter()
+                .any(|needle| lower.contains(needle));
+                if is_catastrophic {
+                    "catastrophic"
+                } else if is_confirm {
+                    "confirm"
+                } else {
+                    let has_shell_meta = trimmed.contains('>')
+                        || trimmed.contains(';')
+                        || trimmed.contains('&')
+                        || trimmed.contains('|')
+                        || trimmed.contains('\n')
+                        || trimmed.contains('\r')
+                        || trimmed.contains("$(")
+                        || trimmed.contains('`');
+                    let is_safe_prefix = [
+                        "ls ",
+                        "pwd ",
+                        "cat ",
+                        "head ",
+                        "tail ",
+                        "git status ",
+                        "git diff ",
+                        "git log ",
+                        "rg ",
+                        "grep ",
+                        "find ",
+                        "echo ",
+                        "which ",
+                        "cargo check ",
+                        "cargo test ",
+                        "npm test ",
+                        "pnpm test ",
+                        "pytest ",
+                    ]
+                    .iter()
+                    .any(|prefix| lower == prefix.trim() || lower.starts_with(prefix));
+                    if !has_shell_meta && is_safe_prefix {
+                        "safe"
+                    } else {
+                        "bounded"
+                    }
+                }
+            }
+            _ => "confirm",
+        };
+        Some(tier.to_string())
     }
 
     fn attachment_recovery(event: &Value) -> Option<ServerFrame> {
@@ -1892,11 +2040,36 @@ impl BridgeState {
                 ) else {
                     return vec![];
                 };
+                let risk_tier = event["risk_tier"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| Self::infer_permission_risk_tier(tool_name, &event["input"]));
                 vec![ServerFrame::event(ApiEvent::PermissionRequest {
                     session_id: session_id.to_string(),
                     request_id: request_id.to_string(),
                     tool_name: tool_name.to_string(),
                     description: description.to_string(),
+                    risk_tier,
+                })]
+            }
+            "permission_mode_changed" => {
+                let Some(mode) = serde_json::from_value::<rayucode_harness_api::PermissionMode>(
+                    event["mode"].clone(),
+                )
+                .ok() else {
+                    return vec![];
+                };
+                let session_id = event["session_id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| session(self));
+                if session_id.is_empty() || self.session_id.as_deref() != Some(session_id.as_str())
+                {
+                    return vec![];
+                }
+                vec![ServerFrame::event(ApiEvent::PermissionModeChanged {
+                    session_id,
+                    mode,
                 })]
             }
             "tool_call" => {
@@ -2735,6 +2908,10 @@ impl BridgeState {
                     SimpleKind::Ok | SimpleKind::ToolControl => {
                         vec![ServerFrame::reply(api_id, ApiEvent::Ok)]
                     }
+                    SimpleKind::SetPermissionMode { session_id, mode } => vec![
+                        ServerFrame::reply(api_id, ApiEvent::Ok),
+                        ServerFrame::event(ApiEvent::PermissionModeChanged { session_id, mode }),
+                    ],
                     SimpleKind::Credential {
                         provider,
                         configured,

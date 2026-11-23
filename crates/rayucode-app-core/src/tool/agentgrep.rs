@@ -47,7 +47,16 @@ impl Drop for SearchTaskOwner {
     }
 }
 
+#[cfg(test)]
 fn spawn_cancellable_search(
+    work: impl FnOnce() -> Result<ToolOutput> + Send + 'static,
+) -> tokio::task::JoinHandle<Result<ToolOutput>> {
+    spawn_cancellable_search_with_scope(None, None, work)
+}
+
+fn spawn_cancellable_search_with_scope(
+    path_arg: Option<String>,
+    working_dir: Option<PathBuf>,
     work: impl FnOnce() -> Result<ToolOutput> + Send + 'static,
 ) -> tokio::task::JoinHandle<Result<ToolOutput>> {
     let token = Arc::new(AtomicBool::new(false));
@@ -56,8 +65,13 @@ fn spawn_cancellable_search(
     let guard = CancelSearchOnDrop(token);
     tokio::spawn(async move {
         let _guard = guard;
-        tokio::task::spawn_blocking(move || {
-            with_search_control(control, work).map_err(anyhow::Error::msg)?
+        tokio::task::spawn_blocking(move || match with_search_control(control, work) {
+            Ok(inner) => inner,
+            Err(control_err) => Err(anyhow::anyhow!(enrich_resource_limit_error(
+                &control_err,
+                path_arg.as_deref(),
+                working_dir.as_deref(),
+            ))),
         })
         .await
         .map_err(|err| anyhow::anyhow!("agentgrep blocking task failed to join: {err}"))?
@@ -301,7 +315,11 @@ impl Tool for AgentGrepTool {
         // the first cold-cache search feel like it "takes forever" with no
         // spinner and an unresponsive interrupt. This mirrors how the sibling
         // grep/glob/ls tools offload their work.
-        let work_handle = spawn_cancellable_search(move || run_agentgrep_blocking(&params, &ctx));
+        let path_arg = effective_scope_path(&params).map(str::to_string);
+        let working_dir = ctx.working_dir.clone();
+        let work_handle = spawn_cancellable_search_with_scope(path_arg, working_dir, move || {
+            run_agentgrep_blocking(&params, &ctx)
+        });
         await_or_background_search(
             work_handle,
             AGENTGREP_FOREGROUND_BUDGET,
@@ -415,8 +433,12 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
             Ok(output)
         }
         Err(err) => {
-            let detail = err.to_string();
-            let detail = util::truncate_str(detail.trim(), 600);
+            let enriched = enrich_resource_limit_error(
+                &err.to_string(),
+                effective_scope_path(params),
+                ctx.working_dir.as_deref(),
+            );
+            let detail = util::truncate_str(enriched.trim(), 600);
             logging::warn(&format!(
                 "agentgrep failure mode={} elapsed_ms={} request={} error={}",
                 params.mode, elapsed_ms, request, detail
@@ -425,10 +447,117 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
                 "agentgrep {} failed after {}ms: {}",
                 params.mode,
                 elapsed_ms,
-                err
+                enriched
             ))
         }
     }
+}
+
+fn effective_scope_path(params: &AgentGrepInput) -> Option<&str> {
+    params.path.as_deref().or(params.file.as_deref())
+}
+
+/// When `agentgrep` aborts on a resource limit (e.g. a single file > 8 MiB),
+/// name up to 3 offending oversized files and give concrete narrowing hints so
+/// the caller can scope `path`, `glob`, or `type` without guessing.
+fn enrich_resource_limit_error(
+    raw: &str,
+    path_arg: Option<&str>,
+    working_dir: Option<&Path>,
+) -> String {
+    if !raw.contains("search resource limit exceeded:") {
+        return raw.to_string();
+    }
+
+    let mut out = raw.to_string();
+    let root = match (working_dir, path_arg) {
+        (_, Some(path)) if Path::new(path).is_absolute() => Some(PathBuf::from(path)),
+        (Some(dir), Some(path)) => Some(dir.join(path)),
+        (Some(dir), None) => Some(dir.to_path_buf()),
+        (None, Some(path)) => Some(PathBuf::from(path)),
+        (None, None) => None,
+    };
+    if let Some(limit_bytes) = parse_file_bytes_limit(raw)
+        && let Some(root) = root.filter(|p| p.exists())
+    {
+        let offenders = find_oversized_files(&root, limit_bytes, 3, 5_000);
+        if !offenders.is_empty() {
+            let formatted: Vec<String> = offenders
+                .iter()
+                .map(|(path, bytes)| format!("{} ({:.1} MiB)", path, *bytes as f64 / (1024.0 * 1024.0)))
+                .collect();
+            out.push_str(&format!("\nOversized file(s) found: {}.", formatted.join(", ")));
+        }
+    }
+    out.push_str(
+        "\nNarrow the search with `path` (e.g. a subdirectory), `glob`, or `type` (e.g. \"rs\") to skip oversized files.",
+    );
+    out
+}
+
+fn parse_file_bytes_limit(error_text: &str) -> Option<u64> {
+    let rest = error_text.split("file bytes (limit ").nth(1)?;
+    let digits = rest.split(')').next()?.trim();
+    digits.parse::<u64>().ok()
+}
+
+fn find_oversized_files(
+    root: &Path,
+    limit_bytes: u64,
+    max_results: usize,
+    max_entries: usize,
+) -> Vec<(String, u64)> {
+    const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".next", "dist", "build"];
+    if let Ok(meta) = std::fs::metadata(root)
+        && meta.is_file()
+    {
+        if meta.len() > limit_bytes {
+            let label = root
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string());
+            return vec![(label, meta.len())];
+        }
+        return Vec::new();
+    }
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
+    let mut found = Vec::new();
+
+    while let Some(dir) = stack.pop() {
+        if visited >= max_entries || found.len() >= max_results {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > max_entries || found.len() >= max_results {
+                break;
+            }
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && SKIP_DIRS.contains(&name)
+                {
+                    continue;
+                }
+                stack.push(path);
+            } else if meta.is_file() && meta.len() > limit_bytes {
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                found.push((rel, meta.len()));
+            }
+        }
+    }
+    found
 }
 
 fn execute_linked_agentgrep(

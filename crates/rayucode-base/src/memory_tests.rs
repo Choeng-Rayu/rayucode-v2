@@ -422,6 +422,9 @@ fn memory_search_normalizes_whitespace_and_separators() {
 
     assert_eq!(store.search("  side-panel  ").len(), 1);
     assert_eq!(store.search("BUILD.CACHE").len(), 1);
+    assert_eq!(store.search("layout side").len(), 1);
+    assert_eq!(store.search("side cache").len(), 1);
+    assert!(store.search("side nonexistent").is_empty());
     assert!(store.search("   ").is_empty());
 }
 

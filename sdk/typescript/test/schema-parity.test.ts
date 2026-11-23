@@ -16,7 +16,9 @@ import {
   API_VERSION_MAJOR,
   API_VERSION_MINOR,
   KNOWN_EVENT_KINDS,
+  KNOWN_PERMISSION_MODES,
   KNOWN_REQUEST_KINDS,
+  KNOWN_RUNTIME_COMMANDS,
 } from "../dist/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +59,25 @@ test("event tags match the Rust ApiEvent enum", () => {
     .filter((tag) => tag !== "question_request" && tag !== "question_closed")
     .sort();
   assert.deepEqual([...KNOWN_EVENT_KINDS].sort(), rust);
+});
+
+test("runtime commands match the Rust RuntimeCommand enum", () => {
+  const rust = enumVariants("runtime_commands.rs", "RuntimeCommand").sort();
+  assert.deepEqual([...KNOWN_RUNTIME_COMMANDS].sort(), rust);
+});
+
+test("permission modes match the Rust PermissionMode enum", () => {
+  const rust = enumVariants("requests.rs", "PermissionMode").sort();
+  assert.deepEqual([...KNOWN_PERMISSION_MODES].sort(), rust);
+});
+
+test("permission_request risk_tier and permission_mode_changed match the Rust schema", () => {
+  const rustEvents = fs.readFileSync(path.join(rustCrate, "events.rs"), "utf8");
+  const typescript = fs.readFileSync(path.resolve(here, "../src/protocol.ts"), "utf8");
+  assert.match(rustEvents, /PermissionRequest\s*{[\s\S]*?risk_tier:\s*Option<String>/);
+  assert.match(typescript, /ev:\s*"permission_request"[\s\S]*?risk_tier\?:\s*string/);
+  assert.match(rustEvents, /PermissionModeChanged\s*{[\s\S]*?mode:\s*crate::PermissionMode/);
+  assert.match(typescript, /ev:\s*"permission_mode_changed"[\s\S]*?mode:\s*PermissionMode/);
 });
 
 test("send_message no_reply field matches the Rust schema", () => {

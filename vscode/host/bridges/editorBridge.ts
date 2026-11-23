@@ -1,0 +1,387 @@
+import os from "node:os";
+import path from "node:path";
+import * as vscode from "vscode";
+import type { EditorSelectionView } from "../../shared/vscodeProtocol.js";
+
+const SELECTION_DEBOUNCE_MS = 150;
+const MAX_SELECTION_CHARS = 32_000;
+export const ORIGINAL_DIFF_SCHEME = "rayucode-original";
+
+class VirtualDiffDocumentProvider implements vscode.TextDocumentContentProvider {
+  private readonly contents = new Map<string, string>();
+  private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this.emitter.event;
+
+  set(key: string, content: string, displayName: string): vscode.Uri {
+    const safeName = encodeURIComponent(path.basename(displayName) || "document");
+    const uri = vscode.Uri.parse(`${ORIGINAL_DIFF_SCHEME}:/${safeName}?${encodeURIComponent(key)}`);
+    this.contents.set(key, content);
+    this.emitter.fire(uri);
+    return uri;
+  }
+
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    const key = decodeURIComponent(uri.query);
+    return this.contents.get(key) ?? "";
+  }
+
+  dispose(): void {
+    this.contents.clear();
+    this.emitter.dispose();
+  }
+}
+
+function isAbsolutePath(filePath: string): boolean {
+  return (
+    filePath.startsWith("/") ||
+    /^[A-Za-z]:[\\/]/.test(filePath) ||
+    filePath.startsWith("\\\\")
+  );
+}
+
+export function resolveWorkspaceFileUri(targetPath: string): vscode.Uri | null {
+  const trimmed = targetPath.trim();
+  if (!trimmed) return null;
+  if (trimmed === "~") {
+    return vscode.Uri.file(os.homedir());
+  }
+  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+    return vscode.Uri.joinPath(
+      vscode.Uri.file(os.homedir()),
+      trimmed.slice(2).replace(/\\/g, "/"),
+    );
+  }
+  if (isAbsolutePath(trimmed)) {
+    return vscode.Uri.file(trimmed);
+  }
+  const primaryFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!primaryFolder) {
+    return vscode.Uri.file(path.resolve(trimmed));
+  }
+  return vscode.Uri.joinPath(primaryFolder.uri, trimmed);
+}
+
+export class EditorBridge implements vscode.Disposable {
+  private readonly disposables: vscode.Disposable[] = [];
+  private readonly diffProvider = new VirtualDiffDocumentProvider();
+  private readonly terminals = new Map<string, vscode.Terminal>();
+  private lastActiveEditor: vscode.TextEditor | undefined;
+  private currentSelection: EditorSelectionView | null = null;
+  private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(
+    private readonly onSelectionChanged: (selection: EditorSelectionView | null) => void,
+  ) {
+    this.disposables.push(
+      this.diffProvider,
+      vscode.workspace.registerTextDocumentContentProvider(
+        ORIGINAL_DIFF_SCHEME,
+        this.diffProvider,
+      ),
+      vscode.window.onDidChangeTextEditorSelection(() => this.scheduleSelectionFlush()),
+      vscode.window.onDidChangeActiveTextEditor((editor) => {
+        if (
+          editor &&
+          (editor.document.uri.scheme === "file" ||
+            editor.document.uri.scheme === "untitled")
+        ) {
+          this.lastActiveEditor = editor;
+        }
+        this.scheduleSelectionFlush();
+      }),
+      vscode.workspace.onDidChangeTextDocument(() => this.scheduleSelectionFlush()),
+      vscode.workspace.onDidCloseTextDocument(() => this.scheduleSelectionFlush()),
+      vscode.window.onDidCloseTerminal((closed) => {
+        for (const [key, term] of this.terminals.entries()) {
+          if (term === closed) this.terminals.delete(key);
+        }
+      }),
+    );
+
+    if (vscode.window.activeTextEditor) {
+      this.lastActiveEditor = vscode.window.activeTextEditor;
+    }
+    this.scheduleSelectionFlush();
+  }
+
+  getSelection(): EditorSelectionView | null {
+    return this.currentSelection;
+  }
+
+  readActiveSelectionImmediate(): EditorSelectionView | null {
+    const editor =
+      vscode.window.activeTextEditor ?? this.lastActiveEditor;
+    if (!editor) return null;
+    const { document, selection } = editor;
+    if (document.uri.scheme !== "file" && document.uri.scheme !== "untitled") {
+      return null;
+    }
+
+    const filePath = document.uri.fsPath || document.uri.path;
+    const relativePath = vscode.workspace.asRelativePath(document.uri, false);
+    const languageId = document.languageId;
+
+    if (selection.isEmpty) {
+      const line = selection.active.line + 1;
+      return {
+        filePath,
+        relativePath,
+        languageId,
+        lineStart: line,
+        lineEnd: line,
+        lineCount: 0,
+      };
+    }
+
+    const startLine0 = selection.start.line;
+    const endLine0 =
+      selection.end.character === 0 && selection.end.line > selection.start.line
+        ? selection.end.line - 1
+        : selection.end.line;
+    const lineStart = startLine0 + 1;
+    const lineEnd = Math.max(lineStart, endLine0 + 1);
+    const lineCount = lineEnd - lineStart + 1;
+    const rawText = document.getText(selection);
+    const selectedText =
+      rawText.length > MAX_SELECTION_CHARS
+        ? rawText.slice(0, MAX_SELECTION_CHARS)
+        : rawText;
+
+    return {
+      filePath,
+      relativePath,
+      languageId,
+      lineStart,
+      lineEnd,
+      lineCount,
+      selectedText,
+    };
+  }
+
+  private scheduleSelectionFlush(): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = undefined;
+      const next = this.readActiveSelectionImmediate();
+      this.currentSelection = next;
+      this.onSelectionChanged(next);
+    }, SELECTION_DEBOUNCE_MS);
+  }
+
+  async openFile(options: {
+    path: string;
+    line?: number;
+    column?: number;
+    preview?: boolean;
+  }): Promise<void> {
+    const uri = resolveWorkspaceFileUri(options.path);
+    if (!uri) return;
+
+    const line0 = options.line && options.line > 0 ? options.line - 1 : undefined;
+    const col0 = options.column && options.column > 0 ? options.column - 1 : 0;
+    const selection =
+      line0 !== undefined
+        ? new vscode.Range(line0, col0, line0, col0)
+        : undefined;
+
+    const editor = await vscode.window.showTextDocument(uri, {
+      preview: options.preview ?? true,
+      selection,
+    });
+    if (selection) {
+      editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    }
+  }
+
+  async openDiff(options: {
+    path: string;
+    originalContent: string;
+    modifiedContent?: string;
+    title?: string;
+  }): Promise<void> {
+    const fileUri = resolveWorkspaceFileUri(options.path);
+    if (!fileUri) return;
+
+    const leftUri = this.diffProvider.set(
+      `orig:${options.path}`,
+      options.originalContent,
+      options.path,
+    );
+    const rightUri =
+      options.modifiedContent !== undefined && !isAbsolutePath(options.path) && !vscode.workspace.workspaceFolders?.length
+        ? this.diffProvider.set(`mod:${options.path}`, options.modifiedContent, options.path)
+        : fileUri;
+
+    const baseName = path.basename(options.path) || options.path;
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      leftUri,
+      rightUri,
+      options.title ?? `${baseName} — RayuCode Diff`,
+      {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: false,
+      },
+    );
+  }
+
+  async insertCode(options: {
+    code: string;
+    mode: "cursor" | "diff";
+    languageId?: string;
+  }): Promise<void> {
+    const editor = vscode.window.activeTextEditor ?? this.lastActiveEditor;
+    if (!editor) {
+      const doc = await vscode.workspace.openTextDocument({
+        content: options.code,
+        language: options.languageId ?? "plaintext",
+      });
+      await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside,
+      });
+      return;
+    }
+
+    if (options.mode === "cursor") {
+      await editor.edit((editBuilder) => {
+        if (editor.selection.isEmpty) {
+          editBuilder.insert(editor.selection.active, options.code);
+        } else {
+          editBuilder.replace(editor.selection, options.code);
+        }
+      });
+      return;
+    }
+
+    const currentText = editor.document.getText();
+    const startOffset = editor.document.offsetAt(editor.selection.start);
+    const endOffset = editor.document.offsetAt(editor.selection.end);
+    const proposedText =
+      currentText.slice(0, startOffset) +
+      options.code +
+      currentText.slice(endOffset);
+
+    const filePath = editor.document.uri.fsPath || editor.document.fileName;
+    const leftUri = this.diffProvider.set(`insert-orig:${filePath}`, currentText, filePath);
+    const rightUri = this.diffProvider.set(`insert-prop:${filePath}`, proposedText, filePath);
+    const baseName = path.basename(filePath) || "Snippet";
+
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      leftUri,
+      rightUri,
+      `${baseName} — Proposed Code`,
+      {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: true,
+      },
+    );
+  }
+
+  openTerminal(options: { cwd?: string; name?: string } = {}): void {
+    const defaultCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const cwd = options.cwd?.trim() || defaultCwd;
+    const name = options.name?.trim() || "RayuCode";
+    const key = `${name}:${cwd ?? ""}`;
+    let terminal = this.terminals.get(key);
+    if (!terminal || terminal.exitStatus !== undefined) {
+      terminal = vscode.window.createTerminal({
+        name,
+        cwd,
+      });
+      this.terminals.set(key, terminal);
+    }
+    terminal.show(false);
+  }
+
+  async openWorktreeWindow(folderPath: string): Promise<void> {
+    const uri = resolveWorkspaceFileUri(folderPath);
+    if (!uri) return;
+    await vscode.commands.executeCommand("vscode.openFolder", uri, {
+      forceNewWindow: true,
+    });
+  }
+
+  async openMarkdownPreview(filePath: string): Promise<void> {
+    const uri = resolveWorkspaceFileUri(filePath);
+    if (!uri) return;
+    try {
+      await vscode.commands.executeCommand("markdown.showPreviewToSide", uri);
+    } catch {
+      await this.openFile({ path: filePath, preview: false });
+    }
+  }
+
+  async openSimpleBrowser(url: string): Promise<void> {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    try {
+      await vscode.commands.executeCommand("simpleBrowser.show", trimmed);
+    } catch {
+      await this.openExternal(trimmed);
+    }
+  }
+
+  async openExternal(url: string): Promise<void> {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    await vscode.env.openExternal(vscode.Uri.parse(trimmed));
+  }
+
+  async copyToClipboard(text: string): Promise<void> {
+    if (text.length <= 2_000_000) {
+      await vscode.env.clipboard.writeText(text);
+    }
+  }
+
+  async pickFiles(options: {
+    canSelectMany?: boolean;
+    filters?: Record<string, string[]>;
+    canSelectFolders?: boolean;
+  } = {}): Promise<string[]> {
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: options.canSelectMany ?? true,
+      canSelectFiles: !options.canSelectFolders,
+      canSelectFolders: options.canSelectFolders ?? false,
+      filters: options.filters,
+      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+    });
+    return (uris ?? []).map((u) => u.fsPath);
+  }
+
+  async findWorkspaceFiles(query: string, limit = 50): Promise<string[]> {
+    const uris = await vscode.workspace.findFiles(
+      "**/*",
+      "**/{node_modules,.git,dist,target,.next,build,coverage,.turbo}/**",
+      1500,
+    );
+    const relativePaths = uris.map((u) => vscode.workspace.asRelativePath(u, false));
+    const q = query.trim().toLowerCase();
+    if (!q) {
+      return relativePaths.sort().slice(0, limit);
+    }
+
+    const scored: Array<{ path: string; score: number }> = [];
+    for (const rel of relativePaths) {
+      const lower = rel.toLowerCase();
+      const base = path.basename(lower);
+      if (base === q) {
+        scored.push({ path: rel, score: 100 });
+      } else if (base.startsWith(q)) {
+        scored.push({ path: rel, score: 80 });
+      } else if (base.includes(q)) {
+        scored.push({ path: rel, score: 60 });
+      } else if (lower.includes(q)) {
+        scored.push({ path: rel, score: 40 });
+      }
+    }
+    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+    return scored.slice(0, limit).map((item) => item.path);
+  }
+
+  dispose(): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    for (const d of this.disposables) d.dispose();
+    this.disposables.length = 0;
+  }
+}

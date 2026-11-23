@@ -150,6 +150,8 @@ pub(super) async fn prepare_run_todo_follow_up(
     use futures::{FutureExt, StreamExt};
 
     let mut completion_messages = Vec::new();
+    let mut previously_waitable: BTreeSet<String> = BTreeSet::new();
+    let mut reported_resolved: BTreeSet<String> = BTreeSet::new();
     let dependencies: BTreeSet<_> = todos
         .iter()
         .filter(|todo| {
@@ -196,6 +198,25 @@ pub(super) async fn prepare_run_todo_follow_up(
             .iter()
             .filter(|task| run_task_is_waitable(task, session_id))
             .collect();
+        let still_waitable: BTreeSet<&str> = waiting
+            .iter()
+            .map(|task| task.task_id.as_str())
+            .chain(awaits.iter().map(String::as_str))
+            .collect();
+        // Any dependency we were previously waiting on that finished while we
+        // were processing another completion must still have its status and
+        // output tail reported before we return or wait again.
+        let newly_resolved: Vec<String> = previously_waitable
+            .iter()
+            .filter(|id| !still_waitable.contains(id.as_str()) && !reported_resolved.contains(*id))
+            .cloned()
+            .collect();
+        for resolved in newly_resolved {
+            reported_resolved.insert(resolved.clone());
+            completion_messages.push(
+                format_dependency_resolution_message(manager, session_id, &resolved).await,
+            );
+        }
         for task in &waiting {
             // Prevent a second, daemon-owned turn for the same completion. Do this
             // even for mixed work, whose independent todos remain actionable.
@@ -220,6 +241,10 @@ pub(super) async fn prepare_run_todo_follow_up(
                 actionable,
                 (!completion_messages.is_empty()).then(|| completion_messages.join("\n\n")),
             );
+        }
+
+        for id in &still_waitable {
+            previously_waitable.insert((*id).to_string());
         }
 
         let mut waits = futures::stream::FuturesUnordered::new();
@@ -261,34 +286,46 @@ pub(super) async fn prepare_run_todo_follow_up(
             crate::logging::warn("Headless dependency wait set unexpectedly empty");
             return (actionable, None);
         };
-        let status = manager.status(&resolved).await;
-        let mut message = format!(
-            "[auto] Background dependency {resolved} resolved. Reassess the waiting todos and continue newly actionable work. Do not retry failed tasks automatically or work on todos whose other dependencies are still running.\n"
-        );
-        match status.filter(|task| task.session_id == session_id) {
-            Some(task) => {
-                message.push_str(&format!(
-                    "Status: {:?}; exit code: {:?}; error: {:?}\n",
-                    task.status, task.exit_code, task.error
-                ));
-                if let Some(output) = manager.output(&resolved).await {
-                    message.push_str("Task output (tail):\n");
-                    let tail: String = output.chars().rev().take(16_000).collect();
-                    message.extend(tail.chars().rev());
-                }
-            }
-            None => {
-                if let Some(state) =
-                    crate::todo::await_dependency::load(&crate::storage::runtime_dir(), &resolved)
-                {
-                    message.push_str(&format!("Swarm await result: {:?}", state.final_response));
-                } else {
-                    message.push_str("Task status is unavailable. Inspect or repair the stale dependency instead of waiting for it again.");
-                }
+        if reported_resolved.insert(resolved.clone()) {
+            completion_messages.push(
+                format_dependency_resolution_message(manager, session_id, &resolved).await,
+            );
+        }
+    }
+}
+
+async fn format_dependency_resolution_message(
+    manager: &crate::background::BackgroundTaskManager,
+    session_id: &str,
+    resolved: &str,
+) -> String {
+    let status = manager.status(resolved).await;
+    let mut message = format!(
+        "[auto] Background dependency {resolved} resolved. Reassess the waiting todos and continue newly actionable work. Do not retry failed tasks automatically or work on todos whose other dependencies are still running.\n"
+    );
+    match status.filter(|task| task.session_id == session_id) {
+        Some(task) => {
+            message.push_str(&format!(
+                "Status: {:?}; exit code: {:?}; error: {:?}\n",
+                task.status, task.exit_code, task.error
+            ));
+            if let Some(output) = manager.output(resolved).await {
+                message.push_str("Task output (tail):\n");
+                let tail: String = output.chars().rev().take(16_000).collect();
+                message.extend(tail.chars().rev());
             }
         }
-        completion_messages.push(message);
+        None => {
+            if let Some(state) =
+                crate::todo::await_dependency::load(&crate::storage::runtime_dir(), resolved)
+            {
+                message.push_str(&format!("Swarm await result: {:?}", state.final_response));
+            } else {
+                message.push_str("Task status is unavailable. Inspect or repair the stale dependency instead of waiting for it again.");
+            }
+        }
     }
+    message
 }
 
 /// Build the deferred quality-check reminder for a headless run, consuming the

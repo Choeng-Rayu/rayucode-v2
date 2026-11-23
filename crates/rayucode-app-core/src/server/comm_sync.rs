@@ -149,28 +149,81 @@ pub(super) async fn member_runtime_extras(
     }
 }
 
-async fn ensure_same_swarm_access(
+/// Resolve a target identifier (`session_id` or unique friendly name like `"wolf"`)
+/// against a slice of candidate session IDs in the same swarm. Single source of
+/// truth shared by DM delivery (`client_comm_message`) and inspection handlers
+/// (`handle_comm_summary`, `handle_comm_status`, `handle_comm_read_context`).
+pub(super) async fn resolve_swarm_target_session(
+    target: &str,
+    swarm_session_ids: &[String],
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+) -> anyhow::Result<String> {
+    if swarm_session_ids
+        .iter()
+        .any(|session_id| session_id == target)
+    {
+        return Ok(target.to_string());
+    }
+
+    let members = swarm_members.read().await;
+    let mut matches: Vec<(String, String)> = swarm_session_ids
+        .iter()
+        .filter_map(|session_id| {
+            let member = members.get(session_id)?;
+            member
+                .friendly_name
+                .as_deref()
+                .filter(|friendly_name| *friendly_name == target)
+                .map(|friendly_name| (session_id.clone(), friendly_name.to_string()))
+        })
+        .collect();
+    matches.sort_by(|(left_session, _), (right_session, _)| left_session.cmp(right_session));
+    matches.dedup_by(|(left_session, _), (right_session, _)| left_session == right_session);
+    match matches.len() {
+        1 => Ok(matches.remove(0).0),
+        0 => Err(anyhow::anyhow!(
+            "Unknown target '{}' - use an exact session_id or a unique friendly name within the swarm.",
+            target
+        )),
+        _ => {
+            let match_list = matches
+                .iter()
+                .map(|(session_id, friendly_name)| format!("{} [{}]", friendly_name, session_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(anyhow::anyhow!(
+                "Friendly name '{}' is ambiguous in swarm. Use an exact session id instead. Matches: {}",
+                target,
+                match_list
+            ))
+        }
+    }
+}
+
+async fn resolve_same_swarm_target(
     id: u64,
     req_session_id: &str,
     target_session: &str,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) -> bool {
-    let (req_swarm, target_swarm) = {
+) -> Option<String> {
+    let (req_swarm, swarm_session_ids) = {
         let members = swarm_members.read().await;
-        (
-            members
-                .get(req_session_id)
-                .and_then(|member| member.swarm_id.clone()),
-            members
-                .get(target_session)
-                .and_then(|member| member.swarm_id.clone()),
-        )
+        let req_swarm = members
+            .get(req_session_id)
+            .and_then(|member| member.swarm_id.clone());
+        let ids = match req_swarm.as_deref() {
+            Some(swarm_id) => members
+                .iter()
+                .filter(|(_, member)| member.swarm_id.as_deref() == Some(swarm_id))
+                .map(|(session_id, _)| session_id.clone())
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        (req_swarm, ids)
     };
 
-    if req_swarm.is_some() && req_swarm == target_swarm {
-        true
-    } else {
+    if req_swarm.is_none() {
         let _ = client_event_tx.send(ServerEvent::Error {
             id,
             message: format!(
@@ -179,7 +232,28 @@ async fn ensure_same_swarm_access(
             ),
             retry_after_secs: None,
         });
-        false
+        return None;
+    }
+
+    match resolve_swarm_target_session(target_session, &swarm_session_ids, swarm_members).await {
+        Ok(resolved) => Some(resolved),
+        Err(err) => {
+            let err_msg = err.to_string();
+            let message = if err_msg.contains("ambiguous") {
+                err_msg
+            } else {
+                format!(
+                    "Session '{}' is not in the same swarm as requester '{}'",
+                    target_session, req_session_id
+                )
+            };
+            let _ = client_event_tx.send(ServerEvent::Error {
+                id,
+                message,
+                retry_after_secs: None,
+            });
+            None
+        }
     }
 }
 
@@ -208,7 +282,7 @@ pub(super) async fn handle_comm_summary(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if !ensure_same_swarm_access(
+    let Some(target_session) = resolve_same_swarm_target(
         id,
         &req_session_id,
         &target_session,
@@ -216,15 +290,24 @@ pub(super) async fn handle_comm_summary(
         client_event_tx,
     )
     .await
-    {
+    else {
         return;
-    }
+    };
 
     let limit = limit.unwrap_or(10);
     let agent_sessions = sessions.read().await;
     if let Some(agent) = agent_sessions.get(&target_session) {
         let tool_calls = if let Ok(agent) = agent.try_lock() {
             agent.get_tool_call_summaries(limit)
+        } else if let Ok(session) = crate::session::Session::load(&target_session) {
+            // Self-summary and in-flight worker summaries always observe the
+            // Agent mutex as locked during an active turn; fall back to the
+            // persisted session history rather than failing with "busy".
+            crate::session::summarize_tool_calls(&session, limit)
+        } else if target_session == req_session_id {
+            // Fresh session not yet persisted to disk still has no prior tool
+            // calls; return empty rather than deadlocking on self.
+            Vec::new()
         } else {
             let _ = client_event_tx.send(ServerEvent::Error {
                 id,
@@ -236,6 +319,13 @@ pub(super) async fn handle_comm_summary(
             });
             return;
         };
+        let _ = client_event_tx.send(ServerEvent::CommSummaryResponse {
+            id,
+            session_id: target_session,
+            tool_calls,
+        });
+    } else if let Ok(session) = crate::session::Session::load(&target_session) {
+        let tool_calls = crate::session::summarize_tool_calls(&session, limit);
         let _ = client_event_tx.send(ServerEvent::CommSummaryResponse {
             id,
             session_id: target_session,
@@ -264,7 +354,7 @@ pub(super) async fn handle_comm_status(
     file_touch: &FileTouchService,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if !ensure_same_swarm_access(
+    let Some(target_session) = resolve_same_swarm_target(
         id,
         &req_session_id,
         &target_session,
@@ -272,9 +362,9 @@ pub(super) async fn handle_comm_status(
         client_event_tx,
     )
     .await
-    {
+    else {
         return;
-    }
+    };
 
     // Release the member guard before taking client_connections: disconnect
     // cleanup holds client_connections.write while waiting on swarm_members.write,
@@ -343,7 +433,7 @@ pub(super) async fn handle_comm_read_context(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    if !ensure_same_swarm_access(
+    let Some(target_session) = resolve_same_swarm_target(
         id,
         &req_session_id,
         &target_session,
@@ -351,9 +441,9 @@ pub(super) async fn handle_comm_read_context(
         client_event_tx,
     )
     .await
-    {
+    else {
         return;
-    }
+    };
 
     if !can_read_full_context(&req_session_id, &target_session, swarm_members).await {
         let _ = client_event_tx.send(ServerEvent::Error {
@@ -368,6 +458,10 @@ pub(super) async fn handle_comm_read_context(
     if let Some(agent) = agent_sessions.get(&target_session) {
         let messages = if let Ok(agent) = agent.try_lock() {
             agent.get_history()
+        } else if let Ok(session) = crate::session::Session::load(&target_session) {
+            crate::agent::Agent::history_messages_from_session(&session)
+        } else if target_session == req_session_id {
+            Vec::new()
         } else {
             let _ = client_event_tx.send(ServerEvent::Error {
                 id,
@@ -379,6 +473,13 @@ pub(super) async fn handle_comm_read_context(
             });
             return;
         };
+        let _ = client_event_tx.send(ServerEvent::CommContextHistory {
+            id,
+            session_id: target_session,
+            messages,
+        });
+    } else if let Ok(session) = crate::session::Session::load(&target_session) {
+        let messages = crate::agent::Agent::history_messages_from_session(&session);
         let _ = client_event_tx.send(ServerEvent::CommContextHistory {
             id,
             session_id: target_session,

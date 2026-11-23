@@ -610,7 +610,7 @@ impl Tool for McpManagementTool {
                 "action": {
                     "type": "string",
                     "enum": ["search", "call", "list", "connect", "disconnect", "reload", "status", "logout"],
-                    "description": "Action."
+                    "description": "Action: search/call MCP tools, list/status servers (health + OAuth state for stdio/remote), connect/disconnect/reload, or logout OAuth."
                 },
                 "server": {
                     "type": "string",
@@ -700,7 +700,8 @@ impl Tool for McpManagementTool {
             "connect" => self.connect_server(params, &ctx.session_id).await,
             "disconnect" => self.disconnect_server(params).await,
             "reload" => self.reload_config(&ctx.session_id).await,
-            "status" | "logout" => self.oauth_action(params).await,
+            "status" => self.status_action(params).await,
+            "logout" => self.oauth_logout_action(params).await,
             "login" => anyhow::bail!(
                 "Interactive MCP OAuth login is CLI-only. Run `rayu mcp login <configured-server>` in a terminal (add --no-browser to print the authorization URL). No browser was opened."
             ),
@@ -750,7 +751,164 @@ impl McpManagementTool {
 }
 
 impl McpManagementTool {
-    async fn oauth_action(&self, params: McpToolInput) -> Result<ToolOutput> {
+    fn has_static_auth(headers: Option<&HashMap<String, String>>) -> bool {
+        headers.is_some_and(|headers| {
+            headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("authorization"))
+        })
+    }
+
+    fn remote_oauth_status_line(url: &str, static_auth: bool) -> Result<&'static str> {
+        validate_remote_url(url)?;
+        if static_auth {
+            Ok("Static Authorization header configured (takes precedence over OAuth)")
+        } else if crate::mcp::oauth::status(url)?.logged_in {
+            Ok("OAuth credentials stored (not a connection or token-validity check)")
+        } else {
+            Ok("No OAuth credentials stored. To sign in, run `rayu mcp login <configured-server>` in a terminal.")
+        }
+    }
+
+    async fn format_server_status_block(
+        &self,
+        name: &str,
+        configured: Option<&McpServerConfig>,
+        connected: bool,
+        tool_count: usize,
+        override_headers: Option<&HashMap<String, String>>,
+        fail_on_auth_error: bool,
+    ) -> Result<String> {
+        let manager = self.manager.read().await;
+        let last_error = if connected {
+            None
+        } else {
+            manager.last_error(name).await
+        };
+        drop(manager);
+
+        let transport = configured
+            .and_then(|cfg| cfg.remote_transport().map(|kind| kind.label()))
+            .unwrap_or("stdio");
+        let enabled = configured.map_or(true, McpServerConfig::is_enabled);
+        let state = if connected {
+            format!(
+                "connected ({} tool{})",
+                tool_count,
+                if tool_count == 1 { "" } else { "s" }
+            )
+        } else if enabled {
+            "disconnected (enabled)".to_string()
+        } else {
+            "disconnected (disabled in config)".to_string()
+        };
+
+        let auth_line: String = match configured {
+            Some(cfg) if cfg.is_remote() => {
+                let auth_result = match cfg.url.as_deref() {
+                    Some(url) => {
+                        let static_auth =
+                            Self::has_static_auth(override_headers.or(Some(&cfg.headers)));
+                        Self::remote_oauth_status_line(url, static_auth).map(str::to_string)
+                    }
+                    None => Err(anyhow::anyhow!(
+                        "Remote MCP server '{name}' has no URL configured"
+                    )),
+                };
+                match auth_result {
+                    Ok(line) => line,
+                    Err(err) if fail_on_auth_error => return Err(err),
+                    Err(err) => format!("error ({err})"),
+                }
+            }
+            _ => "not applicable (stdio)".to_string(),
+        };
+
+        let mut block = format!(
+            "- {name}: {state} | transport: {transport}\n  auth: {auth_line}"
+        );
+        if let Some(err) = last_error {
+            block.push_str(&format!("\n  last error: {err}"));
+        }
+        Ok(block)
+    }
+
+    async fn status_action(&self, params: McpToolInput) -> Result<ToolOutput> {
+        // Explicit ad-hoc URL check: report local OAuth state for that endpoint.
+        if let Some(url) = params.url.as_deref() {
+            let status =
+                Self::remote_oauth_status_line(url, Self::has_static_auth(params.headers.as_ref()))?;
+            return Ok(ToolOutput::new(status).with_title("MCP: OAuth status"));
+        }
+
+        let manager = self.manager.read().await;
+        let connected = manager.connected_servers().await;
+        let all_tools = manager.all_tools().await;
+        let config_servers = manager.config().servers.clone();
+        drop(manager);
+
+        let tool_counts: HashMap<String, usize> = {
+            let mut counts = HashMap::new();
+            for (owner, _) in &all_tools {
+                *counts.entry(owner.clone()).or_default() += 1;
+            }
+            counts
+        };
+
+        if let Some(name) = params.server.as_deref() {
+            let is_connected = connected.iter().any(|s| s == name);
+            let configured = config_servers.get(name);
+            if configured.is_none() && !is_connected {
+                anyhow::bail!(
+                    "MCP server '{name}' is not configured or connected. Use action='list' or omit 'server' to inspect all servers."
+                );
+            }
+            let block = self
+                .format_server_status_block(
+                    name,
+                    configured,
+                    is_connected,
+                    tool_counts.get(name).copied().unwrap_or(0),
+                    params.headers.as_ref(),
+                    true,
+                )
+                .await?;
+            return Ok(ToolOutput::new(block).with_title(format!("MCP: Status {name}")));
+        }
+
+        let mut names: std::collections::BTreeSet<String> = config_servers.keys().cloned().collect();
+        names.extend(connected.iter().cloned());
+        if names.is_empty() {
+            return Ok(
+                ToolOutput::new("No MCP servers configured or connected.")
+                    .with_title("MCP: Status"),
+            );
+        }
+
+        let mut lines = Vec::with_capacity(names.len() + 1);
+        lines.push(format!(
+            "MCP server status ({} connected / {} total):",
+            connected.len(),
+            names.len()
+        ));
+        for name in names {
+            let is_connected = connected.iter().any(|s| s == &name);
+            let block = self
+                .format_server_status_block(
+                    &name,
+                    config_servers.get(&name),
+                    is_connected,
+                    tool_counts.get(&name).copied().unwrap_or(0),
+                    None,
+                    false,
+                )
+                .await?;
+            lines.push(block);
+        }
+        Ok(ToolOutput::new(lines.join("\n")).with_title("MCP: Status"))
+    }
+
+    async fn oauth_logout_action(&self, params: McpToolInput) -> Result<ToolOutput> {
         let configured =
             if let Some(name) = params.server.as_deref().filter(|_| params.url.is_none()) {
                 self.manager
@@ -768,7 +926,7 @@ impl McpManagementTool {
                 .as_ref()
                 .is_some_and(|server| !server.is_remote())
         {
-            anyhow::bail!("OAuth status/logout is only supported for remote MCP servers");
+            anyhow::bail!("OAuth logout is only supported for remote MCP servers");
         }
         let url = params
             .url
@@ -776,33 +934,20 @@ impl McpManagementTool {
             .or_else(|| configured.as_ref().and_then(|server| server.url.as_deref()))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Supply a configured remote 'server' or its 'url' for OAuth status/logout"
+                    "Supply a configured remote 'server' or its 'url' for OAuth logout"
                 )
             })?;
         validate_remote_url(url)?;
-        if params.action == "logout" {
-            let removed = crate::mcp::oauth::logout(url)?;
-            return Ok(ToolOutput::new(format!("{}. Static headers and existing connections are unchanged. This only forgets local OAuth credentials, not server-side authorization. Disconnect/reconnect active servers to stop using the old token.",
-                if removed { "Removed local OAuth credentials" } else { "No local OAuth credentials stored" }))
-                .with_title("MCP: OAuth logout"));
-        }
-        let static_auth = params
-            .headers
-            .as_ref()
-            .or_else(|| configured.as_ref().map(|server| &server.headers))
-            .is_some_and(|headers| {
-                headers
-                    .keys()
-                    .any(|name| name.eq_ignore_ascii_case("authorization"))
-            });
-        let status = if static_auth {
-            "Static Authorization header configured (takes precedence over OAuth)"
-        } else if crate::mcp::oauth::status(url)?.logged_in {
-            "OAuth credentials stored (not a connection or token-validity check)"
-        } else {
-            "No OAuth credentials stored. To sign in, run `rayu mcp login <configured-server>` in a terminal."
-        };
-        Ok(ToolOutput::new(status).with_title("MCP: OAuth status"))
+        let removed = crate::mcp::oauth::logout(url)?;
+        Ok(ToolOutput::new(format!(
+            "{}. Static headers and existing connections are unchanged. This only forgets local OAuth credentials, not server-side authorization. Disconnect/reconnect active servers to stop using the old token.",
+            if removed {
+                "Removed local OAuth credentials"
+            } else {
+                "No local OAuth credentials stored"
+            }
+        ))
+        .with_title("MCP: OAuth logout"))
     }
 
     async fn list_servers(&self) -> Result<ToolOutput> {
@@ -1006,18 +1151,23 @@ impl McpManagementTool {
                 } else {
                     String::new()
                 };
+                let error_chain = crate::util::format_error_chain(&e);
+                let redundant_prefix = format!("Failed to connect to MCP server '{server_name}': ");
+                let detail = error_chain
+                    .strip_prefix(&redundant_prefix)
+                    .unwrap_or(&error_chain);
                 crate::logging::event_warn(
                     "MCP_LIFECYCLE",
                     vec![
                         ("phase", "connect_failed".to_string()),
                         ("server", server_name.clone()),
                         ("session_id", session_id.to_string()),
-                        ("error", e.to_string()),
+                        ("error", error_chain.clone()),
                     ],
                 );
                 Ok(ToolOutput::new(format!(
                     "Failed to connect to '{}': {}{}",
-                    server_name, e, auth_hint
+                    server_name, detail, auth_hint
                 ))
                 .with_title("MCP: Connection failed"))
             }

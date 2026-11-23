@@ -28,7 +28,7 @@ const MAX_REPORT_CHARS: usize = 60_000;
 
 const DESCRIPTION: &str = "Run sandboxed JavaScript to chain, filter, or parallelize tool calls, including MCP. Supply an async function body using await/return; only returned values and console.log reach the conversation.\n\
 await tools.<name>(args) or callTool(name, args) uses normal tool arguments; JSON output becomes objects, other output stays text, and failures throw. Use Promise.all for independent calls.\n\
-listTools(filter?) lists names/descriptions; describeTool(name) gives the schema. Inspect these when unsure. store(key, value), load(key), storedKeys() persist JSON within this session.\n\
+listTools(filter?) lists names/descriptions (substring or RegExp); describeTool(name) gives the schema. store(key, value), load(key), storedKeys() persist JSON within this session.\n\
 No direct filesystem, network, timers, or modules. Limits: 64 MB heap, 300 s, 2000 tool calls per run.";
 
 pub struct CodemodeTool {
@@ -50,6 +50,7 @@ struct CodemodeInput {
 struct RegistryHost {
     registry: Registry,
     ctx: ToolContext,
+    permission_connection: Option<Arc<super::permission_gate::PermissionConnection>>,
     counter: AtomicUsize,
 }
 
@@ -58,6 +59,7 @@ impl Host for RegistryHost {
         let n = self.counter.fetch_add(1, Ordering::SeqCst) + 1;
         let registry = self.registry.clone();
         let sub_ctx = self.ctx.for_subcall(format!("codemode-{n}-{name}"));
+        let perm_conn = self.permission_connection.clone();
         Box::pin(async move {
             if super::ask_user_question::is_question(&name) {
                 return Err("Call ask_user_question directly so it can wait for the user".into());
@@ -66,7 +68,14 @@ impl Host for RegistryHost {
                 Value::Object(map) => Value::Object(map),
                 other => return Err(format!("arguments must be an object, got {other}")),
             };
-            match registry.execute(&name, args, sub_ctx).await {
+            let session_id = sub_ctx.session_id.clone();
+            match super::permission_gate::scope(
+                &session_id,
+                perm_conn,
+                registry.execute(&name, args, sub_ctx),
+            )
+            .await
+            {
                 Ok(output) => Ok(rayucode_codemode::decode_tool_output(&output.output)),
                 Err(err) => Err(crate::util::format_error_chain(&err)),
             }
@@ -226,6 +235,7 @@ impl Tool for CodemodeTool {
 
         let host = Arc::new(RegistryHost {
             registry,
+            permission_connection: super::permission_gate::current_connection(&ctx.session_id),
             ctx: ctx.clone(),
             counter: AtomicUsize::new(0),
         });

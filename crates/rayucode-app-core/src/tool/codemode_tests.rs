@@ -219,6 +219,59 @@ async fn session_policy_applies_inside_scripts() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn normal_session_hides_and_blocks_selfdev_tools_in_codemode() {
+    let session = "codemode-selfdev-surface-test";
+    let registry = registry().await;
+    registry
+        .register(
+            "selfdev".into(),
+            Arc::new(super::super::selfdev::SelfDevTool::new()),
+        )
+        .await;
+    registry
+        .register(
+            "desktop_selfdev".into(),
+            Arc::new(super::super::desktop_selfdev::DesktopSelfDevTool::new()),
+        )
+        .await;
+    let _reg = crate::tool::register_session_runtime_policy(
+        session,
+        None,
+        HashSet::new(),
+        Some(registry.compaction()),
+        crate::tool::SessionSelfDevSurface::Normal,
+    );
+
+    let out = registry
+        .execute(
+            "codemode",
+            json!({
+                "code": "return { names: listTools().map((t) => t.name), hasSelfdev: 'selfdev' in tools, hasDesktop: 'desktop_selfdev' in tools };"
+            }),
+            ctx(session),
+        )
+        .await
+        .expect("codemode runs");
+    assert!(!out.output.contains("\"selfdev\""), "{}", out.output);
+    assert!(!out.output.contains("\"desktop_selfdev\""), "{}", out.output);
+    assert!(out.output.contains("\"hasSelfdev\": false"), "{}", out.output);
+    assert!(out.output.contains("\"hasDesktop\": false"), "{}", out.output);
+
+    let call_err = registry
+        .execute(
+            "codemode",
+            json!({ "code": "return await tools.selfdev({ action: 'status' });" }),
+            ctx(session),
+        )
+        .await
+        .expect_err("selfdev must not be callable from codemode in normal sessions");
+    assert!(
+        call_err.to_string().contains("unknown tool 'selfdev'"),
+        "{call_err}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn uncaught_errors_without_side_effects_are_tool_errors() {
     let registry = registry().await;
     let err = registry

@@ -495,3 +495,95 @@ async fn test_reload_empty_config() {
             || result.output.contains("Reloaded MCP config")
     );
 }
+
+#[tokio::test]
+async fn test_status_supports_no_args_and_stdio_servers() {
+    let config: crate::mcp::McpConfig = serde_json::from_value(json!({
+        "servers": {
+            "node_repl": { "command": "node", "args": ["repl.js"], "shared": false },
+            "disabled_local": { "command": "echo", "enabled": false, "shared": false }
+        }
+    }))
+    .unwrap();
+    let manager = Arc::new(RwLock::new(McpManager::with_config(config)));
+    let tool = McpManagementTool::new(manager);
+
+    let all = tool
+        .execute(json!({"action": "status"}), create_test_context())
+        .await
+        .expect("status with no args must report all servers");
+    assert!(all.output.contains("node_repl"), "{}", all.output);
+    assert!(all.output.contains("disabled_local"), "{}", all.output);
+    assert!(all.output.contains("transport: stdio"), "{}", all.output);
+
+    let stdio = tool
+        .execute(
+            json!({"action": "status", "server": "node_repl"}),
+            create_test_context(),
+        )
+        .await
+        .expect("status on stdio server must succeed");
+    assert!(stdio.output.contains("node_repl"), "{}", stdio.output);
+    assert!(stdio.output.contains("disconnected"), "{}", stdio.output);
+    assert!(stdio.output.contains("not applicable (stdio)"), "{}", stdio.output);
+}
+
+#[tokio::test]
+async fn test_connect_surfaces_underlying_error_and_stderr() {
+    let config: crate::mcp::McpConfig = serde_json::from_value(json!({
+        "servers": {
+            "broken_bin": {
+                "command": "/nonexistent/rayu-missing-mcp-binary",
+                "shared": false
+            },
+            "crashing_stdio": {
+                "command": "/bin/sh",
+                "args": ["-c", "echo missing-api-key >&2; exit 2"],
+                "shared": false
+            }
+        }
+    }))
+    .unwrap();
+    let manager = Arc::new(RwLock::new(McpManager::with_config(config)));
+    let tool = McpManagementTool::new(manager);
+
+    let missing = tool
+        .execute(
+            json!({"action": "connect", "server": "broken_bin"}),
+            create_test_context(),
+        )
+        .await
+        .expect("connect failure returns diagnostic tool output");
+    assert!(
+        missing.output.contains("/nonexistent/rayu-missing-mcp-binary"),
+        "expected missing binary path in error: {}",
+        missing.output
+    );
+
+    let crash = tool
+        .execute(
+            json!({"action": "connect", "server": "crashing_stdio"}),
+            create_test_context(),
+        )
+        .await
+        .expect("connect failure returns diagnostic tool output");
+    assert!(
+        crash.output.contains("missing-api-key"),
+        "expected child stderr in connect error: {}",
+        crash.output
+    );
+
+    // Status should also surface the recorded last error.
+    let status = tool
+        .execute(
+            json!({"action": "status", "server": "crashing_stdio"}),
+            create_test_context(),
+        )
+        .await
+        .expect("status succeeds");
+    assert!(
+        status.output.contains("last error:") && status.output.contains("missing-api-key"),
+        "expected last error in status: {}",
+        status.output
+    );
+}

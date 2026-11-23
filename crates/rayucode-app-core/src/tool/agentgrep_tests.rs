@@ -1151,3 +1151,32 @@ fn grep_defaults_to_a_bounded_match_count() {
         DEFAULT_GREP_MAX_REGIONS
     );
 }
+
+#[tokio::test]
+async fn trace_file_bytes_limit_names_oversized_file_and_narrowing_hint() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("small.rs"), "pub fn auth_status() {}\n").unwrap();
+    // Create a file just over agentgrep's 8 MiB single-file byte cap.
+    std::fs::write(temp.path().join("huge_dump.json"), vec![b'a'; 8 * 1024 * 1024 + 64]).unwrap();
+
+    let tool = AgentGrepTool::new();
+    let err = tool
+        .execute(
+            json!({
+                "mode": "trace",
+                "terms": ["subject:auth_status", "relation:defined"]
+            }),
+            test_ctx(temp.path()),
+        )
+        .await
+        .expect_err("oversized file should trigger file bytes limit");
+    let text = err.to_string();
+    assert!(
+        text.contains("huge_dump.json"),
+        "expected offending file name in error: {text}"
+    );
+    assert!(
+        text.contains("Narrow the search"),
+        "expected narrowing hint in error: {text}"
+    );
+}

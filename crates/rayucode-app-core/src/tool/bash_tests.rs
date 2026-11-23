@@ -1173,5 +1173,58 @@ fn parse_progress_line_classifies_markers_checkpoints_and_heuristics() {
     );
 }
 
+#[tokio::test]
+async fn test_foreground_kill_on_timeout_kills_process_group_with_exit_124() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let probe = temp.path().join("timeout_probe_kill.txt");
+    let tool = BashTool::new();
+    let cmd = format!("sleep 2; echo SURVIVED > {}", probe.display());
+
+    // Plain foreground path (`Direct` mode).
+    let out = tool
+        .execute(
+            json!({
+                "command": cmd,
+                "timeout": 150,
+                "kill_on_timeout": true
+            }),
+            make_ctx(None),
+        )
+        .await
+        .expect("kill_on_timeout should return exit 124 output");
+    assert!(out.output.contains("Exit code: 124"), "{}", out.output);
+    let metadata = out.metadata.expect("timeout metadata");
+    assert_eq!(metadata["timed_out"], true);
+    assert_eq!(metadata["exit_code"], 124);
+
+    // Reload-persistable foreground path (`AgentTurn` with graceful shutdown signal).
+    let probe2 = temp.path().join("timeout_probe_kill_reload.txt");
+    let cmd2 = format!("sleep 2; echo SURVIVED > {}", probe2.display());
+    let signal = rayucode_agent_runtime::InterruptSignal::new();
+    let out2 = tool
+        .execute(
+            json!({
+                "command": cmd2,
+                "timeout": 150,
+                "kill_on_timeout": true
+            }),
+            make_agent_ctx(signal),
+        )
+        .await
+        .expect("reload-persistable kill_on_timeout should return exit 124 output");
+    assert!(out2.output.contains("Exit code: 124"), "{}", out2.output);
+    let metadata2 = out2.metadata.expect("timeout metadata");
+    assert_eq!(metadata2["timed_out"], true);
+    assert_eq!(metadata2["exit_code"], 124);
+
+    // Wait past the original sleep duration to prove neither process survived.
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    assert!(!probe.exists(), "killed foreground process wrote artifact!");
+    assert!(
+        !probe2.exists(),
+        "killed reload-persistable process wrote artifact!"
+    );
+}
+
 #[path = "bash_promoted_tests.rs"]
 mod promoted;

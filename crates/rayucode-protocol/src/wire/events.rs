@@ -1123,6 +1123,8 @@ pub enum ServerEvent {
         description: String,
         #[serde(default)]
         input: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        risk_tier: Option<String>,
     },
 
     /// A running command is waiting for stdin input from the user

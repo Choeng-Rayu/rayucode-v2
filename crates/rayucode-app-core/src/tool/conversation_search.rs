@@ -82,7 +82,9 @@ impl Tool for ConversationSearchTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: SearchInput = serde_json::from_value(input)?;
-        let manager = self.compaction.read().await;
+        let compaction = super::session_compaction(&ctx.session_id)
+            .unwrap_or_else(|| Arc::clone(&self.compaction));
+        let manager = compaction.read().await;
         let session_messages = load_session_messages(&ctx.session_id);
         if session_messages.is_none() {
             crate::logging::warn(&format!(
@@ -95,7 +97,13 @@ impl Tool for ConversationSearchTool {
 
         // Handle stats request
         if params.stats == Some(true) {
-            let stats = manager.stats();
+            let stats = match session_messages.as_deref() {
+                Some(messages) => manager.stats_with(messages),
+                None => manager.stats(),
+            };
+            let total_turns = session_messages.as_ref().map_or(stats.total_turns, |messages| {
+                stats.total_turns.max(messages.len())
+            });
             output.push_str(&format!(
                 "## Conversation Stats\n\n\
                  - Total turns: {}\n\
@@ -104,11 +112,11 @@ impl Tool for ConversationSearchTool {
                  - Compaction in progress: {}\n\
                  - Estimated tokens: {}\n\
                  - Context usage: {:.1}%\n",
-                stats.total_turns,
+                total_turns,
                 stats.active_messages,
                 stats.has_summary,
                 stats.is_compacting,
-                stats.token_estimate,
+                stats.effective_tokens,
                 stats.context_usage * 100.0
             ));
         }
@@ -254,13 +262,23 @@ fn load_session_messages(session_id: &str) -> Option<Vec<Message>> {
 
 fn search_messages(messages: &[Message], query: &str) -> Vec<SearchResult> {
     let query_lower = query.to_lowercase();
+    let terms: Vec<&str> = query_lower.split_whitespace().collect();
+    if terms.is_empty() {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for (idx, msg) in messages.iter().enumerate() {
         let text = message_to_text(msg);
         let lower = text.to_lowercase();
-        if lower.contains(&query_lower) {
-            let snippet = snippet_from_lower(&text, &lower, &query_lower);
+        let exact_match = lower.contains(&query_lower);
+        if exact_match || terms.iter().all(|term| lower.contains(term)) {
+            let anchor = if exact_match {
+                query_lower.as_str()
+            } else {
+                terms[0]
+            };
+            let snippet = snippet_from_lower(&text, &lower, anchor);
             results.push(SearchResult {
                 turn: idx,
                 role: msg.role.clone(),
@@ -416,6 +434,95 @@ mod tests {
         let result = tool.execute(input, ctx).await.unwrap();
         assert!(result.output.contains("Conversation Stats"));
         assert!(result.output.contains("Total turns"));
+        restore_env(base, previous_home);
+    }
+
+    #[tokio::test]
+    async fn test_stats_reflects_live_session_compaction_and_messages() {
+        let _guard = env_lock();
+        let messages = vec![
+            Message::user("first turn talking about architecture"),
+            Message::assistant_text("second turn explaining registry cloning"),
+            Message::user("third turn asking about context usage"),
+        ];
+        let (ctx, base, previous_home) = setup_session(messages);
+        let live_compaction = Arc::new(RwLock::new(CompactionManager::new().with_budget(100_000)));
+        {
+            let mut mgr = live_compaction.write().await;
+            mgr.notify_message_added();
+            mgr.notify_message_added();
+            mgr.notify_message_added();
+            mgr.update_observed_input_tokens(42_000);
+        }
+        // Tool holds an unrelated orphaned CompactionManager (simulating a
+        // cloned/reused registry), while the session registers its live handle.
+        let _reg = crate::tool::register_session_runtime_policy(
+            &ctx.session_id,
+            None,
+            std::collections::HashSet::new(),
+            Some(live_compaction),
+            crate::tool::SessionSelfDevSurface::Normal,
+        );
+        let tool = create_test_tool();
+        let result = tool.execute(json!({"stats": true}), ctx).await.unwrap();
+        assert!(
+            result.output.contains("Total turns: 3"),
+            "expected live total turns: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("Active messages in context: 3"),
+            "expected live active messages: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("Estimated tokens: 42000"),
+            "expected live observed token count: {}",
+            result.output
+        );
+        assert!(
+            result.output.contains("Context usage: 42.0%"),
+            "expected live context usage percentage: {}",
+            result.output
+        );
+        restore_env(base, previous_home);
+    }
+
+    #[tokio::test]
+    async fn test_search_matches_non_contiguous_multi_word_terms() {
+        let _guard = env_lock();
+        let messages = vec![
+            Message::user("Please list all available built-in tools in the registry"),
+            Message::assistant_text("Canva supports 44 design tools across categories"),
+        ];
+        let (ctx, base, previous_home) = setup_session(messages);
+        let tool = create_test_tool();
+
+        let first = tool
+            .execute(json!({"query": "list all tools"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            first.output.contains("Found 1 matches"),
+            "expected multi-word AND match: {}",
+            first.output
+        );
+
+        let second = tool
+            .execute(json!({"query": "canva 44"}), ctx.clone())
+            .await
+            .unwrap();
+        assert!(
+            second.output.contains("Found 1 matches"),
+            "expected non-adjacent term match: {}",
+            second.output
+        );
+
+        let miss = tool
+            .execute(json!({"query": "canva nonexistent"}), ctx)
+            .await
+            .unwrap();
+        assert!(miss.output.contains("No results found"));
         restore_env(base, previous_home);
     }
 

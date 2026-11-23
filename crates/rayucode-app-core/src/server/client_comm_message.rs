@@ -1,3 +1,4 @@
+use super::comm_sync::resolve_swarm_target_session;
 use super::live_turn::{LiveTurnSwarmContext, run_live_turn_if_idle};
 use super::{
     ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember,
@@ -29,53 +30,6 @@ async fn friendly_name_for_session(
     members
         .get(session_id)
         .and_then(|member| member.friendly_name.clone())
-}
-
-async fn resolve_dm_target_session(
-    target: &str,
-    swarm_session_ids: &[String],
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-) -> anyhow::Result<String> {
-    if swarm_session_ids
-        .iter()
-        .any(|session_id| session_id == target)
-    {
-        return Ok(target.to_string());
-    }
-
-    let members = swarm_members.read().await;
-    let mut matches: Vec<(String, String)> = swarm_session_ids
-        .iter()
-        .filter_map(|session_id| {
-            let member = members.get(session_id)?;
-            member
-                .friendly_name
-                .as_deref()
-                .filter(|friendly_name| *friendly_name == target)
-                .map(|friendly_name| (session_id.clone(), friendly_name.to_string()))
-        })
-        .collect();
-    matches.sort_by(|(left_session, _), (right_session, _)| left_session.cmp(right_session));
-    matches.dedup_by(|(left_session, _), (right_session, _)| left_session == right_session);
-    match matches.len() {
-        1 => Ok(matches.remove(0).0),
-        0 => Err(anyhow::anyhow!(
-            "Unknown target '{}' - use an exact session_id or a unique friendly name within the swarm.",
-            target
-        )),
-        _ => {
-            let match_list = matches
-                .iter()
-                .map(|(session_id, friendly_name)| format!("{} [{}]", friendly_name, session_id))
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(anyhow::anyhow!(
-                "Friendly name '{}' is ambiguous in swarm. Use an exact session id instead. Matches: {}",
-                target,
-                match_list
-            ))
-        }
-    }
 }
 
 fn resolve_comm_delivery_mode(
@@ -235,7 +189,7 @@ pub(super) async fn handle_comm_message(
         let resolved_to_session = if let Some(target) = cross_swarm_default_target {
             Some(target)
         } else if let Some(ref target) = to_session {
-            match resolve_dm_target_session(target, &swarm_session_ids, swarm_members).await {
+            match resolve_swarm_target_session(target, &swarm_session_ids, swarm_members).await {
                 Ok(session_id) => Some(session_id),
                 Err(message) => {
                     crate::logging::event_warn(

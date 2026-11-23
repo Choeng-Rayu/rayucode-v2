@@ -1082,3 +1082,91 @@ async fn comm_message_cross_swarm_dm_by_label() {
 
     crate::server::swarm_labels::reset_swarm_labels_for_test();
 }
+
+#[tokio::test]
+async fn comm_summary_resolves_friendly_name_and_works_when_target_is_busy_or_self() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var("RAYU_HOME").ok();
+    crate::env::set_var("RAYU_HOME", temp.path());
+
+    let root = test_agent().await;
+    let root_id = root.lock().await.session_id().to_string();
+    // Persist a session with a tool call so the busy-lock fallback can read it.
+    {
+        let mut session = crate::session::Session::create_with_id(root_id.clone(), None, None);
+        session.add_message(
+            crate::message::Role::Assistant,
+            vec![crate::message::ContentBlock::ToolUse {
+                id: "tc-1".into(),
+                name: "read".into(),
+                input: serde_json::json!({"file_path": "src/main.rs"}),
+                thought_signature: None,
+            }],
+        );
+        session.save().expect("save session");
+    }
+
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::from([(root_id.clone(), root.clone())]),
+    ));
+    let (root_event_tx, _root_event_rx) = mpsc::unbounded_channel();
+    let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel();
+    let swarm_members = Arc::new(RwLock::new(HashMap::from([(
+        root_id.clone(),
+        SwarmMember {
+            session_id: root_id.clone(),
+            event_tx: root_event_tx,
+            event_txs: HashMap::new(),
+            working_dir: None,
+            swarm_id: Some("swarm-self".to_string()),
+            swarm_enabled: true,
+            status: "running".to_string(),
+            detail: None,
+            friendly_name: Some("wolf".to_string()),
+            report_back_to_session_id: None,
+            latest_completion_report: None,
+            role: "coordinator".to_string(),
+            joined_at: Instant::now(),
+            last_status_change: Instant::now(),
+            is_headless: false,
+            output_tail: None,
+            todo_progress: None,
+            todo_items: Vec::new(),
+            runtime: crate::protocol::SwarmMemberRuntime::default(),
+            task_label: None,
+        },
+    )])));
+
+    // Hold the Agent mutex to simulate an active turn calling `swarm summary` on itself.
+    let _busy_guard = root.lock().await;
+    crate::server::comm_sync::handle_comm_summary(
+        42,
+        root_id.clone(),
+        "wolf".to_string(),
+        Some(10),
+        &sessions,
+        &swarm_members,
+        &client_event_tx,
+    )
+    .await;
+
+    match client_event_rx.recv().await {
+        Some(ServerEvent::CommSummaryResponse {
+            id: 42,
+            session_id,
+            tool_calls,
+        }) => {
+            assert_eq!(session_id, root_id);
+            assert_eq!(tool_calls.len(), 1);
+            assert_eq!(tool_calls[0].tool_name, "read");
+        }
+        other => panic!("expected CommSummaryResponse for busy self via friendly name, got {other:?}"),
+    }
+
+    if let Some(prev) = prev_home {
+        crate::env::set_var("RAYU_HOME", prev);
+    } else {
+        crate::env::remove_var("RAYU_HOME");
+    }
+}

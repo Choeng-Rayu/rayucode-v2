@@ -11,6 +11,11 @@ use crate::protocol::{PermissionDecision, PermissionMode, ServerEvent};
 
 tokio::task_local! {
     static TURN_PERMISSION_CLIENT: Option<(String, Arc<PermissionConnection>)>;
+    /// Records the exact `(session_id, tool_call_id)` already authorized at the
+    /// top level of `turn_streaming_mpsc` so `Registry::execute` avoids
+    /// double-prompting on that call (even if the provider call ID contains `:`)
+    /// while still authorizing every `batch`/`codemode` subcall or direct call.
+    static AUTHORIZED_TOP_LEVEL_CALL: Option<(String, String)>;
 }
 
 /// Coarse capability class used to enforce session `PermissionMode` policy.
@@ -117,7 +122,25 @@ pub(crate) fn scope<T>(
 ) -> impl Future<Output = T> {
     TURN_PERMISSION_CLIENT.scope(
         connection.map(|connection| (session_id.into(), connection)),
-        turn,
+        AUTHORIZED_TOP_LEVEL_CALL.scope(None, turn),
+    )
+}
+
+/// Bind a connection-scoped `PermissionConnection` across a spawned tool task while
+/// recording the exact top-level `tool_call_id` that was already authorized by
+/// `turn_streaming_mpsc`. Any nested subcall (e.g. `batch` or `codemode`) has a
+/// distinct `tool_call_id` and therefore still undergoes full permission authorization.
+pub(crate) fn scope_with_authorized_call<T>(
+    session_id: &str,
+    connection: Option<Arc<PermissionConnection>>,
+    authorized_call_id: &str,
+    fut: impl Future<Output = T>,
+) -> impl Future<Output = T> {
+    let sid = session_id.to_string();
+    let call_id = authorized_call_id.to_string();
+    TURN_PERMISSION_CLIENT.scope(
+        connection.map(|connection| (sid.clone(), connection)),
+        AUTHORIZED_TOP_LEVEL_CALL.scope(Some((sid, call_id)), fut),
     )
 }
 
@@ -130,6 +153,30 @@ fn client(session_id: &str) -> Option<Arc<PermissionConnection>> {
         })
         .ok()
         .flatten()
+}
+
+/// Capture the active task-local `PermissionConnection` for propagation across
+/// `tokio::spawn` or external worker threads (such as `spawn_session` and `codemode`).
+pub(crate) fn current_connection(session_id: &str) -> Option<Arc<PermissionConnection>> {
+    client(session_id)
+}
+
+/// Whether `tool_call_id` for `session_id` was already authorized at the top level
+/// of the current turn task.
+pub(crate) fn is_already_authorized(session_id: &str, tool_call_id: &str) -> bool {
+    AUTHORIZED_TOP_LEVEL_CALL
+        .try_with(|entry| {
+            entry.as_ref().is_some_and(|(owner_session, call_id)| {
+                owner_session == session_id && call_id == tool_call_id
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Consume the mid-turn tool-invalidation flag set when `SetPermissionMode`
+/// arrives while the `Agent` mutex is busy.
+pub(crate) fn take_tools_invalidated(session_id: &str) -> bool {
+    client(session_id).is_some_and(|connection| connection.take_tools_invalidated())
 }
 
 /// Active `PermissionMode` for the current task-local session scope, if any.
@@ -155,11 +202,25 @@ pub(crate) fn validate_mode_allows(session_id: &str, tool_name: &str) -> Result<
 
 /// Authorize a tool call against the active `PermissionMode`, prompting the client
 /// when interactive approval is required.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) async fn authorize(session_id: &str, tool_name: &str, input: &Value) -> Result<()> {
+    authorize_with_working_dir(session_id, tool_name, input, None).await
+}
+
+/// Authorize a tool call with its workspace directory so shell risk assessment
+/// (`assess_tool_risk_tier`) can evaluate paths relative to the workspace.
+pub(crate) async fn authorize_with_working_dir(
+    session_id: &str,
+    tool_name: &str,
+    input: &Value,
+    working_dir: Option<std::path::PathBuf>,
+) -> Result<()> {
     let Some(connection) = client(session_id) else {
         return Ok(());
     };
-    connection.authorize_tool(session_id, tool_name, input).await
+    connection
+        .authorize_tool(session_id, tool_name, input, working_dir)
+        .await
 }
 
 struct PendingPermission {
@@ -172,6 +233,7 @@ struct PermissionState {
     interactive_prompts: bool,
     mode: PermissionMode,
     mode_explicitly_set: bool,
+    tools_invalidated: bool,
     session_allowed_tools: HashSet<(String, String)>,
     pending: HashMap<String, PendingPermission>,
 }
@@ -210,6 +272,7 @@ impl PermissionConnection {
                 interactive_prompts,
                 mode,
                 mode_explicitly_set: false,
+                tools_invalidated: false,
                 session_allowed_tools: HashSet::new(),
                 pending: HashMap::new(),
             }),
@@ -240,6 +303,17 @@ impl PermissionConnection {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.mode = mode;
         state.mode_explicitly_set = true;
+        state.tools_invalidated = true;
+    }
+
+    pub(crate) fn clear_tools_invalidated(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.tools_invalidated = false;
+    }
+
+    pub(crate) fn take_tools_invalidated(&self) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut state.tools_invalidated)
     }
 
     /// Deny and release every pending permission prompt immediately on disconnect.
@@ -301,6 +375,7 @@ impl PermissionConnection {
         session_id: &str,
         tool_name: &str,
         input: &Value,
+        working_dir: Option<std::path::PathBuf>,
     ) -> Result<()> {
         self.check_mode_policy(tool_name)?;
         let class = classify_tool(tool_name);
@@ -330,6 +405,9 @@ impl PermissionConnection {
             }
             let request_id = crate::id::new_id("perm");
             let description = describe_tool_call(tool_name, input);
+            let risk_tier = Some(
+                super::assess_tool_risk_tier(tool_name, input, working_dir).to_string(),
+            );
             let (tx, rx) = oneshot::channel();
             self.events
                 .send(ServerEvent::PermissionRequest {
@@ -338,6 +416,7 @@ impl PermissionConnection {
                     tool_name: tool_name.to_string(),
                     description,
                     input: input.clone(),
+                    risk_tier,
                 })
                 .map_err(|_| anyhow!("Denied by user: permission client disconnected"))?;
             state.pending.insert(

@@ -223,8 +223,52 @@ pub(super) async fn execute(
             json!({"enabled": agent.memory_enabled(), "activity": agent.debug_memory_profile(), "pipeline_active": crate::memory_agent::is_active()})
         }
         RuntimeCommand::Swarm => {
-            status_only(args)?;
-            json!({"enabled": swarm_enabled, "default_enabled": config.features.swarm, "members": swarm_data})
+            let sub = args.first().map(String::as_str).unwrap_or("status");
+            if !matches!(sub, "status" | "show" | "stats" | "list" | "board") || args.len() > 1 {
+                bail!("Usage: /swarm [status|show|list|board|on|off|toggle]");
+            }
+            let snapshots = load_durable_swarm_snapshots_async().await;
+            let members = if !swarm_data.is_null() {
+                swarm_data
+            } else {
+                let flattened: Vec<Value> = snapshots
+                    .iter()
+                    .flat_map(|snap| {
+                        snap["members"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                json!(flattened)
+            };
+            let board: Vec<Value> = snapshots
+                .iter()
+                .flat_map(|snap| {
+                    snap.get("messages")
+                        .or_else(|| snap.get("board"))
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
+            let plans: Vec<Value> = snapshots
+                .iter()
+                .filter_map(|snap| snap.get("plan").cloned())
+                .filter(|v| !v.is_null())
+                .collect();
+            json!({
+                "view": sub,
+                "enabled": swarm_enabled,
+                "config_default": config.features.swarm,
+                "default_enabled": config.features.swarm,
+                "swarm_id": Value::Null,
+                "role": Value::Null,
+                "members": members,
+                "swarms": snapshots,
+                "board": board,
+                "plans": plans,
+            })
         }
         RuntimeCommand::Agents => {
             let (global, args) = match args.split_first() {
@@ -405,12 +449,56 @@ pub(super) async fn execute(
         | RuntimeCommand::Premium
         | RuntimeCommand::Remote
         | RuntimeCommand::Auth
-        | RuntimeCommand::Logout => {
+        | RuntimeCommand::Logout
+        | RuntimeCommand::Background
+        | RuntimeCommand::Mcp
+        | RuntimeCommand::Telegram
+        | RuntimeCommand::Features
+        | RuntimeCommand::Doctor
+        | RuntimeCommand::SessionSearch
+        | RuntimeCommand::Schedules
+        | RuntimeCommand::Ambient => {
             return super::runtime_special_commands::execute(agent, command, args).await;
         }
     };
     let message = serde_json::to_string_pretty(&data)?;
     Ok((data, message))
+}
+
+pub(super) async fn load_durable_swarm_snapshots_async() -> Vec<Value> {
+    tokio::task::spawn_blocking(load_durable_swarm_snapshots)
+        .await
+        .unwrap_or_default()
+}
+
+fn load_durable_swarm_snapshots() -> Vec<Value> {
+    let dir = if let Ok(runtime) = std::env::var("RAYU_RUNTIME_DIR")
+        && !runtime.is_empty()
+    {
+        std::path::PathBuf::from(runtime).join("durable-state").join("swarm")
+    } else if let Ok(rayu_dir) = crate::storage::rayu_dir() {
+        rayu_dir.join("state").join("swarm")
+    } else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
+    let mut snapshots = Vec::new();
+    for path in paths {
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(value) = serde_json::from_str::<Value>(&content)
+        {
+            snapshots.push(value);
+        }
+    }
+    snapshots
 }
 
 fn role_args(args: &[String], default_label: &str) -> Result<(Option<String>, String, String)> {
@@ -599,8 +687,94 @@ mod tests {
             if command == RuntimeCommand::Context {
                 assert!(data.get("messages").is_some());
                 assert!(data["system_prompt"]["pending_memory_included"] == false);
+                let breakdown = data.get("token_breakdown").expect("token_breakdown present");
+                assert!(breakdown.get("system").is_some());
+                assert!(breakdown.get("tools").is_some());
+                assert!(breakdown.get("memory").is_some());
+                assert!(breakdown.get("files").is_some());
+                assert!(breakdown.get("messages").is_some());
+                assert!(breakdown.get("free").is_some());
             }
         }
+        // Test v1.14 runtime commands and enriched Swarm/Overnight without inference.
+        for (command, cmd_args) in [
+            (RuntimeCommand::Background, vec!["list".into()]),
+            (RuntimeCommand::Mcp, vec!["list".into()]),
+            (RuntimeCommand::Telegram, vec!["status".into()]),
+            (RuntimeCommand::Telegram, vec!["approvals".into()]),
+            (RuntimeCommand::Telegram, vec!["uninstall".into(), "status".into()]),
+            (RuntimeCommand::Features, vec!["status".into()]),
+            (RuntimeCommand::Doctor, vec!["auth".into()]),
+            (RuntimeCommand::Doctor, vec!["providers".into()]),
+            (RuntimeCommand::SessionSearch, vec!["test-query".into()]),
+            (RuntimeCommand::Schedules, vec!["list".into()]),
+            (RuntimeCommand::Ambient, vec!["status".into()]),
+            (RuntimeCommand::Ambient, vec!["approvals".into()]),
+            (RuntimeCommand::Swarm, vec!["list".into()]),
+            (RuntimeCommand::Swarm, vec!["board".into()]),
+            (RuntimeCommand::Overnight, vec!["list".into()]),
+        ] {
+            let (data, message) = execute(&mut agent, command, &cmd_args, true, Value::Null)
+                .await
+                .unwrap_or_else(|e| panic!("command {command:?} {cmd_args:?} failed: {e:#}"));
+            assert!(data.is_object(), "{command:?}");
+            assert!(!message.is_empty(), "{command:?}");
+        }
+
+        // Verify Features::set persists to config.toml under temp RAYU_HOME.
+        let (feat_data, _) = execute(
+            &mut agent,
+            RuntimeCommand::Features,
+            &["set".into(), "mermaid".into(), "false".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(feat_data["key"], "mermaid");
+        assert_eq!(feat_data["features"]["mermaid"], false);
+        let (feat_status, _) = execute(
+            &mut agent,
+            RuntimeCommand::Features,
+            &["status".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(feat_status["features"]["mermaid"], false);
+
+        // Verify Schedules create -> list -> cancel roundtrip.
+        let (created, _) = execute(
+            &mut agent,
+            RuntimeCommand::Schedules,
+            &["create".into(), "30".into(), "Check build health".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let sched_id = created["schedule"]["id"].as_str().unwrap().to_string();
+        let (listed, _) = execute(
+            &mut agent,
+            RuntimeCommand::Schedules,
+            &["list".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed["count"], 1);
+        let (cancelled, _) = execute(
+            &mut agent,
+            RuntimeCommand::Schedules,
+            &["cancel".into(), sched_id],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cancelled["cancelled"], true);
         execute(
             &mut agent,
             RuntimeCommand::Autoreview,

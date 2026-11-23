@@ -187,8 +187,10 @@ async fn discovery_helpers_work() {
         r#"
         const names = listTools().map((t) => t.name);
         const filtered = listTools("slo").map((t) => t.name);
+        const regex = listTools(/^(echo|fail)$/).map((t) => t.name);
+        const regexGlobal = listTools(/^(echo|hang)$/g).map((t) => t.name);
         const desc = describeTool("echo");
-        return { names, filtered, first: listTools()[0].description, schema: desc.input_schema, has: "echo" in tools };
+        return { names, filtered, regex, regexGlobal, first: listTools()[0].description, schema: desc.input_schema, has: "echo" in tools };
         "#,
     )
     .await;
@@ -198,11 +200,33 @@ async fn discovery_helpers_work() {
         Some(json!({
             "names": ["echo", "fail", "slow", "hang"],
             "filtered": ["slow"],
+            "regex": ["echo", "fail"],
+            "regexGlobal": ["echo", "hang"],
             "first": "echo tool",
             "schema": { "type": "object" },
             "has": true,
         }))
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_tools_rejects_empty_string_and_invalid_filter_types() {
+    for (snippet, expected) in [
+        (r#"return listTools("");"#, "cannot be empty"),
+        (r#"return listTools("   ");"#, "cannot be empty"),
+        (r#"return listTools(123);"#, "expects a non-empty string or RegExp"),
+        (r#"return listTools({});"#, "expects a non-empty string or RegExp"),
+    ] {
+        let out = exec(snippet).await;
+        assert!(
+            out.error
+                .as_deref()
+                .unwrap_or("")
+                .contains(expected),
+            "expected `{expected}` for `{snippet}`, got: {:?}",
+            out
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

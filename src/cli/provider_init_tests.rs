@@ -956,49 +956,32 @@ id = "llama3.1:8b"
 )]
 async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_blocking() {
     let _guard = lock_env();
-    let _env_guard = crate::storage::lock_test_env();
-    let dir = TempDir::new().expect("temp dir");
+    let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().expect("auth test sandbox");
     let saved: Vec<(String, Option<String>)> = [
-        "RAYU_HOME",
         "RAYU_AUTH_CONFIG_DIR",
         "RAYU_CONFIG_DIR",
         "RAYU_API_KEY",
         "USE_RAYU_OAUTH",
         "RAYU_NON_INTERACTIVE",
         "RAYU_DEFERRED_AUTH_BOOTSTRAP",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
         "GITHUB_TOKEN",
-        "GEMINI_API_KEY",
-        "CURSOR_API_KEY",
-        "RAYU_RUNTIME_PROVIDER",
-        "RAYU_ACTIVE_PROVIDER",
-        "RAYU_INITIAL_PROVIDER_EXPLICIT",
     ]
     .iter()
     .map(|k| (k.to_string(), std::env::var(k).ok()))
     .collect();
 
-    crate::env::set_var("RAYU_HOME", dir.path());
-    crate::env::set_var("RAYU_AUTH_CONFIG_DIR", dir.path().join("rayu"));
-    crate::env::set_var("RAYU_CONFIG_DIR", dir.path().join("rayu"));
+    crate::env::set_var("RAYU_AUTH_CONFIG_DIR", sandbox.root().join("rayu"));
+    crate::env::set_var("RAYU_CONFIG_DIR", sandbox.root().join("rayu"));
     crate::env::set_var("USE_RAYU_OAUTH", "false");
     crate::env::set_var("RAYU_NON_INTERACTIVE", "1");
     for key in [
         "RAYU_API_KEY",
         "RAYU_DEFERRED_AUTH_BOOTSTRAP",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "OPENROUTER_API_KEY",
         "GITHUB_TOKEN",
-        "GEMINI_API_KEY",
-        "CURSOR_API_KEY",
-        "RAYU_ACTIVE_PROVIDER",
-        "RAYU_INITIAL_PROVIDER_EXPLICIT",
     ] {
         crate::env::remove_var(key);
     }
+    crate::config::invalidate_config_cache();
     crate::auth::AuthStatus::invalidate_cache();
 
     let opencode_path = crate::auth::claude::ExternalClaudeAuthSource::OpenCode
@@ -1060,6 +1043,8 @@ async fn auto_provider_noninteractive_skips_untrusted_external_auth_instead_of_b
             crate::env::remove_var(&key);
         }
     }
+    drop(sandbox);
+    crate::config::invalidate_config_cache();
 }
 
 #[test]
