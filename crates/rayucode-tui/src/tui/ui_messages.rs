@@ -1591,6 +1591,14 @@ fn todo_card_line(
     )
 }
 
+pub(super) fn bold_todo_row(mut line: Line<'static>) -> Line<'static> {
+    // Transcript wrapping rebuilds lines from spans.
+    for span in &mut line.spans {
+        span.style = span.style.bold();
+    }
+    line
+}
+
 fn todo_card_goal_for_group<'a>(
     goals: &'a [crate::todo::TodoGoal],
     group: Option<&str>,

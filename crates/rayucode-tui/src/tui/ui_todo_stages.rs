@@ -1029,7 +1029,7 @@ pub(crate) fn push_stage_lines(
             if later {
                 row = row.into_iter().map(dim_span).collect();
             }
-            lines.push(todo_card_line(row, base_indent, inner_width).bold());
+            lines.push(bold_todo_row(todo_card_line(row, base_indent, inner_width)));
             continue;
         }
         let mut row = lane_strip_spans(&statuses, strip_width);
@@ -1080,7 +1080,7 @@ pub(crate) fn push_stage_lines(
         if later {
             row = row.into_iter().map(dim_span).collect();
         }
-        lines.push(todo_card_line(row, base_indent, inner_width).bold());
+        lines.push(bold_todo_row(todo_card_line(row, base_indent, inner_width)));
     }
 }
 
@@ -1256,7 +1256,7 @@ fn push_lane_status_lines_inner(
             }
         }
         row.extend(status.spans);
-        lines.push(todo_card_line(row, indent, width).bold());
+        lines.push(bold_todo_row(todo_card_line(row, indent, width)));
     }
 }
 

@@ -292,15 +292,17 @@ fn staged_worker_rows_show_each_runtime_model_with_its_own_metrics() {
         let lines = render_lines(&tasks, &agents, width);
         let rows: Vec<_> = lines.iter().map(ToString::to_string).collect();
         for (line, row) in lines.iter().zip(&rows) {
-            if row.contains("↑") {
-                assert!(
-                    line.spans.iter().all(|span| line
-                        .style
-                        .patch(span.style)
-                        .add_modifier
-                        .contains(Modifier::BOLD)),
-                    "{row}"
-                );
+            if row.contains('↑') {
+                for width in [34, usize::from(width)] {
+                    let wrapped = markdown::wrap_line(line.clone(), width);
+                    assert!(
+                        wrapped
+                            .iter()
+                            .flat_map(|line| &line.spans)
+                            .all(|span| span.style.add_modifier.contains(Modifier::BOLD)),
+                        "{row}"
+                    );
+                }
             }
         }
         let review = rows
