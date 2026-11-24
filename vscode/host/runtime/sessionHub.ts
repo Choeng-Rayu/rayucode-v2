@@ -43,6 +43,7 @@ import {
   mapRawFileChangeActionResponse,
   mapRawFileChangeDiff,
   mapRawFileChangesSnapshot,
+  mapRawHistoryMessage,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
 } from "./featureRouters.js";
@@ -735,21 +736,16 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       }
     }
 
-    const messages: HistoryMessageView[] = rawMessages.map((msg, idx) => {
-      const attached = imagesByMessageIndex.get(idx);
-      return {
+    const messages: HistoryMessageView[] = rawMessages.map((msg, idx) =>
+      mapRawHistoryMessage(msg as unknown as Record<string, unknown>, {
         id: `hist_${sessionId}_${idx}`,
-        role: msg.role,
-        content: msg.content,
         model:
           msg.role === "assistant" && sessionId === this.activeSessionId
             ? this.activeModel
             : undefined,
-        toolName: msg.tool?.name,
-        toolInput: msg.tool?.input,
-        ...(attached && attached.length > 0 ? { images: attached } : {}),
-      };
-    });
+        images: imagesByMessageIndex.get(idx),
+      }),
+    );
 
     return { sessionId, messages };
   }

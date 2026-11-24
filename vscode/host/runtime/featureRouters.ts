@@ -40,6 +40,9 @@ import {
   type FileDiffView,
   type FileReviewDecision,
   type GatewayStatusView,
+  type HistoryImageView,
+  type HistoryMessageView,
+  type HistoryResponseStatsView,
   type HookEntryView,
   type HookEventId,
   type HostToWebviewMessage,
@@ -282,6 +285,68 @@ export function normalizeHarnessRequestFrame(
     normalized.images = normalizeImageAttachments(normalized.images);
   }
   return normalized;
+}
+
+function mapRawResponseStats(raw: unknown): HistoryResponseStatsView | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const durationSecs = typeof r.duration_secs === "number" ? r.duration_secs : undefined;
+  const inputTokens = typeof r.input_tokens === "number" ? r.input_tokens : undefined;
+  const outputTokens = typeof r.output_tokens === "number" ? r.output_tokens : undefined;
+  const cacheReadTokens = typeof r.cache_read_tokens === "number" ? r.cache_read_tokens : undefined;
+  const cacheCreationTokens =
+    typeof r.cache_creation_tokens === "number" ? r.cache_creation_tokens : undefined;
+  const rayuCredits = typeof r.rayu_credits === "number" ? r.rayu_credits : undefined;
+  if (
+    durationSecs === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheReadTokens === undefined &&
+    cacheCreationTokens === undefined &&
+    rayuCredits === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(durationSecs !== undefined ? { durationSecs } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(rayuCredits !== undefined ? { rayuCredits } : {}),
+  };
+}
+
+export function mapRawHistoryMessage(
+  raw: Record<string, unknown>,
+  opts: { id: string; model?: string; images?: HistoryImageView[] },
+): HistoryMessageView {
+  const toolObj =
+    raw.tool && typeof raw.tool === "object" && !Array.isArray(raw.tool)
+      ? (raw.tool as Record<string, unknown>)
+      : null;
+  const responseStats = mapRawResponseStats(raw.response_stats);
+  return {
+    id: opts.id,
+    role: typeof raw.role === "string" ? raw.role : "assistant",
+    content: typeof raw.content === "string" ? raw.content : "",
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(typeof toolObj?.id === "string" ? { toolId: toolObj.id } : {}),
+    ...(typeof toolObj?.name === "string" ? { toolName: toolObj.name } : {}),
+    ...(toolObj && toolObj.input !== undefined ? { toolInput: toolObj.input } : {}),
+    ...(typeof raw.origin === "string" ? { origin: raw.origin } : {}),
+    ...(typeof raw.visibility === "string" ? { visibility: raw.visibility } : {}),
+    ...(raw.attempt_id === null || typeof raw.attempt_id === "string"
+      ? { attemptId: raw.attempt_id }
+      : {}),
+    ...(typeof raw.attempt_reason === "string" ? { attemptReason: raw.attempt_reason } : {}),
+    ...(typeof raw.attempt_status === "string" ? { attemptStatus: raw.attempt_status } : {}),
+    ...(raw.stop_reason === null || typeof raw.stop_reason === "string"
+      ? { stopReason: raw.stop_reason }
+      : {}),
+    ...(responseStats ? { responseStats } : {}),
+    ...(opts.images && opts.images.length > 0 ? { images: opts.images } : {}),
+  };
 }
 
 function classifyProcessGroup(toolName: string): BackgroundProcessGroup {

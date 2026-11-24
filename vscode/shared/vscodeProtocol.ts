@@ -229,14 +229,32 @@ export const HistoryImageViewSchema = z.object({
 });
 export type HistoryImageView = z.infer<typeof HistoryImageViewSchema>;
 
+export const HistoryResponseStatsViewSchema = z.object({
+  durationSecs: z.number().optional(),
+  inputTokens: z.number().optional(),
+  outputTokens: z.number().optional(),
+  cacheReadTokens: z.number().optional(),
+  cacheCreationTokens: z.number().optional(),
+  rayuCredits: z.number().optional(),
+});
+export type HistoryResponseStatsView = z.infer<typeof HistoryResponseStatsViewSchema>;
+
 export const HistoryMessageViewSchema = z.object({
   id: z.string(),
   role: z.string(),
   content: z.string(),
   createdAtMs: z.number().optional(),
   model: z.string().optional(),
+  toolId: z.string().optional(),
   toolName: z.string().optional(),
   toolInput: z.unknown().optional(),
+  origin: z.string().optional(),
+  visibility: z.string().optional(),
+  attemptId: z.string().nullable().optional(),
+  attemptReason: z.string().optional(),
+  attemptStatus: z.string().optional(),
+  stopReason: z.string().nullable().optional(),
+  responseStats: HistoryResponseStatsViewSchema.optional(),
   images: z.array(HistoryImageViewSchema).optional(),
 });
 export type HistoryMessageView = z.infer<typeof HistoryMessageViewSchema>;
