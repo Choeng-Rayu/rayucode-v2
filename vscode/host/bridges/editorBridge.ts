@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
@@ -7,8 +8,19 @@ const SELECTION_DEBOUNCE_MS = 150;
 const MAX_SELECTION_CHARS = 32_000;
 export const ORIGINAL_DIFF_SCHEME = "rayucode-original";
 
+interface TrackedDiffTab {
+  path: string;
+  sessionId?: string;
+  scope?: "session" | "git";
+  leftKey: string;
+  leftUri: vscode.Uri;
+  rightKey?: string;
+  rightUri?: vscode.Uri;
+}
+
 class VirtualDiffDocumentProvider implements vscode.TextDocumentContentProvider {
   private readonly contents = new Map<string, string>();
+  private readonly uris = new Map<string, vscode.Uri>();
   private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this.emitter.event;
 
@@ -16,8 +28,22 @@ class VirtualDiffDocumentProvider implements vscode.TextDocumentContentProvider 
     const safeName = encodeURIComponent(path.basename(displayName) || "document");
     const uri = vscode.Uri.parse(`${ORIGINAL_DIFF_SCHEME}:/${safeName}?${encodeURIComponent(key)}`);
     this.contents.set(key, content);
+    this.uris.set(key, uri);
     this.emitter.fire(uri);
     return uri;
+  }
+
+  update(key: string, content: string): boolean {
+    const uri = this.uris.get(key);
+    if (!uri) return false;
+    this.contents.set(key, content);
+    this.emitter.fire(uri);
+    return true;
+  }
+
+  delete(key: string): void {
+    this.contents.delete(key);
+    this.uris.delete(key);
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
@@ -27,6 +53,7 @@ class VirtualDiffDocumentProvider implements vscode.TextDocumentContentProvider 
 
   dispose(): void {
     this.contents.clear();
+    this.uris.clear();
     this.emitter.dispose();
   }
 }
@@ -64,6 +91,7 @@ export function resolveWorkspaceFileUri(targetPath: string): vscode.Uri | null {
 export class EditorBridge implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly diffProvider = new VirtualDiffDocumentProvider();
+  private readonly openDiffTabs = new Map<string, TrackedDiffTab>();
   private readonly terminals = new Map<string, vscode.Terminal>();
   private lastActiveEditor: vscode.TextEditor | undefined;
   private currentSelection: EditorSelectionView | null = null;
@@ -90,7 +118,19 @@ export class EditorBridge implements vscode.Disposable {
         this.scheduleSelectionFlush();
       }),
       vscode.workspace.onDidChangeTextDocument(() => this.scheduleSelectionFlush()),
-      vscode.workspace.onDidCloseTextDocument(() => this.scheduleSelectionFlush()),
+      vscode.workspace.onDidCloseTextDocument((closed) => {
+        if (closed.uri.scheme === ORIGINAL_DIFF_SCHEME) {
+          const closedKey = decodeURIComponent(closed.uri.query);
+          for (const [tabKey, tab] of this.openDiffTabs.entries()) {
+            if (tab.leftKey === closedKey || tab.rightKey === closedKey) {
+              this.openDiffTabs.delete(tabKey);
+              this.diffProvider.delete(tab.leftKey);
+              if (tab.rightKey) this.diffProvider.delete(tab.rightKey);
+            }
+          }
+        }
+        this.scheduleSelectionFlush();
+      }),
       vscode.window.onDidCloseTerminal((closed) => {
         for (const [key, term] of this.terminals.entries()) {
           if (term === closed) this.terminals.delete(key);
@@ -198,30 +238,103 @@ export class EditorBridge implements vscode.Disposable {
     originalContent: string;
     modifiedContent?: string;
     title?: string;
+    sessionId?: string;
+    scope?: "session" | "git";
+    isCreated?: boolean;
+    isDeleted?: boolean;
   }): Promise<void> {
     const fileUri = resolveWorkspaceFileUri(options.path);
     if (!fileUri) return;
 
-    const leftUri = this.diffProvider.set(
-      `orig:${options.path}`,
-      options.originalContent,
-      options.path,
-    );
-    const rightUri =
-      options.modifiedContent !== undefined && !isAbsolutePath(options.path) && !vscode.workspace.workspaceFolders?.length
-        ? this.diffProvider.set(`mod:${options.path}`, options.modifiedContent, options.path)
-        : fileUri;
+    const scopeKey = options.scope ?? "git";
+    const sessionKey = options.sessionId ?? "ws";
+    const tabKey = `${scopeKey}:${sessionKey}:${options.path}`;
+    const leftKey = `orig:${tabKey}`;
+    const leftContent = options.isCreated ? "" : options.originalContent;
+    const leftUri = this.diffProvider.set(leftKey, leftContent, options.path);
+
+    let diskFileExists = false;
+    try {
+      diskFileExists = fs.existsSync(fileUri.fsPath);
+    } catch {
+      diskFileExists = false;
+    }
+
+    let rightKey: string | undefined;
+    let rightUri: vscode.Uri;
+    if (options.isDeleted || !diskFileExists) {
+      rightKey = `mod:${tabKey}`;
+      const rightContent = options.isDeleted
+        ? ""
+        : (options.modifiedContent ?? "");
+      rightUri = this.diffProvider.set(rightKey, rightContent, options.path);
+    } else {
+      rightUri = fileUri;
+    }
+
+    this.openDiffTabs.set(tabKey, {
+      path: options.path,
+      sessionId: options.sessionId,
+      scope: options.scope,
+      leftKey,
+      leftUri,
+      rightKey,
+      rightUri: rightKey ? rightUri : undefined,
+    });
 
     const baseName = path.basename(options.path) || options.path;
+    const suffix = options.isCreated
+      ? " (Created)"
+      : options.isDeleted
+        ? " (Deleted)"
+        : "";
     await vscode.commands.executeCommand(
       "vscode.diff",
       leftUri,
       rightUri,
-      options.title ?? `${baseName} — RayuCode Diff`,
+      options.title ?? `${baseName}${suffix} — RayuCode Diff`,
       {
         viewColumn: vscode.ViewColumn.Beside,
         preview: false,
       },
+    );
+  }
+
+  /**
+   * Refresh any open virtual diff tabs belonging to `sessionId` after live
+   * file-change state updates (edits, keep, undo, redo).
+   */
+  async refreshOpenDiffs(
+    sessionId: string,
+    resolveDiff: (filePath: string) => Promise<{
+      originalContent: string;
+      modifiedContent?: string;
+      isCreated?: boolean;
+      isDeleted?: boolean;
+    } | null>,
+  ): Promise<void> {
+    const matching = [...this.openDiffTabs.values()].filter(
+      (tab) => tab.sessionId === sessionId || (!tab.sessionId && tab.scope === "session"),
+    );
+    if (matching.length === 0) return;
+
+    await Promise.all(
+      matching.map(async (tab) => {
+        try {
+          const next = await resolveDiff(tab.path);
+          if (!next) return;
+          const leftContent = next.isCreated ? "" : next.originalContent;
+          this.diffProvider.update(tab.leftKey, leftContent);
+          if (tab.rightKey) {
+            const rightContent = next.isDeleted
+              ? ""
+              : (next.modifiedContent ?? "");
+            this.diffProvider.update(tab.rightKey, rightContent);
+          }
+        } catch {
+          // Ignore refresh failure for removed/closed entries
+        }
+      }),
     );
   }
 
@@ -381,6 +494,7 @@ export class EditorBridge implements vscode.Disposable {
 
   dispose(): void {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    this.openDiffTabs.clear();
     for (const d of this.disposables) d.dispose();
     this.disposables.length = 0;
   }

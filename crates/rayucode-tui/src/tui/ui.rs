@@ -53,6 +53,8 @@ mod changelog;
 mod debug_capture;
 #[path = "ui_diagram_pane.rs"]
 mod diagram_pane;
+#[path = "ui_file_changes_card.rs"]
+pub(crate) mod file_changes_card;
 #[path = "ui_file_diff.rs"]
 mod file_diff_ui;
 #[path = "ui_frame_metrics.rs"]
@@ -1418,6 +1420,8 @@ struct FullPrepCacheKey {
     expanded_images_version: u64,
     /// Signature of live swarm member cards embedded beneath spawn tool calls.
     swarm_members_signature: u64,
+    /// Monotonic version of the tracked file-changes card state.
+    file_changes_version: u64,
     latex_rendering: crate::config::LatexRenderingMode,
     show_link_urls: bool,
 }
@@ -3075,6 +3079,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let secondary = secondary_render_active();
     if !secondary {
         panel_image_preview::clear_regions();
+        file_changes_card::clear_hit_rects();
+        crate::tui::file_review_overlay::clear_overlay_layout();
     }
     let area = frame.area().intersection(*frame.buffer_mut().area());
     if area.width == 0 || area.height == 0 {
@@ -3099,6 +3105,23 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let question_active = app.question_active();
     if !question_active && let Some(hash) = app.panel_image_preview() {
         panel_image_preview::draw_preview(frame, area, hash);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
+    if !question_active && let Some(overlay) = app.file_review_overlay() {
+        crate::tui::file_review_overlay::draw_file_review_overlay(
+            frame,
+            area,
+            app.file_changes(),
+            overlay,
+        );
         finalize_frame_metrics(
             app,
             total_start,

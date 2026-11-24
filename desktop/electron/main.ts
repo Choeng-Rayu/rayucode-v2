@@ -41,6 +41,9 @@ import {
   ExtensionRemoveMcpSchema,
   ExtensionToggleSkillSchema,
   ExtensionUpsertMcpSchema,
+  FileChangesActionPayloadSchema,
+  FileChangesDiffPayloadSchema,
+  FileChangesGetPayloadSchema,
   GitCheckoutBranchPayloadSchema,
   GitCommitPayloadSchema,
   GitCreatePrPayloadSchema,
@@ -317,6 +320,34 @@ function registerIpcHandlers(): void {
         parsed.command as RuntimeCommand,
         parsed.args ?? []
       )
+    }
+  )
+
+  // Session-scoped File Change Summary & Review Engine
+  ipcMain.handle(
+    "rayu:file-changes:get",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesGetPayloadSchema.parse(rawPayload)
+      return daemonClient.getFileChanges(parsed.sessionId)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:file-changes:diff",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesDiffPayloadSchema.parse(rawPayload)
+      return daemonClient.getFileChangeDiff(parsed.sessionId, parsed.path)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:file-changes:action",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesActionPayloadSchema.parse(rawPayload)
+      return daemonClient.fileChangeAction(parsed.sessionId, parsed.action, {
+        path: parsed.path,
+        force: parsed.force,
+      })
     }
   )
 

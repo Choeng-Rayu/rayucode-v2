@@ -32,6 +32,7 @@ import {
 import { AppShell, AuthWelcomeScreen } from "@/features/shell";
 import {
   callRpc,
+  isVsCodeWebview,
   onHostMessage,
   sendHarnessRequest,
   useAppStore,
@@ -81,8 +82,10 @@ export function App() {
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeRightTab = useAppStore((s) => s.activeRightTab);
   const daemonStatus = useAppStore((s) => s.daemonStatus);
+  const accountStatus = useAppStore((s) => s.accountStatus);
   const authLoaded = useAppStore((s) => s.authLoaded);
   const authBypassed = useAppStore((s) => s.authBypassed);
+  const authDialogOpen = useAppStore((s) => s.authDialogOpen);
   const backgroundDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const isStreamActive = useAppStore((s) => s.isStreamActive);
 
@@ -91,6 +94,7 @@ export function App() {
   const setAccountStatus = useAppStore((s) => s.setAccountStatus);
   const setAuthLoaded = useAppStore((s) => s.setAuthLoaded);
   const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
+  const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
   const enqueueOptimisticTurn = useAppStore((s) => s.enqueueOptimisticTurn);
@@ -99,15 +103,19 @@ export function App() {
   );
   const requestComposerFocus = useAppStore((s) => s.requestComposerFocus);
 
-  // Hydrate Rayu Cloud / account status once daemon is connected.
+  // Hydrate Rayu Cloud / account status immediately on mount (never blocked on daemon connection).
   React.useEffect(() => {
-    if (daemonStatus.state !== "connected" || authLoaded) return;
+    if (authLoaded) return;
     let cancelled = false;
     void callRpc("settings.account.get")
       .then((account) => {
         if (cancelled) return;
         setAccountStatus(account);
         setAuthLoaded(true);
+        if (account.signedIn) {
+          setAuthBypassed(false);
+          setAuthDialogOpen(false);
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -116,7 +124,13 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [authLoaded, daemonStatus.state, setAccountStatus, setAuthLoaded]);
+  }, [
+    authLoaded,
+    setAccountStatus,
+    setAuthBypassed,
+    setAuthDialogOpen,
+    setAuthLoaded,
+  ]);
 
   // Handle host commands and query invalidations pushed from Extension Host.
   React.useEffect(() => {
@@ -124,10 +138,42 @@ export function App() {
       if (msg.type === "rayucode.host.init") {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({ queryKey: ["processes"] });
+        if (msg.accountStatus) {
+          queryClient.setQueryData(["settings", "account"], msg.accountStatus);
+          queryClient.setQueryData(
+            ["shell", "account", "status"],
+            msg.accountStatus,
+          );
+          void queryClient.invalidateQueries({
+            queryKey: ["settings", "providers"],
+          });
+        }
+        return;
+      }
+      if (msg.type === "rayucode.account.changed") {
+        queryClient.setQueryData(["settings", "account"], msg.account);
+        queryClient.setQueryData(["shell", "account", "status"], msg.account);
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "account"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["shell", "account", "status"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "providers"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "models"],
+        });
+        void queryClient.invalidateQueries({ queryKey: ["models"] });
         return;
       }
       if (msg.type === "rayucode.processes.snapshot") {
         void queryClient.invalidateQueries({ queryKey: ["processes"] });
+        return;
+      }
+      if (msg.type === "rayucode.fileChanges.updated") {
+        void queryClient.invalidateQueries({ queryKey: ["changes"] });
         return;
       }
       if (msg.type === "rayucode.workspaces.changed") {
@@ -229,14 +275,27 @@ export function App() {
   const isDaemonOffline =
     (daemonStatus.state === "disconnected" || daemonStatus.state === "error") &&
     !authBypassed;
+  const isSignedOutGate =
+    isVsCodeWebview() &&
+    authLoaded &&
+    !accountStatus?.signedIn &&
+    !authBypassed;
+  const showAuthGate = authDialogOpen || isSignedOutGate || isDaemonOffline;
 
-  if (isDaemonOffline) {
+  if (showAuthGate) {
     return (
       <div
-        data-testid="rayu-offline-gate"
+        data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
         className="h-screen w-screen overflow-hidden bg-canvas"
       >
-        <AuthWelcomeScreen onContinue={() => setAuthBypassed(true)} />
+        <AuthWelcomeScreen
+          onContinue={() => {
+            setAuthDialogOpen(false);
+            if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
+              setAuthBypassed(true);
+            }
+          }}
+        />
       </div>
     );
   }

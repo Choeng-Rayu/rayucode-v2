@@ -1388,6 +1388,7 @@ fn stale_server_history_is_deferred_before_remote_state_is_applied() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1489,6 +1490,7 @@ fn deferred_stale_server_history_captures_session_id_for_reload_handoff() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1580,6 +1582,7 @@ fn ancient_server_history_is_deferred_via_client_side_release_check() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1669,6 +1672,7 @@ fn older_server_reporting_no_update_is_still_deferred_via_client_check() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1778,6 +1782,7 @@ fn older_server_history_repairs_stale_shared_server_channel_end_to_end() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1861,6 +1866,7 @@ fn current_release_server_history_is_not_deferred_by_client_check() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );

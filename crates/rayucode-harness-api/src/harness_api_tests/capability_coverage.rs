@@ -53,7 +53,10 @@ const LEDGER: &[(&str, Disposition)] = &[
     ("Compact", Covered),
     ("ConfigureTools", Covered),
     ("CycleModel", ClientInternal),
+    ("FileChangeAction", Covered),
     ("GetCompactedHistory", ClientInternal),
+    ("GetFileChangeDiff", Covered),
+    ("GetFileChanges", Covered),
     ("GetHistory", Covered),
     ("GetModelCatalog", Covered),
     // Create/attach session bootstrap requests state through the API bridge.

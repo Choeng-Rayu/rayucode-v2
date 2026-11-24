@@ -17,8 +17,13 @@ import {
 import {
   fromHarnessPermissionMode,
   toHarnessPermissionMode,
+  type AccountStatusView,
   type AppletStateView,
   type BackgroundProcessView,
+  type FileChangeActionKind,
+  type FileChangeActionResultView,
+  type FileChangesSnapshotView,
+  type FileDiffView,
   type HistoryImageView,
   type HistoryMessageView,
   type HostToWebviewMessage,
@@ -33,7 +38,11 @@ import type { GitChangesBridge } from "../bridges/gitChangesBridge.js";
 import type { BridgeManager } from "./bridgeManager.js";
 import {
   buildQuestionResponseWire,
+  emptyFileChangesSnapshot,
   mapRawBackgroundTask,
+  mapRawFileChangeActionResponse,
+  mapRawFileChangeDiff,
+  mapRawFileChangesSnapshot,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
 } from "./featureRouters.js";
@@ -65,6 +74,10 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   >();
   private readonly appletsBySession = new Map<string, AppletStateView[]>();
   private readonly todosBySession = new Map<string, TodoItemView[]>();
+  private readonly fileChangesBySession = new Map<
+    string,
+    FileChangesSnapshotView
+  >();
   private readonly creditsAccumulator = new RayuCreditsAccumulator();
 
   private sessionClient: RayucodeClient | null = null;
@@ -168,6 +181,94 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     return this.todosBySession.get(sessionId) ?? [];
   }
 
+  getFileChangesSnapshot(sessionId: string): FileChangesSnapshotView | undefined {
+    return this.fileChangesBySession.get(sessionId);
+  }
+
+  broadcastFileChanges(
+    sessionId: string,
+    snapshot: FileChangesSnapshotView,
+  ): void {
+    this.fileChangesBySession.set(sessionId, snapshot);
+    this.broadcast({
+      type: "rayucode.fileChanges.updated",
+      sessionId,
+      snapshot,
+    });
+    this.emit("fileChangesUpdated", { sessionId, snapshot });
+  }
+
+  private clientSupportsFileChanges(client: RayucodeClient): boolean {
+    if (typeof client.supports === "function") {
+      return client.supports("file_changes");
+    }
+    return this.bridgeManager.getStatus().capabilities.includes("file_changes");
+  }
+
+  private resolveTrackedFilePath(sessionId: string, filePath: string): string {
+    const cached = this.fileChangesBySession.get(sessionId);
+    const matched = cached?.files.find(
+      (f) => f.path === filePath || f.displayPath === filePath,
+    );
+    return matched?.path ?? filePath;
+  }
+
+  async fetchFileChanges(
+    sessionId?: string,
+  ): Promise<FileChangesSnapshotView | null> {
+    const sid = sessionId ?? this.activeSessionId;
+    if (!sid) return null;
+    try {
+      const client = await this.getClient();
+      if (!this.clientSupportsFileChanges(client)) {
+        return this.fileChangesBySession.get(sid) ?? null;
+      }
+      const raw = await client.getFileChanges(sid);
+      const snapshot = mapRawFileChangesSnapshot(raw, sid);
+      this.fileChangesBySession.set(sid, snapshot);
+      return snapshot;
+    } catch {
+      return this.fileChangesBySession.get(sid) ?? null;
+    }
+  }
+
+  async getFileChangeDiff(
+    sessionId: string,
+    filePath: string,
+  ): Promise<FileDiffView | null> {
+    const client = await this.getClient();
+    if (!this.clientSupportsFileChanges(client)) {
+      return null;
+    }
+    const targetPath = this.resolveTrackedFilePath(sessionId, filePath);
+    const raw = await client.getFileChangeDiff(sessionId, targetPath);
+    return mapRawFileChangeDiff(raw, filePath);
+  }
+
+  async runFileChangeAction(
+    sessionId: string,
+    action: FileChangeActionKind,
+    opts?: { path?: string; force?: boolean },
+  ): Promise<FileChangeActionResultView | null> {
+    const client = await this.getClient();
+    if (!this.clientSupportsFileChanges(client)) {
+      return null;
+    }
+    const targetPath =
+      opts?.path !== undefined
+        ? this.resolveTrackedFilePath(sessionId, opts.path)
+        : undefined;
+    const raw = await client.fileChangeAction(sessionId, action, {
+      ...(targetPath !== undefined ? { path: targetPath } : {}),
+      ...(opts?.force !== undefined ? { force: opts.force } : {}),
+    });
+    const mapped = mapRawFileChangeActionResponse(raw, sessionId);
+    if (mapped.snapshot) {
+      this.broadcastFileChanges(sessionId, mapped.snapshot);
+    }
+    return mapped;
+  }
+
   registerSurface(
     id: string,
     surface: SurfaceKind,
@@ -187,6 +288,19 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
         // ignore disposed surface
       }
     }
+  }
+
+  broadcastAccountChanged(account: AccountStatusView): void {
+    this.broadcast({
+      type: "rayucode.account.changed",
+      account,
+    });
+  }
+
+  async notifyDaemonAuthChanged(provider = "rayu"): Promise<void> {
+    const client = this.sessionClient ?? this.bridgeManager.getActiveClient();
+    if (!client) return;
+    await client.notifyAuthChanged(provider).catch(() => {});
   }
 
   /**
@@ -312,6 +426,17 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
         if (typeof frame.session_id === "string" && frame.state && typeof frame.state === "object") {
           const todos = this.mapTodoSnapshot(frame.state as TodoSnapshot);
           this.todosBySession.set(frame.session_id, todos);
+        }
+        break;
+      }
+      case "file_changes_state": {
+        const sid =
+          typeof frame.session_id === "string"
+            ? frame.session_id
+            : this.activeSessionId;
+        if (sid && frame.snapshot && typeof frame.snapshot === "object") {
+          const snapshot = mapRawFileChangesSnapshot(frame.snapshot, sid);
+          this.broadcastFileChanges(sid, snapshot);
         }
         break;
       }
@@ -493,6 +618,10 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
         this.activeProvider = runtimeInfo.provider ?? this.activeProvider;
       }
 
+      this.fileChangesBySession.set(
+        info.session_id,
+        emptyFileChangesSnapshot(info.session_id),
+      );
       this.emit("stateChanged");
       return this.mapSessionInfoToSummary(info);
     });
@@ -520,6 +649,16 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       if (runtimeInfo) {
         this.activeModel = runtimeInfo.model ?? this.activeModel;
         this.activeProvider = runtimeInfo.provider ?? this.activeProvider;
+      }
+
+      if (this.clientSupportsFileChanges(client)) {
+        void this.fetchFileChanges(info.session_id)
+          .then((snapshot) => {
+            if (snapshot) {
+              this.broadcastFileChanges(info.session_id, snapshot);
+            }
+          })
+          .catch(() => {});
       }
 
       this.emit("stateChanged");

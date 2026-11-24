@@ -710,6 +710,7 @@ fn startup_history(session_id: &str) -> ServerEvent {
         activity: None,
         side_panel: crate::side_panel::SidePanelSnapshot::default(),
         applets: Default::default(),
+        file_changes: None,
     }
 }
 

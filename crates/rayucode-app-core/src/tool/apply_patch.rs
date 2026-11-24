@@ -146,13 +146,34 @@ impl Tool for ApplyPatchTool {
                         tokio::fs::create_dir_all(parent).await?;
                     }
                     let existed = resolved.exists();
-                    let old = tokio::fs::read_to_string(&resolved).await.ok();
+                    let before_mode = existed
+                        .then(|| super::file_changes::read_unix_mode(&resolved))
+                        .flatten();
+                    let (old_bytes, old_exceeded_cap) = if existed {
+                        super::file_changes::read_bytes_capped(&resolved).await
+                    } else {
+                        (None, false)
+                    };
+                    let old = old_bytes
+                        .as_deref()
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                        .map(str::to_owned);
                     tokio::fs::write(&resolved, contents).await?;
                     super::edit_stats::record(
                         &ctx,
                         old.as_deref().unwrap_or(""),
                         contents,
                         existed && old.is_none(),
+                    )
+                    .await;
+                    super::file_changes::record_write(
+                        &ctx,
+                        &resolved,
+                        existed,
+                        old_bytes.as_deref(),
+                        old_exceeded_cap,
+                        before_mode,
+                        contents.as_bytes(),
                     )
                     .await;
                     let diff = generate_diff_summary("", contents);
@@ -188,10 +209,24 @@ impl Tool for ApplyPatchTool {
                         ));
                         continue;
                     }
-                    let old = tokio::fs::read_to_string(&resolved).await.ok();
+                    let before_mode = super::file_changes::read_unix_mode(&resolved);
+                    let (old_bytes, old_exceeded_cap) =
+                        super::file_changes::read_bytes_capped(&resolved).await;
+                    let old = old_bytes
+                        .as_deref()
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                        .map(str::to_owned);
                     let old_contents = old.as_deref().unwrap_or("");
                     if tokio::fs::remove_file(&resolved).await.is_ok() {
                         super::edit_stats::record(&ctx, old_contents, "", old.is_none()).await;
+                        super::file_changes::record_deleted_raw(
+                            &ctx,
+                            &resolved,
+                            old_bytes.as_deref(),
+                            old_exceeded_cap,
+                            before_mode,
+                        )
+                        .await;
                         let diff = generate_diff_summary(old_contents, "");
                         publish_file_touch(
                             &ctx,
@@ -217,6 +252,7 @@ impl Tool for ApplyPatchTool {
                     chunks,
                 } => {
                     let resolved = ctx.resolve_path(Path::new(path));
+                    let before_mode = super::file_changes::read_unix_mode(&resolved);
                     match apply_update_chunks(&resolved, chunks).await {
                         Ok((old_contents, new_contents)) => {
                             let diff = generate_diff_summary(&old_contents, &new_contents);
@@ -226,7 +262,18 @@ impl Tool for ApplyPatchTool {
                                     tokio::fs::create_dir_all(parent).await?;
                                 }
                                 let dest_existed = dest_resolved.exists();
-                                let dest_old = tokio::fs::read_to_string(&dest_resolved).await.ok();
+                                let dest_before_mode = dest_existed
+                                    .then(|| super::file_changes::read_unix_mode(&dest_resolved))
+                                    .flatten();
+                                let (dest_old_bytes, dest_exceeded_cap) = if dest_existed {
+                                    super::file_changes::read_bytes_capped(&dest_resolved).await
+                                } else {
+                                    (None, false)
+                                };
+                                let dest_old = dest_old_bytes
+                                    .as_deref()
+                                    .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                                    .map(str::to_owned);
                                 tokio::fs::write(&dest_resolved, &new_contents).await?;
                                 if tokio::fs::remove_file(&resolved).await.is_ok() {
                                     super::edit_stats::record(
@@ -244,6 +291,36 @@ impl Tool for ApplyPatchTool {
                                             dest_old.is_none(),
                                         )
                                         .await;
+                                        // Destination already existed before this move: record source
+                                        // deletion + destination overwrite separately so Undo restores
+                                        // both files losslessly instead of deleting the pre-existing dest.
+                                        super::file_changes::record_deleted(
+                                            &ctx,
+                                            &resolved,
+                                            old_contents.as_bytes(),
+                                            before_mode,
+                                        )
+                                        .await;
+                                        super::file_changes::record_write(
+                                            &ctx,
+                                            &dest_resolved,
+                                            true,
+                                            dest_old_bytes.as_deref(),
+                                            dest_exceeded_cap,
+                                            dest_before_mode,
+                                            new_contents.as_bytes(),
+                                        )
+                                        .await;
+                                    } else {
+                                        super::file_changes::record_renamed(
+                                            &ctx,
+                                            &resolved,
+                                            &dest_resolved,
+                                            old_contents.as_bytes(),
+                                            before_mode,
+                                            new_contents.as_bytes(),
+                                        )
+                                        .await;
                                     }
                                 } else {
                                     super::edit_stats::record(
@@ -251,6 +328,16 @@ impl Tool for ApplyPatchTool {
                                         dest_old.as_deref().unwrap_or(""),
                                         &new_contents,
                                         dest_existed && dest_old.is_none(),
+                                    )
+                                    .await;
+                                    super::file_changes::record_write(
+                                        &ctx,
+                                        &dest_resolved,
+                                        dest_existed,
+                                        dest_old_bytes.as_deref(),
+                                        dest_exceeded_cap,
+                                        dest_before_mode,
+                                        new_contents.as_bytes(),
                                     )
                                     .await;
                                 }
@@ -295,6 +382,14 @@ impl Tool for ApplyPatchTool {
                                     &old_contents,
                                     &new_contents,
                                     false,
+                                )
+                                .await;
+                                super::file_changes::record_modified(
+                                    &ctx,
+                                    &resolved,
+                                    old_contents.as_bytes(),
+                                    before_mode,
+                                    new_contents.as_bytes(),
                                 )
                                 .await;
                                 publish_file_touch(

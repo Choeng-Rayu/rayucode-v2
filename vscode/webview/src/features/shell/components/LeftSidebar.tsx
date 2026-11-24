@@ -1,5 +1,6 @@
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   LogOut,
   Palette,
@@ -50,6 +51,7 @@ export function IconRail({
   onOpenSessionsDrawer,
   onCloseDrawer,
 }: IconRailProps) {
+  const queryClient = useQueryClient();
   const activeRoute = useAppStore((s) => s.activeRoute);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const theme = useAppStore((s) => s.theme);
@@ -66,6 +68,9 @@ export function IconRail({
   const setDaemonStatus = useAppStore((s) => s.setDaemonStatus);
 
   const [usageOpen, setUsageOpen] = React.useState(false);
+  const [failedAvatarUrl, setFailedAvatarUrl] = React.useState<string | null>(
+    null,
+  );
 
   const accountQuery = useQuery({
     queryKey: ["shell", "account", "status"],
@@ -74,10 +79,10 @@ export function IconRail({
   });
 
   React.useEffect(() => {
-    if (accountQuery.data) {
+    if (accountQuery.data && !accountStatus) {
       setAccountStatus(accountQuery.data);
     }
-  }, [accountQuery.data, setAccountStatus]);
+  }, [accountQuery.data, accountStatus, setAccountStatus]);
 
   const telegramQuery = useQuery({
     queryKey: ["shell", "remote", "telegram"],
@@ -152,8 +157,26 @@ export function IconRail({
   };
 
   const handleSignOut = async () => {
-    const next = await callRpc("settings.account.signOut");
-    setAccountStatus(next);
+    try {
+      const next = await callRpc("settings.account.signOut");
+      setAccountStatus(next);
+      queryClient.setQueryData(["shell", "account", "status"], next);
+      queryClient.setQueryData(["settings", "account"], next);
+      void queryClient.invalidateQueries({ queryKey: ["settings", "account"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["shell", "account", "status"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      toast("Signed out of Rayu Cloud");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to sign out of Rayu Cloud",
+      );
+    }
   };
 
   return (
@@ -275,7 +298,13 @@ export function IconRail({
         onOpenChange={(open) => {
           setUsageOpen(open);
           if (open && isSignedIn) {
-            void callRpc("settings.account.refresh").then(setAccountStatus);
+            void callRpc("settings.account.refresh")
+              .then((next) => {
+                setAccountStatus(next);
+                queryClient.setQueryData(["shell", "account", "status"], next);
+                queryClient.setQueryData(["settings", "account"], next);
+              })
+              .catch(() => {});
           }
         }}
       >
@@ -388,12 +417,22 @@ export function IconRail({
                 className="mt-0.5 grid size-[38px] cursor-pointer place-items-center rounded-[11px] border border-transparent transition-all hover:border-hairline hover:bg-hover data-[state=open]:border-hairline data-[state=open]:bg-active data-[state=open]:shadow-bevel-surface"
               >
                 {isSignedIn ? (
-                  <span
-                    aria-hidden="true"
-                    className="grid size-[26px] place-items-center rounded-full bg-danger text-[10.5px] font-semibold tracking-tight text-destructive-foreground select-none"
-                  >
-                    {resolvedInitials}
-                  </span>
+                  account?.avatarUrl && account.avatarUrl !== failedAvatarUrl ? (
+                    <img
+                      src={account.avatarUrl}
+                      alt={account.displayName || account.email || "Rayu Cloud"}
+                      referrerPolicy="no-referrer"
+                      onError={() => setFailedAvatarUrl(account.avatarUrl ?? null)}
+                      className="size-[26px] rounded-full border border-hairline object-cover select-none"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      className="grid size-[26px] place-items-center rounded-full bg-danger text-[10.5px] font-semibold tracking-tight text-destructive-foreground select-none"
+                    >
+                      {resolvedInitials}
+                    </span>
+                  )
                 ) : (
                   <span
                     aria-hidden="true"

@@ -353,11 +353,16 @@ pub(super) async fn handle_clear_session(
     let observer = new_agent.lock().await.server_turn_observer();
     let (latest_turn_id, _) = observer.snapshot();
     let _ = client_event_tx.send(ServerEvent::TurnState {
-        session_id: new_id,
+        session_id: new_id.clone(),
         runtime_generation: observer.runtime_generation().to_string(),
         latest_turn_id,
         turn_id: None,
     });
+    if !crate::file_changes::snapshot_for_session(&old_session_id).is_empty() {
+        let _ = client_event_tx.send(ServerEvent::FileChangesState {
+            snapshot: crate::file_changes::FileChangesSnapshot::empty(new_id),
+        });
+    }
     let _ = client_event_tx.send(ServerEvent::Done { id });
     crate::logging::event_info(
         "SESSION_LIFECYCLE",

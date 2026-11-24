@@ -261,6 +261,26 @@ pub enum ApiRequest {
     /// Read safe filesystem metadata for a path under the session root.
     FileStatus { session_id: String, path: String },
 
+    /// Fetch the attached session's tracked file-change review snapshot.
+    /// Replies with `FileChangesState`. Requires `file_changes`.
+    GetFileChanges { session_id: String },
+
+    /// Fetch the full uncapped diff payload for one tracked file change.
+    /// Replies with `FileChangeDiff`. Requires `file_changes`.
+    GetFileChangeDiff { session_id: String, path: String },
+
+    /// Apply a review action (`keep`, `undo`, `redo`, `keep_all`, `undo_all`, `redo_all`)
+    /// to one or all tracked file changes. Replies with `FileChangeActionResult`.
+    /// Requires `file_changes`.
+    FileChangeAction {
+        session_id: String,
+        action: crate::FileChangeActionKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default)]
+        force: bool,
+    },
+
     /// Read the session's todo state (todos, plan, goals, deferred gate
     /// observations, long-session review clock) for client-side auto-poke and
     /// quality gates. Replies with `TodoState`. Requires `todo_state`.

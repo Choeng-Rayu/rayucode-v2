@@ -20,6 +20,10 @@ export {
 } from "./components/inline-diff-card"
 export { ShellCard, type ShellCardProps } from "./components/shell-card"
 export { TurnActions, type TurnActionsProps } from "./components/turn-actions"
+export {
+  TurnFileSummaryCard,
+  type TurnFileSummaryCardProps,
+} from "./components/turn-file-summary-card"
 export { WorkTrace, type WorkTraceProps } from "./components/work-trace"
 export {
   useLiveTrace,
@@ -49,6 +53,15 @@ export type {
   CitationKind,
   DiffDecision,
   ExecutionTurn,
+  FileChangeActionKind,
+  FileChangeActionResponse,
+  FileChangeConflict,
+  FileChangeDiffPayload,
+  FileChangeEntrySummary,
+  FileChangeHunk,
+  FileChangeKind,
+  FileChangesSnapshot,
+  FileChangeStatus,
   FileReadStep,
   InlineDiffCardData,
   InlineDiffHunkLine,

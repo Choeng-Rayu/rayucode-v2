@@ -1085,6 +1085,41 @@ pub(super) fn draw_messages(
     if let Some(view) = transcript_view {
         view.highlight(&prepared, scroll, &mut visible_lines);
     }
+    if let Some(snapshot) = app.file_changes().filter(|s| !s.is_empty())
+        && let Some(section) = prepared
+            .sections
+            .iter()
+            .find(|s| s.kind == PreparedSectionKind::TodoBlockers)
+    {
+        let prefix_blank = prepared.sections.iter().any(|s| {
+            matches!(
+                s.kind,
+                PreparedSectionKind::Body
+                    | PreparedSectionKind::InlineImages
+                    | PreparedSectionKind::BatchProgress
+                    | PreparedSectionKind::Streaming
+                    | PreparedSectionKind::Reasoning
+            ) && !s.prepared.wrapped_lines.is_empty()
+        });
+        let empty_expanded = std::collections::HashSet::new();
+        let expanded = app.expanded_file_change_paths().unwrap_or(&empty_expanded);
+        let card = super::file_changes_card::render_card_cached(
+            snapshot,
+            app.file_changes_version(),
+            expanded,
+            app.file_changes_receipt_expanded(),
+            content_area.width,
+            app.centered_mode(),
+            prefix_blank,
+        );
+        super::file_changes_card::set_hit_rects(
+            &card,
+            section.line_start,
+            scroll,
+            visible_end,
+            content_area,
+        );
+    }
     frame.render_widget(Paragraph::new(visible_lines), content_area);
 
     let centered = app.centered_mode();

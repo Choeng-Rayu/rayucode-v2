@@ -14,9 +14,10 @@ use crate::errors::{Error, ErrorKind, Result};
 use crate::launch::{LaunchOptions, LaunchedInstance, ensure_runtime, launch_instance};
 use crate::ssh::{SshConnectOptions, SshProcess, SshTransport};
 use rayucode_harness_api::{
-    API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, HistoryMessage, ModelRouteInfo,
-    PermissionDecision, ServerFrame, SessionInfo, SessionToolDefinition, TextMatch,
-    ToolConfiguration, api_socket_path, read_frame, write_frame,
+    API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, FileChangeActionKind,
+    FileChangeActionResponse, FileChangeDiffPayload, FileChangesSnapshot, HistoryMessage,
+    ModelRouteInfo, PermissionDecision, PermissionMode, ServerFrame, SessionInfo,
+    SessionToolDefinition, TextMatch, ToolConfiguration, api_socket_path, read_frame, write_frame,
 };
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -1063,6 +1064,15 @@ impl RayucodeClient {
         .map(drop)
     }
 
+    /// Change the active local permission mode for the attached session.
+    pub fn set_permission_mode(&self, session_id: &str, mode: PermissionMode) -> Result<()> {
+        self.request_ok(ApiRequest::SetPermissionMode {
+            session_id: session_id.to_string(),
+            mode,
+        })
+        .map(drop)
+    }
+
     /// Models this session can switch to, and which one is serving it.
     pub fn list_models(&self, session_id: &str) -> Result<(Vec<String>, Option<String>)> {
         match self
@@ -1344,6 +1354,107 @@ impl RayucodeClient {
             }),
             other => Err(unexpected("file_status", &other)),
         }
+    }
+
+    /// Fetch the session's tracked file-change review snapshot.
+    /// Requires the `file_changes` capability.
+    pub fn get_file_changes(&self, session_id: &str) -> Result<FileChangesSnapshot> {
+        match self
+            .request_ok(ApiRequest::GetFileChanges {
+                session_id: session_id.to_string(),
+            })?
+            .event
+        {
+            ApiEvent::FileChangesState { snapshot, .. } => Ok(snapshot),
+            other => Err(unexpected("file_changes_state", &other)),
+        }
+    }
+
+    /// Fetch the full uncapped diff payload for one tracked file change in the session.
+    /// Requires the `file_changes` capability.
+    pub fn get_file_change_diff(
+        &self,
+        session_id: &str,
+        path: &str,
+    ) -> Result<FileChangeDiffPayload> {
+        match self
+            .request_ok(ApiRequest::GetFileChangeDiff {
+                session_id: session_id.to_string(),
+                path: path.to_string(),
+            })?
+            .event
+        {
+            ApiEvent::FileChangeDiff { diff, .. } => Ok(diff),
+            other => Err(unexpected("file_change_diff", &other)),
+        }
+    }
+
+    /// Apply a review action (`keep`, `undo`, `redo`, `keep_all`, `undo_all`, `redo_all`)
+    /// to one or all tracked file changes in the session.
+    /// Requires the `file_changes` capability.
+    pub fn file_change_action(
+        &self,
+        session_id: &str,
+        action: FileChangeActionKind,
+        path: Option<&str>,
+        force: bool,
+    ) -> Result<FileChangeActionResponse> {
+        match self
+            .request_ok(ApiRequest::FileChangeAction {
+                session_id: session_id.to_string(),
+                action,
+                path: path.map(str::to_string),
+                force,
+            })?
+            .event
+        {
+            ApiEvent::FileChangeActionResult { response, .. } => Ok(response),
+            other => Err(unexpected("file_change_action_result", &other)),
+        }
+    }
+
+    /// Accept one tracked file change (`keep`), or all pending changes when `path` is `None` (`keep_all`).
+    pub fn keep_file_change(
+        &self,
+        session_id: &str,
+        path: Option<&str>,
+    ) -> Result<FileChangeActionResponse> {
+        let action = if path.is_some() {
+            FileChangeActionKind::Keep
+        } else {
+            FileChangeActionKind::KeepAll
+        };
+        self.file_change_action(session_id, action, path, false)
+    }
+
+    /// Safely restore one tracked file (`undo`), or all tracked files when `path` is `None` (`undo_all`).
+    pub fn undo_file_change(
+        &self,
+        session_id: &str,
+        path: Option<&str>,
+        force: bool,
+    ) -> Result<FileChangeActionResponse> {
+        let action = if path.is_some() {
+            FileChangeActionKind::Undo
+        } else {
+            FileChangeActionKind::UndoAll
+        };
+        self.file_change_action(session_id, action, path, force)
+    }
+
+    /// Safely re-apply one undone file (`redo`), or all undone files when `path` is `None` (`redo_all`).
+    pub fn redo_file_change(
+        &self,
+        session_id: &str,
+        path: Option<&str>,
+        force: bool,
+    ) -> Result<FileChangeActionResponse> {
+        let action = if path.is_some() {
+            FileChangeActionKind::Redo
+        } else {
+            FileChangeActionKind::RedoAll
+        };
+        self.file_change_action(session_id, action, path, force)
     }
 
     /// Configure the tools available to a session before starting a turn.
@@ -1827,6 +1938,10 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | ToolCall { session_id, .. }
         | Tools { session_id, .. }
         | SidePanelState { session_id, .. }
+        | AppletState { session_id, .. }
+        | FileChangesState { session_id, .. }
+        | FileChangeDiff { session_id, .. }
+        | FileChangeActionResult { session_id, .. }
         | TokenUsage { session_id, .. }
         | RayuCredits { session_id, .. }
         | ContextCapChanged { session_id, .. }
@@ -1837,6 +1952,7 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | BackgroundProgress { session_id, .. }
         | MessageAccepted { session_id, .. }
         | PermissionRequest { session_id, .. }
+        | PermissionModeChanged { session_id, .. }
         | QuestionRequest { session_id, .. }
         | QuestionClosed { session_id, .. }
         | SessionStatus { session_id, .. }

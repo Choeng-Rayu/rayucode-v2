@@ -2698,6 +2698,41 @@ fn run_report_provider_name(
     name.to_string()
 }
 
+fn format_headless_file_changes_summary(
+    snapshot: &crate::file_changes::FileChangesSnapshot,
+) -> Option<String> {
+    if snapshot.total_pending_files == 0 {
+        return None;
+    }
+    let pending: Vec<&str> = snapshot
+        .files
+        .iter()
+        .filter(|entry| entry.status == crate::file_changes::FileChangeStatus::Pending)
+        .map(|entry| entry.display_path.as_str())
+        .collect();
+    let total = snapshot.total_pending_files;
+    let file_word = if total == 1 { "file" } else { "files" };
+    const MAX_SHOWN: usize = 5;
+    let shown = if pending.len() > MAX_SHOWN {
+        format!(
+            "{}, +{} more",
+            pending[..MAX_SHOWN].join(", "),
+            pending.len() - MAX_SHOWN
+        )
+    } else {
+        pending.join(", ")
+    };
+    Some(format!(
+        "Changed {} {} (+{} −{}): {} — inspect with rayu --resume {}",
+        total,
+        file_word,
+        snapshot.total_additions,
+        snapshot.total_deletions,
+        shown,
+        snapshot.session_id
+    ))
+}
+
 async fn run_single_message_with_agent(
     agent: &mut crate::agent::Agent,
     provider: std::sync::Arc<dyn crate::provider::Provider>,
@@ -2733,6 +2768,13 @@ async fn run_single_message_with_agent(
         Ok(())
     }
     .await;
+
+    // Emit a concise 1-line tracked file-change summary to stderr (never stdout)
+    // so scripts piping stdout/JSON remain clean while users still see pending edits.
+    let file_changes_snapshot = crate::file_changes::snapshot_for_session(agent.session_id());
+    if let Some(summary) = format_headless_file_changes_summary(&file_changes_snapshot) {
+        eprintln!("{summary}");
+    }
 
     // `Agent::new` and session restore both register this process as the active
     // owner. Unlike the interactive lifecycle, `rayu run` has no later quit

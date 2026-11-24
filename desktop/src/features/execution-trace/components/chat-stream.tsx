@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
+import { changesQueryKeys } from "@/features/changes"
 import { useAppStore } from "@/lib/app-store"
 import {
   createHarnessStreamTracker,
@@ -34,10 +35,16 @@ import { cn } from "@/lib/utils"
 
 import { traceKeys, traceTurnsQueryOptions } from "../api/trace-api"
 import { useLiveTrace } from "../hooks/use-live-trace"
-import type { ExecutionTurn, LiveTraceEvent, SessionSummary } from "../types"
+import type {
+  ExecutionTurn,
+  FileChangesSnapshot,
+  LiveTraceEvent,
+  SessionSummary,
+} from "../types"
 import { CiteLink, EditorialMarkdown } from "./cite-link"
 import { InlineDiffCard } from "./inline-diff-card"
 import { TurnActions } from "./turn-actions"
+import { TurnFileSummaryCard } from "./turn-file-summary-card"
 import { WorkTrace } from "./work-trace"
 
 function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
@@ -63,6 +70,7 @@ function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
 
 interface TurnViewProps {
   turn: ExecutionTurn
+  fileChangesSnapshot?: FileChangesSnapshot | null
   onForked?: (session: SessionSummary) => void
   onPinToggled?: (turnId: string, pinned: boolean) => void
   onReplayTrace?: () => void
@@ -70,6 +78,7 @@ interface TurnViewProps {
 
 function TurnView({
   turn,
+  fileChangesSnapshot,
   onForked,
   onPinToggled,
   onReplayTrace,
@@ -81,7 +90,10 @@ function TurnView({
 
   const hasAnswer =
     turn.answerIntro.trim().length > 0 || turn.answerBullets.length > 0
-  const hasDiffLines = turn.diffCard.lines.length > 0
+  const hasFileSummary =
+    !turn.isLive &&
+    Boolean(fileChangesSnapshot && fileChangesSnapshot.files.length > 0)
+  const hasDiffLines = !hasFileSummary && turn.diffCard.lines.length > 0
 
   return (
     <article
@@ -207,6 +219,13 @@ function TurnView({
               </ol>
             )}
           </div>
+        )}
+
+        {hasFileSummary && fileChangesSnapshot && (
+          <TurnFileSummaryCard
+            sessionId={turn.sessionId}
+            snapshot={fileChangesSnapshot}
+          />
         )}
 
         {hasDiffLines && <InlineDiffCard diff={turn.diffCard} />}
@@ -390,10 +409,36 @@ export function ChatStream({
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive)
+  const sessionFileChanges = useAppStore((s) =>
+    effectiveSessionId ? s.sessionFileChangesBySession[effectiveSessionId] : undefined
+  )
+  const setSessionFileChanges = useAppStore((s) => s.setSessionFileChanges)
   const daemonMode = useAppStore((s) => s.daemonMode)
   const authState = useAppStore((s) => s.authState)
   const activeLiveTurnRef = React.useRef(false)
   const turnsForHistoryRef = React.useRef<ExecutionTurn[]>([])
+
+  // Hydrate persisted/session file changes when opening or switching sessions
+  React.useEffect(() => {
+    if (!effectiveSessionId) return
+    let cancelled = false
+    void ipcClient.fileChanges
+      .get(effectiveSessionId)
+      .then((snapshot) => {
+        if (cancelled || !snapshot) return
+        const existing =
+          useAppStore.getState().sessionFileChangesBySession[effectiveSessionId]
+        if (snapshot.files.length > 0 || !existing) {
+          setSessionFileChanges(effectiveSessionId, snapshot)
+        }
+      })
+      .catch(() => {
+        // Gracefully ignore when daemon does not support file_changes
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveSessionId, setSessionFileChanges])
 
   React.useEffect(() => {
     setIsStreamActive(isStreaming)
@@ -426,6 +471,17 @@ export function ChatStream({
             toolName: ev.toolName,
             description: ev.description,
           })
+        } else if (ev.type === "file-changes") {
+          const targetSessionId = ev.snapshot.session_id || effectiveSessionId
+          if (targetSessionId) {
+            setSessionFileChanges(targetSessionId, ev.snapshot)
+            void queryClient.invalidateQueries({
+              queryKey: changesQueryKeys.state(),
+            })
+            void queryClient.invalidateQueries({
+              queryKey: ["inspector", "changes"],
+            })
+          }
         } else {
           traceEvents.push(ev)
         }
@@ -451,7 +507,14 @@ export function ChatStream({
     })
 
     return unsubscribe
-  }, [effectiveSessionId, pushEvent, setPendingPermission, startLiveTurn])
+  }, [
+    effectiveSessionId,
+    pushEvent,
+    queryClient,
+    setPendingPermission,
+    setSessionFileChanges,
+    startLiveTurn,
+  ])
 
   // Dispatch queued prompt AFTER ChatStream mounts its live event listener (0 dropped tokens)
   React.useEffect(() => {
@@ -657,6 +720,13 @@ export function ChatStream({
     [effectiveSessionId, queryClient]
   )
 
+  const latestFinishedTurnIdx = React.useMemo(() => {
+    for (let i = allTurns.length - 1; i >= 0; i -= 1) {
+      if (!allTurns[i]?.isLive) return i
+    }
+    return -1
+  }, [allTurns])
+
   const bottomComposer = composerSlot ?? children
 
   return (
@@ -683,14 +753,28 @@ export function ChatStream({
           allTurns.length === 0 ? (
             <ChatSkeleton />
           ) : (
-            allTurns.map((turn) => (
-              <TurnView
-                key={turn.id}
-                turn={turn}
-                onForked={handleForked}
-                onPinToggled={handlePinToggled}
-              />
-            ))
+            <>
+              {allTurns.map((turn, idx) => (
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  fileChangesSnapshot={
+                    idx === latestFinishedTurnIdx ? sessionFileChanges : null
+                  }
+                  onForked={handleForked}
+                  onPinToggled={handlePinToggled}
+                />
+              ))}
+              {!isStreaming &&
+                latestFinishedTurnIdx === -1 &&
+                sessionFileChanges &&
+                sessionFileChanges.files.length > 0 && (
+                  <TurnFileSummaryCard
+                    sessionId={effectiveSessionId}
+                    snapshot={sessionFileChanges}
+                  />
+                )}
+            </>
           )}
           <div ref={bottomAnchorRef} />
         </div>

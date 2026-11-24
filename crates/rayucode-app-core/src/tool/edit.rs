@@ -210,11 +210,20 @@ impl Tool for EditTool {
         }
 
         let _lock = super::file_lock::lock(&path).await;
+        let before_mode = super::file_changes::read_unix_mode(&path);
         let content = tokio::fs::read_to_string(&path).await?;
         let (new_content, applied) = apply_edits(&content, &edits, &params.file_path)?;
 
         tokio::fs::write(&path, &new_content).await?;
         super::edit_stats::record(&ctx, &content, &new_content, false).await;
+        super::file_changes::record_modified(
+            &ctx,
+            &path,
+            content.as_bytes(),
+            before_mode,
+            new_content.as_bytes(),
+        )
+        .await;
 
         let intent = params
             .intent

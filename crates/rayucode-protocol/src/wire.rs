@@ -148,6 +148,25 @@ pub enum Request {
     #[serde(rename = "get_todos")]
     GetTodos { id: u64 },
 
+    /// Fetch the attached session's file-change review snapshot without locking its agent.
+    #[serde(rename = "get_file_changes")]
+    GetFileChanges { id: u64 },
+
+    /// Fetch the full uncapped diff payload for one tracked file change.
+    #[serde(rename = "get_file_change_diff")]
+    GetFileChangeDiff { id: u64, path: String },
+
+    /// Keep, undo, or redo one or all tracked file changes in the attached session.
+    #[serde(rename = "file_change_action")]
+    FileChangeAction {
+        id: u64,
+        action: rayucode_session_types::FileChangeActionKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default)]
+        force: bool,
+    },
+
     /// Execute a debug command (debug socket only)
     #[serde(rename = "debug_command")]
     DebugCommand {

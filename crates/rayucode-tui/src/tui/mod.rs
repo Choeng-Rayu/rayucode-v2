@@ -34,6 +34,7 @@ mod cloud_latency;
 mod cloud_status;
 pub(crate) mod color_support;
 mod core;
+pub(crate) mod file_review_overlay;
 pub(crate) mod fuzzy;
 pub mod herdr;
 mod info_widget_cloud;
@@ -1235,6 +1236,26 @@ pub trait TuiState {
     }
     /// Project commit log overlay (None = not showing)
     fn commit_log_overlay(&self) -> Option<&app::CommitLogOverlay> {
+        None
+    }
+    /// Tracked session file-change snapshot for inline summary card & overlay
+    fn file_changes(&self) -> Option<&crate::file_changes::FileChangesSnapshot> {
+        None
+    }
+    /// Monotonic version counter bumped on file-change snapshot/expansion mutations
+    fn file_changes_version(&self) -> u64 {
+        0
+    }
+    /// Display/canonical paths whose inline diff preview is expanded in the card
+    fn expanded_file_change_paths(&self) -> Option<&std::collections::HashSet<String>> {
+        None
+    }
+    /// Whether a resolved file-changes receipt has been expanded back into rows
+    fn file_changes_receipt_expanded(&self) -> bool {
+        false
+    }
+    /// Interactive file review overlay (None = not showing)
+    fn file_review_overlay(&self) -> Option<&file_review_overlay::FileReviewOverlayState> {
         None
     }
     /// Session picker overlay for /resume command

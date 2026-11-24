@@ -63,6 +63,7 @@ impl Agent {
         }
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
+        crate::file_changes::begin_turn(&self.session.id);
         self.fire_turn_start_hook("run");
         let result = self.run_turn(true).await.map(|_| ());
         // `rayu run` uses this path, so headless turns fire the same
@@ -104,6 +105,7 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
+        crate::file_changes::begin_turn(&self.session.id);
         self.run_turn(false).await
     }
 
@@ -212,6 +214,7 @@ impl Agent {
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
+        crate::file_changes::begin_turn(&self.session.id);
         self.fire_turn_start_hook("chat");
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);

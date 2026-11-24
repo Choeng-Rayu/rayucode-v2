@@ -5,6 +5,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type {
   AccountStatusView,
   AgentRoleId,
@@ -116,12 +117,11 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
 
 export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
   {
-    id: "rayu-cloud",
-    name: "Rayu Cloud",
+    id: "rayu",
+    name: "Rayu Cloud Gateway",
     category: "native",
-    status: "ready",
-    authMethod: "oauth",
-    accountLabel: "dev@rayucode.com",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 18,
     supportsOAuth: true,
   },
@@ -129,8 +129,8 @@ export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
     id: "anthropic",
     name: "Anthropic (Claude)",
     category: "native",
-    status: "env_key",
-    authMethod: "env",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 9,
     supportsOAuth: true,
   },
@@ -138,8 +138,8 @@ export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
     id: "openai",
     name: "OpenAI",
     category: "native",
-    status: "ready",
-    authMethod: "api_key",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 14,
     supportsOAuth: true,
   },
@@ -147,8 +147,8 @@ export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
     id: "gemini",
     name: "Google Gemini",
     category: "native",
-    status: "ready",
-    authMethod: "api_key",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 10,
     supportsOAuth: true,
   },
@@ -156,42 +156,41 @@ export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
     id: "openrouter",
     name: "OpenRouter",
     category: "native",
-    status: "ready",
-    authMethod: "api_key",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 120,
-    supportsOAuth: true,
+    supportsOAuth: false,
   },
   {
-    id: "github-copilot",
+    id: "copilot",
     name: "GitHub Copilot",
     category: "native",
-    status: "ready",
-    authMethod: "oauth",
-    accountLabel: "gh-oauth",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 12,
     supportsOAuth: true,
   },
   {
-    id: "aws-bedrock",
+    id: "bedrock",
     name: "AWS Bedrock",
     category: "native",
-    status: "env_key",
-    authMethod: "env",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 16,
     supportsOAuth: false,
   },
   {
     id: "antigravity",
-    name: "Antigravity",
+    name: "Google Antigravity",
     category: "native",
-    status: "ready",
-    authMethod: "oauth",
+    status: "needs_key",
+    authMethod: "none",
     modelCount: 8,
     supportsOAuth: true,
   },
   {
     id: "cursor",
-    name: "Cursor Runtime",
+    name: "Cursor",
     category: "native",
     status: "needs_key",
     authMethod: "none",
@@ -199,8 +198,8 @@ export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
     supportsOAuth: true,
   },
   {
-    id: "grok-build",
-    name: "Grok Build (xAI Native)",
+    id: "grok",
+    name: "xAI Grok",
     category: "native",
     status: "needs_key",
     authMethod: "none",
@@ -213,23 +212,23 @@ const OPENAI_COMPAT_45_NAMES: ReadonlyArray<{
   id: string;
   name: string;
   baseUrl: string;
-  ready?: boolean;
+  localNoKey?: boolean;
 }> = [
-  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", ready: true },
-  { id: "groq", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", ready: true },
-  { id: "mistral", name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1", ready: true },
+  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1" },
+  { id: "groq", name: "Groq", baseUrl: "https://api.groq.com/openai/v1" },
+  { id: "mistral", name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
   { id: "perplexity", name: "Perplexity", baseUrl: "https://api.perplexity.ai" },
-  { id: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", ready: true },
+  { id: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1" },
   { id: "fireworks", name: "Fireworks AI", baseUrl: "https://api.fireworks.ai/inference/v1" },
   { id: "xai", name: "xAI (OpenAI-Compat)", baseUrl: "https://api.x.ai/v1" },
-  { id: "cerebras", name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1", ready: true },
+  { id: "cerebras", name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1" },
   { id: "moonshot", name: "Moonshot (Kimi)", baseUrl: "https://api.moonshot.cn/v1" },
   { id: "minimax", name: "MiniMax", baseUrl: "https://api.minimax.chat/v1" },
   { id: "zai", name: "Z.AI (GLM)", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
   { id: "huggingface", name: "Hugging Face TGI", baseUrl: "https://api-inference.huggingface.co/v1" },
   { id: "nvidia-nim", name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1" },
-  { id: "ollama", name: "Ollama (Local)", baseUrl: "http://127.0.0.1:11434/v1", ready: true },
-  { id: "lmstudio", name: "LM Studio (Local)", baseUrl: "http://127.0.0.1:1234/v1", ready: true },
+  { id: "ollama", name: "Ollama (Local)", baseUrl: "http://127.0.0.1:11434/v1", localNoKey: true },
+  { id: "lmstudio", name: "LM Studio (Local)", baseUrl: "http://127.0.0.1:1234/v1", localNoKey: true },
   { id: "meta-llama", name: "Meta Llama API", baseUrl: "https://api.llama.com/compat/v1" },
   { id: "cohere", name: "Cohere Compat", baseUrl: "https://api.cohere.ai/compatibility/v1" },
   { id: "ai21", name: "AI21 Labs", baseUrl: "https://api.ai21.com/studio/v1" },
@@ -267,35 +266,67 @@ export const OPENAI_COMPAT_45_PROVIDERS: ReadonlyArray<ProviderEntryView> =
     id: p.id,
     name: p.name,
     category: "openai_compatible",
-    status: p.ready ? "ready" : "needs_key",
-    authMethod: p.ready ? "api_key" : "none",
+    status: p.localNoKey ? "ready" : "needs_key",
+    authMethod: "none",
     baseUrl: p.baseUrl,
-    modelCount: p.ready ? 6 : 4,
     supportsOAuth: false,
   }));
 
 export const ENTERPRISE_2_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
   {
-    id: "azure-openai",
+    id: "azure",
     name: "Azure OpenAI Service",
     category: "enterprise",
-    status: "env_key",
-    authMethod: "env",
-    baseUrl: "https://rayu-enterprise.openai.azure.com",
-    modelCount: 11,
+    status: "needs_key",
+    authMethod: "none",
     supportsOAuth: true,
   },
   {
-    id: "google-workspace-vertex",
+    id: "google_workspace",
     name: "Google Workspace & Vertex AI",
     category: "enterprise",
-    status: "ready",
-    authMethod: "oauth",
-    accountLabel: "gcp-adc",
-    modelCount: 12,
+    status: "needs_key",
+    authMethod: "none",
     supportsOAuth: true,
   },
 ];
+
+function normalizeProviderIdForUi(rawId: string): string {
+  switch (rawId.trim().toLowerCase()) {
+    case "rayu-cloud":
+    case "rayu":
+      return "rayu";
+    case "claude":
+    case "claude-api":
+    case "anthropic":
+      return "anthropic";
+    case "openai-api":
+    case "openai":
+      return "openai";
+    case "github-copilot":
+    case "copilot":
+      return "copilot";
+    case "aws-bedrock":
+    case "bedrock":
+      return "bedrock";
+    case "azure-openai":
+    case "azure":
+      return "azure";
+    case "google-gemini":
+    case "gemini-api":
+    case "gemini":
+      return "gemini";
+    case "grok-build":
+    case "grok":
+      return "grok";
+    case "google-workspace-vertex":
+    case "google-workspace":
+    case "google_workspace":
+      return "google_workspace";
+    default:
+      return rawId;
+  }
+}
 
 export const ALL_57_DEFAULT_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
   ...NATIVE_10_PROVIDERS,
@@ -522,7 +553,7 @@ export const FULL_PLAN_LADDER = [
     id: "plus",
     name: "Plus",
     priceLabel: "$20 / mo",
-    current: true,
+    current: false,
     highlights: ["115,000 Rayu Cloud credits / mo", "Swarms & Overnight runs"],
   },
   {
@@ -535,25 +566,43 @@ export const FULL_PLAN_LADDER = [
   {
     id: "team",
     name: "Team",
-    priceLabel: "$30 / seat",
+    priceLabel: "$10 / mo",
     current: false,
-    highlights: ["Shared workspace pool", "Centralized billing & audit"],
+    highlights: ["30,000 shared credits / mo", "Unlimited seats & centralized billing"],
   },
   {
     id: "team-plus",
     name: "Team Plus",
-    priceLabel: "$60 / seat",
+    priceLabel: "$29 / mo",
     current: false,
-    highlights: ["350,000 credits / seat", "SSO & shared MCP connectors"],
+    highlights: ["100,000 shared credits / mo", "Unlimited seats & Hosted API"],
   },
   {
     id: "team-max",
     name: "Team Max",
-    priceLabel: "$120 / seat",
+    priceLabel: "$79 / mo",
     current: false,
-    highlights: ["800,000 credits / seat", "Dedicated priority capacity"],
+    highlights: ["400,000 shared credits / mo", "Dedicated org controls & priority capacity"],
   },
 ];
+
+function buildPlanLadderForAccount(account: AccountStatusView) {
+  const base =
+    account.planLadder && account.planLadder.length >= 7
+      ? account.planLadder
+      : FULL_PLAN_LADDER;
+  const activePlan = account.signedIn
+    ? (account.planName ?? "").trim().toLowerCase()
+    : "";
+  return base.map((tier) => ({
+    ...tier,
+    current: Boolean(
+      activePlan &&
+        (tier.id.toLowerCase() === activePlan ||
+          tier.name.toLowerCase() === activePlan),
+    ),
+  }));
+}
 
 export function useSettings(initialSection: SettingsSectionId = "account") {
   const queryClient = useQueryClient();
@@ -561,6 +610,10 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
   const daemonStatusFromStore = useAppStore((s) => s.daemonStatus);
   const setDaemonStatus = useAppStore((s) => s.setDaemonStatus);
+  const setAccountStatus = useAppStore((s) => s.setAccountStatus);
+  const setAuthLoaded = useAppStore((s) => s.setAuthLoaded);
+  const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
+  const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
 
   const [activeSection, setActiveSection] =
     React.useState<SettingsSectionId>(initialSection);
@@ -580,27 +633,52 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const [selfDevOutput, setSelfDevOutput] = React.useState<string | null>(null);
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
 
+  const syncAccountEverywhere = React.useCallback(
+    (next: AccountStatusView) => {
+      const normalized: AccountStatusView = {
+        ...next,
+        planLadder: buildPlanLadderForAccount(next),
+      };
+      setAccountStatus(normalized);
+      setAuthLoaded(true);
+      if (normalized.signedIn) {
+        setAuthBypassed(false);
+        setAuthDialogOpen(false);
+      }
+      queryClient.setQueryData(["settings", "account"], normalized);
+      queryClient.setQueryData(["shell", "account", "status"], normalized);
+      void queryClient.invalidateQueries({ queryKey: ["settings", "account"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["shell", "account", "status"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      return normalized;
+    },
+    [
+      queryClient,
+      setAccountStatus,
+      setAuthBypassed,
+      setAuthDialogOpen,
+      setAuthLoaded,
+    ],
+  );
+
   const accountQuery = useQuery(
     queryOptions({
       queryKey: ["settings", "account"] as const,
       queryFn: async (): Promise<AccountStatusView> => {
         const res = await callRpc("settings.account.get");
-        return {
+        const normalized: AccountStatusView = {
           ...res,
-          windows:
-            res.windows.length >= 3
-              ? res.windows
-              : [
-                  ...res.windows,
-                  {
-                    label: "Monthly allowance",
-                    remainingPercent: 82,
-                    usedPercent: 18,
-                    resetCountdown: "Resets in 19d",
-                  },
-                ],
-          planLadder: FULL_PLAN_LADDER,
+          planLadder: buildPlanLadderForAccount(res),
         };
+        setAccountStatus(normalized);
+        setAuthLoaded(true);
+        return normalized;
       },
     }),
   );
@@ -626,10 +704,14 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       queryKey: ["settings", "providers"] as const,
       queryFn: async (): Promise<ProviderEntryView[]> => {
         const res = await callRpc("settings.providers.list");
-        const byId = new Map(res.providers.map((p) => [p.id, p]));
+        const byId = new Map<string, ProviderEntryView>();
+        for (const p of res.providers) {
+          const id = normalizeProviderIdForUi(p.id);
+          byId.set(id, { ...p, id });
+        }
         return ALL_57_DEFAULT_PROVIDERS.map((def) => {
           const live = byId.get(def.id);
-          return live ? { ...def, ...live } : def;
+          return live ? { ...def, ...live, id: def.id } : def;
         });
       },
     }),
@@ -726,39 +808,104 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const refreshAccountMutation = useMutation({
     mutationFn: () => callRpc("settings.account.refresh"),
     onSuccess: (next) => {
-      queryClient.setQueryData(["settings", "account"], {
-        ...next,
-        planLadder: FULL_PLAN_LADDER,
-      });
+      syncAccountEverywhere(next);
       setStatusMessage("Synced Rayu Cloud account & usage windows.");
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to refresh Rayu Cloud account";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
   const signOutMutation = useMutation({
     mutationFn: () => callRpc("settings.account.signOut"),
     onSuccess: (next) => {
-      queryClient.setQueryData(["settings", "account"], {
-        ...next,
-        planLadder: FULL_PLAN_LADDER,
-      });
+      syncAccountEverywhere(next);
       setStatusMessage("Signed out of Rayu Cloud.");
+      toast("Signed out of Rayu Cloud");
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to sign out of Rayu Cloud";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
   const signInBrowserMutation = useMutation({
-    mutationFn: () => callRpc("settings.account.signInBrowser"),
+    mutationFn: (mode?: "vscode" | "loopback") =>
+      callRpc("settings.account.signInBrowser", mode ? { mode } : undefined),
     onSuccess: (res) => {
       if (res.state) {
-        queryClient.setQueryData(["settings", "account"], {
-          ...res.state,
-          planLadder: FULL_PLAN_LADDER,
-        });
+        syncAccountEverywhere(res.state);
       }
       setStatusMessage(
         res.state?.signedIn
           ? "Authenticated with Rayu Cloud."
           : "Complete sign-in in your browser...",
       );
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to start browser sign-in";
+      setStatusMessage(msg);
+      toast.error(msg);
+    },
+  });
+
+  const cancelSignInMutation = useMutation({
+    mutationFn: () => callRpc("settings.account.cancelSignIn"),
+    onSuccess: (next) => {
+      syncAccountEverywhere(next);
+      setStatusMessage("Cancelled browser sign-in.");
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to cancel browser sign-in";
+      setStatusMessage(msg);
+      toast.error(msg);
+    },
+  });
+
+  const signInApiKeyMutation = useMutation({
+    mutationFn: (apiKey: string) =>
+      callRpc("settings.account.signInApiKey", { apiKey }),
+    onSuccess: (next) => {
+      syncAccountEverywhere(next);
+      setStatusMessage("Connected Rayu Cloud API key.");
+      toast.success("Rayu Cloud API key connected");
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to verify Rayu API key";
+      setStatusMessage(msg);
+      toast.error(msg);
+    },
+  });
+
+  const completeCallbackMutation = useMutation({
+    mutationFn: (callbackUrl: string) =>
+      callRpc("settings.account.completeCallback", { callbackUrl }),
+    onSuccess: (next) => {
+      syncAccountEverywhere(next);
+      setStatusMessage("Completed browser sign-in.");
+      toast.success("Signed in to Rayu Cloud");
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to complete OAuth callback";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -775,6 +922,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           ? "Pacing windows bypassed (using all available credits)."
           : "5-hour and weekly pacing windows enabled.",
       );
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to update pacing setting";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -799,7 +952,26 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               : p,
           ),
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      if (providerId === "rayu") {
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "account"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["shell", "account", "status"],
+        });
+      }
       setStatusMessage(`Saved API key for provider ${providerId}.`);
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to save provider API key";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -816,7 +988,26 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               : p,
           ),
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      if (providerId === "rayu") {
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "account"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["shell", "account", "status"],
+        });
+      }
       setStatusMessage(`Cleared API key for ${providerId}.`);
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to clear provider API key";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -838,7 +1029,26 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               : p,
           ),
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      if (providerId === "rayu") {
+        void queryClient.invalidateQueries({
+          queryKey: ["settings", "account"],
+        });
+        void queryClient.invalidateQueries({
+          queryKey: ["shell", "account", "status"],
+        });
+      }
       setStatusMessage(`Logged out of ${providerId}.`);
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to log out provider";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -1264,8 +1474,14 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     // Actions
     refreshAccount: () => refreshAccountMutation.mutateAsync(),
     isRefreshingAccount: refreshAccountMutation.isPending,
-    signInBrowser: () => signInBrowserMutation.mutateAsync(),
+    signInBrowser: (mode?: "vscode" | "loopback") =>
+      signInBrowserMutation.mutateAsync(mode),
+    cancelSignIn: () => cancelSignInMutation.mutateAsync(),
+    signInApiKey: (apiKey: string) => signInApiKeyMutation.mutateAsync(apiKey),
+    completeCallback: (callbackUrl: string) =>
+      completeCallbackMutation.mutateAsync(callbackUrl),
     signOut: () => signOutMutation.mutateAsync(),
+    isSigningOut: signOutMutation.isPending,
     setBypassPacing: (enabled: boolean) =>
       bypassPacingMutation.mutateAsync(enabled),
     setProviderApiKey: (input: {

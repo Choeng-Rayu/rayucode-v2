@@ -40,7 +40,11 @@ mod notifications;
 
 pub use comm_format::*;
 pub use notifications::{FeatureToggle, NotificationType};
-pub use rayucode_session_types::TurnStopReason;
+pub use rayucode_session_types::{
+    FileChangeActionKind, FileChangeActionResponse, FileChangeConflict, FileChangeDiffPayload,
+    FileChangeEntrySummary, FileChangeHunk, FileChangeKind, FileChangeStatus, FileChangesSnapshot,
+    TurnStopReason,
+};
 
 use rayucode_batch_types::BatchProgress;
 use rayucode_message_types::{InputShellResult, ToolCall};
@@ -916,6 +920,9 @@ impl Request {
             Request::Ping { id } => *id,
             Request::GetState { id } => *id,
             Request::GetTodos { id } => *id,
+            Request::GetFileChanges { id }
+            | Request::GetFileChangeDiff { id, .. }
+            | Request::FileChangeAction { id, .. } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
             Request::ClientDebugResponse { id, .. } => *id,

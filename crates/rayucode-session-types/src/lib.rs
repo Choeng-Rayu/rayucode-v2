@@ -3,8 +3,13 @@ use rayucode_message_types::{ContentBlock, Message, Role, ToolCall};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod file_changes;
 mod title;
 mod transcription;
+pub use file_changes::{
+    FileChangeActionKind, FileChangeActionResponse, FileChangeConflict, FileChangeDiffPayload,
+    FileChangeEntrySummary, FileChangeHunk, FileChangeKind, FileChangeStatus, FileChangesSnapshot,
+};
 pub use rayucode_message_types::rayu_credits::{
     self, MICRO_CREDITS_PER_CREDIT, RayuCreditsAccumulator, RayuRequestCharge, format_rayu_credits,
     format_rayu_credits_exact, rayu_credits_label, rayu_credits_tooltip,

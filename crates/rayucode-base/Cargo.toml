@@ -37,6 +37,7 @@ toml = "0.8"
 toml_edit = "0.20"
 
 # File operations
+similar = "2"            # structured diffs and hunk extraction for file change review
 
 # Utilities
 dirs = "5"               # home directory

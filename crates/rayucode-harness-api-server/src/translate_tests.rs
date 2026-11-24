@@ -4576,3 +4576,404 @@ fn permission_requests_and_responses_stay_disabled_when_not_negotiated() {
     };
     assert_eq!(sub["supports_permissions"], true);
 }
+
+fn sample_file_changes_snapshot_json(session_id: &str) -> Value {
+    json!({
+        "session_id": session_id,
+        "latest_turn_id": 2,
+        "total_pending_files": 1,
+        "total_additions": 2,
+        "total_deletions": 1,
+        "files": [{
+            "path": "/repo/src/lib.rs",
+            "display_path": "src/lib.rs",
+            "kind": "modified",
+            "status": "pending",
+            "additions": 2,
+            "deletions": 1,
+            "changed_in_latest_turn": true,
+            "turn_id": 2,
+            "edit_count": 1,
+            "is_binary": false,
+            "undoable": true,
+            "can_redo": false,
+            "preview_hunks": [{
+                "old_start": 1,
+                "old_lines": 1,
+                "new_start": 1,
+                "new_lines": 2,
+                "header": "@@ -1,1 +1,2 @@",
+                "lines": ["-old", "+new", "+added"]
+            }],
+            "preview_truncated": false,
+            "updated_at_ms": 1_700_000_000_000_i64
+        }]
+    })
+}
+
+fn sample_file_change_diff_json() -> Value {
+    json!({
+        "path": "/repo/src/lib.rs",
+        "display_path": "src/lib.rs",
+        "kind": "modified",
+        "status": "pending",
+        "additions": 2,
+        "deletions": 1,
+        "is_binary": false,
+        "original_content": "old\n",
+        "modified_content": "new\nadded\n",
+        "unified_diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,2 @@\n-old\n+new\n+added\n",
+        "hunks": [{
+            "old_start": 1,
+            "old_lines": 1,
+            "new_start": 1,
+            "new_lines": 2,
+            "header": "@@ -1,1 +1,2 @@",
+            "lines": ["-old", "+new", "+added"]
+        }]
+    })
+}
+
+#[test]
+fn file_changes_requests_require_attachment_and_validate_inputs() {
+    let mut unattached = BridgeState::default();
+    for req in [
+        json!({"id": 1, "req": "get_file_changes", "session_id": "s1"}),
+        json!({"id": 2, "req": "get_file_change_diff", "session_id": "s1", "path": "/repo/src/lib.rs"}),
+        json!({"id": 3, "req": "file_change_action", "session_id": "s1", "action": "keep_all"}),
+    ] {
+        let event = only_reply_event(unattached.api_request_to_legacy(&req));
+        assert!(
+            matches!(
+                event,
+                ApiEvent::Error {
+                    code: ErrorCode::UnknownSession,
+                    ..
+                }
+            ),
+            "expected UnknownSession for unattached {req}, got {event:?}"
+        );
+    }
+
+    let mut attached = state_with_session();
+    // Wrong session id is rejected before reaching the daemon.
+    for req in [
+        json!({"id": 10, "req": "get_file_changes", "session_id": "other"}),
+        json!({"id": 11, "req": "get_file_change_diff", "session_id": "other", "path": "/repo/src/lib.rs"}),
+        json!({"id": 12, "req": "file_change_action", "session_id": "other", "action": "keep_all"}),
+    ] {
+        let event = only_reply_event(attached.api_request_to_legacy(&req));
+        assert!(
+            matches!(
+                event,
+                ApiEvent::Error {
+                    code: ErrorCode::UnknownSession,
+                    ..
+                }
+            ),
+            "expected UnknownSession for wrong-session {req}, got {event:?}"
+        );
+    }
+
+    // Empty path on diff or invalid action kind yields InvalidRequest.
+    for req in [
+        json!({"id": 20, "req": "get_file_change_diff", "session_id": "s1", "path": "   "}),
+        json!({"id": 21, "req": "file_change_action", "session_id": "s1", "action": "bogus"}),
+    ] {
+        let event = only_reply_event(attached.api_request_to_legacy(&req));
+        assert!(
+            matches!(
+                event,
+                ApiEvent::Error {
+                    code: ErrorCode::InvalidRequest,
+                    ..
+                }
+            ),
+            "expected InvalidRequest for {req}, got {event:?}"
+        );
+    }
+    assert!(attached.pending_simple.is_empty());
+}
+
+#[test]
+fn file_changes_roundtrip_reply_and_unsolicited_stream_events() {
+    let mut state = state_with_session();
+    let snapshot_json = sample_file_changes_snapshot_json("s1");
+
+    // 1. Unsolicited file_changes_state becomes a stream event (no reply_to).
+    let live = state.legacy_event_to_api(&json!({
+        "type": "file_changes_state",
+        "snapshot": snapshot_json,
+    }));
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].reply_to, None);
+    assert!(matches!(
+        &live[0].event,
+        ApiEvent::FileChangesState { session_id, snapshot }
+            if session_id == "s1" && snapshot.total_pending_files == 1
+    ));
+
+    // Broadcast for another session is filtered out.
+    let other_session = state.legacy_event_to_api(&json!({
+        "type": "file_changes_state",
+        "snapshot": sample_file_changes_snapshot_json("s2"),
+    }));
+    assert!(other_session.is_empty());
+
+    // 2. Explicit get_file_changes correlates against daemon file_changes_state (no id field).
+    let out = state.api_request_to_legacy(&json!({
+        "id": 101,
+        "req": "get_file_changes",
+        "session_id": "s1",
+    }));
+    let [Outbound::Legacy(legacy)] = out.as_slice() else {
+        panic!("expected legacy get_file_changes, got {out:?}");
+    };
+    assert_eq!(legacy["type"], "get_file_changes");
+    let reply = state.legacy_event_to_api(&json!({
+        "type": "file_changes_state",
+        "snapshot": snapshot_json,
+    }));
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].reply_to, Some(101));
+    assert!(matches!(
+        &reply[0].event,
+        ApiEvent::FileChangesState { session_id, snapshot }
+            if session_id == "s1" && snapshot.files.len() == 1
+    ));
+    assert!(state.pending_simple.is_empty());
+
+    // 3. get_file_change_diff correlates by id and returns FileChangeDiff.
+    let diff_out = state.api_request_to_legacy(&json!({
+        "id": 102,
+        "req": "get_file_change_diff",
+        "session_id": "s1",
+        "path": "/repo/src/lib.rs",
+    }));
+    let [Outbound::Legacy(diff_legacy)] = diff_out.as_slice() else {
+        panic!("expected legacy get_file_change_diff, got {diff_out:?}");
+    };
+    assert_eq!(diff_legacy["type"], "get_file_change_diff");
+    assert_eq!(diff_legacy["path"], "/repo/src/lib.rs");
+    let diff_reply = state.legacy_event_to_api(&json!({
+        "type": "file_change_diff",
+        "id": diff_legacy["id"],
+        "diff": sample_file_change_diff_json(),
+    }));
+    assert_eq!(diff_reply.len(), 1);
+    assert_eq!(diff_reply[0].reply_to, Some(102));
+    assert!(matches!(
+        &diff_reply[0].event,
+        ApiEvent::FileChangeDiff { session_id, diff }
+            if session_id == "s1" && diff.path == "/repo/src/lib.rs" && diff.hunks.len() == 1
+    ));
+
+    // 4. file_change_action with path & force, followed by action result + broadcast state.
+    let action_out = state.api_request_to_legacy(&json!({
+        "id": 103,
+        "req": "file_change_action",
+        "session_id": "s1",
+        "action": "undo",
+        "path": "/repo/src/lib.rs",
+        "force": true,
+    }));
+    let [Outbound::Legacy(action_legacy)] = action_out.as_slice() else {
+        panic!("expected legacy file_change_action, got {action_out:?}");
+    };
+    assert_eq!(action_legacy["type"], "file_change_action");
+    assert_eq!(action_legacy["action"], "undo");
+    assert_eq!(action_legacy["path"], "/repo/src/lib.rs");
+    assert_eq!(action_legacy["force"], true);
+
+    let action_reply = state.legacy_event_to_api(&json!({
+        "type": "file_change_action_result",
+        "id": action_legacy["id"],
+        "response": {
+            "ok": false,
+            "message": "1 conflict",
+            "conflicts": [{
+                "path": "/repo/src/lib.rs",
+                "display_path": "src/lib.rs",
+                "reason": "modified externally"
+            }],
+            "snapshot": snapshot_json,
+        }
+    }));
+    assert_eq!(action_reply.len(), 1);
+    assert_eq!(action_reply[0].reply_to, Some(103));
+    assert!(matches!(
+        &action_reply[0].event,
+        ApiEvent::FileChangeActionResult { session_id, response }
+            if session_id == "s1" && !response.ok && response.conflicts.len() == 1
+    ));
+
+    // Subsequent broadcast after action is unsolicited (not miscorrelated).
+    let post_action_broadcast = state.legacy_event_to_api(&json!({
+        "type": "file_changes_state",
+        "snapshot": snapshot_json,
+    }));
+    assert_eq!(post_action_broadcast.len(), 1);
+    assert_eq!(post_action_broadcast[0].reply_to, None);
+
+    // Bulk action omits path and defaults force to false.
+    let bulk_out = state.api_request_to_legacy(&json!({
+        "id": 104,
+        "req": "file_change_action",
+        "session_id": "s1",
+        "action": "keep_all",
+    }));
+    let [Outbound::Legacy(bulk_legacy)] = bulk_out.as_slice() else {
+        panic!("expected legacy bulk file_change_action");
+    };
+    assert_eq!(bulk_legacy["action"], "keep_all");
+    assert!(bulk_legacy.get("path").is_none());
+    assert_eq!(bulk_legacy["force"], false);
+}
+
+#[test]
+fn file_change_errors_correlate_without_disrupting_active_turn() {
+    for scoped in [false, true] {
+        for (req, expected_msg) in [
+            (
+                json!({"id": 201, "req": "get_file_changes", "session_id": "s1"}),
+                "failed to load snapshot",
+            ),
+            (
+                json!({"id": 202, "req": "get_file_change_diff", "session_id": "s1", "path": "/repo/missing.rs"}),
+                "unknown tracked file",
+            ),
+            (
+                json!({"id": 203, "req": "file_change_action", "session_id": "s1", "action": "undo_all"}),
+                "Cannot modify file changes while a turn is processing.",
+            ),
+        ] {
+            let mut state = BridgeState {
+                session_id: Some("s1".into()),
+                observed_turn_active: true,
+                pending_message_id: Some(777),
+                ..Default::default()
+            };
+            if scoped {
+                state.legacy_event_to_api(&json!({
+                    "type": "turn_started",
+                    "identity": {"runtime_generation": "runtime", "turn_id": 5},
+                }));
+            }
+            let out = state.api_request_to_legacy(&req);
+            let [Outbound::Legacy(legacy)] = out.as_slice() else {
+                panic!("expected legacy outbound for {req}");
+            };
+            let reply = state.legacy_event_to_api(&json!({
+                "type": "error",
+                "id": legacy["id"],
+                "message": expected_msg,
+            }));
+            assert_eq!(
+                reply,
+                vec![ServerFrame::reply(
+                    req["id"].as_u64().unwrap(),
+                    ApiEvent::Error {
+                        code: ErrorCode::Internal,
+                        message: expected_msg.into(),
+                    }
+                )],
+                "scoped={scoped}, req={req}"
+            );
+            assert!(state.pending_simple.is_empty());
+            assert!(state.observed_turn_active);
+            assert_eq!(state.pending_message_id, Some(777));
+            if scoped {
+                assert!(state.turn_fence.active());
+            }
+        }
+    }
+}
+
+#[test]
+fn history_hydration_emits_file_changes_state_only_when_present_and_non_null() {
+    // Attachment recovery path (`pending_recovery_history`).
+    let mut state = BridgeState::default();
+    let attach = state.api_request_to_legacy(&json!({
+        "id": 1,
+        "req": "attach_session",
+        "session_id": "s1",
+    }));
+    let subscribe_id = match &attach[0] {
+        Outbound::Legacy(v) => v["id"].as_u64().unwrap(),
+        other => panic!("expected subscribe, got {other:?}"),
+    };
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": subscribe_id,
+        "session_id": "s1",
+        "messages": [],
+        "file_changes": sample_file_changes_snapshot_json("s1"),
+    }));
+    assert!(
+        frames.iter().any(|f| matches!(
+            &f.event,
+            ApiEvent::FileChangesState { session_id, snapshot }
+                if session_id == "s1" && snapshot.total_pending_files == 1
+        )),
+        "expected FileChangesState on attach history hydration, got {frames:?}"
+    );
+
+    // Absent/null file_changes on attach history does not emit FileChangesState.
+    let mut state_empty = BridgeState::default();
+    let attach_empty = state_empty.api_request_to_legacy(&json!({
+        "id": 2,
+        "req": "attach_session",
+        "session_id": "s1",
+    }));
+    let subscribe_empty_id = match &attach_empty[0] {
+        Outbound::Legacy(v) => v["id"].as_u64().unwrap(),
+        other => panic!("expected subscribe, got {other:?}"),
+    };
+    let frames_empty = state_empty.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": subscribe_empty_id,
+        "session_id": "s1",
+        "messages": [],
+        "file_changes": null,
+    }));
+    assert!(
+        !frames_empty
+            .iter()
+            .any(|f| matches!(&f.event, ApiEvent::FileChangesState { .. })),
+        "null file_changes must not emit FileChangesState: {frames_empty:?}"
+    );
+
+    // Explicit get_history also hydrates FileChangesState when present.
+    let mut attached = state_with_session();
+    let history_out = attached.api_request_to_legacy(&json!({
+        "id": 50,
+        "req": "get_history",
+        "session_id": "s1",
+    }));
+    let [Outbound::Legacy(history_legacy)] = history_out.as_slice() else {
+        panic!("expected legacy get_history");
+    };
+    let history_frames = attached.legacy_event_to_api(&json!({
+        "type": "history",
+        "id": history_legacy["id"],
+        "session_id": "s1",
+        "messages": [],
+        "file_changes": sample_file_changes_snapshot_json("s1"),
+    }));
+    assert!(matches!(
+        &history_frames[0],
+        ServerFrame {
+            reply_to: Some(50),
+            event: ApiEvent::History { .. },
+            ..
+        }
+    ));
+    assert!(
+        history_frames.iter().any(|f| matches!(
+            &f.event,
+            ApiEvent::FileChangesState { session_id, snapshot }
+                if session_id == "s1" && snapshot.total_pending_files == 1
+        )),
+        "expected FileChangesState on get_history reply: {history_frames:?}"
+    );
+}

@@ -1,12 +1,15 @@
 import * as React from "react";
 import {
+  Check,
   ChevronDown,
   ChevronUp,
   Columns2,
   GitBranch,
   GitCommitHorizontal,
   GitPullRequest,
+  Redo2,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -38,6 +41,7 @@ export function ChangesView({ className }: ChangesViewProps) {
 
   const {
     changes,
+    sessionSnapshot,
     files,
     activeFile,
     diffLines,
@@ -59,6 +63,9 @@ export function ChangesView({ className }: ChangesViewProps) {
     isStaging,
     keepFile,
     undoFile,
+    keepAllSession,
+    undoAllSession,
+    redoAllSession,
     isReviewing,
     commitStaged,
     isCommitting,
@@ -290,20 +297,66 @@ export function ChangesView({ className }: ChangesViewProps) {
               aria-label="Changed files"
               className="flex w-full shrink-0 flex-col border-b border-hairline bg-pane/50 lg:w-[330px] lg:border-r lg:border-b-0"
             >
-              <div className="flex items-center justify-between border-b border-hairline px-3.5 py-2 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-hairline px-3.5 py-2 text-xs">
                 <span className="font-medium text-ink">
                   Flat changed files ({summary.fileCount})
                 </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  disabled={isStaging || summary.fileCount === 0}
-                  onClick={() => void stageAll(!allStaged)}
-                  data-testid="stage-all-btn"
-                >
-                  {allStaged ? "Unstage all" : "Stage all"}
-                </Button>
+                <div className="flex items-center gap-1">
+                  {scope === "session" &&
+                    sessionSnapshot &&
+                    sessionSnapshot.totalPendingFiles > 0 && (
+                      <>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          disabled={isReviewing}
+                          onClick={() => void undoAllSession()}
+                          data-testid="changes-undo-all-btn"
+                        >
+                          <RotateCcw className="size-3" aria-hidden="true" />
+                          <span>Undo all</span>
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="xs"
+                          disabled={isReviewing}
+                          onClick={() => void keepAllSession()}
+                          data-testid="changes-keep-all-btn"
+                        >
+                          <Check className="size-3 text-brand-text" aria-hidden="true" />
+                          <span>Keep all</span>
+                        </Button>
+                      </>
+                    )}
+                  {scope === "session" &&
+                    sessionSnapshot &&
+                    sessionSnapshot.totalPendingFiles === 0 &&
+                    sessionSnapshot.files.some((f) => f.canRedo) && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        disabled={isReviewing}
+                        onClick={() => void redoAllSession()}
+                        data-testid="changes-redo-all-btn"
+                      >
+                        <Redo2 className="size-3" aria-hidden="true" />
+                        <span>Redo all</span>
+                      </Button>
+                    )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    disabled={isStaging || summary.fileCount === 0}
+                    onClick={() => void stageAll(!allStaged)}
+                    data-testid="stage-all-btn"
+                  >
+                    {allStaged ? "Unstage all" : "Stage all"}
+                  </Button>
+                </div>
               </div>
 
               <ScrollArea className="min-h-0 flex-1">

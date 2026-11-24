@@ -72,6 +72,9 @@ fn request_key(request: &Request) -> Option<(u64, &'static str)> {
         Request::GetHistory { id } => Some((*id, "history")),
         Request::GetCompactedHistory { id, .. } => Some((*id, "history_page")),
         Request::GetTodos { id } => Some((*id, "todos")),
+        Request::GetFileChanges { id } => Some((*id, "file_changes")),
+        Request::GetFileChangeDiff { id, .. } => Some((*id, "file_change_diff")),
+        Request::FileChangeAction { id, .. } => Some((*id, "file_change_action")),
         _ => None,
     }
 }
@@ -127,6 +130,9 @@ impl RequestTimings {
         if !matches!(
             event,
             ServerEvent::Todos { .. }
+                | ServerEvent::FileChangesState { .. }
+                | ServerEvent::FileChangeDiff { .. }
+                | ServerEvent::FileChangeActionResult { .. }
                 | ServerEvent::History { .. }
                 | ServerEvent::CompactedHistory { .. }
                 | ServerEvent::Error { .. }
@@ -153,8 +159,13 @@ impl RequestTimings {
                         })
                     })?
             }
+            ServerEvent::FileChangesState { .. } => pending
+                .iter()
+                .position(|request| request.operation == "file_changes")?,
             ServerEvent::History { id, .. }
             | ServerEvent::CompactedHistory { id, .. }
+            | ServerEvent::FileChangeDiff { id, .. }
+            | ServerEvent::FileChangeActionResult { id, .. }
             | ServerEvent::Error { id, .. } => {
                 pending.iter().position(|request| request.id == *id)?
             }
@@ -211,6 +222,9 @@ pub(super) fn event_key(event: &ServerEvent) -> Option<(&'static str, Option<u64
         ServerEvent::History { id, .. } => Some(("history", Some(*id))),
         ServerEvent::CompactedHistory { id, .. } => Some(("history_page", Some(*id))),
         ServerEvent::Todos { .. } => Some(("todos", None)),
+        ServerEvent::FileChangesState { .. } => Some(("file_changes", None)),
+        ServerEvent::FileChangeDiff { id, .. } => Some(("file_change_diff", Some(*id))),
+        ServerEvent::FileChangeActionResult { id, .. } => Some(("file_change_action", Some(*id))),
         _ => None,
     }
 }
