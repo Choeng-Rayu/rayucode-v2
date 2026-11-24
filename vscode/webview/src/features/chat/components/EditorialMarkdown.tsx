@@ -45,43 +45,20 @@ const markdownProcessor = unified().use(remarkParse).use(remarkGfm);
 function getInlineCodeClasses(category: InlineCodeCategory): string {
   switch (category) {
     case "folder":
-      return "text-folder hover:bg-folder-soft/60";
     case "file-ts":
-      return "text-code-fn hover:bg-info-soft/60";
     case "file-rust":
-      return "text-code-num hover:bg-pill-think-bg/60";
     case "file-doc":
-      return "text-code-type hover:bg-pill-edit-bg/60";
     case "file-data":
-      return "text-office-excel hover:bg-office-excel-soft/60";
+      return "text-brand-text hover:bg-brand-soft/60";
     case "component":
-      return "text-code-type";
     case "command":
-      return "bg-hover/65 text-code-kw";
     case "symbol":
-      return "text-code-fn";
     default:
       return "bg-hover/55 text-ink";
   }
 }
 
-function getLanguageBadgeClass(lang?: string | null): string {
-  const lower = (lang ?? "").trim().toLowerCase();
-  if (["ts", "tsx", "typescript", "js", "jsx", "javascript"].includes(lower)) {
-    return "text-code-fn bg-info-soft";
-  }
-  if (["rs", "rust", "go", "c", "cpp"].includes(lower)) {
-    return "text-code-num bg-pill-think-bg";
-  }
-  if (["sh", "bash", "zsh", "shell"].includes(lower)) {
-    return "text-code-kw bg-brand-softer";
-  }
-  if (["json", "yaml", "yml", "toml"].includes(lower)) {
-    return "text-code-str bg-warn-soft/70";
-  }
-  if (["mermaid", "md", "markdown"].includes(lower)) {
-    return "text-code-type bg-pill-edit-bg";
-  }
+function getLanguageBadgeClass(_lang?: string | null): string {
   return "text-muted-ink bg-active/70";
 }
 
