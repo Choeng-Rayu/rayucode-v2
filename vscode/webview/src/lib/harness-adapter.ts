@@ -1595,7 +1595,6 @@ export function mapHarnessFrameToLiveEvents(
         frame.risk_tier === "safe" ||
         frame.risk_tier === "bounded" ||
         frame.risk_tier === "confirm" ||
-        frame.risk_tier === "catastrophic" ||
         frame.risk_tier === "hard_deny"
           ? frame.risk_tier
           : undefined;
