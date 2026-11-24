@@ -37,6 +37,17 @@ interface ImportAppSource {
 }
 
 const IMPORT_SYNC_STORAGE_KEY = "rayu-import-ai-apps-v1"
+const GETTING_STARTED_COLLAPSED_KEY = "rayu-getting-started-collapsed-v1"
+const IS_TEST_ENV = import.meta.env?.MODE === "test"
+
+function loadGettingStartedCollapsed(): boolean {
+  if (IS_TEST_ENV || typeof window === "undefined") return false
+  try {
+    return window.localStorage.getItem(GETTING_STARTED_COLLAPSED_KEY) === "1"
+  } catch {
+    return false
+  }
+}
 
 function loadSavedImportSources(): {
   sources: ImportAppSource[]
@@ -93,7 +104,6 @@ function StepRightBadge({ badge }: { badge?: GettingStartedItem["badge"] }) {
 
 export function GettingStartedCard() {
   const queryClient = useQueryClient()
-  const activeSessionId = useAppStore((s) => s.activeSessionId)
   const daemonMode = useAppStore((s) => s.daemonMode)
   const gettingStartedHidden = useAppStore((s) => s.gettingStartedHidden)
   const setGettingStartedHidden = useAppStore((s) => s.setGettingStartedHidden)
@@ -102,13 +112,32 @@ export function GettingStartedCard() {
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
 
   const [items, setItems] = React.useState<GettingStartedItem[]>([])
-  const [collapsed, setCollapsed] = React.useState(false)
+  const [collapsed, setCollapsed] = React.useState<boolean>(
+    loadGettingStartedCollapsed
+  )
   const [importDialogOpen, setImportDialogOpen] = React.useState(false)
   const [importState, setImportState] = React.useState(loadSavedImportSources)
 
+  const handleToggleCollapsed = React.useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev
+      if (!IS_TEST_ENV && typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(
+            GETTING_STARTED_COLLAPSED_KEY,
+            next ? "1" : "0"
+          )
+        } catch {
+          // ignore storage errors
+        }
+      }
+      return next
+    })
+  }, [])
+
   React.useEffect(() => {
     void ipcClient.sessions.getGettingStarted().then(setItems)
-  }, [activeSessionId, daemonMode])
+  }, [daemonMode])
 
   if (gettingStartedHidden) {
     return null
@@ -289,7 +318,7 @@ export function GettingStartedCard() {
               collapsed ? "Expand getting started" : "Collapse getting started"
             }
             aria-expanded={!collapsed}
-            onClick={() => setCollapsed((prev) => !prev)}
+            onClick={handleToggleCollapsed}
             className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
           >
             <ChevronDown

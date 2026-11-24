@@ -26,6 +26,12 @@ export {
 } from "./components/turn-file-summary-card"
 export { WorkTrace, type WorkTraceProps } from "./components/work-trace"
 export {
+  clearSessionLiveTurn,
+  LiveTraceController,
+  resetAllLiveTraces,
+  useLiveTraceStore,
+} from "./hooks/live-trace-store"
+export {
   useLiveTrace,
   type StartLiveTurnInput,
   type UseLiveTraceOptions,

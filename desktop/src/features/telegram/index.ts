@@ -6,8 +6,10 @@ export {
 export {
   useConnectBotToken,
   useResolveTelegramApproval,
+  useSelectTelegramSession,
   useSetRemoteUninstall,
   useSetTelegramMode,
+  useStartHostedPairing,
   useTelegramBridgeActions,
   useTelegramState,
 } from "./hooks/use-telegram"
@@ -18,9 +20,11 @@ export {
   fetchTelegramState,
   prefetchTelegramState,
   resolveTelegramApproval,
+  selectTelegramSession,
   sendTelegramTestPing,
   setTelegramMode,
   setTelegramRemoteUninstall,
+  startHostedTelegramPairing,
   telegramQueryKeys,
   telegramQueryOptions,
 } from "./api/telegram-api"

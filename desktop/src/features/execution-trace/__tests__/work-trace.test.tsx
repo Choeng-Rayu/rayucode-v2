@@ -676,4 +676,26 @@ describe("execution-trace feature", () => {
     expect(useAppStore.getState().activeRightTab).toBe("diagram")
     expect(useAppStore.getState().activeDiagram.source).toContain("Renderer")
   })
+
+  it("uses a single theme accent color (text-brand-text) for all file and folder links in chat and does not turn plain diagram words into diagram cards", () => {
+    const md =
+      "Check `desktop/src/`, `main.ts`, `Cargo.toml`, `README.md`, `package.json`, and the word `diagram`."
+    const { container } = render(<EditorialMarkdown content={md} />)
+
+    const fileButtons = container.querySelectorAll(
+      '[data-code-kind="folder"], [data-code-kind="file-ts"], [data-code-kind="file-rust"], [data-code-kind="file-doc"], [data-code-kind="file-data"]'
+    )
+    expect(fileButtons.length).toBe(5)
+    for (const btn of fileButtons) {
+      expect(btn.className).toContain("text-brand-text")
+      expect(btn.className).not.toContain("text-folder")
+      expect(btn.className).not.toContain("text-code-fn")
+      expect(btn.className).not.toContain("text-code-num")
+      expect(btn.className).not.toContain("text-code-type")
+      expect(btn.className).not.toContain("text-office-excel")
+    }
+
+    // Without a Mermaid block in the message, `diagram` stays plain inline code
+    expect(container.querySelector('[data-code-kind="diagram"]')).toBeNull()
+  })
 })

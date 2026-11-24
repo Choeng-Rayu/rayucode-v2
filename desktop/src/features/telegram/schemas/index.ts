@@ -40,11 +40,20 @@ export const telegramStateSchema = z.object({
   drivingSession: z.string().min(1),
   mediaDelivery: z.string().min(1),
   authPath: z.string().min(1),
-  pairingCommand: z.string().min(1),
-  pairingLink: z.string().min(1),
+  pairingCommand: z.string(),
+  pairingLink: z.string(),
   remoteUninstallEnabled: z.boolean(),
   approvals: z.array(telegramApprovalItemSchema),
   commands: z.array(telegramCommandItemSchema),
+  linked: z.boolean().optional(),
+  configured: z.boolean().optional(),
+  statusLabel: z.string().optional(),
+  bridgeMode: z.enum(["hosted", "botfather"]).nullable().optional(),
+  daemonConnected: z.boolean().optional(),
+  qrSize: z.number().int().positive().nullable().optional(),
+  qrPath: z.string().nullable().optional(),
+  pendingUntil: z.number().nullable().optional(),
+  daemonError: z.string().nullable().optional(),
 })
 
 export const connectBotTokenInputSchema = z.object({

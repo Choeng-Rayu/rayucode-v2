@@ -93,6 +93,21 @@ export interface PendingStreamPrompt {
   images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
+  startedAtMs?: number
+}
+
+export interface SessionTokenUsageSnapshot {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+  effectiveBudget: number | null
+}
+
+export interface SessionModelInfoSnapshot {
+  model?: string
+  provider?: string
+  reasoningEffort?: string
 }
 
 export interface AppStoreState {
@@ -132,6 +147,8 @@ export interface AppStoreState {
   liveExcelWorkbookVersion: number
   activeDiagram: ActiveDiagramState
   sessionFileChangesBySession: Record<string, FileChangesSnapshot>
+  sessionTokenUsageBySession: Record<string, SessionTokenUsageSnapshot>
+  sessionModelInfoBySession: Record<string, SessionModelInfoSnapshot>
   selectedDiffFilePath: string | null
 
   setTheme: (theme: ThemeMode) => void
@@ -161,6 +178,14 @@ export interface AppStoreState {
   setSessionFileChanges: (
     sessionId: string,
     snapshot: FileChangesSnapshot
+  ) => void
+  setSessionTokenUsage: (
+    sessionId: string,
+    usage: SessionTokenUsageSnapshot
+  ) => void
+  setSessionModelInfo: (
+    sessionId: string,
+    info: SessionModelInfoSnapshot
   ) => void
   setSelectedDiffFilePath: (filePath: string | null) => void
   openDocPreview: (kind: DocPreviewKind, pillLabel: string) => void
@@ -398,6 +423,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   liveExcelWorkbookVersion: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
   sessionFileChangesBySession: {},
+  sessionTokenUsageBySession: {},
+  sessionModelInfoBySession: {},
   selectedDiffFilePath: null,
 
   setTheme: (theme) => {
@@ -657,6 +684,26 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       sessionFileChangesBySession: {
         ...state.sessionFileChangesBySession,
         [sessionId]: snapshot,
+      },
+    }))
+  },
+
+  setSessionTokenUsage: (sessionId, usage) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionTokenUsageBySession: {
+        ...state.sessionTokenUsageBySession,
+        [sessionId]: usage,
+      },
+    }))
+  },
+
+  setSessionModelInfo: (sessionId, info) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionModelInfoBySession: {
+        ...state.sessionModelInfoBySession,
+        [sessionId]: info,
       },
     }))
   },

@@ -118,11 +118,14 @@ fn normalize_batch_input(mut input: Value) -> Value {
     if let Some(calls) = input.get_mut("tool_calls").and_then(|v| v.as_array_mut()) {
         for call in calls.iter_mut() {
             if let Some(obj) = call.as_object_mut() {
-                // Normalize "name" -> "tool" if the model used the wrong key
-                if !obj.contains_key("tool")
-                    && let Some(name_val) = obj.remove("name")
-                {
-                    obj.insert("tool".to_string(), name_val);
+                // Normalize common tool-name key aliases ("name", "tool_name", "function") -> "tool"
+                if !obj.contains_key("tool") {
+                    for alias in ["name", "tool_name", "function"] {
+                        if let Some(name_val) = obj.remove(alias) {
+                            obj.insert("tool".to_string(), name_val);
+                            break;
+                        }
+                    }
                 }
 
                 if !obj.contains_key("parameters") {

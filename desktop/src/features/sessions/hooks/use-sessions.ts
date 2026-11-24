@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { useAppStore } from "@/lib/app-store"
+import { formatHarnessModelSpec } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 
 import {
@@ -157,6 +158,28 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
         // ignore storage errors
       }
     }
+    const activeSessionId = useAppStore.getState().activeSessionId
+    const spec = formatHarnessModelSpec(model.id, model.provider, model.apiMethod)
+    if (
+      activeSessionId &&
+      !activeSessionId.startsWith("ses_") &&
+      spec
+    ) {
+      void ipcClient.harness
+        .setModel(activeSessionId, spec)
+        .then((res) => {
+          if (res && !res.ok) {
+            toast.error(res.error ?? `Failed to switch model to ${model.label}`)
+          }
+        })
+        .catch((error: unknown) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : `Failed to switch model to ${model.label}`
+          )
+        })
+    }
   }, [])
 
   const setEffort = React.useCallback((nextEffort: ReasoningEffort) => {
@@ -170,6 +193,12 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
       } catch {
         // ignore storage errors
       }
+    }
+    const activeSessionId = useAppStore.getState().activeSessionId
+    if (activeSessionId && !activeSessionId.startsWith("ses_")) {
+      void ipcClient.harness
+        .setReasoningEffort(activeSessionId, nextEffort.toLowerCase())
+        .catch(() => {})
     }
   }, [])
 

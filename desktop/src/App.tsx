@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { AppProviders } from "@/components/providers/app-providers"
 import { AppShell } from "@/components/shell/AppShell"
@@ -15,7 +15,12 @@ import {
   TelegramSkeleton,
 } from "@/components/ui/page-skeletons"
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
-import { ChatStream } from "@/features/execution-trace"
+import {
+  ChatStream,
+  clearSessionLiveTurn,
+  LiveTraceController,
+  traceTurnsQueryOptions,
+} from "@/features/execution-trace"
 import {
   HomeView,
   SessionComposer,
@@ -52,6 +57,15 @@ function ActiveWorkspaceStage() {
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
   const isStreamActive = useAppStore((s) => s.isStreamActive)
+  const turnsQuery = useQuery({
+    ...traceTurnsQueryOptions(activeSessionId),
+    enabled: Boolean(activeSessionId),
+  })
+  const loadedTurnsCount = turnsQuery.data?.length ?? 0
+  const isHistoryLoading =
+    Boolean(activeSessionId) &&
+    turnsQuery.isLoading &&
+    loadedTurnsCount === 0
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
@@ -64,16 +78,13 @@ function ActiveWorkspaceStage() {
             : "")
         const created = await ipcClient.sessions.createSession({
           prompt: sessionTitlePrompt,
+          workingDir: useAppStore.getState().activeWorkspacePath ?? undefined,
           modelId: payload.modelId,
           modelLabel: payload.modelLabel,
           effort: payload.effort,
           permissionMode: payload.permissionMode,
         })
         targetSessionId = created.id
-        queryClient.setQueryData(
-          ["execution-trace", "turns", created.id],
-          []
-        )
         useAppStore.getState().setActiveSession(created.id, created.title)
         void queryClient.invalidateQueries({ queryKey: ["sessions"] })
       }
@@ -83,6 +94,7 @@ function ActiveWorkspaceStage() {
         images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
+        startedAtMs: Date.now(),
       })
     },
     [activeSessionId, queryClient]
@@ -99,10 +111,15 @@ function ActiveWorkspaceStage() {
             useAppStore.getState().setPendingStreamPrompt(null)
             useAppStore.getState().setIsStreamActive(false)
             if (activeSessionId) {
+              clearSessionLiveTurn(activeSessionId)
               void ipcClient.trace.cancel(activeSessionId)
             }
           }}
-          isSubmitting={Boolean(pendingStreamPrompt) || isStreamActive}
+          disabled={isHistoryLoading}
+          isSubmitting={
+            (pendingStreamPrompt?.sessionId === activeSessionId) ||
+            isStreamActive
+          }
         />
       }
     />
@@ -263,6 +280,47 @@ export function App() {
             .getState()
             .setSessionFileChanges(snapshot.session_id, snapshot)
         }
+      } else if (frame.ev === "token_usage") {
+        const sid = typeof frame.session_id === "string" ? frame.session_id : ""
+        if (sid) {
+          useAppStore.getState().setSessionTokenUsage(sid, {
+            input: typeof frame.input === "number" ? frame.input : 0,
+            output: typeof frame.output === "number" ? frame.output : 0,
+            cacheRead:
+              typeof frame.cache_read_input === "number"
+                ? frame.cache_read_input
+                : 0,
+            cacheCreation:
+              typeof frame.cache_creation_input === "number"
+                ? frame.cache_creation_input
+                : 0,
+            effectiveBudget:
+              typeof frame.effective_budget === "number" &&
+              frame.effective_budget > 0
+                ? frame.effective_budget
+                : null,
+          })
+        }
+      } else if (frame.ev === "model_info") {
+        const sid = typeof frame.session_id === "string" ? frame.session_id : ""
+        const model =
+          typeof frame.model === "string" ? frame.model : undefined
+        const provider =
+          typeof frame.provider === "string" ? frame.provider : undefined
+        const reasoningEffort =
+          typeof frame.reasoning_effort === "string"
+            ? frame.reasoning_effort
+            : undefined
+        if (sid) {
+          useAppStore.getState().setSessionModelInfo(sid, {
+            model,
+            provider,
+            reasoningEffort,
+          })
+          if (model) {
+            ipcClient.harness.recordSyncedModel(sid, model, provider)
+          }
+        }
       } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
         useAppStore.getState().setPendingPermission(null)
       }
@@ -285,6 +343,7 @@ export function App() {
   return (
     <AppProviders>
       <AuthQuerySync />
+      <LiveTraceController />
       <AuthSignInDialog />
       {showWelcomeGate ? (
         <AuthWelcomeScreen />
