@@ -8,12 +8,13 @@ import {
 import type {
   ChangedFileView,
   ChangesStatusView,
+  FileChangesSnapshotView,
   FileDiffView,
   FileReviewDecision,
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc, postToHost } from "@/lib/rpc-client";
+import { callRpc, onHostMessage, postToHost } from "@/lib/rpc-client";
 
 export type ChangesScope = "session" | "git";
 export type DiffViewMode = "unified" | "split";
@@ -167,6 +168,12 @@ export function fileDiffQueryOptions(
 export function useChanges() {
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const setStoreFileChangesSnapshot = useAppStore(
+    (s) => s.setFileChangesSnapshot,
+  );
+  const sessionSnapshot = useAppStore((s) =>
+    activeSessionId ? (s.fileChangesBySession[activeSessionId] ?? null) : null,
+  );
 
   const [scope, setScope] = React.useState<ChangesScope>("git");
   const [diffMode, setDiffMode] = React.useState<DiffViewMode>("unified");
@@ -181,6 +188,82 @@ export function useChanges() {
   const statusQuery = useQuery(
     changesStatusQueryOptions(activeSessionId, scope),
   );
+
+  const applyFileChangesSnapshotToCache = React.useCallback(
+    (snapshot: FileChangesSnapshotView) => {
+      if (snapshot.sessionId) {
+        setStoreFileChangesSnapshot(snapshot.sessionId, snapshot);
+      }
+      const patchStatus = (prev: ChangesStatusView | undefined) => {
+        if (!prev) return prev;
+        const nextFiles = prev.files.map((file) => {
+          const matched = snapshot.files.find(
+            (entry) =>
+              entry.displayPath === file.path || entry.path === file.path,
+          );
+          if (!matched) return file;
+          const decision: FileReviewDecision =
+            matched.status === "kept"
+              ? "accepted"
+              : matched.status === "undone"
+                ? "rejected"
+                : "pending";
+          return {
+            ...file,
+            fromSession: true,
+            decision,
+            additions: matched.additions,
+            deletions: matched.deletions,
+            staged: matched.status === "undone" ? false : file.staged,
+          };
+        });
+        return {
+          ...prev,
+          files: nextFiles,
+          totalAdditions: nextFiles.reduce((acc, f) => acc + f.additions, 0),
+          totalDeletions: nextFiles.reduce((acc, f) => acc + f.deletions, 0),
+          stagedCount: nextFiles.filter((f) => f.staged).length,
+        };
+      };
+
+      for (const targetScope of ["git", "session"] as const) {
+        const key = changesStatusQueryOptions(
+          activeSessionId,
+          targetScope,
+        ).queryKey;
+        queryClient.setQueryData<ChangesStatusView>(key, patchStatus);
+      }
+      void queryClient.invalidateQueries({ queryKey: ["changes", "status"] });
+      void queryClient.invalidateQueries({ queryKey: ["changes", "diff"] });
+    },
+    [activeSessionId, queryClient, setStoreFileChangesSnapshot],
+  );
+
+  // Sync ChangesView immediately whenever Chat or another VS Code surface updates file changes
+  React.useEffect(() => {
+    return onHostMessage((msg) => {
+      if (msg.type !== "rayucode.fileChanges.updated") return;
+      if (activeSessionId && msg.sessionId !== activeSessionId) return;
+      applyFileChangesSnapshotToCache(msg.snapshot);
+    });
+  }, [activeSessionId, applyFileChangesSnapshotToCache]);
+
+  React.useEffect(() => {
+    if (!activeSessionId) return;
+    let cancelled = false;
+    void callRpc("changes.getSessionSummary", { sessionId: activeSessionId })
+      .then((snapshot) => {
+        if (!cancelled) {
+          setStoreFileChangesSnapshot(activeSessionId, snapshot);
+        }
+      })
+      .catch(() => {
+        // Ignore if daemon does not support file_changes
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, setStoreFileChangesSnapshot]);
 
   const visibleFiles = React.useMemo<ChangedFileView[]>(() => {
     const files = statusQuery.data?.files ?? [];
@@ -288,8 +371,15 @@ export function useChanges() {
         path,
         sessionId: activeSessionId ?? undefined,
       }),
-    onSuccess: (_res, path) => {
+    onSuccess: (res, path) => {
+      if (!res.ok) {
+        setActionError(res.message ?? `Failed to keep changes in ${path}.`);
+        return;
+      }
       setActionError(null);
+      if (res.snapshot) {
+        applyFileChangesSnapshotToCache(res.snapshot);
+      }
       updateCachedStatus((prev) => ({
         ...prev,
         files: prev.files.map((f) =>
@@ -304,15 +394,21 @@ export function useChanges() {
   });
 
   const undoMutation = useMutation({
-    mutationFn: async (path: string) =>
+    mutationFn: async ({ path, force }: { path: string; force?: boolean }) =>
       callRpc("changes.undo", {
         path,
         sessionId: activeSessionId ?? undefined,
+        ...(force ? { force: true } : {}),
       }),
-    onSuccess: (res, path) => {
-      if (!res.ok || res.conflict) {
+    onSuccess: (res, { path }) => {
+      if (res.snapshot) {
+        applyFileChangesSnapshotToCache(res.snapshot);
+      }
+      if (!res.ok || res.conflict || (res.conflicts && res.conflicts.length > 0)) {
+        const conflictDetail = res.conflicts?.[0]?.reason;
         setActionError(
-          res.message ??
+          conflictDetail ??
+            res.message ??
             `Cannot auto-revert ${path}: manual edits were detected after the session snapshot.`,
         );
         return;
@@ -334,6 +430,63 @@ export function useChanges() {
           stagedCount: nextFiles.filter((f) => f.staged).length,
         };
       });
+    },
+  });
+
+  const keepAllMutation = useMutation({
+    mutationFn: async () =>
+      callRpc("changes.keepAll", {
+        sessionId: activeSessionId ?? undefined,
+      }),
+    onSuccess: (res) => {
+      if (res.snapshot) {
+        applyFileChangesSnapshotToCache(res.snapshot);
+      }
+      if (!res.ok) {
+        setActionError(res.message ?? "Unable to keep all session changes.");
+        return;
+      }
+      setActionError(null);
+    },
+  });
+
+  const undoAllMutation = useMutation({
+    mutationFn: async (force?: boolean) =>
+      callRpc("changes.undoAll", {
+        sessionId: activeSessionId ?? undefined,
+        ...(force ? { force: true } : {}),
+      }),
+    onSuccess: (res) => {
+      if (res.snapshot) {
+        applyFileChangesSnapshotToCache(res.snapshot);
+      }
+      if (!res.ok || res.conflict || (res.conflicts && res.conflicts.length > 0)) {
+        setActionError(
+          res.conflicts?.[0]?.reason ??
+            res.message ??
+            "Manual edits prevented undoing one or more files.",
+        );
+        return;
+      }
+      setActionError(null);
+    },
+  });
+
+  const redoAllMutation = useMutation({
+    mutationFn: async (force?: boolean) =>
+      callRpc("changes.redoAll", {
+        sessionId: activeSessionId ?? undefined,
+        ...(force ? { force: true } : {}),
+      }),
+    onSuccess: (res) => {
+      if (res.snapshot) {
+        applyFileChangesSnapshotToCache(res.snapshot);
+      }
+      if (!res.ok) {
+        setActionError(res.message ?? "Unable to redo session changes.");
+        return;
+      }
+      setActionError(null);
     },
   });
 
@@ -374,10 +527,28 @@ export function useChanges() {
   );
 
   const undoFile = React.useCallback(
-    async (path: string) => {
-      await undoMutation.mutateAsync(path);
+    async (path: string, force?: boolean) => {
+      await undoMutation.mutateAsync({ path, force });
     },
     [undoMutation],
+  );
+
+  const keepAllSession = React.useCallback(async () => {
+    await keepAllMutation.mutateAsync();
+  }, [keepAllMutation]);
+
+  const undoAllSession = React.useCallback(
+    async (force?: boolean) => {
+      await undoAllMutation.mutateAsync(force);
+    },
+    [undoAllMutation],
+  );
+
+  const redoAllSession = React.useCallback(
+    async (force?: boolean) => {
+      await redoAllMutation.mutateAsync(force);
+    },
+    [redoAllMutation],
   );
 
   const commitStaged = React.useCallback(
@@ -526,6 +697,7 @@ export function useChanges() {
 
   return {
     changes: statusQuery.data ?? null,
+    sessionSnapshot,
     files: visibleFiles,
     activeFile,
     activeDiff: (diffQuery.data as FileDiffView | undefined) ?? null,
@@ -548,7 +720,15 @@ export function useChanges() {
     isStaging: stageMutation.isPending,
     keepFile,
     undoFile,
-    isReviewing: keepMutation.isPending || undoMutation.isPending,
+    keepAllSession,
+    undoAllSession,
+    redoAllSession,
+    isReviewing:
+      keepMutation.isPending ||
+      undoMutation.isPending ||
+      keepAllMutation.isPending ||
+      undoAllMutation.isPending ||
+      redoAllMutation.isPending,
     commitStaged,
     isCommitting: commitMutation.isPending,
     lastCommit,

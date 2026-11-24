@@ -2264,6 +2264,28 @@ impl crate::tui::TuiState for App {
         self.commit_log_overlay.as_ref()
     }
 
+    fn file_changes(&self) -> Option<&crate::file_changes::FileChangesSnapshot> {
+        self.file_changes.as_ref()
+    }
+
+    fn file_changes_version(&self) -> u64 {
+        self.file_changes_version
+    }
+
+    fn expanded_file_change_paths(&self) -> Option<&std::collections::HashSet<String>> {
+        Some(&self.expanded_file_change_paths)
+    }
+
+    fn file_changes_receipt_expanded(&self) -> bool {
+        self.file_changes_receipt_expanded
+    }
+
+    fn file_review_overlay(
+        &self,
+    ) -> Option<&crate::tui::file_review_overlay::FileReviewOverlayState> {
+        self.file_review_overlay.as_ref()
+    }
+
     fn session_picker_overlay(
         &self,
     ) -> Option<&RefCell<crate::tui::session_picker::SessionPicker>> {

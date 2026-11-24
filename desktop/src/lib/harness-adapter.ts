@@ -1,5 +1,10 @@
 import type {
   ExecutionTurn,
+  FileChangeEntrySummary,
+  FileChangeHunk,
+  FileChangeKind,
+  FileChangesSnapshot,
+  FileChangeStatus,
   FileReadStep,
   InlineDiffCardData,
   ListStep,
@@ -60,6 +65,7 @@ export type MappedLiveTraceEvent =
       toolName: string
       description: string
     }
+  | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
   | { type: "duration"; workedDuration: string }
   | {
@@ -379,6 +385,110 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     startedAtMs: Date.now(),
     turnActive: false,
     batchEpoch: 1,
+  }
+}
+
+function normalizeFileChangeKind(value: unknown): FileChangeKind {
+  if (
+    value === "created" ||
+    value === "modified" ||
+    value === "deleted" ||
+    value === "renamed"
+  ) {
+    return value
+  }
+  return "modified"
+}
+
+function normalizeFileChangeStatus(value: unknown): FileChangeStatus {
+  if (value === "pending" || value === "kept" || value === "undone") {
+    return value
+  }
+  return "pending"
+}
+
+function normalizeFileChangeHunk(raw: unknown): FileChangeHunk | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  return {
+    old_start: typeof r.old_start === "number" ? r.old_start : 1,
+    old_lines: typeof r.old_lines === "number" ? r.old_lines : 0,
+    new_start: typeof r.new_start === "number" ? r.new_start : 1,
+    new_lines: typeof r.new_lines === "number" ? r.new_lines : 0,
+    header: typeof r.header === "string" ? r.header : "@@",
+    lines: Array.isArray(r.lines)
+      ? r.lines.filter((line): line is string => typeof line === "string")
+      : [],
+  }
+}
+
+function normalizeFileChangeEntry(raw: unknown): FileChangeEntrySummary | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const path = typeof r.path === "string" ? r.path : ""
+  if (!path) return null
+  const displayPath =
+    typeof r.display_path === "string" && r.display_path.trim()
+      ? r.display_path
+      : path
+  const previewHunks = Array.isArray(r.preview_hunks)
+    ? r.preview_hunks
+        .map(normalizeFileChangeHunk)
+        .filter((h): h is FileChangeHunk => h !== null)
+    : []
+  return {
+    path,
+    display_path: displayPath,
+    ...(typeof r.old_path === "string" ? { old_path: r.old_path } : {}),
+    kind: normalizeFileChangeKind(r.kind),
+    status: normalizeFileChangeStatus(r.status),
+    additions: typeof r.additions === "number" ? r.additions : 0,
+    deletions: typeof r.deletions === "number" ? r.deletions : 0,
+    changed_in_latest_turn: Boolean(r.changed_in_latest_turn),
+    turn_id: typeof r.turn_id === "number" ? r.turn_id : 0,
+    edit_count: typeof r.edit_count === "number" ? r.edit_count : 1,
+    is_binary: Boolean(r.is_binary),
+    undoable: r.undoable !== false,
+    can_redo: Boolean(r.can_redo),
+    preview_hunks: previewHunks,
+    preview_truncated: Boolean(r.preview_truncated),
+    updated_at_ms:
+      typeof r.updated_at_ms === "number" ? r.updated_at_ms : Date.now(),
+  }
+}
+
+export function normalizeFileChangesSnapshot(
+  raw: unknown,
+  fallbackSessionId = ""
+): FileChangesSnapshot | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const files = Array.isArray(r.files)
+    ? r.files
+        .map(normalizeFileChangeEntry)
+        .filter((entry): entry is FileChangeEntrySummary => entry !== null)
+    : []
+  const sessionId =
+    typeof r.session_id === "string" && r.session_id
+      ? r.session_id
+      : fallbackSessionId
+  const pendingFiles = files.filter((f) => f.status === "pending")
+  return {
+    session_id: sessionId,
+    latest_turn_id: typeof r.latest_turn_id === "number" ? r.latest_turn_id : 0,
+    total_pending_files:
+      typeof r.total_pending_files === "number"
+        ? r.total_pending_files
+        : pendingFiles.length,
+    total_additions:
+      typeof r.total_additions === "number"
+        ? r.total_additions
+        : files.reduce((sum, f) => sum + f.additions, 0),
+    total_deletions:
+      typeof r.total_deletions === "number"
+        ? r.total_deletions
+        : files.reduce((sum, f) => sum + f.deletions, 0),
+    files,
   }
 }
 
@@ -756,6 +866,13 @@ export function mapHarnessFrameToLiveEvents(
           description,
         },
       ]
+    }
+    case "file_changes_state": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      const snapshot = normalizeFileChangesSnapshot(frame.snapshot, sessionId)
+      if (!snapshot) return []
+      return [{ type: "file-changes", snapshot }]
     }
     case "token_usage": {
       const input = typeof frame.input === "number" ? frame.input : 0

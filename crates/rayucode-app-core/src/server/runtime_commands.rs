@@ -38,16 +38,38 @@ pub(super) async fn rayu_credits_data() -> Result<Value> {
         return Ok(json!({
             "configured": false,
             "source": "local",
+            "auth_method": "none",
+            "user": Value::Null,
             "message": "Log in to Rayu to fetch live credits and plan status."
         }));
     }
     let credential = crate::rayu::gateway_credential()
         .await
         .ok_or_else(|| anyhow::anyhow!("No Rayu credential is available"))?;
+    let auth_method = match crate::rayu::RayuAuthKind::from_credential(&credential) {
+        crate::rayu::RayuAuthKind::AccountJwt => "oauth",
+        crate::rayu::RayuAuthKind::ApiKey => "api_key",
+        crate::rayu::RayuAuthKind::Unknown => "none",
+    };
     let credits = crate::rayu::fetch_credits(&credential).await?;
+    let user = if auth_method == "oauth" {
+        crate::rayu::read_session().map(|session| {
+            json!({
+                "id": session.user.id,
+                "display_name": session.user.display_name,
+                "email": session.user.email,
+                "avatar_url": session.user.avatar_url,
+                "role": session.user.role,
+            })
+        })
+    } else {
+        None
+    };
     Ok(json!({
         "configured": true,
         "source": "live",
+        "auth_method": auth_method,
+        "user": user,
         "credits": {
             "plan": credits.plan,
             "plan_name": credits.plan_name,
@@ -58,6 +80,15 @@ pub(super) async fn rayu_credits_data() -> Result<Value> {
             "period_end": credits.period_end,
             "topup_balance": credits.topup_balance,
             "top_up_enabled": credits.top_up_enabled,
+            "credits_per_5h": credits.credits_per_5h,
+            "window_used_credits": credits.window_used_credits,
+            "window_remaining_credits": credits.window_remaining_credits,
+            "window_reset_seconds": credits.window_reset_seconds,
+            "session_window_minutes": credits.session_window_minutes,
+            "credits_per_week": credits.credits_per_week,
+            "week_used_credits": credits.week_used_credits,
+            "week_remaining_credits": credits.week_remaining_credits,
+            "week_reset_seconds": credits.week_reset_seconds,
             "limit_mode": credits.limit_mode,
             "api_key": credits.api_key.map(|limits| json!({
                 "key_id": limits.key_id,
@@ -887,5 +918,146 @@ mod tests {
         );
         assert!(role_args(&["--model".into()], "swarm").is_err());
         assert!(role_args(&["--continue".into(), "session".into()], "swarm").is_err());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn rayu_credits_data_reports_auth_method_user_and_pacing_windows() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let keys = [
+            "RAYU_AUTH_CONFIG_DIR",
+            "RAYU_HOME",
+            "RAYU_CONFIG_DIR",
+            "RAYU_API_KEY",
+            "RAYU_GATEWAY_URL",
+        ];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = keys
+            .iter()
+            .map(|key| (*key, std::env::var_os(key)))
+            .collect();
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    match value {
+                        Some(val) => crate::env::set_var(key, val),
+                        None => crate::env::remove_var(key),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(saved);
+        for key in keys {
+            crate::env::remove_var(key);
+        }
+        crate::env::set_var("RAYU_AUTH_CONFIG_DIR", temp.path());
+        crate::env::set_var("RAYU_HOME", temp.path());
+
+        // 1. Signed-out state reports auth_method = "none" and user = null.
+        let unconfigured = rayu_credits_data().await.unwrap();
+        assert_eq!(unconfigured["configured"], false);
+        assert_eq!(unconfigured["source"], "local");
+        assert_eq!(unconfigured["auth_method"], "none");
+        assert!(unconfigured["user"].is_null());
+
+        // Spawn a minimal loopback gateway serving GET /v1/credits twice.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let body = serde_json::to_string(&json!({
+                "plan": "plus",
+                "planName": "Plus",
+                "creditsPerPeriod": 5000.0,
+                "usedCredits": 1250.5,
+                "remainingCredits": 3749.5,
+                "resetSeconds": 86400,
+                "periodEnd": "2026-12-01T00:00:00Z",
+                "topupBalance": 250.0,
+                "topUpEnabled": true,
+                "creditsPer5h": 500.0,
+                "windowUsedCredits": 120.0,
+                "windowRemainingCredits": 380.0,
+                "windowResetSeconds": 7200,
+                "sessionWindowMinutes": 300,
+                "creditsPerWeek": 2000.0,
+                "weekUsedCredits": 600.0,
+                "weekRemainingCredits": 1400.0,
+                "weekResetSeconds": 259200,
+                "limitMode": "gated",
+                "apiKey": {
+                    "keyId": 99,
+                    "creditLimit": 1000.0,
+                    "allowedModels": ["claude-sonnet-4"],
+                    "rateLimitRpm": 60
+                }
+            }))
+            .unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                socket.write_all(response.as_bytes()).await.unwrap();
+                let _ = socket.shutdown().await;
+            }
+        });
+        crate::env::set_var("RAYU_GATEWAY_URL", format!("http://{addr}"));
+
+        // 2. OAuth session reports auth_method = "oauth", full user profile, and pacing windows.
+        let session = crate::rayu::RayuSession {
+            access_token: "jwt-access-token".into(),
+            refresh_token: "jwt-refresh-token".into(),
+            expires_at: chrono::Utc::now().timestamp_millis() + 3_600_000,
+            user: crate::rayu::RayuSessionUser {
+                id: 42,
+                email: Some("alice@example.invalid".into()),
+                display_name: Some("Alice".into()),
+                avatar_url: Some("https://example.invalid/alice.png".into()),
+                role: "member".into(),
+            },
+        };
+        crate::rayu::write_session(&session).unwrap();
+        let oauth_data = rayu_credits_data().await.unwrap();
+        assert_eq!(oauth_data["configured"], true);
+        assert_eq!(oauth_data["source"], "live");
+        assert_eq!(oauth_data["auth_method"], "oauth");
+        assert_eq!(oauth_data["user"]["id"], 42);
+        assert_eq!(oauth_data["user"]["display_name"], "Alice");
+        assert_eq!(oauth_data["user"]["email"], "alice@example.invalid");
+        assert_eq!(
+            oauth_data["user"]["avatar_url"],
+            "https://example.invalid/alice.png"
+        );
+        assert_eq!(oauth_data["user"]["role"], "member");
+        assert_eq!(oauth_data["credits"]["plan"], "plus");
+        assert_eq!(oauth_data["credits"]["credits_per_5h"], 500.0);
+        assert_eq!(oauth_data["credits"]["window_used_credits"], 120.0);
+        assert_eq!(oauth_data["credits"]["window_remaining_credits"], 380.0);
+        assert_eq!(oauth_data["credits"]["window_reset_seconds"], 7200);
+        assert_eq!(oauth_data["credits"]["session_window_minutes"], 300);
+        assert_eq!(oauth_data["credits"]["credits_per_week"], 2000.0);
+        assert_eq!(oauth_data["credits"]["week_used_credits"], 600.0);
+        assert_eq!(oauth_data["credits"]["week_remaining_credits"], 1400.0);
+        assert_eq!(oauth_data["credits"]["week_reset_seconds"], 259200);
+
+        // 3. API-key-only auth reports auth_method = "api_key" and user = null.
+        crate::rayu::clear_session();
+        crate::env::set_var("RAYU_API_KEY", "rayu_sk_live_credits_test_key");
+        let apikey_data = rayu_credits_data().await.unwrap();
+        assert_eq!(apikey_data["configured"], true);
+        assert_eq!(apikey_data["auth_method"], "api_key");
+        assert!(apikey_data["user"].is_null());
+        assert_eq!(apikey_data["credits"]["api_key"]["key_id"], 99);
+        assert_eq!(apikey_data["credits"]["credits_per_5h"], 500.0);
+        assert_eq!(apikey_data["credits"]["credits_per_week"], 2000.0);
+
+        server.await.unwrap();
     }
 }

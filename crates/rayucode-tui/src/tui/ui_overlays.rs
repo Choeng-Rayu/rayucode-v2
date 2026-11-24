@@ -320,6 +320,22 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Show branch and working tree status for the repo",
     ));
     lines.push(help_entry(
+        "/changes [path]",
+        "Open interactive file changes review overlay (Alt+R)",
+    ));
+    lines.push(help_entry(
+        "/keep [path|all]",
+        "Keep tracked file changes for this session",
+    ));
+    lines.push(help_entry(
+        "/undo [--force] [path|all]",
+        "Revert tracked file changes (latest pending if no arg)",
+    ));
+    lines.push(help_entry(
+        "/redo [path|all]",
+        "Re-apply undone file changes",
+    ));
+    lines.push(help_entry(
         "/context",
         "Show the full session context snapshot",
     ));
@@ -620,6 +636,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(key_entry(
         "/diff",
         "Cycle diff mode (Off/Inline/Pinned/File)",
+    ));
+    lines.push(key_entry(
+        &alt("R"),
+        "Open interactive file changes review overlay",
     ));
     lines.push(key_entry(&alt("G"), "Show the project's git commit log"));
     lines.push(key_entry("Shift+Tab", "Cycle favorited models"));

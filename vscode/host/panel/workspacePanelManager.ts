@@ -15,6 +15,7 @@ import {
   type WebviewToHostMessage,
   type WorkspaceFolderView,
 } from "../../shared/vscodeProtocol.js";
+import type { RayuHostAuthManager } from "../auth/rayuHostAuthManager.js";
 import type { EditorBridge } from "../bridges/editorBridge.js";
 import type { GitChangesBridge } from "../bridges/gitChangesBridge.js";
 import type { BridgeManager } from "../runtime/bridgeManager.js";
@@ -47,6 +48,7 @@ export class WorkspacePanelManager
     private readonly featureRouter: FeatureRouter,
     private readonly editorBridge: EditorBridge,
     private readonly gitBridge: GitChangesBridge,
+    private readonly authManager?: RayuHostAuthManager,
   ) {
     this.disposables.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -354,6 +356,12 @@ export class WorkspacePanelManager
       const route = initialNav?.route ?? this.currentRoute;
       const sessionId =
         initialNav?.sessionId ?? this.sessionHub.getActiveSessionId();
+      const accountStatus = this.authManager
+        ? this.authManager.getAccountStatusSnapshot()
+        : undefined;
+      const fileChanges = sessionId
+        ? (this.sessionHub.getFileChangesSnapshot(sessionId) ?? null)
+        : null;
 
       postToSurface({
         type: "rayucode.host.init",
@@ -370,6 +378,8 @@ export class WorkspacePanelManager
         workspaces,
         editorSelection: this.editorBridge.getSelection(),
         backgroundTasks: this.sessionHub.getBackgroundTasks(),
+        ...(accountStatus ? { accountStatus } : {}),
+        fileChanges,
       });
 
       if (initialNav?.openProcessesDrawer) {
@@ -435,6 +445,9 @@ export class WorkspacePanelManager
       case "rayucode.webview.ready": {
         await sendInit();
         void this.bridgeManager.ensureConnected().catch(() => {});
+        if (this.authManager?.getAccountStatusSnapshot().signedIn) {
+          void this.authManager.getAccountStatus(false).catch(() => {});
+        }
         break;
       }
       case "rayucode.rpc.call": {
@@ -481,15 +494,21 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openDiff": {
-        const diff = await this.gitBridge.getDiff({
+        const resolvedSessionId =
+          message.sessionId ?? this.sessionHub.getActiveSessionId();
+        const diff = await this.featureRouter.call("changes.diff", {
           path: message.path,
-          sessionId: message.sessionId,
+          sessionId: resolvedSessionId,
           scope: message.scope,
         });
         await this.editorBridge.openDiff({
-          path: message.path,
+          path: diff.path || message.path,
           originalContent: diff.originalContent,
           modifiedContent: diff.modifiedContent,
+          sessionId: resolvedSessionId,
+          scope: message.scope,
+          isCreated: diff.kind === "created",
+          isDeleted: diff.kind === "deleted",
         });
         break;
       }

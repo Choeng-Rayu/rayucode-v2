@@ -574,6 +574,81 @@ export interface ChangesState {
   files: ChangedFileDiff[]
 }
 
+export type FileChangeKind = "created" | "modified" | "deleted" | "renamed"
+export type FileChangeStatus = "pending" | "kept" | "undone"
+export type FileChangeActionKind =
+  | "keep"
+  | "undo"
+  | "redo"
+  | "keep_all"
+  | "undo_all"
+  | "redo_all"
+
+export interface FileChangeHunk {
+  old_start: number
+  old_lines: number
+  new_start: number
+  new_lines: number
+  header: string
+  lines: string[]
+}
+
+export interface FileChangeEntrySummary {
+  path: string
+  display_path: string
+  old_path?: string
+  kind: FileChangeKind
+  status: FileChangeStatus
+  additions: number
+  deletions: number
+  changed_in_latest_turn: boolean
+  turn_id: number
+  edit_count: number
+  is_binary: boolean
+  undoable: boolean
+  can_redo: boolean
+  preview_hunks?: FileChangeHunk[]
+  preview_truncated?: boolean
+  updated_at_ms: number
+}
+
+export interface FileChangesSnapshot {
+  session_id: string
+  latest_turn_id: number
+  total_pending_files: number
+  total_additions: number
+  total_deletions: number
+  files: FileChangeEntrySummary[]
+}
+
+export interface FileChangeDiffPayload {
+  path: string
+  display_path: string
+  old_path?: string
+  kind: FileChangeKind
+  status: FileChangeStatus
+  additions: number
+  deletions: number
+  is_binary: boolean
+  original_content: string
+  modified_content: string
+  unified_diff: string
+  hunks: FileChangeHunk[]
+}
+
+export interface FileChangeConflict {
+  path: string
+  display_path: string
+  reason: string
+}
+
+export interface FileChangeActionResponse {
+  ok: boolean
+  message: string
+  conflicts: FileChangeConflict[]
+  snapshot: FileChangesSnapshot
+}
+
 export interface TelegramApprovalItem {
   id: string
   toolBadge: string
@@ -2440,6 +2515,135 @@ const mockDaemonStatus: DaemonStatus = {
   latencyMs: 2,
 }
 
+function createEmptyFileChangesSnapshot(sessionId: string): FileChangesSnapshot {
+  return {
+    session_id: sessionId,
+    latest_turn_id: 0,
+    total_pending_files: 0,
+    total_additions: 0,
+    total_deletions: 0,
+    files: [],
+  }
+}
+
+function recalcFileChangesSnapshot(
+  snapshot: FileChangesSnapshot
+): FileChangesSnapshot {
+  const pending = snapshot.files.filter((f) => f.status === "pending")
+  return {
+    ...snapshot,
+    total_pending_files: pending.length,
+    total_additions: snapshot.files.reduce((sum, f) => sum + f.additions, 0),
+    total_deletions: snapshot.files.reduce((sum, f) => sum + f.deletions, 0),
+  }
+}
+
+const mockFileChangesBySession: Record<string, FileChangesSnapshot> = {
+  ses_retire_cache: {
+    session_id: "ses_retire_cache",
+    latest_turn_id: 3,
+    total_pending_files: 3,
+    total_additions: 26,
+    total_deletions: 55,
+    files: [
+      {
+        path: "src/session/lookup.rs",
+        display_path: "src/session/lookup.rs",
+        kind: "modified",
+        status: "pending",
+        additions: 12,
+        deletions: 7,
+        changed_in_latest_turn: true,
+        turn_id: 3,
+        edit_count: 2,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [
+          {
+            old_start: 18,
+            old_lines: 5,
+            new_start: 18,
+            new_lines: 7,
+            header: "@@ -18,5 +18,7 @@ impl SessionLookup {",
+            lines: [
+              "     pub fn get(&self, key: &SessionKey) -> Option<Session> {",
+              "-        self.cache.read().get(key).cloned()",
+              "+        let hit = self.shards.lookup(key)?;",
+              "+        self.budget.touch(key);",
+              "+        Some(hit)",
+              "     }",
+            ],
+          },
+        ],
+        preview_truncated: false,
+        updated_at_ms: 1_764_000_000_000,
+      },
+      {
+        path: "src/session/cache.rs",
+        display_path: "src/session/cache.rs",
+        kind: "deleted",
+        status: "pending",
+        additions: 0,
+        deletions: 48,
+        changed_in_latest_turn: true,
+        turn_id: 3,
+        edit_count: 1,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [
+          {
+            old_start: 1,
+            old_lines: 4,
+            new_start: 0,
+            new_lines: 0,
+            header: "@@ -1,4 +0,0 @@",
+            lines: [
+              "-//! Legacy in-memory SessionCache (replaced by ShardStore::lookup)",
+              "-pub struct SessionCache {",
+              "-    map: RwLock<HashMap<SessionId, Session>>,",
+              "-}",
+            ],
+          },
+        ],
+        preview_truncated: true,
+        updated_at_ms: 1_763_999_990_000,
+      },
+      {
+        path: "MIGRATION_PLAN.md",
+        display_path: "MIGRATION_PLAN.md",
+        kind: "created",
+        status: "pending",
+        additions: 14,
+        deletions: 0,
+        changed_in_latest_turn: false,
+        turn_id: 2,
+        edit_count: 1,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [
+          {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: 3,
+            header: "@@ -0,0 +1,3 @@",
+            lines: [
+              "+# SessionCache Retirement & ShardStore Migration",
+              "+- [x] Route reads through ShardStore::lookup with CacheBudget",
+              "+- [x] Verify 14 session:: unit tests and -38% RSS reduction",
+            ],
+          },
+        ],
+        preview_truncated: false,
+        updated_at_ms: 1_763_999_940_000,
+      },
+    ],
+  },
+}
+
 // ============================================================================
 // Window Bridge Interface & Typed Client
 // ============================================================================
@@ -2582,6 +2786,18 @@ export interface RayuBridgeApi {
       args?: string[]
     ) => Promise<{ command: string; data: unknown; message: string }>
     onEvent?: (cb: (frame: Record<string, unknown>) => void) => () => void
+  }
+  fileChanges?: {
+    get?: (sessionId: string) => Promise<FileChangesSnapshot>
+    diff?: (
+      sessionId: string,
+      filePath: string
+    ) => Promise<FileChangeDiffPayload | null>
+    action?: (
+      sessionId: string,
+      action: FileChangeActionKind,
+      opts?: { path?: string; force?: boolean }
+    ) => Promise<FileChangeActionResponse>
   }
   workspace?: {
     getInfo?: () => Promise<WorkspaceInfo>
@@ -5415,6 +5631,149 @@ export const ipcClient = {
         return bridge.browser.onEnsureOpen(listener)
       }
       return () => {}
+    },
+  },
+
+  fileChanges: {
+    async get(sessionId: string): Promise<FileChangesSnapshot> {
+      if (!sessionId) {
+        return createEmptyFileChangesSnapshot("")
+      }
+      const bridge = getBridge()
+      if (
+        bridge?.fileChanges?.get &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        try {
+          return await bridge.fileChanges.get(sessionId)
+        } catch {
+          return createEmptyFileChangesSnapshot(sessionId)
+        }
+      }
+      const existing = mockFileChangesBySession[sessionId]
+      if (existing) {
+        return structuredClone(existing)
+      }
+      return createEmptyFileChangesSnapshot(sessionId)
+    },
+
+    async diff(
+      sessionId: string,
+      filePath: string
+    ): Promise<FileChangeDiffPayload | null> {
+      if (!sessionId || !filePath) return null
+      const bridge = getBridge()
+      if (
+        bridge?.fileChanges?.diff &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        try {
+          return await bridge.fileChanges.diff(sessionId, filePath)
+        } catch {
+          return null
+        }
+      }
+      const snap = mockFileChangesBySession[sessionId]
+      const entry = snap?.files.find(
+        (f) => f.path === filePath || f.display_path === filePath
+      )
+      if (!entry) return null
+      const originalLines: string[] = []
+      const modifiedLines: string[] = []
+      const diffParts: string[] = [
+        `--- a/${entry.old_path ?? entry.display_path}`,
+        `+++ b/${entry.display_path}`,
+      ]
+      const entryHunks = entry.preview_hunks ?? []
+      for (const hunk of entryHunks) {
+        diffParts.push(hunk.header)
+        for (const line of hunk.lines) {
+          diffParts.push(line)
+          if (line.startsWith("-")) {
+            originalLines.push(line.slice(1))
+          } else if (line.startsWith("+")) {
+            modifiedLines.push(line.slice(1))
+          } else {
+            const body = line.startsWith(" ") ? line.slice(1) : line
+            originalLines.push(body)
+            modifiedLines.push(body)
+          }
+        }
+      }
+      return {
+        path: entry.path,
+        display_path: entry.display_path,
+        ...(entry.old_path ? { old_path: entry.old_path } : {}),
+        kind: entry.kind,
+        status: entry.status,
+        additions: entry.additions,
+        deletions: entry.deletions,
+        is_binary: entry.is_binary,
+        original_content: originalLines.join("\n"),
+        modified_content: modifiedLines.join("\n"),
+        unified_diff: diffParts.join("\n"),
+        hunks: structuredClone(entryHunks),
+      }
+    },
+
+    async action(
+      sessionId: string,
+      action: FileChangeActionKind,
+      opts?: { path?: string; force?: boolean }
+    ): Promise<FileChangeActionResponse> {
+      const bridge = getBridge()
+      if (
+        bridge?.fileChanges?.action &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        return bridge.fileChanges.action(sessionId, action, opts)
+      }
+      const existing =
+        mockFileChangesBySession[sessionId] ??
+        createEmptyFileChangesSnapshot(sessionId)
+      const targetPath = opts?.path
+      const nextFiles = existing.files.map((entry) => {
+        const matches =
+          !targetPath ||
+          entry.path === targetPath ||
+          entry.display_path === targetPath
+        if (!matches) return entry
+        if (action === "keep" || action === "keep_all") {
+          if (entry.status !== "pending") return entry
+          return { ...entry, status: "kept" as const, can_redo: false }
+        }
+        if (action === "undo" || action === "undo_all") {
+          if (entry.status !== "pending" || !entry.undoable) return entry
+          return { ...entry, status: "undone" as const, can_redo: true }
+        }
+        if (action === "redo" || action === "redo_all") {
+          if (entry.status !== "undone" || !entry.can_redo) return entry
+          return { ...entry, status: "pending" as const, can_redo: false }
+        }
+        return entry
+      })
+      const updated = recalcFileChangesSnapshot({
+        ...existing,
+        files: nextFiles,
+      })
+      mockFileChangesBySession[sessionId] = updated
+      const messageMap: Record<FileChangeActionKind, string> = {
+        keep: targetPath ? `Kept ${targetPath}` : "Kept file",
+        undo: targetPath ? `Undid ${targetPath}` : "Undid file",
+        redo: targetPath ? `Redid ${targetPath}` : "Redid file",
+        keep_all: "Kept all changed files",
+        undo_all: "Undid all changed files",
+        redo_all: "Redid all undone files",
+      }
+      return {
+        ok: true,
+        message: messageMap[action],
+        conflicts: [],
+        snapshot: structuredClone(updated),
+      }
     },
   },
 }

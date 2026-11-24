@@ -973,6 +973,7 @@ impl App {
                 true
             }
             MouseScrollTarget::CommitLogOverlay => self.scroll_commit_log_overlay(direction),
+            MouseScrollTarget::FileReviewOverlay => self.scroll_file_review_overlay(direction),
             MouseScrollTarget::ModelStatusOverlay => {
                 let Some(current) = self.model_status_scroll else {
                     return false;
@@ -1359,6 +1360,11 @@ impl App {
                 self.close_panel_image_preview();
             }
             finish_mouse_event!(false, "panel_image_preview");
+        }
+
+        if !question_active && self.file_review_overlay.is_some() {
+            let scroll_only = self.handle_file_review_overlay_mouse(mouse);
+            finish_mouse_event!(scroll_only, "file_review_overlay");
         }
 
         if !question_active && self.commit_log_overlay.is_some() {
@@ -1801,6 +1807,15 @@ impl App {
             && self.try_toggle_swarm_expand_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "toggle_swarm_expand");
+        }
+
+        if !question_active
+            && matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && let Some(target) =
+                crate::tui::ui::file_changes_card::hit_target_at(mouse.column, mouse.row)
+        {
+            self.handle_file_change_card_click(target);
+            finish_mouse_event!(false, "file_change_card_click");
         }
 
         if !question_active

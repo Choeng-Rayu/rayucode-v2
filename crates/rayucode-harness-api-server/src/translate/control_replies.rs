@@ -37,6 +37,12 @@ pub(super) enum SimpleKind {
         session_id: String,
         mode: rayucode_harness_api::PermissionMode,
     },
+    /// Awaiting `file_changes_state` reply for `get_file_changes`.
+    FileChanges,
+    /// Awaiting `file_change_diff` reply for `get_file_change_diff`.
+    FileChangeDiff,
+    /// Awaiting `file_change_action_result` reply for `file_change_action`.
+    FileChangeAction,
     Credential {
         provider: String,
         configured: bool,
@@ -57,6 +63,9 @@ impl BridgeState {
                         SimpleKind::Tools
                             | SimpleKind::ToolControl
                             | SimpleKind::SetPermissionMode { .. }
+                            | SimpleKind::FileChanges
+                            | SimpleKind::FileChangeDiff
+                            | SimpleKind::FileChangeAction
                             | SimpleKind::OkOnDone
                             | SimpleKind::OkOnHistory
                     )

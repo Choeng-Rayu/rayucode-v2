@@ -337,6 +337,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     session.ensure_initial_session_context_message();
     app.session = session;
     clear_side_panel_for_new_session(app);
+    app.clear_file_changes_state();
     app.provider_session_id = None;
 }
 

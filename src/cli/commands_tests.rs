@@ -40,6 +40,90 @@ fn run_auto_poke_default_skips_quality_reviews_but_keeps_unfinished_work() {
 }
 
 #[test]
+fn headless_file_changes_summary_formats_pending_only() {
+    use crate::file_changes::{
+        FileChangeEntrySummary, FileChangeKind, FileChangeStatus, FileChangesSnapshot,
+    };
+
+    let empty = FileChangesSnapshot {
+        session_id: "ses_cli_1".into(),
+        latest_turn_id: 1,
+        total_pending_files: 0,
+        total_additions: 5,
+        total_deletions: 1,
+        files: vec![FileChangeEntrySummary {
+            path: "/repo/a.rs".into(),
+            display_path: "a.rs".into(),
+            old_path: None,
+            kind: FileChangeKind::Modified,
+            status: FileChangeStatus::Kept,
+            additions: 5,
+            deletions: 1,
+            changed_in_latest_turn: true,
+            turn_id: 1,
+            edit_count: 1,
+            is_binary: false,
+            undoable: false,
+            can_redo: false,
+            preview_hunks: Vec::new(),
+            preview_truncated: false,
+            updated_at_ms: 1,
+        }],
+    };
+    assert!(format_headless_file_changes_summary(&empty).is_none());
+
+    let pending = FileChangesSnapshot {
+        session_id: "ses_cli_2".into(),
+        latest_turn_id: 2,
+        total_pending_files: 2,
+        total_additions: 14,
+        total_deletions: 3,
+        files: vec![
+            FileChangeEntrySummary {
+                path: "/repo/src/a.rs".into(),
+                display_path: "src/a.rs".into(),
+                old_path: None,
+                kind: FileChangeKind::Modified,
+                status: FileChangeStatus::Pending,
+                additions: 10,
+                deletions: 3,
+                changed_in_latest_turn: true,
+                turn_id: 2,
+                edit_count: 1,
+                is_binary: false,
+                undoable: true,
+                can_redo: false,
+                preview_hunks: Vec::new(),
+                preview_truncated: false,
+                updated_at_ms: 2,
+            },
+            FileChangeEntrySummary {
+                path: "/repo/src/b.rs".into(),
+                display_path: "src/b.rs".into(),
+                old_path: None,
+                kind: FileChangeKind::Created,
+                status: FileChangeStatus::Pending,
+                additions: 4,
+                deletions: 0,
+                changed_in_latest_turn: true,
+                turn_id: 2,
+                edit_count: 1,
+                is_binary: false,
+                undoable: true,
+                can_redo: false,
+                preview_hunks: Vec::new(),
+                preview_truncated: false,
+                updated_at_ms: 2,
+            },
+        ],
+    };
+    assert_eq!(
+        format_headless_file_changes_summary(&pending).as_deref(),
+        Some("Changed 2 files (+14 −3): src/a.rs, src/b.rs — inspect with rayu --resume ses_cli_2")
+    );
+}
+
+#[test]
 fn run_report_names_local_profile_instead_of_openrouter_slot() {
     // Ollama/LM Studio share the OpenRouter transport slot (#804).
     assert_eq!(

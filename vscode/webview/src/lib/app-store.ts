@@ -7,6 +7,7 @@ import type {
   DaemonStatusView,
   DensityPreference,
   EditorSelectionView,
+  FileChangesSnapshotView,
   HostToWebviewMessage,
   SurfaceKind,
   ThemePreference,
@@ -107,6 +108,7 @@ export interface AppStoreState {
   chatCollapsedByRight: boolean;
   backgroundDrawerOpen: boolean;
   backgroundTasks: BackgroundProcessView[];
+  fileChangesBySession: Record<string, FileChangesSnapshotView>;
 
   // Daemon, Auth & Notifications
   daemonStatus: DaemonStatusView;
@@ -161,6 +163,10 @@ export interface AppStoreState {
   setBackgroundDrawerOpen: (open: boolean) => void;
   toggleBackgroundDrawer: () => void;
   setBackgroundTasks: (tasks: BackgroundProcessView[]) => void;
+  setFileChangesSnapshot: (
+    sessionId: string,
+    snapshot: FileChangesSnapshotView,
+  ) => void;
 
   setDaemonStatus: (status: DaemonStatusView) => void;
   setAccountStatus: (status: AccountStatusView | null) => void;
@@ -359,6 +365,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   chatCollapsedByRight: false,
   backgroundDrawerOpen: false,
   backgroundTasks: [],
+  fileChangesBySession: {},
 
   daemonStatus: DEFAULT_DAEMON_STATUS,
   capabilities: [],
@@ -677,6 +684,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setBackgroundTasks: (backgroundTasks) => set({ backgroundTasks }),
 
+  setFileChangesSnapshot: (sessionId, snapshot) =>
+    set((state) => ({
+      fileChangesBySession: {
+        ...state.fileChangesBySession,
+        [sessionId]: snapshot,
+      },
+    })),
+
   setDaemonStatus: (daemonStatus) =>
     set({ daemonStatus, capabilities: daemonStatus.capabilities }),
 
@@ -772,6 +787,32 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
               ? msg.editorSelection
               : state.editorSelection,
           backgroundTasks: msg.backgroundTasks ?? state.backgroundTasks,
+          ...(msg.sessionId && msg.fileChanges
+            ? {
+                fileChangesBySession: {
+                  ...state.fileChangesBySession,
+                  [msg.sessionId]: msg.fileChanges,
+                },
+              }
+            : {}),
+          ...(msg.accountStatus !== undefined
+            ? {
+                accountStatus: msg.accountStatus,
+                authLoaded: true,
+                ...(msg.accountStatus.signedIn
+                  ? { authBypassed: false, authDialogOpen: false }
+                  : {}),
+              }
+            : {}),
+        }));
+        return;
+      }
+      case "rayucode.account.changed": {
+        set((state) => ({
+          accountStatus: msg.account,
+          authLoaded: true,
+          authBypassed: msg.account.signedIn ? false : state.authBypassed,
+          authDialogOpen: msg.account.signedIn ? false : state.authDialogOpen,
         }));
         return;
       }
@@ -810,6 +851,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         return;
       case "rayucode.processes.snapshot":
         set({ backgroundTasks: msg.tasks });
+        return;
+      case "rayucode.fileChanges.updated":
+        set((state) => ({
+          fileChangesBySession: {
+            ...state.fileChangesBySession,
+            [msg.sessionId]: msg.snapshot,
+          },
+        }));
         return;
       case "rayucode.ui.navigate": {
         if (msg.sessionId) {

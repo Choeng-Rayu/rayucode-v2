@@ -917,6 +917,42 @@ impl RemoteConnection {
         Ok(id)
     }
 
+    /// Fetch the attached session's current tracked file-changes snapshot.
+    pub async fn get_file_changes(&mut self) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::GetFileChanges { id }).await?;
+        Ok(id)
+    }
+
+    /// Fetch the full structured diff for one tracked file path.
+    pub async fn get_file_change_diff(&mut self, path: String) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::GetFileChangeDiff { id, path })
+            .await?;
+        Ok(id)
+    }
+
+    /// Apply a keep/undo/redo/keep_all/undo_all/redo_all action on tracked file changes.
+    pub async fn file_change_action(
+        &mut self,
+        action: crate::file_changes::FileChangeActionKind,
+        path: Option<String>,
+        force: bool,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::FileChangeAction {
+            id,
+            action,
+            path,
+            force,
+        })
+        .await?;
+        Ok(id)
+    }
+
     /// Ask the server for the fully route-expanded model catalog.
     ///
     /// The bootstrap `History` payload deliberately ships model *names* only

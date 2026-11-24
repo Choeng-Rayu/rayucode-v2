@@ -101,7 +101,11 @@ export function SettingsView({
     refreshAccount,
     isRefreshingAccount,
     signInBrowser,
+    cancelSignIn,
+    signInApiKey,
+    completeCallback,
     signOut,
+    isSigningOut,
     setBypassPacing,
     setProviderApiKey,
     clearProviderApiKey,
@@ -417,7 +421,11 @@ export function SettingsView({
                     onRefreshAccount={refreshAccount}
                     isRefreshingAccount={isRefreshingAccount}
                     onSignInBrowser={signInBrowser}
+                    onCancelSignIn={cancelSignIn}
+                    onSignInApiKey={signInApiKey}
+                    onCompleteCallback={completeCallback}
                     onSignOut={signOut}
+                    isSigningOut={isSigningOut}
                     onSetBypassPacing={setBypassPacing}
                     onSetProviderApiKey={setProviderApiKey}
                     onClearProviderApiKey={clearProviderApiKey}

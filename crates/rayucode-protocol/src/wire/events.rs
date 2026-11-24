@@ -759,6 +759,9 @@ pub enum ServerEvent {
         /// Session-scoped agent applet instances.
         #[serde(default, skip_serializing_if = "applets_is_empty")]
         applets: rayucode_applet_types::AgentApplets,
+        /// Session-scoped file changes awaiting or completed in review.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_changes: Option<rayucode_session_types::FileChangesSnapshot>,
     },
 
     /// Expanded compacted-history window (response to GetCompactedHistory).
@@ -785,6 +788,26 @@ pub enum ServerEvent {
     AppletState {
         session_id: String,
         snapshot: rayucode_applet_types::AgentApplets,
+    },
+
+    /// Session file changes snapshot updated (after tool edits, turn exit, or review action).
+    #[serde(rename = "file_changes_state")]
+    FileChangesState {
+        snapshot: rayucode_session_types::FileChangesSnapshot,
+    },
+
+    /// Full diff payload for one tracked file change (response to `get_file_change_diff`).
+    #[serde(rename = "file_change_diff")]
+    FileChangeDiff {
+        id: u64,
+        diff: rayucode_session_types::FileChangeDiffPayload,
+    },
+
+    /// Result of a `file_change_action` review request.
+    #[serde(rename = "file_change_action_result")]
+    FileChangeActionResult {
+        id: u64,
+        response: rayucode_session_types::FileChangeActionResponse,
     },
 
     /// Server is reloading (clients should reconnect)

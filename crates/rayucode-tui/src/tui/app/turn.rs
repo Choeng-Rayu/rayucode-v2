@@ -72,6 +72,7 @@ impl App {
         let mut redraw_interval = super::run_shell::redraw_timer(redraw_period);
         let mut status_spinner_interval = super::run_shell::status_spinner_interval();
         let mut status_spinner_renderer = super::run_shell::StatusSpinnerRenderer::default();
+        crate::file_changes::begin_turn(&self.session.id);
 
         'turn_loop: loop {
             self.streaming.response_output.reset();
@@ -199,6 +200,7 @@ impl App {
                                         self.clear_pending_tool_calls();
                                         self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
+                                        self.refresh_local_file_changes();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
                                         return Ok(());
                                     }
@@ -450,6 +452,7 @@ impl App {
                                         self.finish_turn_footer(crate::tui::TurnFooterOutcome::Interrupted);
                                         self.streaming.streaming_rayu_credits.reset();
                                         self.schedule_queued_dispatch_after_interrupt();
+                                        self.refresh_local_file_changes();
                                         self.push_display_message(DisplayMessage::system("Interrupted"));
                                         return Ok(());
                                     }
@@ -1558,6 +1561,7 @@ impl App {
                                             self.interrupt_pending_tools();
                                             self.batch_progress = None;
                                             self.schedule_queued_dispatch_after_interrupt();
+                                            self.refresh_local_file_changes();
                                             self.push_display_message(DisplayMessage::system("Interrupted"));
                                             return Ok(());
                                         }
@@ -1723,6 +1727,7 @@ impl App {
                 self.observe_tool_result(&tc, &output, is_error, tool_title.as_deref());
                 self.note_tool_completed(&tc, is_error);
                 self.note_todo_gate_result(&tc, &output, is_error);
+                self.refresh_local_file_changes();
                 let _ = self.session.save();
             }
 

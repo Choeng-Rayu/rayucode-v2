@@ -78,6 +78,7 @@ mod copy_selection;
 mod debug;
 mod dictation;
 mod event_wrappers;
+mod file_changes;
 mod handterm_native_scroll;
 pub(crate) mod helpers;
 mod hotkey_feedback;
@@ -653,6 +654,7 @@ pub(super) enum MouseScrollTarget {
     ChangelogOverlay,
     ModelStatusOverlay,
     CommitLogOverlay,
+    FileReviewOverlay,
     /// The right-hand preview pane of the /resume session picker overlay.
     SessionPickerPreview,
 }
@@ -1838,6 +1840,21 @@ pub struct App {
     model_status_content: String,
     /// Commit log overlay (None = not visible)
     commit_log_overlay: Option<commit_log::CommitLogOverlay>,
+    /// Tracked session file-change snapshot for inline summary card & overlay
+    file_changes: Option<crate::file_changes::FileChangesSnapshot>,
+    /// Monotonic version bumped whenever file-change snapshot or expansion state changes
+    file_changes_version: u64,
+    /// Canonical file paths whose inline preview hunks are currently expanded in the card
+    expanded_file_change_paths: HashSet<String>,
+    /// Whether a resolved 1-line file-changes receipt has been manually expanded
+    file_changes_receipt_expanded: bool,
+    /// Interactive File Review Overlay (`Alt+R` / `/changes` / `[Diff]`)
+    file_review_overlay: Option<super::file_review_overlay::FileReviewOverlayState>,
+    /// Queued remote file-change wire requests produced by synchronous UI handlers
+    pending_remote_file_change_requests:
+        std::collections::VecDeque<file_changes::PendingRemoteFileChangeRequest>,
+    /// In-flight remote file-change request IDs so error replies stay scoped to review UI
+    pending_remote_file_change_request_ids: HashSet<u64>,
     /// Session picker overlay (None = not visible)
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
     session_picker_mode: SessionPickerMode,

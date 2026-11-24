@@ -20,7 +20,10 @@ import {
   TechFileBadge,
 } from "@/components/ui";
 import { cn, postToHost, useAppStore } from "@/lib";
-import type { SessionSummaryView } from "@shared/vscodeProtocol";
+import type {
+  FileChangesSnapshotView,
+  SessionSummaryView,
+} from "@shared/vscodeProtocol";
 
 import type {
   ChatTurnView,
@@ -35,6 +38,7 @@ import {
 import { EditorialMarkdown } from "./EditorialMarkdown";
 import { InlineDiffCard } from "./InlineDiffCard";
 import { TurnActions } from "./TurnActions";
+import { TurnFileSummaryCard } from "./TurnFileSummaryCard";
 import { WorkTrace } from "./WorkTrace";
 
 function formatTurnResponseMarkdown(turn: ChatTurnView): string {
@@ -60,6 +64,8 @@ function formatTurnResponseMarkdown(turn: ChatTurnView): string {
 
 interface TurnViewProps {
   turn: ChatTurnView;
+  fileChangesSnapshot?: FileChangesSnapshotView | null;
+  onFileChangesUpdated?: (snapshot: FileChangesSnapshotView) => void;
   onForked?: (session: SessionSummaryView) => void;
   onPinToggled?: (turnId: string, pinned: boolean) => void;
   onRetry?: (turnId: string) => void;
@@ -69,6 +75,8 @@ interface TurnViewProps {
 
 function TurnView({
   turn,
+  fileChangesSnapshot,
+  onFileChangesUpdated,
   onForked,
   onPinToggled,
   onRetry,
@@ -82,7 +90,11 @@ function TurnView({
 
   const hasAnswer =
     turn.answerIntro.trim().length > 0 || turn.answerBullets.length > 0;
-  const hasPrimaryDiff = turn.diffCard && turn.diffCard.lines.length > 0;
+  const hasFileSummary = Boolean(
+    fileChangesSnapshot && fileChangesSnapshot.files.length > 0,
+  );
+  const hasPrimaryDiff =
+    !hasFileSummary && Boolean(turn.diffCard && turn.diffCard.lines.length > 0);
 
   return (
     <article
@@ -245,9 +257,10 @@ function TurnView({
           <InlineDiffCard diff={turn.diffCard} sessionId={turn.sessionId} />
         )}
 
-        {turn.diffCards?.map((dc) => (
-          <InlineDiffCard key={dc.id} diff={dc} sessionId={turn.sessionId} />
-        ))}
+        {!hasFileSummary &&
+          turn.diffCards?.map((dc) => (
+            <InlineDiffCard key={dc.id} diff={dc} sessionId={turn.sessionId} />
+          ))}
 
         {turn.artifacts && turn.artifacts.length > 0 && (
           <div className="flex flex-col gap-2">
@@ -332,6 +345,14 @@ function TurnView({
           </div>
         )}
 
+        {fileChangesSnapshot && fileChangesSnapshot.files.length > 0 && (
+          <TurnFileSummaryCard
+            snapshot={fileChangesSnapshot}
+            sessionId={turn.sessionId}
+            onSnapshotUpdated={onFileChangesUpdated}
+          />
+        )}
+
         {!turn.isLive && (
           <TurnActions
             sessionId={turn.sessionId}
@@ -356,6 +377,8 @@ export interface ChatStreamProps {
   sessionId?: string;
   turns: ChatTurnView[];
   isStreaming?: boolean;
+  fileChangesSnapshot?: FileChangesSnapshotView | null;
+  onFileChangesUpdated?: (snapshot: FileChangesSnapshotView) => void;
   pendingPermission?: ApprovalCardRequest | null;
   pendingQuestion?: ClarifyingQuestionRequest | null;
   softInterrupts?: SoftInterruptQueueItem[];
@@ -381,8 +404,11 @@ export interface ChatStreamProps {
 }
 
 export function ChatStream({
+  sessionId,
   turns,
   isStreaming = false,
+  fileChangesSnapshot,
+  onFileChangesUpdated,
   pendingPermission,
   pendingQuestion,
   softInterrupts = [],
@@ -407,6 +433,20 @@ export function ChatStream({
       bottomAnchorRef.current.scrollIntoView({ block: "end" });
     }
   }, [turns.length]);
+
+  const hasFileChanges = Boolean(
+    fileChangesSnapshot && fileChangesSnapshot.files.length > 0,
+  );
+  const lastFinishedTurnIndex = React.useMemo(() => {
+    for (let i = turns.length - 1; i >= 0; i -= 1) {
+      if (!turns[i]?.isLive) return i;
+    }
+    return -1;
+  }, [turns]);
+  const anchorSummaryInTurnIndex =
+    hasFileChanges && !isStreaming && lastFinishedTurnIndex >= 0
+      ? lastFinishedTurnIndex
+      : -1;
 
   return (
     <div
@@ -450,10 +490,14 @@ export function ChatStream({
           data-slot="stream-container"
           className="mx-auto flex w-full max-w-[732px] min-w-0 flex-col gap-6 px-4 pt-5 pb-10 @min-[640px]/app:px-6"
         >
-          {turns.map((turn) => (
+          {turns.map((turn, idx) => (
             <TurnView
               key={turn.id}
               turn={turn}
+              fileChangesSnapshot={
+                idx === anchorSummaryInTurnIndex ? fileChangesSnapshot : null
+              }
+              onFileChangesUpdated={onFileChangesUpdated}
               onForked={onForked}
               onPinToggled={onPinToggled}
               onRetry={onRetryTurn}
@@ -461,6 +505,16 @@ export function ChatStream({
               onBackgroundTool={onBackgroundTool}
             />
           ))}
+
+          {hasFileChanges &&
+            anchorSummaryInTurnIndex === -1 &&
+            fileChangesSnapshot && (
+              <TurnFileSummaryCard
+                snapshot={fileChangesSnapshot}
+                sessionId={sessionId}
+                onSnapshotUpdated={onFileChangesUpdated}
+              />
+            )}
 
           {pendingPermission && onPermissionDecision && (
             <ApprovalCard

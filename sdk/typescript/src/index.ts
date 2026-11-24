@@ -30,6 +30,7 @@ export type {
   AssistantTextMessage,
   ConnectOptions,
   CreateSessionOptions,
+  FileChangeActionOptions,
   FileContent,
   FileStatus,
   GlobalEventsOptions,

@@ -66,14 +66,19 @@ impl Tool for WriteTool {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        // Check if file existed before and read old content for diff
+        // Check if file existed before and read old bytes once for diff and undo snapshots
         let _lock = super::file_lock::lock(&path).await;
         let existed = path.exists();
-        let old_content = if existed {
-            tokio::fs::read_to_string(&path).await.ok()
+        let before_mode = existed.then(|| super::file_changes::read_unix_mode(&path)).flatten();
+        let (old_bytes, old_exceeded_cap) = if existed {
+            super::file_changes::read_bytes_capped(&path).await
         } else {
-            None
+            (None, false)
         };
+        let old_content = old_bytes
+            .as_deref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .map(str::to_owned);
 
         // Write the file
         tokio::fs::write(&path, &params.content).await?;
@@ -82,6 +87,16 @@ impl Tool for WriteTool {
             old_content.as_deref().unwrap_or(""),
             &params.content,
             existed && old_content.is_none(),
+        )
+        .await;
+        super::file_changes::record_write(
+            &ctx,
+            &path,
+            existed,
+            old_bytes.as_deref(),
+            old_exceeded_cap,
+            before_mode,
+            params.content.as_bytes(),
         )
         .await;
 

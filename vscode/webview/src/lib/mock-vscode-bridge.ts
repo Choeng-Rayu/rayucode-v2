@@ -13,6 +13,10 @@ import type {
   DensityPreference,
   EffortChoice,
   FeatureFlagsView,
+  FileChangeActionKind,
+  FileChangeActionResultView,
+  FileChangeStatus,
+  FileChangesSnapshotView,
   HistoryMessageView,
   HostToWebviewMessage,
   McpServerView,
@@ -64,6 +68,7 @@ interface MockBridgeState {
   memory: MemoryStatusView;
   workspaceIntegrations: WorkspaceIntegrationsView;
   changes: ChangesStatusView;
+  fileChangesBySession: Record<string, FileChangesSnapshotView>;
   telegram: TelegramStatusView;
   remoteInfra: RemoteInfraStatusView;
   providers: ProviderEntryView[];
@@ -113,6 +118,7 @@ const mockState: MockBridgeState = {
       "gateway",
       "voice",
       "codemode",
+      "file_changes",
     ],
     isRayuRepo: true,
   },
@@ -268,6 +274,12 @@ const mockState: MockBridgeState = {
 
   account: {
     signedIn: true,
+    authMethod: "oauth",
+    signingIn: false,
+    pendingAuthUrl: null,
+    pendingMode: null,
+    webBase: "https://rayucode.com",
+    error: null,
     displayName: "Rayu Developer",
     email: "dev@rayucode.com",
     planName: "Plus",
@@ -297,6 +309,13 @@ const mockState: MockBridgeState = {
         highlights: ["BYOK across 55+ providers", "Local CLI & VS Code extension"],
       },
       {
+        id: "pro",
+        name: "Pro",
+        priceLabel: "$10 / mo",
+        current: false,
+        highlights: ["50,000 Rayu Cloud credits / mo", "Hosted Telegram pairing"],
+      },
+      {
         id: "plus",
         name: "Plus",
         priceLabel: "$20 / mo",
@@ -309,6 +328,27 @@ const mockState: MockBridgeState = {
         priceLabel: "$50 / mo",
         current: false,
         highlights: ["300,000 Rayu Cloud credits / mo", "Priority routing"],
+      },
+      {
+        id: "team",
+        name: "Team",
+        priceLabel: "$10 / mo",
+        current: false,
+        highlights: ["30,000 shared credits / mo", "Unlimited seats"],
+      },
+      {
+        id: "team-plus",
+        name: "Team Plus",
+        priceLabel: "$29 / mo",
+        current: false,
+        highlights: ["100,000 shared credits / mo", "Unlimited seats & Telegram"],
+      },
+      {
+        id: "team-max",
+        name: "Team Max",
+        priceLabel: "$79 / mo",
+        current: false,
+        highlights: ["400,000 shared credits / mo", "Dedicated priority capacity"],
       },
     ],
   },
@@ -585,6 +625,82 @@ const mockState: MockBridgeState = {
     ],
   },
 
+  fileChangesBySession: {
+    ses_vscode_shell: {
+      sessionId: "ses_vscode_shell",
+      latestTurnId: 2,
+      totalPendingFiles: 1,
+      totalAdditions: 248,
+      totalDeletions: 34,
+      files: [
+        {
+          path: "/workspace/rayucode-v2/vscode/webview/src/styles/globals.css",
+          displayPath: "vscode/webview/src/styles/globals.css",
+          kind: "created",
+          status: "kept",
+          additions: 180,
+          deletions: 0,
+          changedInLatestTurn: false,
+          turnId: 1,
+          editCount: 1,
+          isBinary: false,
+          undoable: true,
+          canRedo: false,
+          previewHunks: [
+            {
+              oldStart: 0,
+              oldLines: 0,
+              newStart: 1,
+              newLines: 4,
+              header: "@@ -0,0 +1,4 @@",
+              lines: [
+                "+:root {",
+                "+  --surface-canvas: var(--bg-canvas);",
+                "+  --surface-accent: var(--accent);",
+                "+}",
+              ],
+            },
+          ],
+          previewTruncated: true,
+          updatedAtMs: NOW - 180_000,
+        },
+        {
+          path: "/workspace/rayucode-v2/vscode/webview/src/features/shell/components/AppShell.tsx",
+          displayPath: "vscode/webview/src/features/shell/components/AppShell.tsx",
+          kind: "modified",
+          status: "pending",
+          additions: 68,
+          deletions: 34,
+          changedInLatestTurn: true,
+          turnId: 2,
+          editCount: 2,
+          isBinary: false,
+          undoable: true,
+          canRedo: false,
+          previewHunks: [
+            {
+              oldStart: 18,
+              oldLines: 4,
+              newStart: 18,
+              newLines: 5,
+              header: "@@ -18,4 +18,5 @@",
+              lines: [
+                " export function AppShell({ children }: AppShellProps) {",
+                "-  return <div className=\"flex h-screen\">{children}</div>;",
+                "+  return (",
+                "+    <div className=\"@container/app flex h-screen w-screen overflow-hidden\">{children}</div>",
+                "+  );",
+                " }",
+              ],
+            },
+          ],
+          previewTruncated: false,
+          updatedAtMs: NOW - 60_000,
+        },
+      ],
+    },
+  },
+
   telegram: {
     linked: false,
     daemonOnline: true,
@@ -607,8 +723,8 @@ const mockState: MockBridgeState = {
 
   providers: [
     {
-      id: "rayu-cloud",
-      name: "Rayu Cloud",
+      id: "rayu",
+      name: "Rayu Cloud Gateway",
       category: "native",
       status: "ready",
       authMethod: "oauth",
@@ -618,7 +734,7 @@ const mockState: MockBridgeState = {
     },
     {
       id: "anthropic",
-      name: "Anthropic",
+      name: "Anthropic (Claude)",
       category: "native",
       status: "env_key",
       authMethod: "env",
@@ -804,12 +920,220 @@ export function createMockHostInitMessage(): Extract<
     workspaces: mockState.workspaces.map((w) => ({ ...w })),
     editorSelection: null,
     backgroundTasks: mockState.backgroundTasks.map((t) => ({ ...t })),
+    accountStatus: {
+      ...mockState.account,
+      windows: mockState.account.windows.map((w) => ({ ...w })),
+    },
+    fileChanges: mockState.activeSessionId
+      ? cloneFileChangesSnapshot(
+          mockState.fileChangesBySession[mockState.activeSessionId],
+          mockState.activeSessionId,
+        )
+      : null,
+  };
+}
+
+function emptyFileChangesSnapshot(sessionId: string): FileChangesSnapshotView {
+  return {
+    sessionId,
+    latestTurnId: 0,
+    totalPendingFiles: 0,
+    totalAdditions: 0,
+    totalDeletions: 0,
+    files: [],
+  };
+}
+
+function cloneFileChangesSnapshot(
+  snapshot: FileChangesSnapshotView | undefined,
+  sessionId: string,
+): FileChangesSnapshotView {
+  if (!snapshot) return emptyFileChangesSnapshot(sessionId);
+  return {
+    ...snapshot,
+    files: snapshot.files.map((f) => ({
+      ...f,
+      previewHunks: f.previewHunks.map((h) => ({
+        ...h,
+        lines: [...h.lines],
+      })),
+    })),
+  };
+}
+
+function recomputeMockSnapshotTotals(
+  snapshot: FileChangesSnapshotView,
+): FileChangesSnapshotView {
+  let totalPendingFiles = 0;
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  for (const f of snapshot.files) {
+    if (f.status === "pending") totalPendingFiles += 1;
+    totalAdditions += f.additions;
+    totalDeletions += f.deletions;
+  }
+  return {
+    ...snapshot,
+    totalPendingFiles,
+    totalAdditions,
+    totalDeletions,
+  };
+}
+
+function applyMockFileChangeAction(
+  sessionId: string,
+  action: FileChangeActionKind,
+  targetPath?: string,
+  dispatch?: HostMessageDispatch,
+): FileChangeActionResultView {
+  const existing =
+    mockState.fileChangesBySession[sessionId] ??
+    emptyFileChangesSnapshot(sessionId);
+  const nextFiles = existing.files.map((file) => {
+    const matchesTarget =
+      !targetPath ||
+      file.path === targetPath ||
+      file.displayPath === targetPath;
+    if (!matchesTarget) return file;
+
+    let nextStatus: FileChangeStatus = file.status;
+    let nextCanRedo = file.canRedo;
+    if (action === "keep" || action === "keep_all") {
+      if (action === "keep" || file.status === "pending") {
+        nextStatus = "kept";
+        nextCanRedo = false;
+      }
+    } else if (action === "undo" || action === "undo_all") {
+      if (action === "undo" || file.status === "pending") {
+        nextStatus = "undone";
+        nextCanRedo = true;
+      }
+    } else if (action === "redo" || action === "redo_all") {
+      if (file.status === "undone" && file.canRedo) {
+        nextStatus = "pending";
+        nextCanRedo = false;
+      }
+    }
+    return {
+      ...file,
+      status: nextStatus,
+      canRedo: nextCanRedo,
+      updatedAtMs: Date.now(),
+    };
+  });
+
+  const nextSnapshot = recomputeMockSnapshotTotals({
+    ...existing,
+    files: nextFiles,
+  });
+  mockState.fileChangesBySession[sessionId] = nextSnapshot;
+
+  // Keep mockState.changes review decisions synchronized for ChangesView tests
+  mockState.changes = {
+    ...mockState.changes,
+    files: mockState.changes.files.map((cf) => {
+      const matched = nextSnapshot.files.find(
+        (f) => f.displayPath === cf.path || f.path === cf.path,
+      );
+      if (!matched) return cf;
+      const decision =
+        matched.status === "kept"
+          ? "accepted"
+          : matched.status === "undone"
+            ? "rejected"
+            : "pending";
+      return {
+        ...cf,
+        decision,
+        staged: matched.status === "undone" ? false : cf.staged,
+      };
+    }),
+  };
+  mockState.changes.stagedCount = mockState.changes.files.filter(
+    (f) => f.staged,
+  ).length;
+
+  const cloned = cloneFileChangesSnapshot(nextSnapshot, sessionId);
+  dispatch?.({
+    type: "rayucode.fileChanges.updated",
+    sessionId,
+    snapshot: cloned,
+  });
+  return {
+    ok: true,
+    conflict: false,
+    conflicts: [],
+    snapshot: cloned,
+  };
+}
+
+const DEFAULT_MOCK_WINDOWS: AccountStatusView["windows"] = [
+  {
+    label: "5-hour limit",
+    remainingPercent: 86,
+    usedPercent: 14,
+    resetCountdown: "Resets in 3h 42m",
+  },
+  {
+    label: "Weekly limit",
+    remainingPercent: 74,
+    usedPercent: 26,
+    resetCountdown: "Resets in 4d 11h",
+  },
+];
+
+export function __setMockAccountStateForTest(
+  next: Partial<AccountStatusView>,
+): AccountStatusView {
+  mockState.account = {
+    ...mockState.account,
+    ...next,
+    windows: next.windows
+      ? next.windows.map((w) => ({ ...w }))
+      : next.signedIn === false
+        ? []
+        : mockState.account.windows.map((w) => ({ ...w })),
+  };
+  return {
+    ...mockState.account,
+    windows: mockState.account.windows.map((w) => ({ ...w })),
+  };
+}
+
+function updateMockRayuProviderFromAccount(): void {
+  const acct = mockState.account;
+  mockState.providers = mockState.providers.map((p) => {
+    if (p.id !== "rayu") return p;
+    return {
+      ...p,
+      status: acct.signedIn ? "ready" : "needs_key",
+      authMethod: acct.signedIn
+        ? acct.authMethod === "apiKey"
+          ? "api_key"
+          : "oauth"
+        : "none",
+      accountLabel: acct.signedIn
+        ? acct.email ?? acct.displayName ?? "Rayu Cloud"
+        : undefined,
+    };
+  });
+}
+
+function cloneAccount(account: AccountStatusView): AccountStatusView {
+  return {
+    ...account,
+    windows: account.windows.map((w) => ({ ...w })),
+    planLadder: account.planLadder?.map((t) => ({
+      ...t,
+      highlights: [...t.highlights],
+    })),
   };
 }
 
 export async function handleMockRpcCall<M extends RpcMethod>(
   method: M,
   rawParams?: RpcParams<M>,
+  dispatch?: HostMessageDispatch,
 ): Promise<RpcResult<M>> {
   const params = (rawParams ?? {}) as Record<string, unknown>;
 
@@ -1280,10 +1604,47 @@ export async function handleMockRpcCall<M extends RpcMethod>(
 
     // --- Changes ---
     case "changes.status":
-      return { ...mockState.changes } as RpcResult<M>;
-    case "changes.diff":
       return {
-        path: String(params.path ?? ""),
+        ...mockState.changes,
+        files: mockState.changes.files.map((f) => ({ ...f })),
+      } as RpcResult<M>;
+    case "changes.getSessionSummary": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return cloneFileChangesSnapshot(
+        mockState.fileChangesBySession[sid],
+        sid,
+      ) as RpcResult<M>;
+    }
+    case "changes.diff": {
+      const reqPath = String(params.path ?? "");
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      const matched = mockState.fileChangesBySession[sid]?.files.find(
+        (f) => f.path === reqPath || f.displayPath === reqPath,
+      );
+      if (matched) {
+        const unifiedDiff = matched.previewHunks
+          .map((h) => [h.header, ...h.lines].join("\n"))
+          .join("\n");
+        return {
+          path: matched.displayPath,
+          originalContent: "// original\n",
+          modifiedContent: "// modified\n",
+          unifiedDiff:
+            unifiedDiff || "@@ -1 +1 @@\n-// original\n+// modified\n",
+          additions: matched.additions,
+          deletions: matched.deletions,
+          languageId: "typescript",
+          isBinary: matched.isBinary,
+          kind: matched.kind,
+          status: matched.status,
+          hunks: matched.previewHunks.map((h) => ({
+            ...h,
+            lines: [...h.lines],
+          })),
+        } as RpcResult<M>;
+      }
+      return {
+        path: reqPath,
         originalContent: "// original\n",
         modifiedContent: "// modified\n",
         unifiedDiff: "@@ -1 +1 @@\n-// original\n+// modified\n",
@@ -1291,11 +1652,64 @@ export async function handleMockRpcCall<M extends RpcMethod>(
         deletions: 1,
         languageId: "typescript",
       } as RpcResult<M>;
+    }
     case "changes.stage":
     case "changes.unstage":
-    case "changes.keep":
-    case "changes.undo":
       return { ok: true } as RpcResult<M>;
+    case "changes.keep": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "keep",
+        String(params.path ?? ""),
+        dispatch,
+      ) as RpcResult<M>;
+    }
+    case "changes.undo": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "undo",
+        String(params.path ?? ""),
+        dispatch,
+      ) as RpcResult<M>;
+    }
+    case "changes.redo": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "redo",
+        String(params.path ?? ""),
+        dispatch,
+      ) as RpcResult<M>;
+    }
+    case "changes.keepAll": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "keep_all",
+        undefined,
+        dispatch,
+      ) as RpcResult<M>;
+    }
+    case "changes.undoAll": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "undo_all",
+        undefined,
+        dispatch,
+      ) as RpcResult<M>;
+    }
+    case "changes.redoAll": {
+      const sid = String(params.sessionId ?? mockState.activeSessionId ?? "");
+      return applyMockFileChangeAction(
+        sid,
+        "redo_all",
+        undefined,
+        dispatch,
+      ) as RpcResult<M>;
+    }
     case "changes.commit":
       return { ok: true, commitHash: "a1b2c3d", summary: String(params.message ?? "") } as RpcResult<M>;
     case "changes.createPr":
@@ -1334,17 +1748,119 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     // --- Settings ---
     case "settings.account.get":
     case "settings.account.refresh":
-      return { ...mockState.account } as RpcResult<M>;
-    case "settings.account.signInBrowser":
-      mockState.account = { ...mockState.account, signedIn: true };
-      return { ok: true, state: { ...mockState.account } } as RpcResult<M>;
-    case "settings.account.signInApiKey":
-    case "settings.account.completeCallback":
-      mockState.account = { ...mockState.account, signedIn: true };
-      return { ...mockState.account } as RpcResult<M>;
-    case "settings.account.signOut":
-      mockState.account = { ...mockState.account, signedIn: false };
-      return { ...mockState.account } as RpcResult<M>;
+      return cloneAccount(mockState.account) as RpcResult<M>;
+    case "settings.account.signInBrowser": {
+      const mode = params.mode === "loopback" ? "loopback" : "vscode";
+      const webBase = mockState.account.webBase ?? "https://rayucode.com";
+      const stateHex = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+      const authUrl =
+        mode === "loopback"
+          ? `${webBase}/cli-login?port=54321&state=${stateHex}`
+          : `${webBase}/vscode-login?state=${stateHex}`;
+      mockState.account = {
+        ...mockState.account,
+        signingIn: true,
+        pendingAuthUrl: authUrl,
+        pendingMode: mode,
+        error: null,
+      };
+      const snapshot = cloneAccount(mockState.account);
+      dispatch?.({ type: "rayucode.account.changed", account: snapshot });
+      return { ok: true, authUrl, state: snapshot } as RpcResult<M>;
+    }
+    case "settings.account.cancelSignIn": {
+      mockState.account = {
+        ...mockState.account,
+        signingIn: false,
+        pendingAuthUrl: null,
+        pendingMode: null,
+        error: null,
+      };
+      const snapshot = cloneAccount(mockState.account);
+      dispatch?.({ type: "rayucode.account.changed", account: snapshot });
+      return snapshot as RpcResult<M>;
+    }
+    case "settings.account.signInApiKey": {
+      const apiKey = String(params.apiKey ?? "").trim();
+      if (!apiKey.startsWith("rayu_sk_live_") || apiKey.length < 18) {
+        throw new Error(
+          "Invalid Rayu API key — keys must start with rayu_sk_live_.",
+        );
+      }
+      mockState.account = {
+        ...mockState.account,
+        signedIn: true,
+        authMethod: "apiKey",
+        signingIn: false,
+        pendingAuthUrl: null,
+        pendingMode: null,
+        error: null,
+        displayName: "Rayu API Key",
+        email: undefined,
+        planName: "Plus",
+        creditsRemaining: 94_250,
+        topUpBalance: 12_000,
+        windows: DEFAULT_MOCK_WINDOWS.map((w) => ({ ...w })),
+      };
+      updateMockRayuProviderFromAccount();
+      const snapshot = cloneAccount(mockState.account);
+      dispatch?.({ type: "rayucode.account.changed", account: snapshot });
+      return snapshot as RpcResult<M>;
+    }
+    case "settings.account.completeCallback": {
+      const callbackUrl = String(params.callbackUrl ?? "").trim();
+      if (
+        !callbackUrl.includes("code=") ||
+        !callbackUrl.includes("state=") ||
+        (!callbackUrl.startsWith("vscode://") &&
+          !callbackUrl.startsWith("http://127.0.0.1") &&
+          !callbackUrl.startsWith("http://localhost"))
+      ) {
+        throw new Error(
+          "Invalid callback URL — expected vscode://rayucode.rayucode/auth?code=...&state=... or http://127.0.0.1:.../callback?code=...&state=...",
+        );
+      }
+      mockState.account = {
+        ...mockState.account,
+        signedIn: true,
+        authMethod: "oauth",
+        signingIn: false,
+        pendingAuthUrl: null,
+        pendingMode: null,
+        error: null,
+        displayName: "Rayu Developer",
+        email: "dev@rayucode.com",
+        planName: "Plus",
+        creditsRemaining: 94_250,
+        topUpBalance: 12_000,
+        windows: DEFAULT_MOCK_WINDOWS.map((w) => ({ ...w })),
+      };
+      updateMockRayuProviderFromAccount();
+      const snapshot = cloneAccount(mockState.account);
+      dispatch?.({ type: "rayucode.account.changed", account: snapshot });
+      return snapshot as RpcResult<M>;
+    }
+    case "settings.account.signOut": {
+      mockState.account = {
+        signedIn: false,
+        authMethod: "none",
+        signingIn: false,
+        pendingAuthUrl: null,
+        pendingMode: null,
+        webBase: mockState.account.webBase ?? "https://rayucode.com",
+        error: null,
+        windows: [],
+        planLadder: mockState.account.planLadder?.map((t) => ({
+          ...t,
+          current: false,
+          highlights: [...t.highlights],
+        })),
+      };
+      updateMockRayuProviderFromAccount();
+      const snapshot = cloneAccount(mockState.account);
+      dispatch?.({ type: "rayucode.account.changed", account: snapshot });
+      return snapshot as RpcResult<M>;
+    }
     case "settings.account.setBypassPacing":
       mockState.account.bypassPacing = Boolean(params.enabled);
       return { ok: true, enabled: mockState.account.bypassPacing } as RpcResult<M>;
@@ -1369,9 +1885,60 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     }
     case "settings.providers.list":
       return { providers: mockState.providers.map((p) => ({ ...p })) } as RpcResult<M>;
-    case "settings.providers.setApiKey":
-    case "settings.providers.clearApiKey":
-    case "settings.providers.logout":
+    case "settings.providers.setApiKey": {
+      const pid = String(params.providerId ?? "");
+      const baseUrl =
+        typeof params.baseUrl === "string" && params.baseUrl.trim()
+          ? params.baseUrl.trim()
+          : undefined;
+      const existing = mockState.providers.find((p) => p.id === pid);
+      if (existing) {
+        mockState.providers = mockState.providers.map((p) =>
+          p.id === pid
+            ? {
+                ...p,
+                status: "ready",
+                authMethod: "api_key",
+                baseUrl: baseUrl ?? p.baseUrl,
+              }
+            : p,
+        );
+      } else if (pid) {
+        mockState.providers = [
+          ...mockState.providers,
+          {
+            id: pid,
+            name: pid,
+            category: "native",
+            status: "ready",
+            authMethod: "api_key",
+            baseUrl,
+          },
+        ];
+      }
+      return { ok: true } as RpcResult<M>;
+    }
+    case "settings.providers.clearApiKey": {
+      const pid = String(params.providerId ?? "");
+      mockState.providers = mockState.providers.map((p) =>
+        p.id === pid ? { ...p, status: "needs_key", authMethod: "none" } : p,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
+    case "settings.providers.logout": {
+      const pid = String(params.providerId ?? "");
+      mockState.providers = mockState.providers.map((p) =>
+        p.id === pid
+          ? {
+              ...p,
+              status: "needs_key",
+              authMethod: "none",
+              accountLabel: undefined,
+            }
+          : p,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
     case "settings.models.setRoleOverride":
     case "settings.hooks.openConfig":
     case "settings.shortcuts.openKeybindings":
@@ -1521,6 +2088,7 @@ export function handleMockHostMessage(
       void handleMockRpcCall(
         msg.method,
         msg.params as RpcParams<typeof msg.method>,
+        dispatch,
       )
         .then((data) => {
           dispatch({

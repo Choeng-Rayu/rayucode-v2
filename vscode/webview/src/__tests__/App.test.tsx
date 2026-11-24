@@ -364,6 +364,76 @@ describe("App end-to-end integration", () => {
     expect(await screen.findByTestId("home-page")).toBeTruthy();
   });
 
+  it("opens AuthWelcomeScreen when authDialogOpen is triggered and closes it automatically on rayucode.account.changed sign-in", async () => {
+    useAppStore.setState({
+      accountStatus: {
+        signedIn: false,
+        authMethod: "none",
+        windows: [],
+      },
+      authLoaded: true,
+      authBypassed: false,
+      authDialogOpen: true,
+    });
+
+    renderApp();
+    expect(await screen.findByTestId("rayu-auth-gate")).toBeTruthy();
+    expect(screen.getByTestId("auth-welcome-screen")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.account.changed",
+        account: {
+          signedIn: true,
+          authMethod: "oauth",
+          displayName: "Rayu Developer",
+          email: "dev@rayucode.com",
+          planName: "Plus",
+          windows: [],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("app-shell")).toBeTruthy();
+      expect(screen.getByTestId("home-page")).toBeTruthy();
+    });
+    expect(useAppStore.getState().authDialogOpen).toBe(false);
+    expect(useAppStore.getState().accountStatus?.signedIn).toBe(true);
+  });
+
+  it("gates VS Code webview behind AuthWelcomeScreen when signed out and allows Open workspace bypass", async () => {
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: () => {},
+      getState: () => undefined,
+      setState: () => {},
+    });
+
+    try {
+      useAppStore.setState({
+        accountStatus: {
+          signedIn: false,
+          authMethod: "none",
+          windows: [],
+        },
+        authLoaded: true,
+        authBypassed: false,
+        authDialogOpen: false,
+      });
+
+      renderApp();
+      expect(await screen.findByTestId("rayu-auth-gate")).toBeTruthy();
+      expect(screen.getByTestId("auth-welcome-screen")).toBeTruthy();
+
+      fireEvent.click(screen.getByTestId("auth-continue-byok"));
+      expect(await screen.findByTestId("app-shell")).toBeTruthy();
+      expect(useAppStore.getState().authBypassed).toBe(true);
+    } finally {
+      window.acquireVsCodeApi = prevAcquire;
+    }
+  });
+
   it("keeps compact sessions drawer close button non-overlapping and closes drawer on nav clicks", async () => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,

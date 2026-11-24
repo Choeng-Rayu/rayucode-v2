@@ -174,6 +174,31 @@ export const HarnessRuntimeCommandSchema = z.object({
   args: z.array(z.string()).optional(),
 })
 
+export const FileChangeActionKindSchema = z.enum([
+  "keep",
+  "undo",
+  "redo",
+  "keep_all",
+  "undo_all",
+  "redo_all",
+])
+
+export const FileChangesGetPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+})
+
+export const FileChangesDiffPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  path: z.string().min(1).max(4096),
+})
+
+export const FileChangesActionPayloadSchema = z.object({
+  sessionId: z.string().min(1),
+  action: FileChangeActionKindSchema,
+  path: z.string().min(1).max(4096).optional(),
+  force: z.boolean().optional(),
+})
+
 export const AuthApiKeyPayloadSchema = z.object({
   apiKey: z.string().trim().min(10).max(512),
 })

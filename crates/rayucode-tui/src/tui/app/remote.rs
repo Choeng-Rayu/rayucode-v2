@@ -91,6 +91,39 @@ pub(super) enum RemoteEventOutcome {
     Quit,
 }
 
+pub(super) async fn flush_pending_remote_file_change_requests(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+) -> bool {
+    let mut sent_any = false;
+    while let Some(request) = app.pending_remote_file_change_requests.pop_front() {
+        let outcome = match request {
+            super::file_changes::PendingRemoteFileChangeRequest::GetFileChanges => {
+                remote.get_file_changes().await
+            }
+            super::file_changes::PendingRemoteFileChangeRequest::GetFileChangeDiff { path } => {
+                remote.get_file_change_diff(path).await
+            }
+            super::file_changes::PendingRemoteFileChangeRequest::FileChangeAction {
+                action,
+                path,
+                force,
+            } => remote.file_change_action(action, path, force).await,
+        };
+        match outcome {
+            Ok(id) => {
+                app.pending_remote_file_change_request_ids.insert(id);
+                sent_any = true;
+            }
+            Err(error) => {
+                app.handle_remote_file_change_error(&error.to_string());
+                sent_any = true;
+            }
+        }
+    }
+    sent_any
+}
+
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
     if app.cloud_environment_idle_clear_due()
         && let Err(error) = app.prepare_cloud_environment(remote).await
@@ -125,6 +158,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
                 "Failed to hydrate model routes after History: {error}"
             ));
         }
+    }
+    if remote.has_loaded_history() {
+        needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
     }
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
@@ -722,6 +758,7 @@ async fn apply_terminal_event<B: Backend>(
             }
             needs_redraw =
                 before_release.is_none_or(|before| before != app.key_release_visible_state());
+            needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
             needs_redraw |= dispatch_compacted_history_load(app, remote).await;
         }
         Some(Ok(Event::Paste(text))) => {
@@ -737,6 +774,7 @@ async fn apply_terminal_event<B: Backend>(
                 app.note_client_interaction();
                 handle_mouse_event(app, mouse);
                 needs_redraw = true;
+                needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
                 needs_redraw |= dispatch_compacted_history_load(app, remote).await;
             }
         }
@@ -1538,6 +1576,8 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
 
+    let _ = flush_pending_remote_file_change_requests(app, remote).await;
+
     // Esc redirected to a pending prompt: the server sends Done before
     // Interrupted. Sending now would let the late Interrupted end the new turn.
     if app.awaiting_remote_interrupt_ack() {
@@ -2332,8 +2372,18 @@ fn handle_disconnected_key_internal(
         return Ok(());
     }
 
+    if app.has_file_changes() && super::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
+        return Ok(());
+    }
+
     if app.open_resume_key_matches(code, modifiers) {
         app.open_session_picker();
+        return Ok(());
+    }
+
+    if super::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
         return Ok(());
     }
 

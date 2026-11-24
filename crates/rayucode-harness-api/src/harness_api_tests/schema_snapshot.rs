@@ -327,6 +327,19 @@ fn request_roundtrip() {
             session_id: "s1".into(),
             path: "src/lib.rs".into(),
         },
+        ApiRequest::GetFileChanges {
+            session_id: "s1".into(),
+        },
+        ApiRequest::GetFileChangeDiff {
+            session_id: "s1".into(),
+            path: "/repo/src/lib.rs".into(),
+        },
+        ApiRequest::FileChangeAction {
+            session_id: "s1".into(),
+            action: FileChangeActionKind::Undo,
+            path: Some("/repo/src/lib.rs".into()),
+            force: true,
+        },
         ApiRequest::GetTodoState {
             session_id: "s1".into(),
         },
@@ -898,5 +911,127 @@ fn permission_mode_and_permission_frames_wire_shapes_and_aliases() {
     assert_eq!(
         serde_json::from_value::<ServerFrame>(wire_changed).unwrap(),
         changed
+    );
+}
+
+#[test]
+fn file_changes_wire_shapes_and_defaults() {
+    use serde_json::json;
+
+    // Minimal file_change_action omits optional path and defaults force to false.
+    let minimal: ClientFrame = serde_json::from_value(json!({
+        "v": 1,
+        "id": 20,
+        "req": "file_change_action",
+        "session_id": "s1",
+        "action": "keep_all"
+    }))
+    .unwrap();
+    assert_eq!(
+        minimal.request,
+        ApiRequest::FileChangeAction {
+            session_id: "s1".into(),
+            action: FileChangeActionKind::KeepAll,
+            path: None,
+            force: false,
+        }
+    );
+    let minimal_wire = serde_json::to_value(&minimal).unwrap();
+    assert!(minimal_wire.get("path").is_none());
+    assert_eq!(minimal_wire["force"], false);
+
+    let hunk = FileChangeHunk {
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        header: "@@ -1,1 +1,2 @@".into(),
+        lines: vec!["-old".into(), "+new".into(), "+added".into()],
+    };
+    let snapshot = FileChangesSnapshot {
+        session_id: "s1".into(),
+        latest_turn_id: 2,
+        total_pending_files: 1,
+        total_additions: 2,
+        total_deletions: 1,
+        files: vec![FileChangeEntrySummary {
+            path: "/repo/src/lib.rs".into(),
+            display_path: "src/lib.rs".into(),
+            old_path: None,
+            kind: FileChangeKind::Modified,
+            status: FileChangeStatus::Pending,
+            additions: 2,
+            deletions: 1,
+            changed_in_latest_turn: true,
+            turn_id: 2,
+            edit_count: 1,
+            is_binary: false,
+            undoable: true,
+            can_redo: false,
+            preview_hunks: vec![hunk.clone()],
+            preview_truncated: false,
+            updated_at_ms: 1_700_000_000_000,
+        }],
+    };
+    let state_frame = ServerFrame::event(ApiEvent::FileChangesState {
+        session_id: "s1".into(),
+        snapshot: snapshot.clone(),
+    });
+    let state_wire = serde_json::to_value(&state_frame).unwrap();
+    assert_eq!(state_wire["ev"], "file_changes_state");
+    assert_eq!(state_wire["session_id"], "s1");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(state_wire).unwrap(),
+        state_frame
+    );
+
+    let diff_frame = ServerFrame::reply(
+        21,
+        ApiEvent::FileChangeDiff {
+            session_id: "s1".into(),
+            diff: FileChangeDiffPayload {
+                path: "/repo/src/lib.rs".into(),
+                display_path: "src/lib.rs".into(),
+                old_path: Some("/repo/src/old.rs".into()),
+                kind: FileChangeKind::Renamed,
+                status: FileChangeStatus::Pending,
+                additions: 2,
+                deletions: 1,
+                is_binary: false,
+                original_content: "old\n".into(),
+                modified_content: "new\nadded\n".into(),
+                unified_diff: "--- a/src/old.rs\n+++ b/src/lib.rs\n".into(),
+                hunks: vec![hunk],
+            },
+        },
+    );
+    let diff_wire = serde_json::to_value(&diff_frame).unwrap();
+    assert_eq!(diff_wire["ev"], "file_change_diff");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(diff_wire).unwrap(),
+        diff_frame
+    );
+
+    let action_frame = ServerFrame::reply(
+        22,
+        ApiEvent::FileChangeActionResult {
+            session_id: "s1".into(),
+            response: FileChangeActionResponse {
+                ok: false,
+                message: "1 conflict".into(),
+                conflicts: vec![FileChangeConflict {
+                    path: "/repo/src/lib.rs".into(),
+                    display_path: "src/lib.rs".into(),
+                    reason: "file modified outside AI session".into(),
+                }],
+                snapshot,
+            },
+        },
+    );
+    let action_wire = serde_json::to_value(&action_frame).unwrap();
+    assert_eq!(action_wire["ev"], "file_change_action_result");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(action_wire).unwrap(),
+        action_frame
     );
 }

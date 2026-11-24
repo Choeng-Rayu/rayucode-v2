@@ -676,6 +676,21 @@ impl App {
         }
     }
 
+    /// Local policy/validation errors (e.g. a tool disabled in self-dev mode
+    /// or blocked by permission mode, or a session lease block) cannot be
+    /// solved by switching models, so never offer a Ctrl+Y model switch for them.
+    fn error_is_non_provider_local_failure(error: &str) -> bool {
+        error.contains("Session is not runnable here")
+            || (error.starts_with("Tool '")
+                && (error.contains("is disabled")
+                    || error.contains("is not allowed")
+                    || error.contains("is only available")
+                    || error.contains("targets Rayu CLI")
+                    || error.contains("requires a RayuCode Desktop")
+                    || error.contains("blocked by")))
+            || error.starts_with("Tool call blocked by")
+    }
+
     /// [`Self::offer_fallback_after_error`] with an explicitly captured resend
     /// payload, for callers whose error-cleanup already cleared the pending
     /// retry slot before the offer could be armed.
@@ -684,12 +699,12 @@ impl App {
         error: &str,
         remote_resend: Option<super::FallbackResendPayload>,
     ) -> bool {
-        // Never compete with the automatic countdown switcher. A migration
-        // lease block is not a provider failure: switching model cannot help.
+        // Never compete with the automatic countdown switcher. Local policy or
+        // lease errors are not provider failures: switching model cannot help.
         if self.pending_provider_failover.is_some()
             || self.pending_automatic_failover_route.is_some()
             || self.pending_automatic_failover_request_id.is_some()
-            || error.contains("Session is not runnable here")
+            || Self::error_is_non_provider_local_failure(error)
         {
             return false;
         }

@@ -112,6 +112,10 @@ function applyTraceEvents(
         next.outputArtifact = event.artifact
         break
       }
+      case "file-changes": {
+        // Authoritative session snapshot is synchronized via useAppStore.setSessionFileChanges
+        break
+      }
       case "answer-delta": {
         next.answerIntro = `${next.answerIntro}${event.delta}`
         break

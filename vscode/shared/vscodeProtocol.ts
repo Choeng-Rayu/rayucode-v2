@@ -688,6 +688,89 @@ export const ChangesStatusViewSchema = z.object({
 });
 export type ChangesStatusView = z.infer<typeof ChangesStatusViewSchema>;
 
+export const FileChangeKindSchema = z.enum([
+  "created",
+  "modified",
+  "deleted",
+  "renamed",
+]);
+export type FileChangeKind = z.infer<typeof FileChangeKindSchema>;
+
+export const FileChangeStatusSchema = z.enum(["pending", "kept", "undone"]);
+export type FileChangeStatus = z.infer<typeof FileChangeStatusSchema>;
+
+export const FileChangeActionKindSchema = z.enum([
+  "keep",
+  "undo",
+  "redo",
+  "keep_all",
+  "undo_all",
+  "redo_all",
+]);
+export type FileChangeActionKind = z.infer<typeof FileChangeActionKindSchema>;
+
+export const FileChangeHunkViewSchema = z.object({
+  oldStart: z.number().int().nonnegative(),
+  oldLines: z.number().int().nonnegative(),
+  newStart: z.number().int().nonnegative(),
+  newLines: z.number().int().nonnegative(),
+  header: z.string(),
+  lines: z.array(z.string()),
+});
+export type FileChangeHunkView = z.infer<typeof FileChangeHunkViewSchema>;
+
+export const FileChangeEntryViewSchema = z.object({
+  path: z.string(),
+  displayPath: z.string(),
+  oldPath: z.string().optional(),
+  kind: FileChangeKindSchema,
+  status: FileChangeStatusSchema,
+  additions: z.number().int().nonnegative(),
+  deletions: z.number().int().nonnegative(),
+  changedInLatestTurn: z.boolean(),
+  turnId: z.number().int().nonnegative(),
+  editCount: z.number().int().nonnegative(),
+  isBinary: z.boolean(),
+  undoable: z.boolean(),
+  canRedo: z.boolean(),
+  previewHunks: z.array(FileChangeHunkViewSchema),
+  previewTruncated: z.boolean(),
+  updatedAtMs: z.number(),
+});
+export type FileChangeEntryView = z.infer<typeof FileChangeEntryViewSchema>;
+
+export const FileChangesSnapshotViewSchema = z.object({
+  sessionId: z.string(),
+  latestTurnId: z.number().int().nonnegative(),
+  totalPendingFiles: z.number().int().nonnegative(),
+  totalAdditions: z.number().int().nonnegative(),
+  totalDeletions: z.number().int().nonnegative(),
+  files: z.array(FileChangeEntryViewSchema),
+});
+export type FileChangesSnapshotView = z.infer<
+  typeof FileChangesSnapshotViewSchema
+>;
+
+export const FileChangeConflictViewSchema = z.object({
+  path: z.string(),
+  displayPath: z.string(),
+  reason: z.string(),
+});
+export type FileChangeConflictView = z.infer<
+  typeof FileChangeConflictViewSchema
+>;
+
+export const FileChangeActionResultViewSchema = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+  conflict: z.boolean().optional(),
+  conflicts: z.array(FileChangeConflictViewSchema).optional(),
+  snapshot: FileChangesSnapshotViewSchema.optional(),
+});
+export type FileChangeActionResultView = z.infer<
+  typeof FileChangeActionResultViewSchema
+>;
+
 export const FileDiffViewSchema = z.object({
   path: z.string(),
   originalContent: z.string(),
@@ -697,6 +780,10 @@ export const FileDiffViewSchema = z.object({
   deletions: z.number().int().nonnegative(),
   languageId: z.string().optional(),
   isBinary: z.boolean().optional(),
+  kind: FileChangeKindSchema.optional(),
+  status: FileChangeStatusSchema.optional(),
+  oldPath: z.string().optional(),
+  hunks: z.array(FileChangeHunkViewSchema).optional(),
 });
 export type FileDiffView = z.infer<typeof FileDiffViewSchema>;
 
@@ -790,6 +877,14 @@ export type AccountUsageWindowView = z.infer<typeof AccountUsageWindowViewSchema
 
 export const AccountStatusViewSchema = z.object({
   signedIn: z.boolean(),
+  authMethod: z.enum(["oauth", "apiKey", "none"]).optional(),
+  signingIn: z.boolean().optional(),
+  pendingAuthUrl: z.string().nullable().optional(),
+  pendingMode: z.enum(["vscode", "loopback"]).nullable().optional(),
+  webBase: z.string().optional(),
+  error: z.string().nullable().optional(),
+  userId: z.string().optional(),
+  role: z.string().optional(),
   displayName: z.string().optional(),
   email: z.string().optional(),
   avatarUrl: z.string().optional(),
@@ -1636,6 +1731,10 @@ export const RpcContractSchemas = {
       .optional(),
     result: ChangesStatusViewSchema,
   },
+  "changes.getSessionSummary": {
+    params: z.object({ sessionId: z.string().optional() }).optional(),
+    result: FileChangesSnapshotViewSchema,
+  },
   "changes.diff": {
     params: z.object({
       path: z.string(),
@@ -1654,15 +1753,45 @@ export const RpcContractSchemas = {
   },
   "changes.keep": {
     params: z.object({ path: z.string(), sessionId: z.string().optional() }),
-    result: OkResultSchema,
+    result: FileChangeActionResultViewSchema,
   },
   "changes.undo": {
-    params: z.object({ path: z.string(), sessionId: z.string().optional() }),
-    result: z.object({
-      ok: z.boolean(),
-      conflict: z.boolean().optional(),
-      message: z.string().optional(),
+    params: z.object({
+      path: z.string(),
+      sessionId: z.string().optional(),
+      force: z.boolean().optional(),
     }),
+    result: FileChangeActionResultViewSchema,
+  },
+  "changes.redo": {
+    params: z.object({
+      path: z.string(),
+      sessionId: z.string().optional(),
+      force: z.boolean().optional(),
+    }),
+    result: FileChangeActionResultViewSchema,
+  },
+  "changes.keepAll": {
+    params: z.object({ sessionId: z.string().optional() }).optional(),
+    result: FileChangeActionResultViewSchema,
+  },
+  "changes.undoAll": {
+    params: z
+      .object({
+        sessionId: z.string().optional(),
+        force: z.boolean().optional(),
+      })
+      .optional(),
+    result: FileChangeActionResultViewSchema,
+  },
+  "changes.redoAll": {
+    params: z
+      .object({
+        sessionId: z.string().optional(),
+        force: z.boolean().optional(),
+      })
+      .optional(),
+    result: FileChangeActionResultViewSchema,
   },
   "changes.commit": {
     params: z.object({ message: z.string().min(1) }),
@@ -1782,12 +1911,20 @@ export const RpcContractSchemas = {
     result: AccountStatusViewSchema,
   },
   "settings.account.signInBrowser": {
-    params: EmptyParamsSchema,
+    params: z
+      .object({
+        mode: z.enum(["vscode", "loopback"]).optional(),
+      })
+      .optional(),
     result: z.object({
       ok: z.boolean(),
       authUrl: z.string().optional(),
       state: AccountStatusViewSchema.optional(),
     }),
+  },
+  "settings.account.cancelSignIn": {
+    params: EmptyParamsSchema,
+    result: AccountStatusViewSchema,
   },
   "settings.account.signInApiKey": {
     params: z.object({ apiKey: z.string().min(1) }),
@@ -2131,9 +2268,20 @@ export const HostToWebviewMessageSchema = z.union([
     workspaces: z.array(WorkspaceFolderViewSchema),
     editorSelection: EditorSelectionViewSchema.nullable().optional(),
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
+    accountStatus: AccountStatusViewSchema.optional(),
+    fileChanges: FileChangesSnapshotViewSchema.nullable().optional(),
   }),
   RpcResultSuccessSchema,
   RpcResultErrorSchema,
+  z.object({
+    type: z.literal("rayucode.account.changed"),
+    account: AccountStatusViewSchema,
+  }),
+  z.object({
+    type: z.literal("rayucode.fileChanges.updated"),
+    sessionId: z.string(),
+    snapshot: FileChangesSnapshotViewSchema,
+  }),
   z.object({
     type: z.literal("rayucode.harness.frame"),
     frame: z.record(z.string(), z.unknown()),

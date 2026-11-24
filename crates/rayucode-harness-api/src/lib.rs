@@ -37,6 +37,8 @@ pub use client::{FrameError, HarnessClient, read_frame, write_frame};
 pub use events::*;
 pub use rayucode_applet_types;
 pub use rayucode_session_types::{
+    FileChangeActionKind, FileChangeActionResponse, FileChangeConflict, FileChangeDiffPayload,
+    FileChangeEntrySummary, FileChangeHunk, FileChangeKind, FileChangeStatus, FileChangesSnapshot,
     MICRO_CREDITS_PER_CREDIT, RayuCreditsAccumulator, RayuRequestCharge, TurnStopReason,
     format_rayu_credits, format_rayu_credits_exact, rayu_credits, rayu_credits_label,
     rayu_credits_tooltip,

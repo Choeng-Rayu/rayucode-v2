@@ -225,6 +225,7 @@ fn test_handle_server_event_history_clears_connection_type_on_session_change_whe
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -285,6 +286,7 @@ fn test_handle_server_event_history_preserves_connection_type_for_same_session_w
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -345,6 +347,7 @@ fn test_handle_server_event_history_preserves_reasoning_effort_for_same_session_
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -432,6 +435,7 @@ fn test_handle_server_event_history_session_change_clears_streaming_preview_diag
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -542,6 +546,7 @@ fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -660,6 +665,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -750,6 +756,7 @@ fn test_handle_server_event_history_same_session_midstream_duplicate_is_dropped_
                 activity: None,
                 side_panel: crate::side_panel::SidePanelSnapshot::default(),
                 applets: Default::default(),
+                file_changes: None,
             },
             &mut remote,
         );
@@ -860,6 +867,7 @@ fn test_handle_server_event_history_same_session_rewind_then_late_done_does_not_
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -952,6 +960,7 @@ fn test_handle_server_event_history_session_change_clears_pending_interleaves() 
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );
@@ -1688,6 +1697,7 @@ fn test_pending_startup_notice_survives_history_bootstrap_for_fresh_session() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );

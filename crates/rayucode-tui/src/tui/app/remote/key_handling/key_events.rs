@@ -71,6 +71,10 @@ pub(super) async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app.handle_file_review_overlay_key(code, modifiers)? {
+        return Ok(());
+    }
+
     if input::handle_scroll_overlay_key(app, code)? {
         return Ok(());
     }
@@ -248,6 +252,11 @@ pub(super) async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if app.has_file_changes() && app_mod::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
+        return Ok(());
+    }
+
     if app.open_resume_key_matches(code, modifiers) {
         if crate::tui::is_ssh_remote() {
             app.set_status_notice(
@@ -256,6 +265,11 @@ pub(super) async fn handle_remote_key_internal(
             return Ok(());
         }
         app.open_session_picker();
+        return Ok(());
+    }
+
+    if app_mod::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
         return Ok(());
     }
 

@@ -386,6 +386,7 @@ fn render_patch(patch: &FilePatch, old: &str) -> Result<String> {
 struct PreparedPatch {
     path: PathBuf,
     old: Option<String>,
+    before_mode: Option<u32>,
     new: Option<String>,
     first_line: usize,
     message: String,
@@ -397,6 +398,9 @@ async fn prepare_patch(patch: &FilePatch, path: PathBuf) -> Result<PreparedPatch
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
+    let before_mode = old
+        .as_ref()
+        .and_then(|_| super::file_changes::read_unix_mode(&path));
     anyhow::ensure!(
         old.is_none() == patch.is_new,
         "{}: {}",
@@ -421,6 +425,7 @@ async fn prepare_patch(patch: &FilePatch, path: PathBuf) -> Result<PreparedPatch
     Ok(PreparedPatch {
         path,
         old,
+        before_mode,
         new: if patch.is_delete { None } else { Some(content) },
         first_line: patch.hunks.first().map_or(1, |h| h.old_start.max(1)),
         message: if patch.is_delete {
@@ -460,6 +465,31 @@ impl PreparedPatch {
         let old = self.old.as_deref().unwrap_or("");
         let new = self.new.as_deref().unwrap_or("");
         super::edit_stats::record(ctx, old, new, false).await;
+        match (&self.old, &self.new) {
+            (None, Some(new_text)) => {
+                super::file_changes::record_created(ctx, &self.path, new_text.as_bytes()).await;
+            }
+            (Some(old_text), Some(new_text)) => {
+                super::file_changes::record_modified(
+                    ctx,
+                    &self.path,
+                    old_text.as_bytes(),
+                    self.before_mode,
+                    new_text.as_bytes(),
+                )
+                .await;
+            }
+            (Some(old_text), None) => {
+                super::file_changes::record_deleted(
+                    ctx,
+                    &self.path,
+                    old_text.as_bytes(),
+                    self.before_mode,
+                )
+                .await;
+            }
+            (None, None) => {}
+        }
         let diff = generate_diff(old, new, self.first_line);
         Ok((self.message, diff))
     }

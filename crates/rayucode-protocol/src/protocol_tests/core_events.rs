@@ -795,6 +795,7 @@ fn test_history_event_roundtrip_preserves_side_panel_snapshot() -> Result<()> {
         compaction_mode: rayucode_config_types::CompactionMode::Reactive,
         activity: None,
         applets: Default::default(),
+        file_changes: None,
         side_panel: rayucode_side_panel_types::SidePanelSnapshot {
             focus_revision: 0,
             focused_page_id: Some("page-1".to_string()),
@@ -1042,12 +1043,161 @@ fn history_delta_fields_are_backward_compatible() {
             .expect("legacy History without messages_base_count");
     let ServerEvent::History {
         messages_base_count,
+        file_changes,
         ..
     } = event
     else {
         panic!("expected history");
     };
     assert_eq!(messages_base_count, None);
+    assert_eq!(file_changes, None);
+}
+
+#[test]
+fn file_changes_requests_events_and_history_roundtrip() -> Result<()> {
+    for (kind, expected) in [
+        (FileChangeKind::Created, "\"created\""),
+        (FileChangeKind::Modified, "\"modified\""),
+        (FileChangeKind::Deleted, "\"deleted\""),
+        (FileChangeKind::Renamed, "\"renamed\""),
+    ] {
+        assert_eq!(serde_json::to_string(&kind)?, expected);
+    }
+    for (status, expected) in [
+        (FileChangeStatus::Pending, "\"pending\""),
+        (FileChangeStatus::Kept, "\"kept\""),
+        (FileChangeStatus::Undone, "\"undone\""),
+    ] {
+        assert_eq!(serde_json::to_string(&status)?, expected);
+    }
+    for (action, expected) in [
+        (FileChangeActionKind::Keep, "\"keep\""),
+        (FileChangeActionKind::Undo, "\"undo\""),
+        (FileChangeActionKind::Redo, "\"redo\""),
+        (FileChangeActionKind::KeepAll, "\"keep_all\""),
+        (FileChangeActionKind::UndoAll, "\"undo_all\""),
+        (FileChangeActionKind::RedoAll, "\"redo_all\""),
+    ] {
+        assert_eq!(serde_json::to_string(&action)?, expected);
+    }
+
+    let req_get = Request::GetFileChanges { id: 10 };
+    assert_eq!(req_get.id(), 10);
+    let decoded_get = parse_request_json(&serde_json::to_string(&req_get)?)?;
+    assert!(matches!(decoded_get, Request::GetFileChanges { id: 10 }));
+
+    let req_diff = Request::GetFileChangeDiff {
+        id: 11,
+        path: "src/lib.rs".into(),
+    };
+    assert_eq!(req_diff.id(), 11);
+    let decoded_diff = parse_request_json(&serde_json::to_string(&req_diff)?)?;
+    assert!(matches!(
+        decoded_diff,
+        Request::GetFileChangeDiff { id: 11, path } if path == "src/lib.rs"
+    ));
+
+    // `force` defaults to false when omitted on the wire.
+    let decoded_action = parse_request_json(
+        r#"{"type":"file_change_action","id":12,"action":"undo","path":"src/lib.rs"}"#,
+    )?;
+    assert_eq!(decoded_action.id(), 12);
+    assert!(matches!(
+        decoded_action,
+        Request::FileChangeAction {
+            id: 12,
+            action: FileChangeActionKind::Undo,
+            path: Some(p),
+            force: false
+        } if p == "src/lib.rs"
+    ));
+
+    let snapshot = FileChangesSnapshot {
+        session_id: "ses_fc".into(),
+        latest_turn_id: 2,
+        total_pending_files: 1,
+        total_additions: 3,
+        total_deletions: 1,
+        files: vec![FileChangeEntrySummary {
+            path: "/repo/src/lib.rs".into(),
+            display_path: "src/lib.rs".into(),
+            old_path: None,
+            kind: FileChangeKind::Modified,
+            status: FileChangeStatus::Pending,
+            additions: 3,
+            deletions: 1,
+            changed_in_latest_turn: true,
+            turn_id: 2,
+            edit_count: 1,
+            is_binary: false,
+            undoable: true,
+            can_redo: false,
+            preview_hunks: vec![FileChangeHunk {
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 3,
+                header: "@@ -1,1 +1,3 @@".into(),
+                lines: vec!["-a".into(), "+b".into(), "+c".into(), "+d".into()],
+            }],
+            preview_truncated: false,
+            updated_at_ms: 1234,
+        }],
+    };
+
+    let state_ev = ServerEvent::FileChangesState {
+        snapshot: snapshot.clone(),
+    };
+    let encoded_state = encode_event(&state_ev);
+    assert!(encoded_state.contains("\"type\":\"file_changes_state\""));
+    let decoded_state = parse_event_json(encoded_state.trim())?;
+    assert!(matches!(
+        decoded_state,
+        ServerEvent::FileChangesState { snapshot: s } if s == snapshot
+    ));
+
+    let diff_ev = ServerEvent::FileChangeDiff {
+        id: 11,
+        diff: FileChangeDiffPayload {
+            path: "/repo/src/lib.rs".into(),
+            display_path: "src/lib.rs".into(),
+            old_path: None,
+            kind: FileChangeKind::Modified,
+            status: FileChangeStatus::Pending,
+            additions: 3,
+            deletions: 1,
+            is_binary: false,
+            original_content: "a\n".into(),
+            modified_content: "b\nc\nd\n".into(),
+            unified_diff: "--- a/src/lib.rs\n+++ b/src/lib.rs\n".into(),
+            hunks: snapshot.files[0].preview_hunks.clone(),
+        },
+    };
+    let encoded_diff = encode_event(&diff_ev);
+    assert!(encoded_diff.contains("\"type\":\"file_change_diff\""));
+    let decoded_diff_ev = parse_event_json(encoded_diff.trim())?;
+    assert!(matches!(
+        decoded_diff_ev,
+        ServerEvent::FileChangeDiff { id: 11, .. }
+    ));
+
+    let action_ev = ServerEvent::FileChangeActionResult {
+        id: 12,
+        response: FileChangeActionResponse {
+            ok: true,
+            message: "Undid 1 file".into(),
+            conflicts: Vec::new(),
+            snapshot: snapshot.clone(),
+        },
+    };
+    let encoded_action = encode_event(&action_ev);
+    assert!(encoded_action.contains("\"type\":\"file_change_action_result\""));
+    let decoded_action_ev = parse_event_json(encoded_action.trim())?;
+    assert!(matches!(
+        decoded_action_ev,
+        ServerEvent::FileChangeActionResult { id: 12, response } if response.ok && response.snapshot == snapshot
+    ));
+    Ok(())
 }
 
 #[test]

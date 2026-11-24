@@ -9,6 +9,10 @@ import {
   unixSocketTransport,
   type ApiRequest,
   type ConnectOptions,
+  type FileChangeActionKind,
+  type FileChangeActionResponse,
+  type FileChangeDiffPayload,
+  type FileChangesSnapshot,
   type FileContent,
   type HistoryMessage,
   type ImageAttachment,
@@ -266,6 +270,22 @@ function hasLocalRayuCredentials(): boolean {
     "rayu.env"
   )
   return fs.existsSync(legacyEnv)
+}
+
+function emptyFileChangesSnapshot(sessionId: string): FileChangesSnapshot {
+  return {
+    session_id: sessionId,
+    latest_turn_id: 0,
+    total_pending_files: 0,
+    total_additions: 0,
+    total_deletions: 0,
+    files: [],
+  }
+}
+
+function isUnsupportedFileChangesError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /unknown_request|unsupported|not support|file_changes/i.test(msg)
 }
 
 export class RayuDaemonClient extends EventEmitter {
@@ -981,6 +1001,114 @@ export class RayuDaemonClient extends EventEmitter {
     })
   }
 
+  private supportsFileChanges(client: RayucodeClient): boolean {
+    if (typeof client.getFileChanges !== "function") {
+      return false
+    }
+    if (
+      typeof client.supports === "function" &&
+      Array.isArray(client.capabilities) &&
+      client.capabilities.length > 0 &&
+      !client.supports("file_changes")
+    ) {
+      return false
+    }
+    return true
+  }
+
+  async getFileChanges(sessionId: string): Promise<FileChangesSnapshot> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return emptyFileChangesSnapshot(sessionId)
+    }
+    return this.runSerialized(async () => {
+      try {
+        let client = await this.connect()
+        if (!this.supportsFileChanges(client)) {
+          return emptyFileChangesSnapshot(sessionId)
+        }
+        client = await this.ensureAttached(client, sessionId)
+        return await client.getFileChanges(sessionId)
+      } catch (err) {
+        if (isUnsupportedFileChangesError(err)) {
+          return emptyFileChangesSnapshot(sessionId)
+        }
+        return emptyFileChangesSnapshot(sessionId)
+      }
+    })
+  }
+
+  async getFileChangeDiff(
+    sessionId: string,
+    filePath: string
+  ): Promise<FileChangeDiffPayload | null> {
+    if (!sessionId || sessionId.startsWith("ses_") || !filePath) {
+      return null
+    }
+    return this.runSerialized(async () => {
+      try {
+        let client = await this.connect()
+        if (!this.supportsFileChanges(client)) {
+          return null
+        }
+        client = await this.ensureAttached(client, sessionId)
+        return await client.getFileChangeDiff(sessionId, filePath)
+      } catch (err) {
+        if (isUnsupportedFileChangesError(err)) {
+          return null
+        }
+        throw err
+      }
+    })
+  }
+
+  async fileChangeAction(
+    sessionId: string,
+    action: FileChangeActionKind,
+    opts?: { path?: string; force?: boolean }
+  ): Promise<FileChangeActionResponse> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return {
+        ok: false,
+        message: "Daemon is not connected",
+        conflicts: [],
+        snapshot: emptyFileChangesSnapshot(sessionId),
+      }
+    }
+    return this.runSerialized(async () => {
+      try {
+        let client = await this.connect()
+        if (!this.supportsFileChanges(client)) {
+          return {
+            ok: false,
+            message: "Connected daemon does not support file_changes",
+            conflicts: [],
+            snapshot: emptyFileChangesSnapshot(sessionId),
+          }
+        }
+        client = await this.ensureAttached(client, sessionId)
+        const response = await client.fileChangeAction(sessionId, action, opts)
+        if (response.snapshot) {
+          this.emit("harness-event", {
+            ev: "file_changes_state",
+            session_id: sessionId,
+            snapshot: response.snapshot,
+          } as unknown as ServerFrame)
+        }
+        return response
+      } catch (err) {
+        if (isUnsupportedFileChangesError(err)) {
+          return {
+            ok: false,
+            message: "Connected daemon does not support file_changes",
+            conflicts: [],
+            snapshot: emptyFileChangesSnapshot(sessionId),
+          }
+        }
+        throw err
+      }
+    })
+  }
+
   async notifyAuthChanged(provider = "rayu"): Promise<void> {
     syncRayuCredentialsToInstanceHome(getDesktopInstanceHome())
     if (!this.client) return
@@ -1045,6 +1173,22 @@ export class RayuDaemonClient extends EventEmitter {
           String(p.sessionId),
           p.command as RuntimeCommand,
           Array.isArray(p.args) ? p.args.map(String) : []
+        )) as T
+      case "fileChanges.get":
+        return (await this.getFileChanges(String(p.sessionId))) as T
+      case "fileChanges.diff":
+        return (await this.getFileChangeDiff(
+          String(p.sessionId),
+          String(p.path)
+        )) as T
+      case "fileChanges.action":
+        return (await this.fileChangeAction(
+          String(p.sessionId),
+          p.action as FileChangeActionKind,
+          {
+            path: typeof p.path === "string" ? p.path : undefined,
+            force: typeof p.force === "boolean" ? p.force : undefined,
+          }
         )) as T
       case "previews.setBrowserBounds":
         return { ok: true } as T

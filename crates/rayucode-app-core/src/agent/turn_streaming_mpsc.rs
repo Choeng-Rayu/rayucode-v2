@@ -15,11 +15,32 @@ impl Agent {
         &mut self,
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
+        let initial_file_changes_rev = crate::file_changes::session_revision(&self.session.id);
+        let result = self
+            .run_turn_streaming_mpsc_inner(event_tx.clone(), initial_file_changes_rev)
+            .await;
+        // Always publish the authoritative file-changes snapshot before turn
+        // completion (`Done`, cancel/interrupted, or error) whenever this turn
+        // mutated any file or pending review items exist.
+        let final_rev = crate::file_changes::session_revision(&self.session.id);
+        let snapshot = crate::file_changes::snapshot_for_session(&self.session.id);
+        if final_rev != initial_file_changes_rev || snapshot.total_pending_files > 0 {
+            let _ = event_tx.send(ServerEvent::FileChangesState { snapshot });
+        }
+        result
+    }
+
+    async fn run_turn_streaming_mpsc_inner(
+        &mut self,
+        event_tx: mpsc::UnboundedSender<ServerEvent>,
+        initial_file_changes_rev: u64,
+    ) -> Result<()> {
         let _runtime_activity =
             crate::runtime_activity::global().try_enter_session(&self.session.id)?;
         self.ensure_session_lease()?;
         self.set_log_context();
         let usage_turn_id = self.model_usage_turn_id();
+        let mut last_emitted_file_changes_rev = initial_file_changes_rev;
         // Mark this session as actively streaming for presence UIs (e.g. the
         // macOS menu bar indicator). Cleared automatically on every exit path.
         let _streaming_guard = crate::session::StreamingGuard::new(self.session.id.clone());
@@ -1013,6 +1034,13 @@ impl Agent {
                                 ));
                             }
                         }
+                        let current_rev = crate::file_changes::session_revision(&self.session.id);
+                        if current_rev != last_emitted_file_changes_rev {
+                            last_emitted_file_changes_rev = current_rev;
+                            let snapshot =
+                                crate::file_changes::snapshot_for_session(&self.session.id);
+                            let _ = event_tx.send(ServerEvent::FileChangesState { snapshot });
+                        }
                     }
                     StreamEvent::UpstreamProvider { provider } => {
                         self.last_upstream_provider = Some(provider.clone());
@@ -1544,12 +1572,15 @@ impl Agent {
                 // the tool itself later fails: it resets the malformed-round
                 // bound in handle_malformed_tool_round below.
                 executed_valid_call = true;
-                if let Err(err) =
-                    crate::tool::permission_gate::validate_mode_allows(&self.session.id, &tc.name)
-                {
+                // `validate_tool_allowed` checks both permission mode and
+                // session/self-dev tool policy. Return policy refusals as a
+                // ToolResult error instead of aborting the turn so the model
+                // sees why the call was rejected and can recover without
+                // leaving an orphaned tool_use or triggering model failover.
+                if let Err(err) = self.validate_tool_allowed(&tc.name) {
                     let err_msg = err.to_string();
                     logging::info(&format!(
-                        "Tool '{}' blocked by permission mode: {}",
+                        "Tool '{}' rejected by session policy: {}",
                         tc.name, err_msg
                     ));
                     let _ = event_tx.send(ServerEvent::ToolDone {
@@ -1570,7 +1601,6 @@ impl Agent {
                     tool_results_dirty = true;
                     continue;
                 }
-                self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = RAYU_NATIVE_TOOLS.contains(&tc.name.as_str());
 
@@ -1927,6 +1957,13 @@ impl Agent {
 
             if tool_results_dirty {
                 self.session.save()?;
+            }
+
+            let current_rev = crate::file_changes::session_revision(&self.session.id);
+            if current_rev != last_emitted_file_changes_rev {
+                last_emitted_file_changes_rev = current_rev;
+                let snapshot = crate::file_changes::snapshot_for_session(&self.session.id);
+                let _ = event_tx.send(ServerEvent::FileChangesState { snapshot });
             }
 
             if !generated_image_contexts.is_empty() {

@@ -8,6 +8,7 @@ import {
   mapHarnessFrameToLiveEvents,
   mapHistoryMessagesToTurns,
   onHarnessFrame,
+  onHostMessage,
   sendHarnessRequest,
   useAppStore,
   type ExecutionTurn,
@@ -16,7 +17,10 @@ import {
   type MappedLiveTraceEvent,
   type OptimisticUserTurn,
 } from "@/lib";
-import type { SessionSummaryView } from "@shared/vscodeProtocol";
+import type {
+  FileChangesSnapshotView,
+  SessionSummaryView,
+} from "@shared/vscodeProtocol";
 
 import type { ApprovalCardRequest } from "../components/ApprovalCard";
 import type { CitationItem } from "../components/CiteLink";
@@ -256,12 +260,15 @@ function toChatTurnViews(
 export interface UseChatStreamOptions {
   sessionId?: string | null;
   initialTurns?: ChatTurnView[];
+  initialFileChanges?: FileChangesSnapshotView | null;
 }
 
 export interface UseChatStreamResult {
   sessionId: string;
   turns: ChatTurnView[];
   isStreaming: boolean;
+  fileChangesSnapshot: FileChangesSnapshotView | null;
+  setFileChangesSnapshot: (snapshot: FileChangesSnapshotView) => void;
   pendingPermission: ApprovalCardRequest | null;
   pendingQuestion: ClarifyingQuestionRequest | null;
   softInterrupts: SoftInterruptQueueItem[];
@@ -306,9 +313,72 @@ export function useChatStream(
   const setStorePermission = useAppStore((s) => s.setPendingPermission);
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const setStoreFileChangesSnapshot = useAppStore(
+    (s) => s.setFileChangesSnapshot,
+  );
 
   const sessionId =
     options.sessionId ?? storeSessionId ?? (!isVsCodeWebview() ? "ses_vscode_shell" : "");
+
+  const storeFileChanges = useAppStore((s) =>
+    sessionId ? (s.fileChangesBySession[sessionId] ?? null) : null,
+  );
+  const [localFileChanges, setLocalFileChanges] =
+    React.useState<FileChangesSnapshotView | null>(
+      options.initialFileChanges ?? null,
+    );
+
+  const setFileChangesSnapshot = React.useCallback(
+    (snapshot: FileChangesSnapshotView) => {
+      const targetSid = snapshot.sessionId || sessionId;
+      setLocalFileChanges(snapshot);
+      if (targetSid) {
+        setStoreFileChangesSnapshot(targetSid, snapshot);
+      }
+    },
+    [sessionId, setStoreFileChangesSnapshot],
+  );
+
+  React.useEffect(() => {
+    if (options.initialFileChanges !== undefined) {
+      setLocalFileChanges(options.initialFileChanges);
+    } else {
+      setLocalFileChanges(null);
+    }
+  }, [options.initialFileChanges, sessionId]);
+
+  React.useEffect(() => {
+    if (!sessionId) return;
+    return onHostMessage((msg) => {
+      if (
+        msg.type === "rayucode.fileChanges.updated" &&
+        msg.sessionId === sessionId
+      ) {
+        setLocalFileChanges(msg.snapshot);
+        setStoreFileChangesSnapshot(msg.sessionId, msg.snapshot);
+      }
+    });
+  }, [sessionId, setStoreFileChangesSnapshot]);
+
+  React.useEffect(() => {
+    if (options.initialFileChanges !== undefined) return;
+    if (!sessionId) return;
+    let cancelled = false;
+    void callRpc("changes.getSessionSummary", { sessionId })
+      .then((snapshot) => {
+        if (cancelled) return;
+        setLocalFileChanges(snapshot);
+        setStoreFileChangesSnapshot(sessionId, snapshot);
+      })
+      .catch(() => {
+        // Offline / unsupported bridge: rely on live events if any
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
+
+  const fileChangesSnapshot = localFileChanges ?? storeFileChanges;
 
   const isMockDemoSession = !isVsCodeWebview() && sessionId === "ses_vscode_shell";
 
@@ -871,6 +941,8 @@ export function useChatStream(
     sessionId,
     turns: allTurns,
     isStreaming,
+    fileChangesSnapshot,
+    setFileChangesSnapshot,
     pendingPermission: storePermission,
     pendingQuestion,
     softInterrupts,

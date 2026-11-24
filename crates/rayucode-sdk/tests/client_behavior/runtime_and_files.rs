@@ -284,3 +284,246 @@ fn ga_runtime_and_file_methods_map_requests_and_typed_replies() {
         ]
     );
 }
+
+#[test]
+fn file_change_methods_and_stream_filtering_roundtrip() {
+    use rayucode_sdk::{
+        FileChangeActionKind, FileChangeActionResponse, FileChangeConflict, FileChangeDiffPayload,
+        FileChangeEntrySummary, FileChangeHunk, FileChangeKind, FileChangeStatus,
+        FileChangesSnapshot, PermissionMode,
+    };
+
+    let sample_hunk = FileChangeHunk {
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        header: "@@ -1,1 +1,2 @@".into(),
+        lines: vec!["-old".into(), "+new".into(), "+added".into()],
+    };
+    let sample_snapshot = FileChangesSnapshot {
+        session_id: "s1".into(),
+        latest_turn_id: 3,
+        total_pending_files: 1,
+        total_additions: 2,
+        total_deletions: 1,
+        files: vec![FileChangeEntrySummary {
+            path: "/repo/src/lib.rs".into(),
+            display_path: "src/lib.rs".into(),
+            old_path: None,
+            kind: FileChangeKind::Modified,
+            status: FileChangeStatus::Pending,
+            additions: 2,
+            deletions: 1,
+            changed_in_latest_turn: true,
+            turn_id: 3,
+            edit_count: 1,
+            is_binary: false,
+            undoable: true,
+            can_redo: false,
+            preview_hunks: vec![sample_hunk.clone()],
+            preview_truncated: false,
+            updated_at_ms: 1_700_000_000_000,
+        }],
+    };
+    let sample_diff = FileChangeDiffPayload {
+        path: "/repo/src/lib.rs".into(),
+        display_path: "src/lib.rs".into(),
+        old_path: None,
+        kind: FileChangeKind::Modified,
+        status: FileChangeStatus::Pending,
+        additions: 2,
+        deletions: 1,
+        is_binary: false,
+        original_content: "old\n".into(),
+        modified_content: "new\nadded\n".into(),
+        unified_diff: "--- a/src/lib.rs\n+++ b/src/lib.rs\n".into(),
+        hunks: vec![sample_hunk],
+    };
+
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&requests);
+    let reply_snapshot = sample_snapshot.clone();
+    let reply_diff = sample_diff.clone();
+    let client = fake_harness(move |frame, writer| {
+        seen.lock().unwrap().push(frame.request.clone());
+        match &frame.request {
+            ApiRequest::SetPermissionMode { .. } => {
+                reply(frame, ApiEvent::Ok, writer);
+            }
+            ApiRequest::GetFileChanges { session_id } => {
+                // Also emit an unsolicited event for another session and for s1
+                // before replying, to test session-scoped stream filtering.
+                let mut other = reply_snapshot.clone();
+                other.session_id = "other".into();
+                push(
+                    ApiEvent::FileChangesState {
+                        session_id: "other".into(),
+                        snapshot: other,
+                    },
+                    writer,
+                );
+                push(
+                    ApiEvent::FileChangesState {
+                        session_id: session_id.clone(),
+                        snapshot: reply_snapshot.clone(),
+                    },
+                    writer,
+                );
+                reply(
+                    frame,
+                    ApiEvent::FileChangesState {
+                        session_id: session_id.clone(),
+                        snapshot: reply_snapshot.clone(),
+                    },
+                    writer,
+                );
+            }
+            ApiRequest::GetFileChangeDiff { session_id, .. } => {
+                reply(
+                    frame,
+                    ApiEvent::FileChangeDiff {
+                        session_id: session_id.clone(),
+                        diff: reply_diff.clone(),
+                    },
+                    writer,
+                );
+            }
+            ApiRequest::FileChangeAction {
+                session_id,
+                action,
+                force,
+                ..
+            } => {
+                let conflict = *action == FileChangeActionKind::Undo && !*force;
+                let response = FileChangeActionResponse {
+                    ok: !conflict,
+                    message: if conflict {
+                        "1 conflict".into()
+                    } else {
+                        "applied".into()
+                    },
+                    conflicts: if conflict {
+                        vec![FileChangeConflict {
+                            path: "/repo/src/lib.rs".into(),
+                            display_path: "src/lib.rs".into(),
+                            reason: "modified externally".into(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    snapshot: reply_snapshot.clone(),
+                };
+                reply(
+                    frame,
+                    ApiEvent::FileChangeActionResult {
+                        session_id: session_id.clone(),
+                        response,
+                    },
+                    writer,
+                );
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    });
+
+    let stream = client.events(Some("s1"));
+    client
+        .set_permission_mode("s1", PermissionMode::AcceptEdits)
+        .expect("set permission mode");
+    let snap = client.get_file_changes("s1").expect("get_file_changes");
+    assert_eq!(snap, sample_snapshot);
+
+    // Stream filtered to "s1" skips "other" and delivers "s1".
+    let streamed = stream
+        .next_timeout(Duration::from_secs(2))
+        .expect("streamed file_changes_state");
+    assert_eq!(
+        streamed,
+        ApiEvent::FileChangesState {
+            session_id: "s1".into(),
+            snapshot: sample_snapshot.clone(),
+        }
+    );
+
+    let diff = client
+        .get_file_change_diff("s1", "/repo/src/lib.rs")
+        .expect("get_file_change_diff");
+    assert_eq!(diff, sample_diff);
+
+    let conflict_resp = client
+        .undo_file_change("s1", Some("/repo/src/lib.rs"), false)
+        .expect("undo with conflict");
+    assert!(!conflict_resp.ok);
+    assert_eq!(conflict_resp.conflicts.len(), 1);
+
+    let forced_resp = client
+        .undo_file_change("s1", Some("/repo/src/lib.rs"), true)
+        .expect("forced undo");
+    assert!(forced_resp.ok);
+
+    assert!(client.keep_file_change("s1", Some("/repo/src/lib.rs")).unwrap().ok);
+    assert!(client.keep_file_change("s1", None).unwrap().ok);
+    assert!(client.undo_file_change("s1", None, false).unwrap().ok);
+    assert!(client.redo_file_change("s1", Some("/repo/src/lib.rs"), false).unwrap().ok);
+    assert!(client.redo_file_change("s1", None, true).unwrap().ok);
+
+    assert_eq!(
+        *requests.lock().unwrap(),
+        vec![
+            ApiRequest::SetPermissionMode {
+                session_id: "s1".into(),
+                mode: PermissionMode::AcceptEdits,
+            },
+            ApiRequest::GetFileChanges {
+                session_id: "s1".into(),
+            },
+            ApiRequest::GetFileChangeDiff {
+                session_id: "s1".into(),
+                path: "/repo/src/lib.rs".into(),
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::Undo,
+                path: Some("/repo/src/lib.rs".into()),
+                force: false,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::Undo,
+                path: Some("/repo/src/lib.rs".into()),
+                force: true,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::Keep,
+                path: Some("/repo/src/lib.rs".into()),
+                force: false,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::KeepAll,
+                path: None,
+                force: false,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::UndoAll,
+                path: None,
+                force: false,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::Redo,
+                path: Some("/repo/src/lib.rs".into()),
+                force: false,
+            },
+            ApiRequest::FileChangeAction {
+                session_id: "s1".into(),
+                action: FileChangeActionKind::RedoAll,
+                path: None,
+                force: true,
+            },
+        ]
+    );
+}

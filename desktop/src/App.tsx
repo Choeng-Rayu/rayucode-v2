@@ -22,6 +22,7 @@ import {
   type ComposerSubmitPayload,
 } from "@/features/sessions"
 import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
+import { normalizeFileChangesSnapshot } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 
 const AutomationsView = React.lazy(() =>
@@ -254,6 +255,14 @@ export function App() {
           toolName: String(frame.tool_name ?? "tool"),
           description: String(frame.description ?? "Tool execution requested"),
         })
+      } else if (frame.ev === "file_changes_state") {
+        const sid = typeof frame.session_id === "string" ? frame.session_id : ""
+        const snapshot = normalizeFileChangesSnapshot(frame.snapshot, sid)
+        if (snapshot && snapshot.session_id) {
+          useAppStore
+            .getState()
+            .setSessionFileChanges(snapshot.session_id, snapshot)
+        }
       } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
         useAppStore.getState().setPendingPermission(null)
       }

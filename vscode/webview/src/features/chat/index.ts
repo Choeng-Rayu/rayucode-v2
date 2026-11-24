@@ -8,5 +8,6 @@ export * from "./components/InlineDiffCard";
 export * from "./components/ShellCard";
 export * from "./components/ToolStepCard";
 export * from "./components/TurnActions";
+export * from "./components/TurnFileSummaryCard";
 export * from "./components/WorkTrace";
 export * from "./hooks/useChatStream";

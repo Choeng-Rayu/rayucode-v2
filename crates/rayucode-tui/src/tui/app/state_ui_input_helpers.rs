@@ -191,6 +191,16 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Cycle or set diff display mode (off/inline/full/file)",
     ),
     RegisteredCommand::public(
+        "/changes",
+        "Open interactive file changes review overlay (Alt+R)",
+    ),
+    RegisteredCommand::public("/keep", "Accept tracked file changes (/keep [path|all])"),
+    RegisteredCommand::public(
+        "/undo",
+        "Revert tracked file changes (/undo [--force] [path|all])",
+    ),
+    RegisteredCommand::public("/redo", "Re-apply undone file changes (/redo [path|all])"),
+    RegisteredCommand::public(
         "/onboarding-preview",
         "Preview the first-run onboarding screen",
     ),
@@ -490,6 +500,9 @@ impl App {
         if crate::tui::is_ssh_remote() {
             // Do not enumerate local account labels, projects, or goals while
             // completing a command intended for a different host.
+            if let Some(candidates) = self.file_change_suggestion_candidates(input) {
+                return self.rank_suggestions(input, candidates);
+            }
             if input.starts_with("/model ") || input.starts_with("/models ") {
                 return self.rank_suggestions(input, self.model_suggestion_candidates());
             }
@@ -503,6 +516,10 @@ impl App {
         // Only show suggestions when input starts with /
         if !input.starts_with('/') {
             return vec![];
+        }
+
+        if let Some(candidates) = self.file_change_suggestion_candidates(input) {
+            return self.rank_suggestions(input, candidates);
         }
 
         let prefix = input.to_lowercase();

@@ -273,6 +273,93 @@ export interface ToolConfiguration {
   custom?: SessionToolDefinition[];
 }
 
+/** Type of filesystem mutation tracked for a file in a session. */
+export type FileChangeKind = "created" | "modified" | "deleted" | "renamed";
+
+/** Review status of a tracked file change entry. */
+export type FileChangeStatus = "pending" | "kept" | "undone";
+
+/** Review action requested by a client on one or all tracked file changes. */
+export type FileChangeActionKind =
+  | "keep"
+  | "undo"
+  | "redo"
+  | "keep_all"
+  | "undo_all"
+  | "redo_all";
+
+/** Structured unified-diff hunk shared across summary previews and full diffs. */
+export interface FileChangeHunk {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  header: string;
+  lines: string[];
+}
+
+/** Compact per-file summary sent inside `FileChangesSnapshot`. */
+export interface FileChangeEntrySummary {
+  path: string;
+  display_path: string;
+  old_path?: string;
+  kind: FileChangeKind;
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  changed_in_latest_turn: boolean;
+  turn_id: number;
+  edit_count: number;
+  is_binary: boolean;
+  undoable: boolean;
+  can_redo: boolean;
+  /** Omitted by the runtime when empty. */
+  preview_hunks?: FileChangeHunk[];
+  preview_truncated: boolean;
+  updated_at_ms: number;
+}
+
+/** Authoritative session-scoped snapshot of tracked file changes for review UIs. */
+export interface FileChangesSnapshot {
+  session_id: string;
+  latest_turn_id: number;
+  total_pending_files: number;
+  total_additions: number;
+  total_deletions: number;
+  files: FileChangeEntrySummary[];
+}
+
+/** Full uncapped diff payload returned on demand for a single tracked file. */
+export interface FileChangeDiffPayload {
+  path: string;
+  display_path: string;
+  old_path?: string;
+  kind: FileChangeKind;
+  status: FileChangeStatus;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  original_content: string;
+  modified_content: string;
+  unified_diff: string;
+  hunks: FileChangeHunk[];
+}
+
+/** Conflict encountered while safely undoing or redoing a file change. */
+export interface FileChangeConflict {
+  path: string;
+  display_path: string;
+  reason: string;
+}
+
+/** Structured response to a `FileChangeActionKind` request. */
+export interface FileChangeActionResponse {
+  ok: boolean;
+  message: string;
+  conflicts: FileChangeConflict[];
+  snapshot: FileChangesSnapshot;
+}
+
 export type ApiRequest =
   | {
       req: "hello";
@@ -338,6 +425,15 @@ export type ApiRequest =
   | { req: "find_files"; session_id: string; query: string; limit?: number }
   | { req: "search_text"; session_id: string; query: string; path?: string; limit?: number }
   | { req: "file_status"; session_id: string; path: string }
+  | { req: "get_file_changes"; session_id: string }
+  | { req: "get_file_change_diff"; session_id: string; path: string }
+  | {
+      req: "file_change_action";
+      session_id: string;
+      action: FileChangeActionKind;
+      path?: string;
+      force?: boolean;
+    }
   | { req: "get_todo_state"; session_id: string }
   | { req: "ack_todo_follow_up"; session_id: string; effects: TodoEffects }
   | { req: "set_model"; session_id: string; model: string }
@@ -442,6 +538,9 @@ export type ApiEvent =
     }
   | { ev: "side_panel_state"; session_id: string; snapshot: SidePanelSnapshot }
   | { ev: "applet_state"; session_id: string; snapshot: AgentApplets }
+  | { ev: "file_changes_state"; session_id: string; snapshot: FileChangesSnapshot }
+  | { ev: "file_change_diff"; session_id: string; diff: FileChangeDiffPayload }
+  | { ev: "file_change_action_result"; session_id: string; response: FileChangeActionResponse }
   | { ev: "side_pane_images"; session_id: string; images: RenderedImage[] }
   | {
       ev: "token_usage";
@@ -621,6 +720,9 @@ export const KNOWN_EVENT_KINDS = [
   "side_pane_images",
   "side_panel_state",
   "applet_state",
+  "file_changes_state",
+  "file_change_diff",
+  "file_change_action_result",
   "pong",
   "text_delta",
   "text_done",
@@ -698,6 +800,9 @@ export const KNOWN_REQUEST_KINDS = [
   "find_files",
   "search_text",
   "file_status",
+  "get_file_changes",
+  "get_file_change_diff",
+  "file_change_action",
   "get_todo_state",
   "ack_todo_follow_up",
   "set_model",

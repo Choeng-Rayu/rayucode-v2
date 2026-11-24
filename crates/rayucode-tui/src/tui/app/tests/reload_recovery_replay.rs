@@ -50,6 +50,7 @@ fn reload_replay_history(
         activity: None,
         side_panel: Default::default(),
         applets: Default::default(),
+        file_changes: None,
     }
 }
 

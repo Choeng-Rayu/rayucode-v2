@@ -74,6 +74,22 @@ const rayuApi = {
       }
     },
   },
+  fileChanges: {
+    get: (sessionId) =>
+      ipcRenderer.invoke("rayu:file-changes:get", { sessionId }),
+    diff: (sessionId, filePath) =>
+      ipcRenderer.invoke("rayu:file-changes:diff", {
+        sessionId,
+        path: filePath,
+      }),
+    action: (sessionId, action, opts) =>
+      ipcRenderer.invoke("rayu:file-changes:action", {
+        sessionId,
+        action,
+        ...(opts && opts.path !== undefined ? { path: opts.path } : {}),
+        ...(opts && opts.force !== undefined ? { force: opts.force } : {}),
+      }),
+  },
   workspace: {
     getInfo: () => ipcRenderer.invoke("rayu:workspace:info"),
     setPath: (targetPath) =>
