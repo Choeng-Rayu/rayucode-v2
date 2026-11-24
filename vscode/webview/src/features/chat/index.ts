@@ -10,4 +10,5 @@ export * from "./components/ToolStepCard";
 export * from "./components/TurnActions";
 export * from "./components/TurnFileSummaryCard";
 export * from "./components/WorkTrace";
+export * from "./hooks/liveTraceStore";
 export * from "./hooks/useChatStream";

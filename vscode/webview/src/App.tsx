@@ -12,7 +12,7 @@ import {
   SettingsSkeleton,
   SwarmSkeleton,
 } from "@/components/ui";
-import { ChatWorkspaceView } from "@/features/chat";
+import { ChatWorkspaceView, LiveTraceController } from "@/features/chat";
 import {
   HomePage,
   SessionComposer,
@@ -284,19 +284,22 @@ export function App() {
 
   if (showAuthGate) {
     return (
-      <div
-        data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
-        className="h-screen w-screen overflow-hidden bg-canvas"
-      >
-        <AuthWelcomeScreen
-          onContinue={() => {
-            setAuthDialogOpen(false);
-            if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
-              setAuthBypassed(true);
-            }
-          }}
-        />
-      </div>
+      <>
+        <LiveTraceController />
+        <div
+          data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
+          className="h-screen w-screen overflow-hidden bg-canvas"
+        >
+          <AuthWelcomeScreen
+            onContinue={() => {
+              setAuthDialogOpen(false);
+              if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
+                setAuthBypassed(true);
+              }
+            }}
+          />
+        </div>
+      </>
     );
   }
 
@@ -409,25 +412,28 @@ export function App() {
   };
 
   return (
-    <AppShell
-      contextSlot={<ContextPanel />}
-      toolsSlot={<ToolsProgressPanel />}
-      artifactsSlot={<ArtifactsPanel />}
-      filesSlot={<FilesSidePanel />}
-      documentSlot={documentSlot}
-      backgroundDockSlot={
-        activeRoute === "workspace" ? undefined : <BackgroundDockBar />
-      }
-      backgroundDrawerSlot={
-        <BackgroundProcessDrawer
-          open={backgroundDrawerOpen}
-          onOpenChange={setBackgroundDrawerOpen}
-          onClose={() => setBackgroundDrawerOpen(false)}
-        />
-      }
-    >
-      {renderRoute()}
-    </AppShell>
+    <>
+      <LiveTraceController />
+      <AppShell
+        contextSlot={<ContextPanel />}
+        toolsSlot={<ToolsProgressPanel />}
+        artifactsSlot={<ArtifactsPanel />}
+        filesSlot={<FilesSidePanel />}
+        documentSlot={documentSlot}
+        backgroundDockSlot={
+          activeRoute === "workspace" ? undefined : <BackgroundDockBar />
+        }
+        backgroundDrawerSlot={
+          <BackgroundProcessDrawer
+            open={backgroundDrawerOpen}
+            onOpenChange={setBackgroundDrawerOpen}
+            onClose={() => setBackgroundDrawerOpen(false)}
+          />
+        }
+      >
+        {renderRoute()}
+      </AppShell>
+    </>
   );
 }
 
