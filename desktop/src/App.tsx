@@ -83,6 +83,7 @@ function ActiveWorkspaceStage() {
         images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
+        startedAtMs: Date.now(),
       })
     },
     [activeSessionId, queryClient]

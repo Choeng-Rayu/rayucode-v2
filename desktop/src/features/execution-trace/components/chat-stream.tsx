@@ -26,6 +26,7 @@ import { useAppStore } from "@/lib/app-store"
 import {
   createHarnessStreamTracker,
   mapHarnessFrameToLiveEvents,
+  type HarnessStreamTracker,
 } from "@/lib/harness-adapter"
 import {
   ipcClient,
@@ -417,10 +418,14 @@ export function ChatStream({
   const authState = useAppStore((s) => s.authState)
   const activeLiveTurnRef = React.useRef(false)
   const turnsForHistoryRef = React.useRef<ExecutionTurn[]>([])
+  const trackerRef = React.useRef<HarnessStreamTracker | null>(null)
 
   // Hydrate persisted/session file changes when opening or switching sessions
+  // Skip when a brand-new prompt is about to stream so we never queue behind sendMessage.
   React.useEffect(() => {
     if (!effectiveSessionId) return
+    const pending = useAppStore.getState().pendingStreamPrompt
+    if (pending && pending.sessionId === effectiveSessionId) return
     let cancelled = false
     void ipcClient.fileChanges
       .get(effectiveSessionId)
@@ -453,6 +458,7 @@ export function ChatStream({
   // Stream live RayuCode harness frames directly into the rAF-batched trace
   React.useEffect(() => {
     const tracker = createHarnessStreamTracker()
+    trackerRef.current = tracker
 
     const unsubscribe = ipcClient.harness.onEvent((frame) => {
       const frameSession =
@@ -506,7 +512,12 @@ export function ChatStream({
       }
     })
 
-    return unsubscribe
+    return () => {
+      if (trackerRef.current === tracker) {
+        trackerRef.current = null
+      }
+      unsubscribe()
+    }
   }, [
     effectiveSessionId,
     pushEvent,
@@ -547,11 +558,24 @@ export function ChatStream({
         }
       }
 
+      const startedAtMs = promptToSend.startedAtMs ?? Date.now()
+      if (trackerRef.current) {
+        trackerRef.current.startedAtMs = startedAtMs
+        trackerRef.current.turnActive = true
+        trackerRef.current.hasStreamedTextInPhase = false
+        trackerRef.current.batchEpoch = 1
+        trackerRef.current.phaseHasReads = false
+        trackerRef.current.phaseHasCommands = false
+        trackerRef.current.phaseHasSearches = false
+        trackerRef.current.toolInputs.clear()
+      }
+
       activeLiveTurnRef.current = true
       startLiveTurn({
         sessionId: effectiveSessionId,
         userPrompt: promptToSend.prompt,
         userImages: promptToSend.images,
+        startedAtMs,
       })
       void ipcClient.trace
         .sendPrompt({

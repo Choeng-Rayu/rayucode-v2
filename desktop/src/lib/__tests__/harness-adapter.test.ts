@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createHarnessStreamTracker,
+  formatDurationSeconds,
   mapHarnessFrameToLiveEvents,
   mapHistoryMessagesToTurns,
   mapModelRoutesToOptions,
@@ -142,7 +143,7 @@ describe("harness-adapter", () => {
     )
     expect(doneEvents[1]).toMatchObject({
       type: "step",
-      groupTitle: "Ran a command",
+      groupTitle: "Read files, ran commands",
       step: { kind: "command", command: "cargo test", output: "ok", exitCode: 0 },
     })
 
@@ -159,6 +160,92 @@ describe("harness-adapter", () => {
     expect(completed.find((e) => e.type === "complete")).toMatchObject({
       type: "complete",
       credits: "0.05 cr",
+    })
+  })
+
+  it("formats elapsed seconds into minutes and hours without 60s or 1m 60s glitches", () => {
+    expect(formatDurationSeconds(0)).toBe("1s")
+    expect(formatDurationSeconds(21)).toBe("21s")
+    expect(formatDurationSeconds(59.4)).toBe("59s")
+    expect(formatDurationSeconds(59.6)).toBe("1m")
+    expect(formatDurationSeconds(60)).toBe("1m")
+    expect(formatDurationSeconds(61)).toBe("1m 1s")
+    expect(formatDurationSeconds(119.6)).toBe("2m")
+    expect(formatDurationSeconds(125)).toBe("2m 5s")
+    expect(formatDurationSeconds(3661)).toBe("1h 1m 1s")
+  })
+
+  it("auto-promotes pre-tool text to a work note and unpacks Rust daemon batch calls into clean Codex steps", () => {
+    const tracker = createHarnessStreamTracker()
+
+    // Model streams a short preamble before calling tools
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "text_delta", text: "I'll inspect the repository structure." },
+        tracker
+      )
+    ).toEqual([
+      { type: "answer-delta", delta: "I'll inspect the repository structure." },
+    ])
+
+    // When tool_start arrives, the preamble is automatically promoted into the work trace
+    const startEvents = mapHarnessFrameToLiveEvents(
+      { ev: "tool_start", call_id: "c_batch", name: "batch" },
+      tracker
+    )
+    expect(startEvents[0]).toEqual({ type: "promote-note" })
+    expect(startEvents[1]).toEqual({
+      type: "tool-status",
+      label: "Inspecting workspace...",
+    })
+
+    // Streamed JSON input for batch tool_calls
+    mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_input_delta",
+        call_id: "c_batch",
+        delta: JSON.stringify({
+          tool_calls: [
+            { tool: "read", file_path: "README.md", intent: "Read README" },
+            { tool: "ls", directory: "desktop", intent: "List desktop" },
+            { tool: "bash", command: "git status --short", intent: "Check git" },
+          ],
+        }),
+      },
+      tracker
+    )
+
+    const doneEvents = mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_done",
+        call_id: "c_batch",
+        name: "batch",
+        output:
+          "[batch timing: duration_ms=15 output_bytes=200] --- [1] read ---\n# RayuCode\n--- [2] ls ---\npackage.json\n--- [3] bash ---\nM desktop/src/App.tsx",
+      },
+      tracker
+    )
+
+    const steps = doneEvents.filter((e) => e.type === "step")
+    expect(steps).toHaveLength(3)
+    expect(steps[0]).toMatchObject({
+      type: "step",
+      groupTitle: "Read files",
+      step: { kind: "read", label: "Read", files: [{ file: "README.md" }] },
+    })
+    expect(steps[1]).toMatchObject({
+      type: "step",
+      groupTitle: "Read files",
+      step: { kind: "list", text: "Listed files in", highlight: "desktop" },
+    })
+    expect(steps[2]).toMatchObject({
+      type: "step",
+      groupTitle: "Read files, ran commands",
+      step: {
+        kind: "command",
+        command: "git status --short",
+        output: "M desktop/src/App.tsx",
+      },
     })
   })
 })

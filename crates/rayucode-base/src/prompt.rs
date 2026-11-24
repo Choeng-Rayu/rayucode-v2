@@ -32,7 +32,7 @@ pub fn load_base_system_prompt(working_dir: Option<&Path>) -> String {
 }
 
 /// Prompt guidance for the optional Mermaid rendering capability.
-pub const MERMAID_PROMPT: &str = "# Mermaid\n\nRender fenced `mermaid` blocks inline.";
+pub const MERMAID_PROMPT: &str = "# Mermaid\n\nOnly render fenced `mermaid` blocks when the user explicitly asks for a diagram. Do not add unsolicited diagrams.";
 
 /// Harness capabilities that conditionally contribute prompt modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -302,6 +302,7 @@ export class RayuDaemonClient extends EventEmitter {
   private desktopRuntime: DesktopToolDeps | null = null
   private activeWorkingDir: string | null = null
   private desiredPermissionMode: PermissionModeId | null = null
+  private syncedPermissionModeBySession = new Map<string, PermissionModeId>()
   private pendingPermissionSync = new Map<string, PermissionModeId>()
   private pendingToolSync = new Set<string>()
   private configuredToolSessions = new Set<string>()
@@ -380,6 +381,7 @@ export class RayuDaemonClient extends EventEmitter {
     this.client = client
     this.attachedSessionId = null
     this.configuredToolSessions.clear()
+    this.syncedPermissionModeBySession.clear()
     this.hasConnectedOnce = true
     if (activeSocketPath) {
       this.socketPath = activeSocketPath
@@ -482,14 +484,27 @@ export class RayuDaemonClient extends EventEmitter {
     }
 
     this.connecting = (async () => {
+      const instanceSocket = path.join(
+        getDesktopInstanceHome(),
+        "run",
+        "rayu-api.sock"
+      )
+      // Fast-path: if the Desktop daemon socket is already alive and the default
+      // socket path is absent, dial the live instance socket immediately.
+      if (
+        this.socketPath !== instanceSocket &&
+        !isUnixSocketPath(this.socketPath) &&
+        isUnixSocketPath(instanceSocket)
+      ) {
+        try {
+          return await this.dialSocket(instanceSocket)
+        } catch {
+          // Fall through to standard probe/launch flow
+        }
+      }
       try {
         return await this.dialSocket(this.socketPath)
       } catch (firstErr) {
-        const instanceSocket = path.join(
-          getDesktopInstanceHome(),
-          "run",
-          "rayu-api.sock"
-        )
         if (this.socketPath !== instanceSocket && fs.existsSync(instanceSocket)) {
           try {
             return await this.dialSocket(instanceSocket)
@@ -560,6 +575,7 @@ export class RayuDaemonClient extends EventEmitter {
           // all read and write the exact same ~/.rayu/sessions store.
           env: {
             RAYU_HOME: canonicalHome,
+            RAYU_ENABLE_MERMAID: process.env.RAYU_ENABLE_MERMAID ?? "false",
           },
           inheritLogins: true,
           clientName: "rayucode-desktop/0.1.0",
@@ -571,14 +587,6 @@ export class RayuDaemonClient extends EventEmitter {
         })
         this.launchedClient = launched
         const latencyMs = Math.max(1, Date.now() - startedAt)
-        if (isUnixSocketPath(instanceSocket)) {
-          try {
-            await this.dialSocket(instanceSocket)
-            return this.getStatus()
-          } catch {
-            // Fall back to the direct launched client
-          }
-        }
         this.attachClient(launched, latencyMs, instanceSocket)
         return this.getStatus()
       } catch (error) {
@@ -722,6 +730,7 @@ export class RayuDaemonClient extends EventEmitter {
         return { ok: false, error: msg }
       }
       this.pendingPermissionSync.delete(sessionId)
+      this.syncedPermissionModeBySession.set(sessionId, mode)
       return { ok: true }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -925,6 +934,12 @@ export class RayuDaemonClient extends EventEmitter {
     if (!this.client) {
       return { ok: true }
     }
+    if (this.syncedPermissionModeBySession.get(sessionId) === mode) {
+      return { ok: true }
+    }
+    if (this.attachedSessionId === sessionId) {
+      return this.sendPermissionModeToClient(this.client, sessionId, mode)
+    }
     return this.runSerialized(async () => {
       let client = await this.connect()
       client = await this.ensureAttached(client, sessionId)
@@ -1019,6 +1034,16 @@ export class RayuDaemonClient extends EventEmitter {
   async getFileChanges(sessionId: string): Promise<FileChangesSnapshot> {
     if (!sessionId || sessionId.startsWith("ses_")) {
       return emptyFileChangesSnapshot(sessionId)
+    }
+    if (this.client && this.attachedSessionId === sessionId) {
+      try {
+        if (!this.supportsFileChanges(this.client)) {
+          return emptyFileChangesSnapshot(sessionId)
+        }
+        return await this.client.getFileChanges(sessionId)
+      } catch {
+        return emptyFileChangesSnapshot(sessionId)
+      }
     }
     return this.runSerialized(async () => {
       try {

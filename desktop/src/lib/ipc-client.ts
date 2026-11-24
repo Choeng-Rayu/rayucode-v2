@@ -3419,8 +3419,12 @@ export const ipcClient = {
           const hasExplicitStoredModel =
             typeof window !== "undefined" &&
             Boolean(window.localStorage.getItem("rayu-model-id"))
+          const hasExplicitStoredEffort =
+            typeof window !== "undefined" &&
+            Boolean(window.localStorage.getItem("rayu-effort"))
           if (
             input.modelId &&
+            input.modelId !== "default" &&
             hasExplicitStoredModel &&
             bridge.harness.setModel
           ) {
@@ -3428,7 +3432,12 @@ export const ipcClient = {
               .setModel(live.session_id, input.modelId)
               .catch(() => {})
           }
-          if (input.effort && bridge.harness.setReasoningEffort) {
+          if (
+            input.effort &&
+            hasExplicitStoredEffort &&
+            input.effort !== "Auto" &&
+            bridge.harness.setReasoningEffort
+          ) {
             void bridge.harness
               .setReasoningEffort(live.session_id, input.effort.toLowerCase())
               .catch(() => {})

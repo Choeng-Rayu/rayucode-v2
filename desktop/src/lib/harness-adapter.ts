@@ -86,10 +86,16 @@ const EMPTY_DIFF: InlineDiffCardData = {
 }
 
 export function formatDurationSeconds(secs?: number): string {
-  if (!secs || secs <= 0) return "1s"
-  if (secs < 60) return `${Math.max(1, Math.round(secs))}s`
-  const mins = Math.floor(secs / 60)
-  const rem = Math.round(secs % 60)
+  if (!secs || !Number.isFinite(secs) || secs <= 0) return "1s"
+  const totalSec = Math.max(1, Math.round(secs))
+  if (totalSec < 60) return `${totalSec}s`
+  const hours = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const rem = totalSec % 60
+  if (hours > 0) {
+    if (rem > 0) return `${hours}h ${mins}m ${rem}s`
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+  }
   return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`
 }
 
@@ -123,21 +129,82 @@ function describeActiveTool(
   name: string,
   args: Record<string, unknown>
 ): string {
+  const intent =
+    typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+  if (intent) {
+    return intent.endsWith("...") ? intent : `${intent}...`
+  }
   const lower = name.toLowerCase()
+  if (lower === "batch") {
+    const calls = Array.isArray(args.tool_calls) ? args.tool_calls : []
+    if (calls.length > 0) {
+      const first = calls[0] as Record<string, unknown> | undefined
+      const firstIntent =
+        typeof first?.intent === "string" && first.intent.trim()
+          ? first.intent.trim()
+          : ""
+      if (firstIntent) {
+        return firstIntent.endsWith("...") ? firstIntent : `${firstIntent}...`
+      }
+      return calls.length === 1
+        ? "Inspecting workspace..."
+        : `Running ${calls.length} parallel checks...`
+    }
+    return "Inspecting workspace..."
+  }
   if (lower === "read_file" || lower === "read") {
-    const p = typeof args.path === "string" ? args.path : ""
+    const p =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.file_path === "string"
+          ? args.file_path
+          : ""
     return p ? `Reading ${basenameOf(p)}...` : "Reading files..."
   }
-  if (lower === "list_files" || lower === "ls") {
-    const d = typeof args.directory === "string" ? args.directory : ""
-    return d && d !== "." ? `Listing files in ${d}...` : "Listing workspace files..."
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    const d =
+      typeof args.directory === "string"
+        ? args.directory
+        : typeof args.path === "string"
+          ? args.path
+          : ""
+    return d && d !== "." ? `Listing files in ${d}...` : "Listing files..."
   }
-  if (lower === "search_files" || lower === "grep" || lower === "rg") {
-    const q = typeof args.query === "string" ? args.query : ""
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    const q =
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.pattern === "string"
+          ? args.pattern
+          : ""
     return q ? `Searching for "${q}"...` : "Searching files..."
   }
   if (lower === "run_command" || lower === "bash" || lower === "shell") {
     return "Running command..."
+  }
+  if (lower === "edit" || lower === "write" || lower === "apply_patch") {
+    const p =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.path === "string"
+          ? args.path
+          : ""
+    return p ? `Updating ${basenameOf(p)}...` : "Updating files..."
+  }
+  if (lower === "webfetch" || lower === "websearch") {
+    return lower === "websearch" ? "Searching web..." : "Fetching page..."
+  }
+  if (lower === "todo" || lower === "todowrite") {
+    return "Updating plan..."
   }
   if (lower === "create_powerpoint") {
     const title = typeof args.title === "string" ? args.title.trim() : ""
@@ -375,6 +442,11 @@ export interface HarnessStreamTracker {
   startedAtMs: number
   turnActive: boolean
   batchEpoch: number
+  hasStreamedTextInPhase: boolean
+  phaseHasReads: boolean
+  phaseHasCommands: boolean
+  phaseHasSearches: boolean
+  phaseCommandCount: number
   lastCredits?: string
   lastKvCachePct?: number
 }
@@ -385,7 +457,299 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     startedAtMs: Date.now(),
     turnActive: false,
     batchEpoch: 1,
+    hasStreamedTextInPhase: false,
+    phaseHasReads: false,
+    phaseHasCommands: false,
+    phaseHasSearches: false,
+    phaseCommandCount: 0,
   }
+}
+
+function resetTrackerPhase(tracker: HarnessStreamTracker): void {
+  tracker.phaseHasReads = false
+  tracker.phaseHasCommands = false
+  tracker.phaseHasSearches = false
+  tracker.phaseCommandCount = 0
+}
+
+function computePhaseGroupTitle(tracker: HarnessStreamTracker): string {
+  const hasReadOrSearch = tracker.phaseHasReads || tracker.phaseHasSearches
+  if (hasReadOrSearch && tracker.phaseHasCommands) {
+    return "Read files, ran commands"
+  }
+  if (tracker.phaseHasReads) {
+    return "Read files"
+  }
+  if (tracker.phaseHasSearches) {
+    return "Searched files"
+  }
+  if (tracker.phaseHasCommands) {
+    return tracker.phaseCommandCount > 1 ? "Ran commands" : "Ran a command"
+  }
+  return "Read files, ran commands"
+}
+
+interface ParsedBatchOutputSection {
+  index: number
+  tool: string
+  output: string
+  isError: boolean
+}
+
+function splitBatchOutputSections(rawOutput: string): ParsedBatchOutputSection[] {
+  if (!rawOutput.trim()) return []
+  const cleaned = rawOutput.replace(/^\[batch timing:[^\]]*\]\s*/i, "")
+  const headerRegex = /---\s*\[(\d+)\]\s*([^\n-]+?)\s*---/g
+  const matches: Array<{
+    index: number
+    tool: string
+    start: number
+    contentStart: number
+  }> = []
+  let m: RegExpExecArray | null
+  while ((m = headerRegex.exec(cleaned)) !== null) {
+    matches.push({
+      index: Number.parseInt(m[1], 10),
+      tool: m[2].trim(),
+      start: m.index,
+      contentStart: m.index + m[0].length,
+    })
+  }
+  if (matches.length === 0) return []
+  return matches.map((cur, idx) => {
+    const end = idx + 1 < matches.length ? matches[idx + 1].start : cleaned.length
+    const sectionText = cleaned.slice(cur.contentStart, end).trim()
+    return {
+      index: cur.index,
+      tool: cur.tool,
+      output: sectionText,
+      isError: /^error:/i.test(sectionText),
+    }
+  })
+}
+
+function extractBatchSubcallArgs(entry: Record<string, unknown>): {
+  tool: string
+  args: Record<string, unknown>
+} {
+  const tool =
+    typeof entry.tool === "string" && entry.tool.trim()
+      ? entry.tool.trim()
+      : typeof entry.name === "string" && entry.name.trim()
+        ? entry.name.trim()
+        : typeof entry.tool_name === "string" && entry.tool_name.trim()
+          ? entry.tool_name.trim()
+          : "tool"
+  const nested =
+    (entry.parameters && typeof entry.parameters === "object"
+      ? (entry.parameters as Record<string, unknown>)
+      : null) ??
+    (entry.arguments && typeof entry.arguments === "object"
+      ? (entry.arguments as Record<string, unknown>)
+      : null) ??
+    (entry.args && typeof entry.args === "object"
+      ? (entry.args as Record<string, unknown>)
+      : null) ??
+    (entry.input && typeof entry.input === "object"
+      ? (entry.input as Record<string, unknown>)
+      : null)
+
+  const merged: Record<string, unknown> = { ...(nested ?? {}) }
+  for (const [k, v] of Object.entries(entry)) {
+    if (
+      k === "tool" ||
+      k === "name" ||
+      k === "tool_name" ||
+      k === "parameters" ||
+      k === "arguments" ||
+      k === "args" ||
+      k === "input"
+    ) {
+      continue
+    }
+    if (merged[k] === undefined) {
+      merged[k] = v
+    }
+  }
+  return { tool, args: merged }
+}
+
+function mapSingleWorkStep(
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+  output: string,
+  error: string | undefined,
+  tracker: HarnessStreamTracker
+): TraceStepItem {
+  const lower = name.toLowerCase()
+  const intent =
+    typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+
+  if (lower === "read_file" || lower === "read") {
+    tracker.phaseHasReads = true
+    const relPath =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.file_path === "string"
+          ? args.file_path
+          : "file"
+    const startLine =
+      typeof args.start_line === "number"
+        ? args.start_line
+        : typeof args.offset === "number"
+          ? args.offset
+          : 1
+    const endLine = typeof args.end_line === "number" ? args.end_line : null
+    const displayLabel = endLine
+      ? `${relPath}:${startLine}-${endLine}`
+      : relPath
+    const fileStep: FileReadStep = {
+      id: callId,
+      kind: "read",
+      label: "Read",
+      files: [
+        {
+          file: basenameOf(relPath),
+          path: relPath,
+          line: startLine,
+          rangeLabel: displayLabel,
+        },
+      ],
+    }
+    return fileStep
+  }
+
+  if (lower === "edit" || lower === "write" || lower === "apply_patch") {
+    tracker.phaseHasReads = true
+    const relPath =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.path === "string"
+          ? args.path
+          : "file"
+    const fileStep: FileReadStep = {
+      id: callId,
+      kind: "read",
+      label: lower === "write" ? "Wrote" : "Edited",
+      files: [
+        {
+          file: basenameOf(relPath),
+          path: relPath,
+          line: 1,
+          rangeLabel: relPath,
+        },
+      ],
+    }
+    return fileStep
+  }
+
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    tracker.phaseHasReads = true
+    const rawDir =
+      typeof args.directory === "string"
+        ? args.directory.trim()
+        : typeof args.path === "string"
+          ? args.path.trim()
+          : ""
+    const hasSubdir = Boolean(rawDir && rawDir !== "." && rawDir !== "./")
+    const listStep: ListStep = {
+      id: callId,
+      kind: "list",
+      text: hasSubdir ? "Listed files in" : "Listed files",
+      ...(hasSubdir ? { highlight: rawDir } : {}),
+    }
+    return listStep
+  }
+
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    tracker.phaseHasSearches = true
+    const query =
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.pattern === "string"
+          ? args.pattern
+          : "workspace"
+    const searchStep: ListStep = {
+      id: callId,
+      kind: "search",
+      text: lower === "glob" || lower === "find_files" ? "Found files matching" : "Searched for",
+      highlight: query,
+    }
+    return searchStep
+  }
+
+  if (lower === "webfetch" || lower === "websearch") {
+    tracker.phaseHasSearches = true
+    const target =
+      typeof args.url === "string"
+        ? args.url
+        : typeof args.query === "string"
+          ? args.query
+          : name
+    const webStep: ListStep = {
+      id: callId,
+      kind: "search",
+      text: lower === "websearch" ? "Searched web for" : "Fetched",
+      highlight: target,
+    }
+    return webStep
+  }
+
+  if (lower === "todo" || lower === "todowrite") {
+    tracker.phaseHasReads = true
+    const todoStep: ListStep = {
+      id: callId,
+      kind: "list",
+      text: intent || "Updated task list",
+    }
+    return todoStep
+  }
+
+  // Shell commands & fallback tool calls
+  const isShell =
+    lower === "run_command" || lower === "bash" || lower === "shell"
+  tracker.phaseHasCommands = true
+  tracker.phaseCommandCount += 1
+
+  let command = name
+  let displayCommand: string
+  if (typeof args.command === "string" && args.command.trim()) {
+    command = args.command.trim()
+    displayCommand = error ? `Command failed (${command})` : command
+  } else if (intent) {
+    command = intent
+    displayCommand = intent
+  } else if (typeof args.path === "string" || typeof args.file_path === "string") {
+    const target =
+      typeof args.path === "string" ? args.path : String(args.file_path)
+    command = `${name} ${target}`
+    displayCommand = command
+  } else {
+    displayCommand = error ? `${name} (retrying)` : name
+  }
+
+  const shellStep: ShellCommandStep = {
+    id: callId,
+    kind: "command",
+    command,
+    displayCommand,
+    output: (error ?? output).slice(0, 2400) || "(no output)",
+    exitCode: error ? 1 : 0,
+    statusLabel: error ? "Failed" : "Success",
+    isFailed: Boolean(error),
+    isMono: isShell && !error,
+  }
+  return shellStep
 }
 
 function normalizeFileChangeKind(value: unknown): FileChangeKind {
@@ -502,6 +866,8 @@ export function mapHarnessFrameToLiveEvents(
     tracker.startedAtMs = Date.now()
     tracker.turnActive = true
     tracker.batchEpoch = 1
+    tracker.hasStreamedTextInPhase = false
+    resetTrackerPhase(tracker)
     tracker.toolInputs.clear()
     return []
   }
@@ -520,10 +886,16 @@ export function mapHarnessFrameToLiveEvents(
   switch (ev) {
     case "text_delta": {
       const text = typeof frame.text === "string" ? frame.text : ""
-      return text ? [{ type: "answer-delta", delta: text }] : []
+      if (text) {
+        tracker.hasStreamedTextInPhase = true
+        return [{ type: "answer-delta", delta: text }]
+      }
+      return []
     }
     case "promote_answer_to_note": {
+      tracker.hasStreamedTextInPhase = false
       tracker.batchEpoch += 1
+      resetTrackerPhase(tracker)
       return [{ type: "promote-note" }]
     }
     case "reasoning_delta": {
@@ -544,7 +916,18 @@ export function mapHarnessFrameToLiveEvents(
           Object.keys(args).length > 0 ? JSON.stringify(args) : ""
         )
       }
-      return [{ type: "tool-status", label: describeActiveTool(name, args) }]
+      const events: MappedLiveTraceEvent[] = []
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        events.push({ type: "promote-note" })
+      }
+      events.push({
+        type: "tool-status",
+        label: describeActiveTool(name, args),
+      })
+      return events
     }
     case "tool_input_delta": {
       const callId = String(frame.call_id ?? "")
@@ -557,6 +940,26 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "tool_exec": {
+      const callId = String(frame.call_id ?? "")
+      const name = String(frame.name ?? "tool")
+      const args = parseToolArgs(
+        frame.tool_input ?? frame.input,
+        callId ? (tracker.toolInputs.get(callId) ?? "") : ""
+      )
+      const events: MappedLiveTraceEvent[] = []
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        events.push({ type: "promote-note" })
+      }
+      events.push({
+        type: "tool-status",
+        label: describeActiveTool(name, args),
+      })
+      return events
+    }
     case "tool_call": {
       const callId = String(frame.call_id ?? "")
       if (callId && frame.input !== undefined) {
@@ -565,6 +968,12 @@ export function mapHarnessFrameToLiveEvents(
             ? frame.input
             : JSON.stringify(frame.input)
         tracker.toolInputs.set(callId, serialized)
+      }
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        return [{ type: "promote-note" }]
       }
       return []
     }
@@ -585,88 +994,90 @@ export function mapHarnessFrameToLiveEvents(
       )
 
       const epoch = tracker.batchEpoch
+      const workGroupId = `codex_work_${epoch}`
 
-      // Map read_file / Read into crisp clickable FileReadStep under "Read files"
-      if (lower === "read_file" || lower === "read") {
-        const relPath =
-          typeof args.path === "string"
-            ? args.path
-            : typeof args.file_path === "string"
-              ? args.file_path
-              : "file"
-        const startLine =
-          typeof args.start_line === "number" ? args.start_line : 1
-        const endLine = typeof args.end_line === "number" ? args.end_line : null
-        const fileStep: FileReadStep = {
-          id: callId,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: basenameOf(relPath),
-              path: relPath,
-              line: startLine,
-              rangeLabel: endLine ? `${relPath}:${startLine}-${endLine}` : relPath,
-            },
-          ],
-        }
-        return [
-          { type: "tool-status", label: null },
-          {
-            type: "step",
-            groupId: `codex_read_${epoch}`,
-            groupTitle: "Read files",
-            step: fileStep,
-          },
-        ]
-      }
+      // Unpack Rust daemon `batch` calls into individual Codex-style steps under one clean group
+      if (lower === "batch") {
+        const rawCalls = Array.isArray(args.tool_calls)
+          ? (args.tool_calls.filter(
+              (c): c is Record<string, unknown> =>
+                Boolean(c) && typeof c === "object" && !Array.isArray(c)
+            ))
+          : []
+        const sections = splitBatchOutputSections(output)
+        const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }]
 
-      // Map list_files / ls into ListStep under "Read files"
-      if (lower === "list_files" || lower === "ls") {
-        const dir =
-          typeof args.directory === "string" && args.directory.trim() !== "."
-            ? args.directory.trim()
-            : "workspace"
-        const listStep: ListStep = {
-          id: callId,
-          kind: "list",
-          text: "Listed files in",
-          highlight: dir,
+        if (rawCalls.length > 0) {
+          for (let i = 0; i < rawCalls.length; i += 1) {
+            const { tool: subTool, args: subArgs } = extractBatchSubcallArgs(
+              rawCalls[i]
+            )
+            const section = sections[i]
+            const subOutput = section?.output ?? (i === 0 ? output : "")
+            const subError =
+              error ?? (section?.isError ? section.output : undefined)
+            const step = mapSingleWorkStep(
+              `${callId}_${i + 1}`,
+              subTool,
+              subArgs,
+              subOutput,
+              subError,
+              tracker
+            )
+            events.push({
+              type: "step",
+              groupId: workGroupId,
+              groupTitle: computePhaseGroupTitle(tracker),
+              step,
+            })
+          }
+          return events
         }
-        return [
-          { type: "tool-status", label: null },
-          {
-            type: "step",
-            groupId: `codex_read_${epoch}`,
-            groupTitle: "Read files",
-            step: listStep,
-          },
-        ]
-      }
 
-      // Map search_files / grep into ListStep under "Searched files"
-      if (lower === "search_files" || lower === "grep" || lower === "rg") {
-        const query =
-          typeof args.query === "string"
-            ? args.query
-            : typeof args.pattern === "string"
-              ? args.pattern
-              : "workspace"
-        const searchStep: ListStep = {
-          id: callId,
-          kind: "search",
-          text: "Searched for",
-          highlight: query,
+        if (sections.length > 0) {
+          for (let i = 0; i < sections.length; i += 1) {
+            const section = sections[i]
+            const step = mapSingleWorkStep(
+              `${callId}_${i + 1}`,
+              section.tool,
+              {},
+              section.output,
+              section.isError ? section.output : error,
+              tracker
+            )
+            events.push({
+              type: "step",
+              groupId: workGroupId,
+              groupTitle: computePhaseGroupTitle(tracker),
+              step,
+            })
+          }
+          return events
         }
-        return [
-          { type: "tool-status", label: null },
-          {
+
+        // Batch failed before running sub-calls (e.g. schema retry) — keep quiet & compact
+        if (error) {
+          tracker.phaseHasCommands = true
+          tracker.phaseCommandCount += 1
+          const retryStep: ShellCommandStep = {
+            id: callId,
+            kind: "command",
+            command: "batch",
+            displayCommand: "Retried parallel tool call",
+            output: error.slice(0, 1200),
+            exitCode: 1,
+            statusLabel: "Retried",
+            isFailed: true,
+            isMono: false,
+          }
+          events.push({
             type: "step",
-            groupId: `codex_search_${epoch}`,
-            groupTitle: "Searched files",
-            step: searchStep,
-          },
-        ]
+            groupId: workGroupId,
+            groupTitle: computePhaseGroupTitle(tracker),
+            step: retryStep,
+          })
+        }
+        return events
       }
 
       // Map create_powerpoint into visual slide preview thumbnail card with real deck metadata
@@ -809,40 +1220,15 @@ export function mapHarnessFrameToLiveEvents(
         ]
       }
 
-      // Commands & other tool calls
-      let displayCommand = name
-      if (typeof args.command === "string") {
-        displayCommand = args.command
-      } else if (typeof args.path === "string") {
-        displayCommand = `${name} ${args.path}`
-      } else {
-        const fallbackRaw = tracker.toolInputs.get(callId) ?? ""
-        if (fallbackRaw && fallbackRaw !== "{}") {
-          displayCommand = `${name} ${fallbackRaw.slice(0, 80)}`.trim()
-        }
-      }
-
-      const isShell =
-        lower === "run_command" || lower === "bash" || lower === "shell"
-      const step: ShellCommandStep = {
-        id: callId,
-        kind: "command",
-        command: displayCommand,
-        displayCommand,
-        output: (error ?? output).slice(0, 2400) || "(no output)",
-        exitCode: error ? 1 : 0,
-        statusLabel: error ? "Failed" : "Success",
-        isFailed: Boolean(error),
-        isMono: isShell,
-      }
+      // Standard workspace tools (read, ls, grep, glob, bash, edit, write, todo, etc.)
+      // all coalesce into one clean Codex-style group per work phase.
+      const step = mapSingleWorkStep(callId, name, args, output, error, tracker)
       return [
         { type: "tool-status", label: null },
         {
           type: "step",
-          groupId: isShell
-            ? `codex_cmd_${epoch}`
-            : `codex_tool_${epoch}`,
-          groupTitle: isShell ? "Ran a command" : `Loaded a tool, ${name}`,
+          groupId: workGroupId,
+          groupTitle: computePhaseGroupTitle(tracker),
           step,
         },
       ]
@@ -899,7 +1285,7 @@ export function mapHarnessFrameToLiveEvents(
     case "turn_stopped": {
       const elapsedSec = Math.max(
         1,
-        Math.round((Date.now() - tracker.startedAtMs) / 1000)
+        Math.floor((Date.now() - tracker.startedAtMs) / 1000)
       )
       const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }]
       if (
@@ -922,6 +1308,8 @@ export function mapHarnessFrameToLiveEvents(
       })
       tracker.batchEpoch = 1
       tracker.turnActive = false
+      tracker.hasStreamedTextInPhase = false
+      resetTrackerPhase(tracker)
       return events
     }
     default:

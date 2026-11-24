@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { RayuProcessingMark } from "@/components/ui/rayu-processing-mark"
 import { useAppStore } from "@/lib/app-store"
 import { getAuthSession } from "@/lib/auth-placeholder"
+import { formatDurationSeconds } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
@@ -90,12 +91,13 @@ export function HomeView({
   const handleSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
       const attemptId = ++submitAttemptRef.current
+      const submitStartedAtMs = Date.now()
       setPendingSubmit({
         prompt: payload.prompt,
         images: payload.images,
-        startedAtMs: Date.now(),
+        startedAtMs: submitStartedAtMs,
       })
-      setPendingElapsedSec(0)
+      setPendingElapsedSec(1)
       setComposerValue("")
 
       const sessionTitlePrompt =
@@ -157,6 +159,7 @@ export function HomeView({
         images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
+        startedAtMs: submitStartedAtMs,
       })
       useAppStore
         .getState()
@@ -209,7 +212,7 @@ export function HomeView({
               <div className="inline-flex items-center gap-1.5 text-[13.5px] font-medium text-ink">
                 <RayuProcessingMark animated className="size-[17px]" />
                 <span className="tabular-nums">
-                  {`Working · ${Math.max(1, pendingElapsedSec)}s`}
+                  {`Working · ${formatDurationSeconds(pendingElapsedSec)}`}
                 </span>
               </div>
             </div>

@@ -90,6 +90,7 @@ function applyTraceEvents(
           const group = next.groups[existingIndex]
           const updatedGroup = {
             ...group,
+            title: event.groupTitle ?? group.title,
             steps: [...group.steps, event.step],
           }
           next.groups[existingIndex] = updatedGroup
@@ -165,6 +166,7 @@ export interface StartLiveTurnInput {
   userImages?: PromptImageAttachment[]
   userRefFiles?: string
   initialNote?: string
+  startedAtMs?: number
 }
 
 export interface UseLiveTraceResult {
@@ -240,7 +242,7 @@ export function useLiveTrace(
     const timer = setInterval(() => {
       const nextSec = Math.max(
         1,
-        Math.round((Date.now() - turnStartedAtRef.current) / 1000)
+        Math.floor((Date.now() - turnStartedAtRef.current) / 1000)
       )
       const formatted = formatDurationSeconds(nextSec)
       setElapsedSeconds(nextSec)
@@ -259,7 +261,7 @@ export function useLiveTrace(
       if (existing && existing.isLive) {
         const finalizedSec = Math.max(
           1,
-          Math.round((Date.now() - turnStartedAtRef.current) / 1000)
+          Math.floor((Date.now() - turnStartedAtRef.current) / 1000)
         )
         const finalizedTurn: ExecutionTurn = {
           ...existing,
@@ -270,15 +272,23 @@ export function useLiveTrace(
         onCompleteRef.current?.(finalizedTurn)
       }
       const id = `live_turn_${Date.now()}_${sequenceRef.current++}`
-      turnStartedAtRef.current = Date.now()
-      setElapsedSeconds(1)
+      const startedAt =
+        typeof input.startedAtMs === "number" && input.startedAtMs > 0
+          ? input.startedAtMs
+          : Date.now()
+      turnStartedAtRef.current = startedAt
+      const initialElapsedSec = Math.max(
+        1,
+        Math.floor((Date.now() - startedAt) / 1000)
+      )
+      setElapsedSeconds(initialElapsedSec)
       const initialTurn: ExecutionTurn = {
         id,
         sessionId: input.sessionId,
         userRefFiles: input.userRefFiles,
         userPrompt: input.userPrompt,
         userImages: input.userImages,
-        workedDuration: "1s",
+        workedDuration: formatDurationSeconds(initialElapsedSec),
         isLive: true,
         notes: input.initialNote ? [input.initialNote] : [],
         groups: [],

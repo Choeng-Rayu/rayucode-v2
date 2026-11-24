@@ -93,6 +93,7 @@ export interface PendingStreamPrompt {
   images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
+  startedAtMs?: number
 }
 
 export interface AppStoreState {
