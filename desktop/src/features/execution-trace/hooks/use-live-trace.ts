@@ -8,7 +8,7 @@ import type { ExecutionTurn, LiveTraceEvent } from "../types"
 
 const FRAME_BATCH_WINDOW_MS = 16
 
-const EMPTY_DIFF_CARD = {
+export const EMPTY_DIFF_CARD = {
   id: "diff_live_pending",
   file: "",
   additions: 0,
@@ -17,7 +17,7 @@ const EMPTY_DIFF_CARD = {
   lines: [],
 }
 
-function applyTraceEvents(
+export function applyTraceEvents(
   current: ExecutionTurn | null,
   events: LiveTraceEvent[]
 ): ExecutionTurn | null {
@@ -188,6 +188,7 @@ export function useLiveTrace(
   const [elapsedSeconds, setElapsedSeconds] = React.useState(0)
   const liveTurnRef = React.useRef<ExecutionTurn | null>(null)
   const turnStartedAtRef = React.useRef<number>(0)
+  const completedTurnIdsRef = React.useRef<Set<string>>(new Set())
 
   React.useEffect(() => {
     liveTurnRef.current = liveTurn
@@ -217,7 +218,13 @@ export function useLiveTrace(
       setLiveTurn((prev) => {
         const updated = applyTraceEvents(prev, events)
         liveTurnRef.current = updated
-        if (hasComplete && updated && onCompleteRef.current) {
+        if (
+          hasComplete &&
+          updated &&
+          onCompleteRef.current &&
+          !completedTurnIdsRef.current.has(updated.id)
+        ) {
+          completedTurnIdsRef.current.add(updated.id)
           queueMicrotask(() => {
             onCompleteRef.current?.(updated)
           })

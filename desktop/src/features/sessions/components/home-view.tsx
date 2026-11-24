@@ -109,6 +109,7 @@ export function HomeView({
       const result = await createSessionMutation.mutateAsync({
         prompt: sessionTitlePrompt,
         project: payload.project,
+        workingDir: useAppStore.getState().activeWorkspacePath ?? undefined,
         checkout: payload.checkout,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
@@ -130,10 +131,6 @@ export function HomeView({
 
       setPendingSubmit(null)
       setPendingElapsedSec(0)
-      queryClient.setQueryData(
-        ["execution-trace", "turns", result.data.id],
-        []
-      )
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
 
       // Sync the chosen Local Permissions mode to the Rust core before the first turn runs

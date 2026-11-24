@@ -9,6 +9,16 @@ import {
   type CloudChatMessage,
   type RayuAuthState,
 } from "./electron/auth-bridge"
+import { RayuDaemonClient } from "./electron/daemon-client"
+import {
+  TelegramConnectBotTokenSchema,
+  TelegramDisconnectSchema,
+  TelegramResolveApprovalSchema,
+  TelegramSelectSessionSchema,
+  TelegramSetRemoteUninstallSchema,
+  TelegramStartHostedSchema,
+} from "./electron/ipc-schemas"
+import { RayuTelegramManager } from "./electron/telegram-bridge"
 
 function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -44,6 +54,12 @@ function rayuDevAuthPlugin(): Plugin {
     apply: "serve",
     configureServer(server) {
       const authManager = new RayuAuthManager()
+      const daemonClient = new RayuDaemonClient()
+      const workspaceDir = path.resolve(import.meta.dirname, "..")
+      const telegramManager = new RayuTelegramManager(
+        daemonClient,
+        () => workspaceDir
+      )
       const sseClients = new Set<ServerResponse>()
 
       authManager.on("auth-changed", (state: RayuAuthState) => {
@@ -59,6 +75,7 @@ function rayuDevAuthPlugin(): Plugin {
 
       server.httpServer?.once("close", () => {
         authManager.dispose()
+        daemonClient.dispose()
         for (const client of sseClients) {
           try {
             client.end()
@@ -194,6 +211,99 @@ function rayuDevAuthPlugin(): Plugin {
             const body = await readJsonBody<{ sessionId?: string }>(req)
             if (body.sessionId) authManager.cancelStream(body.sessionId)
             sendJson(res, 200, { ok: true })
+            return
+          }
+
+          if (req.method === "GET" && urlPath === "/__rayu_dev/telegram/state") {
+            sendJson(res, 200, await telegramManager.getState())
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/start-hosted"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramStartHostedSchema.parse(raw ?? {})
+            sendJson(
+              res,
+              200,
+              await telegramManager.startHosted(Boolean(parsed.replaceExisting))
+            )
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/connect-bot-token"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramConnectBotTokenSchema.parse(raw)
+            sendJson(res, 200, await telegramManager.connectBotToken(parsed))
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/disconnect"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramDisconnectSchema.parse(raw ?? {})
+            sendJson(
+              res,
+              200,
+              await telegramManager.disconnect(Boolean(parsed.localOnly))
+            )
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/resolve-approval"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramResolveApprovalSchema.parse(raw)
+            sendJson(
+              res,
+              200,
+              await telegramManager.resolveApproval(
+                parsed.approvalId,
+                parsed.decision
+              )
+            )
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/set-remote-uninstall"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramSetRemoteUninstallSchema.parse(raw)
+            sendJson(
+              res,
+              200,
+              await telegramManager.setRemoteUninstall(parsed.enabled)
+            )
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/telegram/select-session"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = TelegramSelectSessionSchema.parse(raw)
+            sendJson(
+              res,
+              200,
+              await telegramManager.selectSession(parsed.sessionId)
+            )
+            return
+          }
+
+          if (req.method === "POST" && urlPath === "/__rayu_dev/telegram/ping") {
+            sendJson(res, 200, await telegramManager.sendTestPing())
             return
           }
 

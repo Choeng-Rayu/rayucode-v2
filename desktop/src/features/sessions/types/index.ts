@@ -45,6 +45,7 @@ export interface QuickStartSuggestion {
 export interface CreateSessionInput {
   prompt: string
   project?: string
+  workingDir?: string
   checkout?: string
   modelId?: string
   modelLabel?: string

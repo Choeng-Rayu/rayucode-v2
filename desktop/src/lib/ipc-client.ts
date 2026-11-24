@@ -4,6 +4,9 @@
 import { findMcpBlueprint, REAL_MCP_BLUEPRINTS } from "./mcp-registry"
 
 import {
+  formatHarnessModelSpec,
+  formatRelativeTimestamp,
+  isTempDirectoryPath,
   mapHistoryMessagesToTurns,
   mapModelRoutesToOptions,
   mapSessionInfoToSummary,
@@ -24,9 +27,14 @@ export interface SessionSummary {
   id: string
   title: string
   project: string
+  workingDir?: string
   checkout: string
   branch: string
   updatedAt: string
+  updatedAtMs?: number
+  connection?: "local" | "cloud"
+  saved?: boolean
+  archived?: boolean
   modelId: string
   modelLabel: string
   effort: ReasoningEffort
@@ -35,12 +43,23 @@ export interface SessionSummary {
   creditsUsed: number
 }
 
+export interface ProjectGroupSessionItem {
+  id: string
+  title: string
+  route?: string
+  workingDir?: string
+  updatedAtMs?: number
+  updatedAt?: string
+  connection?: "local" | "cloud"
+  saved?: boolean
+}
+
 export interface ProjectGroup {
   id: string
   name: string
   path: string
   expanded: boolean
-  sessions: Array<{ id: string; title: string; route?: string }>
+  sessions: ProjectGroupSessionItem[]
 }
 
 export type ProjectIconColor =
@@ -79,6 +98,8 @@ export interface SidebarState {
   sortBy: "updated" | "manual"
   showProjectChatsInRecents: boolean
   manualProjectOrder: string[]
+  collapsedProjectIds?: string[]
+  hiddenProjectPaths?: string[]
 }
 
 export interface GettingStartedItem {
@@ -104,6 +125,7 @@ export interface ModelOption {
   label: string
   subtitle?: string
   provider: string
+  apiMethod?: string
   recommended?: boolean
 }
 
@@ -210,6 +232,44 @@ export function parseImageDataUrl(
   return [mediaType, base64]
 }
 
+export type MessageOrigin =
+  | "user_typed"
+  | "user_attachment"
+  | "assistant_model"
+  | "engine_internal"
+  | "tool_output"
+  | "legacy_unknown"
+
+export type MessageVisibility = "shown" | "collapsed" | "hidden"
+
+export type TurnAttemptReason =
+  | "initial"
+  | "retry_error"
+  | "reassess_refusal"
+  | "user_regenerate"
+
+export type TurnOutcome =
+  | "answered"
+  | "answered_partial"
+  | "declined"
+  | "failed"
+  | "cancelled"
+  | "timed_out"
+
+export interface TurnAttempt {
+  id: string
+  reason: TurnAttemptReason
+  status: TurnOutcome
+  answerText: string
+  stopReason?: string | null
+}
+
+export interface HiddenInternalMessage {
+  origin: MessageOrigin
+  visibility: MessageVisibility
+  content: string
+}
+
 export interface ExecutionTurn {
   id: string
   sessionId: string
@@ -243,6 +303,10 @@ export interface ExecutionTurn {
   credits: string
   kvCachePct: number
   pinned?: boolean
+  outcome?: TurnOutcome
+  attempts?: TurnAttempt[]
+  finalAttemptId?: string | null
+  hiddenInternalMessages?: HiddenInternalMessage[]
 }
 
 export interface ContextDetailBreakdown {
@@ -670,6 +734,15 @@ export interface TelegramState {
   remoteUninstallEnabled: boolean
   approvals: TelegramApprovalItem[]
   commands: Array<{ command: string; description: string }>
+  linked?: boolean
+  configured?: boolean
+  statusLabel?: string
+  bridgeMode?: "hosted" | "botfather" | null
+  daemonConnected?: boolean
+  qrSize?: number | null
+  qrPath?: string | null
+  pendingUntil?: number | null
+  daemonError?: string | null
 }
 
 export interface SettingsState {
@@ -2749,6 +2822,8 @@ export interface RayuBridgeApi {
       title?: string
     ) => Promise<HarnessSessionInfoLike>
     renameSession?: (sessionId: string, title: string) => Promise<{ ok: boolean }>
+    archiveSession?: (sessionId: string) => Promise<{ ok: boolean }>
+    restoreSession?: (sessionId: string) => Promise<{ ok: boolean }>
     attachSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
     forkSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
     getHistory?: (sessionId: string) => Promise<{
@@ -2775,7 +2850,10 @@ export interface RayuBridgeApi {
       model?: string
       routes?: HarnessModelRouteLike[]
     }>
-    setModel?: (sessionId: string, model: string) => Promise<{ ok: boolean }>
+    setModel?: (
+      sessionId: string,
+      model: string
+    ) => Promise<{ ok: boolean; error?: string }>
     setReasoningEffort?: (
       sessionId: string,
       effort: string
@@ -3139,6 +3217,27 @@ export interface RayuBridgeApi {
     }>
     onEnsureOpen?: (cb: (payload: { url?: string }) => void) => () => void
   }
+  telegram?: {
+    getState?: () => Promise<TelegramState>
+    startHosted?: (replaceExisting?: boolean) => Promise<TelegramState>
+    connectBotToken?: (input: {
+      botToken: string
+      allowedChatId?: string
+      replaceExisting?: boolean
+    }) => Promise<TelegramState>
+    disconnect?: (localOnly?: boolean) => Promise<TelegramState>
+    resolveApproval?: (
+      approvalId: string,
+      decision: "approved" | "denied"
+    ) => Promise<TelegramState>
+    setRemoteUninstall?: (enabled: boolean) => Promise<TelegramState>
+    selectSession?: (sessionId: string) => Promise<TelegramState>
+    sendTestPing?: () => Promise<{
+      ok: boolean
+      target?: string
+      chatId?: string
+    }>
+  }
 }
 
 declare global {
@@ -3191,9 +3290,26 @@ async function devAuthFetch<T>(
 let lastKnownDaemonLive = false
 let lastActiveHarnessSessionId: string | null = null
 let lastKnownAuthState: RayuAuthState | null = null
+let lastListedModelOptions: ModelOption[] = []
+const lastSyncedModelBySession = new Map<string, string>()
+
+function resolveHarnessModelSpec(modelId: string): string {
+  const matched = lastListedModelOptions.find((m) => m.id === modelId)
+  if (matched) {
+    return formatHarnessModelSpec(matched.id, matched.provider, matched.apiMethod)
+  }
+  const cloudMatched = lastKnownAuthState?.allowedModels?.find(
+    (m) => m.code === modelId
+  )
+  if (cloudMatched) {
+    return formatHarnessModelSpec(modelId, "rayu", "rayu")
+  }
+  return formatHarnessModelSpec(modelId)
+}
 let runtimeSessions: SessionSummary[] = []
 let runtimeTurns: ExecutionTurn[] = []
 let runtimeSessionsHydrated = false
+let runtimeHydrationPromise: Promise<void> | null = null
 const newlyCreatedEmptySessions = new Set<string>()
 let runtimeSwarm: SwarmState = {
   swarmId: "idle",
@@ -3225,22 +3341,51 @@ let runtimeTelegram: TelegramState = {
   commands: mockTelegram.commands,
 }
 
+function normalizeWorkspacePath(raw?: string | null): string {
+  if (!raw) return ""
+  return raw
+    .trim()
+    .replace(/^~(?=\/|$)/, "/Users/~")
+    .replace(/\/+$/, "")
+    .replace(/^\/Users\/[^/]+/, "/Users/~")
+}
+
 async function ensureRuntimeSessionsHydrated(): Promise<void> {
   if (runtimeSessionsHydrated || IS_TEST_ENV) return
-  runtimeSessionsHydrated = true
+  if (runtimeHydrationPromise) return runtimeHydrationPromise
   const bridge = getBridge()
-  if (!bridge?.storage?.getSessionStore) return
-  try {
-    const saved = await bridge.storage.getSessionStore()
-    if (Array.isArray(saved.sessions) && runtimeSessions.length === 0) {
-      runtimeSessions = saved.sessions
-    }
-    if (Array.isArray(saved.turns) && runtimeTurns.length === 0) {
-      runtimeTurns = saved.turns
-    }
-  } catch {
-    // ignore storage read error
+  const getSessionStore = bridge?.storage?.getSessionStore
+  if (!getSessionStore) {
+    runtimeSessionsHydrated = true
+    return
   }
+  runtimeHydrationPromise = (async () => {
+    try {
+      const saved = await getSessionStore()
+      if (Array.isArray(saved.sessions) && saved.sessions.length > 0) {
+        const existingIds = new Set(runtimeSessions.map((s) => s.id))
+        const merged = [
+          ...runtimeSessions,
+          ...saved.sessions.filter((s) => !existingIds.has(s.id)),
+        ]
+        runtimeSessions = merged.slice(0, 50)
+      }
+      if (Array.isArray(saved.turns) && saved.turns.length > 0) {
+        const existingTurnIds = new Set(runtimeTurns.map((t) => t.id))
+        const mergedTurns = [
+          ...saved.turns.filter((t) => !existingTurnIds.has(t.id)),
+          ...runtimeTurns,
+        ]
+        runtimeTurns = mergedTurns.slice(-500)
+      }
+    } catch {
+      // ignore storage read error
+    } finally {
+      runtimeSessionsHydrated = true
+      runtimeHydrationPromise = null
+    }
+  })()
+  return runtimeHydrationPromise
 }
 
 function persistRuntimeSessions(): void {
@@ -3283,89 +3428,166 @@ async function isHarnessLive(): Promise<boolean> {
   }
 }
 
+let inFlightSessionsList: Promise<SessionSummary[]> | null = null
+
 export const ipcClient = {
   sessions: {
     async list(): Promise<SessionSummary[]> {
-      await ensureRuntimeSessionsHydrated()
-      const bridge = getBridge()
-      if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
-        try {
-          const liveSessions = await bridge.harness.listSessions()
-          lastKnownDaemonLive = true
-          const mappedLive = liveSessions.map((info) => {
-            const summary = mapSessionInfoToSummary(info)
-            const cached = runtimeSessions.find((s) => s.id === summary.id)
-            if (!cached) return summary
-            return {
-              ...summary,
-              title:
-                !info.title || summary.title === "Untitled session"
-                  ? cached.title || summary.title
-                  : summary.title,
-              modelId: cached.modelId ?? summary.modelId,
-              modelLabel: cached.modelLabel ?? summary.modelLabel,
-              effort: cached.effort ?? summary.effort,
-              permissionMode: cached.permissionMode ?? summary.permissionMode,
-            }
-          })
-          const liveIds = new Set(mappedLive.map((s) => s.id))
-          const localOnly = runtimeSessions.filter((s) => !liveIds.has(s.id))
-          return [...mappedLive, ...localOnly]
-        } catch {
-          // Fall through if daemon could not be reached
+      if (inFlightSessionsList) {
+        return inFlightSessionsList
+      }
+      inFlightSessionsList = (async () => {
+        await ensureRuntimeSessionsHydrated()
+        const bridge = getBridge()
+        if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
+          try {
+            const liveSessions = await bridge.harness.listSessions()
+            lastKnownDaemonLive = true
+            const mappedLive = liveSessions.map((info) => {
+              const summary = mapSessionInfoToSummary(info)
+              const cached = runtimeSessions.find((s) => s.id === summary.id)
+              if (!cached) return summary
+              const mergedUpdatedAtMs =
+                Math.max(summary.updatedAtMs ?? 0, cached.updatedAtMs ?? 0) ||
+                undefined
+              const hasRealLiveTitle =
+                Boolean(info.title?.trim()) &&
+                summary.title !== "Untitled session"
+              return {
+                ...summary,
+                title: hasRealLiveTitle
+                  ? summary.title
+                  : cached.title || summary.title,
+                workingDir: summary.workingDir ?? cached.workingDir,
+                updatedAtMs: mergedUpdatedAtMs,
+                updatedAt:
+                  info.status === "running"
+                    ? "Live"
+                    : formatRelativeTimestamp(
+                        mergedUpdatedAtMs,
+                        summary.updatedAt
+                      ),
+                connection: summary.connection ?? cached.connection ?? "local",
+                modelId: cached.modelId ?? summary.modelId,
+                modelLabel: cached.modelLabel ?? summary.modelLabel,
+                effort: cached.effort ?? summary.effort,
+                permissionMode: cached.permissionMode ?? summary.permissionMode,
+              }
+            })
+            const liveIds = new Set(mappedLive.map((s) => s.id))
+            const localOnly = runtimeSessions.filter(
+              (s) => !liveIds.has(s.id) && !s.archived
+            )
+            const combined = [...mappedLive, ...localOnly]
+            combined.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+            return combined
+          } catch {
+            // Fall through if daemon could not be reached
+          }
         }
-      }
-      if (!IS_TEST_ENV) {
-        return [...runtimeSessions]
-      }
-      return [...mockSessions]
+        if (!IS_TEST_ENV) {
+          return runtimeSessions
+            .filter((s) => !s.archived)
+            .slice()
+            .sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+        }
+        return [...mockSessions]
+      })().finally(() => {
+        inFlightSessionsList = null
+      })
+      return inFlightSessionsList
     },
     async listProjects(): Promise<ProjectGroup[]> {
       const bridge = getBridge()
+      if (IS_TEST_ENV && !bridge?.workspace?.getInfo) {
+        return MOCK_PROJECTS.map((p) => ({ ...p, sessions: [...p.sessions] }))
+      }
       const liveSessions = await ipcClient.sessions.list()
+      let activeInfo: { project: string; path: string } | null = null
       if (bridge?.workspace?.getInfo) {
         try {
           const info = await bridge.workspace.getInfo()
-          return [
-            {
-              id: `proj_${info.project}`,
-              name: info.project,
-              path: info.path,
-              expanded: true,
-              sessions: liveSessions.map((s) => ({
-                id: s.id,
-                title: s.title,
-              })),
-            },
-          ]
+          activeInfo = { project: info.project, path: info.path }
         } catch {
-          // Fall through
+          // ignore
         }
       }
-      if (!IS_TEST_ENV) {
-        return [
-          {
-            id: "proj_workspace",
-            name: "rayucode-v2",
-            path: "~/workspace/rayu/rayucode-v2",
-            expanded: true,
-            sessions: liveSessions.map((s) => ({
-              id: s.id,
-              title: s.title,
-            })),
-          },
-        ]
+      const groupsByNormPath = new Map<string, ProjectGroup>()
+      const addOrGetGroup = (rawPath: string, name?: string) => {
+        const cleanPath = rawPath.trim().replace(/\/+$/, "")
+        const norm = normalizeWorkspacePath(cleanPath)
+        if (!norm || isTempDirectoryPath(cleanPath)) return null
+        const existing = groupsByNormPath.get(norm)
+        if (existing) return existing
+        const derivedName =
+          name?.trim() ||
+          cleanPath.split(/[\\/]/).filter(Boolean).pop() ||
+          "Workspace"
+        const created: ProjectGroup = {
+          id: `proj_${derivedName}_${norm.slice(-12).replace(/[^a-zA-Z0-9]/g, "")}`,
+          name: derivedName,
+          path: cleanPath,
+          expanded: true,
+          sessions: [],
+        }
+        groupsByNormPath.set(norm, created)
+        return created
       }
-      return MOCK_PROJECTS.map((p) => ({ ...p, sessions: [...p.sessions] }))
+
+      if (activeInfo?.path) {
+        addOrGetGroup(activeInfo.path, activeInfo.project)
+      }
+
+      for (const s of liveSessions) {
+        if (s.archived) continue
+        if (!s.workingDir || isTempDirectoryPath(s.workingDir)) continue
+        const group = groupsByNormPath.get(normalizeWorkspacePath(s.workingDir))
+        if (group) {
+          group.sessions.push({
+            id: s.id,
+            title: s.title,
+            workingDir: s.workingDir,
+            updatedAtMs: s.updatedAtMs,
+            updatedAt: s.updatedAt,
+            connection: s.connection,
+            saved: s.saved,
+          })
+        }
+      }
+
+      const groups = Array.from(groupsByNormPath.values())
+      if (groups.length === 0 && !IS_TEST_ENV) {
+        return []
+      }
+      return groups
     },
-    async listRecents(): Promise<Array<{ id: string; title: string; route?: string }>> {
+    async listRecents(): Promise<ProjectGroupSessionItem[]> {
       if (!IS_TEST_ENV) {
         const liveSessions = await ipcClient.sessions.list()
-        return liveSessions.map((s) => ({ id: s.id, title: s.title }))
+        return liveSessions
+          .filter((s) => !s.archived && !isTempDirectoryPath(s.workingDir))
+          .slice()
+          .sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+          .map((s) => ({
+            id: s.id,
+            title: s.title,
+            workingDir: s.workingDir,
+            updatedAtMs: s.updatedAtMs,
+            updatedAt: s.updatedAt,
+            connection: s.connection,
+            saved: s.saved,
+          }))
       }
       const createdRecents = mockSessions
         .filter((s) => !MOCK_RECENTS.some((r) => r.id === s.id))
-        .map((s) => ({ id: s.id, title: s.title }))
+        .map((s) => ({
+          id: s.id,
+          title: s.title,
+          workingDir: s.workingDir,
+          updatedAtMs: s.updatedAtMs,
+          updatedAt: s.updatedAt,
+          connection: s.connection,
+        }))
       return [...createdRecents, ...MOCK_RECENTS]
     },
     async getGettingStarted(): Promise<GettingStartedItem[]> {
@@ -3391,46 +3613,56 @@ export const ipcClient = {
     async createSession(input: {
       prompt: string
       project?: string
+      workingDir?: string
       checkout?: string
       modelId?: string
       modelLabel?: string
       effort?: ReasoningEffort
       permissionMode?: PermissionModeId
     }): Promise<SessionSummary> {
-      if (IS_TEST_ENV) {
-        await ensureRuntimeSessionsHydrated()
-      } else {
-        void ensureRuntimeSessionsHydrated()
-      }
+      await ensureRuntimeSessionsHydrated()
       const bridge = getBridge()
+      let resolvedWorkingDir = input.workingDir?.trim() || undefined
+      if (!resolvedWorkingDir && bridge?.workspace?.getInfo && !IS_TEST_ENV) {
+        try {
+          const info = await bridge.workspace.getInfo()
+          if (info?.path) resolvedWorkingDir = info.path
+        } catch {
+          // ignore
+        }
+      }
       const derivedTitle =
         input.prompt.trim().length > 48
           ? `${input.prompt.trim().slice(0, 48)}...`
           : input.prompt.trim() || "New session"
+      const nowMs = Date.now()
       if (bridge?.harness?.createSession && !IS_TEST_ENV) {
         try {
           const live = await bridge.harness.createSession(
-            undefined,
+            resolvedWorkingDir,
             derivedTitle
           )
           lastKnownDaemonLive = true
           lastActiveHarnessSessionId = live.session_id
           newlyCreatedEmptySessions.add(live.session_id)
-          const hasExplicitStoredModel =
-            typeof window !== "undefined" &&
-            Boolean(window.localStorage.getItem("rayu-model-id"))
           const hasExplicitStoredEffort =
             typeof window !== "undefined" &&
-            Boolean(window.localStorage.getItem("rayu-effort"))
+            (window.localStorage.getItem("rayu-effort-idx") !== null ||
+              Boolean(window.localStorage.getItem("rayu-effort")))
           if (
             input.modelId &&
             input.modelId !== "default" &&
-            hasExplicitStoredModel &&
             bridge.harness.setModel
           ) {
-            void bridge.harness
-              .setModel(live.session_id, input.modelId)
-              .catch(() => {})
+            const modelSpec = resolveHarnessModelSpec(input.modelId)
+            if (modelSpec) {
+              const modelRes = await bridge.harness
+                .setModel(live.session_id, modelSpec)
+                .catch(() => ({ ok: false }))
+              if (modelRes?.ok !== false) {
+                lastSyncedModelBySession.set(live.session_id, modelSpec)
+              }
+            }
           }
           if (
             input.effort &&
@@ -3438,7 +3670,7 @@ export const ipcClient = {
             input.effort !== "Auto" &&
             bridge.harness.setReasoningEffort
           ) {
-            void bridge.harness
+            await bridge.harness
               .setReasoningEffort(live.session_id, input.effort.toLowerCase())
               .catch(() => {})
           }
@@ -3446,6 +3678,10 @@ export const ipcClient = {
           const summary: SessionSummary = {
             ...mapped,
             title: derivedTitle || mapped.title,
+            workingDir: mapped.workingDir ?? resolvedWorkingDir,
+            updatedAt: "Now",
+            updatedAtMs: nowMs,
+            connection: "local",
             modelId: input.modelId ?? mapped.modelId,
             modelLabel: input.modelLabel ?? mapped.modelLabel,
             effort: input.effort ?? mapped.effort,
@@ -3463,12 +3699,19 @@ export const ipcClient = {
       }
 
       const created: SessionSummary = {
-        id: `ses_${Date.now()}`,
+        id: `ses_${nowMs}`,
         title: derivedTitle,
-        project: input.project ?? "rayucode-v2",
+        project:
+          input.project ??
+          (resolvedWorkingDir
+            ? resolvedWorkingDir.split(/[\\/]/).filter(Boolean).pop() ?? "Workspace"
+            : "rayucode-v2"),
+        workingDir: resolvedWorkingDir,
         checkout: input.checkout ?? "Local Checkout",
         branch: "main",
-        updatedAt: "Just now",
+        updatedAt: "Now",
+        updatedAtMs: nowMs,
+        connection: "cloud",
         modelId: input.modelId ?? "claude-opus-5-5",
         modelLabel: input.modelLabel ?? "Claude Opus 5.5",
         effort: input.effort ?? "Medium",
@@ -3482,6 +3725,58 @@ export const ipcClient = {
         mockSessions = [created, ...mockSessions]
       }
       return created
+    },
+    async archive(sessionId: string): Promise<void> {
+      await ensureRuntimeSessionsHydrated()
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.archiveSession &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        await bridge.harness.archiveSession(sessionId).catch(() => {})
+      }
+      runtimeSessions = runtimeSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: true } : s
+      )
+      persistRuntimeSessions()
+    },
+    async restore(sessionId: string): Promise<void> {
+      await ensureRuntimeSessionsHydrated()
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.restoreSession &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        await bridge.harness.restoreSession(sessionId).catch(() => {})
+      }
+      runtimeSessions = runtimeSessions.map((s) =>
+        s.id === sessionId ? { ...s, archived: false } : s
+      )
+      persistRuntimeSessions()
+    },
+    async rename(sessionId: string, title: string): Promise<void> {
+      const clean = title.trim()
+      if (!clean) return
+      await ensureRuntimeSessionsHydrated()
+      const bridge = getBridge()
+      if (
+        bridge?.harness?.renameSession &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        await bridge.harness.renameSession(sessionId, clean).catch(() => {})
+      }
+      runtimeSessions = runtimeSessions.map((s) =>
+        s.id === sessionId ? { ...s, title: clean } : s
+      )
+      if (IS_TEST_ENV) {
+        mockSessions = mockSessions.map((s) =>
+          s.id === sessionId ? { ...s, title: clean } : s
+        )
+      }
+      persistRuntimeSessions()
     },
     async listPermissionModes(): Promise<PermissionModeOption[]> {
       return [...MOCK_PERMISSION_MODES]
@@ -3501,7 +3796,9 @@ export const ipcClient = {
             lastActiveHarnessSessionId
           )
           if (info.routes && info.routes.length > 0) {
-            return mapModelRoutesToOptions(info.routes)
+            const mapped = mapModelRoutesToOptions(info.routes)
+            lastListedModelOptions = mapped
+            return mapped
           }
         } catch {
           // Fall back to Rayu Cloud or curated catalog
@@ -3517,6 +3814,7 @@ export const ipcClient = {
             label: "Default",
             subtitle: "Recommended Rayu Cloud model",
             provider: "rayu",
+            apiMethod: "rayu",
             recommended: true,
           },
           ...lastKnownAuthState.allowedModels.map((m) => ({
@@ -3524,8 +3822,10 @@ export const ipcClient = {
             label: m.label || m.code,
             subtitle: m.description,
             provider: "rayu",
+            apiMethod: "rayu",
           })),
         ]
+        lastListedModelOptions = cloudOptions
         return cloudOptions
       }
       return [...MOCK_MODELS]
@@ -3551,12 +3851,6 @@ export const ipcClient = {
   trace: {
     async listTurns(sessionId?: string | null): Promise<ExecutionTurn[]> {
       await ensureRuntimeSessionsHydrated()
-      if (sessionId) {
-        const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
-        if (cachedTurns.length > 0) {
-          return cachedTurns
-        }
-      }
       const bridge = getBridge()
       if (
         sessionId &&
@@ -3578,9 +3872,21 @@ export const ipcClient = {
             persistRuntimeSessions()
             return turns
           }
+          const fallbackCached = runtimeTurns.filter(
+            (t) => t.sessionId === sessionId
+          )
+          if (fallbackCached.length > 0) {
+            return fallbackCached
+          }
           return turns
         } catch {
           // Fall back to cached local turns
+        }
+      }
+      if (sessionId) {
+        const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+        if (cachedTurns.length > 0) {
+          return cachedTurns
         }
       }
 
@@ -3611,6 +3917,9 @@ export const ipcClient = {
       modelLabel: string
       history?: CloudChatMessage[]
     }): Promise<ExecutionTurn> {
+      if (input.sessionId) {
+        newlyCreatedEmptySessions.delete(input.sessionId)
+      }
       const bridge = getBridge()
       const imageTuples: Array<[string, string]> = (input.images ?? [])
         .map((img) => parseImageDataUrl(img.dataUrl))
@@ -3627,6 +3936,28 @@ export const ipcClient = {
         !input.sessionId.startsWith("ses_") &&
         !IS_TEST_ENV
       ) {
+        if (
+          input.modelId &&
+          input.modelId !== "default" &&
+          bridge.harness.setModel
+        ) {
+          const modelSpec = resolveHarnessModelSpec(input.modelId)
+          if (
+            modelSpec &&
+            lastSyncedModelBySession.get(input.sessionId) !== modelSpec
+          ) {
+            const modelRes = await bridge.harness.setModel(
+              input.sessionId,
+              modelSpec
+            )
+            if (modelRes && modelRes.ok === false) {
+              throw new Error(
+                modelRes.error || `Failed to switch model to ${input.modelId}`
+              )
+            }
+            lastSyncedModelBySession.set(input.sessionId, modelSpec)
+          }
+        }
         await bridge.harness.sendMessage(
           input.sessionId,
           effectivePrompt,
@@ -3742,10 +4073,15 @@ export const ipcClient = {
         ...runtimeTurns.filter((t) => t.id !== turn.id),
         turn,
       ]
-      if (
-        turn.sessionId &&
-        !runtimeSessions.some((s) => s.id === turn.sessionId)
-      ) {
+      const nowMs = Date.now()
+      const existingIdx = runtimeSessions.findIndex((s) => s.id === turn.sessionId)
+      if (existingIdx >= 0) {
+        runtimeSessions = runtimeSessions.map((s) =>
+          s.id === turn.sessionId
+            ? { ...s, updatedAtMs: nowMs, updatedAt: "Now" }
+            : s
+        )
+      } else if (turn.sessionId) {
         const promptTitle =
           turn.userPrompt.trim().length > 48
             ? `${turn.userPrompt.trim().slice(0, 48)}...`
@@ -3757,7 +4093,9 @@ export const ipcClient = {
             project: "rayucode-v2",
             checkout: "Local Checkout",
             branch: "main",
-            updatedAt: "Just now",
+            updatedAt: "Now",
+            updatedAtMs: nowMs,
+            connection: "local",
             modelId: "claude-opus-5-5",
             modelLabel: "Claude Opus 5.5",
             effort: "Medium",
@@ -3839,8 +4177,8 @@ export const ipcClient = {
               branch: "main",
             },
             context: {
-              usedPctLabel: "0%",
-              tokensSummary: "0 / 200k tokens",
+              usedPctLabel: "—",
+              tokensSummary: "Awaiting usage",
               rows: [],
               bufferRow: {
                 id: "ctx_buf",
@@ -4734,6 +5072,13 @@ export const ipcClient = {
 
   telegram: {
     async getState(): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.getState && !IS_TEST_ENV) {
+        return bridge.telegram.getState()
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/state")
+      }
       return structuredClone(IS_TEST_ENV ? mockTelegram : runtimeTelegram)
     },
     async setMode(mode: TelegramState["mode"]): Promise<TelegramState> {
@@ -4741,13 +5086,108 @@ export const ipcClient = {
         mockTelegram = { ...mockTelegram, mode }
         return structuredClone(mockTelegram)
       }
-      runtimeTelegram = { ...runtimeTelegram, mode }
+      const current = await ipcClient.telegram.getState()
+      runtimeTelegram = { ...current, mode }
       return structuredClone(runtimeTelegram)
+    },
+    async startHosted(replaceExisting = false): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.startHosted && !IS_TEST_ENV) {
+        return bridge.telegram.startHosted(replaceExisting)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/start-hosted", {
+          method: "POST",
+          body: { replaceExisting },
+        })
+      }
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      const token = `rayu_${Math.random().toString(36).slice(2, 10)}`
+      const updated: TelegramState = {
+        ...target,
+        mode: "hosted",
+        linked: false,
+        configured: true,
+        pairingCommand: `/start ${token}`,
+        pairingLink: `https://t.me/RayuCodeBot?start=${token}`,
+        qrSize: 29,
+        qrPath: "M4 4h7v1h-7z",
+        pendingUntil: Math.floor(Date.now() / 1000) + 600,
+      }
+      if (IS_TEST_ENV) mockTelegram = updated
+      else runtimeTelegram = updated
+      return structuredClone(updated)
+    },
+    async connectBotToken(input: {
+      botToken: string
+      allowedChatId?: string
+      replaceExisting?: boolean
+    }): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.connectBotToken && !IS_TEST_ENV) {
+        return bridge.telegram.connectBotToken(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/connect-bot-token", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      const updated: TelegramState = {
+        ...target,
+        mode: "connected",
+        linked: true,
+        configured: true,
+        bridgeMode: "botfather",
+        connectedBotHandle: "@custom_rayu_bot",
+        chatId: input.allowedChatId?.trim() || target.chatId,
+        mediaDelivery: "Inline images & MP4",
+      }
+      if (IS_TEST_ENV) mockTelegram = updated
+      else runtimeTelegram = updated
+      return structuredClone(updated)
+    },
+    async disconnect(localOnly = false): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.disconnect && !IS_TEST_ENV) {
+        return bridge.telegram.disconnect(localOnly)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/disconnect", {
+          method: "POST",
+          body: { localOnly },
+        })
+      }
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      const updated: TelegramState = {
+        ...target,
+        mode: "hosted",
+        linked: false,
+        configured: false,
+        chatId: "Not paired",
+        qrSize: null,
+        qrPath: null,
+        pairingLink: "",
+      }
+      if (IS_TEST_ENV) mockTelegram = updated
+      else runtimeTelegram = updated
+      return structuredClone(updated)
     },
     async resolveApproval(
       approvalId: string,
       decision: "approved" | "denied"
     ): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.resolveApproval && !IS_TEST_ENV) {
+        return bridge.telegram.resolveApproval(approvalId, decision)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/resolve-approval", {
+          method: "POST",
+          body: { approvalId, decision },
+        })
+      }
       const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
       const updated = {
         ...target,
@@ -4760,12 +5200,64 @@ export const ipcClient = {
       return structuredClone(updated)
     },
     async setRemoteUninstall(enabled: boolean): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.setRemoteUninstall && !IS_TEST_ENV) {
+        return bridge.telegram.setRemoteUninstall(enabled)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/set-remote-uninstall", {
+          method: "POST",
+          body: { enabled },
+        })
+      }
       if (IS_TEST_ENV) {
         mockTelegram = { ...mockTelegram, remoteUninstallEnabled: enabled }
         return structuredClone(mockTelegram)
       }
       runtimeTelegram = { ...runtimeTelegram, remoteUninstallEnabled: enabled }
       return structuredClone(runtimeTelegram)
+    },
+    async selectSession(sessionId: string): Promise<TelegramState> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.selectSession && !IS_TEST_ENV) {
+        return bridge.telegram.selectSession(sessionId)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<TelegramState>("telegram/select-session", {
+          method: "POST",
+          body: { sessionId },
+        })
+      }
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      const updated: TelegramState = {
+        ...target,
+        drivingSession: sessionId,
+      }
+      if (IS_TEST_ENV) mockTelegram = updated
+      else runtimeTelegram = updated
+      return structuredClone(updated)
+    },
+    async sendTestPing(): Promise<{
+      ok: boolean
+      target?: string
+      chatId?: string
+    }> {
+      const bridge = getBridge()
+      if (bridge?.telegram?.sendTestPing && !IS_TEST_ENV) {
+        return bridge.telegram.sendTestPing()
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<{ ok: boolean; target?: string; chatId?: string }>(
+          "telegram/ping",
+          { method: "POST", body: {} }
+        )
+      }
+      const target = IS_TEST_ENV ? mockTelegram : runtimeTelegram
+      return {
+        ok: true,
+        target: target.connectedBotHandle,
+        chatId: target.chatId,
+      }
     },
   },
 
@@ -4919,10 +5411,24 @@ export const ipcClient = {
         unsubBridge()
       }
     },
-    async setModel(sessionId: string, model: string): Promise<{ ok: boolean }> {
+    recordSyncedModel(sessionId: string, model: string, provider?: string): void {
+      if (!sessionId || !model) return
+      const spec = formatHarnessModelSpec(model, provider)
+      if (spec) {
+        lastSyncedModelBySession.set(sessionId, spec)
+      }
+    },
+    async setModel(
+      sessionId: string,
+      model: string
+    ): Promise<{ ok: boolean; error?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setModel && (await isHarnessLive())) {
-        return bridge.harness.setModel(sessionId, model)
+        const res = await bridge.harness.setModel(sessionId, model)
+        if (res.ok !== false) {
+          lastSyncedModelBySession.set(sessionId, model)
+        }
+        return res
       }
       return { ok: true }
     },

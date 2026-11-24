@@ -125,6 +125,16 @@ export interface PersistedSidebarState {
   sortBy: "updated" | "manual"
   showProjectChatsInRecents: boolean
   manualProjectOrder: string[]
+  collapsedProjectIds?: string[]
+  hiddenProjectPaths?: string[]
+}
+
+export interface PersistedWindowBounds {
+  width: number
+  height: number
+  x?: number
+  y?: number
+  isMaximized?: boolean
 }
 
 const DEFAULT_PREFERENCES: PersistedDesktopPreferences = {
@@ -692,10 +702,51 @@ const DEFAULT_SIDEBAR_STATE: PersistedSidebarState = {
   sortBy: "updated",
   showProjectChatsInRecents: true,
   manualProjectOrder: [],
+  collapsedProjectIds: [],
+  hiddenProjectPaths: [],
 }
 
 function sidebarStatePath(): string {
   return path.join(getRayuAppConfigDir(), "desktop-sidebar.json")
+}
+
+function windowBoundsPath(): string {
+  return path.join(getRayuAppConfigDir(), "desktop-window-bounds.json")
+}
+
+export function readWindowBounds(): PersistedWindowBounds | null {
+  const stored = readJsonFile<Partial<PersistedWindowBounds> | null>(
+    windowBoundsPath(),
+    null
+  )
+  if (
+    !stored ||
+    typeof stored.width !== "number" ||
+    typeof stored.height !== "number" ||
+    !Number.isFinite(stored.width) ||
+    !Number.isFinite(stored.height) ||
+    stored.width < 600 ||
+    stored.height < 480
+  ) {
+    return null
+  }
+  return {
+    width: Math.round(stored.width),
+    height: Math.round(stored.height),
+    ...(typeof stored.x === "number" && Number.isFinite(stored.x)
+      ? { x: Math.round(stored.x) }
+      : {}),
+    ...(typeof stored.y === "number" && Number.isFinite(stored.y)
+      ? { y: Math.round(stored.y) }
+      : {}),
+    ...(typeof stored.isMaximized === "boolean"
+      ? { isMaximized: stored.isMaximized }
+      : {}),
+  }
+}
+
+export function writeWindowBounds(bounds: PersistedWindowBounds): void {
+  writeJsonFile(windowBoundsPath(), bounds)
 }
 
 export function readSidebarState(): PersistedSidebarState {
@@ -725,6 +776,12 @@ export function readSidebarState(): PersistedSidebarState {
     manualProjectOrder: Array.isArray(stored.manualProjectOrder)
       ? stored.manualProjectOrder.slice(0, 60)
       : [],
+    collapsedProjectIds: Array.isArray(stored.collapsedProjectIds)
+      ? stored.collapsedProjectIds.slice(0, 100)
+      : [],
+    hiddenProjectPaths: Array.isArray(stored.hiddenProjectPaths)
+      ? stored.hiddenProjectPaths.slice(0, 100)
+      : [],
   }
 }
 
@@ -740,6 +797,12 @@ export function writeSidebarState(
     sortBy: next.sortBy,
     showProjectChatsInRecents: next.showProjectChatsInRecents,
     manualProjectOrder: next.manualProjectOrder.slice(0, 60),
+    collapsedProjectIds: Array.isArray(next.collapsedProjectIds)
+      ? next.collapsedProjectIds.slice(0, 100)
+      : [],
+    hiddenProjectPaths: Array.isArray(next.hiddenProjectPaths)
+      ? next.hiddenProjectPaths.slice(0, 100)
+      : [],
   }
   writeJsonFile(sidebarStatePath(), bounded)
   return bounded

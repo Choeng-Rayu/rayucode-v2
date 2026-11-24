@@ -13,9 +13,11 @@ import {
   LogOut,
   Palette,
   Plus,
+  Search,
   Settings,
   Smartphone,
   User,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -363,7 +365,18 @@ export function IconRail() {
                 aria-current={active ? "page" : undefined}
                 onMouseEnter={() => handlePrefetchRoute(item.id)}
                 onFocus={() => handlePrefetchRoute(item.id)}
-                onClick={() => setActiveRoute(item.id)}
+                onClick={() => {
+                  if (
+                    item.id === "home" &&
+                    activeRoute !== "home" &&
+                    activeRoute !== "workspace" &&
+                    useAppStore.getState().activeSessionId
+                  ) {
+                    setActiveRoute("workspace")
+                    return
+                  }
+                  setActiveRoute(item.id)
+                }}
                 className={cn(
                   "relative grid size-9 cursor-pointer place-items-center rounded-[10px] border transition-all",
                   active
@@ -755,6 +768,9 @@ export function SessionPane() {
   const goForward = useAppStore((s) => s.goForward)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
 
+  const [searchOpen, setSearchOpen] = React.useState(false)
+  const [sidebarSearchQuery, setSidebarSearchQuery] = React.useState("")
+
   const canGoBack = navHistoryIndex > 0
   const canGoForward = navHistoryIndex < navHistory.length - 1
 
@@ -805,7 +821,7 @@ export function SessionPane() {
     const worktrees = swarm?.worktrees ?? []
 
     return (
-      <div className="flex w-[244px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
+      <div className="flex w-[264px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
         <div className="flex h-[46px] shrink-0 items-center justify-end gap-1 pr-0.5">
           <button
             type="button"
@@ -986,7 +1002,7 @@ export function SessionPane() {
   }
 
   return (
-    <div className="flex w-[244px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
+    <div className="flex w-[264px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
       {/* Top 46px Back / Forward row */}
       <div className="flex h-[46px] shrink-0 items-center justify-end gap-1 pr-0.5">
         <button
@@ -1042,11 +1058,62 @@ export function SessionPane() {
       </div>
 
       {/* Brand row */}
-      <div className="flex shrink-0 items-center px-2.5 pt-0.5 pb-1.5">
-        <span className="text-[15px] font-semibold tracking-tight text-ink">
+      <div className="flex shrink-0 items-center justify-between px-2.5 pt-0.5 pb-1.5">
+        <span className="text-[16px] font-semibold tracking-tight text-ink">
           RayuCode
         </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Search chats"
+              aria-pressed={searchOpen}
+              data-testid="sidebar-search-toggle-btn"
+              onClick={() => {
+                setSearchOpen((prev) => {
+                  if (prev) setSidebarSearchQuery("")
+                  return !prev
+                })
+              }}
+              className={cn(
+                "grid size-7 cursor-pointer place-items-center rounded-md transition-colors",
+                searchOpen
+                  ? "bg-active text-ink"
+                  : "text-muted-ink hover:bg-hover hover:text-ink"
+              )}
+            >
+              <Search className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Search chats</TooltipContent>
+        </Tooltip>
       </div>
+
+      {searchOpen && (
+        <div className="mx-1.5 mb-1.5 flex items-center gap-1.5 rounded-[9px] border border-hairline bg-inset px-2.5 py-1.5">
+          <Search className="size-3.5 shrink-0 text-muted-ink" aria-hidden="true" />
+          <input
+            type="text"
+            autoFocus
+            aria-label="Filter sidebar chats"
+            data-testid="sidebar-search-input"
+            value={sidebarSearchQuery}
+            onChange={(e) => setSidebarSearchQuery(e.target.value)}
+            placeholder="Search chats..."
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-muted-ink"
+          />
+          {sidebarSearchQuery && (
+            <button
+              type="button"
+              aria-label="Clear sidebar search"
+              onClick={() => setSidebarSearchQuery("")}
+              className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-ink hover:text-ink"
+            >
+              <X className="size-3" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* New Conversation button */}
       <button
@@ -1056,14 +1123,14 @@ export function SessionPane() {
           setActiveRoute("home")
         }}
         className={cn(
-          "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-[6px] text-[12.5px] leading-[1.35] transition-colors",
+          "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-[7px] text-[13.5px] leading-[1.38] transition-colors",
           activeRoute === "home" && !activeSessionId
             ? "bg-active font-medium text-ink"
             : "text-body hover:bg-hover hover:text-ink"
         )}
       >
         <svg
-          className="size-[14.5px] text-muted-ink"
+          className="size-[15px] text-muted-ink"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -1079,7 +1146,10 @@ export function SessionPane() {
       </button>
 
       {/* Scrollable Projects & Recents (Codex-style mini menus, hover cards & emoji/icon picker) */}
-      <SidebarProjectsPane onOpenSession={openSessionWithOptionalPreview} />
+      <SidebarProjectsPane
+        onOpenSession={openSessionWithOptionalPreview}
+        searchQuery={sidebarSearchQuery}
+      />
 
       {/* Bottom Interactive Getting Started Card (hideable + AI apps import dialog) */}
       <GettingStartedCard />
@@ -1102,7 +1172,7 @@ export function LeftSidebar() {
       className={cn(
         "flex h-full shrink-0 overflow-hidden transition-[width] duration-150",
         showSessionPane
-          ? "w-[296px] bg-chrome"
+          ? "w-[316px] bg-chrome"
           : leftCollapsed
             ? "w-[52px] bg-canvas"
             : "w-[52px] bg-chrome"

@@ -290,6 +290,8 @@ export const StorageSidebarStateSchema = z.object({
   sortBy: z.enum(["updated", "manual"]),
   showProjectChatsInRecents: z.boolean(),
   manualProjectOrder: z.array(z.string().max(120)).max(60),
+  collapsedProjectIds: z.array(z.string().max(120)).max(100).optional(),
+  hiddenProjectPaths: z.array(z.string().max(2048)).max(100).optional(),
 })
 
 export const ExtensionUpsertMcpSchema = z.object({
@@ -392,6 +394,33 @@ export const BrowserCdpTypeSchema = z.object({
   ref: z.string().trim().min(1).max(32),
   text: z.string().max(4000),
   submit: z.boolean().optional(),
+})
+
+export const TelegramStartHostedSchema = z.object({
+  replaceExisting: z.boolean().optional(),
+})
+
+export const TelegramConnectBotTokenSchema = z.object({
+  botToken: z.string().trim().min(10).max(256),
+  allowedChatId: z.string().trim().max(32).optional(),
+  replaceExisting: z.boolean().optional(),
+})
+
+export const TelegramDisconnectSchema = z.object({
+  localOnly: z.boolean().optional(),
+})
+
+export const TelegramResolveApprovalSchema = z.object({
+  approvalId: z.string().trim().min(1).max(128),
+  decision: z.enum(["approved", "denied"]),
+})
+
+export const TelegramSetRemoteUninstallSchema = z.object({
+  enabled: z.boolean(),
+})
+
+export const TelegramSelectSessionSchema = z.object({
+  sessionId: z.string().trim().min(1).max(128),
 })
 
 export type DaemonInvokePayload = z.infer<typeof DaemonInvokePayloadSchema>

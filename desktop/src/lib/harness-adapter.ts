@@ -6,12 +6,18 @@ import type {
   FileChangesSnapshot,
   FileChangeStatus,
   FileReadStep,
+  HiddenInternalMessage,
   InlineDiffCardData,
   ListStep,
+  MessageOrigin,
+  MessageVisibility,
   ModelOption,
   SessionSummary,
   ShellCommandStep,
   TraceStepItem,
+  TurnAttempt,
+  TurnAttemptReason,
+  TurnOutcome,
   TurnOutputArtifact,
 } from "./ipc-client"
 
@@ -22,6 +28,56 @@ export interface HarnessSessionInfoLike {
   status?: string
   agent_label?: string
   edit_stats?: { added: number; removed: number; approximate: boolean }
+  updated_at_ms?: number
+  last_active_at_ms?: number
+  saved?: boolean
+  archived?: boolean
+  archived_at_ms?: number
+}
+
+export function isTempDirectoryPath(raw?: string | null): boolean {
+  if (!raw) return false
+  const normalized = raw.trim().replace(/\\/g, "/").replace(/\/+$/, "")
+  if (!normalized) return false
+  const lower = normalized.toLowerCase()
+  if (
+    lower === "/tmp" ||
+    lower.startsWith("/tmp/") ||
+    lower === "/private/tmp" ||
+    lower.startsWith("/private/tmp/") ||
+    lower === "/var/tmp" ||
+    lower.startsWith("/var/tmp/") ||
+    lower === "/private/var/tmp" ||
+    lower.startsWith("/private/var/tmp/") ||
+    lower === "/var/folders" ||
+    lower.startsWith("/var/folders/") ||
+    lower === "/private/var/folders" ||
+    lower.startsWith("/private/var/folders/")
+  ) {
+    return true
+  }
+  if (/^[a-z]:\/(temp|tmp)(\/|$)/.test(lower)) return true
+  if (/\/appdata\/local\/temp(\/|$)/.test(lower)) return true
+  return false
+}
+
+export function formatRelativeTimestamp(
+  ms?: number | null,
+  fallback = "Now"
+): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) {
+    return fallback
+  }
+  const diffMs = Math.max(0, Date.now() - ms)
+  const mins = Math.floor(diffMs / 60_000)
+  if (mins < 1) return "Now"
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+  const weeks = Math.floor(days / 7)
+  return `${weeks}w`
 }
 
 export interface HarnessModelRouteLike {
@@ -35,6 +91,17 @@ export interface HarnessModelRouteLike {
 export interface HarnessHistoryMessageLike {
   role: string
   content: string
+  origin?: MessageOrigin
+  visibility?: MessageVisibility
+  attempt_id?: string | null
+  attempt_reason?: TurnAttemptReason
+  attempt_status?: TurnOutcome
+  stop_reason?: string | null
+  tool?: {
+    id?: string
+    name?: string
+    input?: unknown
+  } | null
   response_stats?: {
     duration_secs?: number
     input_tokens?: number
@@ -254,13 +321,28 @@ export function mapSessionInfoToSummary(
     info.title?.trim() ||
     info.agent_label?.trim() ||
     `Session ${info.session_id.slice(0, 8)}`
+  const updatedAtMs =
+    typeof info.last_active_at_ms === "number" && info.last_active_at_ms > 0
+      ? info.last_active_at_ms
+      : typeof info.updated_at_ms === "number" && info.updated_at_ms > 0
+        ? info.updated_at_ms
+        : undefined
+  const fallbackLabel = info.status === "running" ? "Live" : "Active"
   return {
     id: info.session_id,
     title,
     project: basenameOf(info.working_dir),
+    workingDir: info.working_dir,
     checkout: info.working_dir ? "Local Checkout" : "Daemon Session",
     branch: "main",
-    updatedAt: info.status === "running" ? "Live" : "Active",
+    updatedAt:
+      info.status === "running"
+        ? "Live"
+        : formatRelativeTimestamp(updatedAtMs, fallbackLabel),
+    updatedAtMs,
+    connection: "local",
+    saved: Boolean(info.saved),
+    archived: Boolean(info.archived),
     modelId: "claude-opus-5-5",
     modelLabel: "Claude Opus 5.5",
     effort: "Medium",
@@ -268,6 +350,22 @@ export function mapSessionInfoToSummary(
     kvWarmPct: 94,
     creditsUsed: 0,
   }
+}
+
+export function formatHarnessModelSpec(
+  modelId: string,
+  provider?: string,
+  apiMethod?: string
+): string {
+  const trimmed = modelId.trim()
+  if (!trimmed || trimmed === "default") return ""
+  if (trimmed.includes(":")) return trimmed
+  const normalizedApi = apiMethod?.trim().toLowerCase() ?? ""
+  const normalizedProvider = provider?.trim().toLowerCase() ?? ""
+  if (normalizedApi === "rayu" || normalizedProvider === "rayu") {
+    return `rayu:${trimmed}`
+  }
+  return trimmed
 }
 
 export function mapModelRoutesToOptions(
@@ -280,14 +378,76 @@ export function mapModelRoutesToOptions(
     seen.add(route.model)
     out.push({
       id: route.model,
-      label: route.model,
+      label: route.model.replace(/^rayu:/i, "") || route.model,
       subtitle:
         route.detail || (route.available ? "Available" : "Configure key"),
       provider: route.provider || "Rayu",
+      apiMethod: route.api_method,
       recommended: route.available === true && out.length < 2,
     })
   }
   return out
+}
+
+const REASONING_SENTINEL = "\u{2063}"
+const REASONING_LINE_RE = new RegExp(
+  `^\\*${REASONING_SENTINEL}([\\s\\S]*)${REASONING_SENTINEL}\\*[ \\t]*$`
+)
+
+function splitReasoningFromAssistantContent(raw: string): {
+  reasoningNotes: string[]
+  answerText: string
+} {
+  if (!raw.includes(REASONING_SENTINEL)) {
+    return { reasoningNotes: [], answerText: raw }
+  }
+  const reasoningNotes: string[] = []
+  const answerLines: string[] = []
+  let paragraphLines: string[] = []
+  let sawReasoning = false
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) return
+    const text = paragraphLines.join("\n").trim()
+    if (text) reasoningNotes.push(text)
+    paragraphLines = []
+  }
+
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.replace(/\r$/, "")
+    const match = REASONING_LINE_RE.exec(line)
+    if (match) {
+      const unescaped = match[1].replace(/\\([\\*_`[\]<>&~|$])/g, "$1")
+      if (unescaped.trim().length > 0) {
+        paragraphLines.push(unescaped)
+      }
+      sawReasoning = true
+      continue
+    }
+    if (sawReasoning && line.trim() === "") {
+      flushParagraph()
+      sawReasoning = false
+      continue
+    }
+    flushParagraph()
+    sawReasoning = false
+    answerLines.push(line)
+  }
+  flushParagraph()
+
+  return {
+    reasoningNotes,
+    answerText: answerLines.join("\n").trim(),
+  }
+}
+
+function summarizeNotificationLine(trimmed: string): string {
+  const firstLine = (trimmed.split("\n")[0] ?? trimmed)
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  return firstLine.slice(0, 140) || "Notification"
 }
 
 function classifySyntheticUserMessage(
@@ -321,6 +481,34 @@ function classifySyntheticUserMessage(
   }
 
   if (
+    /^\*\*Background task(?:\s+(?:started|progress|stalled))?\*\*/i.test(
+      trimmed
+    )
+  ) {
+    return {
+      groupTitle: "Background task",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (/^(?:\u{1F41D}\s*)?\*\*Swarm\b/iu.test(trimmed)) {
+    return {
+      groupTitle: "Swarm update",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (/^\[Scheduled task\]/i.test(trimmed)) {
+    return {
+      groupTitle: "Scheduled task",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (
     /^<(?:system-reminder|command-message|local-command-stdout|local-command-caveat)\b/i.test(
       trimmed
     )
@@ -335,6 +523,77 @@ function classifySyntheticUserMessage(
   return null
 }
 
+const ENGINE_INTERNAL_RECOVERY_PREFIXES = [
+  "Reassess the user's request using its full context and likely intent rather than isolated keywords.",
+  "Review the request again and distinguish legitimate coding, debugging, defensive, educational, or analytical work",
+  "Perform one final, independent policy check. Prefer a safe and useful constrained response when possible.",
+  "[System reminder: your previous response ended ",
+  "[Attached image associated with the preceding tool result:",
+] as const
+
+function isEngineInternalRecoveryPrompt(content: string): boolean {
+  const trimmed = content.trimStart()
+  if (/^You have \d+ incomplete todos?\b/i.test(trimmed)) {
+    return true
+  }
+  return ENGINE_INTERNAL_RECOVERY_PREFIXES.some((prefix) =>
+    trimmed.startsWith(prefix)
+  )
+}
+
+function summarizeHistoryToolCall(
+  tool: HarnessHistoryMessageLike["tool"]
+): { command: string; displayCommand: string } {
+  if (!tool?.name) {
+    return { command: "tool output", displayCommand: "tool execution" }
+  }
+  const input =
+    tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
+      ? (tool.input as Record<string, unknown>)
+      : null
+  if (input) {
+    const directCommand =
+      typeof input.command === "string"
+        ? input.command
+        : typeof input.file_path === "string"
+          ? input.file_path
+          : typeof input.path === "string"
+            ? input.path
+            : typeof input.pattern === "string"
+              ? input.pattern
+              : typeof input.query === "string"
+                ? input.query
+                : null
+    if (directCommand && directCommand.trim()) {
+      return {
+        command: directCommand.trim(),
+        displayCommand: `${tool.name} ${directCommand.trim()}`,
+      }
+    }
+  }
+  return { command: tool.name, displayCommand: tool.name }
+}
+
+function resolveAttemptStatus(
+  trimmedText: string,
+  explicitStatus?: TurnOutcome,
+  stopReason?: string | null
+): TurnOutcome {
+  const isRefusal =
+    typeof stopReason === "string" &&
+    /(refusal|content_filter|safety|guardrail|policy_violation)/i.test(
+      stopReason
+    )
+  if (explicitStatus) {
+    if (explicitStatus === "answered" && trimmedText.length === 0) {
+      return isRefusal ? "declined" : "failed"
+    }
+    return explicitStatus
+  }
+  if (isRefusal) return "declined"
+  return trimmedText.length > 0 ? "answered" : "failed"
+}
+
 export function mapHistoryMessagesToTurns(
   sessionId: string,
   messages: HarnessHistoryMessageLike[]
@@ -342,8 +601,13 @@ export function mapHistoryMessagesToTurns(
   const turns: ExecutionTurn[] = []
   let currentUserPrompt: string | null = null
   let assistantChunks: string[] = []
+  let workNotes: string[] = []
   let toolSteps: TraceStepItem[] = []
   let lastStats: HarnessHistoryMessageLike["response_stats"]
+  let attempts: TurnAttempt[] = []
+  let attemptIndexById = new Map<string, number>()
+  let hasExplicitAttemptMeta = false
+  let hiddenInternalMessages: HiddenInternalMessage[] = []
 
   const flushTurn = () => {
     if (currentUserPrompt === null) return
@@ -358,13 +622,32 @@ export function mapHistoryMessagesToTurns(
       typeof stats?.rayu_credits === "number"
         ? `${stats.rayu_credits.toFixed(2)} cr`
         : "0.00 cr"
+    const finalAttempt =
+      attempts.length > 0 ? attempts[attempts.length - 1] : null
+    const finalAttemptId = finalAttempt ? finalAttempt.id : null
+    const latestAnsweredAttempt = [...attempts]
+      .reverse()
+      .find((attempt) => attempt.answerText.trim().length > 0)
+    const answerIntro =
+      finalAttempt?.answerText.trim() ||
+      latestAnsweredAttempt?.answerText.trim() ||
+      assistantChunks.join("\n\n").trim()
+    const outcome: TurnOutcome | undefined = finalAttempt
+      ? finalAttempt.answerText.trim().length > 0
+        ? finalAttempt.status === "answered_partial"
+          ? "answered_partial"
+          : "answered"
+        : finalAttempt.status === "answered"
+          ? "failed"
+          : finalAttempt.status
+      : undefined
 
     turns.push({
       id: `hist_${sessionId}_${turns.length + 1}`,
       sessionId,
       userPrompt: currentUserPrompt,
       workedDuration: formatDurationSeconds(stats?.duration_secs),
-      notes: [],
+      notes: workNotes,
       groups:
         toolSteps.length > 0
           ? [
@@ -375,27 +658,50 @@ export function mapHistoryMessagesToTurns(
               },
             ]
           : [],
-      answerIntro: assistantChunks.join("\n\n").trim(),
+      answerIntro,
       answerBullets: [],
       diffCard: EMPTY_DIFF,
       timestamp: "History",
       credits,
       kvCachePct,
       pinned: false,
+      ...(outcome ? { outcome } : {}),
+      ...(attempts.length > 0 ? { attempts, finalAttemptId } : {}),
+      ...(hiddenInternalMessages.length > 0
+        ? { hiddenInternalMessages }
+        : {}),
     })
     currentUserPrompt = null
     assistantChunks = []
+    workNotes = []
     toolSteps = []
     lastStats = undefined
+    attempts = []
+    attemptIndexById = new Map()
+    hasExplicitAttemptMeta = false
+    hiddenInternalMessages = []
   }
 
   for (const msg of messages) {
     if (msg.role === "user") {
+      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
+        hiddenInternalMessages.push({
+          origin: msg.origin ?? "engine_internal",
+          visibility: msg.visibility ?? "hidden",
+          content: msg.content,
+        })
+        continue
+      }
+      if (isEngineInternalRecoveryPrompt(msg.content)) {
+        hiddenInternalMessages.push({
+          origin: "engine_internal",
+          visibility: "hidden",
+          content: msg.content,
+        })
+        continue
+      }
       const synthetic = classifySyntheticUserMessage(msg.content)
       if (synthetic) {
-        if (currentUserPrompt === null) {
-          currentUserPrompt = synthetic.groupTitle
-        }
         const step: ShellCommandStep = {
           id: `tool_${turns.length}_${toolSteps.length}`,
           kind: "command",
@@ -406,17 +712,43 @@ export function mapHistoryMessagesToTurns(
           statusLabel: "Loaded",
           isMono: false,
         }
-        toolSteps.push(step)
+        if (currentUserPrompt !== null) {
+          toolSteps.push(step)
+        } else if (turns.length > 0) {
+          const prevTurn = turns[turns.length - 1]
+          if (prevTurn.groups.length > 0) {
+            prevTurn.groups[0].steps.push(step)
+          } else {
+            prevTurn.groups.push({
+              id: `wg_${turns.length}`,
+              title: synthetic.groupTitle,
+              steps: [step],
+            })
+          }
+        } else {
+          currentUserPrompt = synthetic.groupTitle
+          toolSteps.push(step)
+        }
         continue
       }
       flushTurn()
       currentUserPrompt = msg.content
     } else if (msg.role === "tool") {
+      if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
+        for (const chunk of assistantChunks) {
+          const clean = chunk.trim()
+          if (clean) workNotes.push(clean)
+        }
+        assistantChunks = []
+        attempts = []
+        attemptIndexById = new Map()
+      }
+      const summary = summarizeHistoryToolCall(msg.tool)
       const step: ShellCommandStep = {
         id: `tool_${turns.length}_${toolSteps.length}`,
         kind: "command",
-        command: "tool output",
-        displayCommand: "tool execution",
+        command: summary.command,
+        displayCommand: summary.displayCommand,
         output: msg.content.slice(0, 1200),
         exitCode: 0,
         statusLabel: "Success",
@@ -424,8 +756,63 @@ export function mapHistoryMessagesToTurns(
       }
       toolSteps.push(step)
     } else if (msg.role === "assistant") {
-      if (msg.content.trim()) {
-        assistantChunks.push(msg.content)
+      const { reasoningNotes, answerText } = splitReasoningFromAssistantContent(
+        msg.content
+      )
+      for (const note of reasoningNotes) {
+        workNotes.push(note)
+      }
+      const trimmed = answerText.trim()
+      if (trimmed) {
+        assistantChunks.push(answerText)
+      }
+      const hasExplicitAttempt =
+        msg.attempt_id != null ||
+        msg.attempt_status !== undefined ||
+        msg.stop_reason != null
+      if (hasExplicitAttempt) {
+        hasExplicitAttemptMeta = true
+      }
+      if (trimmed.length > 0 || hasExplicitAttempt) {
+        const attemptId =
+          msg.attempt_id ??
+          (hasExplicitAttempt ? `att_${attempts.length + 1}` : "att_1")
+        const existingIdx = attemptIndexById.get(attemptId)
+        if (existingIdx !== undefined) {
+          const existing = attempts[existingIdx]
+          const combinedText = [existing.answerText, trimmed]
+            .filter(Boolean)
+            .join("\n\n")
+          attempts[existingIdx] = {
+            ...existing,
+            reason: msg.attempt_reason ?? existing.reason,
+            answerText: combinedText,
+            stopReason: msg.stop_reason ?? existing.stopReason,
+            status: resolveAttemptStatus(
+              combinedText,
+              msg.attempt_status ??
+                (combinedText.length > 0 ? existing.status : undefined),
+              msg.stop_reason ?? existing.stopReason
+            ),
+          }
+        } else {
+          attemptIndexById.set(attemptId, attempts.length)
+          attempts.push({
+            id: attemptId,
+            reason:
+              msg.attempt_reason ??
+              (attempts.length === 0 ? "initial" : "reassess_refusal"),
+            status: resolveAttemptStatus(
+              trimmed,
+              msg.attempt_status,
+              msg.stop_reason
+            ),
+            answerText: trimmed,
+            ...(msg.stop_reason !== undefined
+              ? { stopReason: msg.stop_reason }
+              : {}),
+          })
+        }
       }
       if (msg.response_stats) {
         lastStats = msg.response_stats
@@ -441,6 +828,7 @@ export interface HarnessStreamTracker {
   toolInputs: Map<string, string>
   startedAtMs: number
   turnActive: boolean
+  turnCompleted?: boolean
   batchEpoch: number
   hasStreamedTextInPhase: boolean
   phaseHasReads: boolean
@@ -456,6 +844,7 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     toolInputs: new Map(),
     startedAtMs: Date.now(),
     turnActive: false,
+    turnCompleted: false,
     batchEpoch: 1,
     hasStreamedTextInPhase: false,
     phaseHasReads: false,
@@ -881,10 +1270,12 @@ export function mapHarnessFrameToLiveEvents(
   ) {
     tracker.startedAtMs = Date.now()
     tracker.turnActive = true
+    tracker.turnCompleted = false
   }
 
   switch (ev) {
     case "text_delta": {
+      tracker.turnCompleted = false
       const text = typeof frame.text === "string" ? frame.text : ""
       if (text) {
         tracker.hasStreamedTextInPhase = true
@@ -1281,8 +1672,20 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "provider_guardrail": {
+      tracker.turnCompleted = false
+      const message =
+        typeof frame.message === "string" && frame.message.trim()
+          ? frame.message.trim()
+          : "The model declined this request."
+      return [{ type: "answer-delta", delta: `\n\n${message}` }]
+    }
     case "turn_done":
     case "turn_stopped": {
+      if (tracker.turnCompleted) {
+        return []
+      }
+      tracker.turnCompleted = true
       const elapsedSec = Math.max(
         1,
         Math.floor((Date.now() - tracker.startedAtMs) / 1000)

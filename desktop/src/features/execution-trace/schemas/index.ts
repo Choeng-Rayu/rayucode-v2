@@ -137,6 +137,56 @@ export const executionTurnSchema = z.object({
   credits: z.string(),
   kvCachePct: z.number(),
   pinned: z.boolean().optional(),
+  outcome: z
+    .enum([
+      "answered",
+      "answered_partial",
+      "declined",
+      "failed",
+      "cancelled",
+      "timed_out",
+    ])
+    .optional(),
+  attempts: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        reason: z.enum([
+          "initial",
+          "retry_error",
+          "reassess_refusal",
+          "user_regenerate",
+        ]),
+        status: z.enum([
+          "answered",
+          "answered_partial",
+          "declined",
+          "failed",
+          "cancelled",
+          "timed_out",
+        ]),
+        answerText: z.string(),
+        stopReason: z.string().nullable().optional(),
+      })
+    )
+    .optional(),
+  finalAttemptId: z.string().nullable().optional(),
+  hiddenInternalMessages: z
+    .array(
+      z.object({
+        origin: z.enum([
+          "user_typed",
+          "user_attachment",
+          "assistant_model",
+          "engine_internal",
+          "tool_output",
+          "legacy_unknown",
+        ]),
+        visibility: z.enum(["shown", "collapsed", "hidden"]),
+        content: z.string(),
+      })
+    )
+    .optional(),
 })
 
 export const executionTurnListSchema = z.array(executionTurnSchema)

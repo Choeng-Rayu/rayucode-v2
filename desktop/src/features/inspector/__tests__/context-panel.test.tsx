@@ -263,4 +263,32 @@ describe("Inspector feature (ContextPanel, CodeViewer, TerminalPanel, InspectorS
     })
     await screen.findByTestId("custom-preview-excel")
   })
+
+  it("displays session-scoped live token usage in ContextPanel instead of hardcoded placeholder percentages", async () => {
+    const store = useAppStore.getState() as unknown as {
+      setSessionTokenUsage?: (
+        sessionId: string,
+        usage: {
+          input: number
+          output: number
+          cacheRead: number
+          cacheCreation: number
+          effectiveBudget: number | null
+        }
+      ) => void
+    }
+    expect(typeof store.setSessionTokenUsage).toBe("function")
+    store.setSessionTokenUsage!("ses_retire_cache", {
+      input: 20_000,
+      output: 5_000,
+      cacheRead: 25_000,
+      cacheCreation: 0,
+      effectiveBudget: 200_000,
+    })
+
+    renderWithProviders(<ContextPanel />)
+
+    await screen.findByText("23% used")
+    expect(screen.getByText("45K / 200K")).toBeInTheDocument()
+  })
 })

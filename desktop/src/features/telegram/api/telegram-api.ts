@@ -21,15 +21,6 @@ export const telegramQueryKeys = {
   state: () => [...telegramQueryKeys.all, "state"] as const,
 }
 
-type TelegramIpcWithOptionalMethods = typeof ipcClient.telegram & {
-  connectBotToken?: (input: {
-    botToken: string
-    allowedChatId: string
-  }) => Promise<TelegramState>
-  disconnect?: () => Promise<TelegramState>
-  sendTestPing?: () => Promise<{ ok: boolean; target?: string }>
-}
-
 function extractFieldErrors(
   issues: ReadonlyArray<{ path: ReadonlyArray<PropertyKey>; message: string }>
 ): Record<string, string[]> {
@@ -50,7 +41,7 @@ export function telegramQueryOptions() {
   return queryOptions({
     queryKey: telegramQueryKeys.state(),
     queryFn: fetchTelegramState,
-    staleTime: 15_000,
+    staleTime: 5_000,
   })
 }
 
@@ -78,6 +69,21 @@ export async function setTelegramMode(
   }
 }
 
+export async function startHostedTelegramPairing(
+  replaceExisting = false
+): Promise<ActionResult<TelegramState>> {
+  try {
+    const raw = await ipcClient.telegram.startHosted(replaceExisting)
+    return ok(telegramStateSchema.parse(raw))
+  } catch (error) {
+    return err(
+      error instanceof Error
+        ? error.message
+        : "Failed to start hosted Telegram pairing"
+    )
+  }
+}
+
 export async function connectTelegramBotToken(
   input: ConnectBotTokenInput
 ): Promise<ActionResult<TelegramState>> {
@@ -89,26 +95,12 @@ export async function connectTelegramBotToken(
     return err(firstMessage, fieldErrors)
   }
 
-  const client = ipcClient.telegram as TelegramIpcWithOptionalMethods
-
   try {
-    if (typeof client.connectBotToken === "function") {
-      const raw = await client.connectBotToken({
-        botToken: parsed.data.botToken,
-        allowedChatId: parsed.data.allowedChatId,
-      })
-      return ok(telegramStateSchema.parse(raw))
-    }
-
-    const raw = await ipcClient.telegram.setMode("connected")
-    const validated = telegramStateSchema.parse(raw)
-    return ok({
-      ...validated,
-      mode: "connected",
-      connectedBotHandle: "@custom_rayu_bot",
-      chatId: parsed.data.allowedChatId,
-      mediaDelivery: "Inline images & MP4",
+    const raw = await ipcClient.telegram.connectBotToken({
+      botToken: parsed.data.botToken,
+      allowedChatId: parsed.data.allowedChatId,
     })
+    return ok(telegramStateSchema.parse(raw))
   } catch (error) {
     return err(
       error instanceof Error
@@ -155,16 +147,29 @@ export async function setTelegramRemoteUninstall(
   }
 }
 
-export async function disconnectTelegramBridge(): Promise<
-  ActionResult<TelegramState>
-> {
-  const client = ipcClient.telegram as TelegramIpcWithOptionalMethods
+export async function selectTelegramSession(
+  sessionId: string
+): Promise<ActionResult<TelegramState>> {
+  if (!sessionId.trim()) {
+    return err("Select or open a session first")
+  }
   try {
-    if (typeof client.disconnect === "function") {
-      const raw = await client.disconnect()
-      return ok(telegramStateSchema.parse(raw))
-    }
-    const raw = await ipcClient.telegram.getState()
+    const raw = await ipcClient.telegram.selectSession(sessionId.trim())
+    return ok(telegramStateSchema.parse(raw))
+  } catch (error) {
+    return err(
+      error instanceof Error
+        ? error.message
+        : "Failed to attach session to Telegram bridge"
+    )
+  }
+}
+
+export async function disconnectTelegramBridge(
+  localOnly = false
+): Promise<ActionResult<TelegramState>> {
+  try {
+    const raw = await ipcClient.telegram.disconnect(localOnly)
     return ok(telegramStateSchema.parse(raw))
   } catch (error) {
     return err(
@@ -176,15 +181,15 @@ export async function disconnectTelegramBridge(): Promise<
 }
 
 export async function sendTelegramTestPing(): Promise<
-  ActionResult<{ ok: boolean }>
+  ActionResult<{ ok: boolean; target?: string; chatId?: string }>
 > {
-  const client = ipcClient.telegram as TelegramIpcWithOptionalMethods
   try {
-    if (typeof client.sendTestPing === "function") {
-      const res = await client.sendTestPing()
-      return ok({ ok: Boolean(res.ok) })
-    }
-    return ok({ ok: true })
+    const res = await ipcClient.telegram.sendTestPing()
+    return ok({
+      ok: Boolean(res.ok),
+      target: res.target,
+      chatId: res.chatId,
+    })
   } catch (error) {
     return err(
       error instanceof Error ? error.message : "Failed to send Telegram ping"
