@@ -114,6 +114,30 @@ test("rotating credentials are shared so token refresh stays coherent", () => {
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
+test("rayu-auth.json is inherited as a shared symlink for rayu provider logins", () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-auth-inherit-test-"));
+  const from = path.join(sandbox, "user");
+  const to = path.join(sandbox, "instance");
+  fs.mkdirSync(from, { recursive: true });
+  fs.writeFileSync(path.join(from, "rayu-auth.json"), '{"access_token":"tok_v1"}');
+
+  try {
+    const inherited = inheritCredentials(from, to);
+    assert.ok(inherited.includes("rayu-auth.json"));
+    assert.ok(
+      fs.lstatSync(path.join(to, "rayu-auth.json")).isSymbolicLink(),
+      "rayu-auth.json must be symlinked so rotating rayu gateway tokens stay coherent",
+    );
+    fs.writeFileSync(path.join(from, "rayu-auth.json"), '{"access_token":"tok_v2"}');
+    assert.equal(
+      fs.readFileSync(path.join(to, "rayu-auth.json"), "utf8"),
+      '{"access_token":"tok_v2"}',
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("credential inheritance refuses to use the user's home as the instance home", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-same-home-test-"));
   const auth = path.join(home, "auth.json");
