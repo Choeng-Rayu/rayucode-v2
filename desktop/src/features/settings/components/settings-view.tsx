@@ -764,7 +764,7 @@ export function SettingsView({
                           </div>
                           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-active">
                             <div
-                              className="h-full rounded-full bg-ink transition-all"
+                              className="rayu-effort-bar h-full rounded-full transition-all"
                               style={{ width: `${fiveHourPct}%` }}
                             />
                           </div>
@@ -794,7 +794,7 @@ export function SettingsView({
                           </div>
                           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-active">
                             <div
-                              className="h-full rounded-full bg-ink transition-all"
+                              className="rayu-effort-bar h-full rounded-full transition-all"
                               style={{ width: `${weeklyPct}%` }}
                             />
                           </div>

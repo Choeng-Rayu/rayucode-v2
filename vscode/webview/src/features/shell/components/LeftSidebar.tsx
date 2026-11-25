@@ -317,49 +317,177 @@ export function IconRail({
           side="right"
           align="end"
           sideOffset={10}
-          className="w-[292px] rounded-2xl border-premium-hi bg-popover-solid p-0 text-ink shadow-popover"
+          className="w-[308px] rounded-2xl border-premium-hi bg-popover-solid p-0 text-ink shadow-popover"
         >
-          <div className="px-[18px] pt-[15px] pb-[13px] text-[13px] font-medium text-muted-ink">
-            {isSignedIn
-              ? `Usage source: ${account?.planName ?? "Rayu Cloud"}`
-              : "Not signed in to Rayu Cloud"}
+          <div className="flex items-center justify-between gap-2 px-[18px] pt-[15px] pb-[13px]">
+            <span className="text-[13px] font-medium text-muted-ink">
+              {isSignedIn
+                ? `Usage source: ${account?.planName ?? "Rayu Cloud"}`
+                : "Not signed in to Rayu Cloud"}
+            </span>
+            {isSignedIn && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-brand/25 bg-brand-soft px-2 py-0.5 text-[10.5px] font-medium text-brand-text">
+                <span className="size-1.5 rounded-full bg-brand" aria-hidden="true" />
+                Active
+              </span>
+            )}
           </div>
           <div className="mx-[18px] h-px bg-hairline" />
-          <div className="flex flex-col gap-[13px] px-[18px] py-[15px] text-sm">
+          <div className="flex flex-col gap-3.5 px-[18px] py-[15px] text-sm">
             {(account?.windows ?? []).length > 0 ? (
-              account!.windows.map((win) => (
+              <>
                 <div
-                  key={win.label}
-                  className="flex items-start justify-between gap-3"
+                  data-testid="usage-limits-graph"
+                  aria-label="Usage capacity graph"
+                  className="rounded-xl border border-hairline bg-inset px-3 py-2.5"
                 >
-                  <div>
-                    <div className="font-medium text-ink">{win.label}</div>
-                    {win.resetCountdown && (
-                      <div className="mt-0.5 text-[11px] text-muted-ink">
-                        {win.resetCountdown}
-                      </div>
-                    )}
+                  <div className="mb-2 flex items-center justify-between text-[10.5px] font-medium text-muted-ink">
+                    <span>Capacity overview</span>
+                    <span className="font-mono text-brand-text tabular-nums">
+                      Remaining
+                    </span>
                   </div>
-                  <span className="font-mono text-ink tabular-nums">
-                    {win.remainingPercent}% left
-                  </span>
+                  <div
+                    className={cn(
+                      "grid items-end gap-2.5",
+                      account!.windows.length >= 3
+                        ? "grid-cols-3"
+                        : "grid-cols-2",
+                    )}
+                  >
+                    {account!.windows.map((win) => {
+                      const pct = Math.max(
+                        0,
+                        Math.min(100, Math.round(win.remainingPercent)),
+                      );
+                      const shortLabel = /5h|5-hour/i.test(win.label)
+                        ? "5h"
+                        : /week/i.test(win.label)
+                          ? "Week"
+                          : /month/i.test(win.label)
+                            ? "Month"
+                            : win.label.slice(0, 8);
+                      const fillClass =
+                        pct <= 10
+                          ? "bg-danger"
+                          : pct <= 20
+                            ? "bg-warn"
+                            : "rayu-effort-bar";
+                      return (
+                        <div
+                          key={`graph_${win.label}`}
+                          className="flex flex-col items-center gap-1"
+                        >
+                          <div className="flex h-11 w-full items-end overflow-hidden rounded-md bg-active p-0.5">
+                            <div
+                              className={cn(
+                                "w-full rounded-[4px] transition-all duration-300",
+                                fillClass,
+                              )}
+                              style={{ height: `${Math.max(6, pct)}%` }}
+                            />
+                          </div>
+                          <div className="flex w-full items-baseline justify-between gap-1 text-[10px]">
+                            <span className="truncate text-muted-ink">
+                              {shortLabel}
+                            </span>
+                            <span className="font-mono font-medium text-ink tabular-nums">
+                              {pct}%
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              ))
+
+                {account!.windows.map((win) => {
+                  const pct = Math.max(
+                    0,
+                    Math.min(100, Math.round(win.remainingPercent)),
+                  );
+                  const fillClass =
+                    pct <= 10
+                      ? "bg-danger"
+                      : pct <= 20
+                        ? "bg-warn"
+                        : "rayu-effort-bar";
+                  return (
+                    <div key={win.label} className="flex flex-col gap-1.5">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="font-medium text-ink">
+                            {win.label}
+                          </div>
+                          {win.resetCountdown && (
+                            <div className="mt-0.5 text-[11px] text-muted-ink">
+                              {win.resetCountdown}
+                            </div>
+                          )}
+                        </div>
+                        <span className="font-mono text-xs font-medium text-ink tabular-nums">
+                          {win.remainingPercent}% left
+                        </span>
+                      </div>
+                      <div
+                        role="progressbar"
+                        aria-label={win.label}
+                        aria-valuenow={pct}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        className="h-1.5 w-full overflow-hidden rounded-full bg-active"
+                      >
+                        <div
+                          className={cn(
+                            "h-full rounded-full transition-all duration-300",
+                            fillClass,
+                          )}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
             ) : (
               <>
-                <div className="flex items-start justify-between gap-3">
-                  <span className="font-medium text-ink">5-hour limit</span>
-                  <span className="font-mono text-ink tabular-nums">—</span>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="font-medium text-ink">5-hour limit</span>
+                    <span className="font-mono text-xs text-ink tabular-nums">
+                      —
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-active" />
                 </div>
-                <div className="flex items-start justify-between gap-3">
-                  <span className="font-medium text-ink">Weekly limit</span>
-                  <span className="font-mono text-ink tabular-nums">—</span>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="font-medium text-ink">Weekly limit</span>
+                    <span className="font-mono text-xs text-ink tabular-nums">
+                      —
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-active" />
                 </div>
               </>
             )}
-            <div className="flex items-baseline justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 border-t border-hairline-soft pt-2.5">
               <span className="font-medium text-ink">Credits</span>
-              <span className="font-mono text-ink tabular-nums">
+              <span
+                data-testid="usage-credits-badge"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full font-mono text-xs font-semibold tabular-nums",
+                  isSignedIn && account?.creditsRemaining != null
+                    ? "border border-brand/25 bg-brand-soft px-2.5 py-0.5 text-brand-text"
+                    : "text-muted-ink",
+                )}
+              >
+                {isSignedIn && account?.creditsRemaining != null && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-brand"
+                    aria-hidden="true"
+                  />
+                )}
                 {isSignedIn && account?.creditsRemaining != null
                   ? `${account.creditsRemaining.toLocaleString()} credits`
                   : "—"}
