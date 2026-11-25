@@ -16,6 +16,7 @@ export const AppRouteSchema = z.enum([
   "home",
   "workspace",
   "swarm",
+  "agents",
   "automations",
   "plugins",
   "changes",
@@ -942,18 +943,36 @@ export type TelegramApprovalView = z.infer<typeof TelegramApprovalViewSchema>;
 
 export const TelegramStatusViewSchema = z.object({
   linked: z.boolean(),
+  configured: z.boolean().optional(),
+  statusLabel: z.string().optional(),
+  generation: z.string().optional(),
+  expired: z.boolean().optional(),
+  activeAccount: z.boolean().optional(),
   mode: z.enum(["hosted", "botfather"]).optional(),
   botHandle: z.string().optional(),
   chatId: z.string().optional(),
   boundSessionId: z.string().optional(),
+  authPath: z.string().optional(),
   daemonOnline: z.boolean(),
   remoteUninstallEnabled: z.boolean(),
   pairingUrl: z.string().optional(),
   pairingCode: z.string().optional(),
   pairingExpiresAtMs: z.number().optional(),
+  qrSize: z.number().int().positive().nullable().optional(),
+  qrPath: z.string().nullable().optional(),
+  daemonError: z.string().nullable().optional(),
   approvals: z.array(TelegramApprovalViewSchema),
 });
 export type TelegramStatusView = z.infer<typeof TelegramStatusViewSchema>;
+
+export const AgentProfileViewSchema = z.object({
+  name: z.string().min(1),
+  model: z.string().min(1),
+  description: z.string(),
+  effort: z.string().nullable().optional(),
+  scope: z.enum(["global", "session"]),
+});
+export type AgentProfileView = z.infer<typeof AgentProfileViewSchema>;
 
 export const GatewayDeviceViewSchema = z.object({
   id: z.string(),
@@ -2050,23 +2069,29 @@ export const RpcContractSchemas = {
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.linkHosted": {
-    params: EmptyParamsSchema,
+    params: z.object({ replaceExisting: z.boolean().optional() }).optional(),
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.linkBotfather": {
     params: z.object({
       botToken: z.string().min(1),
       allowedChatId: z.string().optional(),
+      replaceExisting: z.boolean().optional(),
     }),
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.disconnect": {
-    params: EmptyParamsSchema,
+    params: z.object({ localOnly: z.boolean().optional() }).optional(),
     result: OkResultSchema,
   },
   "remote.telegram.testPing": {
     params: EmptyParamsSchema,
-    result: OkResultSchema,
+    result: z.object({
+      ok: z.boolean(),
+      target: z.string().optional(),
+      chatId: z.string().optional(),
+      message: z.string().optional(),
+    }),
   },
   "remote.telegram.driveSession": {
     params: z.object({ sessionId: z.string() }),
@@ -2212,8 +2237,15 @@ export const RpcContractSchemas = {
       serviceTier: ServiceTierSchema,
       cacheTtl: CacheTtlSchema,
       transport: ProviderTransportSchema,
+      subagentModel: z.string().nullable().optional(),
+      inheritModel: z.string().nullable().optional(),
       roleOverrides: z.array(AgentRoleOverrideViewSchema),
+      effectiveRoleModels: z.record(z.string(), z.string().nullable()).optional(),
+      profiles: z.array(AgentProfileViewSchema).optional(),
+      globalProfiles: z.array(AgentProfileViewSchema).optional(),
+      sessionProfiles: z.array(AgentProfileViewSchema).optional(),
       swarmAllowlist: z.array(z.string()).optional(),
+      configPath: z.string().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
     }),
   },
@@ -2245,6 +2277,46 @@ export const RpcContractSchemas = {
       sessionId: z.string().optional(),
     }),
     result: OkResultSchema,
+  },
+  "settings.agents.setSubagentModel": {
+    params: z.object({
+      model: z.string().min(1),
+      scope: z.enum(["session", "global"]).optional(),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      model: z.string().nullable().optional(),
+      configuredDefault: z.string().nullable().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "settings.agents.upsertProfile": {
+    params: z.object({
+      name: z.string().min(1).max(32),
+      model: z.string().min(1).max(256),
+      effort: z.string().nullable().optional(),
+      description: z.string().max(500).optional(),
+      scope: z.enum(["session", "global"]),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      profiles: z.array(AgentProfileViewSchema),
+      message: z.string().optional(),
+    }),
+  },
+  "settings.agents.deleteProfile": {
+    params: z.object({
+      name: z.string().min(1).max(32),
+      scope: z.enum(["session", "global"]),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      profiles: z.array(AgentProfileViewSchema),
+      message: z.string().optional(),
+    }),
   },
   "settings.features.get": {
     params: EmptyParamsSchema,

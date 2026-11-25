@@ -1,6 +1,7 @@
 import * as React from "react";
-import { RefreshCw } from "lucide-react";
+import { ArrowUpRight, Bot, RefreshCw } from "lucide-react";
 import type {
+  AgentProfileView,
   AgentRoleId,
   AgentRoleOverrideView,
   CacheTtl,
@@ -29,6 +30,8 @@ export interface ModelsAgentsSectionProps {
   serviceTier: ServiceTier;
   cacheTtl: CacheTtl;
   roleOverrides: ReadonlyArray<AgentRoleOverrideView>;
+  profiles?: ReadonlyArray<AgentProfileView>;
+  subagentModel?: string | null;
   swarmAllowlist?: ReadonlyArray<string>;
   routes?: ReadonlyArray<ModelRouteOptionView>;
   onSelectDefaultModel: (model: string) => void;
@@ -40,6 +43,7 @@ export interface ModelsAgentsSectionProps {
     model: string;
     scope: "session" | "global";
   }) => Promise<unknown>;
+  onOpenAgentsStudio?: () => void;
   onRefreshModels: () => Promise<unknown>;
   isRefreshingModels: boolean;
 }
@@ -59,6 +63,8 @@ export function ModelsAgentsSection({
   serviceTier,
   cacheTtl,
   roleOverrides,
+  profiles,
+  subagentModel,
   swarmAllowlist,
   routes,
   onSelectDefaultModel,
@@ -66,6 +72,7 @@ export function ModelsAgentsSection({
   onSelectServiceTier,
   onSelectCacheTtl,
   onSetRoleOverride,
+  onOpenAgentsStudio,
   onRefreshModels,
   isRefreshingModels,
 }: ModelsAgentsSectionProps) {
@@ -122,6 +129,12 @@ export function ModelsAgentsSection({
     ];
     const seen = new Set<string>(["inherit", "default"]);
 
+    for (const p of profiles ?? []) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      out.push({ value: p.name, label: `Persona: ${p.name} (${p.model})` });
+    }
+
     for (const choice of modelChoices) {
       if (seen.has(choice.value)) continue;
       seen.add(choice.value);
@@ -136,7 +149,7 @@ export function ModelsAgentsSection({
     }
 
     return out;
-  }, [modelChoices, roleOverrides]);
+  }, [modelChoices, profiles, roleOverrides]);
 
   return (
     <section
@@ -302,6 +315,46 @@ export function ModelsAgentsSection({
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Subagent Models & Agent Personas Studio Entry */}
+      <div
+        data-testid="models-agents-studio-card"
+        className="rayu-card-bevel flex flex-wrap items-center justify-between gap-3 rounded-xl border border-premium bg-pane px-4 py-3.5 text-xs"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+            <Bot className="size-4 text-brand-text" aria-hidden="true" />
+            <span>Subagent Models &amp; Agent Personas</span>
+            <span className="rounded-full bg-raised px-2 py-0.5 text-[10.5px] text-muted-ink tabular-nums">
+              {(profiles ?? []).length} persona
+              {(profiles ?? []).length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="mt-1 text-muted-ink">
+            Design custom worker personas (
+            <code className="rounded bg-inset px-1 py-0.5 font-mono text-[10.5px] text-body">
+              [[agents.profiles]]
+            </code>
+            ), set{" "}
+            <code className="rounded bg-inset px-1 py-0.5 font-mono text-[10.5px] text-body">
+              /subagent-model
+            </code>{" "}
+            ({subagentModel ?? "inherit"}), and bind personas to roles.
+          </div>
+        </div>
+        {onOpenAgentsStudio && (
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={onOpenAgentsStudio}
+            data-testid="settings-open-agents-studio-btn"
+          >
+            <span>Open Agents &amp; Personas</span>
+            <ArrowUpRight className="size-3.5" aria-hidden="true" />
+          </Button>
+        )}
       </div>
 
       {/* Per-Role Subagent & Swarm Model Overrides */}

@@ -17,6 +17,7 @@ export const SHELL_ROUTES: Record<AppRoute, RouteMeta> = {
   home: { id: "home", title: "New session", hasRightInspector: true },
   workspace: { id: "workspace", title: "Active session", hasRightInspector: true },
   swarm: { id: "swarm", title: "Swarm Mission Control", hasRightInspector: false },
+  agents: { id: "agents", title: "Agents & Personas", hasRightInspector: false },
   automations: { id: "automations", title: "Automations", hasRightInspector: false },
   plugins: { id: "plugins", title: "Plugins, MCP & Memory", hasRightInspector: false },
   changes: { id: "changes", title: "Changes & Review", hasRightInspector: false },
@@ -32,6 +33,7 @@ export interface PrimaryNavItem {
 
 export const PRIMARY_NAV_ITEMS: ReadonlyArray<PrimaryNavItem> = [
   { id: "home", label: "Home", icon: "home" },
+  { id: "agents", label: "Agents", icon: "agents" },
   { id: "automations", label: "Automations", icon: "clock" },
   { id: "plugins", label: "Plugins", icon: "plug" },
   { id: "changes", label: "Changes", icon: "branch" },

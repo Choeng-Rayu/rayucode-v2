@@ -87,7 +87,18 @@ interface MockBridgeState {
     serviceTier: ServiceTier;
     cacheTtl: CacheTtl;
     transport: ProviderTransport;
+    subagentModel?: string | null;
+    inheritModel?: string | null;
     roleOverrides: AgentRoleOverrideView[];
+    effectiveRoleModels?: Record<string, string | null>;
+    profiles: Array<{
+      name: string;
+      model: string;
+      description: string;
+      effort?: string | null;
+      scope: "global" | "session";
+    }>;
+    configPath?: string;
     routes: ModelRouteOptionView[];
   };
   appearance: {
@@ -709,6 +720,9 @@ const mockState: MockBridgeState = {
 
   telegram: {
     linked: false,
+    configured: false,
+    statusLabel: "Disconnected",
+    authPath: "~/.rayu/telegram-remote.json",
     daemonOnline: true,
     remoteUninstallEnabled: false,
     approvals: [],
@@ -827,10 +841,39 @@ const mockState: MockBridgeState = {
     serviceTier: "auto",
     cacheTtl: "5m",
     transport: "auto",
+    subagentModel: null,
+    inheritModel: "rayu:claude-sonnet-4-5",
     roleOverrides: [
       { role: "swarm", label: "Swarm Workers", model: "rayu:claude-sonnet-4-5", scope: "global" },
-      { role: "review", label: "Auto-Review", model: "rayu:claude-sonnet-4-5", scope: "global" },
+      { role: "review", label: "Code Review", model: "architect", scope: "global" },
+      { role: "judge", label: "Acceptance Judge", model: "inherit", scope: "global" },
+      { role: "memory", label: "Memory Extraction", model: "inherit", scope: "global" },
+      { role: "ambient", label: "Ambient Cycles", model: "inherit", scope: "global" },
     ],
+    effectiveRoleModels: {
+      swarm: "rayu:claude-sonnet-4-5",
+      review: "rayu:claude-opus-4-5",
+      judge: null,
+      memory: null,
+      ambient: null,
+    },
+    profiles: [
+      {
+        name: "architect",
+        model: "rayu:claude-opus-4-5",
+        effort: "high",
+        description: "Systems architecture, API design, and thorough code reviews.",
+        scope: "global",
+      },
+      {
+        name: "coder",
+        model: "rayu:claude-sonnet-4-5",
+        effort: "medium",
+        description: "Focused feature implementation, surgical edits, and unit tests.",
+        scope: "global",
+      },
+    ],
+    configPath: "~/.rayu/config.toml",
     routes: [
       {
         id: "claude-sonnet-4-5",
@@ -1886,13 +1929,81 @@ export async function handleMockRpcCall<M extends RpcMethod>(
 
     // --- Remote ---
     case "remote.telegram.status":
+      return {
+        ...mockState.telegram,
+        approvals: mockState.telegram.approvals.map((a) => ({ ...a })),
+      } as RpcResult<M>;
     case "remote.telegram.linkHosted":
-    case "remote.telegram.linkBotfather":
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: false,
+        configured: true,
+        statusLabel: "Waiting for pairing",
+        mode: "hosted",
+        botHandle: "@RayuCodeBot",
+        pairingCode: "live_pair_9k4m2p",
+        pairingUrl: "https://t.me/RayuCodeBot?start=live_pair_9k4m2p",
+        pairingExpiresAtMs: Date.now() + 600_000,
+        qrSize: 29,
+        qrPath: "M2 2h7v1h-7zM2 3h1v5h-1zM8 3h1v5h-1zM4 4h3v3h-3zM2 8h7v1h-7z",
+      };
       return { ...mockState.telegram } as RpcResult<M>;
+    case "remote.telegram.linkBotfather": {
+      const chatId =
+        typeof params.allowedChatId === "string" && params.allowedChatId.trim()
+          ? params.allowedChatId.trim()
+          : undefined;
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: Boolean(chatId),
+        configured: true,
+        statusLabel: chatId ? "Linked" : "Waiting for pairing",
+        mode: "botfather",
+        botHandle: "@CustomRayuBot",
+        chatId,
+        pairingCode: chatId ? undefined : "bf_pair_8m2k",
+        pairingUrl: chatId
+          ? undefined
+          : "https://t.me/CustomRayuBot?start=bf_pair_8m2k",
+        pairingExpiresAtMs: chatId ? undefined : Date.now() + 600_000,
+        qrSize: chatId ? null : 29,
+        qrPath: chatId
+          ? null
+          : "M2 2h7v1h-7zM2 3h1v5h-1zM8 3h1v5h-1zM4 4h3v3h-3zM2 8h7v1h-7z",
+      };
+      return { ...mockState.telegram } as RpcResult<M>;
+    }
     case "remote.telegram.disconnect":
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: false,
+        configured: false,
+        statusLabel: "Disconnected",
+        chatId: undefined,
+        pairingCode: undefined,
+        pairingUrl: undefined,
+        qrSize: null,
+        qrPath: null,
+      };
+      return { ok: true } as RpcResult<M>;
     case "remote.telegram.testPing":
+      return {
+        ok: true,
+        target: mockState.telegram.botHandle ?? "@RayuCodeBot",
+        chatId: mockState.telegram.chatId,
+        message: "Sent Telegram ping.",
+      } as RpcResult<M>;
     case "remote.telegram.driveSession":
-    case "remote.telegram.decide":
+      mockState.telegram.boundSessionId = String(params.sessionId ?? "");
+      return { ok: true } as RpcResult<M>;
+    case "remote.telegram.decide": {
+      const id = String(params.id ?? "");
+      const decision = params.decision === "allow" ? "approved" : "denied";
+      mockState.telegram.approvals = mockState.telegram.approvals.map((a) =>
+        a.id === id ? { ...a, status: decision, resolvedVia: "host" } : a,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
     case "remote.gateway.revoke":
     case "remote.cloud.syncEnv":
       return { ok: true } as RpcResult<M>;
@@ -2108,7 +2219,61 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       );
       return { ok: true } as RpcResult<M>;
     }
-    case "settings.models.setRoleOverride":
+    case "settings.models.setRoleOverride": {
+      const role = String(params.role ?? "");
+      const model = String(params.model ?? "inherit");
+      const scope = params.scope === "session" ? "session" : "global";
+      mockState.modelSettings.roleOverrides =
+        mockState.modelSettings.roleOverrides.map((r) =>
+          r.role === role ? { ...r, model, scope } : r,
+        );
+      return { ok: true } as RpcResult<M>;
+    }
+    case "settings.agents.setSubagentModel": {
+      const model = String(params.model ?? "inherit");
+      mockState.modelSettings.subagentModel = model === "default" ? null : model;
+      return {
+        ok: true,
+        model: mockState.modelSettings.subagentModel,
+        configuredDefault: mockState.modelSettings.subagentModel,
+      } as RpcResult<M>;
+    }
+    case "settings.agents.upsertProfile": {
+      const name = String(params.name ?? "").trim().toLowerCase();
+      const model = String(params.model ?? "").trim();
+      const scope = params.scope === "session" ? "session" : "global";
+      const next = {
+        name,
+        model,
+        effort:
+          typeof params.effort === "string" && params.effort.trim()
+            ? params.effort.trim()
+            : null,
+        description: String(params.description ?? "").trim(),
+        scope,
+      } as const;
+      mockState.modelSettings.profiles = [
+        ...mockState.modelSettings.profiles.filter(
+          (p) => !(p.name === name && p.scope === scope),
+        ),
+        next,
+      ];
+      return {
+        ok: true,
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+      } as RpcResult<M>;
+    }
+    case "settings.agents.deleteProfile": {
+      const name = String(params.name ?? "").trim().toLowerCase();
+      const scope = params.scope === "session" ? "session" : "global";
+      mockState.modelSettings.profiles = mockState.modelSettings.profiles.filter(
+        (p) => !(p.name === name && p.scope === scope),
+      );
+      return {
+        ok: true,
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+      } as RpcResult<M>;
+    }
     case "settings.hooks.openConfig":
     case "settings.shortcuts.openKeybindings":
     case "settings.runtime.update":
@@ -2146,6 +2311,13 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return {
         ...mockState.modelSettings,
         roleOverrides: mockState.modelSettings.roleOverrides.map((r) => ({ ...r })),
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+        globalProfiles: mockState.modelSettings.profiles
+          .filter((p) => p.scope === "global")
+          .map((p) => ({ ...p })),
+        sessionProfiles: mockState.modelSettings.profiles
+          .filter((p) => p.scope === "session")
+          .map((p) => ({ ...p })),
         routes: mockState.modelSettings.routes.map((r) => ({ ...r })),
       } as RpcResult<M>;
     case "settings.models.refresh":

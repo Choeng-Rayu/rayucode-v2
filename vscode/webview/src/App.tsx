@@ -47,6 +47,11 @@ import {
 const SwarmView = React.lazy(() =>
   import("@/features/swarm").then((m) => ({ default: m.SwarmView })),
 );
+const AgentsPersonasView = React.lazy(() =>
+  import("@/features/agents").then((m) => ({
+    default: m.AgentsPersonasView,
+  })),
+);
 const AutomationsView = React.lazy(() =>
   import("@/features/automations").then((m) => ({
     default: m.AutomationsView,
@@ -447,6 +452,16 @@ export function App() {
             fallback={<SwarmSkeleton />}
           >
             <SwarmView />
+          </RoutePanel>
+        );
+
+      case "agents":
+        return (
+          <RoutePanel
+            title="Agents & Personas failed to load"
+            fallback={<SettingsSkeleton />}
+          >
+            <AgentsPersonasView />
           </RoutePanel>
         );
 

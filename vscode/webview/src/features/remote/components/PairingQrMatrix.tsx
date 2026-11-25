@@ -1,9 +1,14 @@
 import * as React from "react";
+import { Loader2, QrCode } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 export interface PairingQrMatrixProps {
-  value: string;
+  value?: string;
+  qrSize?: number | null;
+  qrPath?: string | null;
+  isGenerating?: boolean;
+  isExpired?: boolean;
   label?: string;
   sizePx?: number;
   className?: string;
@@ -29,7 +34,6 @@ function isFinderCell(row: number, col: number): boolean | null {
   const bl = checkCorner(GRID_SIZE - 7, 0);
   if (bl !== null) return bl;
 
-  // Quiet separator around 7x7 finder patterns
   if (
     (row <= 7 && col <= 7) ||
     (row <= 7 && col >= GRID_SIZE - 8) ||
@@ -38,7 +42,6 @@ function isFinderCell(row: number, col: number): boolean | null {
     return false;
   }
 
-  // Timing lines
   if (row === 6) return col % 2 === 0;
   if (col === 6) return row % 2 === 0;
 
@@ -88,47 +91,122 @@ export function buildDeterministicQrMatrix(seed: string): boolean[][] {
 
 export function PairingQrMatrix({
   value,
+  qrSize,
+  qrPath,
+  isGenerating = false,
+  isExpired = false,
   label = "RayuCode pairing QR matrix",
   sizePx = 156,
   className,
   testId = "pairing-qr-matrix",
 }: PairingQrMatrixProps) {
-  const matrix = React.useMemo(() => buildDeterministicQrMatrix(value), [value]);
+  const fallbackMatrix = React.useMemo(
+    () => (value && !qrPath ? buildDeterministicQrMatrix(value) : null),
+    [qrPath, value],
+  );
+
+  if (isGenerating) {
+    return (
+      <div
+        aria-label="Generating pairing QR code"
+        data-testid={`${testId}-loading`}
+        className={cn(
+          "flex size-[184px] shrink-0 flex-col items-center justify-center gap-2 rounded-[14px] border border-premium bg-inset p-4 text-center",
+          className,
+        )}
+      >
+        <Loader2
+          className="size-6 animate-spin text-brand-text"
+          aria-hidden="true"
+        />
+        <span className="text-xs font-medium text-body">Generating QR…</span>
+      </div>
+    );
+  }
+
+  if (qrPath && qrSize && !isExpired) {
+    return (
+      <div
+        aria-label={label}
+        data-testid={testId}
+        data-qr-value={value ?? ""}
+        className={cn(
+          "flex size-[184px] shrink-0 items-center justify-center rounded-[14px] border border-premium bg-white p-3 shadow-bevel-surface",
+          className,
+        )}
+      >
+        <svg
+          viewBox={`0 0 ${qrSize} ${qrSize}`}
+          width={sizePx}
+          height={sizePx}
+          shapeRendering="crispEdges"
+          role="img"
+          aria-label={label}
+        >
+          <rect width={qrSize} height={qrSize} className="fill-white" />
+          <path className="fill-black" d={qrPath} />
+        </svg>
+      </div>
+    );
+  }
+
+  if (fallbackMatrix && !isExpired) {
+    return (
+      <div
+        aria-label={label}
+        data-testid={testId}
+        data-qr-value={value ?? ""}
+        className={cn(
+          "flex size-[184px] shrink-0 items-center justify-center rounded-[14px] border border-premium bg-white p-3 shadow-bevel-surface",
+          className,
+        )}
+      >
+        <svg
+          viewBox={`0 0 ${GRID_SIZE} ${GRID_SIZE}`}
+          width={sizePx}
+          height={sizePx}
+          shapeRendering="crispEdges"
+          role="img"
+          aria-label={label}
+        >
+          <rect width={GRID_SIZE} height={GRID_SIZE} className="fill-white" />
+          {fallbackMatrix.map((row, rIdx) =>
+            row.map((filled, cIdx) =>
+              filled ? (
+                <rect
+                  key={`${rIdx}-${cIdx}`}
+                  x={cIdx}
+                  y={rIdx}
+                  width={1}
+                  height={1}
+                  className="fill-black"
+                />
+              ) : null,
+            ),
+          )}
+        </svg>
+      </div>
+    );
+  }
 
   return (
     <div
-      aria-label={label}
-      data-testid={testId}
-      data-qr-value={value}
+      aria-label={isExpired ? "Pairing QR expired" : "No active pairing QR"}
+      data-testid={`${testId}-placeholder`}
       className={cn(
-        "flex size-[184px] shrink-0 items-center justify-center rounded-[14px] border border-premium bg-white p-3 shadow-bevel-surface",
+        "flex size-[184px] shrink-0 flex-col items-center justify-center gap-2 rounded-[14px] border border-dashed border-premium bg-inset p-4 text-center",
         className,
       )}
     >
-      <svg
-        viewBox={`0 0 ${GRID_SIZE} ${GRID_SIZE}`}
-        width={sizePx}
-        height={sizePx}
-        shapeRendering="crispEdges"
-        role="img"
-        aria-label={label}
-      >
-        <rect width={GRID_SIZE} height={GRID_SIZE} className="fill-white" />
-        {matrix.map((row, rIdx) =>
-          row.map((filled, cIdx) =>
-            filled ? (
-              <rect
-                key={`${rIdx}-${cIdx}`}
-                x={cIdx}
-                y={rIdx}
-                width={1}
-                height={1}
-                className="fill-black"
-              />
-            ) : null,
-          ),
-        )}
-      </svg>
+      <QrCode className="size-8 text-muted-ink" aria-hidden="true" />
+      <span className="text-xs font-medium text-body">
+        {isExpired ? "Pairing code expired" : "No active QR"}
+      </span>
+      <span className="text-[11px] text-muted-ink">
+        {isExpired
+          ? "Click Regenerate QR to create a new code"
+          : "Click Generate QR to start pairing"}
+      </span>
     </div>
   );
 }

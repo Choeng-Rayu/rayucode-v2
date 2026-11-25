@@ -147,6 +147,7 @@ describe("App end-to-end integration", () => {
       const routes: Array<{ route: AppRoute; testId: string }> = [
         { route: "workspace", testId: "chat-workspace-view" },
         { route: "swarm", testId: "swarm-view" },
+        { route: "agents", testId: "agents-view" },
         { route: "automations", testId: "automations-view" },
         { route: "plugins", testId: "plugins-view" },
         { route: "changes", testId: "changes-view" },

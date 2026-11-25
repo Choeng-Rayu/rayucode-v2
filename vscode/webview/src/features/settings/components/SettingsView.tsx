@@ -19,6 +19,7 @@ import { SettingsSkeleton } from "@/components/ui/page-skeletons";
 import { RunStatusPulse } from "@/components/ui/rayu-symbols";
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary";
 import { useShellFormFactor } from "@/features/shell";
+import { useAppStore } from "@/lib/app-store";
 import { cn } from "@/lib/utils";
 
 import {
@@ -66,6 +67,7 @@ export function SettingsView({
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const { formFactor } = useShellFormFactor(containerRef);
   const isCompact = formFactor === "compact";
+  const setActiveRoute = useAppStore((s) => s.setActiveRoute);
 
   const {
     activeSection,
@@ -444,6 +446,8 @@ export function SettingsView({
                     serviceTier={models.serviceTier}
                     cacheTtl={models.cacheTtl}
                     roleOverrides={models.roleOverrides}
+                    profiles={models.profiles}
+                    subagentModel={models.subagentModel}
                     swarmAllowlist={models.swarmAllowlist}
                     routes={models.routes}
                     onSelectDefaultModel={setDefaultModel}
@@ -451,6 +455,7 @@ export function SettingsView({
                     onSelectServiceTier={setFastTier}
                     onSelectCacheTtl={setCacheTtl}
                     onSetRoleOverride={setRoleOverride}
+                    onOpenAgentsStudio={() => setActiveRoute("agents")}
                     onRefreshModels={refreshModels}
                     isRefreshingModels={isRefreshingModels}
                   />

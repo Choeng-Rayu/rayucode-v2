@@ -12,6 +12,7 @@ import {
   fromHarnessPermissionMode,
   parseRpcParams,
   type AccountStatusView,
+  type AgentProfileView,
   type AgentRoleId,
   type AgentRoleOverrideView,
   type AmbientApprovalView,
@@ -1436,6 +1437,17 @@ const HOOK_EVENTS: Array<{ event: HookEventId; label: string; mode: "sync" | "as
 ];
 
 export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
+  let pendingTelegramPairing: {
+    generation: string | null;
+    mode: "hosted" | "botfather";
+    username?: string;
+    pairingUrl: string;
+    pairingCode?: string;
+    qrSize?: number | null;
+    qrPath?: string | null;
+    pairingExpiresAtMs?: number;
+  } | null = null;
+
   const execRuntimeCmd = async (
     command: RuntimeCommand,
     args: string[] = [],
@@ -3974,87 +3986,259 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 9. Remote (Telegram, Cloud, SSH, WS Gateway)
     // -------------------------------------------------------------------------
     "remote.telegram.status": async (): Promise<TelegramStatusView> => {
-      const [data, approvalsData] = await Promise.all([
-        safeRuntimeCmd("telegram", ["status"]),
-        safeRuntimeCmd("telegram", ["approvals"]),
+      const daemonOnline = deps.bridgeManager.getStatus().state === "connected";
+      if (!daemonOnline) {
+        pendingTelegramPairing = null;
+        return {
+          linked: false,
+          configured: false,
+          statusLabel: "Daemon offline",
+          daemonOnline: false,
+          remoteUninstallEnabled: false,
+          authPath: "~/.rayu/telegram-remote.json",
+          daemonError: "Start the local Rayu daemon to manage Telegram remote.",
+          approvals: [],
+        };
+      }
+      const [statusRes, approvalsRes] = await Promise.all([
+        execRuntimeCmd("telegram", ["status"]),
+        execRuntimeCmd("telegram", ["approvals"]),
       ]);
+      const data = statusRes.data;
+      const approvalsData = approvalsRes.data;
+      if (!statusRes.ok) {
+        return {
+          linked: false,
+          configured: false,
+          statusLabel: "Unavailable",
+          daemonOnline,
+          remoteUninstallEnabled: false,
+          authPath: "~/.rayu/telegram-remote.json",
+          daemonError:
+            statusRes.message ||
+            "Could not query Telegram remote status from the Rust daemon.",
+          approvals: [],
+        };
+      }
       const approvals = mapTelegramApprovals(
         approvalsData.approvals ?? data.approvals,
       );
+      const linked = Boolean(data.linked ?? data.connected ?? false);
+      const configured = Boolean(data.configured ?? linked);
+      const expired = Boolean(data.expired ?? false);
+      const generation =
+        typeof data.generation === "string" ? data.generation : undefined;
+
+      if (
+        linked ||
+        !configured ||
+        expired ||
+        (pendingTelegramPairing?.generation &&
+          generation &&
+          pendingTelegramPairing.generation !== generation)
+      ) {
+        pendingTelegramPairing = null;
+      }
+
+      const activePairing = pendingTelegramPairing;
       const chatIdRaw = data.owner_chat_id ?? data.chat_id;
       const pendingUntilRaw = data.pending_until;
+      const rawUsername =
+        typeof data.username === "string"
+          ? data.username
+          : typeof data.bot_handle === "string"
+            ? data.bot_handle
+            : activePairing?.username;
+      const cleanHandle = rawUsername?.trim().replace(/^@+/, "");
+      const mode: "hosted" | "botfather" | undefined =
+        data.mode === "hosted" || data.mode === "botfather"
+          ? data.mode
+          : activePairing?.mode;
+
       return {
-        linked: Boolean(data.linked ?? data.connected ?? false),
-        mode:
-          data.mode === "hosted" || data.mode === "botfather"
-            ? data.mode
+        linked,
+        configured,
+        statusLabel:
+          typeof data.status === "string"
+            ? data.status
+            : linked
+              ? "Linked"
+              : "Disconnected",
+        generation,
+        expired,
+        activeAccount:
+          typeof data.active_account === "boolean"
+            ? data.active_account
             : undefined,
-        botHandle:
-          typeof data.username === "string"
-            ? data.username
-            : typeof data.bot_handle === "string"
-              ? data.bot_handle
-              : undefined,
+        mode,
+        botHandle: cleanHandle ? `@${cleanHandle}` : undefined,
         chatId:
           chatIdRaw !== undefined && chatIdRaw !== null
             ? String(chatIdRaw)
             : undefined,
         boundSessionId:
-          typeof data.selected_session === "string"
-            ? data.selected_session
-            : deps.sessionHub.getActiveSessionId(),
-        daemonOnline: deps.bridgeManager.getStatus().state === "connected",
+          typeof data.selected_session === "string" &&
+          data.selected_session.trim().length > 0
+            ? data.selected_session.trim()
+            : undefined,
+        authPath:
+          typeof data.auth_path === "string" && data.auth_path.trim().length > 0
+            ? data.auth_path.trim()
+            : "~/.rayu/telegram-remote.json",
+        daemonOnline: true,
         remoteUninstallEnabled: Boolean(data.uninstall_enabled ?? false),
         pairingUrl:
-          typeof data.pairing_url === "string" ? data.pairing_url : undefined,
+          typeof data.pairing_url === "string"
+            ? data.pairing_url
+            : activePairing?.pairingUrl,
         pairingCode:
-          typeof data.pairing_code === "string" ? data.pairing_code : undefined,
+          typeof data.pairing_code === "string"
+            ? data.pairing_code
+            : activePairing?.pairingCode,
         pairingExpiresAtMs:
           pendingUntilRaw !== undefined && pendingUntilRaw !== null
             ? parseTimestampMs(pendingUntilRaw)
-            : typeof data.ttl_secs === "number"
-              ? Date.now() + data.ttl_secs * 1000
-              : undefined,
+            : activePairing?.pairingExpiresAtMs ??
+              (typeof data.ttl_secs === "number"
+                ? Date.now() + data.ttl_secs * 1000
+                : undefined),
+        qrSize:
+          typeof data.qr_size === "number"
+            ? data.qr_size
+            : activePairing?.qrSize ?? null,
+        qrPath:
+          typeof data.qr_path === "string"
+            ? data.qr_path
+            : activePairing?.qrPath ?? null,
+        daemonError: null,
         approvals,
       };
     },
-    "remote.telegram.linkHosted": async () => {
-      // Preserve pairing_url / username / pending_until directly from `link_hosted`
-      const { data } = await requireRuntimeCmd("telegram", ["link_hosted"]);
+    "remote.telegram.linkHosted": async (params) => {
+      const args = params?.replaceExisting
+        ? ["link_hosted", "replace"]
+        : ["link_hosted"];
+      const { data } = await requireRuntimeCmd("telegram", args);
+      const pairingUrl =
+        typeof data.pairing_url === "string" ? data.pairing_url : "";
+      const pairingCode =
+        typeof data.pairing_code === "string" ? data.pairing_code : undefined;
+      const username =
+        typeof data.username === "string" ? data.username : undefined;
+      const qrSize = typeof data.qr_size === "number" ? data.qr_size : null;
+      const qrPath = typeof data.qr_path === "string" ? data.qr_path : null;
+      const pairingExpiresAtMs =
+        data.pending_until !== undefined && data.pending_until !== null
+          ? parseTimestampMs(data.pending_until)
+          : undefined;
+      if (pairingUrl) {
+        pendingTelegramPairing = {
+          generation:
+            typeof data.generation === "string" ? data.generation : null,
+          mode: "hosted",
+          username,
+          pairingUrl,
+          pairingCode,
+          qrSize,
+          qrPath,
+          pairingExpiresAtMs,
+        };
+      }
       const status = await handlers["remote.telegram.status"](undefined);
       return {
         ...status,
         mode: "hosted",
-        botHandle:
-          typeof data.username === "string" ? data.username : status.botHandle,
-        pairingUrl:
-          typeof data.pairing_url === "string"
-            ? data.pairing_url
-            : status.pairingUrl,
-        pairingExpiresAtMs:
-          data.pending_until !== undefined && data.pending_until !== null
-            ? parseTimestampMs(data.pending_until)
-            : status.pairingExpiresAtMs,
+        botHandle: username
+          ? `@${username.replace(/^@+/, "")}`
+          : status.botHandle,
+        pairingUrl: pairingUrl || status.pairingUrl,
+        pairingCode: pairingCode ?? status.pairingCode,
+        qrSize: qrSize ?? status.qrSize,
+        qrPath: qrPath ?? status.qrPath,
+        pairingExpiresAtMs: pairingExpiresAtMs ?? status.pairingExpiresAtMs,
       };
     },
-    "remote.telegram.linkBotfather": async () => {
-      throw new HarnessError(
-        "invalid_request",
-        "BotFather token linking via runtime_command is not supported yet; use Hosted Telegram pairing or `rayu telegram` CLI.",
-      );
+    "remote.telegram.linkBotfather": async (params) => {
+      const args = ["link_botfather", params.botToken.trim()];
+      if (params.allowedChatId?.trim()) {
+        args.push(params.allowedChatId.trim());
+      }
+      if (params.replaceExisting) {
+        args.push("replace");
+      }
+      const { data } = await requireRuntimeCmd("telegram", args);
+      const linked = Boolean(data.linked);
+      const pairingUrl =
+        typeof data.pairing_url === "string" ? data.pairing_url : "";
+      const pairingCode =
+        typeof data.pairing_code === "string" ? data.pairing_code : undefined;
+      const username =
+        typeof data.username === "string" ? data.username : undefined;
+      const qrSize = typeof data.qr_size === "number" ? data.qr_size : null;
+      const qrPath = typeof data.qr_path === "string" ? data.qr_path : null;
+      const pairingExpiresAtMs =
+        data.pending_until !== undefined && data.pending_until !== null
+          ? parseTimestampMs(data.pending_until)
+          : undefined;
+      if (!linked && pairingUrl) {
+        pendingTelegramPairing = {
+          generation:
+            typeof data.generation === "string" ? data.generation : null,
+          mode: "botfather",
+          username,
+          pairingUrl,
+          pairingCode,
+          qrSize,
+          qrPath,
+          pairingExpiresAtMs,
+        };
+      } else {
+        pendingTelegramPairing = null;
+      }
+      const status = await handlers["remote.telegram.status"](undefined);
+      return {
+        ...status,
+        linked: linked || status.linked,
+        mode: "botfather",
+        botHandle: username
+          ? `@${username.replace(/^@+/, "")}`
+          : status.botHandle,
+        pairingUrl: pairingUrl || status.pairingUrl,
+        pairingCode: pairingCode ?? status.pairingCode,
+        qrSize: qrSize ?? status.qrSize,
+        qrPath: qrPath ?? status.qrPath,
+        pairingExpiresAtMs: pairingExpiresAtMs ?? status.pairingExpiresAtMs,
+      };
     },
-    "remote.telegram.disconnect": async () => {
-      const { message } = await requireRuntimeCmd("telegram", ["disconnect"]);
+    "remote.telegram.disconnect": async (params) => {
+      const args = params?.localOnly
+        ? ["disconnect", "local_only"]
+        : ["disconnect"];
+      const { message } = await requireRuntimeCmd("telegram", args);
+      pendingTelegramPairing = null;
       return { ok: true, message: message || undefined };
     },
-    "remote.telegram.testPing": async () => ({
-      ok: false,
-      message: "Telegram test ping is not exposed via runtime_command yet.",
-    }),
-    "remote.telegram.driveSession": async () => ({
-      ok: false,
-      message: "Switching Telegram active session via runtime_command is not supported yet.",
-    }),
+    "remote.telegram.testPing": async () => {
+      const { data, message } = await requireRuntimeCmd("telegram", ["ping"]);
+      const rawUser =
+        typeof data.username === "string" ? data.username.trim() : "";
+      return {
+        ok: data.ok !== false,
+        target: rawUser ? `@${rawUser.replace(/^@+/, "")}` : undefined,
+        chatId:
+          data.chat_id !== undefined && data.chat_id !== null
+            ? String(data.chat_id)
+            : undefined,
+        message: message || undefined,
+      };
+    },
+    "remote.telegram.driveSession": async (params) => {
+      const { message } = await requireRuntimeCmd("telegram", [
+        "select_session",
+        params.sessionId.trim(),
+      ]);
+      return { ok: true, message: message || undefined };
+    },
     "remote.telegram.uninstallToggle": async (params) => {
       const { data } = await requireRuntimeCmd("telegram", [
         "uninstall",
@@ -4668,22 +4852,24 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
 
       const hostAccount = deps.authManager?.getAccountStatusSnapshot();
-      const [data, runtimeInfo, rayuHostedModels] = await Promise.all([
-        safeRuntimeCmd("agents", ["status"], targetSessionId),
-        targetSessionId
-          ? deps.sessionHub
-              .getClient()
-              .then((c) =>
-                typeof c.getRuntimeInfo === "function"
-                  ? c.getRuntimeInfo(targetSessionId)
-                  : null,
-              )
-              .catch(() => null)
-          : Promise.resolve(null),
-        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
-          ? deps.authManager.fetchHostedModels(false).catch(() => [])
-          : Promise.resolve([]),
-      ]);
+      const [data, subagentData, runtimeInfo, rayuHostedModels] =
+        await Promise.all([
+          safeRuntimeCmd("agents", ["status"], targetSessionId),
+          safeRuntimeCmd("subagent_model", ["status"], targetSessionId),
+          targetSessionId
+            ? deps.sessionHub
+                .getClient()
+                .then((c) =>
+                  typeof c.getRuntimeInfo === "function"
+                    ? c.getRuntimeInfo(targetSessionId)
+                    : null,
+                )
+                .catch(() => null)
+            : Promise.resolve(null),
+          hostAccount?.signedIn && deps.authManager?.fetchHostedModels
+            ? deps.authManager.fetchHostedModels(false).catch(() => [])
+            : Promise.resolve([]),
+        ]);
 
       const roles: Array<{ role: AgentRoleId; label: string }> = [
         { role: "swarm", label: "Swarm Workers" },
@@ -4694,6 +4880,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       ];
       const overridesObj = asRecord(data.overrides);
       const defaultsObj = asRecord(data.defaults);
+      const effectiveObj = asRecord(data.effective);
       const roleOverrides: AgentRoleOverrideView[] = roles.map((r) => {
         const sessionOverride = overridesObj[r.role];
         const globalDefault = defaultsObj[r.role];
@@ -4716,6 +4903,58 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         };
       });
 
+      const effectiveRoleModels: Record<string, string | null> = {};
+      for (const r of roles) {
+        const eff = effectiveObj[r.role];
+        effectiveRoleModels[r.role] =
+          typeof eff === "string" && eff.trim() ? eff.trim() : null;
+      }
+
+      const mapProfileList = (
+        raw: unknown,
+        fallbackScope: "global" | "session",
+      ): AgentProfileView[] => {
+        const out: AgentProfileView[] = [];
+        for (const item of asArray(raw)) {
+          const rec = asRecord(item);
+          const name = typeof rec.name === "string" ? rec.name.trim() : "";
+          const model = typeof rec.model === "string" ? rec.model.trim() : "";
+          if (!name || !model) continue;
+          const scope: "global" | "session" =
+            rec.scope === "global" || rec.scope === "session"
+              ? rec.scope
+              : fallbackScope;
+          out.push({
+            name,
+            model,
+            description:
+              typeof rec.description === "string" ? rec.description.trim() : "",
+            effort:
+              typeof rec.effort === "string" && rec.effort.trim()
+                ? rec.effort.trim()
+                : null,
+            scope,
+          });
+        }
+        return out;
+      };
+
+      const globalProfiles = mapProfileList(data.global_profiles, "global");
+      const sessionProfiles = mapProfileList(data.session_profiles, "session");
+      const mergedProfiles = mapProfileList(data.profiles, "global");
+      const profiles =
+        mergedProfiles.length > 0
+          ? mergedProfiles
+          : [
+              ...globalProfiles.filter(
+                (gp) =>
+                  !sessionProfiles.some(
+                    (sp) => sp.name.toLowerCase() === gp.name.toLowerCase(),
+                  ),
+              ),
+              ...sessionProfiles,
+            ];
+
       const { routes, defaultModel } = reconcileAuthConsistentRoutes({
         rawRoutes: runtimeInfo?.routes,
         hostAccount,
@@ -4724,6 +4963,20 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         runtimeProvider: runtimeInfo?.provider,
         fallbackActiveModel: deps.sessionHub.getActiveModel(),
       });
+
+      const subagentModel =
+        typeof subagentData.model === "string" && subagentData.model.trim()
+          ? subagentData.model.trim()
+          : typeof data.subagent_model === "string" && data.subagent_model.trim()
+            ? data.subagent_model.trim()
+            : null;
+      const inheritModel =
+        typeof subagentData.inherit_model === "string" &&
+        subagentData.inherit_model.trim()
+          ? subagentData.inherit_model.trim()
+          : typeof data.inherit_model === "string" && data.inherit_model.trim()
+            ? data.inherit_model.trim()
+            : defaultModel ?? null;
 
       return {
         defaultModel,
@@ -4740,10 +4993,20 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           "rayucode.settings.transport",
           "auto",
         ),
+        subagentModel,
+        inheritModel,
         roleOverrides,
+        effectiveRoleModels,
+        profiles,
+        globalProfiles,
+        sessionProfiles,
         swarmAllowlist: Array.isArray(data.swarm_allowlist)
           ? data.swarm_allowlist.map(String)
           : undefined,
+        configPath:
+          typeof data.config_path === "string" && data.config_path.trim()
+            ? data.config_path.trim()
+            : "~/.rayu/config.toml",
         ...(routes.length > 0 || runtimeInfo?.routes !== undefined
           ? { routes }
           : {}),
@@ -4817,6 +5080,101 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         params.sessionId,
       );
       return { ok: true, message: message || undefined };
+    },
+    "settings.agents.setSubagentModel": async (params) => {
+      const args =
+        params.scope === "global"
+          ? ["global", params.model.trim()]
+          : [params.model.trim()];
+      const { data, message } = await requireRuntimeCmd(
+        "subagent_model",
+        args,
+        params.sessionId,
+      );
+      return {
+        ok: true,
+        model: typeof data.model === "string" ? data.model : null,
+        configuredDefault:
+          typeof data.configured_default === "string"
+            ? data.configured_default
+            : null,
+        message: message || undefined,
+      };
+    },
+    "settings.agents.upsertProfile": async (params) => {
+      const args: string[] = [];
+      if (params.scope === "global") {
+        args.push("global");
+      }
+      args.push("profile", "add", params.name.trim(), params.model.trim());
+      const effort = params.effort?.trim();
+      if (effort && effort !== "auto" && effort !== "none") {
+        args.push("--effort", effort);
+      }
+      const description = params.description?.trim();
+      if (description) {
+        args.push(description);
+      }
+      const { data, message } = await requireRuntimeCmd(
+        "agents",
+        args,
+        params.sessionId,
+      );
+      const profiles: AgentProfileView[] = [];
+      for (const item of asArray(data.profiles)) {
+        const rec = asRecord(item);
+        const name = typeof rec.name === "string" ? rec.name.trim() : "";
+        const model = typeof rec.model === "string" ? rec.model.trim() : "";
+        if (!name || !model) continue;
+        profiles.push({
+          name,
+          model,
+          description:
+            typeof rec.description === "string" ? rec.description.trim() : "",
+          effort:
+            typeof rec.effort === "string" && rec.effort.trim()
+              ? rec.effort.trim()
+              : null,
+          scope:
+            rec.scope === "session" || rec.scope === "global"
+              ? rec.scope
+              : params.scope,
+        });
+      }
+      return { ok: true, profiles, message: message || undefined };
+    },
+    "settings.agents.deleteProfile": async (params) => {
+      const args =
+        params.scope === "global"
+          ? ["global", "profile", "rm", params.name.trim()]
+          : ["profile", "rm", params.name.trim()];
+      const { data, message } = await requireRuntimeCmd(
+        "agents",
+        args,
+        params.sessionId,
+      );
+      const profiles: AgentProfileView[] = [];
+      for (const item of asArray(data.profiles)) {
+        const rec = asRecord(item);
+        const name = typeof rec.name === "string" ? rec.name.trim() : "";
+        const model = typeof rec.model === "string" ? rec.model.trim() : "";
+        if (!name || !model) continue;
+        profiles.push({
+          name,
+          model,
+          description:
+            typeof rec.description === "string" ? rec.description.trim() : "",
+          effort:
+            typeof rec.effort === "string" && rec.effort.trim()
+              ? rec.effort.trim()
+              : null,
+          scope:
+            rec.scope === "session" || rec.scope === "global"
+              ? rec.scope
+              : "global",
+        });
+      }
+      return { ok: true, profiles, message: message || undefined };
     },
     "settings.features.get": async () => {
       const data = await safeRuntimeCmd("features", ["status"]);

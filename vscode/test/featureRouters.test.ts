@@ -564,11 +564,72 @@ test("featureRouters matches Rust v1.14 RuntimeCommand wire contracts 1:1", asyn
         if (command === "telegram" && args[0] === "link_hosted") {
           return {
             data: {
+              generation: "gen-hosted-1",
               username: "rayu_hosted_bot",
-              status: "pending",
+              status: "Waiting for pairing",
               pairing_url: "https://t.me/rayu_hosted_bot?start=pair_xyz",
+              pairing_code: "pair_xyz",
+              qr_size: 29,
+              qr_path: "M2 2h7v1h-7z",
               pending_until: "2026-11-23T18:00:00Z",
             },
+          };
+        }
+        if (command === "telegram" && args[0] === "link_botfather") {
+          return {
+            data: {
+              generation: "gen-bf-2",
+              linked: Boolean(args[2] && args[2] !== "replace"),
+              mode: "botfather",
+              username: "my_custom_bot",
+              owner_chat_id: args[2] && args[2] !== "replace" ? Number(args[2]) : null,
+              status: args[2] && args[2] !== "replace" ? "Linked" : "Waiting for pairing",
+              pairing_url: args[2] && args[2] !== "replace" ? null : "https://t.me/my_custom_bot?start=bf_code",
+              pairing_code: args[2] && args[2] !== "replace" ? null : "bf_code",
+              qr_size: args[2] && args[2] !== "replace" ? null : 29,
+              qr_path: args[2] && args[2] !== "replace" ? null : "M2 2h7v1h-7z",
+            },
+          };
+        }
+        if (command === "telegram" && args[0] === "ping") {
+          return {
+            data: { ok: true, username: "rayu_hosted_bot", chat_id: 987654321, message_id: 77 },
+            message: "Sent Telegram ping to @rayu_hosted_bot (chat 987654321).",
+          };
+        }
+        if (command === "telegram" && args[0] === "select_session") {
+          return {
+            data: { ok: true, selected_session: args[1] },
+            message: `Telegram remote now drives session \`${args[1]}\`.`,
+          };
+        }
+        if (command === "subagent_model") {
+          return {
+            data: {
+              model: args[0] === "status" ? "coder" : args[args.length - 1],
+              configured_default: "rayu:claude-sonnet-4-6",
+              inherit_model: "rayu:claude-opus-4-6",
+            },
+            message: "Updated subagent model.",
+          };
+        }
+        if (command === "agents" && (args[0] === "profile" || args[1] === "profile")) {
+          const isRm = args.includes("rm");
+          return {
+            data: {
+              profiles: isRm
+                ? []
+                : [
+                    {
+                      name: "architect",
+                      model: "rayu:claude-opus-4-6",
+                      effort: "high",
+                      description: "System architecture reviews",
+                      scope: args[0] === "global" ? "global" : "session",
+                    },
+                  ],
+            },
+            message: isRm ? "Removed profile." : "Saved profile.",
           };
         }
         if (command === "telegram" && args[0] === "status") {
@@ -883,12 +944,72 @@ test("featureRouters matches Rust v1.14 RuntimeCommand wire contracts 1:1", asyn
     ["global", "review", "claude-sonnet-4-6"],
   );
 
-  // 11. remote.telegram.linkHosted preserves `pairing_url` & approvals calls `["approvals"]`
+  // 11. remote.telegram.linkHosted, linkBotfather, testPing, driveSession & approvals
   const hosted = await router.call("remote.telegram.linkHosted", undefined);
   assert.equal(hosted.pairingUrl, "https://t.me/rayu_hosted_bot?start=pair_xyz");
-  assert.equal(hosted.botHandle, "rayu_hosted_bot");
+  assert.equal(hosted.pairingCode, "pair_xyz");
+  assert.equal(hosted.qrSize, 29);
+  assert.equal(hosted.qrPath, "M2 2h7v1h-7z");
+  assert.equal(hosted.botHandle, "@rayu_hosted_bot");
   assert.equal(hosted.chatId, "987654321");
   assert.equal(hosted.approvals.length, 1);
+
+  const bf = await router.call("remote.telegram.linkBotfather", {
+    botToken: "123456789:AAF_ValidToken1234567890",
+    allowedChatId: "5551234",
+    replaceExisting: true,
+  });
+  assert.equal(bf.mode, "botfather");
+  assert.equal(bf.botHandle, "@my_custom_bot");
+  assert.equal(bf.linked, true);
+  assert.deepEqual(
+    runtimeCommandsCalled.filter((c) => c.command === "telegram" && c.args[0] === "link_botfather").at(-1)?.args,
+    ["link_botfather", "123456789:AAF_ValidToken1234567890", "5551234", "replace"],
+  );
+
+  const ping = await router.call("remote.telegram.testPing", undefined);
+  assert.equal(ping.ok, true);
+  assert.equal(ping.target, "@rayu_hosted_bot");
+  assert.equal(ping.chatId, "987654321");
+
+  const drive = await router.call("remote.telegram.driveSession", { sessionId: "ses_live_9" });
+  assert.equal(drive.ok, true);
+  assert.deepEqual(
+    runtimeCommandsCalled.filter((c) => c.command === "telegram" && c.args[0] === "select_session").at(-1)?.args,
+    ["select_session", "ses_live_9"],
+  );
+
+  // 11b. settings.agents.* RPCs forward directly to Rust `subagent_model` and `agents [global] profile add|rm`
+  const subModel = await router.call("settings.agents.setSubagentModel", {
+    model: "coder",
+    scope: "session",
+  });
+  assert.equal(subModel.ok, true);
+  assert.equal(subModel.model, "coder");
+
+  const upserted = await router.call("settings.agents.upsertProfile", {
+    name: "architect",
+    model: "rayu:claude-opus-4-6",
+    effort: "high",
+    description: "System architecture reviews",
+    scope: "global",
+  });
+  assert.equal(upserted.ok, true);
+  assert.equal(upserted.profiles[0]?.name, "architect");
+  assert.deepEqual(
+    runtimeCommandsCalled.filter((c) => c.command === "agents").at(-1)?.args,
+    ["global", "profile", "add", "architect", "rayu:claude-opus-4-6", "--effort", "high", "System architecture reviews"],
+  );
+
+  const deleted = await router.call("settings.agents.deleteProfile", {
+    name: "architect",
+    scope: "global",
+  });
+  assert.equal(deleted.ok, true);
+  assert.deepEqual(
+    runtimeCommandsCalled.filter((c) => c.command === "agents").at(-1)?.args,
+    ["global", "profile", "rm", "architect"],
+  );
 
   // 12. remote.gateway.toggle passes `"on"` / `"off"` (not `"enable"`/`"disable"`)
   const gwOn = await router.call("remote.gateway.toggle", { enabled: true });
