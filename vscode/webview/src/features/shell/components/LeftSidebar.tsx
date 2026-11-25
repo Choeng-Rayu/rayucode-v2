@@ -305,9 +305,9 @@ export function IconRail({
                 type="button"
                 aria-label="Plan & usage limits"
                 data-testid="rail-usage-trigger"
-                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-muted-ink transition-all hover:border-hairline hover:bg-hover hover:text-ink data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface"
+                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-brand transition-all hover:border-hairline hover:bg-hover hover:text-brand-bright data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-brand-bright data-[state=open]:shadow-bevel-surface"
               >
-                <UsageRingSvg />
+                <UsageRingSvg className="size-6" />
               </button>
             </PopoverTrigger>
           </TooltipTrigger>

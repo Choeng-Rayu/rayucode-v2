@@ -505,10 +505,10 @@ export function IconRail() {
               <button
                 type="button"
                 aria-label="Plan & usage limits"
-                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-muted-ink transition-all hover:border-hairline hover:bg-hover hover:text-ink data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface"
+                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-brand transition-all hover:border-hairline hover:bg-hover hover:text-brand-bright data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-brand-bright data-[state=open]:shadow-bevel-surface"
               >
                 <svg
-                  className="size-5"
+                  className="size-6"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -518,11 +518,11 @@ export function IconRail() {
                 >
                   <path
                     d="M7.18 6.25A7.5 7.5 0 0 1 16.82 6.25"
-                    strokeWidth="1.9"
+                    strokeWidth="2"
                   />
                   <path
                     d="M19.24 10.06A7.5 7.5 0 1 1 4.76 10.06"
-                    strokeWidth="1.9"
+                    strokeWidth="2"
                   />
                   <rect
                     x="9.6"
@@ -532,7 +532,7 @@ export function IconRail() {
                     rx="0.6"
                     transform="rotate(45 12 12)"
                     fill="currentColor"
-                    opacity="0.48"
+                    opacity="0.72"
                     stroke="none"
                   />
                 </svg>
