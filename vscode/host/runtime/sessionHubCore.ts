@@ -702,6 +702,22 @@ export class SessionHubCore extends EventEmitter {
         }
         break;
       }
+      case "config_changed": {
+        const changedKeys = Array.isArray(frame.changed_keys)
+          ? frame.changed_keys.filter((k): k is string => typeof k === "string")
+          : [];
+        const values =
+          frame.values && typeof frame.values === "object" && !Array.isArray(frame.values)
+            ? (frame.values as Record<string, unknown>)
+            : {};
+        this.broadcast({
+          type: "rayucode.config.changed",
+          changedKeys,
+          requiresRestart: frame.requires_restart === true,
+          values,
+        });
+        break;
+      }
       case "tool_done": {
         if (
           resolvedSessionId &&

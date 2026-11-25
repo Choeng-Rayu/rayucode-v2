@@ -35,7 +35,9 @@ export const ModelOptionSchema = z.object({
   recommended: z.boolean().optional(),
   available: z.boolean().optional(),
   unavailableReason: z.string().optional(),
-   supportedEfforts: z.array(EffortLevelSchema).optional(),
+  supportedEfforts: z.array(z.string()).optional(),
+  defaultEffort: z.string().nullable().optional(),
+  contextWindow: z.number().int().positive().optional(),
 });
 export type ModelOption = z.infer<typeof ModelOptionSchema>;
 
@@ -66,10 +68,17 @@ export type SlashCommandKind = "runtime" | "skill";
 
 export interface SlashCommandItem {
   command: string;
+  name?: string;
   insertText: string;
   description: string;
   kind: SlashCommandKind;
   category?: string;
+  argHint?: string;
+  requiresSession?: boolean;
+  dispatch?:
+    | { kind: "api_request"; req: string }
+    | { kind: "runtime_command"; command: string }
+    | { kind: "skill"; name: string };
 }
 
 export interface QuickActionItem {

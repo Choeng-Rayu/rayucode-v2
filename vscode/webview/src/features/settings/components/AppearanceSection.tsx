@@ -16,6 +16,8 @@ import {
 import { postToHost } from "@/lib/rpc-client";
 import { cn } from "@/lib/utils";
 
+import { ConfigScopeBadge } from "./ConfigSyncChrome";
+
 export interface AppearanceSectionProps {
   className?: string;
 }
@@ -139,12 +141,15 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
       className={cn("flex flex-col gap-6", className)}
     >
       <div>
-        <h1
-          id="settings-h-appearance"
-          className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
-        >
-          Appearance
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1
+            id="settings-h-appearance"
+            className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
+          >
+            Appearance
+          </h1>
+          <ConfigScopeBadge scope="local" />
+        </div>
         <p className="mt-1 text-xs text-muted-ink">
           Customize theme polarity, brand accent, and interface density across
           both the Compact Sidebar and Full Editor Panel.

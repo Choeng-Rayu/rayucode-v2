@@ -173,9 +173,9 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(onSelectEffort).toHaveBeenLastCalledWith("high");
     expect(screen.getByTestId("effort-level-value").textContent).toBe("High");
 
-    fireEvent.click(screen.getByLabelText("xHigh"));
+    fireEvent.click(screen.getByLabelText("Extra High"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("xhigh");
-    expect(screen.getByTestId("effort-level-value").textContent).toBe("xHigh");
+    expect(screen.getByTestId("effort-level-value").textContent).toBe("Extra High");
 
     fireEvent.click(screen.getByLabelText("Max"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("max");

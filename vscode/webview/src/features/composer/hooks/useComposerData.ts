@@ -6,11 +6,16 @@ import {
 } from "@tanstack/react-query";
 import type {
   CacheTtl,
+  CommandDescriptorView,
   EffortLevel,
   ModelRouteOptionView,
   PermissionModeId,
   ServiceTier,
 } from "@shared/vscodeProtocol";
+import type {
+  SlashCommandDescriptor,
+  SlashSkillDescriptor,
+} from "@rayu-dev/rayucode-session-core/client";
 
 import { callRpc, isVsCodeWebview } from "@/lib";
 
@@ -25,6 +30,17 @@ import {
   normalizeEffortLevel,
 } from "../constants";
 import type { ModelOption, SlashCommandItem } from "../types";
+
+export function capabilitiesQueryOptions(sessionId?: string | null) {
+  return queryOptions({
+    queryKey: ["composer", "capabilities", sessionId ?? "global"] as const,
+    queryFn: () =>
+      callRpc("capabilities.get", {
+        sessionId: sessionId ?? undefined,
+      }),
+    staleTime: 60_000,
+  });
+}
 
 export function modelSettingsQueryOptions(sessionId?: string | null) {
   return queryOptions({
@@ -133,6 +149,12 @@ export function contextSnapshotQueryOptions(sessionId?: string | null) {
 
 function mapRouteToModelOption(route: ModelRouteOptionView): ModelOption {
   const id = route.model || route.id;
+  const supportedEfforts =
+    route.supportedEfforts !== undefined
+      ? route.supportedEfforts
+      : route.supportsEffort === false
+        ? []
+        : undefined;
   return {
     id,
     label: route.label || id,
@@ -142,7 +164,9 @@ function mapRouteToModelOption(route: ModelRouteOptionView): ModelOption {
       (route.pricingLabel ? route.pricingLabel : undefined) ||
       (route.available === false ? "Unavailable" : undefined),
     available: route.available !== false,
-    supportedEfforts: route.supportsEffort === false ? [] : undefined,
+    supportedEfforts,
+    defaultEffort: route.defaultEffort,
+    contextWindow: route.contextWindow,
   };
 }
 
@@ -284,42 +308,121 @@ export function useWorkspaceFilesSearch(
   });
 }
 
+function mapDescriptorToSlashItem(
+  cmd: CommandDescriptorView,
+): SlashCommandItem {
+  const cleanName = cmd.name.trim().replace(/^\/+/, "");
+  return {
+    command: `/${cleanName}`,
+    name: cleanName,
+    insertText: cmd.arg_hint ? `/${cleanName} ` : `/${cleanName}`,
+    description: cmd.description,
+    kind: "runtime",
+    category: cmd.category,
+    argHint: cmd.arg_hint,
+    requiresSession: cmd.requires_session,
+    dispatch: cmd.dispatch,
+  };
+}
+
 export function useSlashCommandsCatalog(
   query: string,
   enabled: boolean,
+  sessionId?: string | null,
 ): {
   commands: SlashCommandItem[];
+  engineCommands: SlashCommandItem[];
+  skillCommands: SlashCommandItem[];
+  commandDescriptors: SlashCommandDescriptor[];
+  skillDescriptors: SlashSkillDescriptor[];
+  capabilitiesSupported: boolean;
   isLoading: boolean;
 } {
+  const capabilitiesQuery = useQuery({
+    ...capabilitiesQueryOptions(sessionId),
+    enabled: true,
+  });
   const skillsQuery = useQuery({
     ...skillsListQueryOptions(),
-    enabled,
+    enabled: enabled || capabilitiesQuery.isSuccess,
   });
 
-  const allCommands: SlashCommandItem[] = [
-    ...BUILTIN_SLASH_COMMANDS,
-    ...(skillsQuery.data?.skills ?? []).map((skill) => ({
-      command: `/${skill.name.replace(/^\/+/, "")}`,
-      insertText: `/${skill.name.replace(/^\/+/, "")} `,
-      description: skill.description,
-      kind: "skill" as const,
-      category: skill.category ?? "Skill",
-    })),
-  ];
+  const capabilitiesSupported = capabilitiesQuery.data?.supported === true;
+
+  const rawEngineItems: SlashCommandItem[] = capabilitiesSupported
+    ? (capabilitiesQuery.data?.commands ?? []).map(mapDescriptorToSlashItem)
+    : [...BUILTIN_SLASH_COMMANDS];
+
+  const rawSkillItems: SlashCommandItem[] = (skillsQuery.data?.skills ?? [])
+    .filter((skill) => skill.installed !== false)
+    .map((skill) => {
+      const cleanName = skill.name.trim().replace(/^\/+/, "");
+      return {
+        command: `/${cleanName}`,
+        name: cleanName,
+        insertText: `/${cleanName} `,
+        description: skill.description,
+        kind: "skill" as const,
+        category: "skill",
+        dispatch: { kind: "skill" as const, name: cleanName },
+      };
+    });
 
   const cleanQuery = query.trim().replace(/^\/+/, "").toLowerCase();
-  const filtered = cleanQuery
-    ? allCommands.filter(
-        (item) =>
-          item.command.toLowerCase().includes(cleanQuery) ||
-          item.description.toLowerCase().includes(cleanQuery) ||
-          (item.category ?? "").toLowerCase().includes(cleanQuery),
-      )
-    : allCommands;
+  const matches = (item: SlashCommandItem) =>
+    !cleanQuery ||
+    item.command.toLowerCase().includes(cleanQuery) ||
+    item.description.toLowerCase().includes(cleanQuery) ||
+    (item.argHint ?? "").toLowerCase().includes(cleanQuery) ||
+    (item.category ?? "").toLowerCase().includes(cleanQuery);
+
+  const engineCommands = rawEngineItems.filter(matches);
+  const skillCommands = rawSkillItems.filter(matches);
+  const commands = [...engineCommands, ...skillCommands];
+
+  const commandDescriptors: SlashCommandDescriptor[] = capabilitiesSupported
+    ? (capabilitiesQuery.data?.commands ?? []).map((cmd) => ({
+        name: cmd.name,
+        description: cmd.description,
+        category: cmd.category,
+        arg_hint: cmd.arg_hint,
+        requires_session: cmd.requires_session,
+        dispatch: cmd.dispatch,
+      }))
+    : BUILTIN_SLASH_COMMANDS.map((cmd) => {
+        const cleanName = cmd.command.replace(/^\/+/, "");
+        return {
+          name: cleanName,
+          description: cmd.description,
+          category: (cmd.category ?? "runtime").toLowerCase(),
+          dispatch:
+            cleanName === "compact"
+              ? { kind: "api_request" as const, req: "compact" }
+              : cleanName === "model"
+                ? { kind: "api_request" as const, req: "set_model" }
+                : cleanName === "rewind"
+                  ? { kind: "api_request" as const, req: "rewind" }
+                  : { kind: "runtime_command" as const, command: cleanName },
+        };
+      });
+
+  const skillDescriptors: SlashSkillDescriptor[] = (
+    skillsQuery.data?.skills ?? []
+  )
+    .filter((skill) => skill.installed !== false)
+    .map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+    }));
 
   return {
-    commands: filtered,
-    isLoading: skillsQuery.isLoading,
+    commands,
+    engineCommands,
+    skillCommands,
+    commandDescriptors,
+    skillDescriptors,
+    capabilitiesSupported,
+    isLoading: capabilitiesQuery.isLoading || skillsQuery.isLoading,
   };
 }
 
