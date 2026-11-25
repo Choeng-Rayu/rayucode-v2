@@ -1,4 +1,8 @@
-import { settleHarnessErrorFrame } from "@rayu-dev/rayucode-session-core/client";
+import {
+  filterVisibleHistory,
+  isVisibleHistoryMessage,
+  settleHarnessErrorFrame,
+} from "@rayu-dev/rayucode-session-core/client";
 import type {
   HistoryImageView,
   HistoryResponseStatsView,
@@ -59,6 +63,7 @@ export interface ShellCommandStep {
   isMono?: boolean;
   toolName?: string;
   intent?: string;
+  durationMs?: number;
 }
 
 export type TraceStepItem = FileReadStep | ListStep | ShellCommandStep;
@@ -220,6 +225,7 @@ export type MappedLiveTraceEvent =
       workedDuration: string;
       credits?: string;
       kvCachePct?: number;
+      stopReason?: string;
       timestamp?: string;
     };
 
@@ -861,15 +867,19 @@ export function mapHistoryMessagesToTurns(
   };
 
   for (const msg of messages) {
+    if (!isVisibleHistoryMessage(msg)) {
+      hiddenInternalMessages.push({
+        origin: msg.origin ?? "engine_internal",
+        visibility: msg.visibility ?? "hidden",
+        content: msg.content,
+      });
+      continue;
+    }
+  }
+  const visibleMessages = filterVisibleHistory(messages);
+
+  for (const msg of visibleMessages) {
     if (msg.role === "user") {
-      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
-        hiddenInternalMessages.push({
-          origin: msg.origin ?? "engine_internal",
-          visibility: msg.visibility ?? "hidden",
-          content: msg.content,
-        });
-        continue;
-      }
       if (isEngineInternalRecoveryPrompt(msg.content)) {
         hiddenInternalMessages.push({
           origin: "engine_internal",
@@ -1699,6 +1709,10 @@ export function mapHarnessFrameToLiveEvents(
         ];
       }
 
+      const durationMs =
+        typeof frame.duration_ms === "number" && Number.isFinite(frame.duration_ms)
+          ? Math.max(0, Math.round(frame.duration_ms))
+          : undefined;
       const step = mapSingleWorkStep(
         callId,
         name,
@@ -1708,15 +1722,30 @@ export function mapHarnessFrameToLiveEvents(
         tracker,
         intent,
       );
+      const enrichedStep: TraceStepItem =
+        step.kind === "command" && durationMs !== undefined
+          ? { ...step, durationMs }
+          : step;
       return [
         { type: "tool-status", label: null },
         {
           type: "step",
           groupId: workGroupId,
           groupTitle: computePhaseGroupTitle(tracker),
-          step,
+          step: enrichedStep,
         },
       ];
+    }
+    case "text_done": {
+      const stopReason =
+        typeof frame.stop_reason === "string" && frame.stop_reason.trim()
+          ? frame.stop_reason.trim()
+          : undefined;
+      if (stopReason) {
+        (tracker as HarnessStreamTracker & { lastStopReason?: string }).lastStopReason =
+          stopReason;
+      }
+      return [];
     }
     case "permission_request": {
       const requestId = String(frame.request_id ?? "");
@@ -1820,13 +1849,19 @@ export function mapHarnessFrameToLiveEvents(
           delta: `\n\n**Error:** ${frame.message.trim()}`,
         });
       }
+      const lastStopReason = (
+        tracker as HarnessStreamTracker & { lastStopReason?: string }
+      ).lastStopReason;
       events.push({
         type: "complete",
         workedDuration: formatDurationSeconds(elapsedSec),
         credits: tracker.lastCredits,
         kvCachePct: tracker.lastKvCachePct,
+        ...(lastStopReason ? { stopReason: lastStopReason } : {}),
         timestamp: "Just now",
       });
+      (tracker as HarnessStreamTracker & { lastStopReason?: string }).lastStopReason =
+        undefined;
       tracker.batchEpoch = 1;
       tracker.turnActive = false;
       tracker.hasStreamedTextInPhase = false;

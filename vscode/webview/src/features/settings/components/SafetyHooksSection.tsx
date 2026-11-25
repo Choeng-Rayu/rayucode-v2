@@ -4,6 +4,13 @@ import type { HookEntryView, PermissionModeId } from "@shared/vscodeProtocol";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import {
+  ConfigRestartBanner,
+  ConfigScopeBadge,
+  FieldValidationError,
+  LegacyDaemonBanner,
+} from "./ConfigSyncChrome";
+
 export interface SafetyHooksSectionProps {
   defaultPermissionMode: PermissionModeId;
   onSelectPermissionMode: (mode: PermissionModeId) => Promise<unknown>;
@@ -14,6 +21,12 @@ export interface SafetyHooksSectionProps {
     }
   >;
   configPath?: string;
+  configSupported?: boolean;
+  configRequiresRestart?: boolean;
+  configFieldErrors?: Readonly<Record<string, string>>;
+  onClearFieldError?: (key: string) => void;
+  onReloadDaemon?: () => Promise<unknown>;
+  isReloadingDaemon?: boolean;
   onOpenHooksConfig: () => Promise<unknown>;
 }
 
@@ -92,8 +105,16 @@ export function SafetyHooksSection({
   onSelectPermissionMode,
   hooks,
   configPath = "~/.rayu/config.toml",
+  configSupported = true,
+  configRequiresRestart = false,
+  configFieldErrors = {},
+  onClearFieldError,
+  onReloadDaemon,
+  isReloadingDaemon = false,
   onOpenHooksConfig,
 }: SafetyHooksSectionProps) {
+  const engineReadOnly = !configSupported;
+
   return (
     <section
       data-testid="settings-section-safety"
@@ -101,28 +122,46 @@ export function SafetyHooksSection({
       className="flex flex-col gap-6"
     >
       <div>
-        <h1
-          id="settings-h-safety"
-          className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
-        >
-          Safety &amp; Hooks
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1
+            id="settings-h-safety"
+            className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
+          >
+            Safety &amp; Hooks
+          </h1>
+          <ConfigScopeBadge scope="synced" configPath={configPath} />
+        </div>
         <p className="mt-1 text-xs text-muted-ink">
           Configure the 5-mode permission policy, inspect the 2-stage
           Command-Risk Gate rules, and manage all 7 Rust lifecycle hooks.
         </p>
       </div>
 
+      <LegacyDaemonBanner visible={engineReadOnly} />
+      <ConfigRestartBanner
+        visible={configRequiresRestart}
+        onReload={() => onReloadDaemon?.()}
+        isReloading={isReloadingDaemon}
+      />
+
       {/* 5 Default Permission Modes */}
       <div>
         <h2 className="mb-3 text-xs font-semibold text-ink">
           Default Permission Mode (5 Modes · Cycle anytime with Shift+Tab)
         </h2>
+        <FieldValidationError
+          fieldKey="safety.default_permission_mode"
+          message={configFieldErrors["safety.default_permission_mode"]}
+          onDismiss={() => onClearFieldError?.("safety.default_permission_mode")}
+        />
         <div
           role="radiogroup"
           aria-label="Default permission mode"
           data-testid="permission-modes-list"
-          className="grid grid-cols-1 gap-2.5"
+          className={cn(
+            "mt-2 grid grid-cols-1 gap-2.5",
+            engineReadOnly && "opacity-60",
+          )}
         >
           {FIVE_PERMISSION_MODES.map((m) => {
             const isSelected = defaultPermissionMode === m.id;
@@ -131,6 +170,7 @@ export function SafetyHooksSection({
                 key={m.id}
                 type="button"
                 role="radio"
+                disabled={engineReadOnly}
                 aria-checked={isSelected}
                 data-testid={`permission-mode-card-${m.id}`}
                 onClick={() => void onSelectPermissionMode(m.id)}
