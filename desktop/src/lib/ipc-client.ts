@@ -186,6 +186,7 @@ export interface TraceGroup {
 }
 
 export type TraceTimelineItem =
+  | { type: "reasoning"; id: string; text: string }
   | { type: "note"; id: string; text: string }
   | { type: "group"; group: TraceGroup }
 

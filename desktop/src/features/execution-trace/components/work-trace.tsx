@@ -451,6 +451,23 @@ export function WorkTrace({
         >
           {hasTimeline && timeline ? (
             timeline.map((entry) => {
+              if (entry.type === "reasoning") {
+                return (
+                  <div
+                    key={entry.id}
+                    data-slot="work-reasoning"
+                    data-testid="work-reasoning"
+                    className="max-w-[70ch] border-l-2 border-hairline-strong pl-3"
+                  >
+                    <div className="mb-1 text-[11px] font-medium tracking-[0.02em] text-faint">
+                      Reasoning
+                    </div>
+                    <div className="text-[13px] leading-[1.6] whitespace-pre-wrap text-muted-ink">
+                      {entry.text}
+                    </div>
+                  </div>
+                )
+              }
               if (entry.type === "note") {
                 return (
                   <div

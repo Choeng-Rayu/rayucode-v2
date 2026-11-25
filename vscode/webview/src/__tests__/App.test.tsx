@@ -450,11 +450,12 @@ describe("App end-to-end integration", () => {
     expect(screen.getByTestId("close-sessions-drawer-btn")).toBeTruthy();
 
     // Clicking nav item inside compact drawer closes the slide-over
-    fireEvent.click(screen.getByTestId("rail-nav-swarm"));
+    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
+    fireEvent.click(screen.getByTestId("rail-nav-automations"));
     await waitFor(() => {
       expect(screen.queryByTestId("slide-over-sessions-drawer")).toBeNull();
     });
-    expect(useAppStore.getState().activeRoute).toBe("swarm");
+    expect(useAppStore.getState().activeRoute).toBe("automations");
     expect(postSpy).not.toHaveBeenCalled();
 
     Object.defineProperty(window, "innerWidth", {

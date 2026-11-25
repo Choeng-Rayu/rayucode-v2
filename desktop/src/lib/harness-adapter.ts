@@ -133,6 +133,7 @@ export interface PendingPermissionRequest {
 }
 
 export type MappedLiveTraceEvent =
+  | { type: "reasoning-delta"; delta: string }
   | { type: "note"; text: string }
   | { type: "promote-note" }
   | { type: "tool-status"; label: string | null }
@@ -561,37 +562,172 @@ function isEngineInternalRecoveryPrompt(content: string): boolean {
   )
 }
 
+function isSyntheticReasoningPlaceholder(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return true
+  return /^reasoning via rayu cloud\b/i.test(trimmed)
+}
+
+function isJsonLikeText(text: string): boolean {
+  const trimmed = text.trim()
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  )
+}
+
+function humanizeToolName(name: string): string {
+  const cleaned = name
+    .trim()
+    .replace(/^(?:mcp_|tool_|rayu_)/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim()
+  if (!cleaned) return "Ran tool"
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
+function extractReadableFileFromShell(rawCommand: string): string | null {
+  const tokens = rawCommand.split(/\s+/).filter(Boolean)
+  for (let i = tokens.length - 1; i >= 1; i -= 1) {
+    const token = tokens[i]!.replace(/^['"]|['"]$/g, "")
+    if (
+      token.startsWith("-") ||
+      token.includes("|") ||
+      token.includes(">") ||
+      token.includes("<") ||
+      token === "." ||
+      token === "./" ||
+      token === ".." ||
+      token.startsWith("/dev/")
+    ) {
+      continue
+    }
+    if (/[./]/.test(token) && /\.[a-z0-9]{1,8}$/i.test(token)) {
+      return basenameOf(token)
+    }
+  }
+  return null
+}
+
+function summarizeShellCommandLabel(rawCommand: string): string {
+  const trimmed = rawCommand.trim()
+  if (!trimmed) return "Ran command"
+  const firstSegment = trimmed.split(/[|;&\n]/)[0]?.trim() ?? trimmed
+  const lower = firstSegment.toLowerCase()
+
+  if (/^git\s+status\b/.test(lower)) return "Checked git status"
+  if (/^git\s+diff\b/.test(lower)) return "Inspected git diff"
+  if (/^git\s+log\b/.test(lower)) return "Checked git history"
+  if (/^git\s+branch\b/.test(lower)) return "Checked git branches"
+  if (/^git\s+/.test(lower)) return "Ran git command"
+
+  if (
+    /\b(?:cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|vitest|jest|pytest|go\s+test)\b/.test(
+      lower
+    ) ||
+    /\b(?:npm|pnpm|yarn)\s+run\s+test\b/.test(lower)
+  ) {
+    return "Ran tests"
+  }
+  if (
+    /\b(?:cargo\s+(?:build|check)|tsc\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|typecheck|verify))\b/.test(
+      lower
+    )
+  ) {
+    return "Built and verified project"
+  }
+  if (
+    /\b(?:eslint|clippy|(?:npm|pnpm|yarn)\s+(?:run\s+)?lint)\b/.test(lower)
+  ) {
+    return "Ran linter"
+  }
+  if (/^(?:grep|rg|ag|ack)\b/.test(lower)) return "Searched codebase"
+  if (/^(?:sed|cat|head|tail|awk|nl|bat)\b/.test(lower)) {
+    const file = extractReadableFileFromShell(firstSegment)
+    return file ? `Inspected ${file}` : "Inspected file"
+  }
+  if (/^(?:ls|find|tree|fd)\b/.test(lower)) return "Listed directory"
+  if (/^(?:mkdir|rm|mv|cp|touch)\b/.test(lower)) return "Updated workspace files"
+
+  return "Ran shell command"
+}
+
+function summarizeToolAction(
+  name: string,
+  args: Record<string, unknown> | null,
+  explicitIntent?: string
+): string {
+  const argIntent =
+    args && typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+  const effectiveIntent =
+    (explicitIntent && explicitIntent.trim()) || argIntent
+  if (effectiveIntent && !isJsonLikeText(effectiveIntent)) {
+    return effectiveIntent.length > 90
+      ? `${effectiveIntent.slice(0, 87)}...`
+      : effectiveIntent
+  }
+
+  const lower = name.trim().toLowerCase()
+  if (lower === "run_command" || lower === "bash" || lower === "shell") {
+    const rawCmd =
+      args && typeof args.command === "string" ? args.command.trim() : ""
+    return rawCmd ? summarizeShellCommandLabel(rawCmd) : "Ran shell command"
+  }
+  if (lower === "read_file" || lower === "read") {
+    const target =
+      args && typeof args.path === "string"
+        ? args.path
+        : args && typeof args.file_path === "string"
+          ? args.file_path
+          : ""
+    return target ? `Read ${basenameOf(target)}` : "Read file"
+  }
+  if (
+    lower === "edit" ||
+    lower === "edit_file" ||
+    lower === "write" ||
+    lower === "write_file" ||
+    lower === "apply_patch"
+  ) {
+    const target =
+      args && typeof args.file_path === "string"
+        ? args.file_path
+        : args && typeof args.path === "string"
+          ? args.path
+          : ""
+    const verb = lower === "write" || lower === "write_file" ? "Wrote" : "Edited"
+    return target ? `${verb} ${basenameOf(target)}` : `${verb} file`
+  }
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    return "Searched workspace"
+  }
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    return "Listed files"
+  }
+  return humanizeToolName(name)
+}
+
 function summarizeHistoryToolCall(
   tool: HarnessHistoryMessageLike["tool"]
 ): { command: string; displayCommand: string } {
   if (!tool?.name) {
-    return { command: "tool output", displayCommand: "tool execution" }
+    return { command: "Tool step", displayCommand: "Tool step" }
   }
   const input =
     tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
       ? (tool.input as Record<string, unknown>)
       : null
-  if (input) {
-    const directCommand =
-      typeof input.command === "string"
-        ? input.command
-        : typeof input.file_path === "string"
-          ? input.file_path
-          : typeof input.path === "string"
-            ? input.path
-            : typeof input.pattern === "string"
-              ? input.pattern
-              : typeof input.query === "string"
-                ? input.query
-                : null
-    if (directCommand && directCommand.trim()) {
-      return {
-        command: directCommand.trim(),
-        displayCommand: `${tool.name} ${directCommand.trim()}`,
-      }
-    }
-  }
-  return { command: tool.name, displayCommand: tool.name }
+  const label = summarizeToolAction(tool.name, input)
+  return { command: label, displayCommand: label }
 }
 
 function resolveAttemptStatus(
@@ -772,7 +908,7 @@ export function mapHistoryMessagesToTurns(
         output: msg.content.slice(0, 1200),
         exitCode: 0,
         statusLabel: "Success",
-        isMono: true,
+        isMono: false,
       }
       toolSteps.push(step)
     } else if (msg.role === "assistant") {
@@ -1124,39 +1260,24 @@ function mapSingleWorkStep(
     return todoStep
   }
 
-  // Shell commands & fallback tool calls
-  const isShell =
-    lower === "run_command" || lower === "bash" || lower === "shell"
+  // Shell commands & fallback tool calls — always show concise human-readable action label,
+  // never raw shell flag pipelines or raw JSON tool parameters.
   tracker.phaseHasCommands = true
   tracker.phaseCommandCount += 1
 
-  let command = name
-  let displayCommand: string
-  if (typeof args.command === "string" && args.command.trim()) {
-    command = args.command.trim()
-    displayCommand = error ? `Command failed (${command})` : command
-  } else if (intent) {
-    command = intent
-    displayCommand = intent
-  } else if (typeof args.path === "string" || typeof args.file_path === "string") {
-    const target =
-      typeof args.path === "string" ? args.path : String(args.file_path)
-    command = `${name} ${target}`
-    displayCommand = command
-  } else {
-    displayCommand = error ? `${name} (retrying)` : name
-  }
+  const actionLabel = summarizeToolAction(name, args, intent)
+  const displayCommand = error ? `${actionLabel} (failed)` : actionLabel
 
   const shellStep: ShellCommandStep = {
     id: callId,
     kind: "command",
-    command,
+    command: actionLabel,
     displayCommand,
     output: (error ?? output).slice(0, 2400) || "(no output)",
     exitCode: error ? 1 : 0,
     statusLabel: error ? "Failed" : "Success",
     isFailed: Boolean(error),
-    isMono: isShell && !error,
+    isMono: false,
   }
   return shellStep
 }
@@ -1285,6 +1406,7 @@ export function mapHarnessFrameToLiveEvents(
     !tracker.turnActive &&
     (ev === "text_delta" ||
       ev === "reasoning_delta" ||
+      ev === "thinking_delta" ||
       ev === "tool_start" ||
       ev === "tool_call")
   ) {
@@ -1309,8 +1431,18 @@ export function mapHarnessFrameToLiveEvents(
       resetTrackerPhase(tracker)
       return [{ type: "promote-note" }]
     }
-    case "reasoning_delta": {
-      // Avoid noisy "Reasoning via Rayu Cloud..." placeholder text; keep pulse indicator active.
+    case "reasoning_delta":
+    case "thinking_delta": {
+      tracker.turnCompleted = false
+      const text =
+        typeof frame.text === "string"
+          ? frame.text
+          : typeof frame.delta === "string"
+            ? frame.delta
+            : ""
+      if (text && !isSyntheticReasoningPlaceholder(text)) {
+        return [{ type: "reasoning-delta", delta: text }]
+      }
       return []
     }
     case "reasoning_done": {

@@ -325,6 +325,28 @@ describe("execution-trace feature", () => {
     )
   })
 
+  it("renders model reasoning timeline items cleanly inside WorkTrace", () => {
+    render(
+      <WorkTrace
+        workedDuration="3s"
+        isLive
+        notes={[]}
+        groups={[]}
+        timeline={[
+          {
+            type: "reasoning",
+            id: "r_desktop_1",
+            text: "Checking the session dedup logic before touching the composer.",
+          },
+        ]}
+      />
+    )
+
+    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+      "Checking the session dedup logic before touching the composer."
+    )
+  })
+
   it("expands ShellCard inline, displays success/failure status, and copies command output", async () => {
     render(
       <div>

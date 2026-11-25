@@ -62,7 +62,7 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     expect(resolveFormFactorFromWidth(1440)).toBe("wide");
   });
 
-  it("renders Wide Editor Panel AppShell (>=960px) with 6 primary rail items and TopBar", async () => {
+  it("renders Wide Editor Panel AppShell (>=960px) with 5 primary rail items matching Desktop and TopBar", async () => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -79,15 +79,15 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       screen.getByTestId("app-shell").getAttribute("data-form-factor"),
     ).toBe("wide");
     expect(screen.getByTestId("rail-nav-home")).toBeTruthy();
-    expect(screen.getByTestId("rail-nav-swarm")).toBeTruthy();
+    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
     expect(screen.getByTestId("rail-nav-automations")).toBeTruthy();
     expect(screen.getByTestId("rail-nav-plugins")).toBeTruthy();
     expect(screen.getByTestId("rail-nav-changes")).toBeTruthy();
     expect(screen.getByTestId("rail-nav-remote")).toBeTruthy();
     expect(screen.getByTestId("stage-child")).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId("rail-nav-swarm"));
-    expect(useAppStore.getState().activeRoute).toBe("swarm");
+    fireEvent.click(screen.getByTestId("rail-nav-automations"));
+    expect(useAppStore.getState().activeRoute).toBe("automations");
   });
 
   it("renders Compact Docked Sidebar AppShell (<560px) with CompactTopBar and slide-over drawers", () => {

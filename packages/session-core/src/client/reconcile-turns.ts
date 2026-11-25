@@ -32,6 +32,31 @@ export function normalizePromptForDedup(prompt?: string | null): string {
   return (prompt ?? "").trim().replace(/\s+/g, " ");
 }
 
+function normalizeAnswerForDedup(answer?: string | null): string {
+  return (answer ?? "").trim().replace(/\s+/g, " ");
+}
+
+function answersMatchForDedup(
+  a?: string | null,
+  b?: string | null
+): boolean {
+  const na = normalizeAnswerForDedup(a);
+  const nb = normalizeAnswerForDedup(b);
+  if (!na && !nb) return true;
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const minLen = Math.min(na.length, nb.length);
+  if (minLen >= 16) {
+    return (
+      na.startsWith(nb) ||
+      nb.startsWith(na) ||
+      na.includes(nb) ||
+      nb.includes(na)
+    );
+  }
+  return false;
+}
+
 function hasAssistantContent(turn: ReconcilableTurnLike): boolean {
   if (turn.answerMarkdown && turn.answerMarkdown.trim().length > 0) {
     return true;
@@ -51,17 +76,37 @@ function hasAssistantContent(turn: ReconcilableTurnLike): boolean {
 function findMatchingHistoryIndex<TTurn extends ReconcilableTurnLike>(
   historyTurns: readonly TTurn[],
   candidate: TTurn,
-  baseHistoryTurnCount?: number
+  baseHistoryTurnCount?: number,
+  claimedIndices?: ReadonlySet<number>
 ): number {
-  const byId = historyTurns.findIndex((t) => t.id === candidate.id);
+  const byId = historyTurns.findIndex(
+    (t, idx) => t.id === candidate.id && !claimedIndices?.has(idx)
+  );
   if (byId >= 0) return byId;
 
   const candidatePrompt = normalizePromptForDedup(candidate.userPrompt);
-  if (!candidatePrompt) return -1;
+  if (!candidatePrompt) {
+    // Daemon-initiated settled turn without a local userPrompt: match by answer against the trailing turn.
+    if (!candidate.isLive && normalizeAnswerForDedup(candidate.answerMarkdown).length >= 16) {
+      const lastIdx = historyTurns.length - 1;
+      if (
+        lastIdx >= 0 &&
+        !claimedIndices?.has(lastIdx) &&
+        answersMatchForDedup(
+          historyTurns[lastIdx].answerMarkdown,
+          candidate.answerMarkdown
+        )
+      ) {
+        return lastIdx;
+      }
+    }
+    return -1;
+  }
 
   if (typeof baseHistoryTurnCount === "number" && baseHistoryTurnCount >= 0) {
     // Only inspect turns at or after the submission watermark
     for (let i = historyTurns.length - 1; i >= baseHistoryTurnCount; i -= 1) {
+      if (claimedIndices?.has(i)) continue;
       if (normalizePromptForDedup(historyTurns[i].userPrompt) === candidatePrompt) {
         return i;
       }
@@ -69,16 +114,40 @@ function findMatchingHistoryIndex<TTurn extends ReconcilableTurnLike>(
     return -1;
   }
 
-  // Fallback when caller did not capture baseHistoryTurnCount:
-  // only match the very last history turn when it matches the prompt
-  // AND either the live turn is still active or the history turn has no assistant output yet.
-  const lastIdx = historyTurns.length - 1;
-  if (lastIdx >= 0) {
-    const lastTurn = historyTurns[lastIdx];
-    if (normalizePromptForDedup(lastTurn.userPrompt) === candidatePrompt) {
-      if (candidate.isLive || !hasAssistantContent(lastTurn)) {
-        return lastIdx;
-      }
+  // Active live turn without watermark: only match the trailing history stub.
+  if (candidate.isLive) {
+    const lastIdx = historyTurns.length - 1;
+    if (
+      lastIdx >= 0 &&
+      !claimedIndices?.has(lastIdx) &&
+      normalizePromptForDedup(historyTurns[lastIdx].userPrompt) === candidatePrompt
+    ) {
+      return lastIdx;
+    }
+    return -1;
+  }
+
+  // Settled turn without watermark (e.g. completedLiveTurns):
+  // scan backwards for an unclaimed history turn with matching prompt and either
+  // no persisted assistant output yet OR matching/overlapping assistant output.
+  for (let i = historyTurns.length - 1; i >= 0; i -= 1) {
+    if (claimedIndices?.has(i)) continue;
+    const historyTurn = historyTurns[i];
+    if (normalizePromptForDedup(historyTurn.userPrompt) !== candidatePrompt) {
+      continue;
+    }
+    if (!hasAssistantContent(historyTurn)) {
+      return i;
+    }
+    if (answersMatchForDedup(historyTurn.answerMarkdown, candidate.answerMarkdown)) {
+      return i;
+    }
+    if (
+      i === historyTurns.length - 1 &&
+      !normalizeAnswerForDedup(candidate.answerMarkdown) &&
+      hasAssistantContent(historyTurn)
+    ) {
+      return i;
     }
   }
   return -1;
@@ -90,19 +159,26 @@ function findMatchingHistoryIndex<TTurn extends ReconcilableTurnLike>(
  * Guarantees:
  * 1. Never renders a duplicate user prompt bubble when `sessions.history` resolves
  *    while a turn is still streaming (replaces the empty/stub history turn with `liveTurn`).
- * 2. Preserves intentional repeated identical prompts via `baseHistoryTurnCount`.
- * 3. Keeps a settled `liveTurn` visible until durable history actually contains
- *    the assistant output (preventing blank flash between `turn_done` and refetch).
+ * 2. Preserves intentional repeated identical prompts via `baseHistoryTurnCount` and 1-to-1 matching.
+ * 3. Keeps a settled `liveTurn` / `completedLiveTurn` visible until durable history actually
+ *    contains the assistant output, then retires the local copy so it never renders twice.
  */
 export function reconcileChatTurns<TTurn extends ReconcilableTurnLike>(
   input: ReconcileChatTurnsInput<TTurn>
 ): TTurn[] {
   const merged: TTurn[] = [...input.historyTurns];
+  const claimedIndices = new Set<number>();
 
   // Reconcile recently settled live turns first (if history hasn't refetched yet)
   for (const completed of input.completedLiveTurns ?? []) {
-    const matchIdx = findMatchingHistoryIndex(merged, completed);
+    const matchIdx = findMatchingHistoryIndex(
+      merged,
+      completed,
+      undefined,
+      claimedIndices
+    );
     if (matchIdx >= 0) {
+      claimedIndices.add(matchIdx);
       if (!hasAssistantContent(merged[matchIdx]) && hasAssistantContent(completed)) {
         merged[matchIdx] = completed;
       }

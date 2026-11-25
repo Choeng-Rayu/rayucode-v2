@@ -141,27 +141,6 @@ export function CompactTopBar({
           <TooltipContent side="bottom">New session</TooltipContent>
         </Tooltip>
 
-        {/* [Sw] Swarm */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Swarm Mission Control"
-              data-testid="compact-nav-swarm"
-              onClick={() => setActiveRoute("swarm")}
-              className={cn(
-                "grid size-7 cursor-pointer place-items-center rounded-[7px] transition-colors",
-                activeRoute === "swarm"
-                  ? "bg-active text-ink"
-                  : "text-muted-ink hover:bg-hover hover:text-ink",
-              )}
-            >
-              <NavGlyph icon="swarm" className="size-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Swarm</TooltipContent>
-        </Tooltip>
-
         {/* [Bg·N] Background Processes (badge shown ONLY when >= 1 task active/stalled) */}
         {activeBgCount > 0 && (
           <Tooltip>

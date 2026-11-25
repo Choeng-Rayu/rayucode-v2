@@ -96,12 +96,6 @@ export function IconRail({
     staleTime: 15_000,
   });
 
-  const swarmQuery = useQuery({
-    queryKey: ["shell", "swarm", "list"],
-    queryFn: () => callRpc("swarm.list"),
-    staleTime: 15_000,
-  });
-
   const account = accountStatus ?? accountQuery.data ?? null;
   const isSignedIn = Boolean(account?.signedIn);
 
@@ -115,10 +109,6 @@ export function IconRail({
 
   const hasLiveDotForRoute = (route: AppRoute): boolean => {
     switch (route) {
-      case "swarm":
-        return Boolean(
-          swarmQuery.data?.swarms.some((s) => s.runningCount > 0),
-        );
       case "changes":
         return Boolean((changesQuery.data?.files.length ?? 0) > 0);
       case "remote":
@@ -224,7 +214,7 @@ export function IconRail({
         </Tooltip>
       </div>
 
-      {/* Exact 6 primary navigation items */}
+      {/* Exact 5 primary navigation items (matching Desktop) */}
       {PRIMARY_NAV_ITEMS.map((item) => {
         const active = isNavItemActive(item.id);
         const showDot = hasLiveDotForRoute(item.id);

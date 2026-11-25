@@ -141,6 +141,25 @@ export function applyTraceEvents(
 
   for (const ev of events) {
     switch (ev.type) {
+      case "reasoning-delta": {
+        if (!ev.delta) break;
+        const timeline = next.timeline ?? [];
+        const last = timeline[timeline.length - 1];
+        if (last && last.type === "reasoning") {
+          timeline[timeline.length - 1] = {
+            ...last,
+            text: `${last.text}${ev.delta}`,
+          };
+        } else {
+          timeline.push({
+            type: "reasoning",
+            id: `reasoning_${timeline.length + 1}`,
+            text: ev.delta,
+          });
+        }
+        next.timeline = timeline;
+        break;
+      }
       case "note":
         next.notes.push(ev.text);
         next.timeline?.push({

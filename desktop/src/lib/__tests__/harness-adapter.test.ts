@@ -107,13 +107,24 @@ describe("harness-adapter", () => {
   it("streams live harness frames into Codex-style LiveTraceEvent sequence", () => {
     const tracker = createHarnessStreamTracker()
 
-    // Reasoning delta stays quiet (no noisy "Reasoning via Rayu Cloud..." placeholder)
+    // Synthetic cloud placeholder is suppressed, while real reasoning streams into the trace
     expect(
       mapHarnessFrameToLiveEvents(
-        { ev: "reasoning_delta", text: "checking files" },
+        { ev: "reasoning_delta", text: "Reasoning via Rayu Cloud..." },
         tracker
       )
     ).toEqual([])
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "reasoning_delta", text: "Checking repository layout before editing." },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "reasoning-delta",
+        delta: "Checking repository layout before editing.",
+      },
+    ])
 
     // read_file maps cleanly into "Read files" with clickable FileReadStep
     expect(
@@ -164,7 +175,14 @@ describe("harness-adapter", () => {
     expect(doneEvents[1]).toMatchObject({
       type: "step",
       groupTitle: "Read files, ran commands",
-      step: { kind: "command", command: "cargo test", output: "ok", exitCode: 0 },
+      step: {
+        kind: "command",
+        command: "Ran tests",
+        displayCommand: "Ran tests",
+        isMono: false,
+        output: "ok",
+        exitCode: 0,
+      },
     })
 
     expect(
@@ -263,7 +281,9 @@ describe("harness-adapter", () => {
       groupTitle: "Read files, ran commands",
       step: {
         kind: "command",
-        command: "git status --short",
+        command: "Check git",
+        displayCommand: "Check git",
+        isMono: false,
         output: "M desktop/src/App.tsx",
       },
     })
@@ -300,7 +320,7 @@ describe("harness-adapter", () => {
     expect(turns[0].answerIntro).toBe("Reconsidered and completed safely")
   })
 
-  it("preserves HistoryMessage.tool name and input when mapping restored tool rows", () => {
+  it("maps HistoryMessage.tool metadata into concise human-readable tool rows without raw parameters", () => {
     const turns = mapHistoryMessagesToTurns("s_tool_meta", [
       { role: "user", content: "Run tests" },
       {
@@ -314,7 +334,9 @@ describe("harness-adapter", () => {
     expect(turns).toHaveLength(1)
     expect(turns[0].groups[0].steps[0]).toMatchObject({
       kind: "command",
-      command: "pnpm test",
+      command: "Ran tests",
+      displayCommand: "Ran tests",
+      isMono: false,
       output: "all tests passed",
     })
   })

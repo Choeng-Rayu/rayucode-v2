@@ -94,6 +94,65 @@ describe("reconcileChatTurns", () => {
     expect(result[0].id).toBe("hist_s1_1");
   });
 
+  it("retires completedLiveTurns once durable history contains the same prompt and answer (no duplicate turn)", () => {
+    const historyTurns: TestTurn[] = [
+      {
+        id: "hist_s1_1",
+        userPrompt: "hi",
+        answerMarkdown:
+          "Hi! I'm here and ready in the RayuCode repo on feat/cross-agent-session-sync.",
+        isLive: false,
+      },
+    ];
+    const completedLiveTurns: TestTurn[] = [
+      {
+        id: "live_turn_1795612660_1",
+        userPrompt: "hi",
+        answerMarkdown:
+          "Hi! I'm here and ready in the RayuCode repo on feat/cross-agent-session-sync.",
+        isLive: false,
+      },
+    ];
+
+    const result = reconcileChatTurns({
+      historyTurns,
+      liveTurn: null,
+      completedLiveTurns,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("hist_s1_1");
+  });
+
+  it("keeps a second identical prompt in completedLiveTurns when history only has the first distinct answer", () => {
+    const historyTurns: TestTurn[] = [
+      {
+        id: "hist_s1_1",
+        userPrompt: "hi",
+        answerMarkdown: "First response from earlier.",
+        isLive: false,
+      },
+    ];
+    const completedLiveTurns: TestTurn[] = [
+      {
+        id: "live_turn_2",
+        userPrompt: "hi",
+        answerMarkdown: "Brand new response from second prompt.",
+        isLive: false,
+      },
+    ];
+
+    const result = reconcileChatTurns({
+      historyTurns,
+      liveTurn: null,
+      completedLiveTurns,
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("hist_s1_1");
+    expect(result[1].id).toBe("live_turn_2");
+  });
+
   it("clears stale liveTurn when daemon reports session status idle past grace window", () => {
     const liveTurn: TestTurn = {
       id: "live_stale",

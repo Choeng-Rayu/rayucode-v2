@@ -18,7 +18,12 @@ import {
   WorkTrace,
   type ExtendedWorkStepGroup,
 } from "@/features/chat";
-import { createQueryClient, useAppStore } from "@/lib";
+import {
+  createHarnessStreamTracker,
+  createQueryClient,
+  mapHarnessFrameToLiveEvents,
+  useAppStore,
+} from "@/lib";
 
 function renderWithQuery(ui: React.ReactElement) {
   const client = createQueryClient();
@@ -499,5 +504,93 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     );
 
     delete window.acquireVsCodeApi;
+  });
+
+  it("streams real model reasoning into WorkTrace while suppressing placeholders and raw tool parameters", () => {
+    const tracker = createHarnessStreamTracker();
+
+    // Synthetic cloud placeholder is filtered out
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "reasoning_delta", text: "Reasoning via Rayu Cloud..." },
+        tracker,
+      ),
+    ).toEqual([]);
+
+    // Real model reasoning emits reasoning-delta
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "reasoning_delta",
+          text: "I should check the composer model sync before editing.",
+        },
+        tracker,
+      ),
+    ).toEqual([
+      {
+        type: "reasoning-delta",
+        delta: "I should check the composer model sync before editing.",
+      },
+    ]);
+
+    // Raw shell flags / tool parameters are summarized into clean human-readable labels
+    mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_input_delta",
+        call_id: "c_grep",
+        delta: JSON.stringify({
+          command:
+            'grep -rn "Explain the active editor selection" --include="*" -l . 2>/dev/null | head -50',
+        }),
+      },
+      tracker,
+    );
+    const doneEvents = mapHarnessFrameToLiveEvents(
+      { ev: "tool_done", call_id: "c_grep", name: "bash", output: "matched.ts" },
+      tracker,
+    );
+    expect(doneEvents[1]).toMatchObject({
+      type: "step",
+      step: {
+        kind: "command",
+        displayCommand: "Searched codebase",
+        isMono: false,
+      },
+    });
+
+    // WorkTrace renders the reasoning block cleanly and ToolStepCard never shows raw JSON payload
+    renderWithQuery(
+      <div>
+        <WorkTrace
+          workedDuration="2s"
+          isLive
+          notes={[]}
+          groups={[]}
+          timeline={[
+            {
+              type: "reasoning",
+              id: "r1",
+              text: "I should check the composer model sync before editing.",
+            },
+          ]}
+        />
+        <ToolStepCard
+          defaultExpanded
+          step={{
+            id: "no_payload",
+            toolName: "read_file",
+            intent: "Read SessionComposer.tsx",
+            payloadJson: '{"secret_param":"should_never_render"}',
+            output: "ok",
+          }}
+        />
+      </div>,
+    );
+
+    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+      "I should check the composer model sync before editing.",
+    );
+    expect(screen.queryByText(/Payload/i)).toBeNull();
+    expect(screen.queryByText(/should_never_render/)).toBeNull();
   });
 });

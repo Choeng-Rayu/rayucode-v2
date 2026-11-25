@@ -83,7 +83,13 @@ describe("vscode harness-adapter", () => {
       type: "step",
       groupId: "codex_work_2",
       groupTitle: "Read files, ran commands",
-      step: { kind: "command", command: "cargo test", output: "test result: ok." },
+      step: {
+        kind: "command",
+        command: "Ran tests",
+        displayCommand: "Ran tests",
+        isMono: false,
+        output: "test result: ok.",
+      },
     });
 
     const permEvents = mapHarnessFrameToLiveEvents(
@@ -198,8 +204,9 @@ describe("vscode harness-adapter", () => {
     expect(turn.groups[0]?.steps).toHaveLength(2);
     expect(turn.groups[0]?.steps[0]).toMatchObject({
       kind: "command",
-      command: "cargo test lookup",
-      displayCommand: "bash cargo test lookup",
+      command: "Ran tests",
+      displayCommand: "Ran tests",
+      isMono: false,
       output: "6 passed",
     });
     expect(turn.groups[0]?.steps[1]).toMatchObject({

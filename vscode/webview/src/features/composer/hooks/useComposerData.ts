@@ -246,7 +246,11 @@ export function useComposerModelCatalog(sessionId?: string | null) {
   const defaultModelId =
     modelSettingsQuery.data?.defaultModel ?? DEFAULT_MODEL_ID;
   const matchedDefault = models.find((m) => m.id === defaultModelId);
-  const defaultModelLabel = matchedDefault?.label ?? DEFAULT_MODEL_LABEL;
+  const defaultModelLabel =
+    matchedDefault?.label ??
+    (modelSettingsQuery.data?.defaultModel
+      ? modelSettingsQuery.data.defaultModel.replace(/^rayu:/i, "")
+      : DEFAULT_MODEL_LABEL);
   const defaultEffort: EffortLevel = normalizeEffortLevel(
     modelSettingsQuery.data?.defaultEffort ?? DEFAULT_EFFORT,
   );
