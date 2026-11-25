@@ -560,6 +560,7 @@ mod tests {
             tool_calls: vec![],
             tool_data: None,
             stored_index: None,
+            is_engine_internal: false,
         };
         assert_eq!(
             DisplayMessage::from_rendered_message(row.clone()).duration_secs,
@@ -593,6 +594,7 @@ mod tests {
             tool_calls: vec!["read".to_string()],
             tool_data: None,
             stored_index: None,
+            is_engine_internal: false,
         };
 
         let display = DisplayMessage::from_rendered_message(rendered);

@@ -2907,6 +2907,19 @@ impl Provider for FableGuardrailProvider {
 #[tokio::test]
 async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
     let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(home) => crate::env::set_var("RAYU_HOME", home),
+                None => crate::env::remove_var("RAYU_HOME"),
+            }
+        }
+    }
+    let _restore = RestoreHome(std::env::var_os("RAYU_HOME"));
+    crate::env::set_var("RAYU_HOME", home.path());
+
     let fable = FableGuardrailProvider::default();
     let calls = fable.calls.clone();
     let prompts_seen = fable.prompts_seen.clone();
@@ -2937,6 +2950,15 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
         text.contains("Reconsidered and completed safely"),
         "{text:?}"
     );
+
+    let rendered = crate::session::render_messages(&agent.session);
+    let user_rows: Vec<_> = rendered.iter().filter(|m| m.role == "user").collect();
+    assert_eq!(user_rows.len(), 1);
+    assert_eq!(user_rows[0].content, "do this ordinary coding task");
+    assert!(!user_rows[0].is_engine_internal);
+    let internal_rows: Vec<_> = rendered.iter().filter(|m| m.is_engine_internal).collect();
+    assert_eq!(internal_rows.len(), 3);
+    assert!(internal_rows.iter().all(|m| m.role == "system"));
 }
 
 #[tokio::test]
