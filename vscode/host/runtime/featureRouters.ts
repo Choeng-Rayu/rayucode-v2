@@ -139,6 +139,26 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
       : typeof r.supportsEffort === "boolean"
         ? r.supportsEffort
         : undefined;
+  const rawSupportedEfforts = Array.isArray(r.supported_efforts)
+    ? r.supported_efforts
+    : Array.isArray(r.supportedEfforts)
+      ? r.supportedEfforts
+      : undefined;
+  const supportedEfforts = rawSupportedEfforts
+    ? rawSupportedEfforts
+        .filter((e): e is string => typeof e === "string" && e.trim().length > 0)
+        .map((e) => e.trim())
+    : undefined;
+  const defaultEffort =
+    typeof r.default_effort === "string"
+      ? r.default_effort
+      : r.default_effort === null
+        ? null
+        : typeof r.defaultEffort === "string"
+          ? r.defaultEffort
+          : r.defaultEffort === null
+            ? null
+            : undefined;
   const supportsFast =
     typeof r.supports_fast === "boolean"
       ? r.supports_fast
@@ -167,6 +187,8 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
     ...(available !== undefined ? { available } : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+    ...(supportedEfforts !== undefined ? { supportedEfforts } : {}),
+    ...(defaultEffort !== undefined ? { defaultEffort } : {}),
     ...(supportsFast !== undefined ? { supportsFast } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(pricingLabel !== undefined ? { pricingLabel } : {}),
@@ -4651,6 +4673,172 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       await client.closeApplet(params.sessionId, params.appletId);
       return { ok: true };
     },
+    "capabilities.get": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient(params?.sessionId);
+        if (typeof client.getCapabilities !== "function") {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        const caps = await client.getCapabilities(
+          params?.sessionId ?? deps.sessionHub.getActiveSessionId(),
+        );
+        if (!caps) {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        return {
+          supported: true,
+          commands: caps.commands ?? [],
+          permission_modes: caps.permission_modes ?? [],
+          features: caps.features ?? [],
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "unsupported" || error.code === "unknown_request")
+        ) {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        throw error;
+      }
+    },
+    "config.get": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient();
+        if (typeof client.getConfig !== "function") {
+          return { supported: false, config: null };
+        }
+        const config = await client.getConfig(params?.sections);
+        if (!config) {
+          return { supported: false, config: null };
+        }
+        return { supported: true, config };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "unsupported" || error.code === "unknown_request")
+        ) {
+          return { supported: false, config: null };
+        }
+        throw error;
+      }
+    },
+    "config.patch": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient();
+        if (typeof client.patchConfig !== "function") {
+          return {
+            ok: false,
+            code: "unsupported",
+            message: "This Rayu daemon does not support config_v1.",
+          };
+        }
+        const config = await client.patchConfig(params.patch);
+        const patchedKeys = new Set(Object.keys(params.patch));
+        const requiresRestart = (config.schema ?? []).some(
+          (field) =>
+            patchedKeys.has(field.key) &&
+            field.apply_mode === "restart_required",
+        );
+        return {
+          ok: true,
+          config,
+          requiresRestart,
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "invalid_request" ||
+            error.code === "unsupported" ||
+            error.code === "busy")
+        ) {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.setModel": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient(params.sessionId);
+        await client.setModel(params.sessionId, params.model);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof HarnessError && error.code === "busy") {
+          return {
+            ok: false,
+            deferred: true,
+            code: "busy",
+            message: error.message || "Applies on next turn",
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.setEffort": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient(params.sessionId);
+        await client.setReasoningEffort(params.sessionId, params.effort);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof HarnessError && error.code === "busy") {
+          return {
+            ok: false,
+            deferred: true,
+            code: "busy",
+            message: error.message || "Applies on next turn",
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.runtimeCommand": async (params) => {
+      try {
+        const out = await deps.sessionHub.runtimeCommand(
+          params.command as RuntimeCommand,
+          params.args ?? [],
+          params.sessionId ?? deps.sessionHub.getActiveSessionId(),
+        );
+        return {
+          ok: true,
+          command: String(out.command ?? params.command),
+          message: out.message,
+          data: out.data,
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "busy" ||
+            error.code === "unsupported" ||
+            error.code === "invalid_request")
+        ) {
+          return {
+            ok: false,
+            command: params.command,
+            code: error.code,
+            message: error.message,
+          };
+        }
+        throw error;
+      }
+    },
     "inspector.todos.get": async (params) => {
       try {
         const client = await deps.sessionHub.getClient();
@@ -4744,9 +4932,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
                 ? "SESSION_NOT_FOUND"
                 : error.code === "invalid_request"
                   ? "VALIDATION_ERROR"
-                  : error.code === "timeout"
-                    ? "TIMEOUT"
-                    : "INTERNAL_ERROR"
+                  : error.code === "busy"
+                    ? "BUSY"
+                    : error.code === "unsupported"
+                      ? "UNSUPPORTED"
+                      : error.code === "timeout"
+                        ? "TIMEOUT"
+                        : "INTERNAL_ERROR"
             : "INTERNAL_ERROR";
         const message =
           error instanceof Error ? error.message : String(error);

@@ -257,6 +257,90 @@ export class HarnessSession {
         await client.rewindUndo(sessionId);
         return { ev: "ok" };
       }
+      case "get_capabilities": {
+        const generation = this.connectionGeneration;
+        const attached = this.client;
+        const client = attached ?? (await this.openConnection(generation));
+        try {
+          const targetSid =
+            typeof frame.session_id === "string"
+              ? frame.session_id
+              : this.sessionId;
+          const caps = await client.getCapabilities(targetSid);
+          this.checkConnection(generation);
+          if (!caps) {
+            throw new HarnessError(
+              "unsupported",
+              "This Rayu daemon does not support capabilities_v1.",
+            );
+          }
+          return {
+            ev: "capabilities",
+            commands: caps.commands,
+            permission_modes: caps.permission_modes,
+            features: caps.features,
+          };
+        } finally {
+          if (!attached) void client.close();
+        }
+      }
+      case "get_config": {
+        const generation = this.connectionGeneration;
+        const attached = this.client;
+        const client = attached ?? (await this.openConnection(generation));
+        try {
+          const sections = Array.isArray(frame.sections)
+            ? frame.sections.filter((s): s is string => typeof s === "string")
+            : undefined;
+          const state = await client.getConfig(sections);
+          this.checkConnection(generation);
+          if (!state) {
+            throw new HarnessError(
+              "unsupported",
+              "This Rayu daemon does not support config_v1.",
+            );
+          }
+          return {
+            ev: "config_state",
+            path: state.path,
+            sections: state.sections,
+            values: state.values,
+            schema: state.schema,
+          };
+        } finally {
+          if (!attached) void client.close();
+        }
+      }
+      case "patch_config": {
+        const generation = this.connectionGeneration;
+        const attached = this.client;
+        const client = attached ?? (await this.openConnection(generation));
+        try {
+          if (
+            typeof frame.patch !== "object" ||
+            frame.patch === null ||
+            Array.isArray(frame.patch)
+          ) {
+            throw new HarnessError(
+              "invalid_request",
+              "Provide a valid config patch object.",
+            );
+          }
+          const state = await client.patchConfig(
+            frame.patch as Record<string, unknown>,
+          );
+          this.checkConnection(generation);
+          return {
+            ev: "config_state",
+            path: state.path,
+            sections: state.sections,
+            values: state.values,
+            schema: state.schema,
+          };
+        } finally {
+          if (!attached) void client.close();
+        }
+      }
       case "ping": {
         const generation = this.connectionGeneration;
         const attached = this.client;
