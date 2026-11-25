@@ -707,4 +707,58 @@ describe("TurnFileSummaryCard & file-change sync", () => {
       await within(card).findByTestId("file-diff-preview-assets/huge.dat")
     ).toHaveTextContent(/10 MiB snapshot limit/i)
   })
+
+  it("hides TurnFileSummaryCard while a turn is actively streaming and reveals it once finished", async () => {
+    const snap = createSnapshot()
+    let listener: ((frame: Record<string, unknown>) => void) | null = null
+    vi.spyOn(ipcClient.harness, "onEvent").mockImplementation((cb) => {
+      listener = cb
+      return () => {
+        listener = null
+      }
+    })
+    vi.spyOn(ipcClient.fileChanges, "get").mockResolvedValue(snap)
+
+    const queryClient = createQueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatStream sessionId={SESSION_ID} turns={[createFinishedTurn()]} />
+      </QueryClientProvider>
+    )
+
+    // Visible while idle after finished turn
+    expect(
+      await screen.findByTestId("turn-file-summary-card")
+    ).toBeInTheDocument()
+
+    // While a new turn is actively streaming, card stays hidden even when file_changes_state arrives mid-turn
+    act(() => {
+      listener?.({
+        ev: "text_delta",
+        session_id: SESSION_ID,
+        text: "Editing files...",
+      })
+      listener?.({
+        ev: "file_changes_state",
+        session_id: SESSION_ID,
+        snapshot: snap,
+      })
+    })
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("turn-file-summary-card")
+      ).not.toBeInTheDocument()
+    })
+
+    // Once the turn finishes, the summary card reappears
+    act(() => {
+      listener?.({
+        ev: "turn_done",
+        session_id: SESSION_ID,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("turn-file-summary-card")).toBeInTheDocument()
+    })
+  })
 })

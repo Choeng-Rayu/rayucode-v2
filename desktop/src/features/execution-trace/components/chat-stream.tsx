@@ -610,7 +610,9 @@ export function ChatStream({
                   key={turn.id}
                   turn={turn}
                   fileChangesSnapshot={
-                    idx === latestFinishedTurnIdx ? sessionFileChanges : null
+                    !isStreaming && idx === latestFinishedTurnIdx
+                      ? sessionFileChanges
+                      : null
                   }
                   onForked={handleForked}
                   onPinToggled={handlePinToggled}

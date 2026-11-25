@@ -33,7 +33,7 @@ pub(crate) enum FileChangeHitTarget {
     KeepAll,
     UndoAll,
     RedoAll,
-    ToggleReceipt,
+    ToggleCollapse,
 }
 
 /// Line-local clickable range inside a rendered card.
@@ -182,6 +182,8 @@ struct CardRenderCacheKey {
     latest_turn_id: u64,
     file_count: usize,
     pending_count: usize,
+    card_expanded: bool,
+    is_processing: bool,
     width: u16,
     centered: bool,
     prefix_blank: bool,
@@ -190,11 +192,13 @@ struct CardRenderCacheKey {
 static CARD_RENDER_CACHE: OnceLock<Mutex<Option<(CardRenderCacheKey, Arc<RenderedFileChangesCard>)>>> =
     OnceLock::new();
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_card_cached(
     snapshot: &FileChangesSnapshot,
     version: u64,
     expanded_paths: &HashSet<String>,
-    receipt_expanded: bool,
+    card_expanded: bool,
+    is_processing: bool,
     width: u16,
     centered: bool,
     prefix_blank: bool,
@@ -205,6 +209,8 @@ pub(crate) fn render_card_cached(
         latest_turn_id: snapshot.latest_turn_id,
         file_count: snapshot.files.len(),
         pending_count: snapshot.total_pending_files,
+        card_expanded,
+        is_processing,
         width,
         centered,
         prefix_blank,
@@ -219,7 +225,8 @@ pub(crate) fn render_card_cached(
     let rendered = Arc::new(render_file_changes_card(
         snapshot,
         expanded_paths,
-        receipt_expanded,
+        card_expanded,
+        is_processing,
         width,
         centered,
         prefix_blank,
@@ -436,7 +443,7 @@ fn render_collapsed_receipt(
     right_pills.push((
         expand_label.to_string(),
         dim_color(),
-        FileChangeHitTarget::ToggleReceipt,
+        FileChangeHitTarget::ToggleCollapse,
     ));
 
     let right_width: usize = right_pills
@@ -509,7 +516,181 @@ fn render_collapsed_receipt(
         line_offset,
         col_start: (pad_left + lead_w) as u16,
         col_width: box_width.saturating_sub(lead_w) as u16,
-        target: FileChangeHitTarget::ToggleReceipt,
+        target: FileChangeHitTarget::ToggleCollapse,
+        is_pill: false,
+    });
+
+    let line = truncate_line_with_ellipsis_to_width(
+        &Line::from(spans).alignment(Alignment::Left),
+        width as usize,
+    );
+    lines.push(line);
+
+    RenderedFileChangesCard { lines, hit_regions }
+}
+
+/// Build the collapsed 1-line pending summary bar shown by default while the AI
+/// is still responding, or whenever the user manually collapses an active card.
+/// Responsive across narrow (`<48`, `48..64`, `64..82`) and wide (`82+`) widths.
+fn render_collapsed_pending_bar(
+    snapshot: &FileChangesSnapshot,
+    is_processing: bool,
+    width: u16,
+    centered: bool,
+    prefix_blank: bool,
+) -> RenderedFileChangesCard {
+    let mut lines = Vec::new();
+    let mut hit_regions = Vec::new();
+    if width < 8 || snapshot.is_empty() {
+        return RenderedFileChangesCard { lines, hit_regions };
+    }
+    if prefix_blank {
+        lines.push(Line::from("").alignment(Alignment::Left));
+    }
+
+    let box_width = if centered {
+        centered_content_block_width(width, 96)
+    } else {
+        (width as usize).min(108)
+    }
+    .min(width as usize);
+    let pad_left = if centered {
+        (width as usize).saturating_sub(box_width) / 2
+    } else {
+        0
+    };
+
+    let plural = |n: usize| if n == 1 { "file" } else { "files" };
+    let mut right_pills: Vec<(&'static str, Color, FileChangeHitTarget)> = Vec::new();
+    let pill_sep = if !is_processing && box_width < 64 && box_width >= 48 {
+        ""
+    } else {
+        " "
+    };
+    if is_processing {
+        let expand_label = if box_width < 56 { "[+]" } else { "[Expand]" };
+        right_pills.push((expand_label, accent_color(), FileChangeHitTarget::ToggleCollapse));
+    } else if box_width >= 82 {
+        right_pills.push(("[Undo all]", diff_del_color(), FileChangeHitTarget::UndoAll));
+        right_pills.push(("[Keep all]", diff_add_color(), FileChangeHitTarget::KeepAll));
+        right_pills.push(("[Expand]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+    } else if box_width >= 64 {
+        right_pills.push(("[Undo]", diff_del_color(), FileChangeHitTarget::UndoAll));
+        right_pills.push(("[Keep]", diff_add_color(), FileChangeHitTarget::KeepAll));
+        right_pills.push(("[Expand]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+    } else if box_width >= 48 {
+        right_pills.push(("[u]", diff_del_color(), FileChangeHitTarget::UndoAll));
+        right_pills.push(("[k]", diff_add_color(), FileChangeHitTarget::KeepAll));
+        right_pills.push(("[+]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+    } else {
+        right_pills.push(("[+]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+    }
+
+    let pill_sep_w = UnicodeWidthStr::width(pill_sep);
+    let right_width: usize = right_pills
+        .iter()
+        .map(|(l, _, _)| UnicodeWidthStr::width(*l))
+        .sum::<usize>()
+        + right_pills.len().saturating_sub(1) * pill_sep_w;
+
+    let line_offset = lines.len();
+    let lead = "  ";
+    let lead_w = UnicodeWidthStr::width(lead);
+    let min_gap = 2usize;
+    let left_budget = box_width.saturating_sub(lead_w + right_width + min_gap);
+
+    let mut left_spans: Vec<Span<'static>> = vec![
+        Span::styled("▸ ", muted_style()),
+        Span::styled(
+            if box_width < 48 {
+                format!(
+                    "{} {}",
+                    snapshot.total_pending_files,
+                    plural(snapshot.total_pending_files)
+                )
+            } else {
+                format!(
+                    "{} {} changed",
+                    snapshot.total_pending_files,
+                    plural(snapshot.total_pending_files)
+                )
+            },
+            text_style().add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    if snapshot.total_additions > 0 || snapshot.total_deletions > 0 {
+        let mut stats_spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+        if snapshot.total_additions > 0 {
+            stats_spans.push(Span::styled(
+                format!("+{}", snapshot.total_additions),
+                Style::default().fg(diff_add_color()),
+            ));
+        }
+        if snapshot.total_deletions > 0 {
+            if snapshot.total_additions > 0 {
+                stats_spans.push(Span::raw(" "));
+            }
+            stats_spans.push(Span::styled(
+                format!("−{}", snapshot.total_deletions),
+                Style::default().fg(diff_del_color()),
+            ));
+        }
+        if spans_display_width(&left_spans) + spans_display_width(&stats_spans) <= left_budget {
+            left_spans.extend(stats_spans);
+        }
+    }
+
+    if is_processing {
+        let status_note = if box_width >= 74 {
+            " · responding"
+        } else {
+            " · live"
+        };
+        if spans_display_width(&left_spans) + UnicodeWidthStr::width(status_note) <= left_budget {
+            left_spans.push(Span::styled(status_note, muted_style()));
+        }
+    }
+
+    let mut left_line = Line::from(left_spans);
+    if left_line.width() > left_budget {
+        left_line = truncate_line_with_ellipsis_to_width(&left_line, left_budget);
+    }
+    let used_left = lead_w + left_line.width();
+    let gap = box_width.saturating_sub(used_left + right_width).max(1);
+
+    let mut spans = Vec::new();
+    if pad_left > 0 {
+        spans.push(Span::raw(" ".repeat(pad_left)));
+    }
+    spans.push(Span::raw(lead));
+    spans.extend(left_line.spans);
+    spans.push(Span::raw(" ".repeat(gap)));
+
+    let mut cursor_x = pad_left + used_left + gap;
+    for (idx, (label, color, target)) in right_pills.into_iter().enumerate() {
+        if idx > 0 && pill_sep_w > 0 {
+            spans.push(Span::raw(pill_sep));
+            cursor_x += pill_sep_w;
+        }
+        let w = UnicodeWidthStr::width(label);
+        spans.push(Span::styled(label, pill_style(color)));
+        hit_regions.push(CardLineHitRegion {
+            line_offset,
+            col_start: cursor_x as u16,
+            col_width: w as u16,
+            target,
+            is_pill: true,
+        });
+        cursor_x += w;
+    }
+
+    // Whole bar toggles expansion when clicked outside specific action pills.
+    hit_regions.push(CardLineHitRegion {
+        line_offset,
+        col_start: (pad_left + lead_w) as u16,
+        col_width: box_width.saturating_sub(lead_w) as u16,
+        target: FileChangeHitTarget::ToggleCollapse,
         is_pill: false,
     });
 
@@ -526,7 +707,8 @@ fn render_collapsed_receipt(
 pub(crate) fn render_file_changes_card(
     snapshot: &FileChangesSnapshot,
     expanded_paths: &HashSet<String>,
-    receipt_expanded: bool,
+    card_expanded: bool,
+    is_processing: bool,
     width: u16,
     centered: bool,
     prefix_blank: bool,
@@ -535,8 +717,11 @@ pub(crate) fn render_file_changes_card(
         return RenderedFileChangesCard::default();
     }
 
-    if snapshot.total_pending_files == 0 && !receipt_expanded {
-        return render_collapsed_receipt(snapshot, width, centered, prefix_blank);
+    if !card_expanded {
+        if snapshot.total_pending_files == 0 {
+            return render_collapsed_receipt(snapshot, width, centered, prefix_blank);
+        }
+        return render_collapsed_pending_bar(snapshot, is_processing, width, centered, prefix_blank);
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -564,7 +749,7 @@ pub(crate) fn render_file_changes_card(
     // 1. Top border
     lines.push(build_rule_row(pad_left, box_width, '╭', '─', '╮'));
 
-    // 2. Header row
+    // 2. Header row (always includes a responsive Collapse button)
     {
         let line_offset = lines.len();
         let plural = |n: usize| if n == 1 { "file" } else { "files" };
@@ -579,66 +764,108 @@ pub(crate) fn render_file_changes_card(
             .any(|f| f.status == FileChangeStatus::Undone && f.can_redo);
 
         let mut header_pills: Vec<(&str, Color, FileChangeHitTarget)> = Vec::new();
+        let header_pill_sep = if box_width < 60 { "" } else { " " };
         if snapshot.total_pending_files > 0 {
-            if compact_pills {
-                header_pills.push(("[Undo]", diff_del_color(), FileChangeHitTarget::UndoAll));
-                header_pills.push(("[Keep]", diff_add_color(), FileChangeHitTarget::KeepAll));
-            } else {
+            if is_processing {
+                header_pills.push((
+                    if box_width < 64 { "[-]" } else { "[Collapse]" },
+                    dim_color(),
+                    FileChangeHitTarget::ToggleCollapse,
+                ));
+            } else if box_width >= 84 {
                 header_pills.push(("[Undo all]", diff_del_color(), FileChangeHitTarget::UndoAll));
                 header_pills.push(("[Keep all]", diff_add_color(), FileChangeHitTarget::KeepAll));
+                header_pills.push(("[Collapse]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+            } else if box_width >= 60 {
+                header_pills.push(("[Undo]", diff_del_color(), FileChangeHitTarget::UndoAll));
+                header_pills.push(("[Keep]", diff_add_color(), FileChangeHitTarget::KeepAll));
+                header_pills.push(("[-]", dim_color(), FileChangeHitTarget::ToggleCollapse));
+            } else {
+                header_pills.push(("[u]", diff_del_color(), FileChangeHitTarget::UndoAll));
+                header_pills.push(("[k]", diff_add_color(), FileChangeHitTarget::KeepAll));
+                header_pills.push(("[-]", dim_color(), FileChangeHitTarget::ToggleCollapse));
             }
         } else {
             if any_redoable {
                 header_pills.push((
-                    if compact_pills { "[Redo]" } else { "[Redo all]" },
+                    if box_width < 52 {
+                        "[r]"
+                    } else if box_width < 68 {
+                        "[Redo]"
+                    } else {
+                        "[Redo all]"
+                    },
                     accent_color(),
                     FileChangeHitTarget::RedoAll,
                 ));
             }
             header_pills.push((
-                if compact_pills { "[-]" } else { "[Collapse]" },
+                if box_width < 68 { "[-]" } else { "[Collapse]" },
                 dim_color(),
-                FileChangeHitTarget::ToggleReceipt,
+                FileChangeHitTarget::ToggleCollapse,
             ));
         }
 
+        let header_pill_sep_w = UnicodeWidthStr::width(header_pill_sep);
         let pills_width: usize = header_pills
             .iter()
             .map(|(l, _, _)| UnicodeWidthStr::width(*l))
             .sum::<usize>()
-            + header_pills.len().saturating_sub(1);
+            + header_pills.len().saturating_sub(1) * header_pill_sep_w;
 
         let left_budget = inner_width.saturating_sub(pills_width + 2);
-        let mut left_spans: Vec<Span<'static>> = Vec::new();
+        let mut left_spans: Vec<Span<'static>> = vec![Span::styled("▾ ", muted_style())];
         if snapshot.total_pending_files > 0 {
-            let count_label = format!(
-                "{} {} changed",
-                snapshot.total_pending_files,
-                plural(snapshot.total_pending_files)
-            );
+            let count_label = if box_width < 54 {
+                format!(
+                    "{} {}",
+                    snapshot.total_pending_files,
+                    plural(snapshot.total_pending_files)
+                )
+            } else {
+                format!(
+                    "{} {} changed",
+                    snapshot.total_pending_files,
+                    plural(snapshot.total_pending_files)
+                )
+            };
             left_spans.push(Span::styled(
                 count_label,
                 text_style().add_modifier(Modifier::BOLD),
             ));
             if snapshot.total_additions > 0 || snapshot.total_deletions > 0 {
-                left_spans.push(Span::raw("  "));
+                let mut stat_spans = vec![Span::raw("  ")];
                 if snapshot.total_additions > 0 {
-                    left_spans.push(Span::styled(
+                    stat_spans.push(Span::styled(
                         format!("+{}", snapshot.total_additions),
                         Style::default().fg(diff_add_color()),
                     ));
                 }
                 if snapshot.total_deletions > 0 {
                     if snapshot.total_additions > 0 {
-                        left_spans.push(Span::raw(" "));
+                        stat_spans.push(Span::raw(" "));
                     }
-                    left_spans.push(Span::styled(
+                    stat_spans.push(Span::styled(
                         format!("−{}", snapshot.total_deletions),
                         Style::default().fg(diff_del_color()),
                     ));
                 }
+                if spans_display_width(&left_spans) + spans_display_width(&stat_spans)
+                    <= left_budget
+                {
+                    left_spans.extend(stat_spans);
+                }
             }
-            if pending_in_latest_turn > 0 && pending_in_latest_turn < snapshot.total_pending_files {
+            if is_processing {
+                let live_note = " · responding";
+                if spans_display_width(&left_spans) + UnicodeWidthStr::width(live_note)
+                    <= left_budget
+                {
+                    left_spans.push(Span::styled(live_note, muted_style()));
+                }
+            } else if pending_in_latest_turn > 0
+                && pending_in_latest_turn < snapshot.total_pending_files
+            {
                 let turn_note = format!(" · {} in this turn", pending_in_latest_turn);
                 if spans_display_width(&left_spans) + UnicodeWidthStr::width(turn_note.as_str())
                     <= left_budget
@@ -668,9 +895,9 @@ pub(crate) fn render_file_changes_card(
 
         let mut col = inner_col_origin + left_used + gap;
         for (idx, (label, color, target)) in header_pills.into_iter().enumerate() {
-            if idx > 0 {
-                inner_spans.push(Span::raw(" "));
-                col += 1;
+            if idx > 0 && header_pill_sep_w > 0 {
+                inner_spans.push(Span::raw(header_pill_sep));
+                col += header_pill_sep_w;
             }
             let w = UnicodeWidthStr::width(label);
             inner_spans.push(Span::styled(label.to_string(), pill_style(color)));
@@ -683,6 +910,15 @@ pub(crate) fn render_file_changes_card(
             });
             col += w;
         }
+
+        // Clicking anywhere on the header outside action pills collapses the card.
+        hit_regions.push(CardLineHitRegion {
+            line_offset,
+            col_start: inner_col_origin as u16,
+            col_width: inner_width as u16,
+            target: FileChangeHitTarget::ToggleCollapse,
+            is_pill: false,
+        });
 
         lines.push(build_bordered_row(pad_left, box_width, inner_spans));
     }
@@ -698,6 +934,7 @@ pub(crate) fn render_file_changes_card(
             entry,
             is_expanded,
             compact_pills,
+            is_processing,
             pad_left,
             box_width,
             inner_width,
@@ -723,7 +960,7 @@ pub(crate) fn render_file_changes_card(
     // 5. Footer hint row (strictly 1 row)
     {
         let hints = [
-            "Click file to expand · Alt+R review overlay · /keep · /undo",
+            "Click file to expand · [Collapse] to fold · Alt+R review · /keep · /undo",
             "Click file to expand · Alt+R review · /keep · /undo",
             "Click to expand · Alt+R review · /keep · /undo",
             "Alt+R review · /keep · /undo",
@@ -752,6 +989,7 @@ fn render_file_row(
     entry: &FileChangeEntrySummary,
     is_expanded: bool,
     compact_pills: bool,
+    is_processing: bool,
     pad_left: usize,
     box_width: usize,
     inner_width: usize,
@@ -768,7 +1006,13 @@ fn render_file_row(
     let mut pills: Vec<(&'static str, Color, FileChangeHitTarget)> = Vec::new();
     match entry.status {
         FileChangeStatus::Pending => {
-            if compact_pills {
+            if is_processing {
+                pills.push((
+                    if compact_pills { "[d]" } else { "[Diff]" },
+                    file_link_color(),
+                    FileChangeHitTarget::OpenDiff(entry.path.clone()),
+                ));
+            } else if compact_pills {
                 pills.push((
                     "[d]",
                     file_link_color(),
@@ -813,7 +1057,7 @@ fn render_file_row(
                 file_link_color(),
                 FileChangeHitTarget::OpenDiff(entry.path.clone()),
             ));
-            if entry.can_redo {
+            if entry.can_redo && !is_processing {
                 pills.push((
                     if compact_pills { "[r]" } else { "[Redo]" },
                     accent_color(),
@@ -1156,36 +1400,89 @@ mod tests {
         let mut expanded = HashSet::new();
         expanded.insert(snapshot.files[0].path.clone());
 
-        for width in [72u16, 80, 120, 160] {
+        for width in [40u16, 56, 72, 80, 100, 120, 160] {
             for centered in [false, true] {
-                let card =
-                    render_file_changes_card(&snapshot, &expanded, false, width, centered, true);
-                assert!(
-                    !card.lines.is_empty(),
-                    "card must render lines at width={width}"
-                );
-                for (idx, line) in card.lines.iter().enumerate() {
-                    let w = line.width();
-                    assert!(
-                        w <= width as usize,
-                        "card line {idx} exceeded width {width} (centered={centered}): got {w} cells: {:?}",
-                        super::super::line_plain_text(line)
-                    );
+                for card_expanded in [false, true] {
+                    for is_processing in [false, true] {
+                        let card = render_file_changes_card(
+                            &snapshot,
+                            &expanded,
+                            card_expanded,
+                            is_processing,
+                            width,
+                            centered,
+                            true,
+                        );
+                        assert!(
+                            !card.lines.is_empty(),
+                            "card must render lines at width={width} expanded={card_expanded}"
+                        );
+                        if !card_expanded {
+                            // 1 blank prefix line + 1 collapsed summary bar line
+                            assert_eq!(
+                                card.lines.len(),
+                                2,
+                                "collapsed card must fit on 1 row at width={width}"
+                            );
+                        }
+                        for (idx, line) in card.lines.iter().enumerate() {
+                            let w = line.width();
+                            assert!(
+                                w <= width as usize,
+                                "card line {idx} exceeded width {width} (centered={centered}, expanded={card_expanded}, processing={is_processing}): got {w} cells: {:?}",
+                                super::super::line_plain_text(line)
+                            );
+                        }
+                    }
                 }
             }
         }
 
-        // Verify compact pills are used at narrow width (72) and full pills at 80+.
-        let narrow = render_file_changes_card(&snapshot, &HashSet::new(), false, 72, false, false);
+        // Verify responsive pills across narrow (44, 72) and wide (120) widths when expanded.
+        let ultra_narrow = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            true,
+            false,
+            44,
+            false,
+            false,
+        );
+        let ultra_text: String = ultra_narrow
+            .lines
+            .iter()
+            .map(super::super::line_plain_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(ultra_text.contains("[u][k][-]"));
+
+        let narrow = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            true,
+            false,
+            72,
+            false,
+            false,
+        );
         let narrow_text: String = narrow
             .lines
             .iter()
             .map(super::super::line_plain_text)
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(narrow_text.contains("[Undo] [Keep] [-]"));
         assert!(narrow_text.contains("[d][u][k]"));
 
-        let wide = render_file_changes_card(&snapshot, &HashSet::new(), false, 120, false, false);
+        let wide = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            true,
+            false,
+            120,
+            false,
+            false,
+        );
         let wide_text: String = wide
             .lines
             .iter()
@@ -1193,8 +1490,39 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(wide_text.contains("[Diff] [Undo] [Keep]"));
-        assert!(wide_text.contains("[Undo all] [Keep all]"));
+        assert!(wide_text.contains("[Undo all] [Keep all] [Collapse]"));
         assert!(wide_text.contains("2 in this turn"));
+
+        // Collapsed while responding shows compact [Expand] (wide) / [+] (narrow) without mutation buttons.
+        let collapsed_responding_wide = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            false,
+            true,
+            100,
+            false,
+            false,
+        );
+        assert_eq!(collapsed_responding_wide.lines.len(), 1);
+        let resp_wide_text = super::super::line_plain_text(&collapsed_responding_wide.lines[0]);
+        assert!(resp_wide_text.contains("3 files changed"));
+        assert!(resp_wide_text.contains("responding"));
+        assert!(resp_wide_text.contains("[Expand]"));
+        assert!(!resp_wide_text.contains("[Undo"));
+
+        let collapsed_responding_narrow = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            false,
+            true,
+            48,
+            false,
+            false,
+        );
+        assert_eq!(collapsed_responding_narrow.lines.len(), 1);
+        let resp_narrow_text =
+            super::super::line_plain_text(&collapsed_responding_narrow.lines[0]);
+        assert!(resp_narrow_text.contains("[+]"));
     }
 
     #[test]
@@ -1206,21 +1534,37 @@ mod tests {
         for f in &mut snapshot.files {
             f.status = FileChangeStatus::Kept;
         }
-        for width in [72u16, 80, 120, 160] {
-            let card =
-                render_file_changes_card(&snapshot, &HashSet::new(), false, width, false, false);
+        for width in [40u16, 72, 80, 120, 160] {
+            let card = render_file_changes_card(
+                &snapshot,
+                &HashSet::new(),
+                false,
+                false,
+                width,
+                false,
+                false,
+            );
             assert_eq!(card.lines.len(), 1, "resolved receipt must be 1 line");
             assert!(card.lines[0].width() <= width as usize);
             let text = super::super::line_plain_text(&card.lines[0]);
-            assert!(text.contains("Kept 3 files"));
+            if width >= 72 {
+                assert!(text.contains("Kept 3 files"));
+            }
         }
 
         for f in &mut snapshot.files {
             f.status = FileChangeStatus::Undone;
             f.can_redo = true;
         }
-        let undone =
-            render_file_changes_card(&snapshot, &HashSet::new(), false, 80, false, false);
+        let undone = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            false,
+            false,
+            80,
+            false,
+            false,
+        );
         assert_eq!(undone.lines.len(), 1);
         let text = super::super::line_plain_text(&undone.lines[0]);
         assert!(text.contains("Undid 3 files"));
@@ -1230,8 +1574,15 @@ mod tests {
     #[test]
     fn file_change_card_hit_test_resolution() {
         let snapshot = sample_snapshot();
-        let card =
-            render_file_changes_card(&snapshot, &HashSet::new(), false, 100, false, false);
+        let card = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            true,
+            false,
+            100,
+            false,
+            false,
+        );
         let content_area = Rect {
             x: 2,
             y: 5,
@@ -1251,6 +1602,7 @@ mod tests {
         for check in [
             FileChangeHitTarget::UndoAll,
             FileChangeHitTarget::KeepAll,
+            FileChangeHitTarget::ToggleCollapse,
             FileChangeHitTarget::OpenDiff(snapshot.files[0].path.clone()),
             FileChangeHitTarget::UndoFile(snapshot.files[0].path.clone()),
             FileChangeHitTarget::KeepFile(snapshot.files[0].path.clone()),
@@ -1263,7 +1615,32 @@ mod tests {
             assert_eq!(hit, Some(check));
         }
 
-        // Clicking the left side of row 0 (not on a pill) resolves to ExpandRow.
+        // Collapsed pending bar click resolves to ToggleCollapse (Expand).
+        let collapsed = render_file_changes_card(
+            &snapshot,
+            &HashSet::new(),
+            false,
+            true,
+            80,
+            false,
+            false,
+        );
+        set_hit_rects(&collapsed, 0, 0, 30, content_area);
+        let expand_pill = collapsed
+            .hit_regions
+            .iter()
+            .find(|r| r.is_pill && r.target == FileChangeHitTarget::ToggleCollapse)
+            .expect("expected expand pill");
+        assert_eq!(
+            hit_target_at(
+                content_area.x + expand_pill.col_start,
+                content_area.y + expand_pill.line_offset as u16,
+            ),
+            Some(FileChangeHitTarget::ToggleCollapse)
+        );
+
+        // Clicking the left side of row 0 (not on a pill) in expanded card resolves to ExpandRow.
+        set_hit_rects(&card, 0, 0, 30, content_area);
         let row_region = find_region(&|t| matches!(t, FileChangeHitTarget::ExpandRow(p) if p == &snapshot.files[0].path));
         let hit = hit_target_at(
             content_area.x + row_region.col_start + 1,

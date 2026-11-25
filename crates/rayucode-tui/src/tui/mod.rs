@@ -1417,9 +1417,11 @@ pub trait TuiState {
     fn expanded_file_change_paths(&self) -> Option<&std::collections::HashSet<String>> {
         None
     }
-    /// Whether a resolved file-changes receipt has been expanded back into rows
-    fn file_changes_receipt_expanded(&self) -> bool {
-        false
+    /// Whether the file-changes card currently renders expanded (all changed files)
+    /// or collapsed (compact 1-line summary bar with Expand button). Defaults to
+    /// collapsed while the AI is responding and expanded once finished.
+    fn file_changes_card_expanded(&self) -> bool {
+        !self.is_processing()
     }
     /// Interactive file review overlay (None = not showing)
     fn file_review_overlay(&self) -> Option<&file_review_overlay::FileReviewOverlayState> {

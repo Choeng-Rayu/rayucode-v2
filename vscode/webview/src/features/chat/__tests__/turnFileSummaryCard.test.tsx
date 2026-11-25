@@ -501,4 +501,54 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
       screen.getByTestId("file-summary-inline-diff-assets/huge.dat").textContent,
     ).toMatch(/10 MiB snapshot limit/i);
   });
+
+  it("hides TurnFileSummaryCard in ChatStream while AI is streaming and shows it after response finishes", () => {
+    const sampleTurn: ChatTurnView = {
+      id: "turn_stream_guard",
+      sessionId: "ses_review_1",
+      userPrompt: "Edit auth.ts",
+      workedDuration: "3s",
+      notes: [],
+      groups: [],
+      answerIntro: "Done.",
+      answerBullets: [],
+      diffCard: {
+        id: "empty",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "0.05 cr",
+      kvCachePct: 95,
+      pinned: false,
+    };
+    const snap = makeSnapshot();
+
+    const { rerender } = renderWithQuery(
+      <ChatStream
+        sessionId="ses_review_1"
+        turns={[sampleTurn]}
+        isStreaming={true}
+        fileChangesSnapshot={snap}
+      />,
+    );
+
+    expect(screen.queryByTestId("turn-file-summary-card")).toBeNull();
+
+    rerender(
+      <QueryClientProvider client={createQueryClient()}>
+        <ChatStream
+          sessionId="ses_review_1"
+          turns={[sampleTurn]}
+          isStreaming={false}
+          fileChangesSnapshot={snap}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("turn-file-summary-card")).toBeTruthy();
+  });
 });
