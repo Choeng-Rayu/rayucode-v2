@@ -13,6 +13,7 @@ import {
   coalesceTraceGroups,
   EditorialMarkdown,
   InlineDiffCard,
+  resetAllLiveTraces,
   ShellCard,
   ToolStepCard,
   WorkTrace,
@@ -21,7 +22,9 @@ import {
 import * as rpcClient from "@/lib/rpc-client";
 import {
   __dispatchHostMessageForTest,
+  createHarnessStreamTracker,
   createQueryClient,
+  mapHarnessFrameToLiveEvents,
   useAppStore,
 } from "@/lib";
 
@@ -35,6 +38,7 @@ function renderWithQuery(ui: React.ReactElement) {
 describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    resetAllLiveTraces();
     useAppStore.setState({
       activeSessionId: "ses_vscode_shell",
       inspectorOpen: false,
@@ -126,7 +130,7 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       "0",
     );
     expect(screen.getByTestId("work-trace-summary").textContent).toBe(
-      "Worked for 14s · 3 files · 1 cmd",
+      "Worked for 14s",
     );
     expect(screen.queryByTestId("work-trace-body")).toBeNull();
 
@@ -136,7 +140,7 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       "1",
     );
     expect(screen.getByTestId("work-trace-body")).toBeTruthy();
-    expect(screen.getByText("Explored 3 files")).toBeTruthy();
+    expect(screen.getByText(/Explored 3 files/)).toBeTruthy();
 
     // Expand Depth 2 ShellCard
     fireEvent.click(screen.getByText("$ cargo test -p rayu-harness"));
@@ -544,8 +548,10 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       expect(screen.getByTestId("midturn-item-si_other_2")).toBeTruthy();
     });
 
-    // Expand WorkTrace to verify recorded steer note
-    fireEvent.click(screen.getByTestId("work-trace-toggle"));
+    // Live WorkTrace auto-expands; expand if collapsed before verifying recorded steer note
+    if (screen.getByTestId("work-trace").getAttribute("data-depth") === "0") {
+      fireEvent.click(screen.getByTestId("work-trace-toggle"));
+    }
     expect(
       screen.getByText("Steered: Keep token refresh idempotent"),
     ).toBeTruthy();
@@ -854,5 +860,168 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     await waitFor(() => {
       expect(screen.queryByTestId("clarifying-question-card")).toBeNull();
     });
+  });
+
+  it("auto-expands WorkTrace while live, renders chronological timeline, and opens monochrome file links in VS Code", () => {
+    const postSpy = vi.fn();
+    window.acquireVsCodeApi = () => ({
+      postMessage: postSpy,
+      getState: () => undefined,
+      setState: () => undefined,
+    });
+
+    const { rerender } = renderWithQuery(
+      <WorkTrace
+        workedDuration="3s"
+        isLive
+        showLiveBackgroundPill
+        notes={["Checking lookup hot path."]}
+        groups={[]}
+        timeline={[
+          { type: "note", id: "n1", text: "Checking lookup hot path." },
+          {
+            type: "group",
+            group: {
+              id: "g_tl",
+              title: "Read files",
+              steps: [
+                {
+                  id: "r_tl",
+                  kind: "read",
+                  label: "Read",
+                  files: [
+                    {
+                      file: "lookup.rs",
+                      path: "crates/rayu-harness/src/lookup.rs",
+                      line: 42,
+                      rangeLabel: "lookup.rs:42-80",
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("work-trace").getAttribute("data-depth")).toBe("1");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe("Working · 3s");
+    expect(screen.getByTestId("work-trace-live-bg-btn")).toBeTruthy();
+    expect(screen.getByText("Checking lookup hot path.")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByTestId("trace-file-link-crates/rayu-harness/src/lookup.rs"),
+    );
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "crates/rayu-harness/src/lookup.rs",
+      line: 42,
+    });
+
+    rerender(
+      <QueryClientProvider client={createQueryClient()}>
+        <WorkTrace
+          workedDuration="3s"
+          isLive={false}
+          notes={["Checking lookup hot path."]}
+          groups={[]}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("work-trace").getAttribute("data-depth")).toBe("0");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Worked for 3s",
+    );
+
+    delete window.acquireVsCodeApi;
+  });
+
+  it("streams real model reasoning into WorkTrace while suppressing placeholders and raw tool parameters", () => {
+    const tracker = createHarnessStreamTracker();
+
+    // Synthetic cloud placeholder is filtered out
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "reasoning_delta", text: "Reasoning via Rayu Cloud..." },
+        tracker,
+      ),
+    ).toEqual([]);
+
+    // Real model reasoning emits reasoning-delta
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "reasoning_delta",
+          text: "I should check the composer model sync before editing.",
+        },
+        tracker,
+      ),
+    ).toEqual([
+      {
+        type: "reasoning-delta",
+        delta: "I should check the composer model sync before editing.",
+      },
+    ]);
+
+    // Raw shell flags / tool parameters are summarized into clean human-readable labels
+    mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_input_delta",
+        call_id: "c_grep",
+        delta: JSON.stringify({
+          command:
+            'grep -rn "Explain the active editor selection" --include="*" -l . 2>/dev/null | head -50',
+        }),
+      },
+      tracker,
+    );
+    const doneEvents = mapHarnessFrameToLiveEvents(
+      { ev: "tool_done", call_id: "c_grep", name: "bash", output: "matched.ts" },
+      tracker,
+    );
+    expect(doneEvents[1]).toMatchObject({
+      type: "step",
+      step: {
+        kind: "command",
+        displayCommand: "Searched codebase",
+        isMono: false,
+      },
+    });
+
+    // WorkTrace renders the reasoning block cleanly and ToolStepCard never shows raw JSON payload
+    renderWithQuery(
+      <div>
+        <WorkTrace
+          workedDuration="2s"
+          isLive
+          notes={[]}
+          groups={[]}
+          timeline={[
+            {
+              type: "reasoning",
+              id: "r1",
+              text: "I should check the composer model sync before editing.",
+            },
+          ]}
+        />
+        <ToolStepCard
+          defaultExpanded
+          step={{
+            id: "no_payload",
+            toolName: "read_file",
+            intent: "Read SessionComposer.tsx",
+            payloadJson: '{"secret_param":"should_never_render"}',
+            output: "ok",
+          }}
+        />
+      </div>,
+    );
+
+    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+      "I should check the composer model sync before editing.",
+    );
+    expect(screen.queryByText(/Payload/i)).toBeNull();
+    expect(screen.queryByText(/should_never_render/)).toBeNull();
   });
 });

@@ -283,13 +283,15 @@ export function TopBar() {
   const activeRoute = useAppStore((s) => s.activeRoute);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle);
+  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const inspectorOpen = useAppStore((s) => s.inspectorOpen);
   const rightMode = useAppStore((s) => s.rightMode);
   const navHistory = useAppStore((s) => s.navHistory);
   const navHistoryIndex = useAppStore((s) => s.navHistoryIndex);
-  const setActiveRoute = useAppStore((s) => s.setActiveRoute);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
+  const requestComposerFocus = useAppStore((s) => s.requestComposerFocus);
   const goBack = useAppStore((s) => s.goBack);
   const goForward = useAppStore((s) => s.goForward);
 
@@ -390,8 +392,8 @@ export function TopBar() {
                 type="button"
                 aria-label="New chat"
                 onClick={() => {
-                  setActiveSession(null);
-                  setActiveRoute("home");
+                  openNewChatDraft({ workingDir: activeProjectPath });
+                  requestComposerFocus();
                 }}
                 className="grid size-7 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
               >
@@ -425,8 +427,8 @@ export function TopBar() {
         <DropdownMenuContent align="start" className="w-52">
           <DropdownMenuItem
             onClick={() => {
-              setActiveSession(null);
-              setActiveRoute("home");
+              openNewChatDraft({ workingDir: activeProjectPath });
+              requestComposerFocus();
             }}
           >
             <Plus className="size-3.5" />

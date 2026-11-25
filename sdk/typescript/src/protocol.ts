@@ -155,6 +155,61 @@ export interface SessionInfo {
   last_active_at_ms?: number;
   archived?: boolean;
   archived_at_ms?: number;
+  /** Origin coding agent (e.g. "rayu", "claude_code", "claude_desktop", "codex", "codex_desktop", "cursor", "opencode", "pi"). */
+  source?:
+    | "rayu"
+    | "claude_code"
+    | "claude_desktop"
+    | "codex"
+    | "codex_desktop"
+    | "cursor"
+    | "opencode"
+    | "pi"
+    | string;
+  /** Session identifier in the source external coding agent. */
+  external_session_id?: string;
+  /** Filesystem path to the external agent's transcript or metadata record. */
+  external_path?: string;
+  /** Project/workspace name reported by the external agent (e.g. Claude Desktop or Codex Desktop). */
+  external_project_name?: string;
+  /** Whether this external session has been materialized into Rayu's local store. */
+  imported?: boolean;
+  /** Whether the external transcript was modified after the imported Rayu snapshot. */
+  sync_stale?: boolean;
+}
+
+/** A project discovered in an external coding agent (e.g. Claude Desktop or Codex Desktop). */
+export interface ExternalProjectInfo {
+  id: string;
+  source: string;
+  name: string;
+  working_dir?: string | null;
+  session_count: number;
+  updated_at_ms?: number;
+  sessions: SessionInfo[];
+}
+
+/** One external session selected for import or re-sync. */
+export interface ImportExternalSessionItem {
+  source: string;
+  external_session_id: string;
+  external_path?: string;
+  working_dir?: string;
+}
+
+/** One external session that could not be imported or resynced cleanly. */
+export interface ImportSkipInfo {
+  external_session_id: string;
+  source: string;
+  reason: "conflict" | "not_found" | "error" | string;
+  message: string;
+  existing_session_id?: string | null;
+}
+
+/** Structured result of `import_external_sessions`. */
+export interface ImportExternalSessionsResult {
+  sessions: SessionInfo[];
+  skipped: ImportSkipInfo[];
 }
 
 /** Tracked turns with a persisted response, separate from historical picker selections. */
@@ -369,7 +424,20 @@ export type ApiRequest =
       supports_user_response?: boolean;
       supports_permissions?: boolean;
     }
-  | { req: "list_sessions"; include_archived?: boolean; limit?: number }
+  | {
+      req: "list_sessions";
+      include_archived?: boolean;
+      limit?: number;
+      include_external?: boolean;
+      sources?: string[];
+    }
+  | { req: "list_external_projects"; source?: string }
+  | {
+      req: "import_external_sessions";
+      items: ImportExternalSessionItem[];
+      force_resync?: boolean;
+      fork_on_conflict?: boolean;
+    }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
   | { req: "set_retention_policy"; archive_after_days?: number }
@@ -514,6 +582,12 @@ export type ApiEvent =
   | { ev: "runtime_command_result"; session_id: string; command: RuntimeCommand; data: unknown; message: string }
   | { ev: "error"; code: ErrorCode; message: string }
   | { ev: "sessions"; sessions: SessionInfo[] }
+  | { ev: "external_projects"; projects: ExternalProjectInfo[] }
+  | {
+      ev: "external_sessions_imported";
+      sessions: SessionInfo[];
+      skipped: ImportSkipInfo[];
+    }
   | { ev: "attached"; session: SessionInfo }
   | { ev: "session_forked"; session: SessionInfo }
   | { ev: "history"; session_id: string; messages: HistoryMessage[]; images?: RenderedImage[] }

@@ -130,18 +130,43 @@ const IMAGE_BASE64_BYTE_LIMIT: usize = 10 * 1024 * 1024;
 /// Target base64 size we re-encode oversized images down to. Kept a little
 /// under the hard limit so we always land safely inside the cap.
 const IMAGE_BASE64_BYTE_TARGET: usize = 9 * 1024 * 1024;
+/// Combined base64 byte limit across all inline images in a single request.
+/// Hosted gateways and proxies commonly reject HTTP bodies past ~8-10 MB with
+/// HTTP 413 even when every individual image is under `IMAGE_BASE64_BYTE_LIMIT`
+/// (e.g. reading 6 reference images in parallel).
+const REQUEST_IMAGE_BASE64_BYTE_LIMIT: usize = 6 * 1024 * 1024;
+/// Combined base64 byte target when clamping a multi-image request so JSON
+/// framing, system prompt, tools, and transcript still fit safely under 413.
+const REQUEST_IMAGE_BASE64_BYTE_TARGET: usize = 5 * 1024 * 1024;
+/// Floor for per-image JPEG re-encoding target during multi-image clamping.
+const REQUEST_IMAGE_MIN_PER_IMAGE_TARGET: usize = 64 * 1024;
 
 /// Inspect `messages` and, if any `ContentBlock::Image` exceeds the per-image
-/// edge limit implied by the total image count, or the per-image base64 byte
-/// cap, return a clamped clone of the messages. Returns `None` when no
-/// downscaling is required so the common path avoids cloning the (potentially
-/// large) message vector.
+/// edge limit implied by the total image count, the per-image base64 byte cap,
+/// or the combined request-wide base64 budget, return a clamped clone of the
+/// messages. Returns `None` when no downscaling is required so the common path
+/// avoids cloning the (potentially large) message vector.
 pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>> {
-    let image_count = messages
-        .iter()
-        .flat_map(|m| m.content.iter())
-        .filter(|b| matches!(b, ContentBlock::Image { .. }))
-        .count();
+    clamp_outbound_images_with_request_budget(
+        messages,
+        REQUEST_IMAGE_BASE64_BYTE_LIMIT,
+        REQUEST_IMAGE_BASE64_BYTE_TARGET,
+    )
+}
+
+fn clamp_outbound_images_with_request_budget(
+    messages: &[Message],
+    request_byte_limit: usize,
+    request_byte_target: usize,
+) -> Option<Vec<Message>> {
+    let mut image_count = 0usize;
+    let mut total_b64_bytes = 0usize;
+    for b in messages.iter().flat_map(|m| m.content.iter()) {
+        if let ContentBlock::Image { data, .. } = b {
+            image_count += 1;
+            total_b64_bytes = total_b64_bytes.saturating_add(data.len());
+        }
+    }
     if image_count == 0 {
         return None;
     }
@@ -155,19 +180,21 @@ pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>
     // Cheap pre-scan: the base64 byte check is just a string length, the
     // dimension probe is header-only, and the media-type sniff only reads a
     // handful of magic bytes. Only do the expensive decode/clone when at least
-    // one image actually exceeds a limit or carries a mismatched media type.
-    let needs_change = messages
-        .iter()
-        .flat_map(|m| m.content.iter())
-        .filter_map(|b| match b {
-            ContentBlock::Image { media_type, data } => Some((media_type, data)),
-            _ => None,
-        })
-        .any(|(media_type, data)| {
-            data.len() > IMAGE_BASE64_BYTE_LIMIT
-                || image_exceeds_edge(data, max_edge)
-                || format_needs_fix(media_type, data)
-        });
+    // one image actually exceeds a limit, carries a mismatched media type, or
+    // the combined image payload exceeds the request-wide budget.
+    let needs_change = total_b64_bytes > request_byte_limit
+        || messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Image { media_type, data } => Some((media_type, data)),
+                _ => None,
+            })
+            .any(|(media_type, data)| {
+                data.len() > IMAGE_BASE64_BYTE_LIMIT
+                    || image_exceeds_edge(data, max_edge)
+                    || format_needs_fix(media_type, data)
+            });
     if !needs_change {
         return None;
     }
@@ -207,7 +234,67 @@ pub(crate) fn clamp_outbound_images(messages: &[Message]) -> Option<Vec<Message>
         }
     }
 
+    if clamp_total_request_image_bytes(&mut clamped, request_byte_limit, request_byte_target) {
+        changed = true;
+    }
+
     changed.then_some(clamped)
+}
+
+/// Enforce a combined base64 byte budget across all inline images in a single
+/// outbound request by JPEG-reencoding/downscaling the largest images first.
+fn clamp_total_request_image_bytes(
+    messages: &mut [Message],
+    request_byte_limit: usize,
+    request_byte_target: usize,
+) -> bool {
+    let mut entries: Vec<(usize, usize, usize)> = Vec::new();
+    let mut total_bytes = 0usize;
+    for (mi, msg) in messages.iter().enumerate() {
+        for (bi, block) in msg.content.iter().enumerate() {
+            if let ContentBlock::Image { data, .. } = block {
+                entries.push((mi, bi, data.len()));
+                total_bytes = total_bytes.saturating_add(data.len());
+            }
+        }
+    }
+    if entries.is_empty() || total_bytes <= request_byte_limit {
+        return false;
+    }
+
+    // Shrink the largest images first so small icons/thumbnails remain crisp.
+    entries.sort_by(|a, b| b.2.cmp(&a.2));
+    let per_image_target = (request_byte_target / entries.len()).max(REQUEST_IMAGE_MIN_PER_IMAGE_TARGET);
+    let mut changed = false;
+
+    for (mi, bi, original_len) in entries {
+        if total_bytes <= request_byte_target {
+            break;
+        }
+        if original_len <= per_image_target {
+            continue;
+        }
+        if let ContentBlock::Image { media_type, data } = &mut messages[mi].content[bi] {
+            let Some(bytes) = decode_b64(data) else {
+                continue;
+            };
+            let Ok(img) = image::load_from_memory(&bytes) else {
+                continue;
+            };
+            if let Some(encoded) = encode_within_byte_budget(&img, per_image_target)
+                && encoded.len() < original_len
+            {
+                total_bytes = total_bytes
+                    .saturating_sub(original_len)
+                    .saturating_add(encoded.len());
+                *media_type = "image/jpeg".to_string();
+                *data = encoded;
+                changed = true;
+            }
+        }
+    }
+
+    changed
 }
 
 /// True when the block cannot go on the wire as-is: the payload is not valid
@@ -825,5 +912,68 @@ mod tests {
             &out[0].content[0],
             ContentBlock::Text { text, .. } if text.starts_with("[Image omitted: image/png")
         ));
+    }
+
+    #[test]
+    fn multi_image_request_clamps_combined_bytes_under_request_budget() {
+        // 6 noisy PNGs that each stay well under the per-image 10 MB cap,
+        // yet together exceed a tight request-level byte budget.
+        let mut content = Vec::new();
+        for seed in 0..6u32 {
+            let mut img = image::RgbImage::new(512, 512);
+            let mut state = 0x1234_5678u32.wrapping_add(seed.wrapping_mul(97_531));
+            for pixel in img.pixels_mut() {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let r = (state >> 24) as u8;
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let g = (state >> 24) as u8;
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                let b = (state >> 24) as u8;
+                *pixel = image::Rgb([r, g, b]);
+            }
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(img)
+                .write_to(&mut png, image::ImageFormat::Png)
+                .expect("encode png");
+            let b64 = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+            content.push(ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: b64,
+            });
+        }
+
+        let messages = vec![Message {
+            role: Role::User,
+            content,
+            timestamp: None,
+            tool_duration_ms: None,
+        }];
+        let before_total: usize = messages[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Image { data, .. } => Some(data.len()),
+                _ => None,
+            })
+            .sum();
+        assert!(before_total > 1_200_000, "test fixture should be >1.2MB base64");
+
+        let clamped =
+            clamp_outbound_images_with_request_budget(&messages, 1_000_000, 800_000)
+                .expect("combined multi-image payload must be clamped");
+        let remaining_images: Vec<&String> = clamped[0]
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Image { data, .. } => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(remaining_images.len(), 6, "all 6 images should remain visible");
+        let after_total: usize = remaining_images.iter().map(|d| d.len()).sum();
+        assert!(
+            after_total <= 800_000,
+            "combined base64 {after_total} should fit under target 800_000"
+        );
     }
 }

@@ -12,7 +12,12 @@ import {
   SettingsSkeleton,
   SwarmSkeleton,
 } from "@/components/ui";
-import { ChatWorkspaceView } from "@/features/chat";
+import {
+  ChatWorkspaceView,
+  LiveTraceController,
+  chatHistoryQueryKey,
+  type ChatTurnView,
+} from "@/features/chat";
 import {
   HomePage,
   SessionComposer,
@@ -91,6 +96,7 @@ export function App() {
   const isStreamActive = useAppStore((s) => s.isStreamActive);
 
   const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
   const setAccountStatus = useAppStore((s) => s.setAccountStatus);
   const setAuthLoaded = useAppStore((s) => s.setAuthLoaded);
@@ -155,6 +161,9 @@ export function App() {
       if (msg.type === "rayucode.host.init") {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({ queryKey: ["processes"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace", "ledger"],
+        });
         if (msg.accountStatus) {
           queryClient.setQueryData(["settings", "account"], msg.accountStatus);
           queryClient.setQueryData(
@@ -196,12 +205,21 @@ export function App() {
       if (msg.type === "rayucode.workspaces.changed") {
         void queryClient.invalidateQueries({ queryKey: ["composer"] });
         void queryClient.invalidateQueries({ queryKey: ["changes"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace", "ledger"],
+        });
+        return;
+      }
+      if (msg.type === "rayucode.workspaces.ledgerChanged") {
+        queryClient.setQueryData(["workspace", "ledger"], msg.ledger);
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         return;
       }
       if (msg.type === "rayucode.host.command") {
         if (msg.command === "newSession") {
-          setActiveSession(null);
-          setActiveRoute("home");
+          openNewChatDraft({
+            workingDir: useAppStore.getState().activeProjectPath,
+          });
           requestComposerFocus();
         } else if (msg.command === "openBackgroundProcesses") {
           setBackgroundDrawerOpen(true);
@@ -219,33 +237,56 @@ export function App() {
       }
     });
   }, [
+    openNewChatDraft,
     queryClient,
     requestComposerFocus,
     requestSessionSearchFocus,
     setActiveRoute,
-    setActiveSession,
     setBackgroundDrawerOpen,
   ]);
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
-      let targetSessionId = useAppStore.getState().activeSessionId;
-      const modelSpec = payload.modelSpec || payload.modelId || undefined;
+      const storeState = useAppStore.getState();
+      const draft = storeState.activeDraft;
+      let targetSessionId = storeState.activeSessionId;
+      let isNewSession = false;
+      const effectiveWorkingDir =
+        payload.workingDir ??
+        draft?.workingDir ??
+        storeState.activeProjectPath ??
+        undefined;
+      const effectiveModel =
+        payload.modelSpec || payload.modelId || draft?.model || undefined;
+      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+      const effectivePermissionMode =
+        payload.permissionMode ??
+        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined);
 
       if (!targetSessionId) {
         try {
           const created = await callRpc("sessions.create", {
-            workingDir: payload.workingDir,
-            permissionMode: payload.permissionMode,
-            model: modelSpec,
+            workingDir: effectiveWorkingDir,
+            permissionMode: effectivePermissionMode,
+            model: effectiveModel,
           });
           targetSessionId = created.session.sessionId;
+          isNewSession = true;
           setActiveSession(created.session.sessionId, created.session.title);
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["workspace", "ledger"],
+          });
         } catch {
           return;
         }
       }
+
+      const cachedHistory = isNewSession
+        ? []
+        : (queryClient.getQueryData<ChatTurnView[]>(
+            chatHistoryQueryKey(targetSessionId),
+          ) ?? []);
 
       const selectionContext = payload.editorSelection
         ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
@@ -265,6 +306,7 @@ export function App() {
           dataUrl: img.data,
         })),
         createdAtMs: Date.now(),
+        baseHistoryTurnCount: cachedHistory.length,
       });
 
       setIsStreamActive(true);
@@ -272,10 +314,11 @@ export function App() {
         req: "send_message",
         session_id: targetSessionId,
         content: `${payload.prompt}${selectionContext}`,
-        ...(modelSpec ? { model: modelSpec } : {}),
+        ...(effectiveModel ? { model: effectiveModel } : {}),
         ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
-        effort: payload.effort,
+        effort: effectiveEffort,
         images: payload.images,
+        ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
       });
     },
     [enqueueOptimisticTurn, queryClient, setActiveSession, setIsStreamActive],
@@ -331,19 +374,22 @@ export function App() {
 
   if (showAuthGate) {
     return (
-      <div
-        data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
-        className="h-screen w-screen overflow-hidden bg-canvas"
-      >
-        <AuthWelcomeScreen
-          onContinue={() => {
-            setAuthDialogOpen(false);
-            if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
-              setAuthBypassed(true);
-            }
-          }}
-        />
-      </div>
+      <>
+        <LiveTraceController />
+        <div
+          data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
+          className="h-screen w-screen overflow-hidden bg-canvas"
+        >
+          <AuthWelcomeScreen
+            onContinue={() => {
+              setAuthDialogOpen(false);
+              if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
+                setAuthBypassed(true);
+              }
+            }}
+          />
+        </div>
+      </>
     );
   }
 
@@ -457,25 +503,28 @@ export function App() {
   };
 
   return (
-    <AppShell
-      contextSlot={<ContextPanel />}
-      toolsSlot={<ToolsProgressPanel />}
-      artifactsSlot={<ArtifactsPanel />}
-      filesSlot={<FilesSidePanel />}
-      documentSlot={documentSlot}
-      backgroundDockSlot={
-        activeRoute === "workspace" ? undefined : <BackgroundDockBar />
-      }
-      backgroundDrawerSlot={
-        <BackgroundProcessDrawer
-          open={backgroundDrawerOpen}
-          onOpenChange={setBackgroundDrawerOpen}
-          onClose={() => setBackgroundDrawerOpen(false)}
-        />
-      }
-    >
-      {renderRoute()}
-    </AppShell>
+    <>
+      <LiveTraceController />
+      <AppShell
+        contextSlot={<ContextPanel />}
+        toolsSlot={<ToolsProgressPanel />}
+        artifactsSlot={<ArtifactsPanel />}
+        filesSlot={<FilesSidePanel />}
+        documentSlot={documentSlot}
+        backgroundDockSlot={
+          activeRoute === "workspace" ? undefined : <BackgroundDockBar />
+        }
+        backgroundDrawerSlot={
+          <BackgroundProcessDrawer
+            open={backgroundDrawerOpen}
+            onOpenChange={setBackgroundDrawerOpen}
+            onClose={() => setBackgroundDrawerOpen(false)}
+          />
+        }
+      >
+        {renderRoute()}
+      </AppShell>
+    </>
   );
 }
 

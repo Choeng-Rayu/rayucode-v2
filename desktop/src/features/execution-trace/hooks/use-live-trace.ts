@@ -42,6 +42,25 @@ export function applyTraceEvents(
 
   for (const event of events) {
     switch (event.type) {
+      case "reasoning-delta": {
+        if (!event.delta) break
+        const timeline = next.timeline ?? []
+        const last = timeline[timeline.length - 1]
+        if (last && last.type === "reasoning") {
+          timeline[timeline.length - 1] = {
+            ...last,
+            text: `${last.text}${event.delta}`,
+          }
+        } else {
+          timeline.push({
+            type: "reasoning",
+            id: `reasoning_${timeline.length + 1}`,
+            text: event.delta,
+          })
+        }
+        next.timeline = timeline
+        break
+      }
       case "note": {
         next.notes.push(event.text)
         next.timeline?.push({
@@ -167,6 +186,7 @@ export interface StartLiveTurnInput {
   userRefFiles?: string
   initialNote?: string
   startedAtMs?: number
+  baseHistoryTurnCount?: number
 }
 
 export interface UseLiveTraceResult {

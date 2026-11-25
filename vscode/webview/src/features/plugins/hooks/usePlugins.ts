@@ -963,26 +963,7 @@ export function workspaceIntegrationsQueryOptions() {
   return queryOptions({
     queryKey: PLUGINS_KEYS.workspace(),
     queryFn: async (): Promise<WorkspaceIntegrationsView> => {
-      const res = await callRpc("plugins.workspace.status");
-      return {
-        gmail: {
-          ...res.gmail,
-          actionCount: res.gmail.actionCount || 15,
-        },
-        calendar: {
-          ...res.calendar,
-          actionCount: res.calendar.actionCount || 7,
-        },
-        browser: {
-          ...res.browser,
-          detectedBrowsers:
-            res.browser.detectedBrowsers.length > 1
-              ? res.browser.detectedBrowsers
-              : ["Chrome", "Chromium", "Firefox", "Edge", "Brave"],
-          actionCount: res.browser.actionCount || 17,
-        },
-        companion: res.companion,
-      };
+      return callRpc("plugins.workspace.status");
     },
   });
 }
@@ -1073,6 +1054,11 @@ export function useMcpActions() {
         shared: params.shared,
         timeoutSecs: params.timeoutSecs,
       });
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? `Failed to save MCP server "${params.id}".`,
+        );
+      }
       const tpl = findCatalogTemplate(params.brandId ?? params.id);
       const server: McpServerView = res.server ?? {
         id: params.id,
@@ -1130,7 +1116,12 @@ export function useMcpActions() {
       id: string;
       scope?: "global" | "workspace";
     }) => {
-      await callRpc("plugins.mcp.remove", params);
+      const res = await callRpc("plugins.mcp.remove", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? `Failed to remove MCP server "${params.id}".`,
+        );
+      }
       return params.id;
     },
     onSuccess: (removedId) => {
@@ -1160,12 +1151,22 @@ export function useMcpActions() {
       id: string;
       action: "login" | "logout";
     }) => {
-      if (params.action === "login") {
-        await callRpc("plugins.mcp.login", { id: params.id });
-      } else {
-        await callRpc("plugins.mcp.logout", { id: params.id });
+      const actionRes =
+        params.action === "login"
+          ? await callRpc("plugins.mcp.login", { id: params.id })
+          : await callRpc("plugins.mcp.logout", { id: params.id });
+      if (!actionRes.ok) {
+        throw new Error(
+          actionRes.message ??
+            `MCP OAuth ${params.action} is not supported here; run \`rayu mcp ${params.action}\` in the terminal.`,
+        );
       }
       const res = await callRpc("plugins.mcp.oauth", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? `MCP OAuth ${params.action} failed for "${params.id}".`,
+        );
+      }
       return { id: params.id, authenticated: res.authenticated };
     },
     onSuccess: ({ id, authenticated }) => {
@@ -1248,7 +1249,12 @@ export function useSkillActions() {
 
   const installSkillMutation = useMutation({
     mutationFn: async (skill: SkillView) => {
-      await callRpc("plugins.skills.install", { name: skill.name });
+      const res = await callRpc("plugins.skills.install", { name: skill.name });
+      if (!res.ok) {
+        throw new Error(
+          `Installing endorsed skill "${skill.name}" via runtime_command is not supported yet.`,
+        );
+      }
       return skill;
     },
     onSuccess: (installedSkill) => {
@@ -1294,7 +1300,14 @@ export function useSkillActions() {
       name: string;
       args?: string;
     }) => {
-      return callRpc("plugins.skills.run", params);
+      const res = await callRpc("plugins.skills.run", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ??
+            `Running "/${params.name}" here is not supported yet; invoke it directly in chat.`,
+        );
+      }
+      return res;
     },
   });
 
@@ -1381,7 +1394,12 @@ export function useMemoryActions() {
 
   const forgetFactMutation = useMutation({
     mutationFn: async (id: string) => {
-      await callRpc("plugins.memory.forget", { id });
+      const res = await callRpc("plugins.memory.forget", { id });
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? "Deleting memory facts is not supported yet.",
+        );
+      }
       return id;
     },
     onSuccess: (id) => {
@@ -1402,7 +1420,12 @@ export function useMemoryActions() {
 
   const tagFactMutation = useMutation({
     mutationFn: async (params: { id: string; tags: string[] }) => {
-      await callRpc("plugins.memory.tag", params);
+      const res = await callRpc("plugins.memory.tag", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? "Tagging memory facts is not supported yet.",
+        );
+      }
       return params;
     },
     onSuccess: ({ id, tags }) => {
@@ -1427,7 +1450,12 @@ export function useMemoryActions() {
       targetId: string;
       relation?: string;
     }) => {
-      await callRpc("plugins.memory.link", params);
+      const res = await callRpc("plugins.memory.link", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ?? "Linking memory facts is not supported yet.",
+        );
+      }
       return params;
     },
     onSuccess: ({ sourceId, targetId }) => {
@@ -1477,6 +1505,12 @@ export function useTriggerWorkspaceIntegration() {
       payload?: Record<string, unknown>;
     }) => {
       const res = await callRpc("plugins.workspace.trigger", params);
+      if (!res.ok) {
+        throw new Error(
+          res.message ??
+            `Workspace action '${params.integration}:${params.action}' is not supported yet.`,
+        );
+      }
       return { ...params, ...res };
     },
     onSuccess: ({ integration, action }) => {
@@ -1484,38 +1518,12 @@ export function useTriggerWorkspaceIntegration() {
         PLUGINS_KEYS.workspace(),
         (prev) => {
           if (!prev) return prev;
-          if (integration === "gmail" && action === "connect") {
-            return {
-              ...prev,
-              gmail: {
-                ...prev.gmail,
-                connected: true,
-                account: "dev@rayucode.com",
-              },
-              calendar: {
-                ...prev.calendar,
-                connected: true,
-                calendarCount: 3,
-              },
-            };
-          }
-          if (integration === "calendar" && action === "connect") {
-            return {
-              ...prev,
-              calendar: {
-                ...prev.calendar,
-                connected: true,
-                calendarCount: 3,
-              },
-            };
-          }
           if (integration === "browser" && action === "handoff") {
             return {
               ...prev,
               browser: {
                 ...prev.browser,
                 handoffActive: !prev.browser.handoffActive,
-                activeUrl: "http://localhost:5173",
               },
             };
           }
@@ -1531,6 +1539,7 @@ export function useTriggerWorkspaceIntegration() {
           return prev;
         },
       );
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.workspace() });
     },
   });
 }

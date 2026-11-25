@@ -257,6 +257,10 @@ impl SessionPicker {
     pub fn handle_overlay_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
         let at = std::time::Instant::now();
         let before = self.latency_selection_id();
+        if self.handle_source_filter_mouse(mouse) {
+            self.latency_input_complete(before, at);
+            return;
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 self.handle_mouse_scroll(mouse.column, mouse.row, mouse.kind);

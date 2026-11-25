@@ -40,6 +40,9 @@ import {
   type FileDiffView,
   type FileReviewDecision,
   type GatewayStatusView,
+  type HistoryImageView,
+  type HistoryMessageView,
+  type HistoryResponseStatsView,
   type HookEntryView,
   type HookEventId,
   type HostToWebviewMessage,
@@ -79,6 +82,7 @@ import {
   type VoiceStatusView,
   type WorkspaceFolderView,
   type WorkspaceIntegrationsView,
+  type WorkspaceLedgerView,
 } from "../../shared/vscodeProtocol.js";
 import type {
   BackgroundProcessGroup,
@@ -490,6 +494,68 @@ export function normalizeHarnessRequestFrame(
   return normalized;
 }
 
+function mapRawResponseStats(raw: unknown): HistoryResponseStatsView | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const durationSecs = typeof r.duration_secs === "number" ? r.duration_secs : undefined;
+  const inputTokens = typeof r.input_tokens === "number" ? r.input_tokens : undefined;
+  const outputTokens = typeof r.output_tokens === "number" ? r.output_tokens : undefined;
+  const cacheReadTokens = typeof r.cache_read_tokens === "number" ? r.cache_read_tokens : undefined;
+  const cacheCreationTokens =
+    typeof r.cache_creation_tokens === "number" ? r.cache_creation_tokens : undefined;
+  const rayuCredits = typeof r.rayu_credits === "number" ? r.rayu_credits : undefined;
+  if (
+    durationSecs === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheReadTokens === undefined &&
+    cacheCreationTokens === undefined &&
+    rayuCredits === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(durationSecs !== undefined ? { durationSecs } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(rayuCredits !== undefined ? { rayuCredits } : {}),
+  };
+}
+
+export function mapRawHistoryMessage(
+  raw: Record<string, unknown>,
+  opts: { id: string; model?: string; images?: HistoryImageView[] },
+): HistoryMessageView {
+  const toolObj =
+    raw.tool && typeof raw.tool === "object" && !Array.isArray(raw.tool)
+      ? (raw.tool as Record<string, unknown>)
+      : null;
+  const responseStats = mapRawResponseStats(raw.response_stats);
+  return {
+    id: opts.id,
+    role: typeof raw.role === "string" ? raw.role : "assistant",
+    content: typeof raw.content === "string" ? raw.content : "",
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(typeof toolObj?.id === "string" ? { toolId: toolObj.id } : {}),
+    ...(typeof toolObj?.name === "string" ? { toolName: toolObj.name } : {}),
+    ...(toolObj && toolObj.input !== undefined ? { toolInput: toolObj.input } : {}),
+    ...(typeof raw.origin === "string" ? { origin: raw.origin } : {}),
+    ...(typeof raw.visibility === "string" ? { visibility: raw.visibility } : {}),
+    ...(raw.attempt_id === null || typeof raw.attempt_id === "string"
+      ? { attemptId: raw.attempt_id }
+      : {}),
+    ...(typeof raw.attempt_reason === "string" ? { attemptReason: raw.attempt_reason } : {}),
+    ...(typeof raw.attempt_status === "string" ? { attemptStatus: raw.attempt_status } : {}),
+    ...(raw.stop_reason === null || typeof raw.stop_reason === "string"
+      ? { stopReason: raw.stop_reason }
+      : {}),
+    ...(responseStats ? { responseStats } : {}),
+    ...(opts.images && opts.images.length > 0 ? { images: opts.images } : {}),
+  };
+}
+
 function classifyProcessGroup(toolName: string): BackgroundProcessGroup {
   const lower = toolName.toLowerCase();
   if (lower.includes("swarm") || lower.includes("agent") || lower.includes("worker")) {
@@ -846,10 +912,23 @@ export interface FeatureRouterHub {
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
   getActivePermissionMode(): PermissionModeId;
-  getClient(): Promise<RayucodeClient>;
-  listSessions(includeArchived?: boolean): Promise<{
+  getClient(sessionId?: string): Promise<RayucodeClient>;
+  listSessions(
+    includeArchived?: boolean,
+    options?: { includeExternal?: boolean; sources?: string[] },
+  ): Promise<{
     sessions: SessionSummaryView[];
     activeSessionId?: string;
+  }>;
+  listExternalProjects?(
+    source?: string,
+  ): Promise<{ projects: import("../../shared/vscodeProtocol.js").ExternalProjectView[] }>;
+  importExternalSessions?(
+    items: import("../../shared/vscodeProtocol.js").ImportExternalSessionItemView[],
+    options?: { forceResync?: boolean; forkOnConflict?: boolean },
+  ): Promise<{
+    sessions: SessionSummaryView[];
+    skipped: import("../../shared/vscodeProtocol.js").ImportSkipView[];
   }>;
   createSession(options?: {
     workingDir?: string;
@@ -918,6 +997,33 @@ export interface FeatureRouterHub {
     sessionId: string,
     snapshot: FileChangesSnapshotView,
   ): void;
+  getWorkspaceLedger?(): WorkspaceLedgerView;
+  loadWorkspaceLedger?(): Promise<WorkspaceLedgerView>;
+  ensureWorkspace?(
+    rawPath: string,
+    options?: { name?: string; unhide?: boolean },
+  ): Promise<WorkspaceLedgerView>;
+  removeWorkspace?(idOrPath: string): Promise<WorkspaceLedgerView>;
+  setWorkspaceCollapsed?(
+    workspaceId: string,
+    collapsed: boolean,
+  ): Promise<WorkspaceLedgerView>;
+  attachSessionToWorkspace?(
+    workspaceIdOrPath: string,
+    sessionId: string,
+  ): Promise<WorkspaceLedgerView>;
+  importProjectGroup?(
+    rawPath: string,
+    options: { name?: string; sessionIds: readonly string[] },
+  ): Promise<WorkspaceLedgerView>;
+  setSessionPinnedLedger?(
+    sessionId: string,
+    pinned: boolean,
+  ): Promise<WorkspaceLedgerView>;
+  setSessionArchivedLedger?(
+    sessionId: string,
+    archived: boolean,
+  ): Promise<WorkspaceLedgerView>;
 }
 
 export interface FeatureRouterAuthManager {
@@ -1639,6 +1745,103 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "workspace.listFolders": async () => ({
       folders: await deps.getWorkspaceFolders(),
     }),
+    "workspace.ledger.get": async () => {
+      if (typeof deps.sessionHub.loadWorkspaceLedger === "function") {
+        return deps.sessionHub.loadWorkspaceLedger();
+      }
+      if (typeof deps.sessionHub.getWorkspaceLedger === "function") {
+        return deps.sessionHub.getWorkspaceLedger();
+      }
+      const folders = await deps.getWorkspaceFolders();
+      const now = Date.now();
+      return {
+        version: 1 as const,
+        updatedAt: now,
+        workspaces: folders.map((f, idx) => ({
+          id: f.id ?? `ws_${idx}_${f.name}`,
+          name: f.name,
+          path: f.path,
+          canonicalPath: f.canonicalPath ?? f.path,
+          sessionIds: [],
+          createdAt: now,
+          updatedAt: now,
+          lastOpenedAt: now,
+          branch: f.branch,
+          icon: f.icon,
+          isPrimary: f.isPrimary,
+        })),
+        pinnedSessionIds: [],
+        archivedSessionIds: [],
+        collapsedWorkspaceIds: [],
+        manualWorkspaceOrder: [],
+        openFolderPaths: folders.map((f) => f.path),
+      };
+    },
+    "workspace.ledger.ensure": async (params) => {
+      if (typeof deps.sessionHub.ensureWorkspace === "function") {
+        return deps.sessionHub.ensureWorkspace(params.path, {
+          name: params.name,
+          unhide: params.unhide,
+        });
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.remove": async (params) => {
+      if (typeof deps.sessionHub.removeWorkspace === "function") {
+        return deps.sessionHub.removeWorkspace(params.idOrPath);
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setPinned": async (params) => {
+      if (typeof deps.sessionHub.setSessionPinnedLedger === "function") {
+        return deps.sessionHub.setSessionPinnedLedger(
+          params.sessionId,
+          params.pinned,
+        );
+      }
+      await deps.sessionHub.setSessionPinned(params.sessionId, params.pinned);
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setArchived": async (params) => {
+      if (typeof deps.sessionHub.setSessionArchivedLedger === "function") {
+        return deps.sessionHub.setSessionArchivedLedger(
+          params.sessionId,
+          params.archived,
+        );
+      }
+      await deps.sessionHub.setSessionArchived(
+        params.sessionId,
+        params.archived,
+      );
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setCollapsed": async (params) => {
+      if (typeof deps.sessionHub.setWorkspaceCollapsed === "function") {
+        return deps.sessionHub.setWorkspaceCollapsed(
+          params.workspaceId,
+          params.collapsed,
+        );
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.attachSession": async (params) => {
+      if (typeof deps.sessionHub.attachSessionToWorkspace === "function") {
+        return deps.sessionHub.attachSessionToWorkspace(
+          params.workspaceIdOrPath,
+          params.sessionId,
+        );
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.importProjectGroup": async (params) => {
+      if (typeof deps.sessionHub.importProjectGroup === "function") {
+        return deps.sessionHub.importProjectGroup(params.path, {
+          name: params.name,
+          sessionIds: params.sessionIds,
+        });
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
     "workspace.findFiles": async (params) => {
       const limit = params.limit ?? 50;
       const sid = params.sessionId ?? deps.sessionHub.getActiveSessionId();
@@ -1737,13 +1940,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     "sessions.list": async (params) => {
       try {
-        return await deps.sessionHub.listSessions(params?.includeArchived ?? false);
+        return await deps.sessionHub.listSessions(
+          params?.includeArchived ?? false,
+          {
+            includeExternal: params?.includeExternal ?? true,
+            sources: params?.sources,
+          },
+        );
       } catch {
         return {
           sessions: [],
           activeSessionId: deps.sessionHub.getActiveSessionId(),
         };
       }
+    },
+    "sessions.listExternalProjects": async (params) => {
+      try {
+        if (typeof deps.sessionHub.listExternalProjects === "function") {
+          return await deps.sessionHub.listExternalProjects(params?.source);
+        }
+        return { projects: [] };
+      } catch {
+        return { projects: [] };
+      }
+    },
+    "sessions.importExternal": async (params) => {
+      if (typeof deps.sessionHub.importExternalSessions === "function") {
+        return await deps.sessionHub.importExternalSessions(params.items, {
+          forceResync: params.forceResync,
+          forkOnConflict: params.forkOnConflict,
+        });
+      }
+      return { sessions: [], skipped: [] };
     },
     "sessions.search": async (params) => {
       const queryWords = params.query.trim().split(/\s+/).filter(Boolean);
@@ -1838,7 +2066,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "sessions.setPermissionMode": async (params) =>
       deps.sessionHub.setPermissionMode(params.sessionId, params.mode),
     "sessions.rewind": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       let index = 0;
       if (
         typeof params.messageIndex === "number" &&
@@ -1864,12 +2092,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true };
     },
     "sessions.rewindUndo": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       await client.rewindUndo(params.sessionId);
       return { ok: true };
     },
     "sessions.softInterrupt": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       const interruptId =
         params.clientId?.trim() ||
         `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -1882,7 +2110,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, interruptId };
     },
     "sessions.cancelSoftInterrupts": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       if (params.interruptId) {
         const supportsIds =
           typeof client.supports === "function"
@@ -1906,7 +2134,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true };
     },
     "sessions.respondQuestion": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       const response = buildQuestionResponseWire(params.answers, params.notes);
       const reply = await client.request({
         req: "question_response",
@@ -3034,21 +3262,176 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const listed = await handlers["plugins.mcp.list"](undefined);
       return { ok: true, servers: listed.servers };
     },
-    "plugins.mcp.add": async () => ({
-      ok: false,
-      message:
-        "Adding MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
-    "plugins.mcp.edit": async () => ({
-      ok: false,
-      message:
-        "Editing MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
-    "plugins.mcp.remove": async () => ({
-      ok: false,
-      message:
-        "Removing MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
+    "plugins.mcp.add": async (params) => {
+      const id = params.id.trim();
+      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
+        return {
+          ok: false,
+          message:
+            "MCP server ID must contain only letters, numbers, dots, hyphens, or underscores.",
+        };
+      }
+      if (params.transport === "stdio" && !params.command?.trim()) {
+        return {
+          ok: false,
+          message: "Provide an executable command for stdio MCP servers.",
+        };
+      }
+      if (params.transport !== "stdio" && !params.url?.trim()) {
+        return {
+          ok: false,
+          message: "Provide a remote URL for HTTP/SSE MCP servers.",
+        };
+      }
+
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const targetPath =
+        params.scope === "workspace"
+          ? path.join(workspaceRoot, ".mcp.json")
+          : path.join(rayuHome, "mcp.json");
+
+      let existing: Record<string, unknown> = {};
+      try {
+        if (fs.existsSync(targetPath)) {
+          const parsed = JSON.parse(fs.readFileSync(targetPath, "utf8"));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            existing = parsed as Record<string, unknown>;
+          }
+        }
+      } catch {
+        existing = {};
+      }
+
+      const existingMap =
+        existing.mcpServers &&
+        typeof existing.mcpServers === "object" &&
+        !Array.isArray(existing.mcpServers)
+          ? { ...(existing.mcpServers as Record<string, unknown>) }
+          : {};
+
+      const entry: Record<string, unknown> = {};
+      if (params.transport === "stdio") {
+        entry.command = params.command!.trim();
+        if (params.args && params.args.length > 0) {
+          entry.args = params.args.filter((a) => a.length > 0);
+        }
+      } else {
+        entry.type = params.transport === "sse" ? "sse" : "http";
+        entry.url = params.url!.trim();
+      }
+      if (params.env && Object.keys(params.env).length > 0) {
+        const cleanEnv: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params.env)) {
+          const key = k.trim();
+          if (key && v.trim()) cleanEnv[key] = v.trim();
+        }
+        if (Object.keys(cleanEnv).length > 0) entry.env = cleanEnv;
+      }
+      if (typeof params.shared === "boolean") {
+        entry.shared = params.shared;
+      }
+      if (typeof params.timeoutSecs === "number" && params.timeoutSecs > 0) {
+        entry.timeout_secs = Math.round(params.timeoutSecs);
+      }
+
+      existingMap[id] = entry;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(
+        targetPath,
+        `${JSON.stringify({ ...existing, mcpServers: existingMap }, null, 2)}\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+
+      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
+      const listed = await handlers["plugins.mcp.list"](undefined);
+      const server: McpServerView = listed.servers.find((s) => s.id === id) ?? {
+        id,
+        name: id,
+        status: "cached",
+        enabled: true,
+        transport: params.transport,
+        configLayer: params.scope,
+        configPath: targetPath,
+        shared: params.shared ?? true,
+        command: params.command,
+        args: params.args,
+        url: params.url,
+        timeoutSecs: params.timeoutSecs,
+      };
+      return {
+        ok: true,
+        server,
+        message: `Saved MCP server '${id}' to ${targetPath}.`,
+      };
+    },
+    "plugins.mcp.edit": async (params) =>
+      handlers["plugins.mcp.add"]({
+        ...params,
+        scope: params.scope ?? "global",
+        transport:
+          params.transport ?? (params.url ? "streamable-http" : "stdio"),
+      }),
+    "plugins.mcp.remove": async (params) => {
+      const id = params.id.trim();
+      if (!id) {
+        return { ok: false, message: "MCP server ID is required." };
+      }
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const targets =
+        params.scope === "workspace"
+          ? [path.join(workspaceRoot, ".mcp.json")]
+          : params.scope === "global"
+            ? [path.join(rayuHome, "mcp.json")]
+            : [
+                path.join(workspaceRoot, ".mcp.json"),
+                path.join(rayuHome, "mcp.json"),
+              ];
+
+      let removed = false;
+      for (const filePath of targets) {
+        if (!fs.existsSync(filePath)) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<
+            string,
+            unknown
+          >;
+          if (
+            parsed.mcpServers &&
+            typeof parsed.mcpServers === "object" &&
+            !Array.isArray(parsed.mcpServers) &&
+            id in (parsed.mcpServers as Record<string, unknown>)
+          ) {
+            const nextServers = {
+              ...(parsed.mcpServers as Record<string, unknown>),
+            };
+            delete nextServers[id];
+            fs.writeFileSync(
+              filePath,
+              `${JSON.stringify({ ...parsed, mcpServers: nextServers }, null, 2)}\n`,
+              { encoding: "utf8", mode: 0o600 },
+            );
+            removed = true;
+          }
+        } catch {
+          // ignore malformed file
+        }
+      }
+
+      if (!removed) {
+        return {
+          ok: false,
+          message: `MCP server '${id}' was not found in ~/.rayu/mcp.json or .mcp.json.`,
+        };
+      }
+      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
+      return { ok: true, message: `Removed MCP server '${id}'.` };
+    },
     "plugins.mcp.login": async () => ({
       ok: false,
       message:
@@ -3102,11 +3485,45 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         endorsed: asArray(data.endorsed).map((s) => mapSkill(s, "endorsed")),
       };
     },
-    "plugins.skills.create": async () => {
-      throw new HarnessError(
-        "invalid_request",
-        "Creating skills via runtime_command is not supported yet; add SKILL.md under .agents/skills or ~/.rayu/skills.",
-      );
+    "plugins.skills.create": async (params) => {
+      const slug = params.name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-_]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      if (!slug) {
+        throw new HarnessError(
+          "invalid_request",
+          "Skill name must contain letters or numbers.",
+        );
+      }
+      const scope = params.scope === "global" ? "global" : "project";
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const baseDir =
+        scope === "global"
+          ? path.join(rayuHome, "skills")
+          : path.join(workspaceRoot, ".agents", "skills");
+      const skillDir = path.join(baseDir, slug);
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const body =
+        params.content?.trim() ||
+        `# ${params.name.trim()}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
+      const markdown = `---\nname: ${slug}\ndescription: ${params.description.trim()}\n---\n\n${body}\n`;
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(skillFile, markdown, "utf8");
+      return {
+        ok: true,
+        skill: {
+          name: slug,
+          description: params.description.trim(),
+          path: skillFile,
+          scope,
+          installed: true,
+        },
+      };
     },
     "plugins.skills.install": async () => ({
       ok: false,

@@ -451,6 +451,18 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     try {
       renderWithQuery(<SessionComposer mode="workspace" sessionId="ses_live_1" />);
 
+      // Composer syncs visible model label from live settings.models.get instead of staying on fallback
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("model-effort-trigger").textContent,
+        ).toContain("Claude Future 99 Sonnet");
+      });
+
+      // Desktop-aligned [+] trigger exists and opens the Add menu
+      fireEvent.click(screen.getByTestId("composer-plus-trigger"));
+      expect(screen.getByTestId("composer-add-file-mention")).toBeTruthy();
+      expect(screen.getByTestId("composer-add-slash")).toBeTruthy();
+
       fireEvent.click(screen.getByTestId("model-effort-trigger"));
       fireEvent.click(screen.getByTestId("open-model-list-btn"));
 

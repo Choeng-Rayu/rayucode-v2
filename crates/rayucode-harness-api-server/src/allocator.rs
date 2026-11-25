@@ -59,6 +59,8 @@ pub fn request_is_heavy(request: &serde_json::Value) -> bool {
         request["req"].as_str(),
         Some(
             "list_sessions"
+                | "list_external_projects"
+                | "import_external_sessions"
                 | "attach_session"
                 | "create_session"
                 | "get_history"

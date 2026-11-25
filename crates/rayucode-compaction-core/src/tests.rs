@@ -391,6 +391,37 @@ fn strip_large_images_drops_oldest_until_under_budget() {
     }
 }
 
+#[test]
+fn adaptive_413_strip_halves_payload_even_below_default_budget() {
+    // Total 6_000_000 chars is below PAYLOAD_IMAGE_CHAR_BUDGET (12 MB), yet a
+    // gateway with a smaller cap still returned HTTP 413. Adaptive stripping
+    // must strictly shrink the payload on each pass instead of returning 0.
+    let mut messages = vec![
+        image_msg(1_000_000),
+        image_msg(1_000_000),
+        image_msg(1_000_000),
+        image_msg(1_000_000),
+        image_msg(1_000_000),
+        image_msg(1_000_000),
+    ];
+
+    let mut contents: Vec<&mut Vec<ContentBlock>> =
+        messages.iter_mut().map(|m| &mut m.content).collect();
+    let first = strip_large_images_adaptively_in_contents(&mut contents, PAYLOAD_IMAGE_CHAR_BUDGET);
+    assert_eq!(first, 3, "should drop oldest half when total <= 12MB");
+
+    let second =
+        strip_large_images_adaptively_in_contents(&mut contents, PAYLOAD_IMAGE_CHAR_BUDGET);
+    assert_eq!(second, 2, "second 413 should drop down to 1 image");
+
+    let third = strip_large_images_adaptively_in_contents(&mut contents, PAYLOAD_IMAGE_CHAR_BUDGET);
+    assert_eq!(third, 1, "final 413 should drop the last remaining image");
+
+    let fourth =
+        strip_large_images_adaptively_in_contents(&mut contents, PAYLOAD_IMAGE_CHAR_BUDGET);
+    assert_eq!(fourth, 0, "no images left to strip");
+}
+
 fn tool_image_msg(data_len: usize) -> Message {
     Message {
         role: Role::User,

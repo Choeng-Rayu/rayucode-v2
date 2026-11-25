@@ -62,7 +62,7 @@ impl Agent {
         let mut turn_rayu_credits = rayucode_message_types::RayuCreditsAccumulator::new();
         self.last_turn_rayu_credits = None;
 
-        loop {
+        'turn_loop: loop {
             // Never open a new provider request after a cancel. Several paths
             // `continue` this loop (compaction retry, incomplete/stranded
             // continuation, empty-response recovery, soft-interrupt injection),
@@ -289,7 +289,7 @@ impl Agent {
                                             ));
                                         }
                                         let _ = event_tx.send(self.take_recovery_compaction_event());
-                                        continue;
+                                        continue 'turn_loop;
                                     }
                                     return Err(e);
                                 }

@@ -1,3 +1,7 @@
+import {
+  createOrReuseDraft,
+  type ProvisionalDraftSession,
+} from "@rayu-dev/rayucode-session-core/client"
 import { create } from "zustand"
 
 import type {
@@ -116,6 +120,7 @@ export interface AppStoreState {
   activeRoute: AppRoute
   activeSessionId: string | null
   activeSessionTitle: string | null
+  activeDraft: ProvisionalDraftSession | null
   navHistory: NavHistoryEntry[]
   navHistoryIndex: number
   activeWorkspacePath: string | null
@@ -157,6 +162,14 @@ export interface AppStoreState {
   setActiveRoute: (route: AppRoute) => void
   setActiveSession: (sessionId: string | null, title?: string | null) => void
   setActiveSessionTitle: (title: string | null) => void
+  openNewChatDraft: (target?: {
+    workingDir?: string | null
+    workspaceId?: string | null
+    model?: string
+    reasoningEffort?: string
+    permissionMode?: string
+  }) => ProvisionalDraftSession
+  clearActiveDraft: () => void
   goBack: () => void
   goForward: () => void
   setActiveWorkspacePath: (workspacePath: string | null) => void
@@ -387,6 +400,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   activeRoute: "home",
   activeSessionId: null,
   activeSessionTitle: null,
+  activeDraft: null,
   navHistory: [{ route: "home", sessionId: null, sessionTitle: null }],
   navHistoryIndex: 0,
   activeWorkspacePath: null,
@@ -499,6 +513,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       return {
         activeSessionId,
         activeSessionTitle: resolvedTitle,
+        activeDraft: activeSessionId ? null : state.activeDraft,
         activeRoute: resolvedRoute,
         navHistory: nextHistory,
         navHistoryIndex: nextHistory.length - 1,
@@ -514,6 +529,18 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setActiveSessionTitle: (activeSessionTitle) => {
     set({ activeSessionTitle })
+  },
+
+  openNewChatDraft: (target) => {
+    const draft = createOrReuseDraft(get().activeDraft, target ?? {})
+    set({ activeDraft: draft })
+    get().setActiveSession(null)
+    get().setActiveRoute("home")
+    return draft
+  },
+
+  clearActiveDraft: () => {
+    set({ activeDraft: null })
   },
 
   goBack: () => {

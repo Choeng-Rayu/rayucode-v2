@@ -59,6 +59,7 @@ mod progressive_preview;
 mod render;
 mod saved_placement;
 mod session_view;
+mod source_filter;
 use session_view::highlight_buffer_matches;
 mod transcript_search;
 #[cfg(test)]
@@ -300,6 +301,12 @@ pub struct SessionPicker {
     show_test_sessions: bool,
     /// Current list filter mode
     filter_mode: SessionFilterMode,
+    /// Active coding-agent source filter and interactive popup state
+    source_filter: source_filter::SourceFilterGroup,
+    source_filter_popup_open: bool,
+    source_filter_popup_cursor: usize,
+    last_source_filter_chip_area: Option<Rect>,
+    last_source_filter_popup_area: Option<Rect>,
     /// Search query for filtering sessions
     search_query: String,
     /// Whether we're in search input mode
@@ -412,6 +419,11 @@ impl SessionPicker {
             reserved_panel_area: None,
             show_test_sessions: false,
             filter_mode: SessionFilterMode::All,
+            source_filter: source_filter::SourceFilterGroup::All,
+            source_filter_popup_open: false,
+            source_filter_popup_cursor: 0,
+            last_source_filter_chip_area: None,
+            last_source_filter_popup_area: None,
             search_query: String::new(),
             search_active: false,
             copy_notice: None,
@@ -477,6 +489,11 @@ impl SessionPicker {
             reserved_panel_area: None,
             show_test_sessions: false,
             filter_mode: SessionFilterMode::All,
+            source_filter: source_filter::SourceFilterGroup::All,
+            source_filter_popup_open: false,
+            source_filter_popup_cursor: 0,
+            last_source_filter_chip_area: None,
+            last_source_filter_popup_area: None,
             search_query: String::new(),
             search_active: false,
             copy_notice: None,
@@ -574,6 +591,11 @@ impl SessionPicker {
             reserved_panel_area: None,
             show_test_sessions: false,
             filter_mode: SessionFilterMode::All,
+            source_filter: source_filter::SourceFilterGroup::All,
+            source_filter_popup_open: false,
+            source_filter_popup_cursor: 0,
+            last_source_filter_chip_area: None,
+            last_source_filter_popup_area: None,
             search_query: String::new(),
             search_active: false,
             copy_notice: None,
@@ -1510,6 +1532,14 @@ impl SessionPicker {
         if let Some(action) = self.handle_claude_takeover_confirmation_key(code, modifiers) {
             return Ok(action);
         }
+        if let Some(action) = self.handle_source_filter_popup_key(code, modifiers) {
+            return Ok(action);
+        }
+        // Ctrl+F toggles the interactive coding-agent source filter popup from any mode.
+        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('f') | KeyCode::Char('F')) {
+            self.toggle_source_filter_popup();
+            return Ok(OverlayAction::Continue);
+        }
         // Alt+S / Alt+Shift+S cycle filters from any mode, including while
         // typing a search query where plain `s` must stay literal text.
         if modifiers.contains(KeyModifiers::ALT) {
@@ -1576,6 +1606,9 @@ impl SessionPicker {
             KeyCode::Char('q') => return Ok(OverlayAction::Close),
             KeyCode::Char('y') if modifiers.is_empty() => {
                 self.copy_selected_session_with(super::app::helpers::copy_to_clipboard);
+            }
+            KeyCode::Char('f') if modifiers.is_empty() => {
+                self.toggle_source_filter_popup();
             }
             KeyCode::Char(' ') => {
                 self.toggle_selected_session();
@@ -2217,6 +2250,7 @@ impl SessionPicker {
         self.resume_latency.initial_selection(initial_id);
         self.latency_transcript_rendered = false;
         self.render_inner(frame);
+        self.render_source_filter_popup(frame);
         let id = if frame.area().width > 0 && frame.area().height > 0 {
             self.latency_selection_id()
         } else {

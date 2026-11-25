@@ -811,6 +811,50 @@ pub fn strip_large_images_in_contents(
     stripped
 }
 
+/// Adaptive variant of [`strip_large_images_in_contents`] for HTTP 413 recovery.
+///
+/// When the gateway/provider rejects a request with HTTP 413 even though the
+/// combined image base64 length is already `<= max_target_total_chars` (for
+/// example, a reverse proxy with an 8 MB cap vs `PAYLOAD_IMAGE_CHAR_BUDGET` of
+/// 12 MB), a fixed ceiling would strip 0 images and leave the session wedged.
+/// This helper ensures every 413 recovery strictly reduces the inline image
+/// payload by halving the current total (and dropping at least one oldest image)
+/// whenever inline images are present.
+pub fn strip_large_images_adaptively_in_contents(
+    contents: &mut [&mut Vec<ContentBlock>],
+    max_target_total_chars: usize,
+) -> usize {
+    let mut image_count = 0usize;
+    let mut total = 0usize;
+    for content in contents.iter() {
+        for block in content.iter() {
+            if let ContentBlock::Image { data, .. } = block {
+                image_count += 1;
+                total = total.saturating_add(data.len());
+            }
+        }
+    }
+    if image_count == 0 {
+        return 0;
+    }
+
+    let effective_target = if total > max_target_total_chars {
+        max_target_total_chars
+    } else if image_count == 1 {
+        0
+    } else {
+        total / 2
+    };
+
+    let stripped = strip_large_images_in_contents(contents, effective_target);
+    if stripped > 0 {
+        return stripped;
+    }
+
+    // Fallback if halving did not drop an image (e.g. 0-byte edge case): strip oldest.
+    strip_large_images_in_contents(contents, 0)
+}
+
 /// Inline tool-result images (computer-use and browser screenshots) are decayed
 /// once the transcript holds more than this many of them. See
 /// [`decay_old_tool_images_in_contents`].

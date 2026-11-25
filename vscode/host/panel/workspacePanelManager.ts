@@ -418,10 +418,16 @@ export class WorkspacePanelManager
   }
 
   private async broadcastWorkspacesChanged(): Promise<void> {
-    const workspaces = await this.getWorkspaceFoldersView();
+    const [workspaces, workspaceLedger] = await Promise.all([
+      this.getWorkspaceFoldersView(),
+      this.sessionHub.syncOpenWorkspaceFolders().catch(() =>
+        this.sessionHub.getWorkspaceLedger(),
+      ),
+    ]);
     this.sessionHub.broadcast({
       type: "rayucode.workspaces.changed",
       workspaces,
+      workspaceLedger,
     });
   }
 
@@ -697,6 +703,9 @@ export class WorkspacePanelManager
         .toString()
         .replace(/\/$/, "");
       const workspaces = await this.getWorkspaceFoldersView();
+      const workspaceLedger = await this.sessionHub
+        .waitUntilWorkspacesReady()
+        .catch(() => this.sessionHub.getWorkspaceLedger());
       const daemonStatus = this.bridgeManager.getStatus();
       const route = initialNav?.route ?? this.currentRoute;
       const sessionId =
@@ -721,6 +730,7 @@ export class WorkspacePanelManager
         capabilities: daemonStatus.capabilities,
         daemonStatus,
         workspaces,
+        workspaceLedger,
         editorSelection: this.editorBridge.getSelection(),
         backgroundTasks: sessionId
           ? this.sessionHub.getBackgroundTasks(sessionId)

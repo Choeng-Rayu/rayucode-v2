@@ -53,6 +53,9 @@ import {
   GitStageAllPayloadSchema,
   GitToggleStagePayloadSchema,
   HarnessCreateSessionSchema,
+  HarnessImportExternalSessionsPayloadSchema,
+  HarnessListExternalProjectsPayloadSchema,
+  HarnessListSessionsPayloadSchema,
   HarnessPermissionResponseSchema,
   HarnessRenameSessionSchema,
   HarnessRuntimeCommandSchema,
@@ -86,6 +89,8 @@ import {
   TerminalPtyResizePayloadSchema,
   TerminalPtyWritePayloadSchema,
   TerminalRunPayloadSchema,
+  WorkspaceEnsurePayloadSchema,
+  WorkspaceImportProjectGroupPayloadSchema,
   WorkspaceReadFilePayloadSchema,
   WorkspaceSetPayloadSchema,
 } from "./ipc-schemas.js"
@@ -104,6 +109,9 @@ import {
 import {
   createLocalSkill,
   deleteCustomTemplate,
+  disposeWorkspaceRegistry,
+  ensureRegisteredWorkspace,
+  importProjectGroupInRegistry,
   listLocalExtensions,
   listWorkspaceFiles,
   readCustomTemplates,
@@ -115,6 +123,8 @@ import {
   recordRecentWorkspace,
   removeLocalMcpServer,
   saveCustomTemplate,
+  subscribeExternalWorkspaceChanges,
+  syncSessionArchivedInRegistry,
   toggleLocalSkill,
   upsertLocalMcpServer,
   writeDesktopPreferences,
@@ -191,17 +201,55 @@ function registerIpcHandlers(): void {
   })
 
   // Real RayuCode Harness API (@rayu-dev/rayucode-sdk)
-  ipcMain.handle("rayu:harness:list-sessions", async () => {
-    const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
-    if (!status.connected) {
-      return []
+  ipcMain.handle(
+    "rayu:harness:list-sessions",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessListSessionsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return []
+      }
+      try {
+        return await daemonClient.listSessions(parsed?.includeArchived ?? false, {
+          includeExternal: parsed?.includeExternal ?? true,
+          sources: parsed?.sources,
+        })
+      } catch {
+        return []
+      }
     }
-    try {
-      return await daemonClient.listSessions(false)
-    } catch {
-      return []
+  )
+
+  ipcMain.handle(
+    "rayu:harness:list-external-projects",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessListExternalProjectsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return []
+      }
+      try {
+        return await daemonClient.listExternalProjects(parsed?.source)
+      } catch {
+        return []
+      }
     }
-  })
+  )
+
+  ipcMain.handle(
+    "rayu:harness:import-external-sessions",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessImportExternalSessionsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return { sessions: [], skipped: [] }
+      }
+      return daemonClient.importExternalSessions(parsed.items, {
+        forceResync: parsed.forceResync,
+        forkOnConflict: parsed.forkOnConflict,
+      })
+    }
+  )
 
   ipcMain.handle(
     "rayu:harness:create-session",
@@ -228,6 +276,7 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
       await daemonClient.archiveSession(parsed.sessionId)
+      await syncSessionArchivedInRegistry(parsed.sessionId, true).catch(() => {})
       return { ok: true }
     }
   )
@@ -237,6 +286,9 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
       await daemonClient.restoreSession(parsed.sessionId)
+      await syncSessionArchivedInRegistry(parsed.sessionId, false).catch(
+        () => {}
+      )
       return { ok: true }
     }
   )
@@ -395,14 +447,38 @@ function registerIpcHandlers(): void {
     const parsed = WorkspaceSetPayloadSchema.parse(rawPayload)
     activeWorkspaceDir = path.resolve(parsed.path)
     recordRecentWorkspace(activeWorkspaceDir)
+    void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
+
+  ipcMain.handle(
+    "rayu:workspace:ensure",
+    async (_event, rawPayload: unknown) => {
+      const parsed = WorkspaceEnsurePayloadSchema.parse(rawPayload)
+      return ensureRegisteredWorkspace(parsed.path, {
+        name: parsed.name,
+        unhide: true,
+      })
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:workspace:import-project-group",
+    async (_event, rawPayload: unknown) => {
+      const parsed = WorkspaceImportProjectGroupPayloadSchema.parse(rawPayload)
+      return importProjectGroupInRegistry(parsed.path, {
+        name: parsed.name,
+        sessionIds: parsed.sessionIds,
+      })
+    }
+  )
 
   ipcMain.handle("rayu:workspace:pick-folder", async () => {
     const chosen = await pickWorkspaceFolder(mainWindow)
     if (!chosen) return null
     activeWorkspaceDir = path.resolve(chosen)
     recordRecentWorkspace(activeWorkspaceDir)
+    void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
 
@@ -504,6 +580,9 @@ function registerIpcHandlers(): void {
       const parsed = ExtensionUpsertMcpSchema.parse(rawPayload)
       const snapshot = upsertLocalMcpServer(activeWorkspaceDir, parsed)
       await daemonClient.notifyAuthChanged("rayu")
+      await daemonClient
+        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
+        .catch(() => {})
       return snapshot
     }
   )
@@ -518,6 +597,9 @@ function registerIpcHandlers(): void {
         parsed.scope
       )
       await daemonClient.notifyAuthChanged("rayu")
+      await daemonClient
+        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
+        .catch(() => {})
       return snapshot
     }
   )
@@ -968,6 +1050,12 @@ function registerIpcHandlers(): void {
     }
   })
 
+  subscribeExternalWorkspaceChanges((state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("rayu:storage:sidebar-changed", state)
+    }
+  })
+
   let wasSignedIn = authManager.getState().signedIn
   authManager.on("auth-changed", (state: RayuAuthState) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1155,6 +1243,7 @@ app.on("before-quit", () => {
   terminalPty.killAll()
   authManager.dispose()
   daemonClient.dispose()
+  disposeWorkspaceRegistry()
 })
 
 app.on("window-all-closed", () => {

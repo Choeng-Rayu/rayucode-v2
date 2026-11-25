@@ -940,6 +940,109 @@ async fn run_turn_streaming_mpsc_emits_native_compaction_for_client_cache_reset(
     );
 }
 
+struct Payload413ThenSuccessProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for Payload413ThenSuccessProvider {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        let call_idx = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let remaining_images: usize = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter(|b| matches!(b, ContentBlock::Image { .. }))
+            .count();
+        if call_idx == 0 {
+            assert_eq!(remaining_images, 2);
+            anyhow::bail!(
+                "Request body too large (HTTP 413: request body too large). Run /compact or remove large attachments and retry."
+            );
+        }
+        assert!(
+            remaining_images < 2,
+            "retry after HTTP 413 must rebuild messages with stripped images (got {remaining_images})"
+        );
+        let events = vec![
+            Ok(StreamEvent::TextDelta("recovered after 413".to_string())),
+            Ok(StreamEvent::MessageEnd {
+                stop_reason: Some("end_turn".to_string()),
+            }),
+        ];
+        Ok(Box::pin(futures::stream::iter(events)))
+    }
+
+    fn name(&self) -> &str {
+        "mock-413-provider"
+    }
+
+    fn model(&self) -> String {
+        "mock-model".to_string()
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Payload413ThenSuccessProvider {
+            calls: std::sync::atomic::AtomicUsize::new(
+                self.calls.load(std::sync::atomic::Ordering::SeqCst),
+            ),
+        })
+    }
+}
+
+#[tokio::test]
+async fn run_turn_streaming_mpsc_recovers_from_http_413_on_complete_split_without_panicking() {
+    let _guard = crate::storage::lock_test_env();
+    let provider = Arc::new(Payload413ThenSuccessProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider.clone(), registry);
+    agent.add_message(
+        Role::User,
+        vec![
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "a".repeat(200_000),
+            },
+            ContentBlock::Image {
+                media_type: "image/png".to_string(),
+                data: "b".repeat(200_000),
+            },
+            ContentBlock::Text {
+                text: "inspect references".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    agent
+        .run_turn_streaming_mpsc(tx)
+        .await
+        .expect("HTTP 413 during complete_split must recover and retry on outer turn loop");
+
+    assert_eq!(
+        provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "provider must be retried once after stripping images"
+    );
+    let mut saw_text = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let ServerEvent::TextDelta { text } = ev
+            && text.contains("recovered after 413")
+        {
+            saw_text = true;
+        }
+    }
+    assert!(saw_text, "expected recovered assistant response");
+}
+
 /// Provider that transparently switches its model mid-stream, mimicking the
 /// Anthropic retired-model fallback (`claude-fable-5` -> `claude-opus-4-8`).
 struct MidStreamModelSwitchProvider {

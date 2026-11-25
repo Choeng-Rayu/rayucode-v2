@@ -268,6 +268,21 @@ fn request_roundtrip() {
         ApiRequest::ListSessions {
             include_archived: false,
             limit: None,
+            include_external: false,
+            sources: None,
+        },
+        ApiRequest::ListExternalProjects {
+            source: Some("codex_desktop".into()),
+        },
+        ApiRequest::ImportExternalSessions {
+            items: vec![ImportExternalSessionItem {
+                source: "codex".into(),
+                external_session_id: "ext-1".into(),
+                external_path: Some("/tmp/ext-1.jsonl".into()),
+                working_dir: Some("/repo/app".into()),
+            }],
+            force_resync: false,
+            fork_on_conflict: true,
         },
         ApiRequest::ArchiveSession {
             session_id: "s1".into(),
@@ -869,7 +884,7 @@ fn permission_mode_and_permission_frames_wire_shapes_and_aliases() {
         perm_hello
     );
 
-    assert_eq!(API_VERSION_MINOR, 14);
+    assert_eq!(API_VERSION_MINOR, 15);
 
     let event = ServerFrame::event(ApiEvent::PermissionRequest {
         session_id: "s1".into(),
@@ -1033,5 +1048,120 @@ fn file_changes_wire_shapes_and_defaults() {
     assert_eq!(
         serde_json::from_value::<ServerFrame>(action_wire).unwrap(),
         action_frame
+    );
+}
+
+#[test]
+fn external_sessions_wire_shapes_and_legacy_defaults() {
+    use serde_json::json;
+
+    // Legacy ListSessions omits include_external/sources and defaults cleanly.
+    let legacy_list: ClientFrame = serde_json::from_value(json!({
+        "v": 1,
+        "id": 30,
+        "req": "list_sessions"
+    }))
+    .unwrap();
+    assert_eq!(
+        legacy_list.request,
+        ApiRequest::ListSessions {
+            include_archived: false,
+            limit: None,
+            include_external: false,
+            sources: None,
+        }
+    );
+    let legacy_wire = serde_json::to_value(&legacy_list).unwrap();
+    assert!(legacy_wire.get("include_external").is_none());
+    assert!(legacy_wire.get("sources").is_none());
+
+    // Extended ListSessions roundtrips include_external + sources.
+    let ext_list = ClientFrame::new(
+        31,
+        ApiRequest::ListSessions {
+            include_archived: false,
+            limit: Some(50),
+            include_external: true,
+            sources: Some(vec!["rayu".into(), "claude".into(), "codex".into()]),
+        },
+    );
+    let ext_list_wire = serde_json::to_value(&ext_list).unwrap();
+    assert_eq!(ext_list_wire["include_external"], true);
+    assert_eq!(ext_list_wire["sources"], json!(["rayu", "claude", "codex"]));
+    assert_eq!(
+        serde_json::from_value::<ClientFrame>(ext_list_wire).unwrap(),
+        ext_list
+    );
+
+    // Legacy SessionInfo omits all external fields and deserializes with defaults.
+    let legacy_session: SessionInfo =
+        serde_json::from_value(json!({"session_id": "s1", "status": "idle"})).unwrap();
+    assert_eq!(legacy_session.source, None);
+    assert_eq!(legacy_session.external_session_id, None);
+    assert_eq!(legacy_session.external_path, None);
+    assert_eq!(legacy_session.external_project_name, None);
+    assert!(!legacy_session.imported);
+    assert!(!legacy_session.sync_stale);
+    let legacy_session_wire = serde_json::to_value(&legacy_session).unwrap();
+    for field in [
+        "source",
+        "external_session_id",
+        "external_path",
+        "external_project_name",
+        "imported",
+        "sync_stale",
+    ] {
+        assert!(legacy_session_wire.get(field).is_none(), "{field} omitted");
+    }
+
+    // ExternalProjects and ExternalSessionsImported roundtrip.
+    let imported_session = SessionInfo {
+        source: Some("codex_desktop".into()),
+        external_session_id: Some("codex-1".into()),
+        external_path: Some("/tmp/codex-1.jsonl".into()),
+        external_project_name: Some("rayucode".into()),
+        imported: true,
+        sync_stale: true,
+        ..legacy_session
+    };
+    let projects_frame = ServerFrame::reply(
+        32,
+        ApiEvent::ExternalProjects {
+            projects: vec![ExternalProjectInfo {
+                id: "codex_desktop:/repo/rayucode".into(),
+                source: "codex_desktop".into(),
+                name: "rayucode".into(),
+                working_dir: Some("/repo/rayucode".into()),
+                session_count: 1,
+                updated_at_ms: Some(1_700_000_000_000),
+                sessions: vec![imported_session.clone()],
+            }],
+        },
+    );
+    let projects_wire = serde_json::to_value(&projects_frame).unwrap();
+    assert_eq!(projects_wire["ev"], "external_projects");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(projects_wire).unwrap(),
+        projects_frame
+    );
+
+    let imported_frame = ServerFrame::reply(
+        33,
+        ApiEvent::ExternalSessionsImported {
+            sessions: vec![imported_session],
+            skipped: vec![ImportSkipInfo {
+                source: "claude_code".into(),
+                external_session_id: "cc-1".into(),
+                reason: "conflict".into(),
+                existing_session_id: Some("imported_cc_cc-1".into()),
+                message: "local turns exist".into(),
+            }],
+        },
+    );
+    let imported_wire = serde_json::to_value(&imported_frame).unwrap();
+    assert_eq!(imported_wire["ev"], "external_sessions_imported");
+    assert_eq!(
+        serde_json::from_value::<ServerFrame>(imported_wire).unwrap(),
+        imported_frame
     );
 }

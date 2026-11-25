@@ -656,11 +656,44 @@ impl SessionPicker {
             format!("  {}", filter_label),
             Style::default().fg(rgb(255, 180, 100)),
         ));
+        let chip_label = self.source_filter_chip_label();
+        let title_prefix_width: usize = title_parts
+            .iter()
+            .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+            .sum();
+        let chip_width = unicode_width::UnicodeWidthStr::width(chip_label.as_str());
+        let chip_x = area.x.saturating_add(1).saturating_add(title_prefix_width as u16).saturating_add(1);
+        if chip_x < area.x.saturating_add(area.width) {
+            let clamped_w = (chip_width as u16).min(
+                area.x.saturating_add(area.width).saturating_sub(chip_x),
+            );
+            self.last_source_filter_chip_area = Some(Rect {
+                x: chip_x,
+                y: area.y,
+                width: clamped_w,
+                height: 1,
+            });
+        } else {
+            self.last_source_filter_chip_area = None;
+        }
+        title_parts.push(Span::styled(" ", Style::default()));
+        title_parts.push(Span::styled(
+            chip_label,
+            if self.source_filter != source_filter::SourceFilterGroup::All
+                || self.source_filter_popup_open
+            {
+                Style::default()
+                    .fg(rgb(140, 220, 160))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(rgb(150, 175, 200))
+            },
+        ));
         // These shortcuts insert search text while editing, so do not advertise
         // them there or let their hint push the query out of a narrow header.
         if !self.search_active {
             title_parts.push(Span::styled(
-                " (s/S filter)",
+                " (s/S scope · f agent)",
                 Style::default().fg(rgb(80, 80, 80)),
             ));
         }

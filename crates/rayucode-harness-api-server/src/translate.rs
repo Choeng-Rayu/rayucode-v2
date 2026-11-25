@@ -10,7 +10,8 @@ mod turn_identity_tests;
 use crate::background_progress::parse_background_notification;
 use control_replies::SimpleKind;
 use rayucode_harness_api::{
-    ApiEvent, ErrorCode, HistoryMessage, ModelRouteInfo, ServerFrame, SessionInfo, TextMatch,
+    ApiEvent, ErrorCode, ExternalProjectInfo, HistoryMessage, ImportSkipInfo, ModelRouteInfo,
+    ServerFrame, SessionInfo, TextMatch,
 };
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -229,6 +230,10 @@ pub struct BridgeState {
     available_routes: Vec<ModelRouteInfo>,
     /// Deltas can precede the first catalog or a delayed snapshot reply.
     model_usage_updates: BTreeMap<(String, String, String), rayucode_harness_api::ModelUsage>,
+    /// Pre-scanned external sessions fetched on Tokio's blocking pool before
+    /// translating `list_sessions { include_external: true }`.
+    pub prefetched_external_sessions:
+        Option<Vec<rayucode_base::import::discovery::ExternalSessionSummary>>,
 }
 
 impl BridgeState {
@@ -773,8 +778,22 @@ impl BridgeState {
                 self.pending_simple.push((id, api_id, SimpleKind::Ping));
                 vec![Outbound::Legacy(json!({"type": "ping", "id": id}))]
             }
+            "list_external_projects" => {
+                vec![Outbound::Reply(list_external_projects_reply(
+                    api_id, request,
+                ))]
+            }
+            "import_external_sessions" => {
+                vec![Outbound::Reply(import_external_sessions_reply(
+                    api_id, request,
+                ))]
+            }
             "list_sessions" => {
                 let list_started = std::time::Instant::now();
+                let include_external = request["include_external"].as_bool().unwrap_or(false);
+                let sources: Option<Vec<String>> = request
+                    .get("sources")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok());
                 // A fresh API connection has not received a daemon `state`
                 // snapshot. Start with every persisted record, then merge the
                 // live snapshot so unattached dashboards and global event
@@ -870,42 +889,86 @@ impl BridgeState {
                     .filter(|session_id| {
                         include_archived || !archive.sessions.contains_key(session_id)
                     })
-                    .map(|session_id| SessionInfo {
-                        user_connected: self.user_connected_sessions.contains(&session_id),
-                        edit_stats: None,
-                        parent_session_id: None,
-                        agent_label: None,
-                        swarm_status: None,
-                        working_dir: self.session_dirs.get(&session_id).cloned(),
-                        title: metadata
-                            .get(&session_id)
-                            .and_then(PersistedSessionMetadata::display_title),
-                        status: if self.session_id.as_ref() == Some(&session_id) {
-                            "attached".into()
-                        } else {
-                            "idle".into()
-                        },
-                        transcript_bytes: Self::transcript_bytes(&session_id),
-                        saved: metadata.get(&session_id).is_some_and(|value| value.saved),
-                        save_label: metadata
-                            .get(&session_id)
-                            .and_then(PersistedSessionMetadata::save_label),
-                        updated_at_ms: metadata
-                            .get(&session_id)
-                            .and_then(|value| value.updated_at_ms)
-                            .or_else(|| {
-                                Self::session_modified_ms(&session_id).map(|value| value as i64)
-                            }),
-                        last_active_at_ms: metadata
-                            .get(&session_id)
-                            .and_then(|value| value.last_active_at_ms),
-                        archived: archive.sessions.contains_key(&session_id),
-                        archived_at_ms: archive.sessions.get(&session_id).copied(),
-                        session_id,
+                    .map(|session_id| {
+                        let inferred =
+                            rayucode_base::import::discovery::infer_imported_session_source(
+                                &session_id,
+                            );
+                        let (source, external_session_id, imported) = match inferred {
+                            Some((src, ext_id)) => (Some(src.to_string()), Some(ext_id), true),
+                            None => (None, None, false),
+                        };
+                        SessionInfo {
+                            user_connected: self.user_connected_sessions.contains(&session_id),
+                            edit_stats: None,
+                            parent_session_id: None,
+                            agent_label: None,
+                            swarm_status: None,
+                            working_dir: self.session_dirs.get(&session_id).cloned(),
+                            title: metadata
+                                .get(&session_id)
+                                .and_then(PersistedSessionMetadata::display_title),
+                            status: if self.session_id.as_ref() == Some(&session_id) {
+                                "attached".into()
+                            } else {
+                                "idle".into()
+                            },
+                            transcript_bytes: Self::transcript_bytes(&session_id),
+                            saved: metadata.get(&session_id).is_some_and(|value| value.saved),
+                            save_label: metadata
+                                .get(&session_id)
+                                .and_then(PersistedSessionMetadata::save_label),
+                            updated_at_ms: metadata
+                                .get(&session_id)
+                                .and_then(|value| value.updated_at_ms)
+                                .or_else(|| {
+                                    Self::session_modified_ms(&session_id).map(|value| value as i64)
+                                }),
+                            last_active_at_ms: metadata
+                                .get(&session_id)
+                                .and_then(|value| value.last_active_at_ms),
+                            archived: archive.sessions.contains_key(&session_id),
+                            archived_at_ms: archive.sessions.get(&session_id).copied(),
+                            source,
+                            external_session_id,
+                            external_path: None,
+                            external_project_name: None,
+                            imported,
+                            sync_stale: false,
+                            session_id,
+                        }
                     })
                     .collect();
                 rayucode_harness_api::enrich_sessions_from_local_swarm_state(&mut sessions);
                 rayucode_harness_api::enrich_sessions_from_local_edit_stats(&mut sessions);
+
+                if include_external {
+                    let scan_limit = limit.unwrap_or(
+                        rayucode_base::import::discovery::DEFAULT_EXTERNAL_SCAN_LIMIT,
+                    );
+                    let external = self.prefetched_external_sessions.take().unwrap_or_else(|| {
+                        rayucode_base::import::discovery::list_external_sessions(
+                            scan_limit,
+                            sources.as_deref(),
+                        )
+                    });
+                    sessions = merge_session_infos_with_external(
+                        sessions,
+                        &external,
+                        sources.as_deref(),
+                        limit,
+                    );
+                } else {
+                    self.prefetched_external_sessions = None;
+                    if let Some(filter) = sources.as_deref() {
+                        sessions.retain(|session| {
+                            rayucode_base::import::discovery::source_matches_filter(
+                                session.source.as_deref().unwrap_or("rayu"),
+                                Some(filter),
+                            )
+                        });
+                    }
+                }
                 let completed = list_started.elapsed();
                 eprintln!(
                     "harness API bridge: list_sessions ids={:.1}ms metadata={:.1}ms total={:.1}ms count={}",
@@ -2352,6 +2415,23 @@ impl BridgeState {
                                 save_label: metadata
                                     .as_ref()
                                     .and_then(PersistedSessionMetadata::save_label),
+                                source: rayucode_base::import::discovery::infer_imported_session_source(
+                                    &session_id,
+                                )
+                                .map(|(src, _)| src.to_string()),
+                                external_session_id:
+                                    rayucode_base::import::discovery::infer_imported_session_source(
+                                        &session_id,
+                                    )
+                                    .map(|(_, ext_id)| ext_id),
+                                external_path: None,
+                                external_project_name: None,
+                                imported:
+                                    rayucode_base::import::discovery::infer_imported_session_source(
+                                        &session_id,
+                                    )
+                                    .is_some(),
+                                sync_stale: false,
                             },
                         },
                     )];
@@ -2791,6 +2871,12 @@ impl BridgeState {
                             save_label: metadata
                                 .as_ref()
                                 .and_then(PersistedSessionMetadata::save_label),
+                            source: None,
+                            external_session_id: None,
+                            external_path: None,
+                            external_project_name: None,
+                            imported: false,
+                            sync_stale: false,
                         },
                     },
                 )]
@@ -4084,6 +4170,278 @@ impl BridgeState {
             .position(|(id, _, k)| *id == legacy_id && *k == kind)?;
         Some(self.pending_simple.remove(index).1)
     }
+}
+
+fn merge_session_infos_with_external(
+    native_sessions: Vec<SessionInfo>,
+    external_sessions: &[rayucode_base::import::discovery::ExternalSessionSummary],
+    sources: Option<&[String]>,
+    limit: Option<usize>,
+) -> Vec<SessionInfo> {
+    use rayucode_base::import::discovery::{
+        NativeSessionRecord, merge_with_native_sessions, source_matches_filter,
+    };
+
+    let native_records: Vec<NativeSessionRecord> = native_sessions
+        .iter()
+        .map(|session| NativeSessionRecord {
+            session_id: session.session_id.clone(),
+            working_dir: session.working_dir.clone(),
+            title: session.title.clone(),
+            saved: session.saved,
+            updated_at_ms: session.updated_at_ms,
+            transcript_bytes: session.transcript_bytes,
+        })
+        .collect();
+
+    let merged_records = merge_with_native_sessions(&native_records, external_sessions);
+    let mut out = Vec::with_capacity(merged_records.len());
+
+    for record in merged_records {
+        if !source_matches_filter(&record.source, sources) {
+            continue;
+        }
+        let info = if let Some(idx) = record.native_index {
+            let mut base = native_sessions[idx].clone();
+            base.source = Some(record.source);
+            base.external_session_id = record.external_session_id;
+            base.external_path = record.external_path;
+            base.external_project_name = record.external_project_name;
+            base.imported = record.imported;
+            base.sync_stale = record.sync_stale;
+            if base.working_dir.is_none() {
+                base.working_dir = record.working_dir;
+            }
+            if base.title.is_none() {
+                base.title = record.title;
+            }
+            base
+        } else {
+            SessionInfo {
+                user_connected: false,
+                edit_stats: None,
+                session_id: record.session_id,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
+                working_dir: record.working_dir,
+                title: record.title,
+                status: "idle".to_string(),
+                transcript_bytes: record.transcript_bytes,
+                saved: false,
+                save_label: None,
+                updated_at_ms: record.updated_at_ms,
+                last_active_at_ms: record.updated_at_ms,
+                archived: false,
+                archived_at_ms: None,
+                source: Some(record.source),
+                external_session_id: record.external_session_id,
+                external_path: record.external_path,
+                external_project_name: record.external_project_name,
+                imported: false,
+                sync_stale: false,
+            }
+        };
+        out.push(info);
+    }
+
+    out.sort_by(|a, b| {
+        b.saved
+            .cmp(&a.saved)
+            .then_with(|| {
+                b.updated_at_ms
+                    .unwrap_or(0)
+                    .cmp(&a.updated_at_ms.unwrap_or(0))
+            })
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+
+    if let Some(limit) = limit {
+        let mut kept_non_saved = 0usize;
+        out.retain(|session| {
+            if session.saved || session.user_connected {
+                return true;
+            }
+            if kept_non_saved < limit {
+                kept_non_saved += 1;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    out
+}
+
+fn external_summary_to_session_info(
+    summary: &rayucode_base::import::discovery::ExternalSessionSummary,
+) -> SessionInfo {
+    let imported_exists =
+        BridgeState::session_record_path(&summary.imported_session_id).is_some_and(|p| p.is_file());
+    let local_updated_ms = if imported_exists {
+        BridgeState::session_modified_ms(&summary.imported_session_id).map(|ms| ms as i64)
+    } else {
+        None
+    };
+    let sync_stale = local_updated_ms.is_some_and(|local_ms| summary.updated_at_ms > local_ms);
+    let session_id = if imported_exists {
+        summary.imported_session_id.clone()
+    } else {
+        format!("{}:{}", summary.source, summary.external_session_id)
+    };
+    SessionInfo {
+        user_connected: false,
+        edit_stats: None,
+        session_id,
+        parent_session_id: None,
+        agent_label: None,
+        swarm_status: None,
+        working_dir: summary.working_dir.clone(),
+        title: Some(summary.title.clone()),
+        status: "idle".to_string(),
+        transcript_bytes: summary.transcript_bytes,
+        saved: false,
+        save_label: None,
+        updated_at_ms: local_updated_ms.or(Some(summary.updated_at_ms)),
+        last_active_at_ms: local_updated_ms.or(Some(summary.updated_at_ms)),
+        archived: false,
+        archived_at_ms: None,
+        source: Some(summary.source.clone()),
+        external_session_id: Some(summary.external_session_id.clone()),
+        external_path: Some(summary.external_path.clone()),
+        external_project_name: summary.external_project_name.clone(),
+        imported: imported_exists,
+        sync_stale,
+    }
+}
+
+/// Handle `ApiRequest::ListExternalProjects` locally (safe to run via `spawn_blocking`).
+pub fn list_external_projects_reply(api_id: u64, request: &Value) -> ServerFrame {
+    let source = request
+        .get("source")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let projects = rayucode_base::import::discovery::list_external_projects(
+        rayucode_base::import::discovery::DEFAULT_EXTERNAL_SCAN_LIMIT,
+        source,
+    )
+    .into_iter()
+    .map(|project| {
+        let project_key = project
+            .working_dir
+            .as_deref()
+            .unwrap_or(project.project_name.as_str());
+        ExternalProjectInfo {
+            id: format!("{}:{project_key}", project.source),
+            source: project.source,
+            name: project.project_name,
+            working_dir: project.working_dir,
+            session_count: project.session_count,
+            updated_at_ms: project.latest_updated_at_ms,
+            sessions: project
+                .sessions
+                .iter()
+                .map(external_summary_to_session_info)
+                .collect(),
+        }
+    })
+    .collect();
+
+    ServerFrame::reply(api_id, ApiEvent::ExternalProjects { projects })
+}
+
+/// Handle `ApiRequest::ImportExternalSessions` locally (safe to run via `spawn_blocking`).
+pub fn import_external_sessions_reply(api_id: u64, request: &Value) -> ServerFrame {
+    let Ok(rayucode_harness_api::ApiRequest::ImportExternalSessions {
+        items,
+        force_resync,
+        fork_on_conflict,
+    }) = serde_json::from_value::<rayucode_harness_api::ApiRequest>(request.clone())
+    else {
+        return ServerFrame::reply(
+            api_id,
+            ApiEvent::Error {
+                code: ErrorCode::InvalidRequest,
+                message: "Invalid import_external_sessions request".to_string(),
+            },
+        );
+    };
+
+    let discovery_items: Vec<rayucode_base::import::discovery::ImportExternalItem> = items
+        .into_iter()
+        .map(|item| rayucode_base::import::discovery::ImportExternalItem {
+            source: item.source,
+            external_session_id: item.external_session_id,
+            external_path: item.external_path,
+        })
+        .collect();
+
+    let outcome = rayucode_base::import::discovery::import_external_sessions(
+        &discovery_items,
+        force_resync,
+        fork_on_conflict,
+    );
+
+    let sessions: Vec<SessionInfo> = outcome
+        .sessions
+        .into_iter()
+        .map(|record| {
+            let session_id = record.session.id.clone();
+            let updated_at_ms = Some(record.session.updated_at.timestamp_millis());
+            SessionInfo {
+                user_connected: false,
+                edit_stats: None,
+                transcript_bytes: BridgeState::transcript_bytes(&session_id),
+                saved: record.session.saved,
+                save_label: record.session.save_label.clone(),
+                updated_at_ms,
+                last_active_at_ms: record
+                    .session
+                    .last_active_at
+                    .map(|dt| dt.timestamp_millis())
+                    .or(updated_at_ms),
+                working_dir: record.session.working_dir.clone(),
+                title: record
+                    .session
+                    .custom_title
+                    .clone()
+                    .or_else(|| record.session.title.clone()),
+                status: "idle".to_string(),
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
+                archived: false,
+                archived_at_ms: None,
+                source: Some(record.source),
+                external_session_id: Some(record.external_session_id),
+                external_path: Some(record.external_path),
+                external_project_name: record.external_project_name,
+                imported: true,
+                sync_stale: false,
+                session_id,
+            }
+        })
+        .collect();
+
+    let skipped: Vec<ImportSkipInfo> = outcome
+        .skipped
+        .into_iter()
+        .map(|item| ImportSkipInfo {
+            source: item.source,
+            external_session_id: item.external_session_id,
+            reason: item.reason.as_str().to_string(),
+            message: item.message.unwrap_or_default(),
+            existing_session_id: item.existing_session_id,
+        })
+        .collect();
+
+    ServerFrame::reply(
+        api_id,
+        ApiEvent::ExternalSessionsImported { sessions, skipped },
+    )
 }
 
 #[cfg(test)]

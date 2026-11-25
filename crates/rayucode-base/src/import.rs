@@ -3,6 +3,9 @@
 //! This module handles discovering, parsing, and converting Claude Code sessions
 //! so they can be resumed within rayu.
 
+#[path = "import_discovery.rs"]
+pub mod discovery;
+
 use crate::message::{ContentBlock, Role};
 use crate::session::{Session, SessionStatus, StoredMessage};
 use anyhow::{Context, Result};
@@ -726,10 +729,12 @@ pub fn import_external_resume_id(resume_id: &str) -> Result<Option<String>> {
 
 /// Import a Claude Code session from a file path
 pub fn import_session_from_file(path: &Path, session_id: &str) -> Result<Session> {
-    import_session_from_file_with_target(
+    import_session_from_file_with_options(
         path,
         session_id,
         imported_claude_code_session_id(session_id),
+        None,
+        false,
         false,
     )
 }
@@ -739,6 +744,24 @@ fn import_session_from_file_with_target(
     session_id: &str,
     rayu_session_id: String,
     require_source_identity: bool,
+) -> Result<Session> {
+    import_session_from_file_with_options(
+        path,
+        session_id,
+        rayu_session_id,
+        None,
+        require_source_identity,
+        false,
+    )
+}
+
+pub(crate) fn import_session_from_file_with_options(
+    path: &Path,
+    session_id: &str,
+    rayu_session_id: String,
+    parent_id: Option<String>,
+    require_source_identity: bool,
+    force_overwrite: bool,
 ) -> Result<Session> {
     let entries = load_claude_code_entries(path)?;
     if require_source_identity {
@@ -836,7 +859,7 @@ fn import_session_from_file_with_target(
         }
     }
 
-    let mut session = Session::create_with_id(rayu_session_id, None, title);
+    let mut session = Session::create_with_id(rayu_session_id, parent_id, title);
     session.provider_session_id = Some(session_id.to_string());
     session.provider_key = Some("claude-code".to_string());
     session.working_dir = working_dir;
@@ -847,7 +870,7 @@ fn import_session_from_file_with_target(
         session.append_stored_message(message);
     }
 
-    finalize_imported_session(session, created_at, None)
+    finalize_imported_session_with_options(session, created_at, None, force_overwrite)
 }
 
 fn remove_prepared_takeover_session(session_id: &str) {
@@ -988,14 +1011,25 @@ fn append_text_message(
     });
 }
 
-fn finalize_imported_session(
+pub(crate) fn count_visible_user_turns(session: &Session) -> usize {
+    session
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User && message.display_role.is_none())
+        .count()
+}
+
+fn finalize_imported_session_with_options(
     mut session: Session,
     created_at: DateTime<Utc>,
     updated_at: Option<DateTime<Utc>>,
+    force_overwrite: bool,
 ) -> Result<Session> {
     // Never overwrite a rayu-side continuation with a shorter external
-    // transcript. This protection applies to every importer, not only Claude.
-    if crate::session::session_exists(&session.id)
+    // transcript unless explicitly forced. This protection applies to every
+    // importer, not only Claude.
+    if !force_overwrite
+        && crate::session::session_exists(&session.id)
         && let Ok(mut existing) = Session::load(&session.id)
         && existing.messages.len() > session.messages.len()
     {
@@ -1011,6 +1045,7 @@ fn finalize_imported_session(
     session.last_active_at = updated_at.or(Some(created_at));
     session.status = SessionStatus::Closed;
     normalize_imported_history(&mut session, true);
+    session.imported_turn_count = Some(count_visible_user_turns(&session));
     session.save()?;
     crate::logging::info(&format!(
         "Imported session prepared: source_messages={original_messages} kept_messages={}",
@@ -1053,6 +1088,16 @@ pub fn import_codex_session_from_path(
     path: &Path,
     session_id_hint: Option<&str>,
 ) -> Result<Session> {
+    import_codex_session_from_path_with_options(path, session_id_hint, None, None, false)
+}
+
+pub(crate) fn import_codex_session_from_path_with_options(
+    path: &Path,
+    session_id_hint: Option<&str>,
+    target_session_id: Option<String>,
+    parent_id: Option<String>,
+    force_overwrite: bool,
+) -> Result<Session> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
@@ -1083,7 +1128,8 @@ pub fn import_codex_session_from_path(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let mut model: Option<String> = None;
-    let mut session = Session::create_with_id(imported_codex_session_id(session_id), None, None);
+    let rayu_id = target_session_id.unwrap_or_else(|| imported_codex_session_id(session_id));
+    let mut session = Session::create_with_id(rayu_id, parent_id, None);
     session.provider_session_id = Some(session_id.to_string());
     session.provider_key = Some("openai-codex".to_string());
 
@@ -1171,10 +1217,19 @@ pub fn import_codex_session_from_path(
     session.title = title.or_else(|| Some(format!("Codex session {}", session_id)));
     session.working_dir = working_dir;
     session.model = model;
-    finalize_imported_session(session, created_at, updated_at)
+    finalize_imported_session_with_options(session, created_at, updated_at, force_overwrite)
 }
 
 pub fn import_pi_session(session_path: &str) -> Result<Session> {
+    import_pi_session_with_options(session_path, None, None, false)
+}
+
+pub(crate) fn import_pi_session_with_options(
+    session_path: &str,
+    target_session_id: Option<String>,
+    parent_id: Option<String>,
+    force_overwrite: bool,
+) -> Result<Session> {
     let path = PathBuf::from(session_path);
     let file = File::open(&path)?;
     let reader = BufReader::new(file);
@@ -1197,7 +1252,8 @@ pub fn import_pi_session(session_path: &str) -> Result<Session> {
     let mut title: Option<String> = None;
     let mut model: Option<String> = None;
     let mut provider_key: Option<String> = Some("pi".to_string());
-    let mut session = Session::create_with_id(imported_pi_session_id(session_path), None, None);
+    let rayu_id = target_session_id.unwrap_or_else(|| imported_pi_session_id(session_path));
+    let mut session = Session::create_with_id(rayu_id, parent_id, None);
     session.provider_session_id = if provider_session_id.is_empty() {
         None
     } else {
@@ -1268,7 +1324,7 @@ pub fn import_pi_session(session_path: &str) -> Result<Session> {
     });
     session.provider_key = provider_key;
     session.model = model;
-    finalize_imported_session(session, created_at, updated_at)
+    finalize_imported_session_with_options(session, created_at, updated_at, force_overwrite)
 }
 
 fn find_opencode_session_file(session_id: &str) -> Result<PathBuf> {
@@ -1293,6 +1349,16 @@ pub fn import_opencode_session_from_path(
     session_path: &Path,
     session_id_hint: Option<&str>,
 ) -> Result<Session> {
+    import_opencode_session_from_path_with_options(session_path, session_id_hint, None, None, false)
+}
+
+pub(crate) fn import_opencode_session_from_path_with_options(
+    session_path: &Path,
+    session_id_hint: Option<&str>,
+    target_session_id: Option<String>,
+    parent_id: Option<String>,
+    force_overwrite: bool,
+) -> Result<Session> {
     let value: serde_json::Value = serde_json::from_reader(File::open(session_path)?)?;
     let session_id = value
         .get("id")
@@ -1314,7 +1380,8 @@ pub fn import_opencode_session_from_path(
         .and_then(|v| v.as_i64())
         .and_then(DateTime::<Utc>::from_timestamp_millis)
         .or(Some(created_at));
-    let mut session = Session::create_with_id(imported_opencode_session_id(session_id), None, None);
+    let rayu_id = target_session_id.unwrap_or_else(|| imported_opencode_session_id(session_id));
+    let mut session = Session::create_with_id(rayu_id, parent_id, None);
     session.provider_session_id = Some(session_id.to_string());
     session.provider_key = Some("opencode".to_string());
     session.working_dir = value
@@ -1400,7 +1467,7 @@ pub fn import_opencode_session_from_path(
     }
     session.provider_key = provider_key;
     session.model = model;
-    finalize_imported_session(session, created_at, updated_at)
+    finalize_imported_session_with_options(session, created_at, updated_at, force_overwrite)
 }
 
 /// Locate a Cursor agent transcript file for the given session id.
@@ -1428,13 +1495,24 @@ pub fn import_cursor_session_from_path(
     session_path: &Path,
     session_id_hint: Option<&str>,
 ) -> Result<Session> {
+    import_cursor_session_from_path_with_options(session_path, session_id_hint, None, None, false)
+}
+
+pub(crate) fn import_cursor_session_from_path_with_options(
+    session_path: &Path,
+    session_id_hint: Option<&str>,
+    target_session_id: Option<String>,
+    parent_id: Option<String>,
+    force_overwrite: bool,
+) -> Result<Session> {
     let session_id = session_id_hint
         .map(|id| id.to_string())
         .unwrap_or_else(|| cursor_session_id_from_path(session_path));
     let created_at =
         rayucode_import_core::file_modified_datetime(session_path).unwrap_or_else(Utc::now);
 
-    let mut session = Session::create_with_id(imported_cursor_session_id(&session_id), None, None);
+    let rayu_id = target_session_id.unwrap_or_else(|| imported_cursor_session_id(&session_id));
+    let mut session = Session::create_with_id(rayu_id, parent_id, None);
     session.provider_session_id = Some(session_id.clone());
     session.provider_key = Some("cursor".to_string());
     session.working_dir = cursor_cwd_from_transcript_path(session_path);
@@ -1477,7 +1555,7 @@ pub fn import_cursor_session_from_path(
     }
 
     session.title = title.or_else(|| Some(format!("Cursor session {}", session_id)));
-    finalize_imported_session(session, created_at, Some(created_at))
+    finalize_imported_session_with_options(session, created_at, Some(created_at), force_overwrite)
 }
 
 #[cfg(test)]

@@ -257,14 +257,19 @@ impl Agent {
 
         let stripped = self
             .session
-            .strip_oversized_images(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
+            .strip_oversized_images_adaptively(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
         if stripped == 0 {
             logging::warn(
-                "Request-too-large recovery skipped: no oversized inline images to strip",
+                "Request-too-large recovery skipped: no inline images to strip",
             );
             return false;
         }
         self.reset_after_transcript_image_rewrite();
+        if let Err(err) = self.session.save() {
+            logging::warn(&format!(
+                "Request-too-large recovery: failed to persist stripped transcript: {err}"
+            ));
+        }
 
         logging::warn(&format!(
             "Request body exceeded provider size limit; stripped {} oversized inline image(s) and retrying",

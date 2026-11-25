@@ -1,13 +1,11 @@
 import * as React from "react";
+import { reconcileChatTurns } from "@rayu-dev/rayucode-session-core/client";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   callRpc,
-  createHarnessStreamTracker,
-  createStreamBatcher,
   isVsCodeWebview,
-  mapHarnessFrameToLiveEvents,
   mapHistoryMessagesToTurns,
-  onHarnessFrame,
   onHostMessage,
   sendHarnessRequest,
   useAppStore,
@@ -16,7 +14,6 @@ import {
   type InlineDiffCardData,
   type MappedLiveTraceEvent,
   type MidTurnMessageItem,
-  type OptimisticUserTurn,
 } from "@/lib";
 import type {
   FileChangesSnapshotView,
@@ -27,6 +24,18 @@ import type { ApprovalCardRequest } from "../components/ApprovalCard";
 import type { CitationItem } from "../components/CiteLink";
 import type { ClarifyingQuestionRequest } from "../components/ClarifyingQuestionCard";
 import type { ExtendedWorkStepGroup } from "../components/WorkTrace";
+import {
+  applyTraceEvents,
+  chatHistoryQueryKey,
+  clearSessionLiveTurn,
+  registerSessionQueueDrainHandler,
+  setSessionPendingQuestion,
+  settleSessionTurnQueue,
+  startSessionLiveTurn,
+  toggleCompletedTurnPin,
+  useLiveTraceBridge,
+  useLiveTraceStore,
+} from "./liveTraceStore";
 
 export interface TurnBulletItem {
   id: string;
@@ -35,7 +44,8 @@ export interface TurnBulletItem {
   citations: CitationItem[];
 }
 
-export interface ChatTurnView extends Omit<ExecutionTurn, "groups" | "answerBullets"> {
+export interface ChatTurnView
+  extends Omit<ExecutionTurn, "groups" | "answerBullets"> {
   isLive?: boolean;
   compactedNotice?: string;
   userRefFiles?: string;
@@ -64,7 +74,8 @@ const DEFAULT_SAMPLE_TURNS: ChatTurnView[] = [
     sessionId: "ses_vscode_shell",
     userPrompt:
       "Inspect the dual-form-factor shell and optimize the ShardStore lookup latency.",
-    userRefFiles: "vscode/webview/src/features/shell/components/AppShell.tsx:1-60",
+    userRefFiles:
+      "vscode/webview/src/features/shell/components/AppShell.tsx:1-60",
     workedDuration: "14s",
     notes: [
       "Inspected the shell layout and coalesced consecutive workspace file reads before benchmarking `lookup.rs`.",
@@ -124,7 +135,7 @@ const DEFAULT_SAMPLE_TURNS: ChatTurnView[] = [
           {
             id: "ts_agentgrep_1",
             toolName: "agentgrep",
-            intent: "Searched \"ShardStore::lookup\" across crates/ (4 hits)",
+            intent: 'Searched "ShardStore::lookup" across crates/ (4 hits)',
             status: "completed",
             durationLabel: "0.2s",
             filePath: "crates/rayu-harness/src/lookup.rs",
@@ -216,36 +227,7 @@ const DEFAULT_SAMPLE_TURNS: ChatTurnView[] = [
   },
 ];
 
-const EMPTY_DIFF: InlineDiffCardData = {
-  id: "diff_empty",
-  file: "",
-  additions: 0,
-  deletions: 0,
-  hint: "",
-  lines: [],
-};
-
-function buildOptimisticLiveTurn(turn: OptimisticUserTurn): ChatTurnView {
-  return {
-    id: turn.id,
-    sessionId: turn.sessionId,
-    userPrompt: turn.prompt,
-    userRefFiles: turn.refFiles,
-    userImages: turn.images,
-    workedDuration: "1s",
-    isLive: true,
-    notes: [],
-    groups: [],
-    activeToolStatus: "Thinking...",
-    answerIntro: "",
-    answerBullets: [],
-    diffCard: EMPTY_DIFF,
-    timestamp: "Just now",
-    credits: "0.00 cr",
-    kvCachePct: 94,
-    pinned: false,
-  };
-}
+const EMPTY_COMPLETED_TURNS: ChatTurnView[] = [];
 
 function toChatTurnViews(
   sessionId: string,
@@ -316,19 +298,24 @@ export interface UseChatStreamResult {
 export function useChatStream(
   options: UseChatStreamOptions = {},
 ): UseChatStreamResult {
+  const queryClient = useQueryClient();
   const storeSessionId = useAppStore((s) => s.activeSessionId);
   const storePermission = useAppStore((s) => s.pendingPermission);
-  const pendingUserTurn = useAppStore((s) => s.pendingUserTurn);
-  const consumeOptimisticTurn = useAppStore((s) => s.consumeOptimisticTurn);
   const setStorePermission = useAppStore((s) => s.setPendingPermission);
-  const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const setStoreFileChangesSnapshot = useAppStore(
     (s) => s.setFileChangesSnapshot,
   );
 
   const sessionId =
-    options.sessionId ?? storeSessionId ?? (!isVsCodeWebview() ? "ses_vscode_shell" : "");
+    options.sessionId ??
+    storeSessionId ??
+    (!isVsCodeWebview() ? "ses_vscode_shell" : "");
+
+  useLiveTraceBridge(sessionId);
+
+  const isMockDemoSession =
+    !isVsCodeWebview() && sessionId === "ses_vscode_shell";
 
   const midTurnMessages = useAppStore((s) =>
     sessionId
@@ -410,119 +397,85 @@ export function useChatStream(
 
   const fileChangesSnapshot = localFileChanges ?? storeFileChanges;
 
-  const isMockDemoSession = !isVsCodeWebview() && sessionId === "ses_vscode_shell";
+  const liveTurn = useLiveTraceStore((s) =>
+    sessionId ? (s.liveTurnsBySession[sessionId] ?? null) : null,
+  );
+  const completedTurns = useLiveTraceStore((s) =>
+    sessionId
+      ? (s.completedTurnsBySession[sessionId] ?? EMPTY_COMPLETED_TURNS)
+      : EMPTY_COMPLETED_TURNS,
+  );
+  const baseHistoryTurnCount = useLiveTraceStore((s) =>
+    sessionId ? s.baseHistoryTurnCountBySession[sessionId] : undefined,
+  );
+  const pendingQuestion = useLiveTraceStore((s) =>
+    sessionId ? (s.pendingQuestionsBySession[sessionId] ?? null) : null,
+  );
 
-  const [turns, setTurns] = React.useState<ChatTurnView[]>(() => {
-    if (options.initialTurns) return options.initialTurns;
-    return isMockDemoSession ? DEFAULT_SAMPLE_TURNS : [];
+  const historyQuery = useQuery({
+    queryKey: chatHistoryQueryKey(sessionId),
+    queryFn: async () => {
+      const res = await callRpc("sessions.history", { sessionId });
+      return toChatTurnViews(
+        sessionId,
+        (res.messages ?? []) as HarnessHistoryMessageLike[],
+      );
+    },
+    enabled:
+      options.initialTurns === undefined &&
+      Boolean(sessionId) &&
+      !isMockDemoSession,
+    staleTime: 15_000,
   });
-  const turnsRef = React.useRef(turns);
-  turnsRef.current = turns;
-
-  const [liveTurn, setLiveTurn] = React.useState<ChatTurnView | null>(() => {
-    if (pendingUserTurn && (!sessionId || pendingUserTurn.sessionId === sessionId)) {
-      return buildOptimisticLiveTurn(pendingUserTurn);
-    }
-    return null;
-  });
-  const [pendingQuestion, setPendingQuestion] =
-    React.useState<ClarifyingQuestionRequest | null>(null);
+  const [pinnedOverrides, setPinnedOverrides] = React.useState<
+    Record<string, boolean>
+  >({});
   const [rewoundTurnId, setRewoundTurnId] = React.useState<string | null>(null);
 
   const onDrainQueuedMessageRef = React.useRef(options.onDrainQueuedMessage);
   onDrainQueuedMessageRef.current = options.onDrainQueuedMessage;
-  const turnAbnormalStopRef = React.useRef(false);
-
-  // Consume optimistic turns queued by HomePage or workspace SessionComposer
-  React.useEffect(() => {
-    if (!pendingUserTurn) return;
-    if (sessionId && pendingUserTurn.sessionId !== sessionId) return;
-    turnAbnormalStopRef.current = false;
-    setLiveTurn((prev) => {
-      if (prev && prev.id === pendingUserTurn.id) return prev;
-      return buildOptimisticLiveTurn(pendingUserTurn);
-    });
-    consumeOptimisticTurn(pendingUserTurn.id);
-  }, [consumeOptimisticTurn, pendingUserTurn, sessionId]);
-
-  // Reset/hydrate turns when active session changes (never bleed fake sample turns onto live sessions)
-  const prevSessionRef = React.useRef(sessionId);
-  React.useEffect(() => {
-    if (options.initialTurns) {
-      setTurns(options.initialTurns);
-      prevSessionRef.current = sessionId;
-      return;
-    }
-    if (prevSessionRef.current !== sessionId) {
-      prevSessionRef.current = sessionId;
-      turnAbnormalStopRef.current = false;
-      const pending = useAppStore.getState().pendingUserTurn;
-      const hasMatchingPending =
-        Boolean(pending && pending.sessionId === sessionId);
-      setLiveTurn((prev) => {
-        if (prev && prev.sessionId === sessionId) return prev;
-        return hasMatchingPending && pending
-          ? buildOptimisticLiveTurn(pending)
-          : null;
-      });
-      setRewoundTurnId(null);
-      setTurns(
-        !isVsCodeWebview() && sessionId === "ses_vscode_shell"
-          ? DEFAULT_SAMPLE_TURNS
-          : [],
-      );
-    }
-  }, [options.initialTurns, sessionId]);
-
-  // Hydrate real session history via sessions.history RPC when switching/attaching non-mock sessions
-  const hydrateHistory = React.useCallback(
-    (messages: HarnessHistoryMessageLike[]) => {
-      if (!sessionId) return;
-      setTurns(toChatTurnViews(sessionId, messages));
-    },
-    [sessionId],
-  );
+  const hasDrainHandler = Boolean(options.onDrainQueuedMessage);
 
   React.useEffect(() => {
-    if (options.initialTurns) return;
-    if (!sessionId) return;
-    // Keep rich sample turns for the standalone demo session when running outside VS Code
-    if (!isVsCodeWebview() && sessionId === "ses_vscode_shell") return;
+    if (!sessionId || !hasDrainHandler) return;
+    return registerSessionQueueDrainHandler(sessionId, (item) =>
+      onDrainQueuedMessageRef.current?.(item),
+    );
+  }, [hasDrainHandler, sessionId]);
 
-    let cancelled = false;
-    void callRpc("sessions.history", { sessionId })
-      .then((res) => {
-        if (cancelled) return;
-        const messages: HarnessHistoryMessageLike[] = (res.messages ?? []).map(
-          (msg) => ({
-            role: msg.role,
-            content: msg.content,
-          }),
-        );
-        if (messages.length > 0) {
-          hydrateHistory(messages);
-        }
-      })
-      .catch(() => {
-        // Ignore offline/unavailable history errors; optimistic/live stream still renders
-      });
+  React.useEffect(() => {
+    setRewoundTurnId(null);
+  }, [sessionId]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [hydrateHistory, options.initialTurns, sessionId]);
+  const baseTurns = React.useMemo(() => {
+    if (options.initialTurns) return options.initialTurns;
+    if (isMockDemoSession) return DEFAULT_SAMPLE_TURNS;
+    return historyQuery.data ?? [];
+  }, [historyQuery.data, isMockDemoSession, options.initialTurns]);
+
+  const visibleHistoryTurns = React.useMemo(() => {
+    const sliced = rewoundTurnId
+      ? (() => {
+          const idx = baseTurns.findIndex((t) => t.id === rewoundTurnId);
+          return idx >= 0 ? baseTurns.slice(0, idx + 1) : baseTurns;
+        })()
+      : baseTurns;
+    return sliced.map((t) =>
+      pinnedOverrides[t.id] !== undefined
+        ? { ...t, pinned: pinnedOverrides[t.id]! }
+        : t,
+    );
+  }, [baseTurns, pinnedOverrides, rewoundTurnId]);
 
   const isStreaming = Boolean(liveTurn?.isLive);
+  const turnsRef = React.useRef<ChatTurnView[]>([]);
 
-  React.useEffect(() => {
-    setIsStreamActive(isStreaming);
-  }, [isStreaming, setIsStreamActive]);
+  const pushLiveEvents = React.useCallback(
+    (events: MappedLiveTraceEvent[]) => {
+      if (!sessionId || events.length === 0) return;
 
-  const applyBatchedEvents = React.useCallback(
-    (batch: MappedLiveTraceEvent[]) => {
-      if (batch.length === 0) return;
-
-      for (const ev of batch) {
+      const traceEvents: MappedLiveTraceEvent[] = [];
+      for (const ev of events) {
         if (ev.type === "permission-request") {
           setStorePermission({
             sessionId: ev.sessionId || sessionId,
@@ -531,405 +484,45 @@ export function useChatStream(
             description: ev.description,
             riskTier: ev.riskTier,
           });
-        } else if (ev.type === "turn-stopped") {
-          turnAbnormalStopRef.current = true;
-        }
-      }
-
-      const hasComplete = batch.some((ev) => ev.type === "complete");
-
-      setLiveTurn((prev) => {
-        let current: ChatTurnView = prev ?? {
-          id: `live_${sessionId}_${Date.now()}`,
-          sessionId,
-          userPrompt: "",
-          workedDuration: "1s",
-          isLive: true,
-          notes: [],
-          groups: [],
-          activeToolStatus: null,
-          answerIntro: "",
-          answerBullets: [],
-          diffCard: EMPTY_DIFF,
-          timestamp: "Just now",
-          credits: "0.00 cr",
-          kvCachePct: 94,
-          pinned: false,
-        };
-
-        let completedTurn: ChatTurnView | null = null;
-
-        for (const ev of batch) {
-          switch (ev.type) {
-            case "note":
-              current = {
-                ...current,
-                notes: [...current.notes, ev.text],
-              };
-              break;
-            case "promote-note":
-              if (current.answerIntro.trim()) {
-                current = {
-                  ...current,
-                  notes: [...current.notes, current.answerIntro.trim()],
-                  answerIntro: "",
-                };
-              }
-              break;
-            case "tool-status":
-              current = {
-                ...current,
-                activeToolStatus: ev.label,
-                showLiveBackgroundPill: Boolean(
-                  ev.label &&
-                    /running command|cargo|npm|pnpm|pytest|bash|shell/i.test(
-                      ev.label,
-                    ),
-                ),
-              };
-              break;
-            case "connection-phase":
-              current = {
-                ...current,
-                connectionPhaseLabel: ev.phase,
-              };
-              break;
-            case "kv-cache-miss":
-              current = {
-                ...current,
-                kvCacheMissReason: ev.reason,
-              };
-              break;
-            case "turn-stopped":
-              current = {
-                ...current,
-                activeToolStatus: null,
-                connectionPhaseLabel: null,
-              };
-              break;
-            case "step": {
-              const gId = ev.groupId ?? "wg_live";
-              const gTitle = ev.groupTitle ?? "Read files, ran commands";
-              const existingIdx = current.groups.findIndex(
-                (g) => g.id === gId,
-              );
-              let nextGroups: ExtendedWorkStepGroup[];
-              if (existingIdx >= 0) {
-                nextGroups = current.groups.map((g, idx) =>
-                  idx === existingIdx
-                    ? { ...g, steps: [...g.steps, ev.step] }
-                    : g,
-                );
-              } else {
-                nextGroups = [
-                  ...current.groups,
-                  { id: gId, title: gTitle, steps: [ev.step] },
-                ];
-              }
-              current = { ...current, groups: nextGroups };
-              break;
-            }
-            case "artifact":
-              current = {
-                ...current,
-                artifacts: [...(current.artifacts ?? []), ev.artifact],
-              };
-              break;
-            case "answer-delta":
-              current = {
-                ...current,
-                answerIntro: `${current.answerIntro}${ev.delta}`,
-              };
-              break;
-            case "answer-replace":
-              current = {
-                ...current,
-                answerIntro: ev.text,
-              };
-              break;
-            case "duration":
-              current = {
-                ...current,
-                workedDuration: ev.workedDuration,
-              };
-              break;
-            case "complete":
-              completedTurn = {
-                ...current,
-                isLive: false,
-                activeToolStatus: null,
-                connectionPhaseLabel: null,
-                showLiveBackgroundPill: false,
-                workedDuration: ev.workedDuration || current.workedDuration,
-                credits: ev.credits ?? current.credits,
-                kvCachePct: ev.kvCachePct ?? current.kvCachePct,
-                timestamp: ev.timestamp ?? "Just now",
-              };
-              break;
-            default:
-              break;
-          }
-        }
-
-        if (completedTurn) {
-          const finished = completedTurn;
-          setTurns((old) =>
-            old.some((t) => t.id === finished.id) ? old : [...old, finished],
-          );
-          return null;
-        }
-
-        return current;
-      });
-
-      if (hasComplete && sessionId) {
-        const wasAbnormalStop = turnAbnormalStopRef.current;
-        turnAbnormalStopRef.current = false;
-        const store = useAppStore.getState();
-        const isPaused = Boolean(store.pausedQueueSessions[sessionId]);
-        if (wasAbnormalStop || isPaused) {
-          store.demotePendingSteersToQueue(sessionId);
-          store.setQueuePausedForSession(sessionId, true);
         } else {
-          store.markSteersDelivered(sessionId);
-          const drain = onDrainQueuedMessageRef.current;
-          if (drain) {
-            const nextQueued = store.shiftNextQueuedMessage(sessionId);
-            if (nextQueued) {
-              queueMicrotask(() => {
-                void drain(nextQueued);
-              });
-            }
-          }
+          traceEvents.push(ev);
         }
       }
+      if (traceEvents.length === 0) return;
+
+      const current =
+        useLiveTraceStore.getState().liveTurnsBySession[sessionId] ??
+        startSessionLiveTurn({ sessionId, userPrompt: "" });
+      const updated = applyTraceEvents(current, traceEvents);
+      if (!updated) return;
+      if (traceEvents.some((ev) => ev.type === "complete")) {
+        const wasAbnormalStop = traceEvents.some(
+          (ev) => ev.type === "turn-stopped",
+        );
+        useLiveTraceStore.setState((state) => {
+          const prev = state.completedTurnsBySession[sessionId] ?? [];
+          return {
+            completedTurnsBySession: {
+              ...state.completedTurnsBySession,
+              [sessionId]: prev.some((t) => t.id === updated.id)
+                ? prev
+                : [...prev, updated],
+            },
+          };
+        });
+        clearSessionLiveTurn(sessionId);
+        settleSessionTurnQueue(sessionId, wasAbnormalStop);
+        return;
+      }
+      useLiveTraceStore.setState((state) => ({
+        liveTurnsBySession: {
+          ...state.liveTurnsBySession,
+          [sessionId]: updated,
+        },
+      }));
     },
     [sessionId, setStorePermission],
   );
-
-  const batcherRef = React.useRef<ReturnType<
-    typeof createStreamBatcher<MappedLiveTraceEvent>
-  > | null>(null);
-
-  React.useEffect(() => {
-    const batcher = createStreamBatcher<MappedLiveTraceEvent>(
-      applyBatchedEvents,
-      16,
-    );
-    batcherRef.current = batcher;
-    return () => {
-      batcher.dispose();
-      batcherRef.current = null;
-    };
-  }, [applyBatchedEvents]);
-
-  const pushLiveEvents = React.useCallback(
-    (events: MappedLiveTraceEvent[]) => {
-      const batcher = batcherRef.current;
-      if (!batcher) {
-        applyBatchedEvents(events);
-        return;
-      }
-      for (const ev of events) {
-        batcher.push(ev);
-      }
-      if (
-        events.some(
-          (e) =>
-            e.type === "complete" ||
-            e.type === "permission-request" ||
-            e.type === "turn-stopped" ||
-            e.type === "note",
-        )
-      ) {
-        batcher.flushNow();
-      }
-    },
-    [applyBatchedEvents],
-  );
-
-  // Subscribe to live harness frames from the Extension Host
-  React.useEffect(() => {
-    const tracker = createHarnessStreamTracker();
-    const unsub = onHarnessFrame((frame) => {
-      const frameSession =
-        typeof frame.session_id === "string" ? frame.session_id : null;
-      if (frameSession && frameSession !== sessionId) return;
-
-      if (frame.ev === "soft_interrupt_injected") {
-        if (!sessionId) return;
-        const clientIds = Array.isArray(frame.client_ids)
-          ? frame.client_ids.filter(
-              (id): id is string => typeof id === "string" && id.length > 0,
-            )
-          : [];
-        const store = useAppStore.getState();
-        const currentItems = store.midTurnMessagesBySession[sessionId] ?? [];
-        const matchedSteers = currentItems.filter(
-          (item) =>
-            item.mode === "steer" &&
-            (clientIds.length === 0 || clientIds.includes(item.id)),
-        );
-        store.markSteersDelivered(sessionId, clientIds);
-        if (matchedSteers.length > 0) {
-          const texts = matchedSteers
-            .map((item) => item.text.trim())
-            .filter(Boolean);
-          if (texts.length > 0) {
-            pushLiveEvents([
-              { type: "note", text: `Steered: ${texts.join(" · ")}` },
-            ]);
-          }
-        }
-        return;
-      }
-
-      if (frame.ev === "soft_interrupts_cancelled") {
-        if (!sessionId) return;
-        if (Array.isArray(frame.cancelled)) {
-          const store = useAppStore.getState();
-          for (const id of frame.cancelled) {
-            if (typeof id === "string" && id.length > 0) {
-              store.removeMidTurnMessage(sessionId, id);
-            }
-          }
-        }
-        return;
-      }
-
-      if (frame.ev === "question_closed") {
-        const closedReqId =
-          typeof frame.request_id === "string" ? frame.request_id : null;
-        setPendingQuestion((prev) => {
-          if (!prev) return null;
-          if (closedReqId && prev.requestId !== closedReqId) return prev;
-          return null;
-        });
-        return;
-      }
-
-      if (frame.ev === "question_request" || frame.ev === "ask_user_question") {
-        const reqId = String(frame.request_id ?? `q_${Date.now()}`);
-        const firstQuestion =
-          Array.isArray(frame.questions) &&
-          frame.questions[0] &&
-          typeof frame.questions[0] === "object"
-            ? (frame.questions[0] as Record<string, unknown>)
-            : null;
-        const prompt = String(
-          firstQuestion?.question ??
-            firstQuestion?.prompt ??
-            frame.prompt ??
-            frame.question ??
-            "How would you like to proceed?",
-        );
-        const rawOpts = Array.isArray(firstQuestion?.options)
-          ? firstQuestion.options
-          : Array.isArray(frame.options)
-            ? frame.options
-            : [];
-        const multiSelect = Boolean(
-          firstQuestion?.multiSelect ??
-            firstQuestion?.multi_select ??
-            frame.multiSelect ??
-            frame.multi_select,
-        );
-        setPendingQuestion({
-          requestId: reqId,
-          sessionId,
-          prompt,
-          multiSelect,
-          options:
-            rawOpts.length > 0
-              ? rawOpts.map((o, idx) => {
-                  const obj =
-                    o && typeof o === "object"
-                      ? (o as Record<string, unknown>)
-                      : { title: String(o) };
-                  return {
-                    id: String(obj.id ?? `opt_${idx + 1}`),
-                    key: String(obj.key ?? idx + 1),
-                    title: String(obj.title ?? obj.label ?? `Option ${idx + 1}`),
-                    subtitle:
-                      typeof obj.subtitle === "string"
-                        ? obj.subtitle
-                        : typeof obj.description === "string"
-                          ? obj.description
-                          : undefined,
-                    recommended: Boolean(obj.recommended),
-                  };
-                })
-              : [
-                  {
-                    id: "opt_1",
-                    key: "1",
-                    title: "Proceed with recommended defaults",
-                    recommended: true,
-                  },
-                  {
-                    id: "opt_2",
-                    key: "2",
-                    title: "Review changes step-by-step first",
-                  },
-                ],
-        });
-        return;
-      }
-
-      if (frame.ev === "session_status") {
-        const status = typeof frame.status === "string" ? frame.status : "";
-        if (
-          status === "running" ||
-          status === "generating" ||
-          status === "tool_running"
-        ) {
-          setLiveTurn((prev) => {
-            if (prev) {
-              return prev.isLive ? prev : { ...prev, isLive: true };
-            }
-            return {
-              id: `live_${sessionId}_${Date.now()}`,
-              sessionId,
-              userPrompt: "",
-              workedDuration: "1s",
-              isLive: true,
-              notes: [],
-              groups: [],
-              activeToolStatus:
-                status === "tool_running" ? "Running tool..." : "Thinking...",
-              answerIntro: "",
-              answerBullets: [],
-              diffCard: EMPTY_DIFF,
-              timestamp: "Just now",
-              credits: "0.00 cr",
-              kvCachePct: 94,
-              pinned: false,
-            };
-          });
-        } else if (status === "idle") {
-          setLiveTurn((prev) => {
-            if (!prev) return null;
-            if (
-              !prev.userPrompt.trim() &&
-              !prev.answerIntro.trim() &&
-              prev.groups.length === 0 &&
-              prev.notes.length === 0
-            ) {
-              return null;
-            }
-            return prev;
-          });
-        }
-        return;
-      }
-
-      const mapped = mapHarnessFrameToLiveEvents(frame, tracker);
-      if (mapped.length > 0) {
-        pushLiveEvents(mapped);
-      }
-    });
-    return unsub;
-  }, [pushLiveEvents, sessionId]);
 
   const sendPrompt = React.useCallback(
     (
@@ -940,7 +533,7 @@ export function useChatStream(
       },
     ) => {
       const trimmed = prompt.trim();
-      if (!trimmed) return;
+      if (!trimmed || !sessionId) return;
 
       if (isStreaming) {
         const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -960,25 +553,12 @@ export function useChatStream(
         return;
       }
 
-      turnAbnormalStopRef.current = false;
-      setLiveTurn({
-        id: `live_${sessionId}_${Date.now()}`,
+      startSessionLiveTurn({
         sessionId,
         userPrompt: trimmed,
         userRefFiles: opts?.refFiles,
         userImages: opts?.images,
-        workedDuration: "1s",
-        isLive: true,
-        notes: [],
-        groups: [],
-        activeToolStatus: "Thinking...",
-        answerIntro: "",
-        answerBullets: [],
-        diffCard: EMPTY_DIFF,
-        timestamp: "Just now",
-        credits: "0.00 cr",
-        kvCachePct: 94,
-        pinned: false,
+        baseHistoryTurnCount: visibleHistoryTurns.length,
       });
 
       sendHarnessRequest({
@@ -987,7 +567,7 @@ export function useChatStream(
         content: trimmed,
       });
     },
-    [isStreaming, sessionId],
+    [isStreaming, sessionId, visibleHistoryTurns.length],
   );
 
   const respondPermission = React.useCallback(
@@ -1018,7 +598,7 @@ export function useChatStream(
     ) => {
       if (!pendingQuestion) return;
       const q = pendingQuestion;
-      setPendingQuestion(null);
+      setSessionPendingQuestion(sessionId, null);
       try {
         await callRpc("sessions.respondQuestion", {
           sessionId: q.sessionId || sessionId,
@@ -1034,8 +614,23 @@ export function useChatStream(
   );
 
   const dismissQuestion = React.useCallback(() => {
-    setPendingQuestion(null);
-  }, []);
+    setSessionPendingQuestion(sessionId, null);
+  }, [sessionId]);
+
+  const setPendingQuestion = React.useCallback<
+    React.Dispatch<React.SetStateAction<ClarifyingQuestionRequest | null>>
+  >(
+    (updater) => {
+      const current = sessionId
+        ? (useLiveTraceStore.getState().pendingQuestionsBySession[sessionId] ??
+          null)
+        : null;
+      const next =
+        typeof updater === "function" ? updater(current) : updater;
+      setSessionPendingQuestion(sessionId, next);
+    },
+    [sessionId],
+  );
 
   const backgroundActiveTool = React.useCallback(async () => {
     try {
@@ -1050,10 +645,6 @@ export function useChatStream(
       const idx = turnsRef.current.findIndex((t) => t.id === turnId);
       const messageIndex = idx >= 0 ? idx + 1 : undefined;
       setRewoundTurnId(turnId);
-      setTurns((prev) => {
-        const prevIdx = prev.findIndex((t) => t.id === turnId);
-        return prevIdx >= 0 ? prev.slice(0, prevIdx + 1) : prev;
-      });
       try {
         await callRpc("sessions.rewind", {
           sessionId,
@@ -1074,25 +665,12 @@ export function useChatStream(
     } catch {
       // ignore offline errors
     }
-    if (options.initialTurns) return;
-    if (!isVsCodeWebview() && sessionId === "ses_vscode_shell") {
-      setTurns(DEFAULT_SAMPLE_TURNS);
-      return;
+    if (!options.initialTurns && !isMockDemoSession && sessionId) {
+      await queryClient.invalidateQueries({
+        queryKey: chatHistoryQueryKey(sessionId),
+      });
     }
-    if (!sessionId) return;
-    try {
-      const res = await callRpc("sessions.history", { sessionId });
-      const messages: HarnessHistoryMessageLike[] = (res.messages ?? []).map(
-        (msg) => ({
-          role: msg.role,
-          content: msg.content,
-        }),
-      );
-      hydrateHistory(messages);
-    } catch {
-      // ignore offline errors
-    }
-  }, [hydrateHistory, options.initialTurns, sessionId]);
+  }, [isMockDemoSession, options.initialTurns, queryClient, sessionId]);
 
   const queueSoftInterrupt = React.useCallback(
     async (text: string, urgent = false) => {
@@ -1255,27 +833,51 @@ export function useChatStream(
 
   const togglePinTurn = React.useCallback(
     (turnId: string, pinned: boolean) => {
-      setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, pinned } : t)),
-      );
+      setPinnedOverrides((prev) => ({ ...prev, [turnId]: pinned }));
+      toggleCompletedTurnPin(sessionId, turnId, pinned);
     },
-    [],
+    [sessionId],
   );
 
   const retryTurn = React.useCallback(
     (turnId: string) => {
-      const target = turns.find((t) => t.id === turnId);
+      const target = visibleHistoryTurns.find((t) => t.id === turnId);
       if (target) {
         sendPrompt(target.userPrompt);
       }
     },
-    [sendPrompt, turns],
+    [sendPrompt, visibleHistoryTurns],
   );
 
-  const allTurns = React.useMemo(
-    () => (liveTurn ? [...turns, liveTurn] : turns),
-    [liveTurn, turns],
-  );
+  const allTurns = React.useMemo(() => {
+    const toReconcilable = (t: ChatTurnView) => ({
+      ...t,
+      answerMarkdown: t.answerIntro,
+      workGroups: t.groups,
+    });
+    const reconciled = reconcileChatTurns({
+      historyTurns: visibleHistoryTurns.map(toReconcilable),
+      liveTurn: liveTurn ? toReconcilable(liveTurn) : null,
+      completedLiveTurns: options.initialTurns
+        ? undefined
+        : completedTurns.map(toReconcilable),
+      baseHistoryTurnCount,
+    });
+    return reconciled.map((t) =>
+      pinnedOverrides[t.id] !== undefined
+        ? { ...t, pinned: pinnedOverrides[t.id]! }
+        : t,
+    );
+  }, [
+    baseHistoryTurnCount,
+    completedTurns,
+    isMockDemoSession,
+    liveTurn,
+    options.initialTurns,
+    pinnedOverrides,
+    visibleHistoryTurns,
+  ]);
+  turnsRef.current = allTurns;
 
   return {
     sessionId,

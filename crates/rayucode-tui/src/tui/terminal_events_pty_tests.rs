@@ -69,18 +69,28 @@ fn live_queries_and_fragmented_color_replies_work_through_crossterm() {
         ws_ypixel: 0,
     };
     // SAFETY: openpty initializes both descriptors, with no name or termios.
-    assert_eq!(
-        unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
-            )
-        },
-        0
-    );
+    #[cfg(target_vendor = "apple")]
+    let openpty_rc = unsafe {
+        let mut size = size;
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    #[cfg(not(target_vendor = "apple"))]
+    let openpty_rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &size,
+        )
+    };
+    assert_eq!(openpty_rc, 0);
     // SAFETY: these descriptors are newly allocated and exclusively owned.
     let mut master = unsafe { std::fs::File::from_raw_fd(master) };
     let slave = unsafe { std::fs::File::from_raw_fd(slave) };

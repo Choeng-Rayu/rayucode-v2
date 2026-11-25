@@ -78,6 +78,7 @@ export function HomePage({
 }: HomePageProps) {
   const queryClient = useQueryClient();
   const accountStatus = useAppStore((s) => s.accountStatus);
+  const activeDraft = useAppStore((s) => s.activeDraft);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const enqueueOptimisticTurn = useAppStore((s) => s.enqueueOptimisticTurn);
@@ -159,12 +160,25 @@ export function HomePage({
       setPendingElapsedSec(0);
       setComposerValue("");
 
+      const draft = useAppStore.getState().activeDraft;
+      const effectiveWorkingDir =
+        payload.workingDir ??
+        draft?.workingDir ??
+        useAppStore.getState().activeProjectPath ??
+        undefined;
+      const effectiveModel =
+        payload.modelSpec || payload.modelId || draft?.model || undefined;
+      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+      const effectivePermissionMode =
+        payload.permissionMode ??
+        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined) ??
+        "default";
+
       try {
-        const resolvedModel = payload.modelSpec || payload.modelId;
         const created = await createSessionMutation.mutateAsync({
-          workingDir: payload.workingDir,
-          permissionMode: payload.permissionMode,
-          model: resolvedModel,
+          workingDir: effectiveWorkingDir,
+          permissionMode: effectivePermissionMode,
+          model: effectiveModel,
         });
 
         if (submitAttemptRef.current !== attemptId) {
@@ -176,11 +190,14 @@ export function HomePage({
         setPendingElapsedSec(0);
 
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace", "ledger"],
+        });
 
         // Sync permission mode via typed RPC (no duplicate sendHarnessRequest)
         void callRpc("sessions.setPermissionMode", {
           sessionId: session.sessionId,
-          mode: payload.permissionMode,
+          mode: effectivePermissionMode,
         }).catch(() => {});
 
         const formattedSelectionContext = payload.editorSelection
@@ -201,6 +218,7 @@ export function HomePage({
             dataUrl: img.data,
           })),
           createdAtMs: Date.now(),
+          baseHistoryTurnCount: 0,
         });
 
         setIsStreamActive(true);
@@ -211,10 +229,11 @@ export function HomePage({
           req: "send_message",
           session_id: session.sessionId,
           content: `${payload.prompt}${formattedSelectionContext}`,
-          model: resolvedModel,
+          ...(effectiveModel ? { model: effectiveModel } : {}),
           ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
-          effort: payload.effort,
+          effort: effectiveEffort,
           images: payload.images,
+          ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
         });
       } catch {
         if (submitAttemptRef.current !== attemptId) return;
@@ -410,6 +429,13 @@ export function HomePage({
         value={composerValue}
         onValueChange={setComposerValue}
         inputRef={textareaRef}
+        modelId={activeDraft?.model}
+        effort={activeDraft?.reasoningEffort}
+        permissionMode={
+          activeDraft?.permissionMode as
+            | ComposerSubmitPayload["permissionMode"]
+            | undefined
+        }
         onSubmit={handleSubmit}
         onStop={handleStopPending}
         isSubmitting={

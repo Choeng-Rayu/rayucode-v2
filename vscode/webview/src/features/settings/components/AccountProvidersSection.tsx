@@ -360,7 +360,7 @@ export function AccountProvidersSection({
                       </div>
                       <div
                         data-testid="account-credits-remaining"
-                        className="font-mono text-base font-semibold text-ink tabular-nums"
+                        className="font-mono text-base font-semibold text-brand-text tabular-nums"
                       >
                         {account.creditsRemaining != null
                           ? `${account.creditsRemaining.toLocaleString()} cr`

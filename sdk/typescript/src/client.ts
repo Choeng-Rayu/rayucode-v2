@@ -25,12 +25,15 @@ import {
   type AnyApiEvent,
   type ApiEvent,
   type ApiRequest,
+  type ExternalProjectInfo,
   type FileChangeActionKind,
   type FileChangeActionResponse,
   type FileChangeDiffPayload,
   type FileChangesSnapshot,
   type HistoryMessage,
   type ImageAttachment,
+  type ImportExternalSessionItem,
+  type ImportExternalSessionsResult,
   type ModelRouteInfo,
   type PermissionDecision,
   type PermissionMode,
@@ -479,12 +482,57 @@ export class RayucodeClient extends EventEmitter {
 
   // --- Curated surface -----------------------------------------------------
 
-  async listSessions(options: { includeArchived?: boolean; limit?: number } = {}): Promise<SessionInfo[]> {
+  async listSessions(
+    options: {
+      includeArchived?: boolean;
+      limit?: number;
+      includeExternal?: boolean;
+      sources?: string[];
+    } = {},
+  ): Promise<SessionInfo[]> {
     const frame = await this.expectReply(
-      { req: "list_sessions", include_archived: options.includeArchived, limit: options.limit },
+      {
+        req: "list_sessions",
+        include_archived: options.includeArchived,
+        limit: options.limit,
+        include_external: options.includeExternal,
+        sources: options.sources,
+      },
       "sessions",
     );
     return frame.sessions ?? [];
+  }
+
+  async listExternalProjects(
+    options: { source?: string } = {},
+  ): Promise<ExternalProjectInfo[]> {
+    const frame = await this.expectReply(
+      {
+        req: "list_external_projects",
+        source: options.source,
+      },
+      "external_projects",
+    );
+    return frame.projects ?? [];
+  }
+
+  async importExternalSessions(
+    items: ImportExternalSessionItem[],
+    options: { forceResync?: boolean; forkOnConflict?: boolean } = {},
+  ): Promise<ImportExternalSessionsResult> {
+    const frame = await this.expectReply(
+      {
+        req: "import_external_sessions",
+        items,
+        force_resync: options.forceResync,
+        fork_on_conflict: options.forkOnConflict,
+      },
+      "external_sessions_imported",
+    );
+    return {
+      sessions: frame.sessions ?? [],
+      skipped: frame.skipped ?? [],
+    };
   }
 
   async listSessionsLimited(limit: number): Promise<SessionInfo[]> {

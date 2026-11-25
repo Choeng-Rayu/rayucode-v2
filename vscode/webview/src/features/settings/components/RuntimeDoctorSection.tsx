@@ -1,3 +1,4 @@
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import * as React from "react";
 import {
   Activity,
@@ -227,7 +228,7 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Daemon version</div>
             <div className="mt-0.5 font-mono text-ink">
-              v{daemonStatus.version ?? "2.4.0-dev"}
+              {formatDaemonVersionLabel(daemonStatus.version ?? "2.4.0-dev") || "v2.4.0-dev"}
             </div>
           </div>
           <div>
