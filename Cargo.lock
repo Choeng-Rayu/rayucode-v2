@@ -5955,6 +5955,7 @@ dependencies = [
  "futures",
  "global-hotkey",
  "libc",
+ "qrcode",
  "rand 0.9.3",
  "rayucode-agent-runtime",
  "rayucode-ambient-types",

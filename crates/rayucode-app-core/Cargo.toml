@@ -59,6 +59,7 @@ base64 = "0.22"
 sha2 = "0.10"
 rand = "0.9.3"
 url = "2"
+qrcode = { version = "0.14.1", default-features = false }
 # Local fallback for the open tool when no `rayu companion` is running.
 rayucode-desktop-open = { path = "../rayucode-desktop-open" }
 rayucode-agent-runtime = { path = "../rayucode-agent-runtime" }

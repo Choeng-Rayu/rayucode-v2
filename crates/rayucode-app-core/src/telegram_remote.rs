@@ -127,6 +127,45 @@ fn path() -> Result<PathBuf> {
     Ok(crate::storage::rayu_dir()?.join("telegram-remote.json"))
 }
 
+pub fn settings_path() -> Result<PathBuf> {
+    path()
+}
+
+/// Encode `data` into a scannable ISO QR code SVG path (`M x y h w v 1 h -w z`)
+/// with a 2-module quiet zone around the matrix.
+pub fn qr_svg_path(data: &str) -> Option<(usize, String)> {
+    use qrcode::{Color, QrCode};
+    let code = QrCode::new(data.as_bytes()).ok()?;
+    let width = code.width();
+    const QUIET: usize = 2;
+    let total = width + QUIET * 2;
+    let mut d = String::with_capacity(width * width * 3);
+    for y in 0..width {
+        let mut x = 0;
+        while x < width {
+            if code[(x, y)] == Color::Dark {
+                let start = x;
+                while x < width && code[(x, y)] == Color::Dark {
+                    x += 1;
+                }
+                let run = x - start;
+                use std::fmt::Write;
+                let _ = write!(
+                    d,
+                    "M{} {}h{}v1h-{}z",
+                    start + QUIET,
+                    y + QUIET,
+                    run,
+                    run
+                );
+            } else {
+                x += 1;
+            }
+        }
+    }
+    Some((total, d))
+}
+
 pub fn load() -> Result<Option<Link>> {
     let path = path()?;
     match std::fs::read(&path) {
@@ -251,8 +290,14 @@ pub fn claim_setup() -> Result<File> {
 }
 
 pub async fn hosted_pairing(replace_existing: bool) -> Result<(Link, String)> {
+    let (link, url, _code) = hosted_pairing_with_code(replace_existing).await?;
+    Ok((link, url))
+}
+
+pub async fn hosted_pairing_with_code(replace_existing: bool) -> Result<(Link, String, String)> {
     let _setup = claim_setup()?;
-    if load()?.is_some() {
+    let existing_local = load()?;
+    if existing_local.is_some() && !replace_existing {
         bail!("Run rayu telegram disconnect before pairing another bot.");
     }
     let account = crate::rayu::read_session()
@@ -274,10 +319,134 @@ pub async fn hosted_pairing(replace_existing: bool) -> Result<(Link, String)> {
         .context("The hosted Telegram bot is unavailable")?;
     let link = Link::new(username, transport.mode);
     let url = rayucode_base::telegram::remote::pairing_url(&link.username, &pairing.code)?;
-    if !replace(None, Some(&link))? {
+    let expected = existing_local.map(|current| current.generation);
+    if !replace(expected, Some(&link))? {
         bail!("Another Telegram setup is active");
     }
-    Ok((link, url))
+    Ok((link, url, pairing.code))
+}
+
+/// Validate a BotFather token against Telegram's `getMe` and `getWebhookInfo`,
+/// register slash commands, and persist either a direct link (when `allowed_chat_id`
+/// is supplied) or a 10-minute `/start <code>` pairing session.
+pub async fn botfather_pairing(
+    token: &str,
+    allowed_chat_id: Option<i64>,
+    replace_existing: bool,
+) -> Result<(Link, Option<(String, String)>)> {
+    let _setup = claim_setup()?;
+    let existing_local = load()?;
+    if existing_local.is_some() && !replace_existing {
+        bail!(
+            "A Telegram bot is already configured on this host. Disconnect it first or replace the existing link."
+        );
+    }
+    let trimmed = token.trim();
+    let bot_id =
+        rayucode_base::telegram::remote::bot_id(trimmed).context("Invalid BotFather token")?;
+    validate_bot(bot_id)?;
+    if let Some(chat_id) = allowed_chat_id
+        && chat_id <= 0
+    {
+        bail!("Allowed Telegram chat ID must be a positive private chat ID.");
+    }
+    let transport = Transport::new(Mode::BotFather {
+        token: trimmed.to_owned(),
+        bot_id,
+    })?;
+    let bot = transport.get_bot().await?;
+    anyhow::ensure!(bot.id == bot_id, "BotFather returned a different bot ID");
+    transport.check_polling().await?;
+    if let Err(error) = transport.register_commands().await {
+        crate::logging::warn(&format!("Telegram command menu: {error}"));
+    }
+    if let Some(existing) = &existing_local
+        && matches!(existing.mode, Mode::Hosted { .. })
+        && let Ok(hosted) = Transport::new(existing.mode.clone())
+    {
+        let _ = hosted.unlink().await;
+    }
+    let expected = existing_local.map(|current| current.generation);
+    if let Some(chat_id) = allowed_chat_id {
+        let mut link = Link::new(bot.username, transport.mode.clone());
+        link.owner = Some(chat_id);
+        link.pending = None;
+        link.pending_until = None;
+        if !replace(expected, Some(&link))? {
+            bail!("Another Telegram setup is active");
+        }
+        if let Err(error) = transport
+            .send(
+                chat_id,
+                "Rayu is linked. Use /sessions to choose a session.",
+                None,
+            )
+            .await
+        {
+            crate::logging::warn(&format!(
+                "Telegram initial welcome message skipped (open the bot in Telegram and tap Start if needed): {error}"
+            ));
+        }
+        Ok((link, None))
+    } else {
+        let (link, code) = Link::new(bot.username, transport.mode).pending_bot();
+        let url = rayucode_base::telegram::remote::pairing_url(&link.username, &code)?;
+        if !replace(expected, Some(&link))? {
+            bail!("Another Telegram setup is active");
+        }
+        Ok((link, Some((url, code))))
+    }
+}
+
+pub fn disconnect_local(link: &Link) -> Result<()> {
+    let _setup = claim_setup()?;
+    if !replace(Some(link.generation), None)? {
+        bail!("Telegram settings changed. Check rayu telegram status.");
+    }
+    Ok(())
+}
+
+pub fn select_session(session_id: &str) -> Result<Link> {
+    let trimmed = session_id.trim();
+    anyhow::ensure!(
+        !trimmed.is_empty()
+            && trimmed.len() <= 128
+            && trimmed
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-')),
+        "Invalid session ID `{trimmed}`"
+    );
+    let _setup = claim_setup()?;
+    let mut link = load()?.context("Telegram is not currently configured on this host.")?;
+    let expected = link.generation;
+    link.selected = Some(trimmed.to_owned());
+    if !replace(Some(expected), Some(&link))? {
+        bail!("Telegram settings changed. Retry selecting the session.");
+    }
+    Ok(link)
+}
+
+pub async fn send_ping() -> Result<(String, i64, i64)> {
+    let link = load()?.context("Telegram is not currently linked on this host.")?;
+    anyhow::ensure!(
+        link.active_account(),
+        "Sign in with the linked Rayu account before sending a Telegram ping."
+    );
+    let chat_id = link
+        .owner
+        .context("Telegram pairing is still pending. Complete pairing in Telegram first.")?;
+    let transport = Transport::new(link.mode.clone())?;
+    let session_note = link
+        .selected
+        .as_deref()
+        .map(|id| format!("\nDriving session: {id}"))
+        .unwrap_or_default();
+    let text = format!(
+        "RayuCode host ping OK · @{}{session_note}",
+        link.username
+    );
+    let message_id = transport.send(chat_id, &text, None).await?;
+    Ok((link.username, chat_id, message_id))
 }
 
 pub fn validate_bot(bot_id: i64) -> Result<()> {

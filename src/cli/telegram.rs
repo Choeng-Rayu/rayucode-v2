@@ -1,8 +1,8 @@
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
-use crate::telegram::remote::{self, Mode, Transport};
-use crate::telegram_remote::{self, Link};
+use crate::telegram_remote;
+use crate::telegram::remote::Mode;
 use anyhow::{Context, Result, bail, ensure};
 use clap::Subcommand;
 
@@ -81,11 +81,7 @@ pub(crate) async fn run(
         TelegramCommand::Disconnect { local_only } => {
             if let Some(link) = link {
                 if local_only {
-                    let _setup = telegram_remote::claim_setup()?;
-                    ensure!(
-                        telegram_remote::replace(Some(link.generation), None)?,
-                        "Telegram settings changed"
-                    );
+                    telegram_remote::disconnect_local(&link)?;
                 } else {
                     telegram_remote::disconnect(&link).await?;
                 }
@@ -122,26 +118,9 @@ pub(crate) async fn run(
                 let token = rayucode_terminal_prompt::read_secret_line()?
                     .trim()
                     .to_owned();
-                let _setup = telegram_remote::claim_setup()?;
-                ensure!(
-                    telegram_remote::load()?.is_none(),
-                    "Another Telegram setup is active"
-                );
-                let bot_id = remote::bot_id(&token).context("Invalid BotFather token")?;
-                telegram_remote::validate_bot(bot_id)?;
-                let transport = Transport::new(Mode::BotFather { token, bot_id })?;
-                let bot = transport.get_bot().await?;
-                ensure!(bot.id == bot_id, "BotFather returned a different bot ID");
-                transport.check_polling().await?;
-                if let Err(error) = transport.register_commands().await {
-                    crate::logging::warn(&format!("Telegram command menu: {error}"));
-                }
-                let (link, code) = Link::new(bot.username, transport.mode).pending_bot();
-                let url = remote::pairing_url(&link.username, &code)?;
-                ensure!(
-                    telegram_remote::replace(None, Some(&link))?,
-                    "Another Telegram setup is active"
-                );
+                let (link, pairing) =
+                    telegram_remote::botfather_pairing(&token, None, false).await?;
+                let (url, _code) = pairing.context("Missing BotFather pairing link")?;
                 (link, url)
             } else {
                 telegram_remote::hosted_pairing(replace_existing).await?
