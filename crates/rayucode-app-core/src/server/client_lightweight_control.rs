@@ -36,6 +36,32 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+pub(super) async fn handle_cancel_background_task(
+    id: u64,
+    task_id: String,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    let (cancelled, message) = match crate::background::global().cancel(&task_id).await {
+        Ok(true) => (true, Some(format!("Cancelled background task {task_id}"))),
+        Ok(false) => (
+            false,
+            Some(format!(
+                "Background task {task_id} is not running or was not found"
+            )),
+        ),
+        Err(error) => (
+            false,
+            Some(format!("Failed to cancel background task {task_id}: {error}")),
+        ),
+    };
+    let _ = client_event_tx.send(ServerEvent::BackgroundTaskCancelled {
+        id,
+        task_id,
+        cancelled,
+        message,
+    });
+}
+
 pub(super) fn parse_swarm_spawn_mode(
     id: u64,
     spawn_mode: Option<String>,
@@ -1038,6 +1064,64 @@ pub(super) async fn handle_lightweight_control_request(
                 },
             )
             .await;
+        }
+        Request::GetProjectActivity { id, session_id } => {
+            let activity_ctx = super::project_activity::ProjectActivityContext {
+                sessions: Arc::clone(sessions),
+                swarm_members: Arc::clone(swarm_members),
+                swarm_plans: Arc::clone(swarm_plans),
+                file_touch: file_touch.clone(),
+                await_members_runtime: await_members_runtime.clone(),
+                ambient_runner: super::project_activity::current_ambient_runner(),
+            };
+            let snapshot = super::project_activity::build_snapshot(
+                &activity_ctx,
+                session_id.as_deref(),
+                None,
+            )
+            .await;
+            let _ = client_event_tx.send(ServerEvent::ProjectActivitySnapshot {
+                id: Some(id),
+                snapshot,
+            });
+        }
+        Request::SubscribeProjectActivity { id, enabled } => {
+            if enabled {
+                let activity_ctx = super::project_activity::ProjectActivityContext {
+                    sessions: Arc::clone(sessions),
+                    swarm_members: Arc::clone(swarm_members),
+                    swarm_plans: Arc::clone(swarm_plans),
+                    file_touch: file_touch.clone(),
+                    await_members_runtime: await_members_runtime.clone(),
+                    ambient_runner: super::project_activity::current_ambient_runner(),
+                };
+                let snapshot =
+                    super::project_activity::build_snapshot(&activity_ctx, None, None).await;
+                let _ = client_event_tx.send(ServerEvent::ProjectActivitySnapshot {
+                    id: None,
+                    snapshot,
+                });
+            }
+            let _ = client_event_tx.send(ServerEvent::Done { id });
+        }
+        Request::PeekSession { id, target } => {
+            if let Some(target) = target {
+                let activity_ctx = super::project_activity::ProjectActivityContext {
+                    sessions: Arc::clone(sessions),
+                    swarm_members: Arc::clone(swarm_members),
+                    swarm_plans: Arc::clone(swarm_plans),
+                    file_touch: file_touch.clone(),
+                    await_members_runtime: await_members_runtime.clone(),
+                    ambient_runner: super::project_activity::current_ambient_runner(),
+                };
+                let payload =
+                    super::session_peek::build_peek_payload(&target, &activity_ctx).await;
+                let _ = client_event_tx.send(ServerEvent::SessionPeek { payload });
+            }
+            let _ = client_event_tx.send(ServerEvent::Done { id });
+        }
+        Request::CancelBackgroundTask { id, task_id } => {
+            handle_cancel_background_task(id, task_id, &client_event_tx).await;
         }
         other => {
             let _ = client_event_tx.send(ServerEvent::Error {

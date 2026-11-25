@@ -892,6 +892,13 @@ impl crate::tui::TuiState for App {
             .is_some_and(|(media_type, data)| !media_type.is_empty() && !data.is_empty())
     }
 
+    fn input_pasted_attached(&self, number: usize) -> bool {
+        number
+            .checked_sub(1)
+            .and_then(|index| self.pasted_contents.get(index))
+            .is_some_and(|content| !content.is_empty())
+    }
+
     fn cursor_pos(&self) -> usize {
         self.cursor_pos
     }
@@ -2142,6 +2149,42 @@ impl crate::tui::TuiState for App {
         self.swarm_panel_full_page && self.inline_swarm_gallery_active()
     }
 
+    fn legacy_passive_swarm_strip_enabled(&self) -> bool {
+        self.debug_force_inline_gallery
+            || std::env::var_os("RAYU_LEGACY_SWARM_STRIP").is_some()
+    }
+
+    fn project_activity_summary(&self) -> crate::protocol::ProjectActivitySummary {
+        self.effective_project_activity_summary()
+    }
+
+    fn has_session_return_target(&self) -> bool {
+        App::has_session_return_target(self)
+    }
+
+    fn activity_dashboard_open(&self) -> bool {
+        self.activity_dashboard.open
+    }
+
+    fn activity_dashboard_render_data(
+        &self,
+    ) -> Option<crate::tui::app::ActivityDashboardRenderData> {
+        self.activity_dashboard
+            .open
+            .then(|| self.build_activity_dashboard_render_data())
+    }
+
+    fn activity_dashboard_peek_debounce_pending(&self) -> bool {
+        self.activity_dashboard.open && self.activity_dashboard.peek_debounce_until.is_some()
+    }
+
+    fn record_activity_dashboard_layout(
+        &self,
+        metrics: rayucode_tui_render::activity_dashboard::ActivityDashboardLayoutMetrics,
+    ) {
+        self.activity_dashboard.layout_metrics.set(metrics);
+    }
+
     fn diagram_focus(&self) -> bool {
         self.diagram_focus
     }
@@ -2405,6 +2448,7 @@ impl crate::tui::TuiState for App {
 }
 
 /// The three Alt+N swarm views. Repeated presses cycle in declaration order.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SwarmPanelView {
     Chat,
@@ -2414,6 +2458,7 @@ pub(crate) enum SwarmPanelView {
 
 impl App {
     /// Cycle chat → inline controls → full live swarm page → chat.
+    #[allow(dead_code)]
     pub(crate) fn cycle_swarm_panel_view(&mut self) -> SwarmPanelView {
         if !self.inline_swarm_gallery_active() {
             self.swarm_panel_focused = false;
@@ -2568,6 +2613,34 @@ impl App {
         self.pop_out_selected_swarm_agent_with_launcher(|exe, session_id, cwd, context| {
             spawn_swarm_agent_window(exe, session_id, cwd, context, crate::tui::is_ssh_remote())
         });
+    }
+
+    /// Open a specific session ID in a separate OS terminal window (used by
+    /// `Alt+O` from the Project Activity Dashboard).
+    pub(super) fn pop_out_session_by_id(&mut self, session_id: &str) {
+        if crate::tui::is_ssh_remote() {
+            self.activity_dashboard.status_banner =
+                Some("OS terminal pop-out is unavailable in SSH mode".to_string());
+            return;
+        }
+        let label = crate::id::extract_session_name(session_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| session_id.chars().take(8).collect());
+        match open_swarm_agent_window(session_id, false) {
+            Ok(true) => {
+                self.activity_dashboard.status_banner =
+                    Some(format!("Opened {label} in a new window"));
+            }
+            Ok(false) => {
+                self.activity_dashboard.status_banner = Some(format!(
+                    "Could not open a terminal for {label} (no emulator found)"
+                ));
+            }
+            Err(e) => {
+                self.activity_dashboard.status_banner =
+                    Some(format!("Failed to open {label}: {e}"));
+            }
+        }
     }
 
     fn pop_out_selected_swarm_agent_with_launcher(

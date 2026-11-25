@@ -7134,6 +7134,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "ratatui",
+ "rayucode-protocol",
  "rayucode-tui-style",
  "unicode-width",
 ]

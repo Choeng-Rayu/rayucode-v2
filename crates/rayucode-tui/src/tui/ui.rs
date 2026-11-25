@@ -3219,6 +3219,55 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         return;
     }
 
+    if !question_active
+        && app.activity_dashboard_open()
+        && let Some(data) = app.activity_dashboard_render_data()
+    {
+        let peek_context_bar = data.peek.as_ref().and_then(|peek| {
+            let used = peek.context_used?;
+            let limit = peek.context_limit?;
+            if limit == 0 {
+                return None;
+            }
+            let pct = ((used as f64 / limit as f64).clamp(0.0, 1.0) * 100.0).round() as u8;
+            Some(crate::tui::info_widget::render_inline_limit_bar(
+                100u8.saturating_sub(pct),
+                8,
+                true,
+            ))
+        });
+        let vm = rayucode_tui_render::activity_dashboard::ActivityDashboardViewModel {
+            project_name: &data.project_name,
+            branch: data.branch.as_deref(),
+            summary: &data.summary,
+            plan_summary: data.plan_summary.as_ref(),
+            active_tab: data.active_tab,
+            tab_counts: data.tab_counts,
+            filter_query: &data.filter_query,
+            rows: &data.rows,
+            selected_index: data.selected_index,
+            tree_scroll: data.tree_scroll,
+            peek: data.peek.as_ref(),
+            peek_context_bar,
+            peek_follow: data.peek_follow,
+            peek_scroll: data.peek_scroll,
+            has_return_session: data.has_return_session,
+            inline_prompt: data.inline_prompt.as_ref(),
+            status_banner: data.status_banner.as_deref(),
+        };
+        let metrics =
+            rayucode_tui_render::activity_dashboard::draw_activity_dashboard(frame, area, &vm);
+        app.record_activity_dashboard_layout(metrics);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
     // Initialize visual debug capture if enabled
     let mut debug_capture = if visual_debug::is_enabled() {
         Some(FrameCaptureBuilder::new(area.width, area.height))
@@ -3409,7 +3458,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let swarm_strip_lines: Vec<Line<'static>> = if !swarm_page_active
         && app.inline_swarm_gallery_active()
         && (app.swarm_panel_focused()
-            || (!workers_in_todos && !super::info_widget::swarm_strip_stands_down_for_dock()))
+            || (app.legacy_passive_swarm_strip_enabled()
+                && !workers_in_todos
+                && !super::info_widget::swarm_strip_stands_down_for_dock()))
     {
         let members = app.inline_swarm_members();
         if chat_area.width >= 24 {

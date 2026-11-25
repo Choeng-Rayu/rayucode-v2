@@ -124,6 +124,117 @@ pub(super) async fn flush_pending_remote_file_change_requests(
     sent_any
 }
 
+pub(super) async fn flush_pending_activity_dashboard_actions(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+) -> bool {
+    use super::activity_dashboard::DashboardRemoteAction;
+
+    let mut sent_any = app.activity_dashboard.flush_debounced_peek(Instant::now());
+    while let Some(action) = app.activity_dashboard.pending_actions.pop_front() {
+        sent_any = true;
+        match action {
+            DashboardRemoteAction::Subscribe(enabled) => {
+                if let Err(err) = remote.subscribe_project_activity(enabled).await {
+                    app.activity_dashboard.status_banner =
+                        Some(format!("Activity subscribe failed: {err}"));
+                }
+            }
+            DashboardRemoteAction::GetSnapshot { session_id } => {
+                if let Err(err) = remote.get_project_activity(session_id.as_deref()).await {
+                    app.activity_dashboard.status_banner =
+                        Some(format!("Activity refresh failed: {err}"));
+                }
+            }
+            DashboardRemoteAction::Peek(target) => {
+                if let Err(err) = remote.peek_session(target).await {
+                    app.activity_dashboard.status_banner = Some(format!("Peek failed: {err}"));
+                }
+            }
+            DashboardRemoteAction::SwitchSession {
+                target_session_id,
+                allow_takeover,
+            } => {
+                if app.is_processing {
+                    app.clear_local_streaming_state_for_session_switch();
+                    remote.clear_pending();
+                }
+                match remote
+                    .resume_session_with_takeover(&target_session_id, allow_takeover)
+                    .await
+                {
+                    Ok(()) => {
+                        let label = crate::id::extract_session_name(&target_session_id)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| target_session_id.clone());
+                        app.set_status_notice(format!("Session → {label}"));
+                    }
+                    Err(err) => {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to switch session: {err}"
+                        )));
+                        app.set_status_notice("Session switch failed");
+                    }
+                }
+            }
+            DashboardRemoteAction::CommMessage {
+                from_session,
+                to_session,
+                to_swarm,
+                message,
+            } => match remote
+                .comm_message(&from_session, &to_session, to_swarm.as_deref(), &message)
+                .await
+            {
+                Ok(id) => {
+                    app.activity_dashboard.pending_control_ids.insert(id);
+                }
+                Err(err) => {
+                    app.activity_dashboard.status_banner = Some(format!("DM failed: {err}"));
+                }
+            },
+            DashboardRemoteAction::CommStop {
+                session_id,
+                target_session_id,
+                label,
+            } => match remote.comm_stop(&session_id, &target_session_id).await {
+                Ok(id) => {
+                    app.activity_dashboard.pending_control_ids.insert(id);
+                    app.activity_dashboard
+                        .pending_control_done_notices
+                        .insert(id, format!("Stopped {label}"));
+                }
+                Err(err) => {
+                    app.activity_dashboard.status_banner = Some(format!("Stop failed: {err}"));
+                }
+            },
+            DashboardRemoteAction::CommTaskControlRetry {
+                session_id,
+                task_id,
+            } => match remote.comm_task_control(&session_id, &task_id, "retry").await {
+                Ok(id) => {
+                    app.activity_dashboard.pending_control_ids.insert(id);
+                }
+                Err(err) => {
+                    app.activity_dashboard.status_banner = Some(format!("Retry failed: {err}"));
+                }
+            },
+            DashboardRemoteAction::CancelBackgroundTask { task_id } => {
+                match remote.cancel_background_task(&task_id).await {
+                    Ok(id) => {
+                        app.activity_dashboard.pending_control_ids.insert(id);
+                    }
+                    Err(err) => {
+                        app.activity_dashboard.status_banner =
+                            Some(format!("Cancel task failed: {err}"));
+                    }
+                }
+            }
+        }
+    }
+    sent_any
+}
+
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
     if app.cloud_environment_idle_clear_due()
         && let Err(error) = app.prepare_cloud_environment(remote).await
@@ -162,6 +273,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     if remote.has_loaded_history() {
         needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
     }
+    needs_redraw |= flush_pending_activity_dashboard_actions(app, remote).await;
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     if let Some((provider, account)) = app.usage_reset.invalidate_account.take() {
@@ -322,49 +434,60 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         return needs_redraw;
     }
 
-    if !app.is_processing {
-        if let Some(request) = app.take_pending_catchup_resume() {
-            match remote.resume_session(&request.target_session_id).await {
-                Ok(()) => {
-                    let label = crate::id::extract_session_name(&request.target_session_id)
-                        .map(|name| name.to_string())
-                        .unwrap_or_else(|| request.target_session_id.clone());
-                    let show_brief = request.show_brief;
-                    app.begin_in_flight_catchup_resume(request);
-                    app.set_status_notice(if show_brief {
-                        format!("Catch Up → {}", label)
-                    } else {
-                        format!("Back → {}", label)
-                    });
-                    return true;
-                }
-                Err(err) => {
-                    app.clear_in_flight_catchup_resume();
-                    app.push_display_message(DisplayMessage::error(format!(
-                        "Failed to switch Catch Up session: {}",
-                        err
-                    )));
-                    needs_redraw = true;
-                }
+    // Non-brief `/back` returns may switch sessions even while the current
+    // turn keeps running on the daemon; `/catchup` brief jumps stay idle-gated.
+    if app
+        .pending_catchup_resume
+        .as_ref()
+        .is_some_and(|req| !req.show_brief || !app.is_processing)
+        && let Some(request) = app.take_pending_catchup_resume()
+    {
+        if app.is_processing {
+            app.clear_local_streaming_state_for_session_switch();
+            remote.clear_pending();
+        }
+        match remote.resume_session(&request.target_session_id).await {
+            Ok(()) => {
+                let label = crate::id::extract_session_name(&request.target_session_id)
+                    .map(|name| name.to_string())
+                    .unwrap_or_else(|| request.target_session_id.clone());
+                let show_brief = request.show_brief;
+                app.begin_in_flight_catchup_resume(request);
+                app.set_status_notice(if show_brief {
+                    format!("Catch Up → {}", label)
+                } else {
+                    format!("Back → {}", label)
+                });
+                return true;
+            }
+            Err(err) => {
+                app.clear_in_flight_catchup_resume();
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to switch Catch Up session: {}",
+                    err
+                )));
+                needs_redraw = true;
             }
         }
+    }
 
-        if let Some(target_session) = app.workspace_client.take_pending_resume_session() {
-            match remote.resume_session(&target_session).await {
-                Ok(()) => {
-                    let label = crate::id::extract_session_name(&target_session)
-                        .map(|name| name.to_string())
-                        .unwrap_or(target_session);
-                    app.set_status_notice(format!("Workspace → {}", label));
-                    return true;
-                }
-                Err(err) => {
-                    app.push_display_message(DisplayMessage::error(format!(
-                        "Failed to switch workspace session: {}",
-                        err
-                    )));
-                    needs_redraw = true;
-                }
+    if !app.is_processing
+        && let Some(target_session) = app.workspace_client.take_pending_resume_session()
+    {
+        match remote.resume_session(&target_session).await {
+            Ok(()) => {
+                let label = crate::id::extract_session_name(&target_session)
+                    .map(|name| name.to_string())
+                    .unwrap_or(target_session);
+                app.set_status_notice(format!("Workspace → {}", label));
+                return true;
+            }
+            Err(err) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to switch workspace session: {}",
+                    err
+                )));
+                needs_redraw = true;
             }
         }
     }
@@ -759,6 +882,7 @@ async fn apply_terminal_event<B: Backend>(
             needs_redraw =
                 before_release.is_none_or(|before| before != app.key_release_visible_state());
             needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
+            needs_redraw |= flush_pending_activity_dashboard_actions(app, remote).await;
             needs_redraw |= dispatch_compacted_history_load(app, remote).await;
         }
         Some(Ok(Event::Paste(text))) => {
@@ -775,6 +899,7 @@ async fn apply_terminal_event<B: Backend>(
                 handle_mouse_event(app, mouse);
                 needs_redraw = true;
                 needs_redraw |= flush_pending_remote_file_change_requests(app, remote).await;
+                needs_redraw |= flush_pending_activity_dashboard_actions(app, remote).await;
                 needs_redraw |= dispatch_compacted_history_load(app, remote).await;
             }
         }
@@ -1242,6 +1367,7 @@ pub(super) fn handle_disconnect(
     reason: Option<RemoteDisconnectReason>,
 ) {
     app.question_dialog = None;
+    app.reset_activity_dashboard_on_disconnect();
     // The daemon may have applied the switch, but the acknowledgement was
     // lost. Never wait on an old connection's request ID or blindly resend.
     if app.pending_automatic_failover_request_id.is_some() {
@@ -2278,6 +2404,10 @@ fn handle_disconnected_key_internal(
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
     if app.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
+        return Ok(());
+    }
+
+    if app.handle_activity_dashboard_key(code, modifiers) {
         return Ok(());
     }
 

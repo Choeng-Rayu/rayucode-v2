@@ -87,7 +87,8 @@ A blocked command must not silently execute against the laptop.
 | `/compact` | Wire | Compaction and session compaction-mode changes happen on the daemon. |
 | `/fix` | Runtime | Recover the attached daemon session using host conversation state. |
 | `/voice`, `/dictate`, `/dictation` | Client input | Capture the displaying client microphone using its configured transcription service/command, then submit text through the remote input path. Requires client microphone setup. |
-| `/memory`, `/swarm` | Wire | Session feature toggles go to the daemon. |
+| `/memory` | Wire | Session feature toggle goes to the daemon. |
+| `/activity`, `/bg`, `/swarm` | Wire + UI | Open the full-screen Project Activity Dashboard (`All`, `Bg Tasks`, or `My Swarm` tab) backed by lightweight daemon activity and live-peek requests, with no laptop storage lookup (`Alt+O` local terminal pop-out stays disabled in SSH mode). `/swarm on`, `/swarm off`, and `/swarm status` preserve daemon feature toggles. |
 | `/test` | Prompt | Verification instruction is staged for the remote tick loop, not a laptop test process. |
 | `/initiatives`, `/goals` | Runtime | Explicit retired-feature notice, preserving old records. Does not resurrect obsolete tracking. |
 | `/overnight` | Runtime | Daemon-owned coordinator, status, log, review and cancellation scoped to the attached session. |
@@ -109,7 +110,7 @@ A blocked command must not silently execute against the laptop.
 | `/client-reload` | Client lifecycle | Close the owned SSH adapter, then re-exec a client with explicit SSH host, server socket, binary, workspace and remote session ID. Never fall back to laptop session lookup. |
 | `/update-rehearsal` | Blocked | The local self-development install rehearsal is not a remote maintenance API. |
 | `/server-reload` | Wire | Explicit request to reload the remote daemon. Requires an available remote binary. |
-| `/resume`, `/sessions`, `/session`, `/active`, `/catchup`, `/back`, `/save`, `/unsave` | Wire + Runtime | List/select host sessions, replay current history, navigate back and persist host bookmarks. `/resume <remote-id>` switches this terminal, without consulting local session files. |
+| `/resume`, `/sessions`, `/session`, `/active`, `/catchup`, `/back`, `/save`, `/unsave` | Wire + Runtime | List/select host sessions, replay current history, navigate back (including while a turn runs on the daemon) and persist host bookmarks. `/resume <remote-id>` switches this terminal, without consulting local session files. |
 | `/rename` | Wire | Rename attached server session, including `--clear`. |
 | `/fork`, `/split`, `/transfer` | Wire | Create a daemon-side child and navigate this terminal only after the matching response. No local child-window launch or VM path lookup. |
 | `/desktop`, `/workspace` | Blocked | Local child-window launch does not yet have a remote-safe Desktop/workspace transport contract. |

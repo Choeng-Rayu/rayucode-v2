@@ -55,6 +55,8 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+pub(crate) mod activity_dashboard;
+pub use activity_dashboard::ActivityDashboardRenderData;
 mod auth;
 mod auth_account_picker_saved_accounts;
 mod auth_remote;
@@ -1461,6 +1463,8 @@ pub struct App {
     swarm_panel_focused: bool,
     // Whether the focused swarm panel owns the main transcript viewport.
     swarm_panel_full_page: bool,
+    // Unified full-screen Project Activity Dashboard state (`Alt+N`, `/activity`, `/swarm`, `/bg`).
+    activity_dashboard: activity_dashboard::ActivityDashboardState,
     // Diff display mode (cycle with /diff)
     diff_mode: crate::config::DiffDisplayMode,
     // Center all content (from config)
@@ -1859,7 +1863,7 @@ pub struct App {
     session_picker_overlay: Option<RefCell<super::session_picker::SessionPicker>>,
     session_picker_mode: SessionPickerMode,
     pending_session_picker_load: Option<PendingSessionPickerLoad>,
-    catchup_return_stack: Vec<String>,
+    session_return_stack: Vec<String>,
     pending_catchup_resume: Option<PendingCatchupResume>,
     in_flight_catchup_resume: Option<PendingCatchupResume>,
     /// Login picker overlay (None = not visible)

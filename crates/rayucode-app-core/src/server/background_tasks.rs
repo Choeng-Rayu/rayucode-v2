@@ -418,6 +418,7 @@ pub(super) async fn dispatch_swarm_output_tail(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
 ) {
+    super::live_status::merge_output_tail(&tail.session_id, &tail.tail);
     let swarm_id = {
         let mut members = swarm_members.write().await;
         let Some(member) = members.get_mut(&tail.session_id) else {
@@ -547,14 +548,20 @@ pub(super) async fn dispatch_swarm_batch_progress(
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
 ) {
     if progress.total == 0 {
+        super::live_status::set_batch_progress(&progress.session_id, None);
         return;
     }
+    let live_changed = super::live_status::set_batch_progress(
+        &progress.session_id,
+        Some((progress.completed as u32, progress.total as u32)),
+    );
     let swarm_id = {
         let mut members = swarm_members.write().await;
         let Some(member) = members.get_mut(&progress.session_id) else {
             return;
         };
-        if !update_active_todo_batch_progress(&mut member.todo_items, progress) {
+        let todo_changed = update_active_todo_batch_progress(&mut member.todo_items, progress);
+        if !live_changed && !todo_changed {
             return;
         }
         member.swarm_id.clone()
@@ -1001,5 +1008,63 @@ mod tests {
             .expect("progress captured");
         assert_eq!((captured.current, captured.total), (27, 43));
         assert!(!update_active_todo_batch_progress(&mut items, &progress));
+    }
+
+    #[tokio::test]
+    async fn dispatch_swarm_batch_progress_updates_live_status_without_todos() {
+        let sid = "worker-batch-no-todos";
+        super::super::live_status::forget(sid);
+        let (event_tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let member = SwarmMember {
+            session_id: sid.into(),
+            event_tx,
+            event_txs: HashMap::new(),
+            working_dir: None,
+            swarm_id: Some("swarm-batch-test".into()),
+            swarm_enabled: true,
+            status: "running".into(),
+            detail: None,
+            task_label: None,
+            friendly_name: Some("worker".into()),
+            report_back_to_session_id: None,
+            latest_completion_report: None,
+            role: "agent".into(),
+            joined_at: std::time::Instant::now(),
+            last_status_change: std::time::Instant::now(),
+            is_headless: true,
+            output_tail: None,
+            todo_progress: None,
+            todo_items: Vec::new(),
+            runtime: Default::default(),
+        };
+        let members = Arc::new(RwLock::new(HashMap::from([(sid.into(), member)])));
+        let swarms = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-batch-test".into(),
+            HashSet::from([sid.into()]),
+        )])));
+        let progress = BatchProgress {
+            session_id: sid.into(),
+            tool_call_id: "batch-no-todo".into(),
+            completed: 3,
+            total: 8,
+            last_completed: Some("read".into()),
+            running: Vec::new(),
+            subcalls: Vec::new(),
+        };
+
+        dispatch_swarm_batch_progress(&progress, &members, &swarms).await;
+        assert_eq!(
+            super::super::live_status::snapshot(sid)
+                .expect("live status present")
+                .batch_progress,
+            Some((3, 8))
+        );
+        let event = rx.try_recv().expect("swarm status broadcast");
+        assert!(matches!(
+            event,
+            ServerEvent::SwarmStatus { members }
+                if members[0].runtime.live_status.as_ref().and_then(|ls| ls.batch_progress) == Some((3, 8))
+        ));
+        super::super::live_status::forget(sid);
     }
 }

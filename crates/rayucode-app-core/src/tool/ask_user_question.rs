@@ -79,6 +79,15 @@ impl QuestionConnection {
         }
     }
 
+    /// Detach on cross-session switch without writing any event onto the newly
+    /// attached session's socket. Dropping any pending sender wakes the
+    /// awaiting tool with a disconnect error and releases its attention guard.
+    pub(crate) fn detach(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.closed = true;
+        let _ = state.pending.take();
+    }
+
     fn notify_closed(&self, pending: Pending, reason: QuestionCloseReason) {
         let _ = self.events.send(ServerEvent::QuestionClosed {
             session_id: pending.session_id,
@@ -137,6 +146,34 @@ impl QuestionConnection {
             });
         }
 
+        let summary = questions
+            .first()
+            .map(|q| {
+                let text = q.question.trim();
+                let header = q.header.trim();
+                let raw = if header.is_empty() || text.starts_with(header) {
+                    text.to_string()
+                } else {
+                    format!("{header}: {text}")
+                };
+                if raw.chars().count() > 120 {
+                    let mut truncated: String = raw.chars().take(119).collect();
+                    truncated.push('…');
+                    truncated
+                } else {
+                    raw
+                }
+            })
+            .unwrap_or_else(|| "Waiting for user answer".to_string());
+        let _attention_guard = crate::server::attention_registry::register_attention(
+            &ctx.session_id,
+            crate::protocol::AgentAttention {
+                kind: crate::protocol::AgentAttentionKind::Question,
+                summary,
+                request_id: Some(request_id.clone()),
+                since_epoch_ms: None,
+            },
+        );
         let mut guard = QuestionGuard {
             connection: self,
             request_id,
@@ -341,6 +378,11 @@ fn parse_question(item: &Value) -> Result<Question> {
 }
 
 pub(super) struct AskUserQuestionTool;
+
+#[cfg(test)]
+pub(crate) async fn execute_for_tests(input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+    AskUserQuestionTool.execute(input, ctx).await
+}
 
 pub(crate) fn definition() -> crate::message::ToolDefinition {
     AskUserQuestionTool.to_definition()

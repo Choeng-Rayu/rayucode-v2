@@ -227,7 +227,7 @@ impl App {
             .sum();
         let reload_info_bytes: usize = self.reload_info.iter().map(|value| value.capacity()).sum();
         let catchup_return_stack_bytes: usize = self
-            .catchup_return_stack
+            .session_return_stack
             .iter()
             .map(|value| value.capacity())
             .sum();

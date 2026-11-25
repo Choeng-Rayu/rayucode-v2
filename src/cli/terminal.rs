@@ -405,9 +405,9 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
         if modes.keyboard_enhanced {
             tui::adopt_keyboard_enhancement_ownership();
         }
-        crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+        tui::enable_bracketed_paste()?;
         if modes.focus_change {
-            crossterm::execute!(std::io::stdout(), crossterm::event::EnableFocusChange)?;
+            tui::enable_focus_change()?;
         }
         if modes.mouse_capture {
             crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
@@ -429,9 +429,9 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
             keyboard_enhanced,
             focus_change: perf_policy.enable_focus_change,
         };
-        crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+        tui::enable_bracketed_paste()?;
         if modes.focus_change {
-            crossterm::execute!(std::io::stdout(), crossterm::event::EnableFocusChange)?;
+            tui::enable_focus_change()?;
         }
         if modes.mouse_capture {
             crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
@@ -487,9 +487,9 @@ fn cleanup_tui_runtime(state: &TuiRuntimeState, restore_terminal: bool) {
     }
 
     if restore_terminal {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = tui::disable_bracketed_paste();
         if state.focus_change {
-            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableFocusChange);
+            let _ = tui::disable_focus_change();
         }
         if state.mouse_capture {
             if let Err(error) = sync_windows_vt_mouse_capture(false) {

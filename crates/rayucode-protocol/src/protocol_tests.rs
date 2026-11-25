@@ -40,6 +40,8 @@ include!("protocol_tests/model_usage.rs");
 include!("protocol_tests/rayu_credits.rs");
 #[path = "protocol_tests/turn_identity.rs"]
 mod turn_identity;
+#[path = "protocol_tests/project_activity.rs"]
+mod project_activity;
 #[test]
 fn swarm_runtime_wait_metadata_is_optional_and_nonempty() {
     let empty: super::SwarmMemberRuntime = serde_json::from_str("{}").unwrap();

@@ -536,15 +536,36 @@ pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
         .collect()
 }
 
+/// Threshold above which a single/few-line clipboard paste collapses into a
+/// compact `[Pasted text #N ...]` pill instead of flooding the 10-row composer.
+const PASTE_COLLAPSE_MIN_LINES: usize = 5;
+const PASTE_COLLAPSE_MIN_CHARS: usize = 300;
+
+fn normalize_pasted_newlines(text: String) -> String {
+    if text.contains('\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        text
+    }
+}
+
+fn should_collapse_paste(text: &str) -> bool {
+    let line_count = text.lines().count().max(1);
+    line_count >= PASTE_COLLAPSE_MIN_LINES || text.chars().count() >= PASTE_COLLAPSE_MIN_CHARS
+}
+
 pub(super) fn handle_text_paste(app: &mut App, text: String) {
+    let text = normalize_pasted_newlines(text);
+    let line_count = text.lines().count().max(1);
+    let char_count = text.chars().count();
     crate::logging::info(&format!(
-        "Text paste: {} chars, {} lines",
+        "Text paste: {} bytes ({} chars), {} lines",
         text.len(),
-        text.lines().count()
+        char_count,
+        line_count
     ));
 
-    let line_count = text.lines().count().max(1);
-    if line_count < 5 {
+    if !should_collapse_paste(&text) {
         insert_input_text(app, &text);
         return;
     }
@@ -552,45 +573,67 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         return;
     }
 
-    let placeholder = paste_placeholder(&text);
+    let number = app.pasted_contents.len() + 1;
+    let placeholder = paste_placeholder(number, &text);
     app.pasted_contents.push(text);
     insert_input_text(app, &placeholder);
+    if line_count > 1 {
+        app.set_status_notice(format!(
+            "Pasted text #{number} ({line_count} lines) · paste again to expand"
+        ));
+    } else {
+        app.set_status_notice(format!(
+            "Pasted text #{number} ({char_count} chars) · paste again to expand"
+        ));
+    }
+}
+
+fn trim_trailing_empty_pasted_slots(pasted_contents: &mut Vec<String>) {
+    while pasted_contents.last().is_some_and(String::is_empty) {
+        pasted_contents.pop();
+    }
 }
 
 fn expand_matching_paste(app: &mut App, text: &str) -> bool {
     let Some(content_index) = app
         .pasted_contents
         .iter()
-        .rposition(|content| content == text)
+        .rposition(|content| !content.is_empty() && content == text)
     else {
         return false;
     };
 
-    let placeholder = paste_placeholder(text);
-    // Placeholders only encode a line count. Skip placeholders belonging to
-    // newer stored pastes with the same shape so equal-length, different text
-    // cannot cause the wrong placeholder to expand.
-    let newer_same_placeholder_count = app.pasted_contents[content_index + 1..]
-        .iter()
-        .filter(|content| paste_placeholder(content) == placeholder)
-        .count();
-    let Some(placeholder_start) = app
-        .input
-        .rmatch_indices(placeholder.as_str())
-        .map(|(position, _)| position)
-        .nth(newer_same_placeholder_count)
-    else {
-        return false;
-    };
+    let numbered = paste_placeholder(content_index + 1, text);
+    let (placeholder_start, placeholder_len) =
+        if let Some(pos) = app.input.rfind(numbered.as_str()) {
+            (pos, numbered.len())
+        } else {
+            let legacy = legacy_paste_placeholder(text);
+            let newer_same_legacy = app.pasted_contents[content_index + 1..]
+                .iter()
+                .filter(|content| !content.is_empty() && legacy_paste_placeholder(content) == legacy)
+                .count();
+            let Some(pos) = app
+                .input
+                .rmatch_indices(legacy.as_str())
+                .map(|(position, _)| position)
+                .nth(newer_same_legacy)
+            else {
+                return false;
+            };
+            (pos, legacy.len())
+        };
 
     app.follow_chat_bottom_for_typing();
     app.remember_input_undo_state();
-    app.input.replace_range(
-        placeholder_start..placeholder_start + placeholder.len(),
-        text,
-    );
+    app.input
+        .replace_range(placeholder_start..placeholder_start + placeholder_len, text);
     app.cursor_pos = placeholder_start + text.len();
-    app.pasted_contents.remove(content_index);
+    // Clear the slot rather than shifting later indices so surviving `#N` tags
+    // still address their exact payloads; trim empty trailing slots so
+    // `pasted_contents.is_empty()` stays accurate once all pastes are gone.
+    app.pasted_contents[content_index].clear();
+    trim_trailing_empty_pasted_slots(&mut app.pasted_contents);
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
     true
@@ -651,7 +694,21 @@ impl App {
     }
 }
 
-pub(super) use terminal_reports::strip_terminal_control_sequences;
+pub(super) use terminal_reports::{
+    strip_terminal_control_sequences, strip_trailing_bare_terminal_report,
+};
+
+/// Remove complete bare CSI terminal reports that arrived one keystroke at a
+/// time (e.g., torn SGR mouse wheel `[<65;50;24M`, bracketed paste `[200~`,
+/// or Kitty CSI-u key releases `[99;1:3u` when ESC was dropped by ConPTY).
+fn scrub_trailing_terminal_reports(app: &mut App) {
+    while let Some((cleaned, cursor)) =
+        strip_trailing_bare_terminal_report(&app.input, app.cursor_pos)
+    {
+        app.input = cleaned;
+        app.cursor_pos = cursor;
+    }
+}
 
 /// Remove late OSC 10/11 color replies that the terminal delivered as keys.
 ///
@@ -827,6 +884,7 @@ fn insert_input_text_with_undo(app: &mut App, text: &str, typed: bool) {
 
     app.input.insert_str(app.cursor_pos, text);
     app.cursor_pos += text.len();
+    scrub_trailing_terminal_reports(app);
     scrub_osc_color_replies(app);
 
     // Typing the final command character immediately arms picker filtering.
@@ -1287,10 +1345,18 @@ pub(super) fn restore_composer_draft(app: &mut App, draft: ComposerDraft) {
 
 fn expand_paste_placeholders_with(pasted_contents: &[String], input: &str) -> String {
     let mut result = input.to_string();
-    for content in pasted_contents.iter().rev() {
-        let placeholder = paste_placeholder(content);
-        if let Some(pos) = result.rfind(&placeholder) {
-            result.replace_range(pos..pos + placeholder.len(), content);
+    for (index, content) in pasted_contents.iter().enumerate().rev() {
+        if content.is_empty() {
+            continue;
+        }
+        let numbered = paste_placeholder(index + 1, content);
+        if let Some(pos) = result.rfind(&numbered) {
+            result.replace_range(pos..pos + numbered.len(), content);
+            continue;
+        }
+        let legacy = legacy_paste_placeholder(content);
+        if let Some(pos) = result.rfind(&legacy) {
+            result.replace_range(pos..pos + legacy.len(), content);
         }
     }
     result
@@ -2204,8 +2270,16 @@ pub(super) fn delete_input_word_back(app: &mut App) {
 
 pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
     match code {
+        KeyCode::Char('b') => {
+            if !app.session_return_stack.is_empty() {
+                app.trigger_session_return();
+                return true;
+            }
+            app.cursor_pos = app.find_word_boundary_back();
+            true
+        }
         // Alt/Option+Left/Right move by word, matching Alt+B / Alt+F.
-        KeyCode::Left | KeyCode::Char('b') => {
+        KeyCode::Left => {
             app.cursor_pos = app.find_word_boundary_back();
             true
         }
@@ -2510,21 +2584,11 @@ pub(super) fn handle_pre_control_shortcuts(
         return true;
     }
 
-    // Swarm views: Alt+N cycles chat → inline controls → full live page → chat.
-    // Selection/open/prompt controls stay available in both active views, while
-    // plain typing continues to flow to the chat input.
+    // Project Activity Dashboard: Alt+N toggles globally regardless of spawn mode or pin_todos.
     if app.toggle_keys.swarm_panel_focus.matches(code, modifiers) {
-        match app.cycle_swarm_panel_view() {
-            super::tui_state::SwarmPanelView::Chat => {
-                app.set_status_notice("Swarm view closed");
-            }
-            super::tui_state::SwarmPanelView::Controls => {
-                app.set_status_notice(crate::tui::keybind::swarm_view_hint("full page"));
-            }
-            super::tui_state::SwarmPanelView::FullPage => {
-                app.set_status_notice(crate::tui::keybind::swarm_page_hint());
-            }
-        }
+        app.toggle_activity_dashboard(
+            rayucode_tui_render::activity_dashboard::ActivityTab::All,
+        );
         return true;
     }
     {
@@ -2736,6 +2800,10 @@ pub(super) fn handle_modal_key(
     }
 
     if app.handle_file_review_overlay_key(code, modifiers)? {
+        return Ok(true);
+    }
+
+    if app.handle_activity_dashboard_key(code, modifiers) {
         return Ok(true);
     }
 
@@ -3127,7 +3195,24 @@ impl App {
     }
 }
 
-fn paste_placeholder(content: &str) -> String {
+fn paste_placeholder(number: usize, content: &str) -> String {
+    let line_count = content.lines().count().max(1);
+    let extra_lines = line_count.saturating_sub(1);
+    if extra_lines > 0 {
+        format!(
+            "[Pasted text #{number} +{extra_lines} line{}]",
+            if extra_lines == 1 { "" } else { "s" }
+        )
+    } else {
+        let char_count = content.chars().count();
+        format!(
+            "[Pasted text #{number} +{char_count} char{}]",
+            if char_count == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn legacy_paste_placeholder(content: &str) -> String {
     let line_count = content.lines().count().max(1);
     format!(
         "[pasted {} line{}]",
@@ -3626,7 +3711,8 @@ impl App {
     /// Handle bracketed paste: store text content (image URLs are still detected inline)
     pub(super) fn handle_paste(&mut self, text: String) {
         self.wake_idle_hibernation();
-        if self.handle_transcript_view_paste(&text)
+        if self.handle_activity_dashboard_paste(&text)
+            || self.handle_transcript_view_paste(&text)
             || crate::tui::TuiState::theme_picker_selected(self).is_some()
         {
             return;

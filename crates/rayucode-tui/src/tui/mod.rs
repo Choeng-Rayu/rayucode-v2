@@ -164,6 +164,52 @@ static KITTY_KEYBOARD_STATE_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 pub(crate) static TERMINAL_OWNERSHIP_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+/// Enable bracketed paste mode when the platform event reader parses it.
+///
+/// Crossterm's Windows event source (`WindowsEventSource`) reads Win32
+/// `INPUT_RECORD`s and never produces `Event::Paste`, yet `EnableBracketedPaste`
+/// writes raw `\x1b[?2004h` when ANSI output is supported. On Windows Terminal /
+/// ConPTY that causes pasted text to inject literal `[200~` / `[201~` keys
+/// into the composer.
+pub fn enable_bracketed_paste() -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+    }
+    Ok(())
+}
+
+/// Disable bracketed paste mode (no-op on Windows, matching [`enable_bracketed_paste`]).
+pub fn disable_bracketed_paste() -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)?;
+    }
+    Ok(())
+}
+
+/// Enable VT focus reporting on Unix terminals.
+///
+/// Windows consoles deliver native Win32 `FOCUS_EVENT_RECORD`s without VT mode
+/// `?1004h`; emitting `?1004h` on Windows Terminal / ConPTY can inject literal
+/// `[I` / `[O` characters when the window gains or loses focus.
+pub fn enable_focus_change() -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableFocusChange)?;
+    }
+    Ok(())
+}
+
+/// Disable VT focus reporting on Unix terminals (no-op on Windows).
+pub fn disable_focus_change() -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        crossterm::execute!(std::io::stdout(), crossterm::event::DisableFocusChange)?;
+    }
+    Ok(())
+}
+
 /// Request Kitty keyboard reporting and tmux's extended-key mode.
 ///
 /// Intentionally avoid REPORT_ALL_KEYS_AS_ESCAPE_CODES for now. When that flag is enabled,
@@ -173,8 +219,14 @@ pub(crate) static TERMINAL_OWNERSHIP_TEST_LOCK: Mutex<()> = Mutex::new(());
 /// shifted symbols for every keyboard layout. Prefer the terminal-delivered printable character
 /// and only synthesize ASCII letter casing in the input fallback.
 ///
+/// On Windows, crossterm reads Win32 `INPUT_RECORD`s and cannot parse Kitty
+/// CSI-u escape sequences, so keyboard enhancement is always skipped.
+///
 /// Returns whether the requests were written, not whether the terminal supports them.
 pub fn enable_keyboard_enhancement() -> bool {
+    if cfg!(windows) {
+        return false;
+    }
     let _guard = kitty_keyboard_state_lock()
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -396,21 +448,46 @@ pub(crate) fn reapply_terminal_modes_to(
     keyboard_enhanced: bool,
     focus_change: bool,
 ) -> std::io::Result<()> {
+    reapply_terminal_modes_for_platform(
+        writer,
+        mouse_capture,
+        keyboard_enhanced,
+        focus_change,
+        cfg!(windows),
+    )
+}
+
+fn reapply_terminal_modes_for_platform(
+    writer: &mut impl std::io::Write,
+    mouse_capture: bool,
+    keyboard_enhanced: bool,
+    focus_change: bool,
+    windows_console: bool,
+) -> std::io::Result<()> {
     use crossterm::QueueableCommand;
     use crossterm::event::{EnableBracketedPaste, EnableFocusChange, EnableMouseCapture};
 
-    writer.queue(EnableBracketedPaste)?;
-    if focus_change {
-        writer.queue(EnableFocusChange)?;
+    // On Windows, crossterm reads Win32 INPUT_RECORDs and never parses VT
+    // bracketed paste (`?2004h`), VT focus (`?1004h`), or Kitty CSI-u (`=7u`).
+    // Writing raw `\x1b[=7u` on FocusGained bypassed crossterm's Windows guard
+    // and enabled Kitty keyboard protocol in Windows Terminal, causing every
+    // key release to dump raw `[99;1:3u` sequences into the composer.
+    if !windows_console {
+        writer.queue(EnableBracketedPaste)?;
+        if focus_change {
+            writer.queue(EnableFocusChange)?;
+        }
     }
     if mouse_capture {
         writer.queue(EnableMouseCapture)?;
         // Crossterm toggles Win32 console mouse input on Windows, but ConPTY
-        // hosts such as VS Code also need the VT tracking modes reasserted.
-        #[cfg(windows)]
-        writer.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h")?;
+        // hosts such as Windows Terminal / VS Code also need the VT tracking
+        // modes reasserted so wheel events do not turn into Up/Down keys.
+        if windows_console {
+            writer.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1015h\x1b[?1006h")?;
+        }
     }
-    if keyboard_enhanced {
+    if !windows_console && keyboard_enhanced {
         reapply_keyboard_enhancement_to(writer, inside_tmux())?;
     }
     writer.flush()
@@ -418,10 +495,17 @@ pub(crate) fn reapply_terminal_modes_to(
 
 pub(crate) fn reapply_configured_terminal_modes_after_focus() {
     let policy = crate::perf::tui_policy();
+    // Only reassert Kitty keyboard flags when this process actually pushed and
+    // owns an active Kitty entry (and never on Windows). Without this check,
+    // FocusGained could write raw `\x1b[=7u` even when startup skipped or
+    // failed PushKeyboardEnhancementFlags, leaving Kitty mode unpopped on exit.
+    let keyboard_enhanced = !cfg!(windows)
+        && policy.enable_keyboard_enhancement
+        && kitty_keyboard_push_active().load(Ordering::Acquire);
     if let Err(error) = reapply_terminal_modes_after_focus_to(
         &mut std::io::stdout(),
         policy.enable_mouse_capture,
-        policy.enable_keyboard_enhancement,
+        keyboard_enhanced,
     ) {
         crate::logging::warn(&format!("failed to reapply terminal modes: {error}"));
     }
@@ -448,9 +532,10 @@ mod terminal_mode_tests {
     use super::{
         disable_keyboard_enhancement_to, enable_keyboard_enhancement_to,
         kitty_keyboard_push_active, reapply_keyboard_enhancement_to,
-        reapply_terminal_modes_after_focus_to, reapply_terminal_modes_to,
         reset_keyboard_enhancement_ownership_for_test,
     };
+    #[cfg(not(windows))]
+    use super::{reapply_terminal_modes_after_focus_to, reapply_terminal_modes_to};
 
     #[test]
     fn disable_skips_kitty_pop_when_no_push_is_owned() {
@@ -589,6 +674,7 @@ mod terminal_mode_tests {
         assert_eq!(output, b"\x1b[<1u");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn reapply_omits_keyboard_protocols_when_disabled() {
         let mut output = Vec::new();
@@ -596,6 +682,7 @@ mod terminal_mode_tests {
         assert_eq!(output, b"\x1b[?2004h");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn reapply_omits_mouse_sequences_when_capture_is_disabled() {
         let mut output = Vec::new();
@@ -607,6 +694,7 @@ mod terminal_mode_tests {
         assert!(output.contains("\x1b[="));
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn reapply_emits_configured_idempotent_modes_without_keyboard_push() {
         let mut output = Vec::new();
@@ -623,6 +711,7 @@ mod terminal_mode_tests {
         );
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn focus_reapply_preserves_other_modes_without_rearming_focus_reporting() {
         for mouse_capture in [false, true] {
@@ -652,6 +741,45 @@ mod terminal_mode_tests {
                     "must not push the Kitty keyboard stack (tmux modifyOtherKeys is allowed)"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn windows_reapply_never_emits_kitty_bracketed_paste_or_vt_focus_sequences() {
+        let mut output = Vec::new();
+        super::reapply_terminal_modes_for_platform(&mut output, false, true, true, true).unwrap();
+        assert!(
+            output.is_empty(),
+            "Windows focus reapply without mouse capture must emit no VT input-mode sequences, got: {:?}",
+            String::from_utf8_lossy(&output)
+        );
+
+        #[cfg(not(windows))]
+        {
+            let mut mouse_output = Vec::new();
+            super::reapply_terminal_modes_for_platform(&mut mouse_output, true, true, true, true)
+                .unwrap();
+            let text = String::from_utf8(mouse_output).unwrap();
+            assert!(
+                !text.contains("\x1b[="),
+                "Windows focus reapply must never emit raw Kitty CSI-u set sequence: {text:?}"
+            );
+            assert!(
+                !text.contains("\x1b[>7u"),
+                "Windows focus reapply must never emit Kitty push sequence: {text:?}"
+            );
+            assert!(
+                !text.contains("\x1b[?2004h"),
+                "Windows focus reapply must never emit bracketed paste mode: {text:?}"
+            );
+            assert!(
+                !text.contains("\x1b[?1004h"),
+                "Windows focus reapply must never emit VT focus mode: {text:?}"
+            );
+            assert!(
+                text.contains("\x1b[?1000h") && text.contains("\x1b[?1006h"),
+                "Windows mouse capture still reasserts ConPTY VT mouse tracking: {text:?}"
+            );
         }
     }
 }
@@ -832,6 +960,11 @@ pub trait TuiState {
     /// Whether the one-based composer image tag has a pending payload.
     /// This does not acknowledge delivery to a provider.
     fn input_image_attached(&self, _number: usize) -> bool {
+        false
+    }
+    /// Whether `[Pasted text #N ...]` in the composer still has its expanded
+    /// text payload stored in `pasted_contents`.
+    fn input_pasted_attached(&self, _number: usize) -> bool {
         false
     }
     fn cursor_pos(&self) -> usize;
@@ -1121,6 +1254,40 @@ pub trait TuiState {
     /// Whether the live swarm page currently replaces the transcript viewport.
     fn swarm_panel_full_page(&self) -> bool {
         false
+    }
+    /// Whether the legacy passive multi-row inline swarm strip above the
+    /// composer is enabled. Disabled by default on `App` in favor of the
+    /// minimal overscroll footer badge and `Alt+N` Activity Dashboard.
+    fn legacy_passive_swarm_strip_enabled(&self) -> bool {
+        false
+    }
+    /// Lightweight project-scoped activity counts for the overscroll footer badge.
+    fn project_activity_summary(&self) -> crate::protocol::ProjectActivitySummary {
+        crate::protocol::ProjectActivitySummary::default()
+    }
+    /// Whether returning to a previous session (`Alt+B` / `/back`) is available.
+    fn has_session_return_target(&self) -> bool {
+        false
+    }
+    /// Whether the full-screen Project Activity Dashboard is currently open.
+    fn activity_dashboard_open(&self) -> bool {
+        false
+    }
+    /// Owned render snapshot for the full-screen Project Activity Dashboard.
+    fn activity_dashboard_render_data(
+        &self,
+    ) -> Option<crate::tui::app::ActivityDashboardRenderData> {
+        None
+    }
+    /// Whether the Activity Dashboard has a debounced `PeekSession` waiting to flush.
+    fn activity_dashboard_peek_debounce_pending(&self) -> bool {
+        false
+    }
+    /// Record rendered pane rectangles and wrapped peek counts for the Activity Dashboard.
+    fn record_activity_dashboard_layout(
+        &self,
+        _metrics: rayucode_tui_render::activity_dashboard::ActivityDashboardLayoutMetrics,
+    ) {
     }
 
     // ---- Workspace ----

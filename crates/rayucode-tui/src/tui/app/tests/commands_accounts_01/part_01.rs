@@ -689,7 +689,7 @@ fn test_catchup_next_queues_resume_for_attention_session() {
 fn test_back_command_queues_return_without_showing_brief() {
     let mut app = create_test_app();
     app.is_remote = true;
-    app.catchup_return_stack.push("session_prev".to_string());
+    app.session_return_stack.push("session_prev".to_string());
 
     app.input = "/back".to_string();
     app.submit_input();

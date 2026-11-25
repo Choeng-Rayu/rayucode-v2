@@ -114,6 +114,11 @@ fn workers_to_members(workers: &[MockWorker]) -> Vec<GalleryMember> {
                 context_tokens: None,
                 context_limit: None,
                 output_tokens: None,
+                live_status: None,
+                stalled_secs: None,
+                files_touched: Vec::new(),
+                pending_attention: None,
+                swarm_label: None,
             }
         })
         .collect()

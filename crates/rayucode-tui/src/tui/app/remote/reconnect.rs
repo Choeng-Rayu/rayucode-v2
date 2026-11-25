@@ -899,6 +899,9 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
         process_remote_followups(app, remote).await;
     }
 
+    app.resubscribe_activity_dashboard_after_reconnect();
+    let _ = super::flush_pending_activity_dashboard_actions(app, remote).await;
+
     Ok(PostConnectOutcome::Ready)
 }
 

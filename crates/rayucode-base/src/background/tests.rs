@@ -608,6 +608,7 @@ fn running_status_fixture(task_id: &str, session_id: &str) -> TaskStatusFile {
         progress: None,
         event_history: Vec::new(),
         stall_wake_seconds: None,
+        working_dir: None,
     }
 }
 
@@ -1005,5 +1006,303 @@ async fn disarm_stall_watchdog_clears_state() -> Result<()> {
     assert_eq!(status.stall_wake_seconds, None);
 
     manager.cancel(&info.task_id).await?;
+    Ok(())
+}
+
+#[test]
+fn legacy_task_status_file_without_working_dir_deserializes() -> Result<()> {
+    let legacy_json = serde_json::json!({
+        "task_id": "legacy123",
+        "tool_name": "bash",
+        "display_name": "cargo check",
+        "session_id": "sess-legacy",
+        "status": "running",
+        "exit_code": null,
+        "error": null,
+        "started_at": "2026-11-24T00:00:00Z",
+        "completed_at": null,
+        "duration_secs": null
+    });
+
+    let decoded: TaskStatusFile = serde_json::from_value(legacy_json)?;
+    assert_eq!(decoded.task_id, "legacy123");
+    assert_eq!(decoded.working_dir, None);
+
+    // None working_dir should be omitted on serialization for clean wire/disk files.
+    let reencoded = serde_json::to_value(&decoded)?;
+    assert!(reencoded.get("working_dir").is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn set_working_dir_persists_through_completion() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+
+    let info = manager
+        .spawn_with_notify(
+            "bash",
+            Some("cwd test".to_string()),
+            "session-cwd",
+            false,
+            false,
+            |_output_path| async move {
+                let _ = finish_rx.await;
+                Ok(TaskResult::completed(Some(0)))
+            },
+        )
+        .await;
+
+    let initial = manager
+        .status(&info.task_id)
+        .await
+        .ok_or_else(|| anyhow!("initial status should exist"))?;
+    assert_eq!(
+        initial.working_dir, None,
+        "tasks without an explicit working_dir must default to None instead of daemon CWD"
+    );
+
+    let updated = manager
+        .set_working_dir(&info.task_id, "/tmp/custom-project-root")
+        .await
+        .ok_or_else(|| anyhow!("set_working_dir should update task"))?;
+    assert_eq!(
+        updated.working_dir.as_deref(),
+        Some("/tmp/custom-project-root")
+    );
+
+    let _ = finish_tx.send(());
+    let finished = manager
+        .wait(&info.task_id, Duration::from_secs(5), false)
+        .await
+        .ok_or_else(|| anyhow!("task should exist"))?;
+    assert_eq!(finished.task.status, BackgroundTaskStatus::Completed);
+    assert_eq!(
+        finished.task.working_dir.as_deref(),
+        Some("/tmp/custom-project-root")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn output_tail_handles_empty_short_large_and_utf8_boundaries() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+    // Missing output file returns None.
+    assert_eq!(manager.output_tail("missing-task", 10, 1024).await, None);
+
+    // Empty file returns empty vec.
+    let empty_id = "tail-empty";
+    tokio::fs::write(manager.output_path_for(empty_id), "").await?;
+    assert_eq!(
+        manager.output_tail(empty_id, 10, 1024).await,
+        Some(Vec::new())
+    );
+
+    // Short file honors max_lines and zero limits.
+    let short_id = "tail-short";
+    tokio::fs::write(
+        manager.output_path_for(short_id),
+        "line-1\nline-2\nline-3\nline-4\n",
+    )
+    .await?;
+    assert_eq!(
+        manager.output_tail(short_id, 2, 1024).await,
+        Some(vec!["line-3".to_string(), "line-4".to_string()])
+    );
+    assert_eq!(
+        manager.output_tail(short_id, 10, 1024).await,
+        Some(vec![
+            "line-1".to_string(),
+            "line-2".to_string(),
+            "line-3".to_string(),
+            "line-4".to_string(),
+        ])
+    );
+    assert_eq!(
+        manager.output_tail(short_id, 0, 1024).await,
+        Some(Vec::new())
+    );
+    assert_eq!(manager.output_tail(short_id, 10, 0).await, Some(Vec::new()));
+
+    // File larger than max_bytes reads only the trailing window and returns the last max_lines.
+    let large_id = "tail-large";
+    let large_content: String = (0..200).map(|i| format!("record-{i:04}\n")).collect();
+    tokio::fs::write(manager.output_path_for(large_id), &large_content).await?;
+    assert_eq!(
+        manager.output_tail(large_id, 3, 64).await,
+        Some(vec![
+            "record-0197".to_string(),
+            "record-0198".to_string(),
+            "record-0199".to_string(),
+        ])
+    );
+
+    // Multi-byte UTF-8 boundary truncation: seek landing in the middle of a 4-byte emoji
+    // (🦀 = F0 9F A6 80) must never panic or corrupt subsequent lines.
+    let utf8_id = "tail-utf8";
+    let payload = "prefix-padding\n🦀hello\nlast-line\n";
+    tokio::fs::write(manager.output_path_for(utf8_id), payload).await?;
+    // Trailing suffix `"hello\nlast-line\n"` is 16 bytes; adding 1, 2, or 3 bytes lands
+    // directly inside the 4-byte 🦀 sequence.
+    for extra in [1usize, 2, 3] {
+        let max_bytes = "hello\nlast-line\n".len() + extra;
+        let tail = manager
+            .output_tail(utf8_id, 5, max_bytes)
+            .await
+            .expect("utf8 output file exists");
+        assert_eq!(tail, vec!["hello".to_string(), "last-line".to_string()]);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_working_dir_is_none_for_spawn_adopt_and_detached_tasks() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+
+    let (spawn_tx, spawn_rx) = tokio::sync::oneshot::channel();
+    let spawned = manager
+        .spawn_with_notify(
+            "bash",
+            Some("spawn default cwd".to_string()),
+            "session-default-none-spawn",
+            false,
+            false,
+            |_output_path| async move {
+                let _ = spawn_rx.await;
+                Ok(TaskResult::completed(Some(0)))
+            },
+        )
+        .await;
+    assert_eq!(
+        manager
+            .status(&spawned.task_id)
+            .await
+            .and_then(|s| s.working_dir),
+        None,
+        "spawn_with_notify must default working_dir to None instead of daemon CWD"
+    );
+    let _ = spawn_tx.send(());
+
+    let (adopt_tx, adopt_rx) = tokio::sync::oneshot::channel();
+    let adopt_handle = tokio::spawn(async move {
+        let _ = adopt_rx.await;
+        Ok(rayucode_tool_types::ToolOutput::new("ok"))
+    });
+    let adopted = manager
+        .adopt_with_options(
+            "bash",
+            Some("adopt default cwd".to_string()),
+            "session-default-none-adopt",
+            false,
+            false,
+            adopt_handle,
+        )
+        .await;
+    assert_eq!(
+        manager
+            .status(&adopted.task_id)
+            .await
+            .and_then(|s| s.working_dir),
+        None,
+        "adopt_with_options must default working_dir to None instead of daemon CWD"
+    );
+    let _ = adopt_tx.send(());
+
+    let detached = manager.reserve_task_info();
+    manager
+        .register_detached_task(
+            &detached,
+            "bash",
+            Some("detached default cwd".to_string()),
+            "session-default-none-detached",
+            std::process::id(),
+            &Utc::now().to_rfc3339(),
+            false,
+            false,
+        )
+        .await;
+    assert_eq!(
+        manager
+            .status(&detached.task_id)
+            .await
+            .and_then(|s| s.working_dir),
+        None,
+        "register_detached_task must default working_dir to None instead of daemon CWD"
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancel_disarms_stall_watchdog_and_publishes_completion_bus_event() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let mut bus_rx = Bus::global().subscribe();
+
+    let info = manager
+        .spawn_with_notify(
+            "bash",
+            Some("cancellable watched job".to_string()),
+            "session-cancel-watchdog",
+            true,
+            true,
+            |_output_path| async move {
+                sleep(Duration::from_secs(3600)).await;
+                Ok(TaskResult::completed(Some(0)))
+            },
+        )
+        .await;
+
+    manager
+        .arm_stall_watchdog(&info.task_id, 30)
+        .await
+        .ok_or_else(|| anyhow!("watchdog should arm on running task"))?;
+    assert!(manager.stall_watchdogs.read().await.contains_key(&info.task_id));
+
+    assert!(manager.cancel(&info.task_id).await?);
+    assert!(
+        !manager.stall_watchdogs.read().await.contains_key(&info.task_id),
+        "cancelling a task must abort and remove its stall watchdog"
+    );
+
+    let status = manager
+        .status(&info.task_id)
+        .await
+        .ok_or_else(|| anyhow!("cancelled task status should exist"))?;
+    assert_eq!(status.status, BackgroundTaskStatus::Failed);
+    assert_eq!(status.stall_wake_seconds, None);
+
+    // Cancel must immediately publish BackgroundTaskCompleted (with wake=false)
+    // so connected dashboards refresh without waiting for the fallback tick.
+    let mut saw_completed = false;
+    while let Ok(event) = bus_rx.try_recv() {
+        if let BusEvent::BackgroundTaskCompleted(completed) = event
+            && completed.task_id == info.task_id
+        {
+            assert_eq!(completed.status, BackgroundTaskStatus::Failed);
+            assert!(!completed.wake, "user cancellation must not wake agent");
+            saw_completed = true;
+            break;
+        }
+    }
+    assert!(
+        saw_completed,
+        "cancel_with_grace must publish BusEvent::BackgroundTaskCompleted"
+    );
+
+    // Advance well past the armed stall window and confirm no stall fires.
+    sleep(Duration::from_secs(90)).await;
+    while let Ok(event) = bus_rx.try_recv() {
+        if let BusEvent::BackgroundTaskStalled(stalled) = event {
+            assert_ne!(
+                stalled.task_id, info.task_id,
+                "disarmed watchdog must never fire after cancellation"
+            );
+        }
+    }
     Ok(())
 }

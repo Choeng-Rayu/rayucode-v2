@@ -531,6 +531,9 @@ export -f cargo
                     },
                 )
                 .await;
+            let _ = background::global()
+                .set_working_dir(&info.task_id, repo_dir.display().to_string())
+                .await;
 
             request.background_task_id = Some(info.task_id.clone());
             request.output_file = Some(info.output_file.display().to_string());
@@ -635,6 +638,9 @@ export -f cargo
                     .await
                 },
             )
+            .await;
+        let _ = background::global()
+            .set_working_dir(&info.task_id, repo_dir.display().to_string())
             .await;
 
         request.background_task_id = Some(info.task_id.clone());
@@ -944,6 +950,9 @@ export -f cargo
                     .await
                 },
             )
+            .await;
+        let _ = background::global()
+            .set_working_dir(&info.task_id, repo_dir.display().to_string())
             .await;
 
         request.background_task_id = Some(info.task_id.clone());

@@ -17,6 +17,7 @@ impl App {
             || self.help_scroll.is_some()
             || self.file_review_overlay.is_some()
             || self.prompt_history_search.is_some()
+            || self.activity_dashboard.open
     }
 
     pub(super) fn handle_transcript_toggle(

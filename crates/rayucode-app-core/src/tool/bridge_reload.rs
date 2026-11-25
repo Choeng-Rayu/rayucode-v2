@@ -364,7 +364,11 @@ async fn restart_bridge(
 }
 
 /// Queue the restart as a daemon-owned background task and return at once.
-pub(crate) async fn spawn_bridge_reload(session_id: &str, new_launch: BridgeLaunch) -> ToolOutput {
+pub(crate) async fn spawn_bridge_reload(
+    session_id: &str,
+    working_dir: Option<&Path>,
+    new_launch: BridgeLaunch,
+) -> ToolOutput {
     let program = new_launch.display();
     let info = background::global()
         .spawn_with_notify(
@@ -386,6 +390,11 @@ pub(crate) async fn spawn_bridge_reload(session_id: &str, new_launch: BridgeLaun
             },
         )
         .await;
+    if let Some(dir) = working_dir {
+        let _ = background::global()
+            .set_working_dir(&info.task_id, dir.display().to_string())
+            .await;
+    }
     ToolOutput::new(format!(
         "Restarting the harness API bridge onto `{program}` as daemon background task {}. \
          It runs independently of this turn, so it completes even if this connection drops. \

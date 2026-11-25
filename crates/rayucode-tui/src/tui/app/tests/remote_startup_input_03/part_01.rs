@@ -385,9 +385,63 @@ fn test_handle_paste_large() {
 
     app.handle_paste("a\nb\nc\nd\ne".to_string());
 
-    // Large paste (5+ lines) uses placeholder
-    assert_eq!(app.input(), "[pasted 5 lines]");
+    // Large paste (5+ lines) uses numbered compact pill placeholder
+    assert_eq!(app.input(), "[Pasted text #1 +4 lines]");
     assert_eq!(app.pasted_contents.len(), 1);
+}
+
+#[test]
+fn test_handle_paste_14_lines_matches_numbered_pill_and_expands_on_submit() {
+    let mut app = create_test_app();
+    let fourteen_lines = (1..=14)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    app.handle_paste(fourteen_lines.clone());
+
+    assert_eq!(app.input(), "[Pasted text #1 +13 lines]");
+    assert_eq!(app.pasted_contents.len(), 1);
+    assert!(crate::tui::TuiState::input_pasted_attached(&app, 1));
+    assert!(!crate::tui::TuiState::input_pasted_attached(&app, 2));
+
+    app.submit_input();
+    assert_eq!(app.display_messages().len(), 1);
+    assert_eq!(app.display_messages()[0].content, fourteen_lines);
+    assert!(app.pasted_contents.is_empty());
+}
+
+#[test]
+fn test_handle_paste_long_single_line_collapses_instead_of_overflowing_input_bar() {
+    let mut app = create_test_app();
+    let long_line = "x".repeat(350);
+
+    app.handle_paste(long_line.clone());
+
+    assert_eq!(app.input(), "[Pasted text #1 +350 chars]");
+    assert_eq!(app.pasted_contents.len(), 1);
+    let visible = app.input().to_string();
+    assert_eq!(
+        crate::tui::app::input::expand_paste_placeholders(&app, &visible),
+        long_line
+    );
+}
+
+#[test]
+fn test_handle_paste_windows_crlf_normalizes_and_counts_lines() {
+    let mut app = create_test_app();
+    let crlf_text = (1..=14)
+        .map(|n| format!("row {n}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+
+    app.handle_paste(crlf_text);
+
+    assert_eq!(app.input(), "[Pasted text #1 +13 lines]");
+    let visible = app.input().to_string();
+    let expanded = crate::tui::app::input::expand_paste_placeholders(&app, &visible);
+    assert!(!expanded.contains('\r'));
+    assert_eq!(expanded.lines().count(), 14);
 }
 
 #[test]
@@ -412,7 +466,10 @@ fn test_paste_again_with_different_text_still_collapses() {
     app.handle_paste("a\nb\nc\nd\ne".to_string());
     app.handle_paste("f\ng\nh\ni\nj".to_string());
 
-    assert_eq!(app.input(), "[pasted 5 lines][pasted 5 lines]");
+    assert_eq!(
+        app.input(),
+        "[Pasted text #1 +4 lines][Pasted text #2 +4 lines]"
+    );
     assert_eq!(app.pasted_contents.len(), 2);
 }
 
@@ -428,14 +485,15 @@ fn test_paste_again_expands_matching_placeholder_not_newer_same_sized_paste() {
     app.handle_paste(second.clone());
     app.handle_paste(first.clone());
 
-    assert_eq!(app.input(), format!("{first} [pasted 5 lines]"));
+    assert_eq!(app.input(), format!("{first} [Pasted text #2 +4 lines]"));
     assert_eq!(app.cursor_pos, first.len());
     let visible_input = app.input().to_string();
     assert_eq!(
         crate::tui::app::input::expand_paste_placeholders(&app, &visible_input),
         format!("{first} {second}")
     );
-    assert_eq!(app.pasted_contents, vec![second]);
+    // Slot #1 is cleared while slot #2 stays at index 1 so `#2` remains stable.
+    assert_eq!(app.pasted_contents, vec![String::new(), second]);
 }
 
 #[test]
@@ -443,11 +501,11 @@ fn test_paste_again_expands_only_most_recent_identical_placeholder() {
     let mut app = create_test_app();
     let big = "a\nb\nc\nd\ne".to_string();
 
-    app.set_input_for_test("[pasted 5 lines] [pasted 5 lines]");
+    app.set_input_for_test("[Pasted text #1 +4 lines] [Pasted text #2 +4 lines]");
     app.pasted_contents = vec![big.clone(), big.clone()];
     app.handle_paste(big.clone());
 
-    assert_eq!(app.input(), format!("[pasted 5 lines] {big}"));
+    assert_eq!(app.input(), format!("[Pasted text #1 +4 lines] {big}"));
     assert_eq!(app.pasted_contents, vec![big]);
 }
 
@@ -463,7 +521,7 @@ fn test_paste_again_does_not_expand_an_edited_placeholder() {
 
     assert_eq!(
         app.input(),
-        "[pasted 5 lines[pasted 5 lines]",
+        "[Pasted text #1 +4 lines[Pasted text #2 +4 lines]",
         "an edited placeholder must not be mistaken for the original"
     );
     assert_eq!(app.pasted_contents.len(), 2);
@@ -488,7 +546,7 @@ fn test_paste_expansion_on_submit() {
         .unwrap();
 
     // Input shows placeholder
-    assert_eq!(app.input(), "A: [pasted 5 lines] B");
+    assert_eq!(app.input(), "A: [Pasted text #1 +4 lines] B");
 
     // Submit expands placeholder
     app.submit_input();
