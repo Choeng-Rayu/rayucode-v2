@@ -53,8 +53,7 @@ impl PreUiTerminalGuard {
     fn enter() -> Result<Self> {
         let terminal = rayucode_tui_style::init_terminal()
             .context("failed to initialize pre-UI setup terminal")?;
-        let bracketed_paste =
-            crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste).is_ok();
+        let bracketed_paste = crate::tui::enable_bracketed_paste().is_ok();
         Ok(Self {
             terminal,
             bracketed_paste,
@@ -73,8 +72,7 @@ impl PreUiTerminalGuard {
 impl Drop for PreUiTerminalGuard {
     fn drop(&mut self) {
         if self.bracketed_paste
-            && let Err(err) =
-                crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste)
+            && let Err(err) = crate::tui::disable_bracketed_paste()
         {
             crate::logging::warn(&format!(
                 "failed to disable bracketed paste on pre-UI setup exit: {err}"

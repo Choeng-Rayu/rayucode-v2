@@ -132,3 +132,157 @@ fn ssh_session_wire_controls_and_navigation() {
         assert!(!remote.has_loaded_history());
     });
 }
+
+#[test]
+fn ssh_back_and_alt_b_interleave_with_dashboard_in_unified_lifo_order() {
+    if crate::tui::app::commands_dispatch::ssh_test_runs_in_child(
+        "ssh_back_and_alt_b_interleave_with_dashboard_in_unified_lifo_order",
+    ) {
+        return;
+    }
+    use crate::protocol::{ProjectActivitySnapshot, SwarmMemberStatus};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use rayucode_tui_render::activity_dashboard::ActivityTab;
+
+    let mut app = crate::tui::app::tests::create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("ses_A".to_string());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let mut remote = RemoteConnection::dummy();
+        remote.set_session_id("ses_A".into());
+        remote.mark_history_loaded();
+        let peer = remote.take_dummy_peer().unwrap();
+        let (reader, _writer) = peer.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // 1. Dashboard Enter switches A -> B (pushes A onto unified return stack).
+        let member_a = SwarmMemberStatus {
+            session_id: "ses_A".into(),
+            friendly_name: Some("alpha".into()),
+            status: "running".into(),
+            ..Default::default()
+        };
+        let member_b = SwarmMemberStatus {
+            session_id: "ses_B".into(),
+            friendly_name: Some("beta".into()),
+            status: "running".into(),
+            report_back_to_session_id: Some("ses_A".into()),
+            ..Default::default()
+        };
+        app.activity_dashboard.apply_snapshot(ProjectActivitySnapshot {
+            my_swarm_members: vec![member_a, member_b],
+            ..Default::default()
+        });
+        app.open_activity_dashboard(ActivityTab::All);
+        app.activity_dashboard.pending_actions.clear();
+        // Composer holding `/login` must NOT hijack Enter while dashboard is open (Bug #12).
+        app.input = "/login".into();
+        super::handle_remote_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut remote,
+        )
+        .await
+        .unwrap();
+        super::handle_remote_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut remote,
+        )
+        .await
+        .unwrap();
+        assert!(!app.activity_dashboard.open);
+        assert_eq!(app.input, "/login", "dashboard Enter must not trigger SSH /login");
+        app.input.clear();
+        super::flush_pending_activity_dashboard_actions(&mut app, &mut remote).await;
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::SubscribeProjectActivity { enabled: false, .. }
+        ));
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::PeekSession { target: None, .. }
+        ));
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::ResumeSession { session_id, .. } if session_id == "ses_B"
+        ));
+        remote.set_session_id("ses_B".into());
+        app.remote_session_id = Some("ses_B".into());
+        remote.mark_history_loaded();
+
+        // 2. SSH `/resume ses_C` moves B -> C (pushes B on top of A).
+        handle_command(&mut app, &mut remote, "/resume ses_C")
+            .await
+            .unwrap();
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::ResumeSession { session_id, .. } if session_id == "ses_C"
+        ));
+        handle_event(&mut app, &mut remote, &history("ses_C"))
+            .await
+            .unwrap();
+        remote.set_session_id("ses_C".into());
+        app.remote_session_id = Some("ses_C".into());
+        remote.mark_history_loaded();
+        assert_eq!(app.session_return_stack, vec!["ses_A", "ses_B"]);
+
+        // 3. Outside Alt+B over SSH must return C -> B (not skip B to A!).
+        super::handle_remote_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+            &mut remote,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::ResumeSession { session_id, .. } if session_id == "ses_B"
+        ));
+        handle_event(&mut app, &mut remote, &history("ses_B"))
+            .await
+            .unwrap();
+        remote.set_session_id("ses_B".into());
+        app.remote_session_id = Some("ses_B".into());
+        remote.mark_history_loaded();
+        assert_eq!(app.session_return_stack, vec!["ses_A"]);
+
+        // 4. Typing `/back` over SSH now pops A (originally pushed by dashboard Enter!).
+        handle_command(&mut app, &mut remote, "/back").await.unwrap();
+        assert!(matches!(
+            read_request(&mut reader).await,
+            Request::ResumeSession { session_id, .. } if session_id == "ses_A"
+        ));
+        handle_event(&mut app, &mut remote, &history("ses_A"))
+            .await
+            .unwrap();
+        remote.set_session_id("ses_A".into());
+        app.remote_session_id = Some("ses_A".into());
+        assert!(!app.has_session_return_target());
+
+        // 5. After SSH `/resume ses_D`, pressing Alt+B *inside* the dashboard pops back to ses_A!
+        handle_command(&mut app, &mut remote, "/resume ses_D")
+            .await
+            .unwrap();
+        let _ = read_request(&mut reader).await;
+        handle_event(&mut app, &mut remote, &history("ses_D"))
+            .await
+            .unwrap();
+        remote.set_session_id("ses_D".into());
+        app.remote_session_id = Some("ses_D".into());
+
+        app.open_activity_dashboard(ActivityTab::All);
+        app.activity_dashboard.pending_actions.clear();
+        assert!(app.handle_activity_dashboard_key(KeyCode::Char('b'), KeyModifiers::ALT));
+        assert!(!app.activity_dashboard.open);
+        assert!(app.activity_dashboard.pending_actions.iter().any(|a| matches!(
+            a,
+            crate::tui::app::activity_dashboard::DashboardRemoteAction::SwitchSession {
+                target_session_id,
+                ..
+            } if target_session_id == "ses_A"
+        )));
+        assert!(!app.has_session_return_target());
+    });
+}

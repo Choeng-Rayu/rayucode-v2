@@ -9,6 +9,20 @@ pub(in crate::tui::app) struct State {
     ready_prompt: Option<String>,
 }
 
+impl State {
+    pub(in crate::tui::app) fn has_back_target(&self) -> bool {
+        !self.back.is_empty()
+    }
+
+    pub(in crate::tui::app) fn last_back_target(&self) -> Option<&str> {
+        self.back.last().map(String::as_str)
+    }
+
+    pub(in crate::tui::app) fn pop_back_target(&mut self) -> Option<String> {
+        self.back.pop()
+    }
+}
+
 struct Navigation {
     request_id: u64,
     target: String,
@@ -85,7 +99,7 @@ pub(in crate::tui::app) async fn handle_command(
     }
     let switching = matches!(
         command,
-        "/resume" | "/back" | "/fork" | "/split" | "/btw" | "/transfer"
+        "/resume" | "/fork" | "/split" | "/btw" | "/transfer"
     ) || (command == "/session" && !args.is_empty());
     if switching && app.is_processing {
         app.push_display_message(DisplayMessage::system(
@@ -132,7 +146,11 @@ pub(in crate::tui::app) async fn handle_command(
             if !args.is_empty() {
                 anyhow::bail!("Usage: /back");
             }
-            if let Some(target) = app.ssh_sessions.back.last().cloned() {
+            if let Some(target) = app.peek_session_return_target().map(str::to_owned) {
+                if app.is_processing {
+                    app.clear_local_streaming_state_for_session_switch();
+                    remote.clear_pending();
+                }
                 navigate(app, remote, &target, true, None).await?;
             } else {
                 app.push_display_message(DisplayMessage::system(
@@ -216,12 +234,19 @@ pub(in crate::tui::app) async fn handle_event(
                 .take()
                 .ok_or_else(|| anyhow::anyhow!("Matched SSH navigation disappeared"))?;
             if navigation.returning {
-                app.ssh_sessions.back.pop();
+                if app.peek_session_return_target() == Some(navigation.target.as_str()) {
+                    app.pop_session_return_target();
+                } else {
+                    app.ssh_sessions.back.pop();
+                }
             } else if let Some(previous) = navigation
                 .previous
                 .filter(|previous| previous != session_id)
             {
-                app.ssh_sessions.back.push(previous);
+                app.push_session_return_target(previous.clone());
+                if app.ssh_sessions.back.last() != Some(&previous) {
+                    app.ssh_sessions.back.push(previous);
+                }
             }
             app.ssh_sessions.ready_prompt = navigation.prompt;
         }

@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 chrono = { version = "0.4", features = ["serde"] }
+rayucode-protocol = { path = "../rayucode-protocol" }
 rayucode-tui-style = { path = "../rayucode-tui-style" }
 ratatui = "0.30"
 unicode-width = "0.2"

@@ -507,6 +507,7 @@ pub(crate) fn diagram_pane_visibility_key_label() -> String {
 }
 
 /// Status-line hint shown when the inline swarm controls open.
+#[allow(dead_code)]
 pub(crate) fn swarm_view_hint(next: &str) -> String {
     use rayucode_tui_core::keybind::alt_chord_lower;
     format!(
@@ -518,6 +519,7 @@ pub(crate) fn swarm_view_hint(next: &str) -> String {
 }
 
 /// Status-line hint shown when the full swarm page opens.
+#[allow(dead_code)]
 pub(crate) fn swarm_page_hint() -> String {
     use rayucode_tui_core::keybind::alt_chord_lower;
     format!(

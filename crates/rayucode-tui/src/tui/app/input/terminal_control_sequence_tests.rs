@@ -15,6 +15,9 @@ fn strips_escape_and_bare_report_remnants() {
         ("[12;40R", ""),
         ("[1I", ""),
         ("[1O", ""),
+        // Kitty CSI-u key-release remnants (Windows Terminal / ConPTY leak).
+        ("C[99;1:3ur[114;1:3ue[101;1:3u[115:83;2:3u", "Cre"),
+        ("hello[104;1:3u world", "hello world"),
         // 8-bit CSI introducer.
         ("\u{9b}[<65;50;24M", ""),
         // Stray C0 controls, but tabs and newlines survive.
@@ -29,6 +32,37 @@ fn strips_escape_and_bare_report_remnants() {
             "input {input:?} should sanitize to {expected:?}"
         );
     }
+}
+
+/// Character-by-character delivery of torn mouse/paste/Kitty CSI reports must
+/// scrub cleanly once the final byte arrives, leaving ordinary text intact.
+#[test]
+fn strips_character_by_character_bare_reports_at_cursor() {
+    use super::strip_trailing_bare_terminal_report;
+
+    let type_stream = |stream: &str| -> String {
+        let mut buf = String::new();
+        let mut cursor = 0usize;
+        for ch in stream.chars() {
+            buf.insert(cursor, ch);
+            cursor += ch.len_utf8();
+            if let Some((cleaned, new_cursor)) = strip_trailing_bare_terminal_report(&buf, cursor) {
+                buf = cleaned;
+                cursor = new_cursor;
+            }
+        }
+        assert_eq!(cursor, buf.len());
+        buf
+    };
+
+    assert_eq!(
+        type_stream("C[99;1:3ur[114;1:3ue[101;1:3u[115:83;2:3u"),
+        "Cre"
+    );
+    assert_eq!(type_stream("hi[<65;50;24M[<64;50;24M there"), "hi there");
+    assert_eq!(type_stream("[200~pasted[201~"), "pasted");
+    assert_eq!(type_stream("let x: [u8; 4] = [1, 2, 3, 4];"), "let x: [u8; 4] = [1, 2, 3, 4];");
+    assert_eq!(type_stream("foo[12;40]bar"), "foo[12;40]bar");
 }
 
 /// The guard must not eat text a user actually typed. Being too aggressive

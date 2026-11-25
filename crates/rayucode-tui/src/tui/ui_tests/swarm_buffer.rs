@@ -612,3 +612,65 @@ fn widgets_render_detail_layer_without_repeating_status_line_facts() {
         "composer model label:\n{frame}"
     );
 }
+
+#[test]
+fn overscroll_activity_footer_badge_preserves_attention_and_never_wraps() {
+    let mut state = overscroll_line_state();
+    state.project_activity_summary = crate::protocol::ProjectActivitySummary {
+        active_agents: 3,
+        total_agents: 4,
+        running_bg_tasks: 2,
+        active_watchers: 0,
+        active_runners: 1,
+        attention_count: 1,
+        primary_attention: Some(crate::protocol::AgentAttention {
+            kind: crate::protocol::AgentAttentionKind::Permission,
+            summary: "bash cargo test".to_string(),
+            request_id: Some("perm_1".to_string()),
+            since_epoch_ms: None,
+        }),
+        active_runtime_note: None,
+    };
+
+    for width in [30_u16, 50, 80, 120] {
+        let _lock = viewport_snapshot_test_lock();
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        let mut state = state.clone();
+        state.input = "draft".into();
+        terminal
+            .draw(|frame| input_ui::draw_overscroll_status(frame, &state, frame.area(), false))
+            .expect("overscroll frame");
+        let buf = terminal.backend().buffer();
+        // Walk cells skipping ratatui's trailing continuation cells after 2-cell emojis.
+        let mut rendered = String::new();
+        let mut x = 0u16;
+        while x < width {
+            let sym = buf[(x, 0)].symbol();
+            let cw = unicode_width::UnicodeWidthStr::width(sym).max(1) as u16;
+            rendered.push_str(sym);
+            x = x.saturating_add(cw);
+        }
+        let display_w = unicode_width::UnicodeWidthStr::width(rendered.as_str());
+        assert!(
+            display_w <= width as usize,
+            "overscroll row at width {width} overflowed ({display_w} cells): {rendered:?}"
+        );
+        assert!(
+            rendered.contains("⚠1"),
+            "attention badge must survive at width {width}: {rendered:?}"
+        );
+        if width >= 80 {
+            assert!(
+                rendered.contains("Alt+N"),
+                "dashboard shortcut should be visible at width {width}: {rendered:?}"
+            );
+        }
+    }
+
+    // Return-session pill appears when session_return_stack is non-empty.
+    state.has_session_return_target = true;
+    let wide = overscroll_line_row(&state, 140);
+    assert!(wide.contains("↩ Alt+B"), "expected return pill: {wide:?}");
+    assert!(wide.contains("⚠1"), "expected attention badge: {wide:?}");
+}

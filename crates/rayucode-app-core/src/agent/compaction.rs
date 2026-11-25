@@ -36,6 +36,10 @@ impl Agent {
         let event = match compaction.try_write() {
             Ok(mut manager) => {
                 let event = manager.poll_compaction_event_with(&provider_messages);
+                crate::server::live_status::set_compacting(
+                    &self.session.id,
+                    manager.is_compacting(),
+                );
                 if event.is_some() {
                     self.sync_session_compaction_state_from_manager(&manager);
                 }
@@ -87,7 +91,12 @@ impl Agent {
                     }
                 );
 
-                match manager.force_compact_with(&messages, provider) {
+                let compact_result = manager.force_compact_with(&messages, provider);
+                crate::server::live_status::set_compacting(
+                    &self.session.id,
+                    manager.is_compacting(),
+                );
+                match compact_result {
                     Ok(()) => (
                         format!(
                             "{}\n\n📦 **Compacting context** (manual) — summarizing older messages in the background to stay within the context window.\n\
@@ -179,6 +188,10 @@ impl Agent {
                     self.last_recovery_compaction = Some((pre_tokens, post_tokens, dropped));
                     (dropped, usage_pct)
                 };
+                crate::server::live_status::set_compacting(
+                    &self.session.id,
+                    manager.is_compacting(),
+                );
                 self.sync_session_compaction_state_from_manager(&manager);
                 (dropped, usage_pct)
             }

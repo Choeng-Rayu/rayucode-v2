@@ -980,6 +980,31 @@ pub enum Request {
         #[serde(default = "default_true")]
         wake: bool,
     },
+
+    // === Project Activity Dashboard & Live Peek ===
+    /// Fetch a one-shot project-scoped activity snapshot without locking an agent.
+    #[serde(rename = "get_project_activity")]
+    GetProjectActivity {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+
+    /// Subscribe or unsubscribe this connection from debounced project activity snapshots.
+    #[serde(rename = "subscribe_project_activity")]
+    SubscribeProjectActivity { id: u64, enabled: bool },
+
+    /// Start, switch, or stop (when `target` is `None`) live peek streaming for this connection.
+    #[serde(rename = "peek_session")]
+    PeekSession {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<PeekTarget>,
+    },
+
+    /// Cancel a running background task by id without blocking on an active LLM turn.
+    #[serde(rename = "cancel_background_task")]
+    CancelBackgroundTask { id: u64, task_id: String },
 }
 
 mod events;

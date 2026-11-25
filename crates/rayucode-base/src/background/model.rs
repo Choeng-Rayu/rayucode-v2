@@ -95,6 +95,9 @@ pub struct TaskStatusFile {
     /// this long with no new output bytes and no progress events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall_wake_seconds: Option<u64>,
+    /// Working directory where the task was launched, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -244,6 +247,7 @@ pub(super) struct RunningTask {
     pub(super) tool_name: String,
     pub(super) display_name: Option<String>,
     pub(super) session_id: String,
+    pub(super) working_dir: Option<String>,
     pub(super) status_path: PathBuf,
     pub(super) started_at: Instant,
     pub(super) started_at_rfc3339: String,

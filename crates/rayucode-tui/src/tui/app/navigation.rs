@@ -1367,6 +1367,11 @@ impl App {
             finish_mouse_event!(scroll_only, "file_review_overlay");
         }
 
+        if !question_active && self.activity_dashboard.open {
+            let scroll_only = self.handle_activity_dashboard_mouse(mouse);
+            finish_mouse_event!(scroll_only, "activity_dashboard");
+        }
+
         if !question_active && self.commit_log_overlay.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {

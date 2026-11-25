@@ -29,9 +29,8 @@ impl App {
     pub(super) fn begin_in_flight_catchup_resume(&mut self, request: PendingCatchupResume) {
         if request.show_brief
             && let Some(source) = request.source_session_id.as_ref()
-            && self.catchup_return_stack.last() != Some(source)
         {
-            self.catchup_return_stack.push(source.clone());
+            self.push_session_return_target(source.clone());
         }
         self.in_flight_catchup_resume = Some(request);
     }
@@ -93,8 +92,31 @@ impl App {
         snapshot
     }
 
-    pub(super) fn pop_catchup_return_target(&mut self) -> Option<String> {
-        self.catchup_return_stack.pop()
+    pub(crate) fn push_session_return_target(&mut self, source: String) {
+        if self.session_return_stack.last() != Some(&source) {
+            self.session_return_stack.push(source);
+        }
+    }
+
+    pub(crate) fn peek_session_return_target(&self) -> Option<&str> {
+        self.session_return_stack
+            .last()
+            .map(String::as_str)
+            .or_else(|| self.ssh_sessions.last_back_target())
+    }
+
+    pub(crate) fn pop_session_return_target(&mut self) -> Option<String> {
+        if let Some(target) = self.session_return_stack.pop() {
+            if self.ssh_sessions.last_back_target() == Some(target.as_str()) {
+                self.ssh_sessions.pop_back_target();
+            }
+            return Some(target);
+        }
+        self.ssh_sessions.pop_back_target()
+    }
+
+    pub(crate) fn has_session_return_target(&self) -> bool {
+        !self.session_return_stack.is_empty() || self.ssh_sessions.has_back_target()
     }
 
     fn catchup_page(&self, session_id: &str, markdown: String) -> SidePanelPage {

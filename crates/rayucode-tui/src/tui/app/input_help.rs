@@ -107,8 +107,14 @@ impl App {
             "catchup" => {
                 "/catchup\nOpen the Catch Up picker for finished sessions that need attention.\n\n/catchup next\nTeleport to the next session needing attention and open a Catch Up brief in the side panel.\n\n/catchup list\nAlias for opening the picker."
             }
+            "activity" => {
+                "/activity\nOpen the full-screen Project Activity Dashboard on the All tab (also Alt+N).\n\nShows My Swarm & Subagents, Peer Sessions, Background Tasks & Watchers, and Autonomous Runners with live Peek inspection and quick actions (Enter switch, a attention, m DM, x stop/cancel, r retry, f follow)."
+            }
+            "bg" => {
+                "/bg\nOpen the Project Activity Dashboard focused on Background Tasks & Watchers."
+            }
             "back" => {
-                "/back\nReturn to the previous session you came from via Catch Up.\n\nWorks after a /catchup next jump or after selecting a session from the Catch Up picker."
+                "/back\nReturn to the previous session (also Alt+B).\n\nWorks after switching sessions from the Project Activity Dashboard (Enter / a) or via Catch Up (/catchup next or the Catch Up picker)."
             }
             "subagent-model" => {
                 "/subagent-model\nShow the current subagent model policy for this session.\n\n/subagent-model <name>\nPin a fixed model for future subagents in this session.\n\n/subagent-model inherit\nReset to using the current active model."
@@ -147,7 +153,7 @@ impl App {
             "goals" => {
                 "/goals\nOpen the goals overview in the side panel.\n\n/goals resume\nResume the most relevant active goal for this session/project.\n\n/goals show <id>\nOpen a specific goal in the side panel."
             }
-            "swarm" => "/swarm [on|off|status]\nToggle swarm features for this session.",
+            "swarm" => "/swarm\nOpen the Project Activity Dashboard on the My Swarm tab.\n\n/swarm [on|off|status]\nEnable, disable, or inspect swarm features for this session.",
             "overnight" => {
                 "/overnight <hours>[h|m] [mission]\nStart one overnight coordinator with a target wake/report time. The coordinator prioritizes verifiable, low-risk work, maintains structured logs, updates review notes, and generates a review HTML page.\n\n/overnight status\nShow the latest overnight run status.\n\n/overnight log\nShow recent overnight events.\n\n/overnight review\nOpen the generated review page.\n\n/overnight cancel\nRequest cancellation after the current coordinator turn reaches a safe boundary."
             }

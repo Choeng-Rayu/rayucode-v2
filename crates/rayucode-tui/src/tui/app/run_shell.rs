@@ -1028,6 +1028,10 @@ impl App {
                     continue;
                 }
 
+                let peek_debounce_at = self
+                    .activity_dashboard_peek_debounce_deadline()
+                    .map(tokio::time::Instant::from_std);
+
                 tokio::select! {
                     // Poll in declaration order so user input always wins the
                     // race against server/bus chatter. During heavy streaming
@@ -1073,6 +1077,17 @@ impl App {
                     } => {
                         super::wake_stats::note("deferred_redraw");
                         deferred_redraw_at = None;
+                    }
+                    _ = async {
+                        match peek_debounce_at {
+                            Some(at) => tokio::time::sleep_until(at).await,
+                            None => futures::future::pending::<()>().await,
+                        }
+                    } => {
+                        super::wake_stats::note("activity_peek_debounce");
+                        needs_redraw |=
+                            remote::flush_pending_activity_dashboard_actions(&mut self, &mut remote_conn)
+                                .await;
                     }
                     event = remote_conn.next_event() => {
                         match &event {

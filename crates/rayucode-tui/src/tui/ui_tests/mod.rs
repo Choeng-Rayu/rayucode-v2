@@ -171,6 +171,8 @@ struct TestState {
     turn_footer: Option<crate::tui::TurnFooterSnapshot>,
     justrust_status: Option<crate::tui::justrust_status::StatusRow>,
     swarm_panel_full_page: bool,
+    project_activity_summary: crate::protocol::ProjectActivitySummary,
+    has_session_return_target: bool,
 }
 
 fn transcript_details() -> Option<std::rc::Rc<crate::tui::transcript_view::TranscriptView>> {
@@ -372,6 +374,15 @@ impl crate::tui::TuiState for TestState {
     }
     fn swarm_panel_full_page(&self) -> bool {
         self.swarm_panel_full_page
+    }
+    fn legacy_passive_swarm_strip_enabled(&self) -> bool {
+        true
+    }
+    fn project_activity_summary(&self) -> crate::protocol::ProjectActivitySummary {
+        self.project_activity_summary.clone()
+    }
+    fn has_session_return_target(&self) -> bool {
+        self.has_session_return_target
     }
     fn remote_startup_phase_active(&self) -> bool {
         self.remote_startup_phase_active

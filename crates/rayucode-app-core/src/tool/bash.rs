@@ -1097,6 +1097,11 @@ impl BashTool {
                         work_handle,
                     )
                     .await;
+                if let Some(dir) = ctx.working_dir.as_ref() {
+                    let _ = crate::background::global()
+                        .set_working_dir(&info.task_id, dir.display().to_string())
+                        .await;
+                }
                 // Route progress parsed from the still-running command's output
                 // to the new background task, including any update seen before
                 // promotion, so the task row shows real progress from the start.
@@ -1233,6 +1238,11 @@ impl BashTool {
                         params.wake,
                     )
                     .await;
+                if let Some(dir) = ctx.working_dir.as_ref() {
+                    let _ = manager
+                        .set_working_dir(&info.task_id, dir.display().to_string())
+                        .await;
+                }
                 // Detached commands write straight to the output file, so no
                 // in-process reader sees their output. Follow the file to keep
                 // the task's progress bar live.
@@ -1291,6 +1301,11 @@ impl BashTool {
                         params.wake,
                     )
                     .await;
+                if let Some(dir) = ctx.working_dir.as_ref() {
+                    let _ = manager
+                        .set_working_dir(&info.task_id, dir.display().to_string())
+                        .await;
+                }
                 spawn_detached_progress_follower(info.task_id.clone(), info.output_file.clone());
                 let output = format!(
                     "Command continued in background due to reload.\n\nTask ID: {}\nOutput file: {}\nStatus file: {}\n\n{BACKGROUND_WAIT_GUIDANCE}",
@@ -1329,6 +1344,7 @@ impl BashTool {
         let description = params.intent.clone();
         let display_name = summarize_background_command(description.as_deref(), &command);
         let working_dir = ctx.working_dir.clone();
+        let task_working_dir = working_dir.as_ref().map(|dir| dir.display().to_string());
         let cloud_environment = cloud_command_environment(working_dir.as_deref())?;
         let session_id_env = ctx.session_id.clone();
         // Capture before handing work to the manager. Its closure can start
@@ -1458,6 +1474,11 @@ impl BashTool {
                 },
             )
             .await;
+        if let Some(dir) = task_working_dir {
+            let _ = crate::background::global()
+                .set_working_dir(&info.task_id, dir)
+                .await;
+        }
 
         let notify_msg = if wake {
             "The agent will be woken when the task completes."

@@ -612,7 +612,12 @@ impl RemoteConnection {
             | Request::ResumeSession { id, .. }
             | Request::GetModelCatalog { id, .. }
             | Request::AccountUsage { id }
-            | Request::GetState { id } => Some(*id),
+            | Request::GetState { id }
+            | Request::GetProjectActivity { id, .. }
+            | Request::SubscribeProjectActivity { id, .. }
+            | Request::PeekSession { id, .. }
+            | Request::CancelBackgroundTask { id, .. }
+            | Request::CommTaskControl { id, .. } => Some(*id),
             _ => None,
         };
         if let Some(id) = control_id {
@@ -987,6 +992,16 @@ impl RemoteConnection {
 
     /// Resume a specific session by ID
     pub async fn resume_session(&mut self, session_id: &str) -> Result<()> {
+        self.resume_session_with_takeover(session_id, false).await
+    }
+
+    /// Resume a specific session by ID, optionally requesting session takeover
+    /// when jumping to answer a pending prompt owned by a peer client.
+    pub async fn resume_session_with_takeover(
+        &mut self,
+        session_id: &str,
+        allow_session_takeover: bool,
+    ) -> Result<()> {
         if self.session_id.as_deref() != Some(session_id) {
             let had_cloud_authority = self.cloud_authority.is_some();
             self.revoke_cloud_authority();
@@ -999,7 +1014,7 @@ impl RemoteConnection {
             session_id: session_id.to_string(),
             client_instance_id: self.client_instance_id.clone(),
             client_has_local_history: false,
-            allow_session_takeover: false,
+            allow_session_takeover,
             client_name: None,
         };
         self.next_request_id += 1;
@@ -1014,6 +1029,112 @@ impl RemoteConnection {
         // remain idempotent rather than appending duplicate messages.
         self.has_loaded_history = false;
         Ok(())
+    }
+
+    /// Fetch a one-shot project-scoped activity snapshot without blocking on an active turn.
+    pub async fn get_project_activity(&mut self, session_id: Option<&str>) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::GetProjectActivity {
+            id,
+            session_id: session_id.map(str::to_string),
+        })
+        .await?;
+        Ok(id)
+    }
+
+    /// Subscribe or unsubscribe this connection from debounced project activity snapshots.
+    pub async fn subscribe_project_activity(&mut self, enabled: bool) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::SubscribeProjectActivity { id, enabled })
+            .await?;
+        Ok(id)
+    }
+
+    /// Start, switch, or stop (when `target` is `None`) live peek streaming for this connection.
+    pub async fn peek_session(
+        &mut self,
+        target: Option<crate::protocol::PeekTarget>,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::PeekSession { id, target })
+            .await?;
+        Ok(id)
+    }
+
+    /// Cancel a running background task by id without blocking on an active turn.
+    pub async fn cancel_background_task(&mut self, task_id: &str) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::CancelBackgroundTask {
+            id,
+            task_id: task_id.to_string(),
+        })
+        .await?;
+        Ok(id)
+    }
+
+    /// Send a direct message / nudge to a target agent session.
+    pub async fn comm_message(
+        &mut self,
+        from_session: &str,
+        to_session: &str,
+        to_swarm: Option<&str>,
+        message: &str,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::CommMessage {
+            id,
+            from_session: from_session.to_string(),
+            message: message.to_string(),
+            to_session: Some(to_session.to_string()),
+            channel: None,
+            delivery: None,
+            wake: Some(true),
+            tldr: None,
+            to_swarm: to_swarm.map(str::to_string),
+            require_target: true,
+        })
+        .await?;
+        Ok(id)
+    }
+
+    /// Request stopping a swarm worker session.
+    pub async fn comm_stop(&mut self, session_id: &str, target_session_id: &str) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::CommStop {
+            id,
+            session_id: session_id.to_string(),
+            target_session: target_session_id.to_string(),
+            force: None,
+        })
+        .await?;
+        Ok(id)
+    }
+
+    /// Control a swarm plan task lifecycle (e.g. `"retry"`).
+    pub async fn comm_task_control(
+        &mut self,
+        session_id: &str,
+        task_id: &str,
+        action: &str,
+    ) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::CommTaskControl {
+            id,
+            session_id: session_id.to_string(),
+            action: action.to_string(),
+            task_id: task_id.to_string(),
+            target_session: None,
+            message: None,
+        })
+        .await?;
+        Ok(id)
     }
 
     /// Request a wider compacted-history window for the active session.

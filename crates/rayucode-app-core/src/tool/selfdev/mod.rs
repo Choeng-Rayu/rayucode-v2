@@ -660,6 +660,7 @@ impl Tool for SelfDevTool {
                         match crate::tool::bridge_reload::cli_bridge_launch() {
                             Ok(launch) => Ok(crate::tool::bridge_reload::spawn_bridge_reload(
                                 &ctx.session_id,
+                                ctx.working_dir.as_deref(),
                                 launch,
                             )
                             .await),

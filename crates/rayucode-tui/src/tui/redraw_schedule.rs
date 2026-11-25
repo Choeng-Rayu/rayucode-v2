@@ -418,7 +418,10 @@ pub(crate) fn redraw_interval_with_policy_and_animation(
     animation_on_screen: bool,
 ) -> Duration {
     let interval = redraw_interval_focused_policy(state, policy, animation_on_screen);
-    if state.client_focused() || state.copy_selection_edge_autoscroll_active() {
+    if state.client_focused()
+        || state.copy_selection_edge_autoscroll_active()
+        || state.activity_dashboard_peek_debounce_pending()
+    {
         interval
     } else {
         interval.max(unfocused_redraw_min(state))
@@ -450,6 +453,12 @@ fn redraw_interval_focused_policy(
     // promptly until drained, regardless of decorative-animation policy.
     if session_picker_preview_redraw_active(state) {
         return Duration::from_millis(16);
+    }
+
+    // Flush debounced Activity Dashboard `PeekSession` requests promptly (~120ms)
+    // instead of stalling behind slow idle/deep-idle/passive-liveness ticks.
+    if state.activity_dashboard_peek_debounce_pending() {
+        return Duration::from_millis(30);
     }
 
     // A retained/collapsing reasoning trace used to need animation cadence here;

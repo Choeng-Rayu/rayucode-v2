@@ -1,4 +1,5 @@
 mod account_usage;
+pub(crate) mod attention_registry;
 mod available_models_cache;
 mod available_models_dedup;
 mod await_members_state;
@@ -19,7 +20,10 @@ mod client_lightweight_control;
 mod client_session;
 mod client_state;
 mod model_refresh;
+pub(crate) mod project_activity;
 mod session_connections;
+pub(crate) mod session_peek;
+pub(crate) mod subagent_registry;
 mod telegram_bridge;
 pub(crate) use client_state::provider_oauth_email;
 mod client_writer;
@@ -50,7 +54,7 @@ mod idle_hibernation;
 mod jade_relay;
 mod lane_dispatch;
 mod lifecycle;
-mod live_status;
+pub(crate) mod live_status;
 mod live_turn;
 mod provider_control;
 mod reload;
@@ -647,6 +651,7 @@ impl Server {
             let safety = Arc::new(crate::safety::SafetySystem::new());
             let handle = AmbientRunnerHandle::new(safety);
             crate::tool::ambient::init_schedule_runner(handle.clone());
+            self::project_activity::register_ambient_runner(handle.clone());
             Some(handle)
         };
 
@@ -657,6 +662,10 @@ impl Server {
             swarms_by_id: restored_swarms_by_id,
         } = load_persisted_swarm_runtime_state();
 
+        let sessions = Arc::new(SessionManager::new());
+        let file_touch = FileTouchService::new();
+        self::swarm::register_runtime_hooks(file_touch.clone(), Arc::clone(&sessions));
+
         Self {
             provider,
             socket_path: socket_path(),
@@ -664,12 +673,12 @@ impl Server {
             gateway_config_override: None,
             identity,
             event_tx,
-            sessions: Arc::new(SessionManager::new()),
+            sessions,
             is_processing: Arc::new(RwLock::new(false)),
             session_id: Arc::new(RwLock::new(String::new())),
             client_count: Arc::new(RwLock::new(0)),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
-            file_touch: FileTouchService::new(),
+            file_touch,
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
@@ -2300,9 +2309,15 @@ impl Server {
                     dispatch_ui_activity(&activity, &swarm_members).await;
                 }
                 BusEvent::ToolUpdated(event) => {
+                    self::subagent_registry::observe_tool_event(&event);
                     dispatch_swarm_tool_activity(&event, &swarm_members, &swarms_by_id).await;
                 }
                 BusEvent::SubagentStatus(event) => {
+                    let known_members: HashSet<String> = {
+                        let members = swarm_members.read().await;
+                        members.keys().cloned().collect()
+                    };
+                    self::subagent_registry::observe_bus_subagent_status(&event, &known_members);
                     dispatch_swarm_runtime_status(&event, &swarm_members, &swarms_by_id).await;
                 }
                 BusEvent::BatchProgress(progress) => {

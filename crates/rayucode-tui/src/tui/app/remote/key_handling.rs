@@ -315,6 +315,10 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             app.should_quit = true;
             return Ok(());
         }
+        if app_mod::activity_dashboard::handle_activity_dashboard_command(app, trimmed) {
+            return Ok(());
+        }
+
         if app_mod::commands_dispatch::handle_ssh_presentation_command(app, trimmed) {
             if matches!(trimmed.split_whitespace().next(), Some("/todos" | "/todo")) {
                 remote.request_todos().await?;
@@ -1193,7 +1197,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             return Ok(());
         }
 
-        if trimmed == "/swarm" || trimmed == "/swarm status" {
+        if trimmed == "/swarm status" {
             let default_enabled = crate::config::config().features.swarm;
             app.push_display_message(DisplayMessage::system(format!(
                 "Swarm feature: {} (config default: {})",

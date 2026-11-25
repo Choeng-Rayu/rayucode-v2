@@ -8,9 +8,14 @@
 //! output to production and the two cannot drift.
 
 use ratatui::prelude::*;
+use rayucode_protocol::{
+    AgentAttention, SwarmLiveStatus, SwarmMemberRuntime, SwarmMemberStatus, SwarmTodoItem,
+    SwarmToolIntent, SwarmToolProgress,
+};
 
 use rayucode_tui_style::color::rgb;
 
+use crate::agent_activity::{FormattedAgentActivity, format_agent_live_activity};
 use crate::swarm_tiles::{SwarmGalleryConfig, SwarmTile, render_swarm_gallery};
 
 /// Accent color for a member lifecycle status.
@@ -296,6 +301,87 @@ pub struct GalleryMember {
     pub context_limit: Option<u64>,
     /// Cumulative output tokens produced by the member.
     pub output_tokens: Option<u64>,
+    /// Current turn's event-derived live status, when known.
+    pub live_status: Option<SwarmLiveStatus>,
+    /// Seconds stalled, when flagged by the stalled-worker watchdog.
+    pub stalled_secs: Option<u64>,
+    /// Recent files touched by this member.
+    pub files_touched: Vec<String>,
+    /// Highest-priority actionable attention item waiting on this member.
+    pub pending_attention: Option<AgentAttention>,
+    /// Human-readable swarm label, when set.
+    pub swarm_label: Option<String>,
+}
+
+/// Convert a [`GalleryMember`] into a [`SwarmMemberStatus`] and delegate
+/// live progress formatting to [`format_agent_live_activity`].
+fn format_gallery_live_activity(member: &GalleryMember) -> FormattedAgentActivity {
+    let status = SwarmMemberStatus {
+        session_id: member.sort_key.clone(),
+        friendly_name: Some(member.label.clone()),
+        status: member.status.clone(),
+        task_label: member.task.clone(),
+        role: member.role.clone(),
+        todo_progress: member.todo,
+        todo_items: member
+            .todo_items
+            .iter()
+            .map(|t| SwarmTodoItem {
+                content: t.content.clone(),
+                status: t.status.clone(),
+                tool_intents: t
+                    .tool_intents
+                    .iter()
+                    .map(|tool| SwarmToolIntent {
+                        tool_call_id: String::new(),
+                        tool_name: tool.tool_name.clone(),
+                        intent: tool.intent.clone(),
+                        status: tool.status.clone(),
+                        progress: tool.progress.as_ref().map(|(current, total, unit)| {
+                            SwarmToolProgress {
+                                current: *current,
+                                total: *total,
+                                unit: unit.clone(),
+                            }
+                        }),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        runtime: SwarmMemberRuntime {
+            live_status: member.live_status.clone(),
+            model: member.model.clone(),
+            provider: member.provider.clone(),
+            auth_method: member.auth_method.clone(),
+            effort: member.effort.clone(),
+            elapsed_secs: member.elapsed_secs,
+            context_tokens: member.context_tokens,
+            context_limit: member.context_limit,
+            output_tokens: member.output_tokens,
+            stalled_secs: member.stalled_secs,
+            files_touched: member.files_touched.clone(),
+            pending_attention: member.pending_attention.clone(),
+            swarm_label: member.swarm_label.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    format_agent_live_activity(&status)
+}
+
+fn has_live_telemetry(member: &GalleryMember) -> bool {
+    member.pending_attention.is_some()
+        || member.stalled_secs.unwrap_or(0) > 0
+        || member.live_status.is_some()
+}
+
+fn member_needs_attention(member: &GalleryMember) -> bool {
+    member.pending_attention.is_some()
+        || member.stalled_secs.unwrap_or(0) > 0
+        || matches!(
+            member.status.as_str(),
+            "blocked" | "failed" | "crashed" | "waiting_network"
+        )
 }
 
 /// One compact todo entry shown in the focused swarm detail view.
@@ -444,7 +530,14 @@ pub fn render_swarm_live_card(
         return Vec::new();
     }
 
-    let accent = status_accent(&member.status);
+    let formatted = format_gallery_live_activity(member);
+    let accent = if formatted.is_failed {
+        rgb(255, 100, 100)
+    } else if formatted.is_attention {
+        rgb(255, 170, 80)
+    } else {
+        status_accent(&member.status)
+    };
     let mut metadata = Vec::new();
     if let Some(elapsed) = member.elapsed_secs {
         metadata.push(format_elapsed(elapsed));
@@ -465,6 +558,13 @@ pub fn render_swarm_live_card(
         .filter(|effort| !effort.trim().is_empty())
     {
         metadata.push(effort.to_string());
+    }
+    if let Some(swarm_label) = member
+        .swarm_label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+    {
+        metadata.push(swarm_label.to_string());
     }
 
     let lead = format!(
@@ -1297,15 +1397,7 @@ pub fn render_swarm_dock(
         .iter()
         .filter(|m| is_active_status(&m.status))
         .count();
-    let attention = members
-        .iter()
-        .filter(|m| {
-            matches!(
-                m.status.as_str(),
-                "blocked" | "failed" | "crashed" | "waiting_network"
-            )
-        })
-        .count();
+    let attention = members.iter().filter(|m| member_needs_attention(m)).count();
 
     let mut out: Vec<Line<'static>> = Vec::new();
     out.push(dock_header(members.len(), active, attention, plan, width));
@@ -1395,15 +1487,7 @@ pub fn render_swarm_compact(
         .iter()
         .filter(|m| is_active_status(&m.status))
         .count();
-    let attention = members
-        .iter()
-        .filter(|m| {
-            matches!(
-                m.status.as_str(),
-                "blocked" | "failed" | "crashed" | "waiting_network"
-            )
-        })
-        .count();
+    let attention = members.iter().filter(|m| member_needs_attention(m)).count();
 
     let sep_style = Style::default().fg(rgb(80, 80, 90));
     let mut spans: Vec<Span<'static>> = vec![
@@ -1453,9 +1537,12 @@ pub fn render_swarm_compact(
 /// rest. Rendered as a low-profile underline (▁) rather than full-height
 /// blocks. Non-empty classes always get at least one cell so tiny progress is
 /// visible, and the bar never exceeds `width` cells.
-fn plan_progress_bar(done: u32, running: u32, total: u32, width: usize) -> Line<'static> {
+pub fn plan_progress_bar(done: u32, running: u32, total: u32, width: usize) -> Line<'static> {
     const CELL: &str = "▁";
-    let cells = width.max(1);
+    if width == 0 {
+        return Line::default();
+    }
+    let cells = width;
     let total = total.max(1) as usize;
     let done = (done as usize).min(total);
     let running = (running as usize).min(total - done);
@@ -1464,11 +1551,14 @@ fn plan_progress_bar(done: u32, running: u32, total: u32, width: usize) -> Line<
     if done > 0 {
         done_w = done_w.clamp(1, cells);
     }
+    let remaining_cells = cells.saturating_sub(done_w);
     let mut running_w = ((done + running) * cells / total).saturating_sub(done_w);
-    if running > 0 {
-        running_w = running_w.clamp(1, cells - done_w);
+    if running > 0 && remaining_cells > 0 {
+        running_w = running_w.clamp(1, remaining_cells);
+    } else {
+        running_w = 0;
     }
-    let empty_w = cells - done_w - running_w;
+    let empty_w = cells.saturating_sub(done_w + running_w);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     if done_w > 0 {
@@ -1720,6 +1810,32 @@ fn hovered_detail_body(
     }
 
     let mut out: Vec<Line<'static>> = Vec::new();
+    let live = format_gallery_live_activity(m);
+    let rail = if show_member_rail { BAR } else { "    " };
+
+    // Live telemetry line (attention, stall, active tool/intent, batch, phase+tps)
+    // delegated to `agent_activity::format_agent_live_activity`.
+    if has_live_telemetry(m) && !live.summary.is_empty() && out.len() < budget {
+        let live_style = if live.is_failed {
+            Style::default()
+                .fg(rgb(255, 100, 100))
+                .add_modifier(Modifier::BOLD)
+        } else if live.is_attention {
+            Style::default()
+                .fg(rgb(255, 170, 80))
+                .add_modifier(Modifier::BOLD)
+        } else if live.is_active {
+            Style::default().fg(rgb(255, 200, 100))
+        } else {
+            Style::default().fg(dim)
+        };
+        let text_budget = width.saturating_sub(GUTTER.len() + BAR.len());
+        out.push(Line::from(vec![
+            Span::raw(GUTTER),
+            Span::styled(rail, Style::default().fg(gutter_fg)),
+            Span::styled(truncate_label(&live.summary, text_budget), live_style),
+        ]));
+    }
 
     // ---- Todo card ----
     // Show a sliding window of four item names. Tool activity belongs to the
@@ -1768,7 +1884,7 @@ fn hovered_detail_body(
             }
             let todo_rail = if !show_member_rail {
                 "    "
-            } else if visible_idx + 1 == shown {
+            } else if visible_idx + 1 == shown && m.files_touched.is_empty() {
                 "└─  "
             } else {
                 BAR
@@ -1837,6 +1953,21 @@ fn hovered_detail_body(
                 }
             }
         }
+        if !m.files_touched.is_empty() && out.len() < budget {
+            let text_budget = width.saturating_sub(GUTTER.len() + BAR.len());
+            let files = format!("files: {}", m.files_touched.join(" · "));
+            out.push(Line::from(vec![
+                Span::raw(GUTTER),
+                Span::styled(
+                    if show_member_rail { "└─  " } else { "    " },
+                    Style::default().fg(gutter_fg),
+                ),
+                Span::styled(
+                    truncate_label(&files, text_budget),
+                    Style::default().fg(dim),
+                ),
+            ]));
+        }
         return out;
     }
 
@@ -1848,38 +1979,59 @@ fn hovered_detail_body(
         .filter(|l| !l.trim_start().starts_with('·'))
         .collect();
     let text_budget = width.saturating_sub(GUTTER.len() + BAR.len());
+    let file_reserve = usize::from(!m.files_touched.is_empty() && budget.saturating_sub(out.len()) >= 2);
+    let transcript_budget = budget.saturating_sub(out.len() + file_reserve);
     let shown: Vec<&str> = transcript
         .iter()
         .copied()
         .rev()
-        .take(budget)
+        .take(transcript_budget)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
         .collect();
     if shown.iter().all(|l| l.trim().is_empty()) {
-        out.push(Line::from(vec![
-            Span::raw(GUTTER),
-            Span::styled(
-                if show_member_rail { BAR } else { "    " },
-                Style::default().fg(gutter_fg),
-            ),
-            Span::styled(format!("[{}]", m.status), Style::default().fg(dim)),
-        ]));
-    } else {
-        for line in shown {
+        if out.is_empty() {
+            let fallback = if live.summary.is_empty() {
+                format!("[{}]", m.status)
+            } else {
+                live.summary
+            };
             out.push(Line::from(vec![
                 Span::raw(GUTTER),
+                Span::styled(rail, Style::default().fg(gutter_fg)),
                 Span::styled(
-                    if show_member_rail { BAR } else { "    " },
-                    Style::default().fg(gutter_fg),
+                    truncate_label(&fallback, text_budget),
+                    Style::default().fg(dim),
                 ),
+            ]));
+        }
+    } else {
+        for line in shown {
+            if out.len() >= budget {
+                break;
+            }
+            out.push(Line::from(vec![
+                Span::raw(GUTTER),
+                Span::styled(rail, Style::default().fg(gutter_fg)),
                 Span::styled(
                     truncate_label(line, text_budget),
                     Style::default().fg(text_fg),
                 ),
             ]));
         }
+    }
+
+    if !m.files_touched.is_empty() && out.len() < budget {
+        let files = format!("files: {}", m.files_touched.join(" · "));
+        out.push(Line::from(vec![
+            Span::raw(GUTTER),
+            Span::styled(rail, Style::default().fg(gutter_fg)),
+            Span::styled(
+                truncate_label(&files, text_budget),
+                Style::default().fg(dim),
+            ),
+        ]));
     }
 
     out

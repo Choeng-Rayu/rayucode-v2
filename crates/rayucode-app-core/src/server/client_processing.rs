@@ -208,7 +208,7 @@ pub(super) async fn start_processing_message(
     processing_done_tx: &mpsc::UnboundedSender<ProcessingCompletion>,
     client_terminal_env: Vec<(String, String)>,
     swarm: &SwarmStatusRefs<'_>,
-) {
+) -> Option<super::super::state::TurnFallbackHandle> {
     let ProcessingMessage {
         id,
         content,
@@ -225,7 +225,7 @@ pub(super) async fn start_processing_message(
             client_session_id
         ));
         let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
-        return;
+        return None;
     }
 
     if crate::rayu::auth_gate_active() {
@@ -239,7 +239,7 @@ pub(super) async fn start_processing_message(
                 client_session_id, err
             ));
         }
-        return;
+        return None;
     }
 
     if *state.client_is_processing {
@@ -248,7 +248,7 @@ pub(super) async fn start_processing_message(
             message: "Already processing a message".to_string(),
             retry_after_secs: None,
         });
-        return;
+        return None;
     }
 
     let telegram_generation =
@@ -260,7 +260,7 @@ pub(super) async fn start_processing_message(
                     message: error.to_string(),
                     retry_after_secs: None,
                 });
-                return;
+                return None;
             }
         };
     // Serialize recovery acceptance with the agent lock across connections.
@@ -274,7 +274,7 @@ pub(super) async fn start_processing_message(
                     message: "The selected session is busy".into(),
                     retry_after_secs: None,
                 });
-                return;
+                return None;
             }
         }
     } else {
@@ -288,7 +288,7 @@ pub(super) async fn start_processing_message(
                 message: error.to_string(),
                 retry_after_secs: None,
             });
-            return;
+            return None;
         }
     };
     let reminder_already_delivered = match system_reminder.as_deref() {
@@ -316,7 +316,7 @@ pub(super) async fn start_processing_message(
                 client_session_id, id
             ));
             let _ = client_event_tx.send(ServerEvent::Done { id });
-            return;
+            return None;
         }
         // After a reload the client combines a queued user follow-up with the
         // reload continuation reminder into one send. Only the reminder is a
@@ -338,7 +338,7 @@ pub(super) async fn start_processing_message(
             message: format!("Skill '{skill_name}' is not installed on the server"),
             retry_after_secs: None,
         });
-        return;
+        return None;
     }
 
     if let Some(reminder) = system_reminder.as_deref()
@@ -397,10 +397,11 @@ pub(super) async fn start_processing_message(
     };
     let agent = Arc::clone(agent);
     let report_agent = Arc::clone(&agent);
-    let events = super::super::state::TurnEventChannel::new(
+    let fallback_handle = super::super::state::TurnFallbackHandle::new(client_event_tx.clone());
+    let events = super::super::state::TurnEventChannel::new_with_fallback(
         client_session_id.to_string(),
         Arc::clone(swarm.members),
-        client_event_tx.clone(),
+        fallback_handle.clone(),
         &turn_lease,
     );
     let tx = events.sender();
@@ -530,6 +531,7 @@ pub(super) async fn start_processing_message(
         drop(turn_lease);
     });
     *state.task = crate::runtime_activity::spawn_session(client_session_id, task);
+    state.task.is_some().then_some(fallback_handle)
 }
 
 pub(super) async fn cancel_processing_message(

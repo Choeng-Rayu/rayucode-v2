@@ -316,6 +316,26 @@ impl PermissionConnection {
         std::mem::take(&mut state.tools_invalidated)
     }
 
+    /// Create a fresh permission gate for a newly attached session on the same
+    /// connection, preserving negotiated interactive capability, permission
+    /// mode, and per-session `AllowAlways` rules while isolating pending
+    /// prompts from the previously attached session.
+    pub(crate) fn fork_for_new_session(&self, events: mpsc::UnboundedSender<ServerEvent>) -> Self {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        Self {
+            events,
+            state: Mutex::new(PermissionState {
+                closed: false,
+                interactive_prompts: state.interactive_prompts,
+                mode: state.mode,
+                mode_explicitly_set: state.mode_explicitly_set,
+                tools_invalidated: false,
+                session_allowed_tools: state.session_allowed_tools.clone(),
+                pending: HashMap::new(),
+            }),
+        }
+    }
+
     /// Deny and release every pending permission prompt immediately on disconnect.
     pub(crate) fn close(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -381,7 +401,7 @@ impl PermissionConnection {
         let class = classify_tool(tool_name);
         let tool_key = (session_id.to_string(), canonical_tool_key(session_id, tool_name));
 
-        let (request_id, receiver) = {
+        let (request_id, description, receiver) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let requires_prompt = match state.mode {
                 PermissionMode::FullManage => false,
@@ -414,7 +434,7 @@ impl PermissionConnection {
                     session_id: session_id.to_string(),
                     request_id: request_id.clone(),
                     tool_name: tool_name.to_string(),
-                    description,
+                    description: description.clone(),
                     input: input.clone(),
                     risk_tier,
                 })
@@ -426,9 +446,23 @@ impl PermissionConnection {
                     answer: tx,
                 },
             );
-            (request_id, rx)
+            (request_id, description, rx)
         };
 
+        let summary = if description.starts_with(tool_name) {
+            description
+        } else {
+            format!("{tool_name}: {description}")
+        };
+        let _attention_guard = crate::server::attention_registry::register_attention(
+            session_id,
+            crate::protocol::AgentAttention {
+                kind: crate::protocol::AgentAttentionKind::Permission,
+                summary,
+                request_id: Some(request_id.clone()),
+                since_epoch_ms: None,
+            },
+        );
         let _guard = PendingPermissionGuard {
             connection: self,
             request_id,
@@ -797,14 +831,15 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_denies_pending_permission_without_hang() {
+        const SESSION_ID: &str = "s1-disconnect-attention";
         let (tx, mut rx) = mpsc::unbounded_channel();
         let conn = Arc::new(PermissionConnection::new(tx));
 
         let worker = {
             let conn = conn.clone();
             tokio::spawn(async move {
-                scope("s1", Some(conn), async {
-                    authorize("s1", "bash", &json!({"command": "echo hi"})).await
+                scope(SESSION_ID, Some(conn), async {
+                    authorize(SESSION_ID, "bash", &json!({"command": "echo hi"})).await
                 })
                 .await
             })
@@ -813,6 +848,13 @@ mod tests {
         let Some(ServerEvent::PermissionRequest { request_id, .. }) = rx.recv().await else {
             panic!("expected PermissionRequest");
         };
+        let attention = crate::server::attention_registry::primary_for_session(SESSION_ID)
+            .expect("permission prompt must register attention");
+        assert_eq!(
+            attention.kind,
+            crate::protocol::AgentAttentionKind::Permission
+        );
+        assert_eq!(attention.request_id.as_deref(), Some(request_id.as_str()));
         conn.close();
 
         let result = tokio::time::timeout(std::time::Duration::from_secs(2), worker)
@@ -821,7 +863,11 @@ mod tests {
             .unwrap();
         assert!(result.unwrap_err().to_string().contains("Denied by user"));
         assert!(
-            conn.respond("s1", &request_id, PermissionDecision::Allow)
+            crate::server::attention_registry::primary_for_session(SESSION_ID).is_none(),
+            "disconnect must clear permission attention via RAII drop"
+        );
+        assert!(
+            conn.respond(SESSION_ID, &request_id, PermissionDecision::Allow)
                 .is_err()
         );
     }

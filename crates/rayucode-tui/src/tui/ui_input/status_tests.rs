@@ -931,6 +931,7 @@ fn voice_ghost_text_wraps_after_input_without_moving_cursor() {
         Color::White,
         3,
         &|_| false,
+        &|_| false,
         Some(("the bug", style)),
     );
     assert_eq!((cursor_line, cursor_col), (0, 3));
@@ -939,4 +940,188 @@ fn voice_ghost_text_wraps_after_input_without_moving_cursor() {
     let ghost = lines[0].spans.last().unwrap();
     assert_eq!(ghost.content.as_ref(), " the bug");
     assert!(ghost.style.add_modifier.contains(Modifier::ITALIC));
+}
+
+#[test]
+fn pasted_text_pills_are_colored_without_changing_input_geometry() {
+    for width in [8, 20, 100] {
+        let input = "界 [Pasted text #1 +13 lines] and [Pasted text #2 +350 chars]";
+        let (lines, cursor_line, cursor_col) = wrap_input_text_with_ghost(
+            input,
+            input.len(),
+            width,
+            "1",
+            "> ",
+            Color::White,
+            3,
+            &|_| false,
+            &|number| number == 1 || number == 2,
+            None,
+        );
+        let segments = wrap_input_segments(input, width);
+        let mut highlighted = String::new();
+        for (index, line) in lines.iter().enumerate() {
+            let prefix = if index == 0 { 2 } else { 1 };
+            let spans = &line.spans[prefix..];
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                segments[index].text
+            );
+            for span in spans {
+                if span.style.fg == Some(rgb(130, 190, 255)) {
+                    assert!(span.style.add_modifier.contains(Modifier::BOLD));
+                    highlighted.push_str(&span.content);
+                }
+            }
+        }
+        assert_eq!(
+            highlighted,
+            "[Pasted text #1 +13 lines][Pasted text #2 +350 chars]"
+        );
+        assert_eq!(cursor_line, segments.len() - 1);
+        assert_eq!(cursor_col, segments.last().unwrap().display_width);
+    }
+}
+
+#[test]
+fn pasted_text_pills_warn_when_unbacked_and_ignore_malformed_tags() {
+    let input = "[Pasted text #1 +13 lines] [Pasted text #2 +1 line] [Pasted text #] [Pasted text #1 +x lines]";
+    let (lines, _, _) = wrap_input_text_with_ghost(
+        input,
+        0,
+        120,
+        "1",
+        "> ",
+        Color::White,
+        3,
+        &|_| false,
+        &|number| number == 1,
+        None,
+    );
+    let attached_span = lines[0]
+        .spans
+        .iter()
+        .find(|s| s.content == "[Pasted text #1 +13 lines]")
+        .expect("attached pasted pill");
+    assert_eq!(attached_span.style.fg, Some(rgb(130, 190, 255)));
+
+    let unbacked_span = lines[0]
+        .spans
+        .iter()
+        .find(|s| s.content == "[Pasted text #2 +1 line]")
+        .expect("unbacked pasted pill");
+    assert_eq!(unbacked_span.style.fg, Some(rgb(255, 193, 7)));
+
+    // Malformed tags remain plain unstyled text.
+    assert!(lines[0].spans.iter().any(|s| {
+        s.content.contains("[Pasted text #]") && s.style == Style::default()
+    }));
+}
+
+#[test]
+fn overscroll_fit_facts_with_activity_compacts_badge_with_facts_across_widths() {
+    use crate::protocol::{AgentAttention, AgentAttentionKind, ProjectActivitySummary};
+    use unicode_width::UnicodeWidthStr;
+
+    let facts = OverscrollFacts {
+        machine: None,
+        dir: Some("~/rayucode-v2".into()),
+        branch: Some("main".into()),
+        git: Some(crate::tui::info_widget::GitInfo {
+            branch: "main".into(),
+            modified: 3,
+            staged: 1,
+            untracked: 0,
+            ahead: 1,
+            behind: 0,
+            ..Default::default()
+        }),
+        context: Some((74_000, 256_000)),
+        account_remaining: Some(80),
+        auth: Some(("OAuth", Color::Cyan)),
+        provider: Some("Anthropic".into()),
+        model: Some("Opus 4.6".into()),
+        effort: Some("high".into()),
+    };
+    let summary = ProjectActivitySummary {
+        active_agents: 2,
+        total_agents: 3,
+        running_bg_tasks: 1,
+        attention_count: 1,
+        primary_attention: Some(AgentAttention {
+            kind: AgentAttentionKind::Permission,
+            summary: "cargo test".into(),
+            request_id: Some("req-1".into()),
+            since_epoch_ms: None,
+        }),
+        ..Default::default()
+    };
+
+    for width in [50usize, 60, 80, 100, 120] {
+        let spans = overscroll_fit_facts_with_activity(&facts, &summary, true, width);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let w = text.width();
+        assert!(w <= width, "width={width} overflowed ({w}): {text:?}");
+        assert!(
+            !text.starts_with(" │ "),
+            "width={width} had stray leading separator: {text:?}"
+        );
+        assert!(
+            text.contains("Opus 4.6"),
+            "width={width} dropped model while compacting activity badge: {text:?}"
+        );
+        assert!(
+            text.contains("29%"),
+            "width={width} dropped context % while compacting activity badge: {text:?}"
+        );
+        assert!(
+            text.contains("⚠1"),
+            "width={width} dropped attention indicator: {text:?}"
+        );
+        if width >= 80 {
+            assert!(
+                text.contains("main"),
+                "width={width} dropped git branch prematurely before compacting badge: {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn overscroll_fit_facts_with_activity_omits_separator_when_facts_empty() {
+    use crate::protocol::ProjectActivitySummary;
+    use unicode_width::UnicodeWidthStr;
+
+    let empty_facts = OverscrollFacts {
+        machine: None,
+        dir: None,
+        branch: None,
+        git: None,
+        context: None,
+        account_remaining: None,
+        auth: None,
+        provider: None,
+        model: None,
+        effort: None,
+    };
+    let summary = ProjectActivitySummary {
+        active_agents: 2,
+        total_agents: 2,
+        attention_count: 1,
+        ..Default::default()
+    };
+
+    for width in [12usize, 30, 50, 80, 120] {
+        let spans = overscroll_fit_facts_with_activity(&empty_facts, &summary, true, width);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.width() <= width, "width={width}: {text:?}");
+        assert!(
+            !text.starts_with(" │ ") && !text.contains(" │ "),
+            "width={width} emitted orphan separator with empty facts: {text:?}"
+        );
+        assert!(text.contains("⚠1"), "width={width}: {text:?}");
+    }
 }

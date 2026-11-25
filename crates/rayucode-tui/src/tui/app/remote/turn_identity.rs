@@ -9,7 +9,7 @@ pub(in crate::tui::app) struct TurnFence {
     retired: HashSet<String>,
     latest: u64,
     completed: u64,
-    pub(super) active: Option<TurnIdentity>,
+    pub(in crate::tui::app) active: Option<TurnIdentity>,
 }
 
 impl TurnFence {

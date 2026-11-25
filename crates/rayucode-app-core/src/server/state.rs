@@ -496,6 +496,51 @@ pub(super) async fn fanout_peer_client_event(
     send_event_to_targets(&targets, event)
 }
 
+/// Detachable/pausable fallback event sink for a [`TurnEventChannel`].
+///
+/// When a client connection switches to a different session while a turn is
+/// still running (even for a non-member session), detaching this handle
+/// guarantees the old turn can never leak `TurnStarted`/`TextDelta`/`ToolStart`/
+/// `Done` onto the newly attached session's socket.
+#[derive(Clone, Default)]
+pub(super) struct TurnFallbackHandle {
+    inner: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<ServerEvent>>>>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl TurnFallbackHandle {
+    pub(super) fn new(tx: mpsc::UnboundedSender<ServerEvent>) -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(Some(tx))),
+            paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn set_paused(&self, paused: bool) {
+        self.paused
+            .store(paused, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(super) fn detach(&self) {
+        self.paused
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = None;
+        }
+    }
+
+    fn send(&self, event: ServerEvent) {
+        if self.paused.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        if let Ok(guard) = self.inner.lock()
+            && let Some(tx) = guard.as_ref()
+        {
+            let _ = tx.send(event);
+        }
+    }
+}
+
 /// Owns one turn's event queue. Closing or aborting the producer drains all
 /// accepted events before releasing the runtime's publication reservation.
 pub(super) struct TurnEventChannel {
@@ -511,6 +556,20 @@ impl TurnEventChannel {
         fallback: mpsc::UnboundedSender<ServerEvent>,
         lease: &crate::agent::TurnLease,
     ) -> Self {
+        Self::new_with_fallback(
+            session_id,
+            members,
+            TurnFallbackHandle::new(fallback),
+            lease,
+        )
+    }
+
+    pub(super) fn new_with_fallback(
+        session_id: String,
+        members: Arc<RwLock<HashMap<String, SwarmMember>>>,
+        fallback: TurnFallbackHandle,
+        lease: &crate::agent::TurnLease,
+    ) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<ServerEvent>();
         let (close, mut closed) = tokio::sync::oneshot::channel();
         let publication = lease.publication_pin();
@@ -521,7 +580,7 @@ impl TurnEventChannel {
                 identity: identity.clone(),
             };
             if fanout_session_event(&members, &session_id, started.clone()).await == 0 {
-                let _ = fallback.send(started);
+                fallback.send(started);
             }
             loop {
                 let event = tokio::select! {
@@ -537,7 +596,7 @@ impl TurnEventChannel {
                     event: Box::new(event),
                 };
                 if fanout_session_event(&members, &session_id, event.clone()).await == 0 {
-                    let _ = fallback.send(event);
+                    fallback.send(event);
                 }
             }
             while let Some(event) = rx.recv().await {
@@ -546,7 +605,7 @@ impl TurnEventChannel {
                     event: Box::new(event),
                 };
                 if fanout_session_event(&members, &session_id, event.clone()).await == 0 {
-                    let _ = fallback.send(event);
+                    fallback.send(event);
                 }
             }
         });

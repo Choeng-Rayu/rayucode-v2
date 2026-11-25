@@ -987,6 +987,10 @@ impl Agent {
                         }
                         manager.messages_for_api_with(all_messages)
                     };
+                    crate::server::live_status::set_compacting(
+                        &self.session.id,
+                        manager.is_compacting(),
+                    );
                     let event = manager.take_compaction_event();
                     if event.is_some() || discarded_oversized_native {
                         self.sync_session_compaction_state_from_manager(&manager);
