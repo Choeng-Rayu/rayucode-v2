@@ -30,6 +30,7 @@ import { bundledRayuBinary, platformBinaryPackage } from "./binary.js";
  */
 const CREDENTIAL_FILES = [
   "auth.json",
+  "rayu-auth.json",
   "openai-auth.json",
   "antigravity_oauth.json",
   "gemini_oauth.json",

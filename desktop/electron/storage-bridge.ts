@@ -25,6 +25,7 @@ export interface PersistedDesktopPreferences {
   defaultModel?: string
   kvCacheTtl?: string
   disabledSkills?: string[]
+  engineConfigMigratedV1?: boolean
 }
 
 export interface PersistedSessionStore {
@@ -215,6 +216,167 @@ export function writeDesktopPreferences(
   const next = { ...readDesktopPreferences(), ...patch }
   writeJsonFile(preferencesPath(), next)
   return next
+}
+
+export interface LegacyEngineMigrationConfigState {
+  values: Record<string, unknown>
+  schema: Array<{ key: string; default_value?: unknown }>
+}
+
+export interface LegacyEngineMigrationDeps {
+  getConfig: () => Promise<LegacyEngineMigrationConfigState | null>
+  patchConfig: (
+    patch: Record<string, unknown>
+  ) => Promise<{ ok: boolean; error?: string } | unknown>
+}
+
+export interface LegacyEngineMigrationResult {
+  migrated: boolean
+  patchedKeys: string[]
+}
+
+function toWirePermissionModeForMigration(mode: string): string {
+  if (mode === "acceptEdits") return "accept_edits"
+  if (mode === "fullManage") return "full_manage"
+  return mode
+}
+
+function isUnsetOrDefaultConfigValue(
+  current: unknown,
+  defaultValue: unknown
+): boolean {
+  if (current === undefined || current === null || current === "") {
+    return true
+  }
+  return defaultValue !== undefined && current === defaultValue
+}
+
+/**
+ * One-time idempotent migration of legacy engine keys from `desktop-settings.json`
+ * (`defaultModel`, `defaultPermissionMode`, `autoCompactContext`, `kvCacheTtl`)
+ * into `~/.rayu/config.toml` via the v1.16 `getConfig`/`patchConfig` RPCs.
+ *
+ * Never overwrites keys already customized in `config.toml`, and stays pending
+ * if the daemon is offline or running `v1.15` (`getConfig()` returns `null`).
+ */
+export async function migrateLegacyEngineSettingsOnce(
+  deps: LegacyEngineMigrationDeps
+): Promise<LegacyEngineMigrationResult> {
+  const rawStored = readJsonFile<Partial<PersistedDesktopPreferences>>(
+    preferencesPath(),
+    {}
+  )
+  if (rawStored.engineConfigMigratedV1 === true) {
+    return { migrated: false, patchedKeys: [] }
+  }
+
+  const config = await deps.getConfig()
+  if (!config) {
+    return { migrated: false, patchedKeys: [] }
+  }
+
+  const schemaByKey = new Map(
+    (config.schema ?? []).map((field) => [field.key, field])
+  )
+  const values = config.values ?? {}
+  const patch: Record<string, unknown> = {}
+
+  if (
+    typeof rawStored.defaultModel === "string" &&
+    rawStored.defaultModel.trim() &&
+    rawStored.defaultModel.trim() !== "default"
+  ) {
+    const field = schemaByKey.get("provider.default_model")
+    if (
+      field &&
+      isUnsetOrDefaultConfigValue(
+        values["provider.default_model"],
+        field.default_value
+      )
+    ) {
+      patch["provider.default_model"] = rawStored.defaultModel.trim()
+    }
+  }
+
+  if (rawStored.kvCacheTtl === "1h" || rawStored.kvCacheTtl === "5m") {
+    const field = schemaByKey.get("provider.anthropic_cache_ttl_1h")
+    const targetVal = rawStored.kvCacheTtl === "1h"
+    if (
+      field &&
+      isUnsetOrDefaultConfigValue(
+        values["provider.anthropic_cache_ttl_1h"],
+        field.default_value
+      ) &&
+      values["provider.anthropic_cache_ttl_1h"] !== targetVal
+    ) {
+      patch["provider.anthropic_cache_ttl_1h"] = targetVal
+    }
+  }
+
+  if (typeof rawStored.autoCompactContext === "boolean") {
+    const autoCompactField = schemaByKey.get("compaction.auto_compact")
+    if (
+      autoCompactField &&
+      isUnsetOrDefaultConfigValue(
+        values["compaction.auto_compact"],
+        autoCompactField.default_value
+      ) &&
+      values["compaction.auto_compact"] !== rawStored.autoCompactContext
+    ) {
+      patch["compaction.auto_compact"] = rawStored.autoCompactContext
+    } else if (rawStored.autoCompactContext === false) {
+      const tokenField = schemaByKey.get("compaction.reactive_threshold_tokens")
+      if (
+        tokenField &&
+        isUnsetOrDefaultConfigValue(
+          values["compaction.reactive_threshold_tokens"],
+          tokenField.default_value
+        ) &&
+        values["compaction.reactive_threshold_tokens"] !== 0
+      ) {
+        patch["compaction.reactive_threshold_tokens"] = 0
+      }
+    }
+  }
+
+  if (
+    typeof rawStored.defaultPermissionMode === "string" &&
+    rawStored.defaultPermissionMode.trim()
+  ) {
+    const candidateKeys = [
+      "safety.default_permission_mode",
+      "provider.default_permission_mode",
+    ]
+    const matchedKey = candidateKeys.find((k) => schemaByKey.has(k))
+    if (matchedKey) {
+      const field = schemaByKey.get(matchedKey)!
+      const wireMode = toWirePermissionModeForMigration(
+        rawStored.defaultPermissionMode.trim()
+      )
+      if (
+        isUnsetOrDefaultConfigValue(values[matchedKey], field.default_value) &&
+        values[matchedKey] !== wireMode
+      ) {
+        patch[matchedKey] = wireMode
+      }
+    }
+  }
+
+  const patchedKeys = Object.keys(patch)
+  if (patchedKeys.length > 0) {
+    const res = await deps.patchConfig(patch)
+    if (
+      res &&
+      typeof res === "object" &&
+      "ok" in res &&
+      (res as { ok?: unknown }).ok === false
+    ) {
+      return { migrated: false, patchedKeys: [] }
+    }
+  }
+
+  writeDesktopPreferences({ engineConfigMigratedV1: true })
+  return { migrated: true, patchedKeys }
 }
 
 export function readDesktopSessionStore(): PersistedSessionStore {

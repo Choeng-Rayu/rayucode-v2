@@ -552,4 +552,80 @@ describe("harness-adapter", () => {
     )
     expect(formatDaemonVersionLabel("")).toBe("")
   })
+
+  it("handles v1.16 model_info, permission_mode_changed, config_changed, ToolDone.duration_ms, and TextDone.stop_reason", () => {
+    const tracker = createHarnessStreamTracker()
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "model_info",
+          session_id: "s1",
+          model: "claude-opus-4-6",
+          provider: "anthropic",
+          reasoning_effort: "xhigh",
+        },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "model-info",
+        sessionId: "s1",
+        model: "claude-opus-4-6",
+        provider: "anthropic",
+        reasoningEffort: "xhigh",
+      },
+    ])
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "permission_mode_changed",
+          session_id: "s1",
+          mode: "plan",
+        },
+        tracker
+      )
+    ).toEqual([{ type: "permission-mode-changed", sessionId: "s1", mode: "plan" }])
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "config_changed",
+          changed_keys: ["compaction.mode"],
+          requires_restart: true,
+          values: { "compaction.mode": "proactive" },
+        },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "config-changed",
+        changedKeys: ["compaction.mode"],
+        requiresRestart: true,
+        values: { "compaction.mode": "proactive" },
+      },
+    ])
+
+    const toolEvents = mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_done",
+        call_id: "c1",
+        name: "bash",
+        tool_input: { command: "echo hi" },
+        tool_output: "hi",
+        duration_ms: 142,
+      },
+      tracker
+    )
+    const stepEvent = toolEvents.find((e) => e.type === "step")
+    expect(stepEvent && stepEvent.type === "step" && stepEvent.step.kind === "command" ? stepEvent.step.durationMs : undefined).toBe(142)
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "text_done", session_id: "s1", stop_reason: "end_turn" },
+        tracker
+      )
+    ).toEqual([{ type: "text-done", stopReason: "end_turn" }])
+  })
 })

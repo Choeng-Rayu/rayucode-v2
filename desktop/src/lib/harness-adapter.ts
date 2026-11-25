@@ -1,4 +1,5 @@
 import {
+  filterVisibleHistory,
   formatDaemonVersionLabel,
   settleHarnessErrorFrame,
 } from "@rayu-dev/rayucode-session-core/client"
@@ -99,6 +100,9 @@ export interface HarnessModelRouteLike {
   api_method?: string
   available?: boolean
   detail?: string
+  supported_efforts?: string[]
+  default_effort?: string
+  context_window?: number
 }
 
 export interface HarnessHistoryMessageLike {
@@ -148,6 +152,25 @@ export type MappedLiveTraceEvent =
     }
   | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
+  | { type: "text-done"; stopReason?: string }
+  | {
+      type: "model-info"
+      sessionId: string
+      model?: string
+      provider?: string
+      reasoningEffort?: string
+    }
+  | {
+      type: "permission-mode-changed"
+      sessionId: string
+      mode: string
+    }
+  | {
+      type: "config-changed"
+      changedKeys: string[]
+      requiresRestart: boolean
+      values: Record<string, unknown>
+    }
   | { type: "duration"; workedDuration: string }
   | {
       type: "complete"
@@ -405,6 +428,19 @@ export function mapModelRoutesToOptions(
       provider: route.provider || "Rayu",
       apiMethod: route.api_method,
       recommended: route.available === true && out.length < 2,
+      ...(route.available === false ? { available: false } : {}),
+      ...(route.available === false && route.detail
+        ? { unavailableReason: route.detail }
+        : {}),
+      ...(Array.isArray(route.supported_efforts)
+        ? { supportedEfforts: route.supported_efforts }
+        : {}),
+      ...(typeof route.default_effort === "string"
+        ? { defaultEffort: route.default_effort }
+        : {}),
+      ...(typeof route.context_window === "number"
+        ? { contextWindow: route.context_window }
+        : {}),
     })
   }
   return out
@@ -838,16 +874,20 @@ export function mapHistoryMessagesToTurns(
     hiddenInternalMessages = []
   }
 
+  const visibleMessages = new Set(filterVisibleHistory(messages))
+
   for (const msg of messages) {
-    if (msg.role === "user") {
-      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
+    if (!visibleMessages.has(msg)) {
+      if (msg.role === "user") {
         hiddenInternalMessages.push({
           origin: msg.origin ?? "engine_internal",
           visibility: msg.visibility ?? "hidden",
           content: msg.content,
         })
-        continue
       }
+      continue
+    }
+    if (msg.role === "user") {
       if (isEngineInternalRecoveryPrompt(msg.content)) {
         hiddenInternalMessages.push({
           origin: "engine_internal",
@@ -1425,6 +1465,56 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "text_done": {
+      const stopReason =
+        typeof frame.stop_reason === "string" ? frame.stop_reason : undefined
+      return stopReason ? [{ type: "text-done", stopReason }] : []
+    }
+    case "model_info": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      return [
+        {
+          type: "model-info",
+          sessionId,
+          ...(typeof frame.model === "string" ? { model: frame.model } : {}),
+          ...(typeof frame.provider === "string"
+            ? { provider: frame.provider }
+            : {}),
+          ...(typeof frame.reasoning_effort === "string"
+            ? { reasoningEffort: frame.reasoning_effort }
+            : {}),
+        },
+      ]
+    }
+    case "permission_mode_changed": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      const mode = typeof frame.mode === "string" ? frame.mode : ""
+      return mode
+        ? [{ type: "permission-mode-changed", sessionId, mode }]
+        : []
+    }
+    case "config_changed": {
+      const changedKeys = Array.isArray(frame.changed_keys)
+        ? frame.changed_keys.filter((k): k is string => typeof k === "string")
+        : []
+      const requiresRestart = frame.requires_restart === true
+      const values =
+        frame.values &&
+        typeof frame.values === "object" &&
+        !Array.isArray(frame.values)
+          ? (frame.values as Record<string, unknown>)
+          : {}
+      return [
+        {
+          type: "config-changed",
+          changedKeys,
+          requiresRestart,
+          values,
+        },
+      ]
+    }
     case "promote_answer_to_note": {
       tracker.hasStreamedTextInPhase = false
       tracker.batchEpoch += 1
@@ -1766,6 +1856,14 @@ export function mapHarnessFrameToLiveEvents(
       // Standard workspace tools (read, ls, grep, glob, bash, edit, write, todo, etc.)
       // all coalesce into one clean Codex-style group per work phase.
       const step = mapSingleWorkStep(callId, name, args, output, error, tracker)
+      const durationMs =
+        typeof frame.duration_ms === "number" &&
+        Number.isFinite(frame.duration_ms)
+          ? frame.duration_ms
+          : undefined
+      if (durationMs !== undefined && step.kind === "command") {
+        step.durationMs = durationMs
+      }
       return [
         { type: "tool-status", label: null },
         {

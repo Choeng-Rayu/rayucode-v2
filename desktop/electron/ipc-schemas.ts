@@ -215,6 +215,22 @@ export const HarnessRuntimeCommandSchema = z.object({
   args: z.array(z.string()).optional(),
 })
 
+export const HarnessGetCapabilitiesSchema = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+  })
+  .optional()
+
+export const HarnessGetConfigSchema = z
+  .object({
+    sections: z.array(z.string().min(1)).optional(),
+  })
+  .optional()
+
+export const HarnessPatchConfigSchema = z.object({
+  patch: z.record(z.string().min(1), z.unknown()),
+})
+
 export const FileChangeActionKindSchema = z.enum([
   "keep",
   "undo",

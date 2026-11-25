@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import {
   API_VERSION_MAJOR,
   API_VERSION_MINOR,
+  CAPABILITIES_CAPABILITY,
+  CONFIG_CAPABILITY,
+  FRAME_FIDELITY_CAPABILITY,
   HarnessError,
   KNOWN_EVENT_KINDS,
   KNOWN_PERMISSION_MODES,
@@ -83,13 +86,22 @@ test("browser entrypoint graph has zero Node builtins or external dependencies",
   }
 });
 
-test("browser entrypoint exports protocol v1.14 metadata and rayu credits helpers", () => {
+test("browser entrypoint exports protocol v1.16 metadata and rayu credits helpers", () => {
   assert.equal(API_VERSION_MAJOR, 1);
-  assert.equal(API_VERSION_MINOR, 14);
+  assert.equal(API_VERSION_MINOR, 16);
+  assert.equal(CAPABILITIES_CAPABILITY, "capabilities_v1");
+  assert.equal(CONFIG_CAPABILITY, "config_v1");
+  assert.equal(FRAME_FIDELITY_CAPABILITY, "frame_fidelity_v1");
   assert.ok(KNOWN_EVENT_KINDS.includes("rayu_credits"));
   assert.ok(KNOWN_EVENT_KINDS.includes("permission_mode_changed"));
+  assert.ok(KNOWN_EVENT_KINDS.includes("capabilities"));
+  assert.ok(KNOWN_EVENT_KINDS.includes("config_state"));
+  assert.ok(KNOWN_EVENT_KINDS.includes("config_changed"));
   assert.ok(KNOWN_REQUEST_KINDS.includes("send_message"));
   assert.ok(KNOWN_REQUEST_KINDS.includes("set_permission_mode"));
+  assert.ok(KNOWN_REQUEST_KINDS.includes("get_capabilities"));
+  assert.ok(KNOWN_REQUEST_KINDS.includes("get_config"));
+  assert.ok(KNOWN_REQUEST_KINDS.includes("patch_config"));
   assert.deepEqual(KNOWN_PERMISSION_MODES, [
     "default",
     "accept_edits",
