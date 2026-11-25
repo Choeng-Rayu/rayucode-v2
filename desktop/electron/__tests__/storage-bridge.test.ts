@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   createLocalSkill,
@@ -10,6 +10,7 @@ import {
   ensureRegisteredWorkspace,
   listLocalExtensions,
   listWorkspaceFiles,
+  migrateLegacyEngineSettingsOnce,
   readCustomTemplates,
   readDesktopPreferences,
   readDesktopSessionStore,
@@ -278,5 +279,56 @@ describe("storage-bridge persistence & local workspace scanning", () => {
     expect(
       rawLedger.workspaces.flatMap((w) => w.sessionIds)
     ).not.toContain("phantom_ses_999")
+  })
+
+  it("migrates legacy engine settings once into config.toml without overwriting existing overrides", async () => {
+    writeDesktopPreferences({
+      defaultModel: "claude-opus-4-6",
+      defaultPermissionMode: "plan",
+      autoCompactContext: false,
+      kvCacheTtl: "5m",
+    })
+
+    const patchConfig = vi.fn().mockResolvedValue({ ok: true })
+    const getConfig = vi.fn().mockResolvedValue({
+      values: {
+        "provider.default_model": "gpt-5.4",
+        "provider.anthropic_cache_ttl_1h": true,
+        "compaction.reactive_threshold_tokens": 400_000,
+        "safety.default_permission_mode": "default",
+      },
+      schema: [
+        { key: "provider.default_model", default_value: null },
+        { key: "provider.anthropic_cache_ttl_1h", default_value: true },
+        { key: "compaction.reactive_threshold_tokens", default_value: 400_000 },
+        { key: "safety.default_permission_mode", default_value: "default" },
+      ],
+    })
+
+    const first = await migrateLegacyEngineSettingsOnce({ getConfig, patchConfig })
+    expect(first.migrated).toBe(true)
+    expect(patchConfig).toHaveBeenCalledTimes(1)
+    expect(patchConfig).toHaveBeenCalledWith({
+      "provider.anthropic_cache_ttl_1h": false,
+      "compaction.reactive_threshold_tokens": 0,
+      "safety.default_permission_mode": "plan",
+    })
+    expect(readDesktopPreferences().engineConfigMigratedV1).toBe(true)
+
+    const second = await migrateLegacyEngineSettingsOnce({ getConfig, patchConfig })
+    expect(second).toEqual({ migrated: false, patchedKeys: [] })
+    expect(patchConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it("defers legacy engine migration when connected to v1.15 daemon (getConfig returns null)", async () => {
+    writeDesktopPreferences({ defaultModel: "claude-sonnet-4-6" })
+    const patchConfig = vi.fn()
+    const res = await migrateLegacyEngineSettingsOnce({
+      getConfig: vi.fn().mockResolvedValue(null),
+      patchConfig,
+    })
+    expect(res).toEqual({ migrated: false, patchedKeys: [] })
+    expect(patchConfig).not.toHaveBeenCalled()
+    expect(readDesktopPreferences().engineConfigMigratedV1).toBeUndefined()
   })
 })

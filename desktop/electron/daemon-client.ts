@@ -4,11 +4,15 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import {
+  HarnessError,
   RayucodeClient,
   apiSocketPath,
   unixSocketTransport,
   type ApiRequest,
+  type CapabilitiesPayload,
+  type ConfigStatePayload,
   type ConnectOptions,
+  type ErrorCode,
   type FileChangeActionKind,
   type FileChangeActionResponse,
   type FileChangeDiffPayload,
@@ -288,9 +292,30 @@ function emptyFileChangesSnapshot(sessionId: string): FileChangesSnapshot {
   }
 }
 
+export function extractHarnessErrorCode(
+  err: unknown
+): ErrorCode | string | undefined {
+  if (err instanceof HarnessError) {
+    return err.code
+  }
+  if (
+    err &&
+    typeof err === "object" &&
+    "code" in err &&
+    typeof (err as { code?: unknown }).code === "string"
+  ) {
+    return (err as { code: string }).code
+  }
+  return undefined
+}
+
+function isBusyError(err: unknown): boolean {
+  return extractHarnessErrorCode(err) === "busy"
+}
+
 function isUnsupportedFileChangesError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /unknown_request|unsupported|not support|file_changes/i.test(msg)
+  const code = extractHarnessErrorCode(err)
+  return code === "unsupported" || code === "unknown_request"
 }
 
 export class RayuDaemonClient extends EventEmitter {
@@ -768,8 +793,7 @@ export class RayuDaemonClient extends EventEmitter {
       this.configuredToolSessions.add(sessionId)
       this.pendingToolSync.delete(sessionId)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (/busy/i.test(msg)) {
+      if (isBusyError(err)) {
         this.pendingToolSync.add(sessionId)
       }
     }
@@ -779,7 +803,7 @@ export class RayuDaemonClient extends EventEmitter {
     client: RayucodeClient,
     sessionId: string,
     mode: PermissionModeId
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{ ok: boolean; error?: string; code?: string }> {
     if (typeof client.request !== "function") {
       return { ok: true }
     }
@@ -791,22 +815,24 @@ export class RayuDaemonClient extends EventEmitter {
       } as unknown as ApiRequest)
       if (frame?.ev === "error") {
         const msg = String(frame.message ?? "Failed to set permission mode")
-        if (/busy/i.test(msg)) {
+        const code = typeof frame.code === "string" ? frame.code : undefined
+        if (code === "busy") {
           this.pendingPermissionSync.set(sessionId, mode)
-          return { ok: true }
+          return { ok: true, code }
         }
-        return { ok: false, error: msg }
+        return { ok: false, error: msg, code }
       }
       this.pendingPermissionSync.delete(sessionId)
       this.syncedPermissionModeBySession.set(sessionId, mode)
       return { ok: true }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (/busy/i.test(msg)) {
+      const code = extractHarnessErrorCode(err)
+      if (code === "busy") {
         this.pendingPermissionSync.set(sessionId, mode)
-        return { ok: true }
+        return { ok: true, code }
       }
-      return { ok: false, error: msg }
+      return { ok: false, error: msg, code }
     }
   }
 
@@ -1187,7 +1213,7 @@ export class RayuDaemonClient extends EventEmitter {
   async setModel(
     sessionId: string,
     model: string
-  ): Promise<{ ok: boolean; error?: string }> {
+  ): Promise<{ ok: boolean; error?: string; code?: string }> {
     if (!sessionId || sessionId.startsWith("ses_")) return { ok: true }
     return this.runSerialized(async () => {
       try {
@@ -1197,24 +1223,111 @@ export class RayuDaemonClient extends EventEmitter {
         return { ok: true }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        return { ok: false, error: msg }
+        const code = extractHarnessErrorCode(err)
+        return { ok: false, error: msg, code }
       }
     })
   }
 
-  async setReasoningEffort(sessionId: string, effort: string): Promise<void> {
-    if (!sessionId || sessionId.startsWith("ses_")) return
+  async setReasoningEffort(
+    sessionId: string,
+    effort: string
+  ): Promise<{ ok: boolean; error?: string; code?: string }> {
+    if (!sessionId || sessionId.startsWith("ses_")) return { ok: true }
     return this.runSerialized(async () => {
       try {
         let client = await this.connect()
         client = await this.ensureAttached(client, sessionId)
         await client.setReasoningEffort(sessionId, effort)
+        return { ok: true }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        if (/not support|reasoning effort|invalid_request|busy/i.test(msg)) {
-          return
+        const code = extractHarnessErrorCode(err)
+        return { ok: false, error: msg, code }
+      }
+    })
+  }
+
+  async compact(
+    sessionId: string
+  ): Promise<{ ok: boolean; message?: string; error?: string; code?: string }> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return { ok: false, error: "No active daemon session to compact." }
+    }
+    return this.runSerialized(async () => {
+      try {
+        let client = await this.connect()
+        client = await this.ensureAttached(client, sessionId)
+        const message = await client.compact(sessionId)
+        return { ok: true, message }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        const code = extractHarnessErrorCode(err)
+        return { ok: false, error: msg, code }
+      }
+    })
+  }
+
+  async getCapabilities(
+    sessionId?: string
+  ): Promise<CapabilitiesPayload | null> {
+    return this.runSerialized(async () => {
+      try {
+        const client = await this.connect()
+        if (typeof client.getCapabilities !== "function") {
+          return null
+        }
+        return await client.getCapabilities(sessionId)
+      } catch (err) {
+        const code = extractHarnessErrorCode(err)
+        if (code === "unsupported" || code === "unknown_request") {
+          return null
         }
         throw err
+      }
+    })
+  }
+
+  async getConfig(sections?: string[]): Promise<ConfigStatePayload | null> {
+    return this.runSerialized(async () => {
+      try {
+        const client = await this.connect()
+        if (typeof client.getConfig !== "function") {
+          return null
+        }
+        return await client.getConfig(sections)
+      } catch (err) {
+        const code = extractHarnessErrorCode(err)
+        if (code === "unsupported" || code === "unknown_request") {
+          return null
+        }
+        throw err
+      }
+    })
+  }
+
+  async patchConfig(patch: Record<string, unknown>): Promise<{
+    ok: boolean
+    state?: ConfigStatePayload
+    error?: string
+    code?: string
+  }> {
+    return this.runSerialized(async () => {
+      try {
+        const client = await this.connect()
+        if (typeof client.patchConfig !== "function") {
+          return {
+            ok: false,
+            code: "unsupported",
+            error: "Daemon client does not support config_v1.",
+          }
+        }
+        const state = await client.patchConfig(patch)
+        return { ok: true, state }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        const code = extractHarnessErrorCode(err)
+        return { ok: false, error: msg, code }
       }
     })
   }
@@ -1439,8 +1552,24 @@ export class RayuDaemonClient extends EventEmitter {
       case "models.setModel":
         return (await this.setModel(String(p.sessionId), String(p.model))) as T
       case "models.setEffort":
-        await this.setReasoningEffort(String(p.sessionId), String(p.effort))
-        return { ok: true } as T
+        return (await this.setReasoningEffort(
+          String(p.sessionId),
+          String(p.effort)
+        )) as T
+      case "sessions.compact":
+        return (await this.compact(String(p.sessionId))) as T
+      case "capabilities.get":
+        return (await this.getCapabilities(
+          typeof p.sessionId === "string" ? p.sessionId : undefined
+        )) as T
+      case "config.get":
+        return (await this.getConfig(
+          Array.isArray(p.sections) ? p.sections.map(String) : undefined
+        )) as T
+      case "config.patch":
+        return (await this.patchConfig(
+          (p.patch ?? {}) as Record<string, unknown>
+        )) as T
       case "runtime.command":
         return (await this.runtimeCommand(
           String(p.sessionId),

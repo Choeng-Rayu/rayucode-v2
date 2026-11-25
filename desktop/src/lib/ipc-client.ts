@@ -15,7 +15,90 @@ import {
   type HarnessSessionInfoLike,
 } from "./harness-adapter"
 
-export type ReasoningEffort = "Auto" | "Low" | "Medium" | "High" | "Max"
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | (string & {})
+
+export type CommandCategory =
+  | "session"
+  | "model"
+  | "quality"
+  | "tools"
+  | "runtime"
+  | (string & {})
+
+export type CommandDispatch =
+  | { kind: "api_request"; req: string }
+  | { kind: "runtime_command"; command: string }
+  | { kind: "skill"; name: string }
+
+export interface CommandDescriptor {
+  name: string
+  description: string
+  category: CommandCategory
+  arg_hint?: string
+  requires_session?: boolean
+  dispatch: CommandDispatch
+}
+
+export interface PermissionModeDescriptor {
+  id: string
+  label: string
+  description: string
+  is_default?: boolean
+}
+
+export interface FeatureFlagDescriptor {
+  key: string
+  enabled: boolean
+  description: string
+  requires_restart?: boolean
+}
+
+export interface CapabilitiesPayload {
+  commands: CommandDescriptor[]
+  permission_modes: PermissionModeDescriptor[]
+  features: FeatureFlagDescriptor[]
+}
+
+export type ConfigFieldKind =
+  | "boolean"
+  | "string"
+  | "integer"
+  | "number"
+  | "enum"
+  | "string_array"
+
+export type ConfigApplyMode = "immediate" | "next_turn" | "restart_required"
+
+export interface ConfigEnumOption {
+  value: string
+  label: string
+}
+
+export interface ConfigFieldSchema {
+  key: string
+  section: string
+  label: string
+  description: string
+  kind: ConfigFieldKind
+  options?: ConfigEnumOption[]
+  default_value: unknown
+  apply_mode: ConfigApplyMode
+}
+
+export interface ConfigStatePayload {
+  path: string
+  sections: string[]
+  values: Record<string, unknown>
+  schema: ConfigFieldSchema[]
+}
 export type PermissionModeId =
   | "default"
   | "acceptEdits"
@@ -134,6 +217,11 @@ export interface ModelOption {
   provider: string
   apiMethod?: string
   recommended?: boolean
+  available?: boolean
+  unavailableReason?: string
+  supportedEfforts?: string[]
+  defaultEffort?: string
+  contextWindow?: number
 }
 
 export interface PermissionModeOption {
@@ -154,6 +242,7 @@ export interface ShellCommandStep {
   statusLabel: string
   isFailed?: boolean
   isMono?: boolean
+  durationMs?: number
 }
 
 export interface FileReadStep {
@@ -2890,11 +2979,22 @@ export interface RayuBridgeApi {
     setModel?: (
       sessionId: string,
       model: string
-    ) => Promise<{ ok: boolean; error?: string }>
+    ) => Promise<{ ok: boolean; error?: string; code?: string }>
     setReasoningEffort?: (
       sessionId: string,
       effort: string
-    ) => Promise<{ ok: boolean }>
+    ) => Promise<{ ok: boolean; error?: string; code?: string }>
+    compact?: (
+      sessionId: string
+    ) => Promise<{ ok: boolean; message?: string; error?: string; code?: string }>
+    getCapabilities?: (sessionId?: string) => Promise<CapabilitiesPayload | null>
+    getConfig?: (sections?: string[]) => Promise<ConfigStatePayload | null>
+    patchConfig?: (patch: Record<string, unknown>) => Promise<{
+      ok: boolean
+      state?: ConfigStatePayload
+      error?: string
+      code?: string
+    }>
     runtimeCommand?: (
       sessionId: string,
       command: string,
@@ -3783,10 +3883,6 @@ export const ipcClient = {
           lastKnownDaemonLive = true
           lastActiveHarnessSessionId = live.session_id
           newlyCreatedEmptySessions.add(live.session_id)
-          const hasExplicitStoredEffort =
-            typeof window !== "undefined" &&
-            (window.localStorage.getItem("rayu-effort-idx") !== null ||
-              Boolean(window.localStorage.getItem("rayu-effort")))
           if (
             input.modelId &&
             input.modelId !== "default" &&
@@ -3802,14 +3898,14 @@ export const ipcClient = {
               }
             }
           }
+          const normalizedEffort = input.effort?.trim().toLowerCase()
           if (
-            input.effort &&
-            hasExplicitStoredEffort &&
-            input.effort !== "Auto" &&
+            normalizedEffort &&
+            normalizedEffort !== "auto" &&
             bridge.harness.setReasoningEffort
           ) {
             await bridge.harness
-              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+              .setReasoningEffort(live.session_id, normalizedEffort)
               .catch(() => {})
           }
           const mapped = mapSessionInfoToSummary(live)
@@ -5612,7 +5708,7 @@ export const ipcClient = {
     async setModel(
       sessionId: string,
       model: string
-    ): Promise<{ ok: boolean; error?: string }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setModel && (await isHarnessLive())) {
         const res = await bridge.harness.setModel(sessionId, model)
@@ -5626,17 +5722,69 @@ export const ipcClient = {
     async setReasoningEffort(
       sessionId: string,
       effort: string
-    ): Promise<{ ok: boolean }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
         return bridge.harness.setReasoningEffort(sessionId, effort)
       }
       return { ok: true }
     },
+    async compact(
+      sessionId: string
+    ): Promise<{ ok: boolean; message?: string; error?: string; code?: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.compact && (await isHarnessLive())) {
+        return bridge.harness.compact(sessionId)
+      }
+      return { ok: true, message: "Context compacted." }
+    },
+    async runtimeCommand(
+      sessionId: string,
+      command: string,
+      args: string[] = []
+    ): Promise<{ command: string; data: unknown; message: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.runtimeCommand && (await isHarnessLive())) {
+        return bridge.harness.runtimeCommand(sessionId, command, args)
+      }
+      return { command, data: null, message: `Ran /${command}` }
+    },
+    async getCapabilities(
+      sessionId?: string
+    ): Promise<CapabilitiesPayload | null> {
+      const bridge = getBridge()
+      if (bridge?.harness?.getCapabilities && (await isHarnessLive())) {
+        return bridge.harness.getCapabilities(sessionId)
+      }
+      return null
+    },
+    async getConfig(sections?: string[]): Promise<ConfigStatePayload | null> {
+      const bridge = getBridge()
+      if (bridge?.harness?.getConfig && (await isHarnessLive())) {
+        return bridge.harness.getConfig(sections)
+      }
+      return null
+    },
+    async patchConfig(patch: Record<string, unknown>): Promise<{
+      ok: boolean
+      state?: ConfigStatePayload
+      error?: string
+      code?: string
+    }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.patchConfig && (await isHarnessLive())) {
+        return bridge.harness.patchConfig(patch)
+      }
+      return {
+        ok: false,
+        code: "unsupported",
+        error: "Connected daemon does not support config_v1.",
+      }
+    },
     async setPermissionMode(
       sessionId: string,
       mode: PermissionModeId
-    ): Promise<{ ok: boolean; error?: string }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setPermissionMode) {
         try {
