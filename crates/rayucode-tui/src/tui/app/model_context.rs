@@ -733,6 +733,7 @@ impl App {
         let options = crate::provider::FallbackPickOptions {
             credential_failure: if is_rayu_route {
                 rayu_account_wide_failure
+                    || is_request_payload_too_large_error(error)
                     || crate::provider::parse_failover_prompt_message(error).is_some()
             } else {
                 crate::provider::error_looks_like_credential_failure(error)
@@ -1441,7 +1442,7 @@ impl App {
             // retry) goes through, and keep auto-poke alive.
             let stripped = self
                 .session
-                .strip_oversized_images(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
+                .strip_oversized_images_adaptively(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
             if stripped > 0 {
                 self.messages.clear();
                 self.reseed_compaction_from_provider_messages();
@@ -1579,7 +1580,7 @@ impl App {
 
         let stripped = self
             .session
-            .strip_oversized_images(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
+            .strip_oversized_images_adaptively(crate::compaction::PAYLOAD_IMAGE_CHAR_BUDGET);
         if stripped == 0 {
             return false;
         }

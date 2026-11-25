@@ -1,3 +1,7 @@
+import {
+  createOrReuseDraft,
+  type ProvisionalDraftSession,
+} from "@rayu-dev/rayucode-session-core/client";
 import { create } from "zustand";
 import type {
   AccentPreference,
@@ -12,6 +16,7 @@ import type {
   SurfaceKind,
   ThemePreference,
   WorkspaceFolderView,
+  WorkspaceLedgerView,
 } from "@shared/vscodeProtocol";
 
 import type { PendingPermissionRequest } from "./harness-adapter";
@@ -67,6 +72,7 @@ export interface OptimisticUserTurn {
   refFiles?: string;
   images?: Array<{ name: string; dataUrl: string }>;
   createdAtMs: number;
+  baseHistoryTurnCount?: number;
 }
 
 export interface AppStoreState {
@@ -90,6 +96,8 @@ export interface AppStoreState {
   activeSessionTitle: string | null;
   activeProjectPath: string | null;
   workspaces: WorkspaceFolderView[];
+  workspaceLedger: WorkspaceLedgerView | null;
+  activeDraft: ProvisionalDraftSession | null;
   editorSelection: EditorSelectionView | null;
 
   // Shell chrome & drawers
@@ -143,6 +151,23 @@ export interface AppStoreState {
   setActiveSessionTitle: (title: string | null) => void;
   setActiveProjectPath: (path: string | null) => void;
   setWorkspaces: (workspaces: WorkspaceFolderView[]) => void;
+  setWorkspaceLedger: (ledger: WorkspaceLedgerView | null) => void;
+  openNewChatDraft: (target?: {
+    workingDir?: string | null;
+    workspaceId?: string | null;
+    model?: string;
+    reasoningEffort?: string;
+    permissionMode?: string;
+  }) => ProvisionalDraftSession;
+  updateActiveDraft: (
+    patch: Partial<
+      Pick<
+        ProvisionalDraftSession,
+        "workingDir" | "workspaceId" | "model" | "reasoningEffort" | "permissionMode"
+      >
+    >,
+  ) => void;
+  clearActiveDraft: () => void;
   setEditorSelection: (selection: EditorSelectionView | null) => void;
   goBack: () => void;
   goForward: () => void;
@@ -348,6 +373,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   activeSessionTitle: null,
   activeProjectPath: null,
   workspaces: [],
+  workspaceLedger: null,
+  activeDraft: null,
   editorSelection: null,
 
   sidebarCollapsed: false,
@@ -492,6 +519,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       return {
         activeSessionId,
         activeSessionTitle: resolvedTitle,
+        ...(activeSessionId ? { activeDraft: null } : {}),
         route: resolvedRoute,
         activeRoute: resolvedRoute,
         navHistory: nextHistory,
@@ -516,6 +544,77 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       activeProjectPath:
         state.activeProjectPath ?? workspaces[0]?.path ?? null,
     })),
+
+  setWorkspaceLedger: (workspaceLedger) =>
+    set((state) => ({
+      workspaceLedger,
+      activeProjectPath:
+        state.activeProjectPath ??
+        workspaceLedger?.openFolderPaths[0] ??
+        workspaceLedger?.workspaces[0]?.path ??
+        null,
+    })),
+
+  openNewChatDraft: (target = {}) => {
+    const state = get();
+    const resolvedDir =
+      target.workingDir !== undefined
+        ? target.workingDir
+        : state.activeProjectPath ??
+          state.workspaceLedger?.openFolderPaths[0] ??
+          state.workspaces[0]?.path ??
+          null;
+    const draft = createOrReuseDraft(state.activeDraft, {
+      ...target,
+      workingDir: resolvedDir,
+    });
+    const nextEntry: NavHistoryEntry = {
+      route: "home",
+      sessionId: null,
+      sessionTitle: null,
+    };
+    const current = state.navHistory[state.navHistoryIndex];
+    const isSame =
+      current && current.route === "home" && current.sessionId === null;
+    const nextHistory = isSame
+      ? state.navHistory
+      : [
+          ...state.navHistory.slice(0, state.navHistoryIndex + 1),
+          nextEntry,
+        ].slice(-50);
+
+    set({
+      activeDraft: draft,
+      activeSessionId: null,
+      activeSessionTitle: null,
+      activeProjectPath: draft.workingDir ?? state.activeProjectPath,
+      route: "home",
+      activeRoute: "home",
+      navHistory: nextHistory,
+      navHistoryIndex: nextHistory.length - 1,
+      inspectorOpen: false,
+      rightMode: "context",
+      inspectorTab: "overview",
+      activeRightTab: "overview",
+      activeDocPill: null,
+      fullView: false,
+      chatCollapsedByRight: false,
+    });
+    return draft;
+  },
+
+  updateActiveDraft: (patch) =>
+    set((state) => {
+      if (!state.activeDraft) return state;
+      return {
+        activeDraft: {
+          ...state.activeDraft,
+          ...patch,
+        },
+      };
+    }),
+
+  clearActiveDraft: () => set({ activeDraft: null }),
 
   setEditorSelection: (editorSelection) => set({ editorSelection }),
 
@@ -780,8 +879,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           capabilities: msg.capabilities,
           daemonStatus: msg.daemonStatus,
           workspaces: msg.workspaces,
+          ...(msg.workspaceLedger !== undefined
+            ? { workspaceLedger: msg.workspaceLedger }
+            : {}),
           activeProjectPath:
-            state.activeProjectPath ?? msg.workspaces[0]?.path ?? null,
+            state.activeProjectPath ??
+            msg.workspaces[0]?.path ??
+            msg.workspaceLedger?.openFolderPaths[0] ??
+            null,
           editorSelection:
             msg.editorSelection !== undefined
               ? msg.editorSelection
@@ -842,8 +947,21 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       case "rayucode.workspaces.changed":
         set((state) => ({
           workspaces: msg.workspaces,
+          ...(msg.workspaceLedger !== undefined
+            ? { workspaceLedger: msg.workspaceLedger }
+            : {}),
           activeProjectPath:
             state.activeProjectPath ?? msg.workspaces[0]?.path ?? null,
+        }));
+        return;
+      case "rayucode.workspaces.ledgerChanged":
+        set((state) => ({
+          workspaceLedger: msg.ledger,
+          activeProjectPath:
+            state.activeProjectPath ??
+            msg.ledger.openFolderPaths[0] ??
+            msg.ledger.workspaces[0]?.path ??
+            null,
         }));
         return;
       case "rayucode.editor.selectionChanged":

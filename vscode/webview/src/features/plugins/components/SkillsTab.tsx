@@ -35,6 +35,7 @@ export function SkillsTab() {
   const [lastTriggeredSkill, setLastTriggeredSkill] = React.useState<
     string | null
   >(null);
+  const [skillError, setSkillError] = React.useState<string | null>(null);
 
   const skills = data?.skills ?? [];
   const endorsed = data?.endorsed ?? [];
@@ -58,11 +59,21 @@ export function SkillsTab() {
   };
 
   const handleRunSkill = async (skillName: string) => {
-    await runSkillMutation.mutateAsync({
-      sessionId: activeSessionId ?? "ses_vscode_shell",
-      name: skillName,
-    });
-    setLastTriggeredSkill(skillName);
+    setSkillError(null);
+    try {
+      await runSkillMutation.mutateAsync({
+        sessionId: activeSessionId ?? "ses_vscode_shell",
+        name: skillName,
+      });
+      setLastTriggeredSkill(skillName);
+    } catch (err) {
+      setLastTriggeredSkill(null);
+      setSkillError(
+        err instanceof Error
+          ? err.message
+          : `Failed to run "/${skillName}".`,
+      );
+    }
   };
 
   return (
@@ -167,6 +178,16 @@ export function SkillsTab() {
           </div>
         </div>
       </header>
+
+      {skillError && (
+        <div
+          role="alert"
+          data-testid="skill-error-banner"
+          className="flex items-center justify-between rounded-xl border border-danger/40 bg-danger-soft px-4 py-2.5 text-xs text-danger"
+        >
+          <span>{skillError}</span>
+        </div>
+      )}
 
       {lastTriggeredSkill && (
         <div

@@ -90,9 +90,9 @@ function TurnView({
 
   const hasAnswer =
     turn.answerIntro.trim().length > 0 || turn.answerBullets.length > 0;
-  const hasFileSummary = Boolean(
-    fileChangesSnapshot && fileChangesSnapshot.files.length > 0,
-  );
+  const hasFileSummary =
+    !turn.isLive &&
+    Boolean(fileChangesSnapshot && fileChangesSnapshot.files.length > 0);
   const hasPrimaryDiff =
     !hasFileSummary && Boolean(turn.diffCard && turn.diffCard.lines.length > 0);
 
@@ -189,16 +189,27 @@ function TurnView({
       <div data-slot="msg-agent" className="flex min-w-0 flex-col gap-3">
         {(turn.isLive ||
           turn.notes.length > 0 ||
-          turn.groups.length > 0) && (
+          turn.groups.length > 0 ||
+          (turn.timeline && turn.timeline.length > 0)) && (
           <WorkTrace
             workedDuration={turn.workedDuration}
             isLive={turn.isLive}
             connectionPhaseLabel={turn.connectionPhaseLabel}
             notes={turn.notes}
             groups={turn.groups}
+            timeline={turn.timeline}
             activeToolStatus={turn.activeToolStatus}
             showLiveBackgroundPill={turn.showLiveBackgroundPill}
             sessionId={turn.sessionId}
+            defaultExpanded={
+              !turn.isLive &&
+              !hasAnswer &&
+              (turn.notes.length > 0 ||
+                turn.groups.length > 0 ||
+                Boolean(turn.timeline?.length))
+                ? true
+                : undefined
+            }
             onBackgroundTool={onBackgroundTool}
           />
         )}
@@ -345,13 +356,15 @@ function TurnView({
           </div>
         )}
 
-        {fileChangesSnapshot && fileChangesSnapshot.files.length > 0 && (
-          <TurnFileSummaryCard
-            snapshot={fileChangesSnapshot}
-            sessionId={turn.sessionId}
-            onSnapshotUpdated={onFileChangesUpdated}
-          />
-        )}
+        {!turn.isLive &&
+          fileChangesSnapshot &&
+          fileChangesSnapshot.files.length > 0 && (
+            <TurnFileSummaryCard
+              snapshot={fileChangesSnapshot}
+              sessionId={turn.sessionId}
+              onSnapshotUpdated={onFileChangesUpdated}
+            />
+          )}
 
         {!turn.isLive && (
           <TurnActions

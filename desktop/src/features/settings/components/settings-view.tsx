@@ -37,6 +37,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client"
 import { useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
@@ -289,8 +290,9 @@ export function SettingsView({
           toast.error(res.error)
           return
         }
+        const versionLabel = formatDaemonVersionLabel(res.data.version)
         toast.success(
-          `Daemon healthy (${res.data.latencyMs} ms · v${res.data.version})`
+          `Daemon healthy (${res.data.latencyMs} ms${versionLabel ? ` · ${versionLabel}` : ""})`
         )
       },
     })
@@ -762,7 +764,7 @@ export function SettingsView({
                           </div>
                           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-active">
                             <div
-                              className="h-full rounded-full bg-ink transition-all"
+                              className="rayu-effort-bar h-full rounded-full transition-all"
                               style={{ width: `${fiveHourPct}%` }}
                             />
                           </div>
@@ -792,7 +794,7 @@ export function SettingsView({
                           </div>
                           <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-active">
                             <div
-                              className="h-full rounded-full bg-ink transition-all"
+                              className="rayu-effort-bar h-full rounded-full transition-all"
                               style={{ width: `${weeklyPct}%` }}
                             />
                           </div>
@@ -1682,7 +1684,7 @@ auto_compact = ${preferences.autoCompactContext}`}
                       </div>
                       <div className="mt-0.5 font-mono text-xs text-ink">
                         {daemonStatus?.version
-                          ? `v${daemonStatus.version}`
+                          ? formatDaemonVersionLabel(daemonStatus.version) || "—"
                           : "—"}
                       </div>
                     </div>

@@ -714,4 +714,45 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       })
     )
   })
+
+  it("synthesizes turn_stopped failure frame when a streaming session socket closes mid-turn", async () => {
+    const client = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_drop_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(client)
+
+    const daemon = new RayuDaemonClient("/tmp/drop-test-rayu.sock")
+    const receivedFrames: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      receivedFrames.push(frame)
+    })
+
+    await daemon.createSession("/repo", "Drop test")
+    await daemon.sendMessage("sess_drop_1", "Run long task")
+
+    // Socket closes mid-turn without turn_done -> SessionSocketPool synthesizes turn_stopped
+    client.emit("close")
+
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "turn_stopped",
+        reason: "failure",
+        session_id: "sess_drop_1",
+      })
+    )
+  })
 })

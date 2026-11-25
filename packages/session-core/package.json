@@ -1,0 +1,43 @@
+{
+  "name": "@rayu-dev/rayucode-session-core",
+  "version": "0.1.0",
+  "description": "Shared host and client session, workspace registry, socket pool, harness adapter, and turn reconciliation core for RayuCode Desktop and VS Code",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host/index.d.ts",
+      "default": "./dist/host/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@rayu-dev/rayucode-sdk": "1.2.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.1.4"
+  }
+}

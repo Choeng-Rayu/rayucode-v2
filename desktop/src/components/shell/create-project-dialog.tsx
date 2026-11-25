@@ -36,15 +36,6 @@ function displayFolderName(folderPath: string): string {
   return parts[parts.length - 1] ?? folderPath
 }
 
-function slugify(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "project"
-  )
-}
-
 function CreateProjectDialogBody({
   onOpenChange,
   onCreate,
@@ -52,6 +43,7 @@ function CreateProjectDialogBody({
   const [name, setName] = React.useState("")
   const [folders, setFolders] = React.useState<string[]>([])
   const [icon, setIcon] = React.useState<ProjectIconSpec>(DEFAULT_ICON)
+  const [submitting, setSubmitting] = React.useState(false)
 
   const handleAddFolder = async () => {
     const picked = await ipcClient.workspace.pickFolder()
@@ -62,8 +54,9 @@ function CreateProjectDialogBody({
     setName((prev) => (prev.trim() ? prev : picked.project))
   }
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (submitting) return
     const cleanName = name.trim() || (folders[0] ? displayFolderName(folders[0]) : "")
     if (!cleanName) {
       toast.error("Give your project a name")
@@ -73,18 +66,30 @@ function CreateProjectDialogBody({
       toast.error("Add at least one source folder")
       return
     }
-    onCreate({
-      id: `proj_${slugify(cleanName)}_${Date.now().toString(36)}`,
-      name: cleanName,
-      folders,
-      iconKind: icon.iconKind,
-      iconValue: icon.iconValue,
-      iconColor: icon.iconColor,
-      pinned: false,
-      sectionId: null,
-      updatedAt: Date.now(),
-    })
-    onOpenChange(false)
+    setSubmitting(true)
+    try {
+      const primary = folders[0]
+      const registered = await ipcClient.workspace.ensure(primary, cleanName)
+      const canonicalPrimary = registered.canonicalPath || registered.path
+      const dedupedFolders = [
+        canonicalPrimary,
+        ...folders.slice(1).filter((f) => f !== canonicalPrimary),
+      ]
+      onCreate({
+        id: registered.id,
+        name: cleanName,
+        folders: dedupedFolders,
+        iconKind: icon.iconKind,
+        iconValue: icon.iconValue,
+        iconColor: icon.iconColor,
+        pinned: false,
+        sectionId: null,
+        updatedAt: Date.now(),
+      })
+      onOpenChange(false)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (

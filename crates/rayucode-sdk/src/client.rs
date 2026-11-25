@@ -747,6 +747,8 @@ impl RayucodeClient {
             .request_ok(ApiRequest::ListSessions {
                 include_archived: false,
                 limit: None,
+                include_external: false,
+                sources: None,
             })?
             .event
         {
@@ -761,6 +763,8 @@ impl RayucodeClient {
             .request_ok(ApiRequest::ListSessions {
                 include_archived: false,
                 limit: Some(limit),
+                include_external: false,
+                sources: None,
             })?
             .event
         {

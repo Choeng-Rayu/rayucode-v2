@@ -46,8 +46,13 @@ export function ShellCard({
       : uncontrolledExpanded
 
   const isFailed = Boolean(step.isFailed) || step.exitCode !== 0
+  const trimmedCmd = step.command.trim()
+  const isJsonLikeCommand =
+    (trimmedCmd.startsWith("{") && trimmedCmd.endsWith("}")) ||
+    (trimmedCmd.startsWith("[") && trimmedCmd.endsWith("]"))
   const isPlaintextTool =
     step.isMono === false ||
+    isJsonLikeCommand ||
     step.displayCommand.toLowerCase().startsWith("importing ") ||
     step.displayCommand.toLowerCase().startsWith("inspecting ")
   const cardId = `shell-card-${step.id}`

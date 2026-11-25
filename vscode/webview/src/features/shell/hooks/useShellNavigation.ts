@@ -32,7 +32,6 @@ export interface PrimaryNavItem {
 
 export const PRIMARY_NAV_ITEMS: ReadonlyArray<PrimaryNavItem> = [
   { id: "home", label: "Home", icon: "home" },
-  { id: "swarm", label: "Swarm", icon: "swarm" },
   { id: "automations", label: "Automations", icon: "clock" },
   { id: "plugins", label: "Plugins", icon: "plug" },
   { id: "changes", label: "Changes", icon: "branch" },

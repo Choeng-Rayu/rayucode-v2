@@ -48,21 +48,27 @@ export function CreateSkillDialog({
     }
 
     setErrorMessage(null);
-    const created = await onCreate({
-      name: cleanName,
-      description: description.trim(),
-      content: content.trim() || undefined,
-      scope,
-    });
-    setName("");
-    setDescription("");
-    setContent("");
-    onOpenChange(false);
+    try {
+      const created = await onCreate({
+        name: cleanName,
+        description: description.trim(),
+        content: content.trim() || undefined,
+        scope,
+      });
+      setName("");
+      setDescription("");
+      setContent("");
+      onOpenChange(false);
 
-    postToHost({
-      type: "rayucode.editor.openFile",
-      path: created.path,
-    });
+      postToHost({
+        type: "rayucode.editor.openFile",
+        path: created.path,
+      });
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : "Failed to create skill.",
+      );
+    }
   };
 
   return (

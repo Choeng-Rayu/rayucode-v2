@@ -6,6 +6,7 @@ import { startMockHarness } from "../../sdk/typescript/test/mock-harness.js";
 import { HarnessSession } from "../host/harnessSession.js";
 import "./reversePatch.test.js";
 import "./featureRouters.test.js";
+import "./sessionHub.test.js";
 
 test("the editor scopes sessions, enables full tools with supports_permissions, and wires v1.14 set_permission_mode", async (t) => {
   const requests: string[] = [];

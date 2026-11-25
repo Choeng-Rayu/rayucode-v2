@@ -27,6 +27,7 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
     useAppStore.setState({
       activeRoute: "home",
       activeSessionId: null,
+      activeDraft: null,
       daemonMode: "demo",
     })
   })
@@ -579,7 +580,7 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
     expect(screen.queryByText("Temp folder test")).not.toBeInTheDocument()
   })
 
-  it("shows only user-created projects in Projects when sidebarState.projects is non-empty and does not auto-add uncreated folders", async () => {
+  it("auto-discovers non-hidden projects even when saved projects exist and keeps Projects and Ungrouped strictly disjoint by default", async () => {
     const now = Date.now()
     vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
       projects: [
@@ -598,23 +599,16 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
       archivedChatIds: [],
       organizeBy: "project",
       sortBy: "updated",
-      showProjectChatsInRecents: true,
+      showProjectChatsInRecents: false,
       manualProjectOrder: [],
       collapsedProjectIds: [],
-      hiddenProjectPaths: [],
+      hiddenProjectPaths: ["/Users/dev/workspace/nek-rean-it"],
     })
     vi.spyOn(ipcClient.sessions, "listProjects").mockResolvedValue([
       {
         id: "proj_rayucode_auto",
         name: "rayucode-v2",
         path: "/Users/dev/workspace/rayu/rayucode-v2",
-        expanded: true,
-        sessions: [],
-      },
-      {
-        id: "proj_core",
-        name: "rayucode-app-core",
-        path: "/Users/dev/workspace/rayu/rayucode-v2/crates/rayucode-app-core",
         expanded: true,
         sessions: [],
       },
@@ -629,13 +623,6 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
         id: "proj_youtube",
         name: "Youtube",
         path: "/Users/dev/workspace/Youtube",
-        expanded: true,
-        sessions: [],
-      },
-      {
-        id: "proj_rayu",
-        name: "rayu",
-        path: "/Users/dev/workspace/rayu",
         expanded: true,
         sessions: [],
       },
@@ -675,6 +662,22 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
         kvWarmPct: 0,
         creditsUsed: 0,
       },
+      {
+        id: "ses_ungrouped_chat",
+        title: "Quick standalone question",
+        project: "scratch",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "1m",
+        updatedAtMs: now - 60_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
     ])
     vi.spyOn(ipcClient.sessions, "listRecents").mockResolvedValue([
       {
@@ -691,21 +694,54 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
         updatedAt: "5m",
         updatedAtMs: now - 300_000,
       },
+      {
+        id: "ses_ungrouped_chat",
+        title: "Quick standalone question",
+        updatedAt: "1m",
+        updatedAtMs: now - 60_000,
+      },
     ])
 
     renderPane()
 
     expect(await screen.findByText("rayucode")).toBeInTheDocument()
-    const rows = screen.getAllByTestId("sidebar-project-row")
-    expect(rows).toHaveLength(1)
-    expect(screen.queryByText("rayucode-app-core")).not.toBeInTheDocument()
+    // Non-hidden discovered project (Youtube) is shown; hidden project (nek-rean-it) is skipped;
+    // duplicate path (rayucode-v2) is deduplicated against saved project (rayucode).
+    expect(screen.getByText("Youtube")).toBeInTheDocument()
     expect(screen.queryByText("nek-rean-it")).not.toBeInTheDocument()
-    expect(screen.queryByText("Youtube")).not.toBeInTheDocument()
-    expect(screen.queryByText("rayu")).not.toBeInTheDocument()
+    expect(screen.getAllByTestId("sidebar-project-row")).toHaveLength(2)
 
-    // Chats from non-project folders remain accessible in Recents
+    // Strict disjoint grouping: project chats render ONCE (only in Projects, not duplicated in Recents)
     expect(
-      screen.getByRole("button", { name: "Build remotion pipeline" })
-    ).toBeInTheDocument()
+      screen.getAllByRole("button", { name: "Fix sidebar routing" })
+    ).toHaveLength(1)
+    expect(
+      screen.getAllByRole("button", { name: "Build remotion pipeline" })
+    ).toHaveLength(1)
+
+    // Ungrouped session appears exclusively in Recents
+    const ungroupedList = screen.getByTestId("ungrouped-chat-list")
+    expect(ungroupedList).toHaveTextContent("Quick standalone question")
+    expect(ungroupedList).not.toHaveTextContent("Fix sidebar routing")
+    expect(ungroupedList).not.toHaveTextContent("Build remotion pipeline")
+  })
+
+  it("uses lazy client-side draft via createOrReuseDraft on New chat without spawning empty daemon sessions", async () => {
+    const createSessionSpy = vi.spyOn(ipcClient.sessions, "createSession")
+    vi.spyOn(ipcClient.workspace, "setPath").mockResolvedValue(null)
+    renderPane()
+
+    const projectRows = await screen.findAllByTestId("sidebar-project-row")
+    const projId = projectRows[0]!.getAttribute("data-project-id")!
+    const newChatBtn = screen.getByTestId(`project-new-chat-${projId}`)
+
+    fireEvent.click(newChatBtn)
+    fireEvent.click(newChatBtn)
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("sidebar-draft-row")).toHaveLength(1)
+    })
+    expect(createSessionSpy).not.toHaveBeenCalled()
+    expect(useAppStore.getState().activeDraft?.workspaceId).toBe(projId)
   })
 })

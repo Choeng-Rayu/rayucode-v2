@@ -203,6 +203,11 @@ pub struct Session {
     /// (`rayu cloud move` / `return`). Zero for sessions that never moved.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub migration_epoch: u64,
+    /// Number of visible user turns captured when this session was imported
+    /// from an external agent transcript. Used to detect local Rayu turns
+    /// added after import so re-sync never silently overwrites local work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_turn_count: Option<usize>,
     #[serde(skip)]
     persist_state: SessionPersistState,
     #[serde(skip)]
@@ -280,6 +285,8 @@ struct SessionStartupStub {
     save_label: Option<String>,
     #[serde(default)]
     migration_epoch: u64,
+    #[serde(default)]
+    imported_turn_count: Option<usize>,
 }
 
 const MAX_SESSION_JOURNAL_BYTES: u64 = 512 * 1024;
@@ -383,6 +390,7 @@ impl Session {
         session.saved = stub.saved;
         session.save_label = stub.save_label;
         session.migration_epoch = stub.migration_epoch;
+        session.imported_turn_count = stub.imported_turn_count;
         session.messages.clear();
         session.env_snapshots.clear();
         session.memory_injections.clear();
@@ -825,6 +833,7 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             migration_epoch: 0,
+            imported_turn_count: None,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
@@ -885,6 +894,7 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             migration_epoch: 0,
+            imported_turn_count: None,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
@@ -1479,6 +1489,23 @@ request in this new forked session, using the inherited conversation only as con
         let stripped = rayucode_compaction_core::strip_large_images_in_contents(
             &mut contents,
             target_total_chars,
+        );
+        if stripped > 0 {
+            self.mark_memory_profile_dirty();
+            self.mark_messages_full_dirty();
+        }
+        stripped
+    }
+
+    /// Adaptive HTTP 413 image stripper: strictly shrinks inline images even
+    /// when their combined size is already below `max_target_total_chars`
+    /// (e.g. a gateway with a lower body limit than `PAYLOAD_IMAGE_CHAR_BUDGET`).
+    pub fn strip_oversized_images_adaptively(&mut self, max_target_total_chars: usize) -> usize {
+        let mut contents: Vec<&mut Vec<ContentBlock>> =
+            self.messages.iter_mut().map(|m| &mut m.content).collect();
+        let stripped = rayucode_compaction_core::strip_large_images_adaptively_in_contents(
+            &mut contents,
+            max_target_total_chars,
         );
         if stripped > 0 {
             self.mark_memory_profile_dirty();

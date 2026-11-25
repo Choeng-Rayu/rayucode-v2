@@ -35,6 +35,12 @@ fn session(id: &str) -> SessionInfo {
         archived: false,
         archived_at_ms: None,
         save_label: None,
+        source: None,
+        external_session_id: None,
+        external_path: None,
+        external_project_name: None,
+        imported: false,
+        sync_stale: false,
     }
 }
 

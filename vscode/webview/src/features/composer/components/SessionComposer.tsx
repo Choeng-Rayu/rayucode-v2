@@ -2,11 +2,16 @@ import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUp,
+  AtSign,
   Check,
   ChevronDown,
   CornerDownLeft,
   GitBranch,
-  Square,
+  Image as ImageIcon,
+  Lightbulb,
+  Plug,
+  Plus,
+  Sparkles,
   X,
 } from "lucide-react";
 import type {
@@ -39,7 +44,6 @@ import {
   normalizeEffortLevel,
 } from "../constants";
 import {
-  contextSnapshotQueryOptions,
   useComposerModelCatalog,
   useSlashCommandsCatalog,
   useWorkspaceFilesSearch,
@@ -57,7 +61,6 @@ import { MentionMenu } from "./MentionMenu";
 import { ModelEffortPopover } from "./ModelEffortPopover";
 import { PermissionPopover } from "./PermissionPopover";
 import { SlashCommandMenu } from "./SlashCommandMenu";
-import { VoiceMicButton } from "./VoiceMicButton";
 
 const SUPPORTED_IMAGE_MEDIA_TYPES = new Set([
   "image/png",
@@ -109,6 +112,77 @@ function readImageFile(file: File): Promise<ImageAttachmentView | null> {
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(file);
   });
+}
+
+export interface ActiveSlashTrigger {
+  slashIndex: number;
+  endIndex: number;
+  query: string;
+}
+
+function clampCursor(value: string, cursor: number): number {
+  return Math.max(0, Math.min(cursor, value.length));
+}
+
+function resolveTextareaCursor(
+  target: HTMLTextAreaElement,
+  valueLength: number,
+): number {
+  const sel = target.selectionStart;
+  if (
+    typeof sel === "number" &&
+    (document.activeElement === target || sel > 0 || valueLength === 0)
+  ) {
+    return sel;
+  }
+  return valueLength;
+}
+
+export function getActiveSlashTrigger(
+  value: string,
+  cursor: number = value.length,
+): ActiveSlashTrigger | null {
+  const safeCursor = clampCursor(value, cursor);
+  const beforeCursor = value.slice(0, safeCursor);
+  const match = /(?:^|\s)(\/([^\s/]*))$/.exec(beforeCursor);
+  if (!match) return null;
+  return {
+    slashIndex: safeCursor - match[1]!.length,
+    endIndex: safeCursor,
+    query: match[2] ?? "",
+  };
+}
+
+export function applySlashSelection(
+  value: string,
+  trigger: ActiveSlashTrigger,
+  insertText: string,
+): { nextValue: string; nextCursor: number } {
+  const token = insertText.trim();
+  const before = value.slice(0, trigger.slashIndex);
+  const after = value.slice(trigger.endIndex);
+  const needsTrailingSpace = after.length === 0 || !/^\s/.test(after);
+  const inserted = needsTrailingSpace ? `${token} ` : token;
+  return {
+    nextValue: `${before}${inserted}${after}`,
+    nextCursor: before.length + inserted.length,
+  };
+}
+
+function stripSlashRange(
+  value: string,
+  start: number,
+  end: number,
+): { nextValue: string; nextCursor: number } {
+  const before = value.slice(0, start);
+  let after = value.slice(end);
+  if (before.length > 0 && /\s$/.test(before) && /^\s/.test(after)) {
+    after = after.replace(/^\s+/, "");
+  }
+  return {
+    nextValue: `${before}${after}`,
+    nextCursor: before.length,
+  };
 }
 
 export interface SessionComposerProps {
@@ -178,12 +252,13 @@ export function SessionComposer({
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
   const storeProjectPath = useAppStore((s) => s.activeProjectPath);
+  const activeDraft = useAppStore((s) => s.activeDraft);
+  const updateActiveDraft = useAppStore((s) => s.updateActiveDraft);
   const setActiveProjectPath = useAppStore((s) => s.setActiveProjectPath);
   const storeWorkspaces = useAppStore((s) => s.workspaces);
   const storeEditorSelection = useAppStore((s) => s.editorSelection);
   const setEditorSelection = useAppStore((s) => s.setEditorSelection);
   const storeIsStreamActive = useAppStore((s) => s.isStreamActive);
-  const openRightTab = useAppStore((s) => s.openRightTab);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
@@ -191,6 +266,7 @@ export function SessionComposer({
 
   const effectiveSessionId =
     controlledSessionId !== undefined ? controlledSessionId : storeSessionId;
+  const sessionOverrideKey = effectiveSessionId ?? "__draft__";
   const isSubmitting =
     controlledIsSubmitting !== undefined
       ? controlledIsSubmitting
@@ -201,9 +277,6 @@ export function SessionComposer({
   const branchesQuery = useQuery(
     workspaceBranchesQueryOptions(storeProjectPath),
   );
-  const contextQuery = useQuery(
-    contextSnapshotQueryOptions(effectiveSessionId),
-  );
 
   const workspaces = React.useMemo(() => {
     if (storeWorkspaces.length > 0) return storeWorkspaces;
@@ -211,12 +284,14 @@ export function SessionComposer({
   }, [foldersQuery.data?.folders, storeWorkspaces]);
 
   const activeWorkspace = React.useMemo(() => {
-    if (storeProjectPath) {
-      const found = workspaces.find((w) => w.path === storeProjectPath);
+    const targetPath =
+      (!effectiveSessionId ? activeDraft?.workingDir : null) ?? storeProjectPath;
+    if (targetPath) {
+      const found = workspaces.find((w) => w.path === targetPath);
       if (found) return found;
     }
     return workspaces[0] ?? null;
-  }, [storeProjectPath, workspaces]);
+  }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
   const [internalValue, setInternalValue] = React.useState("");
   const [internalProject, setInternalProject] = React.useState(
@@ -225,20 +300,23 @@ export function SessionComposer({
   const [internalCheckout, setInternalCheckout] = React.useState(
     activeWorkspace?.branch ?? DEFAULT_CHECKOUT,
   );
-  const [internalModelId, setInternalModelId] = React.useState(
-    catalog.defaultModelId,
-  );
-  const [internalModelLabel, setInternalModelLabel] = React.useState(
-    catalog.defaultModelLabel,
-  );
-  const [internalEffort, setInternalEffort] = React.useState<EffortLevel>(
-    catalog.defaultEffort,
-  );
-  const [internalServiceTier, setInternalServiceTier] =
-    React.useState<ServiceTier>(catalog.serviceTier);
-  const [internalCacheTtl, setInternalCacheTtl] = React.useState<CacheTtl>(
-    catalog.cacheTtl,
-  );
+  const [modelOverride, setModelOverride] = React.useState<{
+    sessionKey: string;
+    id: string;
+    label: string;
+  } | null>(null);
+  const [effortOverride, setEffortOverride] = React.useState<{
+    sessionKey: string;
+    effort: EffortLevel;
+  } | null>(null);
+  const [serviceTierOverride, setServiceTierOverride] = React.useState<{
+    sessionKey: string;
+    tier: ServiceTier;
+  } | null>(null);
+  const [cacheTtlOverride, setCacheTtlOverride] = React.useState<{
+    sessionKey: string;
+    ttl: CacheTtl;
+  } | null>(null);
   const [internalPermissionMode, setInternalPermissionMode] =
     React.useState<PermissionModeId>(DEFAULT_PERMISSION_MODE_ID);
 
@@ -246,13 +324,20 @@ export function SessionComposer({
   const [selectionIncluded, setSelectionIncluded] = React.useState(true);
   const [workspacePickerOpen, setWorkspacePickerOpen] = React.useState(false);
   const [branchPickerOpen, setBranchPickerOpen] = React.useState(false);
+  const [plusMenuOpen, setPlusMenuOpen] = React.useState(false);
   const [mentionIndex, setMentionIndex] = React.useState(0);
   const [slashIndex, setSlashIndex] = React.useState(0);
+  const [cursorPos, setCursorPos] = React.useState<number | null>(null);
+  const [pendingCaret, setPendingCaret] = React.useState<{
+    pos: number;
+    seq: number;
+  } | null>(null);
   const [popupDismissedForText, setPopupDismissedForText] = React.useState<
     string | null
   >(null);
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const lastFocusNonceRef = React.useRef(composerFocusNonce);
 
   React.useEffect(() => {
@@ -291,21 +376,40 @@ export function SessionComposer({
       : branchesQuery.data?.current ??
         activeWorkspace?.branch ??
         internalCheckout;
+  const activeModelOverride =
+    modelOverride?.sessionKey === sessionOverrideKey ? modelOverride : null;
+  const activeEffortOverride =
+    effortOverride?.sessionKey === sessionOverrideKey ? effortOverride : null;
+  const activeServiceTierOverride =
+    serviceTierOverride?.sessionKey === sessionOverrideKey
+      ? serviceTierOverride
+      : null;
+  const activeCacheTtlOverride =
+    cacheTtlOverride?.sessionKey === sessionOverrideKey
+      ? cacheTtlOverride
+      : null;
+
   const activeModelId =
-    controlledModelId !== undefined ? controlledModelId : internalModelId;
+    controlledModelId !== undefined
+      ? controlledModelId
+      : (activeModelOverride?.id ?? catalog.defaultModelId);
   const activeModelLabel =
     controlledModelLabel !== undefined
       ? controlledModelLabel
-      : internalModelLabel;
+      : (activeModelOverride?.label ?? catalog.defaultModelLabel);
   const activeEffort = normalizeEffortLevel(
-    controlledEffort !== undefined ? controlledEffort : internalEffort,
+    controlledEffort !== undefined
+      ? controlledEffort
+      : (activeEffortOverride?.effort ?? catalog.defaultEffort),
   );
   const activeServiceTier =
     controlledServiceTier !== undefined
       ? controlledServiceTier
-      : internalServiceTier;
+      : (activeServiceTierOverride?.tier ?? catalog.serviceTier);
   const activeCacheTtl =
-    controlledCacheTtl !== undefined ? controlledCacheTtl : internalCacheTtl;
+    controlledCacheTtl !== undefined
+      ? controlledCacheTtl
+      : (activeCacheTtlOverride?.ttl ?? catalog.cacheTtl);
   const activePermissionMode =
     controlledPermissionMode !== undefined
       ? controlledPermissionMode
@@ -324,6 +428,18 @@ export function SessionComposer({
     el.style.height = `${nextHeight}px`;
   }, [textValue]);
 
+  React.useLayoutEffect(() => {
+    if (!pendingCaret) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    const pos = clampCursor(el.value, pendingCaret.pos);
+    if (typeof el.setSelectionRange === "function") {
+      el.setSelectionRange(pos, pos);
+    }
+    setCursorPos(pos);
+  }, [pendingCaret]);
+
   const setTextValue = React.useCallback(
     (next: string) => {
       setPopupDismissedForText(null);
@@ -336,26 +452,27 @@ export function SessionComposer({
     [onValueChange],
   );
 
+  const effectiveCursor =
+    cursorPos === null ? textValue.length : clampCursor(textValue, cursorPos);
+
   // Detect `@query` file mention trigger
   const mentionTrigger = React.useMemo(() => {
     if (popupDismissedForText === textValue) return null;
-    const match = /(?:^|\s)@([^\s@]*)$/.exec(textValue);
+    const beforeCursor = textValue.slice(0, effectiveCursor);
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(beforeCursor);
     if (!match) return null;
     return {
       query: match[1] ?? "",
-      tokenStart: textValue.lastIndexOf("@"),
+      tokenStart: beforeCursor.lastIndexOf("@"),
+      tokenEnd: effectiveCursor,
     };
-  }, [popupDismissedForText, textValue]);
+  }, [effectiveCursor, popupDismissedForText, textValue]);
 
-  // Detect `/query` slash command trigger at start of input
+  // Detect `/query` slash command or skill trigger at start or mid-sentence before caret
   const slashTrigger = React.useMemo(() => {
     if (popupDismissedForText === textValue || mentionTrigger) return null;
-    const match = /^\/([a-zA-Z0-9_-]*)$/.exec(textValue.trim());
-    if (!match) return null;
-    return {
-      query: match[1] ?? "",
-    };
-  }, [mentionTrigger, popupDismissedForText, textValue]);
+    return getActiveSlashTrigger(textValue, effectiveCursor);
+  }, [effectiveCursor, mentionTrigger, popupDismissedForText, textValue]);
 
   const filesSearchQuery = useWorkspaceFilesSearch(
     mentionTrigger?.query ?? "",
@@ -392,47 +509,89 @@ export function SessionComposer({
     (filePath: string) => {
       if (!mentionTrigger) return;
       const prefix = textValue.slice(0, mentionTrigger.tokenStart);
-      const next = `${prefix}@${filePath} `;
+      const suffix = textValue.slice(mentionTrigger.tokenEnd);
+      const inserted = `@${filePath} `;
+      const next = `${prefix}${inserted}${suffix}`;
+      const nextCaret = prefix.length + inserted.length;
       setTextValue(next);
-      textareaRef.current?.focus();
+      setPendingCaret((prev) => ({ pos: nextCaret, seq: (prev?.seq ?? 0) + 1 }));
     },
     [mentionTrigger, setTextValue, textValue],
   );
 
   const handleSelectSlashCommand = React.useCallback(
     (item: SlashCommandItem) => {
+      const clearOrStripToken = () => {
+        if (slashTrigger) {
+          const stripped = stripSlashRange(
+            textValue,
+            slashTrigger.slashIndex,
+            slashTrigger.endIndex,
+          );
+          if (stripped.nextValue.trim().length > 0) {
+            setTextValue(stripped.nextValue);
+            setPendingCaret((prev) => ({
+              pos: stripped.nextCursor,
+              seq: (prev?.seq ?? 0) + 1,
+            }));
+            return;
+          }
+        }
+        setTextValue("");
+        setCursorPos(0);
+      };
+
       if (item.command === "/compact" && effectiveSessionId) {
         void callRpc("workspace.compact", {
           sessionId: effectiveSessionId,
         }).catch(() => {});
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/plan") {
         setInternalPermissionMode("plan");
         onPermissionModeChange?.("plan");
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/bg") {
         setBackgroundDrawerOpen(true);
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/clear") {
         setActiveSession(null);
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/mcp" || item.command === "/skills") {
         setActiveRoute("plugins");
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
-      setTextValue(
-        item.insertText.endsWith(" ") ? item.insertText : `${item.insertText} `,
-      );
-      textareaRef.current?.focus();
+
+      if (slashTrigger) {
+        const applied = applySlashSelection(
+          textValue,
+          slashTrigger,
+          item.insertText,
+        );
+        setTextValue(applied.nextValue);
+        setPendingCaret((prev) => ({
+          pos: applied.nextCursor,
+          seq: (prev?.seq ?? 0) + 1,
+        }));
+        return;
+      }
+
+      const fallbackText = item.insertText.endsWith(" ")
+        ? item.insertText
+        : `${item.insertText} `;
+      setTextValue(fallbackText);
+      setPendingCaret((prev) => ({
+        pos: fallbackText.length,
+        seq: (prev?.seq ?? 0) + 1,
+      }));
     },
     [
       effectiveSessionId,
@@ -441,53 +600,83 @@ export function SessionComposer({
       setActiveSession,
       setBackgroundDrawerOpen,
       setTextValue,
+      slashTrigger,
+      textValue,
     ],
   );
 
   const handleModelSelect = React.useCallback(
     (model: ModelOption) => {
-      setInternalModelId(model.id);
-      setInternalModelLabel(model.label);
+      setModelOverride({
+        sessionKey: sessionOverrideKey,
+        id: model.id,
+        label: model.label,
+      });
+      if (!effectiveSessionId) {
+        updateActiveDraft({ model: model.id });
+      }
       onModelChange?.(model);
     },
-    [onModelChange],
+    [effectiveSessionId, onModelChange, sessionOverrideKey, updateActiveDraft],
   );
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
-      setInternalEffort(nextEffort);
+      setEffortOverride({
+        sessionKey: sessionOverrideKey,
+        effort: nextEffort,
+      });
+      if (!effectiveSessionId) {
+        updateActiveDraft({ reasoningEffort: nextEffort });
+      }
       onEffortChange?.(nextEffort);
     },
-    [onEffortChange],
+    [effectiveSessionId, onEffortChange, sessionOverrideKey, updateActiveDraft],
   );
 
   const handleServiceTierSelect = React.useCallback(
     (nextTier: ServiceTier) => {
-      setInternalServiceTier(nextTier);
+      setServiceTierOverride({
+        sessionKey: sessionOverrideKey,
+        tier: nextTier,
+      });
       onServiceTierChange?.(nextTier);
     },
-    [onServiceTierChange],
+    [onServiceTierChange, sessionOverrideKey],
   );
 
   const handleCacheTtlSelect = React.useCallback(
     (nextTtl: CacheTtl) => {
-      setInternalCacheTtl(nextTtl);
+      setCacheTtlOverride({
+        sessionKey: sessionOverrideKey,
+        ttl: nextTtl,
+      });
       onCacheTtlChange?.(nextTtl);
     },
-    [onCacheTtlChange],
+    [onCacheTtlChange, sessionOverrideKey],
   );
 
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
       setInternalPermissionMode(nextMode);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ permissionMode: nextMode });
+      }
       onPermissionModeChange?.(nextMode);
     },
-    [onPermissionModeChange],
+    [effectiveSessionId, onPermissionModeChange, updateActiveDraft],
   );
 
   const handleWorkspaceSelect = (name: string, path: string) => {
     setInternalProject(name);
     setActiveProjectPath(path);
+    if (!effectiveSessionId) {
+      const matched = workspaces.find((w) => w.path === path);
+      updateActiveDraft({
+        workingDir: path,
+        workspaceId: matched?.id ?? null,
+      });
+    }
     onProjectChange?.(name, path);
     setWorkspacePickerOpen(false);
   };
@@ -647,6 +836,35 @@ export function SessionComposer({
     }
   };
 
+  const handleImageFileSelect = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const fileList = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    const imageFiles = fileList.filter((f) => inferImageMediaType(f) !== null);
+    if (imageFiles.length === 0) return;
+    const loaded = (
+      await Promise.all(imageFiles.map((f) => readImageFile(f)))
+    ).filter((img): img is ImageAttachmentView => img !== null);
+    if (loaded.length > 0) {
+      setImages((prev) => [...prev, ...loaded].slice(0, MAX_ATTACHED_IMAGES));
+    }
+  };
+
+  const insertComposerPrefix = React.useCallback(
+    (prefix: "@" | "/") => {
+      setPlusMenuOpen(false);
+      const needsSpace = textValue.length > 0 && !/\s$/.test(textValue);
+      const next = `${textValue}${needsSpace ? " " : ""}${prefix}`;
+      setTextValue(next);
+      setPendingCaret((prev) => ({
+        pos: next.length,
+        seq: (prev?.seq ?? 0) + 1,
+      }));
+    },
+    [setTextValue, textValue],
+  );
+
   const effectivePlaceholder = React.useMemo(() => {
     if (placeholder) return placeholder;
     if (activePermissionMode === "plan") {
@@ -655,9 +873,6 @@ export function SessionComposer({
     return "Message RayuCode... (@ files, / commands)";
   }, [activePermissionMode, placeholder]);
 
-  const contextUsedPercent = Math.round(
-    contextQuery.data?.usedPercent ?? 17,
-  );
   const hasPromptContent = textValue.trim().length > 0 || images.length > 0;
   const branchList = branchesQuery.data?.branches ?? [
     activeCheckout,
@@ -893,136 +1108,256 @@ export function SessionComposer({
               placeholder={effectivePlaceholder}
               data-testid="composer-textarea"
               aria-label="Message RayuCode"
-              onChange={(e) => setTextValue(e.target.value)}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                const nextCursor = resolveTextareaCursor(
+                  e.target,
+                  nextVal.length,
+                );
+                setCursorPos(nextCursor);
+                setTextValue(nextVal);
+              }}
+              onClick={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
+              onKeyUp={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
+              onSelect={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
               onKeyDown={handleKeyDown}
               onPaste={(e) => void handlePaste(e)}
               className="rayu-prose max-h-[180px] min-h-[44px] w-full resize-none border-0 bg-transparent px-3.5 pt-2.5 pb-1.5 text-[13.5px] leading-[1.55] text-ink placeholder:text-muted-ink focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none disabled:opacity-50"
             />
 
-            {/* Bottom Control Bar: Left (ModelEffortPopover + PermissionPopover), Right (VoiceMic + Context Gauge + Send/Stop) */}
-            <div className="flex items-center justify-between gap-1.5 px-2.5 pt-1 pb-2">
-              <div className="flex min-w-0 flex-1 items-center gap-1">
-                <ModelEffortPopover
-                  modelId={activeModelId}
-                  modelLabel={activeModelLabel}
-                  effort={activeEffort}
-                  serviceTier={activeServiceTier}
-                  cacheTtl={activeCacheTtl}
-                  sessionId={effectiveSessionId}
-                  models={catalog.models}
-                  onSelectModel={handleModelSelect}
-                  onSelectEffort={handleEffortSelect}
-                  onSelectServiceTier={handleServiceTierSelect}
-                  onSelectCacheTtl={handleCacheTtlSelect}
-                  onRefreshModels={catalog.refreshModels}
-                  isRefreshing={catalog.isRefreshing}
-                  disabled={disabled}
-                />
+            {/* Hidden image file picker for [+] menu */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              className="hidden"
+              onChange={(e) => void handleImageFileSelect(e)}
+            />
 
-                <PermissionPopover
-                  value={activePermissionMode}
-                  onChange={handlePermissionSelect}
-                  sessionId={effectiveSessionId}
-                  enableShortcut={enablePermissionShortcut}
-                  disabled={disabled}
-                />
-              </div>
+            {/* Bottom Control Bar — matches Desktop Composer 1:1: [+] + ModelEffortPopover | spacer | PermissionPopover + Send/Stop Orb */}
+            <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-2">
+              <Popover open={plusMenuOpen} onOpenChange={setPlusMenuOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        aria-label="Add files and more"
+                        data-testid="composer-plus-trigger"
+                        className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-full border border-transparent text-muted-ink transition-colors outline-none hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none data-[state=open]:border-hairline data-[state=open]:bg-active data-[state=open]:text-ink disabled:pointer-events-none disabled:opacity-50"
+                      >
+                        <Plus className="size-[15px]" aria-hidden="true" />
+                      </button>
+                    </PopoverTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    Add files, skills &amp; more
+                  </TooltipContent>
+                </Tooltip>
+                <PopoverContent
+                  side="top"
+                  align="start"
+                  sideOffset={10}
+                  className="w-[248px] rounded-[14px] border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
+                >
+                  <div className="px-2.5 pt-1 pb-1 text-[11px] font-medium text-muted-ink">
+                    Add
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="composer-add-image"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      fileInputRef.current?.click();
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-ink transition-colors hover:bg-hover"
+                  >
+                    <ImageIcon
+                      className="size-4 shrink-0 text-muted-ink"
+                      aria-hidden="true"
+                    />
+                    <span className="font-medium">Attach image</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="composer-add-file-mention"
+                    onClick={() => insertComposerPrefix("@")}
+                    className="flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-ink transition-colors hover:bg-hover"
+                  >
+                    <span className="inline-flex items-center gap-2.5">
+                      <AtSign
+                        className="size-4 shrink-0 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                      <span className="font-medium">Mention file</span>
+                    </span>
+                    <kbd className="rounded bg-active px-1.5 py-0.5 font-mono text-[10px] text-muted-ink">
+                      @
+                    </kbd>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="composer-add-slash"
+                    onClick={() => insertComposerPrefix("/")}
+                    className="flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-ink transition-colors hover:bg-hover"
+                  >
+                    <span className="inline-flex items-center gap-2.5">
+                      <Sparkles
+                        className="size-4 shrink-0 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                      <span className="font-medium">Skills &amp; commands</span>
+                    </span>
+                    <kbd className="rounded bg-active px-1.5 py-0.5 font-mono text-[10px] text-muted-ink">
+                      /
+                    </kbd>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="composer-toggle-plan"
+                    onClick={() => {
+                      const nextMode: PermissionModeId =
+                        activePermissionMode === "plan" ? "default" : "plan";
+                      handlePermissionSelect(nextMode);
+                      setPlusMenuOpen(false);
+                      textareaRef.current?.focus();
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-ink transition-colors hover:bg-hover"
+                  >
+                    <Lightbulb
+                      className={cn(
+                        "size-4 shrink-0",
+                        activePermissionMode === "plan"
+                          ? "text-brand-text"
+                          : "text-muted-ink",
+                      )}
+                      aria-hidden="true"
+                    />
+                    <span className="font-medium">Plan mode</span>
+                    {activePermissionMode === "plan" ? (
+                      <span className="ml-auto rounded-full bg-brand-soft px-2 py-0.5 text-[10.5px] font-medium text-brand-text">
+                        On
+                      </span>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      setActiveRoute("plugins");
+                    }}
+                    className="flex w-full cursor-pointer items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-left text-[13px] text-ink transition-colors hover:bg-hover"
+                  >
+                    <Plug
+                      className="size-4 shrink-0 text-muted-ink"
+                      aria-hidden="true"
+                    />
+                    <span className="font-medium">Plugins &amp; MCP</span>
+                  </button>
+                </PopoverContent>
+              </Popover>
 
-              <div className="flex shrink-0 items-center gap-1.5">
-                <VoiceMicButton
-                  disabled={disabled}
-                  onTranscript={(transcript) =>
-                    setTextValue(
-                      textValue
-                        ? `${textValue.trimEnd()} ${transcript}`
-                        : transcript,
-                    )
-                  }
-                />
+              <ModelEffortPopover
+                modelId={activeModelId}
+                modelLabel={activeModelLabel}
+                effort={activeEffort}
+                serviceTier={activeServiceTier}
+                cacheTtl={activeCacheTtl}
+                sessionId={effectiveSessionId}
+                models={catalog.models}
+                onSelectModel={handleModelSelect}
+                onSelectEffort={handleEffortSelect}
+                onSelectServiceTier={handleServiceTierSelect}
+                onSelectCacheTtl={handleCacheTtlSelect}
+                onRefreshModels={catalog.refreshModels}
+                isRefreshing={catalog.isRefreshing}
+                disabled={disabled}
+              />
 
+              <span className="flex-1" />
+
+              <PermissionPopover
+                value={activePermissionMode}
+                onChange={handlePermissionSelect}
+                sessionId={effectiveSessionId}
+                enableShortcut={enablePermissionShortcut}
+                disabled={disabled}
+              />
+
+              {isSubmitting && !hasPromptContent ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       type="button"
-                      data-testid="composer-context-gauge"
-                      onClick={() => openRightTab("overview")}
-                      aria-label={`Context usage ${contextUsedPercent}%`}
-                      className="cursor-pointer rounded-full border border-transparent px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-ink tabular-nums transition-colors hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none @max-[340px]/composer:hidden"
+                      data-testid="composer-stop-btn"
+                      aria-label="Abort active turn"
+                      onClick={() => onStop?.()}
+                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98]"
                     >
-                      {contextUsedPercent}%
+                      <span
+                        aria-hidden="true"
+                        className="block size-2.5 rounded-[2px] bg-brand-ink"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Stop generation</TooltipContent>
+                </Tooltip>
+              ) : isSubmitting && hasPromptContent ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid="composer-steer-btn"
+                      aria-label="Steer active turn"
+                      onClick={() => triggerSubmit(false)}
+                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98]"
+                    >
+                      <CornerDownLeft
+                        className="size-[15px]"
+                        strokeWidth={2.2}
+                        aria-hidden="true"
+                      />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="top">
-                    Context window: {contextUsedPercent}% used (click to inspect)
+                    Queue / Steer active turn (Alt+Enter for urgent)
                   </TooltipContent>
                 </Tooltip>
-
-                {isSubmitting && !hasPromptContent ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        data-testid="composer-stop-btn"
-                        aria-label="Abort active turn"
-                        onClick={() => onStop?.()}
-                        className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-premium bg-active text-ink shadow-bevel-surface transition-colors hover:border-danger hover:bg-danger-soft hover:text-danger focus:outline-none"
-                      >
-                        <Square
-                          className="size-3.5 fill-current"
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">Stop / Abort</TooltipContent>
-                  </Tooltip>
-                ) : isSubmitting && hasPromptContent ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        data-testid="composer-steer-btn"
-                        aria-label="Steer active turn"
-                        onClick={() => triggerSubmit(false)}
-                        className="rayu-primary-bevel grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-transform hover:bg-brand-bright active:scale-95 focus:outline-none"
-                      >
-                        <CornerDownLeft
-                          className="size-4"
-                          strokeWidth={2.2}
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      Queue / Steer active turn (Alt+Enter for urgent)
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        data-testid="composer-submit-btn"
-                        aria-label="Send message"
-                        disabled={disabled || !hasPromptContent}
-                        onClick={() => triggerSubmit(false)}
-                        className={cn(
-                          "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
-                          hasPromptContent && !disabled
-                            ? "rayu-primary-bevel cursor-pointer bg-brand text-brand-ink hover:bg-brand-bright active:scale-95"
-                            : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
-                        )}
-                      >
-                        <ArrowUp
-                          className="size-4"
-                          strokeWidth={2.25}
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">Send (Enter)</TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
+              ) : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid="composer-submit-btn"
+                      aria-label="Send message"
+                      disabled={disabled || !hasPromptContent}
+                      onClick={() => triggerSubmit(false)}
+                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      <ArrowUp
+                        className="size-[15px]"
+                        strokeWidth={2.2}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">Send message</TooltipContent>
+                </Tooltip>
+              )}
             </div>
           </div>
         </div>

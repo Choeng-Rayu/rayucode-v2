@@ -1,3 +1,4 @@
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import * as React from "react";
 import {
   queryOptions,
@@ -1226,8 +1227,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               }
             : prev,
       );
+      const formatted = formatDaemonVersionLabel(res.version ?? "2.4.0") || "v2.4.0";
       setStatusMessage(
-        `Daemon healthy (${res.latencyMs} ms RTT · v${res.version ?? "2.4.0"}).`,
+        `Daemon healthy (${res.latencyMs} ms RTT · ${formatted}).`,
       );
     },
   });

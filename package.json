@@ -9,12 +9,14 @@
   ],
   "scripts": {
     "build:sdk": "npm --workspace @rayu-dev/rayucode-sdk run build",
+    "build:session-core": "npm --workspace @rayu-dev/rayucode-session-core run build",
     "build:ui": "npm --workspace @rayu-dev/rayucode-ui run build",
-    "build:ts": "npm run build:sdk && npm run build:ui",
-    "typecheck:ts": "npm --workspace @rayu-dev/rayucode-sdk run typecheck && npm --workspace @rayu-dev/rayucode-ui run typecheck",
+    "build:ts": "npm run build:sdk && npm run build:session-core && npm run build:ui",
+    "typecheck:ts": "npm --workspace @rayu-dev/rayucode-sdk run typecheck && npm --workspace @rayu-dev/rayucode-session-core run typecheck && npm --workspace @rayu-dev/rayucode-ui run typecheck",
     "test:sdk": "npm --workspace @rayu-dev/rayucode-sdk run check",
+    "test:session-core": "npm --workspace @rayu-dev/rayucode-session-core run check",
     "test:ui": "npm --workspace @rayu-dev/rayucode-ui run check",
-    "check:ts": "npm run test:sdk && npm run test:ui",
+    "check:ts": "npm run test:sdk && npm run test:session-core && npm run test:ui",
     "build:vscode": "npm run build:ts && npm run build --workspace @rayu-dev/rayucode-vscode",
     "package:vscode": "npm run build:vscode && npm run package:vsix --workspace @rayu-dev/rayucode-vscode"
   },
