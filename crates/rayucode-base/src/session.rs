@@ -1497,6 +1497,23 @@ request in this new forked session, using the inherited conversation only as con
         stripped
     }
 
+    /// Adaptive HTTP 413 image stripper: strictly shrinks inline images even
+    /// when their combined size is already below `max_target_total_chars`
+    /// (e.g. a gateway with a lower body limit than `PAYLOAD_IMAGE_CHAR_BUDGET`).
+    pub fn strip_oversized_images_adaptively(&mut self, max_target_total_chars: usize) -> usize {
+        let mut contents: Vec<&mut Vec<ContentBlock>> =
+            self.messages.iter_mut().map(|m| &mut m.content).collect();
+        let stripped = rayucode_compaction_core::strip_large_images_adaptively_in_contents(
+            &mut contents,
+            max_target_total_chars,
+        );
+        if stripped > 0 {
+            self.mark_memory_profile_dirty();
+            self.mark_messages_full_dirty();
+        }
+        stripped
+    }
+
     pub fn visible_conversation_message_count(&self) -> usize {
         self.messages
             .iter()
