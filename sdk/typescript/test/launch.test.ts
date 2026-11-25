@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inheritCredentials, userRayuHome } from "../dist/index.js";
+import { inheritCredentials, userAppConfigDir, userRayuHome } from "../dist/index.js";
 
 test("platform runtime packages map to npm platform conventions", async () => {
   const { platformBinaryPackage } = await import("../dist/index.js");
@@ -114,6 +114,30 @@ test("rotating credentials are shared so token refresh stays coherent", () => {
   fs.rmSync(sandbox, { recursive: true, force: true });
 });
 
+test("rayu-auth.json is inherited as a shared symlink for rayu provider logins", () => {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-auth-inherit-test-"));
+  const from = path.join(sandbox, "user");
+  const to = path.join(sandbox, "instance");
+  fs.mkdirSync(from, { recursive: true });
+  fs.writeFileSync(path.join(from, "rayu-auth.json"), '{"access_token":"tok_v1"}');
+
+  try {
+    const inherited = inheritCredentials(from, to);
+    assert.ok(inherited.includes("rayu-auth.json"));
+    assert.ok(
+      fs.lstatSync(path.join(to, "rayu-auth.json")).isSymbolicLink(),
+      "rayu-auth.json must be symlinked so rotating rayu gateway tokens stay coherent",
+    );
+    fs.writeFileSync(path.join(from, "rayu-auth.json"), '{"access_token":"tok_v2"}');
+    assert.equal(
+      fs.readFileSync(path.join(to, "rayu-auth.json"), "utf8"),
+      '{"access_token":"tok_v2"}',
+    );
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+});
+
 test("credential inheritance refuses to use the user's home as the instance home", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-same-home-test-"));
   const auth = path.join(home, "auth.json");
@@ -131,16 +155,14 @@ test("login inheritance creates file links, never credential directory links", (
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-inherit-shape-test-"));
   const oldHome = process.env.HOME;
   const oldXdg = process.env.XDG_CONFIG_HOME;
+  const oldAppData = process.env.APPDATA;
   const home = path.join(sandbox, "home");
   const config = path.join(sandbox, "config");
   const from = path.join(home, ".rayu");
   const to = path.join(sandbox, "instance");
   fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
-  fs.mkdirSync(path.join(config, "rayucode"), { recursive: true });
   fs.mkdirSync(from, { recursive: true });
   fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "{}");
-  fs.writeFileSync(path.join(config, "rayucode", "n.env"), "TOKEN=test");
-  fs.writeFileSync(path.join(config, "rayucode", "usage.json"), "{}");
   const legacyTarget = path.join(sandbox, "legacy-linked-config");
   fs.mkdirSync(legacyTarget);
   fs.writeFileSync(path.join(legacyTarget, "precious"), "untouched");
@@ -150,6 +172,11 @@ test("login inheritance creates file links, never credential directory links", (
   try {
     process.env.HOME = home;
     process.env.XDG_CONFIG_HOME = config;
+    process.env.APPDATA = config;
+    const appConfig = userAppConfigDir();
+    fs.mkdirSync(appConfig, { recursive: true });
+    fs.writeFileSync(path.join(appConfig, "n.env"), "TOKEN=test");
+    fs.writeFileSync(path.join(appConfig, "usage.json"), "{}");
     const inherited = inheritCredentials(from, to);
 
     assert.ok(inherited.includes("config/rayucode/n.env"));
@@ -171,6 +198,8 @@ test("login inheritance creates file links, never credential directory links", (
     else process.env.HOME = oldHome;
     if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
     else process.env.XDG_CONFIG_HOME = oldXdg;
+    if (oldAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = oldAppData;
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
 });
