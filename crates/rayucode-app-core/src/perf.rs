@@ -202,12 +202,25 @@ pub fn tui_policy_for(
     profile: &SystemProfile,
     display: &crate::config::DisplayConfig,
 ) -> TuiPerfPolicy {
+    tui_policy_for_platform(profile, display, cfg!(windows))
+}
+
+fn tui_policy_for_platform(
+    profile: &SystemProfile,
+    display: &crate::config::DisplayConfig,
+    is_windows: bool,
+) -> TuiPerfPolicy {
     let mut redraw_fps = display.redraw_fps.clamp(1, 120);
     let mut animation_fps = display.animation_fps.clamp(1, 120);
     let mut enable_decorative_animations = !matches!(profile.tier, PerformanceTier::Minimal);
-    let mut enable_focus_change = true;
+    let mut enable_focus_change = !is_windows;
     let enable_mouse_capture = display.mouse_capture;
-    let mut enable_keyboard_enhancement = true;
+    // Crossterm's Windows event source reads Win32 INPUT_RECORDs and has no
+    // VT/CSI-u escape parser (`supports_keyboard_enhancement()` is always false
+    // on Windows). Enabling Kitty keyboard flags on Windows Terminal/ConPTY
+    // turns key releases and modified keys into raw `[99;1:3u` text in the
+    // composer. Win32 focus events are also delivered natively without VT 1004h.
+    let mut enable_keyboard_enhancement = !is_windows;
     let mut simplified_model_picker = false;
     let mut linked_side_panel_refresh_interval = std::time::Duration::from_millis(250);
 
@@ -847,6 +860,26 @@ mod tests {
         let policy = tui_policy_for(&profile, &display);
         assert_eq!(policy.redraw_fps, 60);
         assert_eq!(policy.animation_fps, 1);
+        assert!(!policy.enable_decorative_animations);
+    }
+
+    #[test]
+    fn test_tui_policy_disables_kitty_and_vt_focus_on_native_windows() {
+        let profile = SystemProfile {
+            load_avg_1m: None,
+            cpu_count: Some(8),
+            available_memory_mb: Some(8192),
+            total_memory_mb: Some(16384),
+            is_ssh: false,
+            is_wsl: false,
+            terminal: "windows-terminal".to_string(),
+            tier: PerformanceTier::Full,
+            fragile_glyph_cache: false,
+        };
+        let display = crate::config::DisplayConfig::default();
+        let policy = tui_policy_for_platform(&profile, &display, true);
+        assert!(!policy.enable_keyboard_enhancement);
+        assert!(!policy.enable_focus_change);
         assert!(!policy.enable_decorative_animations);
     }
 

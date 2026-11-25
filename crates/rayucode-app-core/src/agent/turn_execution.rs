@@ -497,6 +497,13 @@ impl Agent {
         self.stdin_request_tx = Some(tx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn stdin_request_tx_for_tests(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::tool::StdinInputRequest>> {
+        self.stdin_request_tx.clone()
+    }
+
     /// Prepare the static provider prefix while a client is idle. Unlike
     /// `tool_definitions`, this does not pin the tool snapshot or consume the
     /// one-shot late-MCP-discovery check before the first real turn.

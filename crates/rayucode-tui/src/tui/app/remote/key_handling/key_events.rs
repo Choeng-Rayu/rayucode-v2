@@ -35,7 +35,11 @@ pub(super) async fn handle_remote_key_internal(
         return Ok(());
     }
     // A local login picker preview must not capture native SSH /login.
-    if code == KeyCode::Enter && crate::tui::is_ssh_remote() {
+    // Never intercept Enter when the full-screen Activity Dashboard owns input.
+    if code == KeyCode::Enter
+        && crate::tui::is_ssh_remote()
+        && !(app.activity_dashboard.open && app.question_dialog.is_none())
+    {
         let input = app.input.clone();
         if app.handle_ssh_login_command(input.trim()) {
             app.input.clear();
@@ -72,6 +76,10 @@ pub(super) async fn handle_remote_key_internal(
     }
 
     if app.handle_file_review_overlay_key(code, modifiers)? {
+        return Ok(());
+    }
+
+    if app.handle_activity_dashboard_key(code, modifiers) {
         return Ok(());
     }
 
@@ -355,21 +363,11 @@ pub(super) async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    // Swarm views: Alt+N cycles chat → inline controls → full live page → chat.
-    // Selection/open/prompt controls stay available in both active views, while
-    // plain typing continues to flow to the chat input.
+    // Project Activity Dashboard: Alt+N toggles globally regardless of spawn mode or pin_todos.
     if app.toggle_keys.swarm_panel_focus.matches(code, modifiers) {
-        match app.cycle_swarm_panel_view() {
-            app_mod::tui_state::SwarmPanelView::Chat => {
-                app.set_status_notice("Swarm view closed");
-            }
-            app_mod::tui_state::SwarmPanelView::Controls => {
-                app.set_status_notice(crate::tui::keybind::swarm_view_hint("full page"));
-            }
-            app_mod::tui_state::SwarmPanelView::FullPage => {
-                app.set_status_notice(crate::tui::keybind::swarm_page_hint());
-            }
-        }
+        app.toggle_activity_dashboard(
+            rayucode_tui_render::activity_dashboard::ActivityTab::All,
+        );
         return Ok(());
     }
     {
@@ -438,6 +436,15 @@ pub(super) async fn handle_remote_key_internal(
         let alt_code = macos_option_shortcut.map(KeyCode::Char).unwrap_or(code);
         match alt_code {
             KeyCode::Char('b') => {
+                if app.has_session_return_target() {
+                    if crate::tui::is_ssh_remote() {
+                        let _ =
+                            super::super::ssh_sessions::handle_command(app, remote, "/back").await?;
+                    } else {
+                        app.trigger_session_return();
+                    }
+                    return Ok(());
+                }
                 // Cloud/reconnected clients can display a connection phase while
                 // the server is still executing a tool. The server is authoritative.
                 if app.is_processing || matches!(app.status, ProcessingStatus::RunningTool(_)) {

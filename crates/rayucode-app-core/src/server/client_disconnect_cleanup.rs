@@ -229,7 +229,10 @@ pub(super) async fn cleanup_client_connection(
     let successor_connected = connections
         .values()
         .any(|info| info.session_id == client_session_id);
+    let active_turn_owned_elsewhere = processing_task.is_none()
+        && crate::turn_cancel_registry::has_active_turn(client_session_id);
     if successor_connected
+        || active_turn_owned_elsewhere
         || (allow_reconnect
             && attachment_was_replaced(
                 swarm_members,
@@ -240,8 +243,13 @@ pub(super) async fn cleanup_client_connection(
             .await)
     {
         crate::logging::info(&format!(
-            "Skipping destructive disconnect cleanup for {} because another client is still attached",
-            client_session_id
+            "Skipping destructive disconnect cleanup for {} because {}",
+            client_session_id,
+            if active_turn_owned_elsewhere {
+                "an active turn is still running"
+            } else {
+                "another client is still attached"
+            }
         ));
         // The lifecycle, not the socket, owns completion bookkeeping. Return
         // its writer handle so it can retain and await the task using the same
@@ -419,6 +427,219 @@ pub(super) async fn cleanup_client_connection(
     drop(connections);
     event_handle.abort();
     Ok(None)
+}
+
+#[cfg(test)]
+static DETACHED_RETIRE_GRACE_OVERRIDE_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(u64::MAX);
+
+pub(super) fn detached_session_retire_grace() -> Duration {
+    #[cfg(test)]
+    {
+        let ms = DETACHED_RETIRE_GRACE_OVERRIDE_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if ms != u64::MAX {
+            return Duration::from_millis(ms);
+        }
+    }
+    IDLE_RECONNECT_GRACE
+}
+
+#[cfg(test)]
+pub(super) struct DetachedRetireGraceGuard {
+    previous: u64,
+}
+
+#[cfg(test)]
+impl DetachedRetireGraceGuard {
+    pub(super) fn set(grace: Duration) -> Self {
+        let previous = DETACHED_RETIRE_GRACE_OVERRIDE_MS.swap(
+            grace.as_millis().min(u64::MAX as u128 - 1) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for DetachedRetireGraceGuard {
+    fn drop(&mut self) {
+        DETACHED_RETIRE_GRACE_OVERRIDE_MS
+            .store(self.previous, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Retire a non-headless session whose turn was detached during a cross-session
+/// `ResumeSession` switch once the turn completes and no client reattaches
+/// within `grace`. Removing the `SwarmMember` drops its headless `drain_tx`
+/// channel so the drain task exits cleanly instead of leaking until daemon
+/// restart.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "retiring an unclaimed detached session cleans up sessions, swarms, files, channels, and control registries"
+)]
+pub(super) async fn retire_unclaimed_detached_session(
+    session_id: &str,
+    sessions: &SessionAgents,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
+    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
+    swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
+    file_touch: &FileTouchService,
+    channel_subscriptions: &ChannelSubscriptions,
+    channel_subscriptions_by_session: &ChannelSubscriptions,
+    client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
+    shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
+    soft_interrupt_queues: &SessionInterruptQueues,
+    event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
+    event_counter: &Arc<std::sync::atomic::AtomicU64>,
+    swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    grace: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        if client_connections
+            .read()
+            .await
+            .values()
+            .any(|info| info.session_id == session_id)
+            || crate::turn_cancel_registry::has_active_turn(session_id)
+            || swarm_members
+                .read()
+                .await
+                .get(session_id)
+                .is_some_and(|member| member.is_headless)
+            || !sessions.read().await.contains_key(session_id)
+        {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        tokio::time::sleep_until(std::cmp::min(deadline, now + Duration::from_millis(25))).await;
+    }
+
+    // Hold `client_connections` write lock across retirement so a concurrent
+    // `ResumeSession` cannot claim this session mid-eviction (same lock order
+    // `client_connections` -> `sessions` as `cleanup_client_connection`).
+    let connections = client_connections.write().await;
+    if connections
+        .values()
+        .any(|info| info.session_id == session_id)
+        || crate::turn_cancel_registry::has_active_turn(session_id)
+        || swarm_members
+            .read()
+            .await
+            .get(session_id)
+            .is_some_and(|member| member.is_headless)
+    {
+        return false;
+    }
+
+    let mut retired = false;
+    if let Some(agent_arc) = super::remove_session_entry(sessions, session_id).await {
+        retired = true;
+        crate::session_env::remove_session_env(session_id);
+        match tokio::time::timeout(Duration::from_secs(2), agent_arc.lock()).await {
+            Ok(mut agent) => {
+                if let Some(mut concurrency) = agent.take_concurrency_session() {
+                    tokio::task::spawn_blocking(move || concurrency.finish());
+                }
+                agent.mark_closed();
+                let memory_enabled = agent.memory_enabled();
+                let transcript = if memory_enabled {
+                    Some(agent.build_transcript_for_extraction())
+                } else {
+                    None
+                };
+                let working_dir = agent.working_dir().map(|dir| dir.to_string());
+                drop(agent);
+                crate::runtime_memory_log::emit_event(
+                    crate::runtime_memory_log::RuntimeMemoryLogEvent::new(
+                        "session_closed",
+                        "detached_session_retired",
+                    )
+                    .with_session_id(session_id.to_string())
+                    .force_attribution(),
+                );
+                if let Some(transcript) = transcript {
+                    crate::memory_agent::trigger_final_extraction_with_dir(
+                        transcript,
+                        session_id.to_string(),
+                        working_dir,
+                    );
+                }
+            }
+            Err(_) => {
+                crate::logging::warn(&format!(
+                    "Detached session {} retirement timed out waiting for agent lock",
+                    session_id
+                ));
+            }
+        }
+    }
+
+    update_member_status(
+        session_id,
+        "stopped",
+        Some("detached session retired".to_string()),
+        swarm_members,
+        swarms_by_id,
+        Some(event_history),
+        Some(event_counter),
+        Some(swarm_event_tx),
+    )
+    .await;
+
+    let (swarm_id, removed_name) = {
+        let mut members = swarm_members.write().await;
+        if let Some(member) = members.remove(session_id) {
+            retired = true;
+            (member.swarm_id, member.friendly_name)
+        } else {
+            (None, None)
+        }
+    };
+    crate::session_metrics::forget(session_id);
+    super::live_status::forget(session_id);
+    crate::session_effort::forget_session_effort(session_id);
+
+    if let Some(ref swarm_id) = swarm_id {
+        record_swarm_event(
+            event_history,
+            event_counter,
+            swarm_event_tx,
+            session_id.to_string(),
+            removed_name,
+            Some(swarm_id.clone()),
+            SwarmEventType::MemberChange {
+                action: "left".to_string(),
+            },
+        )
+        .await;
+        remove_session_from_swarm(
+            session_id,
+            swarm_id,
+            swarm_members,
+            swarms_by_id,
+            swarm_coordinators,
+            swarm_plans,
+        )
+        .await;
+    }
+    remove_session_channel_subscriptions(
+        session_id,
+        channel_subscriptions,
+        channel_subscriptions_by_session,
+    )
+    .await;
+    file_touch.clear_session(session_id).await;
+    shutdown_signals.write().await.remove(session_id);
+    remove_background_tool_signal(session_id);
+    remove_session_interrupt_queue(soft_interrupt_queues, session_id).await;
+
+    drop(connections);
+    retired
 }
 
 #[cfg(test)]

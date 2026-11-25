@@ -28,6 +28,11 @@ fn member(id: &str, status: &str, role: Option<&str>, body: &[&str]) -> GalleryM
         context_tokens: None,
         context_limit: None,
         output_tokens: None,
+        live_status: None,
+        stalled_secs: None,
+        files_touched: Vec::new(),
+        pending_attention: None,
+        swarm_label: None,
     }
 }
 

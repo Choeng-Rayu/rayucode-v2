@@ -367,7 +367,7 @@ pub(super) fn handle_run_subagent(
         };
 
         let ctx = crate::tool::ToolContext {
-            session_id,
+            session_id: session_id.clone(),
             message_id,
             tool_call_id: tool_call_id.clone(),
             working_dir,
@@ -375,6 +375,14 @@ pub(super) fn handle_run_subagent(
             graceful_shutdown_signal: None,
             execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
+
+        let subagent_guard = super::subagent_registry::register(
+            tool_call_id.clone(),
+            session_id,
+            "subagent",
+            description,
+            subagent_type,
+        );
 
         let started = Instant::now();
         let tool_name_for_exec = tool_name.clone();
@@ -393,6 +401,7 @@ pub(super) fn handle_run_subagent(
 
         match result {
             Ok(output) => {
+                subagent_guard.finish("completed");
                 let output_text = output.output.clone();
                 let _ = tx.send(ServerEvent::ToolDone {
                     tool_duration_ms: Some(duration_ms),
@@ -416,6 +425,7 @@ pub(super) fn handle_run_subagent(
                 let _ = tx.send(ServerEvent::Done { id });
             }
             Err(error) => {
+                subagent_guard.finish("failed");
                 let error_msg = format!("Error: {}", error);
                 let _ = tx.send(ServerEvent::ToolDone {
                     tool_duration_ms: Some(duration_ms),

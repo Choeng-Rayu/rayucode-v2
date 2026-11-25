@@ -364,6 +364,7 @@ pub(super) fn wrapped_input_line_count(
         caret_color,
         prompt_len,
         &|number| app.input_image_attached(number),
+        &|number| app.input_pasted_attached(number),
         voice_ghost(preview.as_ref()),
     );
     lines.len().max(1)
@@ -1014,7 +1015,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         );
         return;
     }
-    if let Some(stats) = app.turn_footer() {
+    let build_progress = crate::build::read_build_progress();
+    if build_progress.is_none()
+        && let Some(stats) = app.turn_footer()
+    {
         let line = turn_footer_line(app, stats, area.width as usize, pending_count);
         frame.render_widget(Paragraph::new(line), area);
         return;
@@ -1043,7 +1047,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         String::new()
     };
 
-    let line = if let Some(build_progress) = crate::build::read_build_progress() {
+    let has_build_progress = build_progress.is_some();
+    let line = if let Some(build_progress) = build_progress {
         let spinner = super::activity_indicator(elapsed, 12.5);
         Line::from(vec![
             Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
@@ -1309,9 +1314,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         line,
         app.background_task_rows(),
         area.width as usize,
-        app.is_processing(),
+        app.is_processing() || has_build_progress,
     );
-    let line = if line.width() == 0 && !app.is_processing() {
+    let line = if line.width() == 0 && !app.is_processing() && !has_build_progress {
         Line::styled("Rayu ready enjoy your coding bro", Style::default().fg(dim_color()))
     } else {
         line
@@ -1771,7 +1776,14 @@ pub(super) fn draw_overscroll_status(
             facts_area.width -= hint_width + 2;
         }
     }
-    let (spans, _) = overscroll_fit_facts(&facts, usize::from(facts_area.width));
+    let activity_summary = app.project_activity_summary();
+    let has_return_session = app.has_session_return_target();
+    let spans = overscroll_fit_facts_with_activity(
+        &facts,
+        &activity_summary,
+        has_return_session,
+        usize::from(facts_area.width),
+    );
     let alignment = if centered {
         Alignment::Center
     } else {
@@ -1779,6 +1791,126 @@ pub(super) fn draw_overscroll_status(
     };
     let line = Line::from(spans).alignment(alignment);
     frame.render_widget(Paragraph::new(line), facts_area);
+}
+
+/// Combine session facts with the minimal project activity footer badge within
+/// `max_width` display cells without wrapping.
+///
+/// When there is no active project activity and no return-session target, the
+/// badge is empty and this delegates identically to [`overscroll_fit_facts`].
+/// When activity or attention (`⚠N`) is present, session facts compact down
+/// their ladder first so the badge—and especially `⚠N`—remains visible even on
+/// narrow terminals.
+fn overscroll_fit_facts_with_activity(
+    facts: &OverscrollFacts,
+    summary: &crate::protocol::ProjectActivitySummary,
+    has_return_session: bool,
+    max_width: usize,
+) -> Vec<Span<'static>> {
+    use rayucode_tui_render::agent_activity::{
+        render_activity_footer_badge, render_activity_footer_badge_tiers,
+    };
+    use unicode_width::UnicodeWidthStr;
+
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let badge_tiers = render_activity_footer_badge_tiers(summary, has_return_session, max_width);
+    if badge_tiers.is_empty() {
+        return overscroll_fit_facts(facts, max_width).0;
+    }
+
+    let span_width = |spans: &[Span<'static>]| -> usize {
+        spans.iter().map(|s| s.content.width()).sum()
+    };
+    let sep = || Span::styled(" │ ", Style::default().fg(rgb(90, 90, 105)));
+    const SEP_W: usize = 3;
+
+    let render_facts_at = |levels: OverscrollLevels| {
+        let mut out: Vec<Span<'static>> = Vec::new();
+        for group in overscroll_fact_spans(facts, levels) {
+            if !out.is_empty() {
+                out.push(Span::raw(" "));
+            }
+            out.extend(group);
+        }
+        out
+    };
+    let combined_width = |fact_spans: &[Span<'static>], badge_w: usize| -> usize {
+        let fw = span_width(fact_spans);
+        if fw == 0 {
+            badge_w
+        } else {
+            fw + SEP_W + badge_w
+        }
+    };
+    let join_facts_and_badge =
+        |mut fact_spans: Vec<Span<'static>>, badge: Vec<Span<'static>>| -> Vec<Span<'static>> {
+            if fact_spans.is_empty() {
+                return badge;
+            }
+            if badge.is_empty() {
+                return fact_spans;
+            }
+            fact_spans.push(sep());
+            fact_spans.extend(badge);
+            fact_spans
+        };
+
+    // Precompute the session-fact compaction ladder (index 0 = full facts).
+    let mut fact_steps: Vec<Vec<Span<'static>>> = Vec::with_capacity(OVERSCROLL_LADDER.len() + 1);
+    let mut levels = OverscrollLevels::default();
+    fact_steps.push(render_facts_at(levels));
+    for step in OVERSCROLL_LADDER {
+        step(&mut levels);
+        fact_steps.push(render_facts_at(levels));
+    }
+
+    // Never prepend an orphaned separator when no session facts are present.
+    if fact_steps[0].is_empty() {
+        return badge_tiers.into_iter().next().unwrap_or_default();
+    }
+
+    // Interleave badge tier compaction (Tier 1 -> Tier 2 -> Tier 3 -> Tier 4)
+    // with `OVERSCROLL_LADDER` so a wide Tier 1 badge never wipes out normal
+    // session facts (git, context %, model) before compacting itself.
+    let total_tiers = badge_tiers.len();
+    for (tier_idx, badge) in badge_tiers.iter().enumerate() {
+        let badge_w = span_width(badge);
+        let max_step = if tier_idx + 1 >= total_tiers {
+            OVERSCROLL_LADDER.len()
+        } else {
+            match tier_idx {
+                0 => 3.min(OVERSCROLL_LADDER.len()),
+                1 => 6.min(OVERSCROLL_LADDER.len()),
+                _ => OVERSCROLL_LADDER.len(),
+            }
+        };
+        for fact_spans in &fact_steps[..=max_step] {
+            if combined_width(fact_spans, badge_w) <= max_width {
+                return join_facts_and_badge(fact_spans.clone(), badge.clone());
+            }
+        }
+    }
+
+    // Narrow / ultra-narrow fallback: reserve badge budget first so `⚠N` and
+    // active counts stay visible instead of being pushed off by long facts.
+    let badge_cap = if max_width < 24 {
+        max_width
+    } else {
+        (max_width / 2).max(16).min(max_width)
+    };
+    let badge = render_activity_footer_badge(summary, has_return_session, badge_cap);
+    let badge_w = span_width(&badge);
+    if badge.is_empty() {
+        return overscroll_fit_facts(facts, max_width).0;
+    }
+    let left_budget = max_width.saturating_sub(badge_w + SEP_W);
+    if left_budget < 6 {
+        return badge;
+    }
+    let left = overscroll_fit_facts(facts, left_budget).0;
+    join_facts_and_badge(left, badge)
 }
 
 /// Render only the supplied session facts. Unlike the live adapter this never
@@ -2476,6 +2608,7 @@ pub(super) fn draw_input(
         caret_color,
         prompt_len,
         &|number| app.input_image_attached(number),
+        &|number| app.input_pasted_attached(number),
         voice_ghost(voice_preview.as_ref()),
     );
 
@@ -2959,8 +3092,45 @@ fn wrap_input_text_with_images<'a>(
         caret_color,
         prompt_len,
         attached,
+        &|_| false,
         None,
     )
+}
+
+/// Find character-index ranges of `[Pasted text #N +M lines]` / `[Pasted text #N +M chars]`
+/// tags in `input`, paired with whether slot `#N` currently has a stored payload.
+fn find_pasted_text_tag_ranges(
+    input: &str,
+    pasted_attached: &dyn Fn(usize) -> bool,
+) -> Vec<(std::ops::Range<usize>, bool)> {
+    const PREFIX: &str = "[Pasted text #";
+    input
+        .match_indices(PREFIX)
+        .filter_map(|(start, _)| {
+            let after_prefix = &input[start + PREFIX.len()..];
+            let id_digits = after_prefix.bytes().take_while(u8::is_ascii_digit).count();
+            if id_digits == 0 {
+                return None;
+            }
+            let after_id = &after_prefix[id_digits..];
+            let after_plus = after_id.strip_prefix(" +")?;
+            let count_digits = after_plus.bytes().take_while(u8::is_ascii_digit).count();
+            if count_digits == 0 {
+                return None;
+            }
+            let after_count = &after_plus[count_digits..];
+            let suffix_len = [" lines]", " line]", " chars]", " char]"]
+                .iter()
+                .find(|suffix| after_count.starts_with(**suffix))?
+                .len();
+            let total_ascii_chars = PREFIX.len() + id_digits + 2 + count_digits + suffix_len;
+            let char_start = input[..start].chars().count();
+            let present = after_prefix[..id_digits]
+                .parse::<usize>()
+                .is_ok_and(pasted_attached);
+            Some((char_start..char_start + total_ascii_chars, present))
+        })
+        .collect()
 }
 
 /// Like [`wrap_input_text_with_images`], with an optional live voice
@@ -2976,6 +3146,7 @@ fn wrap_input_text_with_ghost<'a>(
     caret_color: Color,
     prompt_len: usize,
     attached: &dyn Fn(usize) -> bool,
+    pasted_attached: &dyn Fn(usize) -> bool,
     ghost: Option<(&str, Style)>,
 ) -> (Vec<Line<'a>>, usize, usize) {
     let shell_bang = if prompt_char == SHELL_PROMPT_INDENT {
@@ -3010,6 +3181,7 @@ fn wrap_input_text_with_ghost<'a>(
             Some((char_start..char_start + 8 + digits, present))
         })
         .collect();
+    let pasted_ranges = find_pasted_text_tag_ranges(input, pasted_attached);
     let cursor_char_pos = crate::tui::core::byte_offset_to_char_index(input, cursor_pos);
     let wrapped_segments = wrap_input_segments(input, line_width);
     let mut lines: Vec<Line> = Vec::new();
@@ -3052,6 +3224,16 @@ fn wrap_input_text_with_ghost<'a>(
             {
                 let color = if *present {
                     rgb(102, 204, 221)
+                } else {
+                    rgb(255, 193, 7)
+                };
+                Style::default().fg(color).bold()
+            } else if let Some((_, present)) = pasted_ranges
+                .iter()
+                .find(|(range, _)| range.contains(&position))
+            {
+                let color = if *present {
+                    rgb(130, 190, 255)
                 } else {
                     rgb(255, 193, 7)
                 };

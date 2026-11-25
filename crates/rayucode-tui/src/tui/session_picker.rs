@@ -2429,7 +2429,7 @@ impl SessionPicker {
             false
         };
         let mouse_capture = perf_policy.enable_mouse_capture;
-        crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+        super::enable_bracketed_paste()?;
         if mouse_capture {
             crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
         }
@@ -2498,7 +2498,7 @@ impl SessionPicker {
             }
         };
 
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = super::disable_bracketed_paste();
         if mouse_capture {
             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         }

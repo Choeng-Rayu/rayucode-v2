@@ -1491,13 +1491,9 @@ fn handle_back_command(app: &mut App, trimmed: &str) -> bool {
         ));
         return true;
     }
-    if app.is_processing {
-        app.set_status_notice("Finish current work before going back");
-        return true;
-    }
-    let Some(target) = app.pop_catchup_return_target() else {
+    let Some(target) = app.pop_session_return_target() else {
         app.push_display_message(DisplayMessage::system(
-            "No previous Catch Up session is available.".to_string(),
+            "No previous session to return to.".to_string(),
         ));
         app.set_status_notice("Back: empty");
         return true;
@@ -1700,7 +1696,8 @@ pub(super) fn handle_git_status_completed(app: &mut App, completed: GitStatusCom
 }
 
 pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
-    if handle_subagent_model_command(app, trimmed)
+    if super::activity_dashboard::handle_activity_dashboard_command(app, trimmed)
+        || handle_subagent_model_command(app, trimmed)
         || app.handle_hotkeys_command(trimmed)
         || app.handle_terminal_setup_command(trimmed)
         || handle_subagent_command(app, trimmed)
@@ -1981,7 +1978,7 @@ pub(super) fn handle_session_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    if trimmed == "/swarm" || trimmed == "/swarm status" {
+    if trimmed == "/swarm status" {
         let default_enabled = crate::config::config().features.swarm;
         app.push_display_message(DisplayMessage::system(format!(
             "Swarm feature: {} (config default: {})",
@@ -3269,7 +3266,7 @@ fn run_interactive_editor_with(
 }
 
 fn suspend_terminal_for_editor() {
-    use crossterm::event::{DisableBracketedPaste, DisableFocusChange, DisableMouseCapture};
+    use crossterm::event::DisableMouseCapture;
 
     // The caller publishes the handoff only after this function returns, so a
     // termination signal firing between these restores and the publication
@@ -3277,18 +3274,15 @@ fn suspend_terminal_for_editor() {
     //
     // These commands are safe even when a mode was not enabled. Disable them
     // before leaving the alternate screen so the child receives normal input.
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        DisableBracketedPaste,
-        DisableFocusChange,
-        DisableMouseCapture
-    );
+    let _ = crate::tui::disable_bracketed_paste();
+    let _ = crate::tui::disable_focus_change();
+    let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     crate::tui::disable_keyboard_enhancement();
     rayucode_tui_style::restore_terminal_quietly();
 }
 
 fn resume_terminal_after_editor() {
-    use crossterm::event::{EnableBracketedPaste, EnableFocusChange, EnableMouseCapture};
+    use crossterm::event::EnableMouseCapture;
 
     // Defense in depth for the run_interactive_editor_with early return: a
     // termination signal already recorded that the process is exiting, so
@@ -3307,9 +3301,9 @@ fn resume_terminal_after_editor() {
         ));
     }
     let policy = crate::perf::tui_policy();
-    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = crate::tui::enable_bracketed_paste();
     if policy.enable_focus_change {
-        let _ = crossterm::execute!(std::io::stdout(), EnableFocusChange);
+        let _ = crate::tui::enable_focus_change();
     }
     if policy.enable_mouse_capture {
         let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);

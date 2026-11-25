@@ -758,12 +758,194 @@ fn swarm_broadcast_key(
     )
 }
 
+const SWARM_FILES_TOUCHED_CAP: usize = 12;
+
+static FILE_TOUCH_HOOK: std::sync::LazyLock<std::sync::RwLock<Option<super::FileTouchService>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(None));
+static SESSIONS_HOOK: std::sync::LazyLock<std::sync::RwLock<Option<super::SessionAgents>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(None));
+
+/// Register the active server's file-touch and session registries so swarm
+/// status broadcasts can enrich member runtimes without blocking or threading
+/// extra parameters through every broadcast call site.
+pub(super) fn register_runtime_hooks(
+    file_touch: super::FileTouchService,
+    sessions: super::SessionAgents,
+) {
+    if let Ok(mut guard) = FILE_TOUCH_HOOK.write() {
+        *guard = Some(file_touch);
+    }
+    if let Ok(mut guard) = SESSIONS_HOOK.write() {
+        *guard = Some(sessions);
+    }
+}
+
+#[derive(Default, Clone)]
+pub(super) struct NonBlockingSessionMeta {
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub context_limit: Option<u64>,
+}
+
+pub(super) fn try_session_meta(
+    sessions: Option<&super::SessionAgents>,
+    session_id: &str,
+) -> NonBlockingSessionMeta {
+    let Some(sessions) = sessions else {
+        return NonBlockingSessionMeta::default();
+    };
+    let Ok(agents) = sessions.try_read() else {
+        return NonBlockingSessionMeta::default();
+    };
+    let Some(agent) = agents.get(session_id) else {
+        return NonBlockingSessionMeta::default();
+    };
+    if let Ok(guard) = agent.try_lock() {
+        let model = guard.provider_model();
+        let provider = guard.provider_name();
+        let context_window = guard.provider_context_window() as u64;
+        return NonBlockingSessionMeta {
+            model: (!model.trim().is_empty()).then_some(model),
+            provider: (!provider.trim().is_empty()).then_some(provider),
+            context_limit: (context_window > 0).then_some(context_window),
+        };
+    }
+    NonBlockingSessionMeta::default()
+}
+
+pub(super) fn build_member_status(
+    m: &SwarmMember,
+    mut files_touched: Vec<String>,
+    meta: &NonBlockingSessionMeta,
+) -> crate::protocol::SwarmMemberStatus {
+    files_touched.truncate(SWARM_FILES_TOUCHED_CAP);
+    let tokens = crate::session_metrics::token_totals(&m.session_id);
+    let wait = crate::wait_registry::current(&m.session_id);
+    let live_status = super::live_status::snapshot(&m.session_id);
+    let stalled_secs = super::swarm_watchdog::stalled_for_secs(&m.session_id);
+    let pending_attention = super::attention_registry::effective_attention_for_member(
+        &m.session_id,
+        &m.status,
+        m.detail.as_deref(),
+        stalled_secs,
+    );
+    let model = m
+        .runtime
+        .model
+        .clone()
+        .or_else(|| meta.model.clone());
+    let provider = m
+        .runtime
+        .provider
+        .clone()
+        .or_else(|| meta.provider.clone());
+    let context_limit = meta
+        .context_limit
+        .or(m.runtime.context_limit)
+        .or_else(|| {
+            model
+                .as_deref()
+                .and_then(crate::provider::models::context_limit_for_model)
+                .map(|limit| limit as u64)
+        });
+    let swarm_label = m
+        .swarm_id
+        .as_deref()
+        .and_then(super::swarm_labels::swarm_label);
+    let context_tokens = tokens
+        .map(|(context, _)| context)
+        .filter(|t| *t > 0)
+        .or_else(|| {
+            live_status
+                .as_ref()
+                .and_then(|ls| ls.input_tokens)
+                .filter(|t| *t > 0)
+        });
+    let output_tokens = tokens
+        .map(|(_, output)| output)
+        .filter(|t| *t > 0)
+        .or_else(|| {
+            live_status
+                .as_ref()
+                .and_then(|ls| ls.output_tokens)
+                .filter(|t| *t > 0)
+        });
+
+    crate::protocol::SwarmMemberStatus {
+        session_id: m.session_id.clone(),
+        friendly_name: m.friendly_name.clone(),
+        status: m.status.clone(),
+        detail: m.detail.clone(),
+        task_label: m.task_label.clone(),
+        role: Some(m.role.clone()),
+        is_headless: Some(m.is_headless),
+        live_attachments: Some(m.event_txs.len()),
+        status_age_secs: Some(status_age_secs(m.last_status_change)),
+        output_tail: m.output_tail.clone(),
+        report_back_to_session_id: m.report_back_to_session_id.clone(),
+        todo_progress: m.todo_progress,
+        todo_items: m.todo_items.clone(),
+        runtime: crate::protocol::SwarmMemberRuntime {
+            live_status,
+            wait_reason: wait.as_ref().map(|(reason, _)| reason.clone()).or_else(|| {
+                (!matches!(m.status.as_str(), "running" | "streaming" | "thinking"))
+                    .then(|| m.runtime.todo_blocked_reason.clone())
+                    .flatten()
+            }),
+            wait_age_secs: wait.map(|(_, age)| age),
+            todo_blocked_reason: m.runtime.todo_blocked_reason.clone(),
+            todo_statuses: m.runtime.todo_statuses.clone(),
+            model,
+            provider,
+            auth_method: m.runtime.auth_method.clone(),
+            effort: m.runtime.effort.clone(),
+            elapsed_secs: if matches!(m.status.as_str(), "running" | "streaming" | "thinking") {
+                Some(m.joined_at.elapsed().as_secs())
+            } else {
+                Some(m.runtime.elapsed_secs.unwrap_or(0))
+            },
+            activity_age_secs: crate::session_metrics::last_activity_age_secs(&m.session_id),
+            context_tokens,
+            context_limit,
+            output_tokens,
+            stalled_secs,
+            files_touched,
+            pending_attention,
+            swarm_id: m.swarm_id.clone(),
+            swarm_label,
+        },
+    }
+}
+
 async fn broadcast_swarm_status_now(
     session_ids: Vec<String>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
 ) {
     if session_ids.is_empty() {
         return;
+    }
+
+    // Snapshot file touches and non-blocking session metadata before locking
+    // `swarm_members` so we never hold the member map lock across `.await`.
+    let file_touch = FILE_TOUCH_HOOK
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone());
+    let sessions = SESSIONS_HOOK.read().ok().and_then(|guard| guard.clone());
+    let mut files_by_session: HashMap<String, Vec<String>> = HashMap::new();
+    let mut meta_by_session: HashMap<String, NonBlockingSessionMeta> = HashMap::new();
+    for sid in &session_ids {
+        if let Some(ft) = file_touch.as_ref() {
+            let mut files = ft.sorted_file_strings_for_session(sid).await;
+            files.truncate(SWARM_FILES_TOUCHED_CAP);
+            if !files.is_empty() {
+                files_by_session.insert(sid.clone(), files);
+            }
+        }
+        let meta = try_session_meta(sessions.as_ref(), sid);
+        if meta.model.is_some() || meta.provider.is_some() || meta.context_limit.is_some() {
+            meta_by_session.insert(sid.clone(), meta);
+        }
     }
 
     // Resolve recipients and publish under one guard. Besides avoiding a lock
@@ -787,6 +969,7 @@ async fn broadcast_swarm_status_now(
         return;
     }
     let broadcast_terminal_retention = swarm_status_broadcast_terminal_retention();
+    let empty_meta = NonBlockingSessionMeta::default();
     let members_list: Vec<crate::protocol::SwarmMemberStatus> = session_ids
         .iter()
         .filter_map(|sid| {
@@ -794,67 +977,10 @@ async fn broadcast_swarm_status_now(
                 .get(sid)
                 .filter(|m| member_in_status_broadcast(m, broadcast_terminal_retention))
                 .map(|m| {
-                    let tokens = crate::session_metrics::token_totals(&m.session_id);
-                    let wait = crate::wait_registry::current(&m.session_id);
-                    let context_limit = m
-                        .runtime
-                        .model
-                        .as_deref()
-                        .and_then(crate::provider::models::context_limit_for_model)
-                        .map(|limit| limit as u64);
-                    (m, tokens, context_limit, wait)
+                    let files = files_by_session.remove(sid).unwrap_or_default();
+                    let meta = meta_by_session.get(sid).unwrap_or(&empty_meta);
+                    build_member_status(m, files, meta)
                 })
-                .map(
-                    |(m, tokens, context_limit, wait)| crate::protocol::SwarmMemberStatus {
-                        session_id: m.session_id.clone(),
-                        friendly_name: m.friendly_name.clone(),
-                        status: m.status.clone(),
-                        detail: m.detail.clone(),
-                        task_label: m.task_label.clone(),
-                        role: Some(m.role.clone()),
-                        is_headless: Some(m.is_headless),
-                        live_attachments: Some(m.event_txs.len()),
-                        status_age_secs: Some(status_age_secs(m.last_status_change)),
-                        output_tail: m.output_tail.clone(),
-                        report_back_to_session_id: m.report_back_to_session_id.clone(),
-                        todo_progress: m.todo_progress,
-                        todo_items: m.todo_items.clone(),
-                        runtime: crate::protocol::SwarmMemberRuntime {
-                            live_status: super::live_status::snapshot(&m.session_id),
-                            wait_reason: wait.as_ref().map(|(reason, _)| reason.clone()).or_else(
-                                || {
-                                    (!matches!(
-                                        m.status.as_str(),
-                                        "running" | "streaming" | "thinking"
-                                    ))
-                                    .then(|| m.runtime.todo_blocked_reason.clone())
-                                    .flatten()
-                                },
-                            ),
-                            wait_age_secs: wait.map(|(_, age)| age),
-                            todo_blocked_reason: m.runtime.todo_blocked_reason.clone(),
-                            todo_statuses: m.runtime.todo_statuses.clone(),
-                            model: m.runtime.model.clone(),
-                            provider: m.runtime.provider.clone(),
-                            auth_method: m.runtime.auth_method.clone(),
-                            effort: m.runtime.effort.clone(),
-                            elapsed_secs: if matches!(
-                                m.status.as_str(),
-                                "running" | "streaming" | "thinking"
-                            ) {
-                                Some(m.joined_at.elapsed().as_secs())
-                            } else {
-                                Some(m.runtime.elapsed_secs.unwrap_or(0))
-                            },
-                            activity_age_secs: crate::session_metrics::last_activity_age_secs(
-                                &m.session_id,
-                            ),
-                            context_tokens: tokens.map(|(context, _)| context).filter(|t| *t > 0),
-                            context_limit,
-                            output_tokens: tokens.map(|(_, output)| output).filter(|t| *t > 0),
-                        },
-                    },
-                )
         })
         .collect();
 
@@ -874,6 +1000,7 @@ pub(super) async fn monitor_wait_status(
 ) {
     let mut changes = crate::wait_registry::subscribe_changes();
     let mut live_changes = super::live_status::subscribe_changes();
+    let mut attention_changes = super::attention_registry::subscribe_changes();
     // Transitions are pushed by the watch channels above. The tick only ages
     // displayed wait/elapsed counters, and each tick fans a full swarm status
     // out to every attached client, so keep it coarse to let clients sleep.
@@ -884,6 +1011,7 @@ pub(super) async fn monitor_wait_status(
         tokio::select! {
             result = changes.changed() => if result.is_err() { return; },
             result = live_changes.changed() => if result.is_err() { return; },
+            result = attention_changes.changed() => if result.is_err() { return; },
             _ = interval.tick() => {},
         }
         let current: HashSet<_> = crate::wait_registry::session_ids().into_iter().collect();

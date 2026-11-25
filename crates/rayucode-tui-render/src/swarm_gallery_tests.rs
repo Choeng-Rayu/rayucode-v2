@@ -19,6 +19,11 @@ fn member(id: &str, status: &str, role: Option<&str>, body: &[&str]) -> GalleryM
         context_tokens: None,
         context_limit: None,
         output_tokens: None,
+        live_status: None,
+        stalled_secs: None,
+        files_touched: Vec::new(),
+        pending_attention: None,
+        swarm_label: None,
     }
 }
 
@@ -1090,6 +1095,79 @@ fn compact_is_width_and_height_bounded_at_all_sizes() {
                     let w = text.as_str().width();
                     assert!(w <= width, "w={width} overflow ({w}): {text:?}");
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn live_card_and_hovered_detail_delegate_live_activity_formatting() {
+    use rayucode_protocol::{AgentAttention, AgentAttentionKind, SwarmLiveStatus};
+
+    let mut worker = member("worker-auth", "running", None, &["older line"]);
+    worker.swarm_label = Some("auth-swarm".into());
+    worker.live_status = Some(SwarmLiveStatus {
+        phase: "tool".into(),
+        tool_name: Some("edit".into()),
+        tool_intent: Some("ui_input.rs".into()),
+        ..Default::default()
+    });
+    worker.files_touched = vec!["src/auth.rs".into(), "src/token.rs".into()];
+
+    let live_tool = render_swarm_live_card(&worker, 0, 90, 8)
+        .iter()
+        .map(plain_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        live_tool.contains("auth-swarm"),
+        "swarm_label missing in header: {live_tool}"
+    );
+    assert!(
+        live_tool.contains("edit ui_input.rs"),
+        "live tool+intent missing: {live_tool}"
+    );
+    assert!(
+        live_tool.contains("files: src/auth.rs · src/token.rs"),
+        "files_touched missing: {live_tool}"
+    );
+
+    // Pending attention takes precedence over live tool activity.
+    worker.pending_attention = Some(AgentAttention {
+        kind: AgentAttentionKind::Permission,
+        summary: "bash `cargo test`".into(),
+        request_id: Some("p1".into()),
+        since_epoch_ms: None,
+    });
+    let live_attn = render_swarm_live_card(&worker, 0, 90, 8)
+        .iter()
+        .map(plain_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        live_attn.contains("⚠ perm: bash `cargo test`"),
+        "pending attention missing: {live_attn}"
+    );
+    assert!(
+        !live_attn.contains("edit ui_input.rs"),
+        "attention should override lower-priority tool activity: {live_attn}"
+    );
+}
+
+#[test]
+fn plan_progress_bar_handles_tiny_widths_without_panicking() {
+    for width in [0usize, 1, 2, 3, 4] {
+        for (done, running, total) in [(1, 1, 2), (2, 1, 3), (0, 1, 2), (1, 0, 2), (0, 0, 0)] {
+            let line = plan_progress_bar(done, running, total, width);
+            assert!(
+                line.width() <= width,
+                "width={width} done={done} running={running} total={total}: got width {}",
+                line.width()
+            );
+            if width == 0 {
+                assert_eq!(line.width(), 0);
+            } else {
+                assert_eq!(line.width(), width);
             }
         }
     }

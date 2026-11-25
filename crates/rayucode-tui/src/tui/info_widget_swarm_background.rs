@@ -375,22 +375,33 @@ fn dock_is_finished(status: &str) -> bool {
     dock_status_rank(status) == 3
 }
 
-fn dock_is_attention(status: &str) -> bool {
-    dock_status_rank(status) == 0
+fn dock_is_attention(member: &SwarmMemberStatus) -> bool {
+    dock_status_rank(&member.status) == 0
+        || member.runtime.pending_attention.is_some()
+        || member.runtime.stalled_secs.is_some_and(|secs| secs > 0)
 }
 
-/// The dock owns lifecycle health and alerts. Task titles and ordinary live
-/// activity belong to the todo lanes, so do not echo them here.
+/// Format live activity for the swarm dock by delegating to the shared
+/// `agent_activity::format_agent_live_activity` formatter whenever live tool,
+/// phase, stall, or pending-attention telemetry is present, while preserving
+/// compact lifecycle health (timed waits, DM labels, quiet alerts) when no
+/// live telemetry is attached.
 fn dock_activity(member: &SwarmMemberStatus) -> String {
+    let has_live_telemetry = member.runtime.pending_attention.is_some()
+        || member.runtime.stalled_secs.is_some_and(|secs| secs > 0)
+        || member.runtime.live_status.is_some();
+    if has_live_telemetry {
+        return rayucode_tui_render::agent_activity::format_agent_live_activity(member).summary;
+    }
     if let Some(note) = super::swarm_gallery::member_wait_note(member) {
         return note;
     }
     let detail = member.detail.as_deref().unwrap_or_default().trim();
-    let is_message = detail.starts_with("DM from ") || detail.starts_with("Cross-swarm DM from ");
-    if !dock_is_attention(&member.status) && !is_message {
-        if rayucode_tui_render::swarm_gallery::is_active_status(&member.status)
-            && let Some(age) = member.runtime.activity_age_secs.filter(|age| *age >= 120)
-        {
+    if detail.starts_with("DM from ") || detail.starts_with("Cross-swarm DM from ") {
+        return detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    if rayucode_tui_render::swarm_gallery::is_active_status(&member.status) {
+        if let Some(age) = member.runtime.activity_age_secs.filter(|age| *age >= 120) {
             return format!(
                 "quiet {}",
                 rayucode_tui_render::swarm_gallery::humanize_age(age)
@@ -398,31 +409,7 @@ fn dock_activity(member: &SwarmMemberStatus) -> String {
         }
         return member.status.replace('_', " ");
     }
-    let nonempty = |s: &Option<String>| {
-        s.as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let tail = member
-        .output_tail
-        .as_deref()
-        .and_then(|t| t.lines().rev().map(str::trim).find(|l| !l.is_empty()))
-        .map(str::to_string);
-    let detail = nonempty(&member.detail);
-    let task = nonempty(&member.task_label);
-    let picked = if dock_is_finished(&member.status) {
-        task.or(detail)
-    } else if dock_is_attention(&member.status) {
-        detail.or(task).or(tail)
-    } else {
-        detail.or(tail).or(task)
-    };
-    picked
-        .unwrap_or_else(|| member.status.clone())
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    rayucode_tui_render::agent_activity::format_agent_live_activity(member).summary
 }
 
 /// Swarm dock with agent lifecycle status, activity, and status age.
@@ -453,7 +440,7 @@ fn render_swarm_dock(info: &SwarmInfo, inner: Rect) -> Framed {
         .count();
     let attention = members
         .iter()
-        .filter(|m| dock_is_attention(&m.status))
+        .filter(|m| dock_is_attention(m))
         .count();
     let finished = members
         .iter()
@@ -523,7 +510,7 @@ fn render_swarm_dock(info: &SwarmInfo, inner: Rect) -> Framed {
         } else {
             String::new()
         };
-        let activity_color = if dock_is_attention(&member.status) {
+        let activity_color = if dock_is_attention(member) {
             rgb(255, 170, 110)
         } else if finished {
             rgb(110, 110, 120)
@@ -740,5 +727,26 @@ mod substantive_footer_tests {
         let rendered = render_background_widget(&data, Rect::new(0, 0, 40, 1));
         assert_eq!(rendered.lines.len(), 1);
         assert_eq!(rendered.footer.unwrap().to_string(), "this session");
+    }
+
+    #[test]
+    fn dock_activity_delegates_to_live_status_tool_and_intent() {
+        let mut worker = member("alpha", "running");
+        worker.runtime.live_status = Some(crate::protocol::SwarmLiveStatus {
+            phase: "running_tool".into(),
+            tool_name: Some("edit".into()),
+            tool_intent: Some("ui_input.rs".into()),
+            ..Default::default()
+        });
+        assert_eq!(dock_activity(&worker), "edit ui_input.rs");
+
+        worker.runtime.pending_attention = Some(crate::protocol::AgentAttention {
+            kind: crate::protocol::AgentAttentionKind::Permission,
+            summary: "bash cargo test".into(),
+            request_id: Some("perm_1".into()),
+            since_epoch_ms: None,
+        });
+        assert!(dock_is_attention(&worker));
+        assert!(dock_activity(&worker).contains("⚠ perm"));
     }
 }

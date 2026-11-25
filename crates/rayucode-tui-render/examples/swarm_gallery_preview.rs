@@ -144,6 +144,11 @@ fn main() {
         context_tokens: None,
         context_limit: None,
         output_tokens: None,
+        live_status: None,
+        stalled_secs: None,
+        files_touched: Vec::new(),
+        pending_attention: None,
+        swarm_label: None,
     };
     let panel_members = vec![
         gm(

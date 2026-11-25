@@ -1163,4 +1163,30 @@ pub enum ServerEvent {
         /// Tool call ID this is associated with
         tool_call_id: String,
     },
+
+    /// Lightweight project-wide activity badge counts pushed during normal chat.
+    #[serde(rename = "project_activity_summary")]
+    ProjectActivitySummary(ProjectActivitySummary),
+
+    /// Full project-wide activity snapshot for the Project Activity Dashboard.
+    #[serde(rename = "project_activity_snapshot")]
+    ProjectActivitySnapshot {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<u64>,
+        snapshot: ProjectActivitySnapshot,
+    },
+
+    /// Live peek update for the currently inspected session, background task, or runner.
+    #[serde(rename = "session_peek")]
+    SessionPeek { payload: SessionPeekPayload },
+
+    /// Result of a `cancel_background_task` request.
+    #[serde(rename = "background_task_cancelled")]
+    BackgroundTaskCancelled {
+        id: u64,
+        task_id: String,
+        cancelled: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }

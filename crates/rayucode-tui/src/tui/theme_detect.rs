@@ -166,7 +166,13 @@ pub(super) fn auto_theme_enabled() -> bool {
 
 pub(super) fn runtime_queries_enabled() -> bool {
     use std::io::IsTerminal;
-    auto_theme_enabled()
+    // On Windows, crossterm reads Win32 INPUT_RECORDs and drops synthetic
+    // ESC (0x1b) bytes from ConPTY VT replies instead of emitting Alt+]/Esc,
+    // so runtime OSC 11 replies bypass `ColorReports` and leak into the draft.
+    // Startup theme detection before raw mode uses terminal-colorsaurus's own
+    // Win32 reader and remains unaffected.
+    !cfg!(windows)
+        && auto_theme_enabled()
         && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && terminal_background_query_supported(

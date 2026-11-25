@@ -70,7 +70,12 @@ impl Tool for DesktopSelfDevTool {
             "reload-bridge" => {
                 let launch = super::bridge_reload::desktop_bridge_launch(&root)?;
                 return Ok(
-                    super::bridge_reload::spawn_bridge_reload(&ctx.session_id, launch).await,
+                    super::bridge_reload::spawn_bridge_reload(
+                        &ctx.session_id,
+                        Some(root.as_path()),
+                        launch,
+                    )
+                    .await,
                 );
             }
             "status" | "reload" | "build-reload" | "inspect" | "build" => (),

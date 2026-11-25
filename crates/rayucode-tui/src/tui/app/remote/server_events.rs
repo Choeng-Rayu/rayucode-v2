@@ -208,6 +208,34 @@ pub(in crate::tui::app) fn handle_server_event(
         app.handle_remote_file_change_error(message);
         return true;
     }
+    if let ServerEvent::Done { id } = &event
+        && app.activity_dashboard.pending_control_ids.remove(id)
+    {
+        if let Some(notice) = app
+            .activity_dashboard
+            .pending_control_done_notices
+            .remove(id)
+        {
+            app.activity_dashboard.status_banner = Some(notice.clone());
+            app.set_status_notice(notice);
+        }
+        return true;
+    }
+    if let ServerEvent::Done { id } = &event
+        && app.activity_dashboard.consume_retired_control_done_id(*id)
+    {
+        return false;
+    }
+    if let ServerEvent::Error { id, message, .. } = &event
+        && app.activity_dashboard.pending_control_ids.remove(id)
+    {
+        app.activity_dashboard
+            .pending_control_done_notices
+            .remove(id);
+        app.activity_dashboard.status_banner = Some(message.clone());
+        app.set_status_notice(message.clone());
+        return true;
+    }
     let (event, identity) = match event {
         ServerEvent::TurnState {
             session_id,
@@ -392,6 +420,9 @@ fn handle_server_event_inner(
             | ServerEvent::AvailableModelsUpdated { .. }
             | ServerEvent::MemoryActivity { .. }
             | ServerEvent::McpStatus { .. }
+            | ServerEvent::ProjectActivitySummary(_)
+            | ServerEvent::ProjectActivitySnapshot { .. }
+            | ServerEvent::SessionPeek { .. }
     ) {
         let reason = match &event {
             ServerEvent::History { .. } => "server_history",
@@ -2063,6 +2094,7 @@ fn handle_server_event_inner(
                 app.swarm_plan_items.clear();
                 app.swarm_plan_version = None;
                 app.swarm_plan_swarm_id = None;
+                app.reset_activity_dashboard_for_session_change();
                 app.clear_file_changes_state();
                 remote.reset_call_output_tokens_seen();
             }
@@ -3633,6 +3665,45 @@ fn handle_server_event_inner(
             {
                 app.request_file_change_diff(selected_path);
             }
+            true
+        }
+        ServerEvent::ProjectActivitySummary(summary) => {
+            app.activity_dashboard.apply_summary(summary)
+        }
+        ServerEvent::ProjectActivitySnapshot { snapshot, .. } => {
+            app.activity_dashboard.apply_snapshot(snapshot);
+            app.sync_activity_dashboard_after_snapshot();
+            true
+        }
+        ServerEvent::SessionPeek { payload } => app.activity_dashboard.apply_peek(payload),
+        ServerEvent::BackgroundTaskCancelled {
+            id,
+            task_id,
+            cancelled,
+            message,
+        } => {
+            app.activity_dashboard.pending_control_ids.remove(&id);
+            let notice = message.unwrap_or_else(|| {
+                if cancelled {
+                    format!("Cancelled task {task_id}")
+                } else {
+                    format!("Task {task_id} could not be cancelled")
+                }
+            });
+            app.activity_dashboard.status_banner = Some(notice.clone());
+            app.set_status_notice(notice);
+            true
+        }
+        ServerEvent::CommTaskControlResponse {
+            id,
+            action,
+            task_id,
+            status,
+            ..
+        } if app.activity_dashboard.pending_control_ids.remove(&id) => {
+            let notice = format!("Task {task_id} {action}: {status}");
+            app.activity_dashboard.status_banner = Some(notice.clone());
+            app.set_status_notice(notice);
             true
         }
         _ => false,

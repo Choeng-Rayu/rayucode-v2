@@ -37,9 +37,11 @@ impl std::fmt::Debug for ProviderOAuthEmail {
 
 mod comm_format;
 mod notifications;
+mod project_activity;
 
 pub use comm_format::*;
 pub use notifications::{FeatureToggle, NotificationType};
+pub use project_activity::*;
 pub use rayucode_session_types::{
     FileChangeActionKind, FileChangeActionResponse, FileChangeConflict, FileChangeDiffPayload,
     FileChangeEntrySummary, FileChangeHunk, FileChangeKind, FileChangeStatus, FileChangesSnapshot,
@@ -717,7 +719,7 @@ impl PlanGraphStatus {
 }
 
 /// Swarm member status for lifecycle updates
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwarmMemberStatus {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -811,10 +813,25 @@ pub struct SwarmMemberRuntime {
     /// Cumulative output tokens produced by the worker.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    /// Seconds stalled, when flagged by the stalled-worker watchdog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stalled_secs: Option<u64>,
+    /// Recent files touched by this member (capped and sorted by producer).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_touched: Vec<String>,
+    /// Highest-priority actionable attention item waiting on this member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_attention: Option<AgentAttention>,
+    /// Identifier of the swarm this member belongs to, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_id: Option<String>,
+    /// Human-readable label of the swarm this member belongs to, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_label: Option<String>,
 }
 
 impl SwarmMemberRuntime {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.live_status.is_none()
             && self.wait_reason.is_none()
             && self.todo_blocked_reason.is_none()
@@ -829,6 +846,18 @@ impl SwarmMemberRuntime {
             && self.context_tokens.is_none()
             && self.context_limit.is_none()
             && self.output_tokens.is_none()
+            && self.stalled_secs.is_none()
+            && self.files_touched.is_empty()
+            && self.pending_attention.is_none()
+            && self.swarm_id.is_none()
+            && self.swarm_label.is_none()
+    }
+
+    /// Output streaming speed in tokens per second derived from `live_status.output_tps_milli`.
+    pub fn tokens_per_sec(&self) -> Option<f32> {
+        self.live_status
+            .as_ref()
+            .and_then(SwarmLiveStatus::tokens_per_sec)
     }
 }
 
@@ -851,6 +880,16 @@ pub struct SwarmLiveStatus {
     pub tool_intent: Option<String>,
     pub stop_reason: Option<String>,
     pub stream_message_ended: bool,
+    /// Completed / total subcalls for an active `batch` tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_progress: Option<(u32, u32)>,
+}
+
+impl SwarmLiveStatus {
+    /// Output streaming speed in tokens per second converted from `output_tps_milli`.
+    pub fn tokens_per_sec(&self) -> Option<f32> {
+        self.output_tps_milli.map(|milli| milli as f32 / 1000.0)
+    }
 }
 
 /// One compact todo entry crossing the swarm status boundary. Only the
@@ -1002,6 +1041,10 @@ impl Request {
             Request::CommSubscribeChannel { id, .. } => *id,
             Request::CommUnsubscribeChannel { id, .. } => *id,
             Request::CommAwaitMembers { id, .. } => *id,
+            Request::GetProjectActivity { id, .. }
+            | Request::SubscribeProjectActivity { id, .. }
+            | Request::PeekSession { id, .. }
+            | Request::CancelBackgroundTask { id, .. } => *id,
         }
     }
 
@@ -1049,6 +1092,10 @@ impl Request {
                 | Request::CommSubscribeChannel { .. }
                 | Request::CommUnsubscribeChannel { .. }
                 | Request::CommAwaitMembers { .. }
+                | Request::GetProjectActivity { .. }
+                | Request::SubscribeProjectActivity { .. }
+                | Request::PeekSession { .. }
+                | Request::CancelBackgroundTask { .. }
         )
     }
 }

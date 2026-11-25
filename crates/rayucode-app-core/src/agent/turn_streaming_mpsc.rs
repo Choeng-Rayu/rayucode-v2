@@ -1914,6 +1914,11 @@ impl Agent {
                             background_handle.expect("tool handed off from the foreground"),
                         )
                         .await;
+                    if let Some(dir) = self.working_dir() {
+                        let _ = crate::background::global()
+                            .set_working_dir(&bg_info.task_id, dir.to_string())
+                            .await;
+                    }
 
                     let reason = if automatic_background {
                         tool_handoff::automatic_handoff_reason(foreground_budget)

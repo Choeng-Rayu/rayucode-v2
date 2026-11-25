@@ -120,6 +120,11 @@ pub(crate) fn members_to_gallery(members: &[SwarmMemberStatus]) -> Vec<GalleryMe
             context_tokens: member.runtime.context_tokens,
             context_limit: member.runtime.context_limit,
             output_tokens: member.runtime.output_tokens,
+            live_status: member.runtime.live_status.clone(),
+            stalled_secs: member.runtime.stalled_secs,
+            files_touched: member.runtime.files_touched.clone(),
+            pending_attention: member.runtime.pending_attention.clone(),
+            swarm_label: member.runtime.swarm_label.clone(),
             todo_items: member
                 .todo_items
                 .iter()
@@ -797,6 +802,46 @@ mod tests {
     #[test]
     fn empty_members_render_nothing() {
         assert!(render_swarm_gallery_lines(&[], 80, 12).is_empty());
+    }
+
+    #[test]
+    fn members_to_gallery_threads_live_status_and_metadata() {
+        let mut worker = member("fox", "running", None, Some("worker"));
+        worker.runtime.live_status = Some(crate::protocol::SwarmLiveStatus {
+            phase: "running_tool".into(),
+            tool_name: Some("grep".into()),
+            tool_intent: Some("oauth pkce".into()),
+            batch_progress: Some((2, 4)),
+            ..Default::default()
+        });
+        worker.runtime.stalled_secs = Some(95);
+        worker.runtime.files_touched = vec!["src/auth.rs".into()];
+        worker.runtime.pending_attention = Some(crate::protocol::AgentAttention {
+            kind: crate::protocol::AgentAttentionKind::Question,
+            summary: "Confirm redirect URI".into(),
+            request_id: Some("q1".into()),
+            since_epoch_ms: None,
+        });
+        worker.runtime.swarm_label = Some("swarm #2".into());
+
+        let gallery = members_to_gallery(&[worker]);
+        assert_eq!(gallery.len(), 1);
+        let g = &gallery[0];
+        assert_eq!(
+            g.live_status.as_ref().and_then(|ls| ls.tool_name.as_deref()),
+            Some("grep")
+        );
+        assert_eq!(
+            g.live_status.as_ref().and_then(|ls| ls.tool_intent.as_deref()),
+            Some("oauth pkce")
+        );
+        assert_eq!(g.stalled_secs, Some(95));
+        assert_eq!(g.files_touched, vec!["src/auth.rs".to_string()]);
+        assert_eq!(g.swarm_label.as_deref(), Some("swarm #2"));
+        assert_eq!(
+            g.pending_attention.as_ref().map(|a| a.summary.as_str()),
+            Some("Confirm redirect URI")
+        );
     }
 
     #[test]

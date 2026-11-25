@@ -54,6 +54,7 @@ async fn execute_with_background_budget(
     }
     let auto_background = auto_background_allowed(&name, &input);
     let session_id = ctx.session_id.clone();
+    let working_dir = ctx.working_dir.clone();
     let tool_name = name.clone();
     let display_name = handoff_display_name(&input);
     let mut work = crate::runtime_activity::spawn_session(&session_id, async move {
@@ -67,6 +68,11 @@ async fn execute_with_background_budget(
             let info = crate::background::global()
                 .adopt_with_options(&name, display_name, &session_id, true, false, work)
                 .await;
+            if let Some(dir) = working_dir.as_ref() {
+                let _ = crate::background::global()
+                    .set_working_dir(&info.task_id, dir.display().to_string())
+                    .await;
+            }
             Ok(crate::tool::ToolOutput::new(format!(
                 "Tool '{}' was moved to background {} (task_id: {}).\n\n{}",
                 name, automatic_handoff_reason(budget), info.task_id, crate::tool::BACKGROUND_WAIT_GUIDANCE

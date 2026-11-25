@@ -14,6 +14,7 @@ use super::App;
 /// display preferences intentionally stay on the client, never on the VM.
 pub(super) fn ssh_presentation_command(input: &str) -> bool {
     super::transcript_inspection::is_transcript_view_command(input)
+        || input.trim() == "/swarm"
         || matches!(
             input.split_whitespace().next().unwrap_or(""),
             "/cancel"
@@ -23,6 +24,8 @@ pub(super) fn ssh_presentation_command(input: &str) -> bool {
                 | "/commands"
                 | "/todos"
                 | "/todo"
+                | "/activity"
+                | "/bg"
                 | "/diff"
                 | "/keys"
                 | "/keybindings"
@@ -81,7 +84,8 @@ pub(super) fn handle_ssh_presentation_command(app: &mut App, input: &str) -> boo
     ) {
         return super::tui_lifecycle_runtime::handle_dev_command(app, input);
     }
-    super::commands::handle_observe_command(app, input)
+    super::activity_dashboard::handle_activity_dashboard_command(app, input)
+        || super::commands::handle_observe_command(app, input)
         || super::split_view::handle_split_view_command(app, input)
         || super::commands::handle_dictation_command(app, input)
         || app.handle_terminal_setup_command(input)
@@ -534,6 +538,9 @@ mod tests {
             "/record cancel",
             "/feedback test",
             "/support",
+            "/activity",
+            "/bg",
+            "/swarm",
         ] {
             assert!(super::ssh_presentation_command(command), "{command}");
             assert!(!super::ssh_unsupported_command(command), "{command}");
@@ -542,7 +549,16 @@ mod tests {
                 command.split_whitespace().next().unwrap()
             )));
         }
-        for command in ["/config edit", "/account", "/model", "/compact", "/git"] {
+        for command in [
+            "/config edit",
+            "/account",
+            "/model",
+            "/compact",
+            "/git",
+            "/swarm on",
+            "/swarm off",
+            "/swarm status",
+        ] {
             assert!(!super::ssh_presentation_command(command), "{command}");
         }
     }

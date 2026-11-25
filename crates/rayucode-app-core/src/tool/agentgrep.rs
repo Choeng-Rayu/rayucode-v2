@@ -317,24 +317,44 @@ impl Tool for AgentGrepTool {
         // grep/glob/ls tools offload their work.
         let path_arg = effective_scope_path(&params).map(str::to_string);
         let working_dir = ctx.working_dir.clone();
+        let bg_working_dir = ctx.working_dir.clone();
         let work_handle = spawn_cancellable_search_with_scope(path_arg, working_dir, move || {
             run_agentgrep_blocking(&params, &ctx)
         });
-        await_or_background_search(
+        await_or_background_search_with_working_dir(
             work_handle,
             AGENTGREP_FOREGROUND_BUDGET,
             display_name,
             session_id,
+            bg_working_dir,
         )
         .await
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn await_or_background_search(
     work_handle: tokio::task::JoinHandle<Result<ToolOutput>>,
     foreground_budget: Duration,
     display_name: String,
     session_id: String,
+) -> Result<ToolOutput> {
+    await_or_background_search_with_working_dir(
+        work_handle,
+        foreground_budget,
+        display_name,
+        session_id,
+        None,
+    )
+    .await
+}
+
+async fn await_or_background_search_with_working_dir(
+    work_handle: tokio::task::JoinHandle<Result<ToolOutput>>,
+    foreground_budget: Duration,
+    display_name: String,
+    session_id: String,
+    working_dir: Option<PathBuf>,
 ) -> Result<ToolOutput> {
     let mut owner = SearchTaskOwner(Some(work_handle));
     let work_handle = owner
@@ -361,6 +381,11 @@ async fn await_or_background_search(
                         .ok_or_else(|| anyhow::anyhow!("agentgrep task owner is missing"))?,
                 )
                 .await;
+            if let Some(dir) = working_dir.as_ref() {
+                let _ = crate::background::global()
+                    .set_working_dir(&info.task_id, dir.display().to_string())
+                    .await;
+            }
             Ok(ToolOutput::new(format!(
                 "Search is still running after 5s and is continuing in background.\n\n\
                      Task ID: {}\n\
