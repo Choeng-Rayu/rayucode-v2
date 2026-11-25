@@ -22,6 +22,13 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ErrorState } from "@/components/ui/error-state"
 import { TelegramSkeleton } from "@/components/ui/page-skeletons"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -29,6 +36,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useSessions } from "@/features/sessions"
 import { useAppStore } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
 
@@ -285,14 +293,17 @@ export function TelegramView({ className }: TelegramViewProps) {
 
   const { isDisconnected, setIsDisconnected, disconnect, reconnect, ping } =
     useTelegramBridgeActions()
+  const sessionsQuery = useSessions()
 
   const activeSessionId = useAppStore((s) => s.activeSessionId)
 
   const [selectedTab, setSelectedTab] =
     React.useState<TelegramConnectionMode | null>(null)
   const [hostedError, setHostedError] = React.useState<string | null>(null)
+  const [byoError, setByoError] = React.useState<string | null>(null)
   const [botToken, setBotToken] = React.useState("")
   const [allowedChatId, setAllowedChatId] = React.useState("")
+  const [replaceExistingByo, setReplaceExistingByo] = React.useState(false)
   const [showToken, setShowToken] = React.useState(false)
   const [formErrors, setFormErrors] = React.useState<{
     botToken?: string
@@ -411,12 +422,20 @@ export function TelegramView({ className }: TelegramViewProps) {
     toast.success(`Reconnected ${data.connectedBotHandle}`)
   }
 
-  const handleByoSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const handleByoSubmit = async (
+    event?: React.FormEvent<HTMLFormElement>,
+    forceReplace?: boolean
+  ) => {
+    event?.preventDefault()
+    setByoError(null)
 
+    const shouldReplace = Boolean(
+      forceReplace ?? (replaceExistingByo || Boolean(data?.configured))
+    )
     const parsed = connectBotTokenInputSchema.safeParse({
       botToken,
       allowedChatId,
+      replaceExisting: shouldReplace,
     })
 
     if (!parsed.success) {
@@ -435,7 +454,13 @@ export function TelegramView({ className }: TelegramViewProps) {
     }
 
     setFormErrors({})
-    const result = await connectBotMutation.mutateAsync(parsed.data)
+    const result = await connectBotMutation.mutateAsync({
+      botToken: parsed.data.botToken,
+      ...(parsed.data.allowedChatId
+        ? { allowedChatId: parsed.data.allowedChatId }
+        : {}),
+      ...(shouldReplace ? { replaceExisting: true } : {}),
+    })
     if (!result.ok) {
       if (result.fieldErrors) {
         setFormErrors({
@@ -443,17 +468,27 @@ export function TelegramView({ className }: TelegramViewProps) {
           allowedChatId: result.fieldErrors.allowedChatId?.[0],
         })
       }
+      setByoError(result.error)
       toast.error(result.error)
       return
     }
 
     setBotToken("")
     setAllowedChatId("")
+    setByoError(null)
     setIsDisconnected(false)
-    setSelectedTab(result.data.linked === false ? "hosted" : "connected")
-    toast.success(
-      `Verified and connected ${result.data.connectedBotHandle} (Chat ID ${result.data.chatId})`
-    )
+    if (result.data.linked === false) {
+      setNowSec(Math.floor(Date.now() / 1000))
+      setSelectedTab("byo")
+      toast.success(
+        `Verified ${result.data.connectedBotHandle}. Scan the QR or open Telegram and tap Start.`
+      )
+    } else {
+      setSelectedTab("connected")
+      toast.success(
+        `Verified and connected ${result.data.connectedBotHandle} (Chat ID ${result.data.chatId})`
+      )
+    }
   }
 
   const handleResolveApproval = async (
@@ -775,12 +810,55 @@ export function TelegramView({ className }: TelegramViewProps) {
                       here.
                     </div>
                   </div>
-                  <span
-                    data-testid="tg-driving-session"
-                    className="font-mono text-xs text-body tabular-nums"
-                  >
-                    {data.drivingSession}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span
+                      data-testid="tg-driving-session"
+                      className="font-mono text-xs text-body tabular-nums"
+                    >
+                      {data.drivingSession}
+                    </span>
+                    {isListening &&
+                    (sessionsQuery.data?.length ?? 0) > 0 ? (
+                      <Select
+                        value={
+                          sessionsQuery.data?.some(
+                            (s) => s.id === data.drivingSession
+                          )
+                            ? data.drivingSession
+                            : undefined
+                        }
+                        disabled={selectSessionMutation.isPending}
+                        onValueChange={(nextId) => {
+                          void selectSessionMutation
+                            .mutateAsync(nextId)
+                            .then((res) => {
+                              if (!res.ok) {
+                                toast.error(res.error)
+                              } else {
+                                toast.success(
+                                  `Attached ${nextId} to Telegram bridge`
+                                )
+                              }
+                            })
+                        }}
+                      >
+                        <SelectTrigger
+                          aria-label="Choose Telegram driving session"
+                          data-testid="tg-session-picker"
+                          className="h-7 w-[200px] text-xs"
+                        >
+                          <SelectValue placeholder="Switch session..." />
+                        </SelectTrigger>
+                        <SelectContent align="end">
+                          {(sessionsQuery.data ?? []).map((sess) => (
+                            <SelectItem key={sess.id} value={sess.id}>
+                              {sess.title || sess.id}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-[13px]">
@@ -1032,9 +1110,86 @@ export function TelegramView({ className }: TelegramViewProps) {
                   <code className="rounded bg-inset px-1.5 py-0.5 font-mono text-[11.5px] text-body">
                     123456789:AAF...
                   </code>
-                  ) and your allowed chat ID below. Supports inline generated
-                  images and MP4 delivery.
+                  ). Enter your numeric chat ID for instant linking, or leave it
+                  blank to pair with a single-use QR &amp; Start link. Supports
+                  inline generated images and MP4 delivery.
                 </p>
+
+                {byoError ? (
+                  <div
+                    data-testid="tg-byo-error"
+                    role="alert"
+                    className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-premium bg-danger-soft px-3 py-2 text-xs text-danger"
+                  >
+                    <span>{byoError}</span>
+                    {/already configured|disconnect|replace/i.test(byoError) ? (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        disabled={connectBotMutation.isPending}
+                        onClick={() => {
+                          void handleByoSubmit(undefined, true)
+                        }}
+                      >
+                        Replace existing link
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {data.bridgeMode === "botfather" && !isLinked && hasActiveQr ? (
+                  <div
+                    data-testid="tg-byo-pending-qr"
+                    className="mt-4 grid grid-cols-1 items-center gap-5 rounded-[12px] border border-brand/30 bg-inset p-4 md:grid-cols-[184px_minmax(0,1fr)]"
+                  >
+                    <PairingQrMatrix
+                      qrSize={data.qrSize}
+                      qrPath={data.qrPath}
+                      isGenerating={connectBotMutation.isPending}
+                      isExpired={isQrExpired}
+                    />
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-ink">
+                        Complete pairing with {data.connectedBotHandle}
+                      </div>
+                      <p className="mt-1 text-xs text-muted-ink">
+                        Scan this QR code or open the link below in Telegram and
+                        tap Start. Valid for {remainingMinutes} minute
+                        {remainingMinutes === 1 ? "" : "s"}.
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {data.pairingLink ? (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            onClick={() => {
+                              void openExternalTelegramUrl(data.pairingLink)
+                            }}
+                          >
+                            <ExternalLink className="size-3.5" aria-hidden="true" />
+                            Open in Telegram
+                          </Button>
+                        ) : null}
+                        <Button
+                          type="button"
+                          variant="default"
+                          size="sm"
+                          onClick={() => {
+                            void copyTextWithFeedback(
+                              data.pairingCommand,
+                              `Copied ${data.pairingCommand}`
+                            )
+                          }}
+                        >
+                          <Copy className="size-3.5" aria-hidden="true" />
+                          Copy /start command
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 <form
                   onSubmit={(event) => {
@@ -1101,8 +1256,8 @@ export function TelegramView({ className }: TelegramViewProps) {
                       </span>
                     ) : (
                       <span className="text-xs text-muted-ink">
-                        Checked with Telegram before saving. Never read back
-                        into view state or transcript.
+                        Checked live via Telegram getMe before saving. Never
+                        read back into view state or transcript.
                       </span>
                     )}
                   </div>
@@ -1112,7 +1267,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                       htmlFor="tg-byo-chat-id"
                       className="text-xs font-medium text-body"
                     >
-                      Allowed Telegram chat ID
+                      Allowed Telegram chat ID (optional)
                     </label>
                     <input
                       id="tg-byo-chat-id"
@@ -1130,7 +1285,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                           }))
                         }
                       }}
-                      placeholder="e.g. 842910443"
+                      placeholder="Leave blank to pair via QR, or enter e.g. 842910443"
                       aria-invalid={Boolean(formErrors.allowedChatId)}
                       className={cn(
                         "w-full rounded-[10px] border bg-inset px-3 py-2 font-mono text-xs text-ink outline-none placeholder:text-faint focus:border-brand",
@@ -1147,8 +1302,25 @@ export function TelegramView({ className }: TelegramViewProps) {
                       >
                         {formErrors.allowedChatId}
                       </span>
-                    ) : null}
+                    ) : (
+                      <span className="text-xs text-muted-ink">
+                        Leave blank to generate a 10-minute QR code and /start
+                        link automatically.
+                      </span>
+                    )}
                   </div>
+
+                  {data.configured ? (
+                    <label className="flex cursor-pointer items-center gap-2 text-xs text-body">
+                      <input
+                        type="checkbox"
+                        checked={replaceExistingByo}
+                        onChange={(e) => setReplaceExistingByo(e.target.checked)}
+                        className="size-3.5 accent-current"
+                      />
+                      <span>Replace existing Telegram link on this host</span>
+                    </label>
+                  ) : null}
 
                   <div className="flex items-center gap-2 pt-1">
                     <Button
@@ -1159,8 +1331,10 @@ export function TelegramView({ className }: TelegramViewProps) {
                       data-testid="tg-byo-submit-btn"
                     >
                       {connectBotMutation.isPending
-                        ? "Connecting..."
-                        : "Save & Connect Bot"}
+                        ? "Verifying..."
+                        : allowedChatId.trim()
+                          ? "Save & Connect Bot"
+                          : "Verify & Generate QR"}
                     </Button>
                   </div>
                 </form>

@@ -39,6 +39,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { PRIMARY_NAV_ITEMS, type PrimaryNavItem } from "@/config/navigation"
+import { agentsQueryOptions } from "@/features/agents"
 import { automationsQueryOptions } from "@/features/automations"
 import { changesStateQueryOptions } from "@/features/changes"
 import { pluginsQueryOptions } from "@/features/plugins"
@@ -80,6 +81,25 @@ function NavGlyph({ icon }: { icon: PrimaryNavItem["icon"] }) {
           <circle cx="5.5" cy="17.5" r="2.5" />
           <circle cx="18.5" cy="17.5" r="2.5" />
           <path d="M10.5 7.7 6.8 15.2M13.5 7.7l3.7 7.5M8 17.5h8" />
+        </svg>
+      )
+    case "agents":
+      return (
+        <svg
+          className="size-[17px]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.65"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="4.5" y="7" width="15" height="11.5" rx="3" />
+          <path d="M12 3.5V7" />
+          <circle cx="9.5" cy="12.5" r="1.1" fill="currentColor" stroke="none" />
+          <circle cx="14.5" cy="12.5" r="1.1" fill="currentColor" stroke="none" />
+          <path d="M9.5 15.5h5" />
         </svg>
       )
     case "clock":
@@ -363,6 +383,11 @@ export function IconRail() {
           break
         case "swarm":
           void queryClient.prefetchQuery(swarmStateQueryOptions())
+          break
+        case "agents":
+          void queryClient.prefetchQuery(
+            agentsQueryOptions(useAppStore.getState().activeSessionId)
+          )
           break
         case "automations":
           void queryClient.prefetchQuery(automationsQueryOptions())

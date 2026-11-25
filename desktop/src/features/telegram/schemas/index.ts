@@ -3,7 +3,7 @@ import { z } from "zod"
 import type { TelegramCommandItem } from "../types"
 
 export const BOT_TOKEN_PATTERN = /^\d{6,12}:[A-Za-z0-9_-]{20,}$/
-export const CHAT_ID_PATTERN = /^-?\d{5,20}$/
+export const CHAT_ID_PATTERN = /^\d{5,20}$/
 
 export const telegramConnectionModeSchema = z.enum([
   "connected",
@@ -68,11 +68,13 @@ export const connectBotTokenInputSchema = z.object({
   allowedChatId: z
     .string()
     .trim()
-    .min(1, "Enter an allowed Telegram chat ID")
-    .regex(
-      CHAT_ID_PATTERN,
-      "Allowed chat ID must be a numeric Telegram ID (e.g. 842910443)"
+    .optional()
+    .default("")
+    .refine(
+      (val) => val.length === 0 || CHAT_ID_PATTERN.test(val),
+      "Allowed chat ID must be a positive numeric Telegram ID (e.g. 842910443)"
     ),
+  replaceExisting: z.boolean().optional(),
 })
 
 export type ValidatedConnectBotTokenInput = z.infer<
@@ -81,31 +83,43 @@ export type ValidatedConnectBotTokenInput = z.infer<
 
 export const SUPPLEMENTAL_TELEGRAM_COMMANDS: readonly TelegramCommandItem[] = [
   {
+    command: "/sessions",
+    description: "Pick which local RayuCode session to drive",
+  },
+  {
+    command: "/switch",
+    description: "Switch directly to another local RayuCode session",
+  },
+  {
     command: "/status",
-    description: "Inspect active session, model route, and bridge latency",
+    description: "Inspect active session, model route, and turn state",
   },
   {
-    command: "/approve",
-    description: "Approve the latest pending tool or plan request",
+    command: "/model",
+    description: "Choose a configured model for the selected session",
   },
   {
-    command: "/deny",
-    description: "Deny the latest pending tool or plan request",
+    command: "/provider",
+    description: "Browse configured providers on this host",
   },
   {
-    command: "/swarm",
-    description: "List active swarm workers and message board updates",
+    command: "/connect",
+    description: "Show local host sign-in instructions for a provider",
   },
   {
-    command: "/diff",
-    description: "Summarize uncommitted workspace file changes",
+    command: "/interrupt",
+    description: "Cancel the currently running Telegram turn",
   },
   {
-    command: "/cancel",
-    description: "Cancel the currently streaming agent turn",
+    command: "/answer",
+    description: "Reply to a pending interactive question from the agent",
   },
   {
-    command: "/uninstall-remote",
-    description: "Teardown remote bridge (guarded by Safety toggle)",
+    command: "/stop",
+    description: "Disconnect Telegram remote control from this host",
+  },
+  {
+    command: "/uninstall",
+    description: "Remove managed CLI (guarded by Safety toggle + code)",
   },
 ] as const

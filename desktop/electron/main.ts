@@ -84,6 +84,11 @@ import {
   TelegramSelectSessionSchema,
   TelegramSetRemoteUninstallSchema,
   TelegramStartHostedSchema,
+  AgentsDeleteProfileSchema,
+  AgentsGetStateSchema,
+  AgentsSetRoleModelSchema,
+  AgentsSetSubagentModelSchema,
+  AgentsUpsertProfileSchema,
   TerminalPtyCreatePayloadSchema,
   TerminalPtyKillPayloadSchema,
   TerminalPtyResizePayloadSchema,
@@ -132,6 +137,7 @@ import {
   writeSidebarState,
   writeWindowBounds,
 } from "./storage-bridge.js"
+import { RayuAgentsManager } from "./agents-bridge.js"
 import { runTerminalCommand, TerminalPtyManager } from "./terminal-bridge.js"
 import { RayuTelegramManager } from "./telegram-bridge.js"
 import {
@@ -161,6 +167,10 @@ app.setName("RayuCode")
 let activeWorkspaceDir =
   process.env.RAYU_WORKSPACE_DIR ?? path.resolve(__dirname, "..", "..")
 const telegramManager = new RayuTelegramManager(
+  daemonClient,
+  () => activeWorkspaceDir
+)
+const agentsManager = new RayuAgentsManager(
   daemonClient,
   () => activeWorkspaceDir
 )
@@ -1036,6 +1046,44 @@ function registerIpcHandlers(): void {
   ipcMain.handle("rayu:telegram:ping", async () => {
     return telegramManager.sendTestPing()
   })
+
+  // Real Subagent Models & Agent Personas (backed by Rust daemon `agents` + `subagent_model`)
+  ipcMain.handle("rayu:agents:state", async (_event, rawPayload: unknown) => {
+    const parsed = AgentsGetStateSchema.parse(rawPayload ?? undefined)
+    return agentsManager.getState(parsed?.sessionId)
+  })
+
+  ipcMain.handle(
+    "rayu:agents:set-role-model",
+    async (_event, rawPayload: unknown) => {
+      const parsed = AgentsSetRoleModelSchema.parse(rawPayload)
+      return agentsManager.setRoleModel(parsed)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:agents:set-subagent-model",
+    async (_event, rawPayload: unknown) => {
+      const parsed = AgentsSetSubagentModelSchema.parse(rawPayload)
+      return agentsManager.setSubagentModel(parsed)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:agents:upsert-profile",
+    async (_event, rawPayload: unknown) => {
+      const parsed = AgentsUpsertProfileSchema.parse(rawPayload)
+      return agentsManager.upsertProfile(parsed)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:agents:delete-profile",
+    async (_event, rawPayload: unknown) => {
+      const parsed = AgentsDeleteProfileSchema.parse(rawPayload)
+      return agentsManager.deleteProfile(parsed)
+    }
+  )
 
   // Push events -> Renderer
   daemonClient.on("status", (status) => {

@@ -1308,6 +1308,32 @@ export function SettingsView({
                 <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-ink">
+                      Subagent models &amp; agent personas
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-ink">
+                      Assign models for Swarm, Review, Judge, Memory, and
+                      Ambient workers or design reusable{" "}
+                      <code className="rounded bg-inset px-1 py-0.5 font-mono text-[11px] text-body">
+                        [[agents.profiles]]
+                      </code>{" "}
+                      personas
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    data-testid="settings-open-agents-studio-btn"
+                    onClick={() => setActiveRoute("agents")}
+                  >
+                    Open Agents &amp; Personas
+                    <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                  </Button>
+                </div>
+
+                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">
                       Prompt KV cache TTL
                     </div>
                     <div className="mt-0.5 text-xs text-muted-ink">

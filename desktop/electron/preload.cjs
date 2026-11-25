@@ -303,6 +303,18 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:telegram:select-session", { sessionId }),
     sendTestPing: () => ipcRenderer.invoke("rayu:telegram:ping"),
   },
+  agents: {
+    getState: (sessionId) =>
+      ipcRenderer.invoke("rayu:agents:state", sessionId ? { sessionId } : {}),
+    setRoleModel: (input) =>
+      ipcRenderer.invoke("rayu:agents:set-role-model", input),
+    setSubagentModel: (input) =>
+      ipcRenderer.invoke("rayu:agents:set-subagent-model", input),
+    upsertProfile: (input) =>
+      ipcRenderer.invoke("rayu:agents:upsert-profile", input),
+    deleteProfile: (input) =>
+      ipcRenderer.invoke("rayu:agents:delete-profile", input),
+  },
 }
 
 contextBridge.exposeInMainWorld("rayu", rayuApi)

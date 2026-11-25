@@ -4,6 +4,7 @@ import { defineConfig, type Plugin } from "vite"
 import react from "@vitejs/plugin-react"
 import tailwindcss from "@tailwindcss/vite"
 
+import { RayuAgentsManager } from "./electron/agents-bridge"
 import {
   RayuAuthManager,
   type CloudChatMessage,
@@ -11,6 +12,10 @@ import {
 } from "./electron/auth-bridge"
 import { RayuDaemonClient } from "./electron/daemon-client"
 import {
+  AgentsDeleteProfileSchema,
+  AgentsSetRoleModelSchema,
+  AgentsSetSubagentModelSchema,
+  AgentsUpsertProfileSchema,
   TelegramConnectBotTokenSchema,
   TelegramDisconnectSchema,
   TelegramResolveApprovalSchema,
@@ -57,6 +62,10 @@ function rayuDevAuthPlugin(): Plugin {
       const daemonClient = new RayuDaemonClient()
       const workspaceDir = path.resolve(import.meta.dirname, "..")
       const telegramManager = new RayuTelegramManager(
+        daemonClient,
+        () => workspaceDir
+      )
+      const agentsManager = new RayuAgentsManager(
         daemonClient,
         () => workspaceDir
       )
@@ -304,6 +313,53 @@ function rayuDevAuthPlugin(): Plugin {
 
           if (req.method === "POST" && urlPath === "/__rayu_dev/telegram/ping") {
             sendJson(res, 200, await telegramManager.sendTestPing())
+            return
+          }
+
+          if (req.method === "GET" && urlPath === "/__rayu_dev/agents/state") {
+            const urlObj = new URL(req.url ?? "", "http://localhost")
+            const sessionId = urlObj.searchParams.get("sessionId") ?? undefined
+            sendJson(res, 200, await agentsManager.getState(sessionId))
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/agents/set-role-model"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = AgentsSetRoleModelSchema.parse(raw)
+            sendJson(res, 200, await agentsManager.setRoleModel(parsed))
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/agents/set-subagent-model"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = AgentsSetSubagentModelSchema.parse(raw)
+            sendJson(res, 200, await agentsManager.setSubagentModel(parsed))
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/agents/upsert-profile"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = AgentsUpsertProfileSchema.parse(raw)
+            sendJson(res, 200, await agentsManager.upsertProfile(parsed))
+            return
+          }
+
+          if (
+            req.method === "POST" &&
+            urlPath === "/__rayu_dev/agents/delete-profile"
+          ) {
+            const raw = await readJsonBody<unknown>(req)
+            const parsed = AgentsDeleteProfileSchema.parse(raw)
+            sendJson(res, 200, await agentsManager.deleteProfile(parsed))
             return
           }
 

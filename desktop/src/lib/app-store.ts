@@ -17,6 +17,7 @@ export type AppRoute =
   | "home"
   | "workspace"
   | "swarm"
+  | "agents"
   | "automations"
   | "plugins"
   | "changes"
@@ -950,6 +951,7 @@ const VALID_ROUTES = new Set<AppRoute>([
   "home",
   "workspace",
   "swarm",
+  "agents",
   "automations",
   "plugins",
   "changes",

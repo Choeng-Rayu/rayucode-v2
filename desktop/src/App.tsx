@@ -6,6 +6,7 @@ import { AppShell } from "@/components/shell/AppShell"
 import { AuthSignInDialog } from "@/components/shell/AuthSignInDialog"
 import { AuthWelcomeScreen } from "@/components/shell/AuthWelcomeScreen"
 import {
+  AgentsSkeleton,
   AutomationsSkeleton,
   ChangesSkeleton,
   ChatSkeleton,
@@ -30,6 +31,9 @@ import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
 import { normalizeFileChangesSnapshot } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 
+const AgentsView = React.lazy(() =>
+  import("@/features/agents").then((m) => ({ default: m.AgentsView }))
+)
 const AutomationsView = React.lazy(() =>
   import("@/features/automations").then((m) => ({ default: m.AutomationsView }))
 )
@@ -151,6 +155,14 @@ function ActiveRouteCanvas() {
         <SectionErrorBoundary title="Swarm orchestration view failed to render">
           <React.Suspense fallback={<SwarmSkeleton />}>
             <SwarmView />
+          </React.Suspense>
+        </SectionErrorBoundary>
+      )
+    case "agents":
+      return (
+        <SectionErrorBoundary title="Agents & Personas view failed to render">
+          <React.Suspense fallback={<AgentsSkeleton />}>
+            <AgentsView />
           </React.Suspense>
         </SectionErrorBoundary>
       )

@@ -464,6 +464,53 @@ export const TelegramSelectSessionSchema = z.object({
   sessionId: z.string().trim().min(1).max(128),
 })
 
+export const AgentRoleIdSchema = z.enum([
+  "swarm",
+  "review",
+  "judge",
+  "memory",
+  "ambient",
+])
+
+export const AgentsGetStateSchema = z
+  .object({
+    sessionId: z.string().trim().max(128).optional(),
+  })
+  .optional()
+
+export const AgentsSetRoleModelSchema = z.object({
+  role: AgentRoleIdSchema,
+  model: z.string().trim().min(1).max(256),
+  scope: z.enum(["global", "session"]),
+  sessionId: z.string().trim().max(128).optional(),
+})
+
+export const AgentsSetSubagentModelSchema = z.object({
+  model: z.string().trim().min(1).max(256),
+  scope: z.enum(["global", "session"]).optional(),
+  sessionId: z.string().trim().max(128).optional(),
+})
+
+export const AgentsUpsertProfileSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(32)
+    .regex(/^[a-zA-Z0-9_-]+$/),
+  model: z.string().trim().min(1).max(256),
+  effort: z.string().trim().max(32).nullable().optional(),
+  description: z.string().trim().max(500).optional(),
+  scope: z.enum(["global", "session"]),
+  sessionId: z.string().trim().max(128).optional(),
+})
+
+export const AgentsDeleteProfileSchema = z.object({
+  name: z.string().trim().min(1).max(32),
+  scope: z.enum(["global", "session"]),
+  sessionId: z.string().trim().max(128).optional(),
+})
+
 export type DaemonInvokePayload = z.infer<typeof DaemonInvokePayloadSchema>
 export type OpenInExcelPayload = z.infer<typeof OpenInExcelPayloadSchema>
 export type OpenInVSCodePayload = z.infer<typeof OpenInVSCodePayloadSchema>

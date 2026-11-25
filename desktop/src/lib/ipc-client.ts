@@ -753,6 +753,43 @@ export interface TelegramState {
   daemonError?: string | null
 }
 
+export type AgentRoleId = "swarm" | "review" | "judge" | "memory" | "ambient"
+
+export interface AgentProfileItem {
+  name: string
+  model: string
+  description: string
+  effort: string | null
+  scope: "global" | "session"
+}
+
+export interface AgentsRouteOption {
+  id: string
+  label: string
+  provider: string
+  model: string
+  modelSpec: string
+  available: boolean
+}
+
+export interface AgentsState {
+  sessionId: string | null
+  subagentModel: string | null
+  inheritModel: string | null
+  defaults: Record<AgentRoleId, string | null>
+  overrides: Record<AgentRoleId, string | null>
+  effective: Record<AgentRoleId, string | null>
+  profiles: AgentProfileItem[]
+  globalProfiles: AgentProfileItem[]
+  sessionProfiles: AgentProfileItem[]
+  swarmAllowlist: string[]
+  models: string[]
+  routes: AgentsRouteOption[]
+  configPath: string
+  daemonConnected: boolean
+  daemonError: string | null
+}
+
 export interface SettingsState {
   account: {
     name: string
@@ -3297,6 +3334,33 @@ export interface RayuBridgeApi {
       chatId?: string
     }>
   }
+  agents?: {
+    getState?: (sessionId?: string) => Promise<AgentsState>
+    setRoleModel?: (input: {
+      role: AgentRoleId
+      model: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    setSubagentModel?: (input: {
+      model: string
+      scope?: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    upsertProfile?: (input: {
+      name: string
+      model: string
+      effort?: string | null
+      description?: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    deleteProfile?: (input: {
+      name: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+  }
 }
 
 declare global {
@@ -3392,13 +3456,106 @@ let runtimeTelegram: TelegramState = {
   chatId: "Not paired",
   drivingSession: "None",
   mediaDelivery: "Disabled until paired",
-  authPath: "~/.rayu/telegram.json",
-  pairingCommand: "rayu telegram pair",
+  authPath: "~/.rayu/telegram-remote.json",
+  pairingCommand: "rayu telegram link",
   pairingLink: "https://t.me/rayucode_bot",
   remoteUninstallEnabled: false,
   approvals: [],
   commands: mockTelegram.commands,
 }
+
+let mockAgents: AgentsState = {
+  sessionId: null,
+  subagentModel: null,
+  inheritModel: "rayu:claude-sonnet-4-5",
+  defaults: {
+    swarm: "rayu:claude-sonnet-4-5",
+    review: "architect",
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  overrides: {
+    swarm: null,
+    review: null,
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  effective: {
+    swarm: "rayu:claude-sonnet-4-5",
+    review: "rayu:claude-opus-4-5",
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  profiles: [
+    {
+      name: "architect",
+      model: "rayu:claude-opus-4-5",
+      effort: "high",
+      description: "Systems design, architecture reviews, and complex debugging.",
+      scope: "global",
+    },
+    {
+      name: "coder",
+      model: "rayu:claude-sonnet-4-5",
+      effort: "medium",
+      description: "Fast feature implementation, refactoring, and unit tests.",
+      scope: "global",
+    },
+  ],
+  globalProfiles: [
+    {
+      name: "architect",
+      model: "rayu:claude-opus-4-5",
+      effort: "high",
+      description: "Systems design, architecture reviews, and complex debugging.",
+      scope: "global",
+    },
+    {
+      name: "coder",
+      model: "rayu:claude-sonnet-4-5",
+      effort: "medium",
+      description: "Fast feature implementation, refactoring, and unit tests.",
+      scope: "global",
+    },
+  ],
+  sessionProfiles: [],
+  swarmAllowlist: [],
+  models: ["rayu:claude-sonnet-4-5", "rayu:claude-opus-4-5", "openai:gpt-5"],
+  routes: [
+    {
+      id: "rayu:claude-sonnet-4-5",
+      label: "Claude Sonnet 4.5",
+      provider: "rayu",
+      model: "claude-sonnet-4-5",
+      modelSpec: "rayu:claude-sonnet-4-5",
+      available: true,
+    },
+    {
+      id: "rayu:claude-opus-4-5",
+      label: "Claude Opus 4.5",
+      provider: "rayu",
+      model: "claude-opus-4-5",
+      modelSpec: "rayu:claude-opus-4-5",
+      available: true,
+    },
+    {
+      id: "openai:gpt-5",
+      label: "GPT-5",
+      provider: "openai",
+      model: "gpt-5",
+      modelSpec: "openai:gpt-5",
+      available: true,
+    },
+  ],
+  configPath: "~/.rayu/config.toml",
+  daemonConnected: true,
+  daemonError: null,
+}
+
+let runtimeAgents: AgentsState = structuredClone(mockAgents)
 
 function normalizeWorkspacePath(raw?: string | null): string {
   if (!raw) return ""
@@ -6487,6 +6644,158 @@ export const ipcClient = {
         conflicts: [],
         snapshot: structuredClone(updated),
       }
+    },
+  },
+
+  agents: {
+    async getState(sessionId?: string): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.getState && !IS_TEST_ENV) {
+        return bridge.agents.getState(sessionId)
+      }
+      if (IS_DEV_SERVER) {
+        const query = sessionId
+          ? `agents/state?sessionId=${encodeURIComponent(sessionId)}`
+          : "agents/state"
+        return devAuthFetch<AgentsState>(query)
+      }
+      return structuredClone(IS_TEST_ENV ? mockAgents : runtimeAgents)
+    },
+    async setRoleModel(input: {
+      role: AgentRoleId
+      model: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.setRoleModel && !IS_TEST_ENV) {
+        return bridge.agents.setRoleModel(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/set-role-model", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const nextVal = input.model === "default" ? null : input.model
+      const updated: AgentsState = structuredClone(target)
+      if (input.scope === "global") {
+        updated.defaults[input.role] = nextVal
+      } else {
+        updated.overrides[input.role] = nextVal
+      }
+      const rawEff =
+        updated.overrides[input.role] ?? updated.defaults[input.role]
+      const matchedProfile = rawEff
+        ? updated.profiles.find(
+            (p) => p.name.toLowerCase() === rawEff.toLowerCase()
+          )
+        : undefined
+      updated.effective[input.role] = matchedProfile?.model ?? rawEff ?? null
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async setSubagentModel(input: {
+      model: string
+      scope?: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.setSubagentModel && !IS_TEST_ENV) {
+        return bridge.agents.setSubagentModel(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/set-subagent-model", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const nextVal = input.model === "default" ? null : input.model
+      const updated: AgentsState = structuredClone(target)
+      if (input.scope === "global") {
+        updated.defaults.swarm = nextVal
+      } else {
+        updated.subagentModel = nextVal
+      }
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async upsertProfile(input: {
+      name: string
+      model: string
+      effort?: string | null
+      description?: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.upsertProfile && !IS_TEST_ENV) {
+        return bridge.agents.upsertProfile(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/upsert-profile", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const updated: AgentsState = structuredClone(target)
+      const normalized: AgentProfileItem = {
+        name: input.name.trim().toLowerCase(),
+        model: input.model.trim(),
+        effort: input.effort?.trim() || null,
+        description: input.description?.trim() || "",
+        scope: input.scope,
+      }
+      const listKey =
+        input.scope === "global" ? "globalProfiles" : "sessionProfiles"
+      const list = updated[listKey].filter((p) => p.name !== normalized.name)
+      list.push(normalized)
+      updated[listKey] = list
+      updated.profiles = [
+        ...updated.globalProfiles.filter(
+          (gp) => !updated.sessionProfiles.some((sp) => sp.name === gp.name)
+        ),
+        ...updated.sessionProfiles,
+      ]
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async deleteProfile(input: {
+      name: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.deleteProfile && !IS_TEST_ENV) {
+        return bridge.agents.deleteProfile(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/delete-profile", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const updated: AgentsState = structuredClone(target)
+      const cleanName = input.name.trim().toLowerCase()
+      const listKey =
+        input.scope === "global" ? "globalProfiles" : "sessionProfiles"
+      updated[listKey] = updated[listKey].filter((p) => p.name !== cleanName)
+      updated.profiles = [
+        ...updated.globalProfiles.filter(
+          (gp) => !updated.sessionProfiles.some((sp) => sp.name === gp.name)
+        ),
+        ...updated.sessionProfiles,
+      ]
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
     },
   },
 }

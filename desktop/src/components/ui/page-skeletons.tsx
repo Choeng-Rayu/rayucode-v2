@@ -104,6 +104,22 @@ export function TelegramSkeleton() {
   )
 }
 
+export function AgentsSkeleton() {
+  return (
+    <div
+      data-slot="agents-skeleton"
+      className="mx-auto flex w-full max-w-[940px] flex-col gap-5 p-6"
+    >
+      <Skeleton className="h-12 w-72" />
+      <Skeleton className="h-56 w-full rounded-xl" />
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Skeleton className="h-36 w-full rounded-xl" />
+        <Skeleton className="h-36 w-full rounded-xl" />
+      </div>
+    </div>
+  )
+}
+
 export function SettingsSkeleton() {
   return (
     <div

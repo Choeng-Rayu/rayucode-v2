@@ -27,6 +27,12 @@ export const ROUTES: Record<AppRoute, RouteDefinition> = {
     title: "Swarm",
     hasRightInspector: false,
   },
+  agents: {
+    id: "agents",
+    label: "Agents & Personas",
+    title: "Agents & Personas",
+    hasRightInspector: false,
+  },
   automations: {
     id: "automations",
     label: "Automations",
