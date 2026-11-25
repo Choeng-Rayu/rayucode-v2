@@ -764,6 +764,8 @@ export function SessionPane() {
   const navHistoryIndex = useAppStore((s) => s.navHistoryIndex)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft)
+  const activeWorkspacePath = useAppStore((s) => s.activeWorkspacePath)
   const goBack = useAppStore((s) => s.goBack)
   const goForward = useAppStore((s) => s.goForward)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
@@ -1119,8 +1121,7 @@ export function SessionPane() {
       <button
         type="button"
         onClick={() => {
-          setActiveSession(null)
-          setActiveRoute("home")
+          openNewChatDraft({ workingDir: activeWorkspacePath })
         }}
         className={cn(
           "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-[7px] text-[13.5px] leading-[1.38] transition-colors",

@@ -114,7 +114,7 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       "0",
     );
     expect(screen.getByTestId("work-trace-summary").textContent).toBe(
-      "Worked for 14s · 3 files · 1 cmd",
+      "Worked for 14s",
     );
     expect(screen.queryByTestId("work-trace-body")).toBeNull();
 
@@ -124,7 +124,7 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       "1",
     );
     expect(screen.getByTestId("work-trace-body")).toBeTruthy();
-    expect(screen.getByText("Explored 3 files")).toBeTruthy();
+    expect(screen.getByText(/Explored 3 files/)).toBeTruthy();
 
     // Expand Depth 2 ShellCard
     fireEvent.click(screen.getByText("$ cargo test -p rayu-harness"));
@@ -424,5 +424,80 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     expect(
       screen.getByText(/lowering p99 lookup latency by 38%/i),
     ).toBeTruthy();
+  });
+
+  it("auto-expands WorkTrace while live, renders chronological timeline, and opens monochrome file links in VS Code", () => {
+    const postSpy = vi.fn();
+    window.acquireVsCodeApi = () => ({
+      postMessage: postSpy,
+      getState: () => undefined,
+      setState: () => undefined,
+    });
+
+    const { rerender } = renderWithQuery(
+      <WorkTrace
+        workedDuration="3s"
+        isLive
+        showLiveBackgroundPill
+        notes={["Checking lookup hot path."]}
+        groups={[]}
+        timeline={[
+          { type: "note", id: "n1", text: "Checking lookup hot path." },
+          {
+            type: "group",
+            group: {
+              id: "g_tl",
+              title: "Read files",
+              steps: [
+                {
+                  id: "r_tl",
+                  kind: "read",
+                  label: "Read",
+                  files: [
+                    {
+                      file: "lookup.rs",
+                      path: "crates/rayu-harness/src/lookup.rs",
+                      line: 42,
+                      rangeLabel: "lookup.rs:42-80",
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId("work-trace").getAttribute("data-depth")).toBe("1");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe("Working · 3s");
+    expect(screen.getByTestId("work-trace-live-bg-btn")).toBeTruthy();
+    expect(screen.getByText("Checking lookup hot path.")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByTestId("trace-file-link-crates/rayu-harness/src/lookup.rs"),
+    );
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "crates/rayu-harness/src/lookup.rs",
+      line: 42,
+    });
+
+    rerender(
+      <QueryClientProvider client={createQueryClient()}>
+        <WorkTrace
+          workedDuration="3s"
+          isLive={false}
+          notes={["Checking lookup hot path."]}
+          groups={[]}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("work-trace").getAttribute("data-depth")).toBe("0");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Worked for 3s",
+    );
+
+    delete window.acquireVsCodeApi;
   });
 });

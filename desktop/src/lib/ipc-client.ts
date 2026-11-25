@@ -32,6 +32,7 @@ export interface SessionSummary {
   branch: string
   updatedAt: string
   updatedAtMs?: number
+  status?: string
   connection?: "local" | "cloud"
   saved?: boolean
   archived?: boolean
@@ -2880,6 +2881,16 @@ export interface RayuBridgeApi {
   workspace?: {
     getInfo?: () => Promise<WorkspaceInfo>
     setPath?: (targetPath: string) => Promise<WorkspaceInfo>
+    ensure?: (
+      targetPath: string,
+      name?: string
+    ) => Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }>
     pickFolder?: () => Promise<WorkspaceInfo | null>
     pickFiles?: () => Promise<
       Array<{
@@ -2934,6 +2945,7 @@ export interface RayuBridgeApi {
     deleteTemplate?: (id: string) => Promise<PersistedComposerTemplate[]>
     getSidebarState?: () => Promise<SidebarState>
     saveSidebarState?: (state: SidebarState) => Promise<SidebarState>
+    onSidebarStateChange?: (cb: (state: SidebarState) => void) => () => void
   }
   extensions?: {
     list?: () => Promise<{
@@ -3474,13 +3486,8 @@ export const ipcClient = {
                 permissionMode: cached.permissionMode ?? summary.permissionMode,
               }
             })
-            const liveIds = new Set(mappedLive.map((s) => s.id))
-            const localOnly = runtimeSessions.filter(
-              (s) => !liveIds.has(s.id) && !s.archived
-            )
-            const combined = [...mappedLive, ...localOnly]
-            combined.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
-            return combined
+            mappedLive.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+            return mappedLive
           } catch {
             // Fall through if daemon could not be reached
           }
@@ -3541,7 +3548,7 @@ export const ipcClient = {
       for (const s of liveSessions) {
         if (s.archived) continue
         if (!s.workingDir || isTempDirectoryPath(s.workingDir)) continue
-        const group = groupsByNormPath.get(normalizeWorkspacePath(s.workingDir))
+        const group = addOrGetGroup(s.workingDir, s.project)
         if (group) {
           group.sessions.push({
             id: s.id,
@@ -4363,6 +4370,42 @@ export const ipcClient = {
       const bridge = getBridge()
       if (!bridge?.workspace?.setPath) return null
       return bridge.workspace.setPath(targetPath)
+    },
+    async ensure(
+      targetPath: string,
+      name?: string
+    ): Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }> {
+      const bridge = getBridge()
+      if (bridge?.workspace?.ensure && !IS_TEST_ENV) {
+        return bridge.workspace.ensure(targetPath, name)
+      }
+      const cleanPath = targetPath.trim().replace(/[\\/]+$/, "") || targetPath
+      const base =
+        cleanPath.split(/[\\/]/).filter(Boolean).pop() ?? "workspace"
+      const slug =
+        base
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 24) || "workspace"
+      const normKey = normalizeWorkspacePath(cleanPath)
+      let hash = 0
+      for (let i = 0; i < normKey.length; i += 1) {
+        hash = (hash * 31 + normKey.charCodeAt(i)) >>> 0
+      }
+      return {
+        id: `ws_${slug}_${hash.toString(16).padStart(8, "0")}`,
+        name: name?.trim() || base,
+        path: cleanPath,
+        canonicalPath: cleanPath,
+        created: true,
+      }
     },
     async listFiles(): Promise<
       Array<{ path: string; name: string; sizeBytes: number; language: string }>
@@ -5904,7 +5947,7 @@ export const ipcClient = {
         archivedChatIds: [],
         organizeBy: "project",
         sortBy: "updated",
-        showProjectChatsInRecents: true,
+        showProjectChatsInRecents: false,
         manualProjectOrder: [],
       }
       const bridge = getBridge()
@@ -5953,6 +5996,13 @@ export const ipcClient = {
         }
       }
       return state
+    },
+    onStateChange(cb: (state: SidebarState) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.storage?.onSidebarStateChange && !IS_TEST_ENV) {
+        return bridge.storage.onSidebarStateChange(cb)
+      }
+      return () => {}
     },
   },
 

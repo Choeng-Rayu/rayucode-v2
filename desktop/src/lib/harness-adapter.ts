@@ -1,3 +1,8 @@
+import {
+  formatDaemonVersionLabel,
+  settleHarnessErrorFrame,
+} from "@rayu-dev/rayucode-session-core/client"
+
 import type {
   ExecutionTurn,
   FileChangeEntrySummary,
@@ -20,6 +25,8 @@ import type {
   TurnOutcome,
   TurnOutputArtifact,
 } from "./ipc-client"
+
+export { formatDaemonVersionLabel }
 
 export interface HarnessSessionInfoLike {
   session_id: string
@@ -340,6 +347,7 @@ export function mapSessionInfoToSummary(
         ? "Live"
         : formatRelativeTimestamp(updatedAtMs, fallbackLabel),
     updatedAtMs,
+    status: info.status,
     connection: "local",
     saved: Boolean(info.saved),
     archived: Boolean(info.archived),
@@ -1679,6 +1687,39 @@ export function mapHarnessFrameToLiveEvents(
           ? frame.message.trim()
           : "The model declined this request."
       return [{ type: "answer-delta", delta: `\n\n${message}` }]
+    }
+    case "error": {
+      const adapter = {
+        startedAtMs: tracker.startedAtMs,
+        turnActive: tracker.turnActive,
+        turnCompleted: Boolean(tracker.turnCompleted),
+        batchEpoch: tracker.batchEpoch,
+        hasStreamedTextInPhase: tracker.hasStreamedTextInPhase,
+        lastCredits: tracker.lastCredits ?? "",
+        lastKvCachePct: tracker.lastKvCachePct ?? 0,
+      }
+      const settled = settleHarnessErrorFrame(frame, adapter, () =>
+        resetTrackerPhase(tracker)
+      )
+      if (!settled) return []
+      tracker.turnCompleted = adapter.turnCompleted
+      tracker.turnActive = adapter.turnActive
+      tracker.batchEpoch = adapter.batchEpoch
+      tracker.hasStreamedTextInPhase = adapter.hasStreamedTextInPhase
+      return [
+        { type: "tool-status", label: null },
+        {
+          type: "answer-delta",
+          delta: `\n\n**Error:** ${settled.message}`,
+        },
+        {
+          type: "complete",
+          workedDuration: settled.workedDuration,
+          ...(settled.credits ? { credits: settled.credits } : {}),
+          ...(settled.kvCachePct > 0 ? { kvCachePct: settled.kvCachePct } : {}),
+          timestamp: "Just now",
+        },
+      ]
     }
     case "turn_done":
     case "turn_stopped": {

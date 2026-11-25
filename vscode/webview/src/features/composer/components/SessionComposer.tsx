@@ -111,6 +111,77 @@ function readImageFile(file: File): Promise<ImageAttachmentView | null> {
   });
 }
 
+export interface ActiveSlashTrigger {
+  slashIndex: number;
+  endIndex: number;
+  query: string;
+}
+
+function clampCursor(value: string, cursor: number): number {
+  return Math.max(0, Math.min(cursor, value.length));
+}
+
+function resolveTextareaCursor(
+  target: HTMLTextAreaElement,
+  valueLength: number,
+): number {
+  const sel = target.selectionStart;
+  if (
+    typeof sel === "number" &&
+    (document.activeElement === target || sel > 0 || valueLength === 0)
+  ) {
+    return sel;
+  }
+  return valueLength;
+}
+
+export function getActiveSlashTrigger(
+  value: string,
+  cursor: number = value.length,
+): ActiveSlashTrigger | null {
+  const safeCursor = clampCursor(value, cursor);
+  const beforeCursor = value.slice(0, safeCursor);
+  const match = /(?:^|\s)(\/([^\s/]*))$/.exec(beforeCursor);
+  if (!match) return null;
+  return {
+    slashIndex: safeCursor - match[1]!.length,
+    endIndex: safeCursor,
+    query: match[2] ?? "",
+  };
+}
+
+export function applySlashSelection(
+  value: string,
+  trigger: ActiveSlashTrigger,
+  insertText: string,
+): { nextValue: string; nextCursor: number } {
+  const token = insertText.trim();
+  const before = value.slice(0, trigger.slashIndex);
+  const after = value.slice(trigger.endIndex);
+  const needsTrailingSpace = after.length === 0 || !/^\s/.test(after);
+  const inserted = needsTrailingSpace ? `${token} ` : token;
+  return {
+    nextValue: `${before}${inserted}${after}`,
+    nextCursor: before.length + inserted.length,
+  };
+}
+
+function stripSlashRange(
+  value: string,
+  start: number,
+  end: number,
+): { nextValue: string; nextCursor: number } {
+  const before = value.slice(0, start);
+  let after = value.slice(end);
+  if (before.length > 0 && /\s$/.test(before) && /^\s/.test(after)) {
+    after = after.replace(/^\s+/, "");
+  }
+  return {
+    nextValue: `${before}${after}`,
+    nextCursor: before.length,
+  };
+}
+
 export interface SessionComposerProps {
   ref?: React.Ref<HTMLTextAreaElement>;
   inputRef?: React.Ref<HTMLTextAreaElement>;
@@ -178,6 +249,8 @@ export function SessionComposer({
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
   const storeProjectPath = useAppStore((s) => s.activeProjectPath);
+  const activeDraft = useAppStore((s) => s.activeDraft);
+  const updateActiveDraft = useAppStore((s) => s.updateActiveDraft);
   const setActiveProjectPath = useAppStore((s) => s.setActiveProjectPath);
   const storeWorkspaces = useAppStore((s) => s.workspaces);
   const storeEditorSelection = useAppStore((s) => s.editorSelection);
@@ -211,12 +284,14 @@ export function SessionComposer({
   }, [foldersQuery.data?.folders, storeWorkspaces]);
 
   const activeWorkspace = React.useMemo(() => {
-    if (storeProjectPath) {
-      const found = workspaces.find((w) => w.path === storeProjectPath);
+    const targetPath =
+      (!effectiveSessionId ? activeDraft?.workingDir : null) ?? storeProjectPath;
+    if (targetPath) {
+      const found = workspaces.find((w) => w.path === targetPath);
       if (found) return found;
     }
     return workspaces[0] ?? null;
-  }, [storeProjectPath, workspaces]);
+  }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
   const [internalValue, setInternalValue] = React.useState("");
   const [internalProject, setInternalProject] = React.useState(
@@ -248,6 +323,11 @@ export function SessionComposer({
   const [branchPickerOpen, setBranchPickerOpen] = React.useState(false);
   const [mentionIndex, setMentionIndex] = React.useState(0);
   const [slashIndex, setSlashIndex] = React.useState(0);
+  const [cursorPos, setCursorPos] = React.useState<number | null>(null);
+  const [pendingCaret, setPendingCaret] = React.useState<{
+    pos: number;
+    seq: number;
+  } | null>(null);
   const [popupDismissedForText, setPopupDismissedForText] = React.useState<
     string | null
   >(null);
@@ -324,6 +404,18 @@ export function SessionComposer({
     el.style.height = `${nextHeight}px`;
   }, [textValue]);
 
+  React.useLayoutEffect(() => {
+    if (!pendingCaret) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    const pos = clampCursor(el.value, pendingCaret.pos);
+    if (typeof el.setSelectionRange === "function") {
+      el.setSelectionRange(pos, pos);
+    }
+    setCursorPos(pos);
+  }, [pendingCaret]);
+
   const setTextValue = React.useCallback(
     (next: string) => {
       setPopupDismissedForText(null);
@@ -336,26 +428,27 @@ export function SessionComposer({
     [onValueChange],
   );
 
+  const effectiveCursor =
+    cursorPos === null ? textValue.length : clampCursor(textValue, cursorPos);
+
   // Detect `@query` file mention trigger
   const mentionTrigger = React.useMemo(() => {
     if (popupDismissedForText === textValue) return null;
-    const match = /(?:^|\s)@([^\s@]*)$/.exec(textValue);
+    const beforeCursor = textValue.slice(0, effectiveCursor);
+    const match = /(?:^|\s)@([^\s@]*)$/.exec(beforeCursor);
     if (!match) return null;
     return {
       query: match[1] ?? "",
-      tokenStart: textValue.lastIndexOf("@"),
+      tokenStart: beforeCursor.lastIndexOf("@"),
+      tokenEnd: effectiveCursor,
     };
-  }, [popupDismissedForText, textValue]);
+  }, [effectiveCursor, popupDismissedForText, textValue]);
 
-  // Detect `/query` slash command trigger at start of input
+  // Detect `/query` slash command or skill trigger at start or mid-sentence before caret
   const slashTrigger = React.useMemo(() => {
     if (popupDismissedForText === textValue || mentionTrigger) return null;
-    const match = /^\/([a-zA-Z0-9_-]*)$/.exec(textValue.trim());
-    if (!match) return null;
-    return {
-      query: match[1] ?? "",
-    };
-  }, [mentionTrigger, popupDismissedForText, textValue]);
+    return getActiveSlashTrigger(textValue, effectiveCursor);
+  }, [effectiveCursor, mentionTrigger, popupDismissedForText, textValue]);
 
   const filesSearchQuery = useWorkspaceFilesSearch(
     mentionTrigger?.query ?? "",
@@ -392,47 +485,89 @@ export function SessionComposer({
     (filePath: string) => {
       if (!mentionTrigger) return;
       const prefix = textValue.slice(0, mentionTrigger.tokenStart);
-      const next = `${prefix}@${filePath} `;
+      const suffix = textValue.slice(mentionTrigger.tokenEnd);
+      const inserted = `@${filePath} `;
+      const next = `${prefix}${inserted}${suffix}`;
+      const nextCaret = prefix.length + inserted.length;
       setTextValue(next);
-      textareaRef.current?.focus();
+      setPendingCaret((prev) => ({ pos: nextCaret, seq: (prev?.seq ?? 0) + 1 }));
     },
     [mentionTrigger, setTextValue, textValue],
   );
 
   const handleSelectSlashCommand = React.useCallback(
     (item: SlashCommandItem) => {
+      const clearOrStripToken = () => {
+        if (slashTrigger) {
+          const stripped = stripSlashRange(
+            textValue,
+            slashTrigger.slashIndex,
+            slashTrigger.endIndex,
+          );
+          if (stripped.nextValue.trim().length > 0) {
+            setTextValue(stripped.nextValue);
+            setPendingCaret((prev) => ({
+              pos: stripped.nextCursor,
+              seq: (prev?.seq ?? 0) + 1,
+            }));
+            return;
+          }
+        }
+        setTextValue("");
+        setCursorPos(0);
+      };
+
       if (item.command === "/compact" && effectiveSessionId) {
         void callRpc("workspace.compact", {
           sessionId: effectiveSessionId,
         }).catch(() => {});
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/plan") {
         setInternalPermissionMode("plan");
         onPermissionModeChange?.("plan");
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/bg") {
         setBackgroundDrawerOpen(true);
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/clear") {
         setActiveSession(null);
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
       if (item.command === "/mcp" || item.command === "/skills") {
         setActiveRoute("plugins");
-        setTextValue("");
+        clearOrStripToken();
         return;
       }
-      setTextValue(
-        item.insertText.endsWith(" ") ? item.insertText : `${item.insertText} `,
-      );
-      textareaRef.current?.focus();
+
+      if (slashTrigger) {
+        const applied = applySlashSelection(
+          textValue,
+          slashTrigger,
+          item.insertText,
+        );
+        setTextValue(applied.nextValue);
+        setPendingCaret((prev) => ({
+          pos: applied.nextCursor,
+          seq: (prev?.seq ?? 0) + 1,
+        }));
+        return;
+      }
+
+      const fallbackText = item.insertText.endsWith(" ")
+        ? item.insertText
+        : `${item.insertText} `;
+      setTextValue(fallbackText);
+      setPendingCaret((prev) => ({
+        pos: fallbackText.length,
+        seq: (prev?.seq ?? 0) + 1,
+      }));
     },
     [
       effectiveSessionId,
@@ -441,6 +576,8 @@ export function SessionComposer({
       setActiveSession,
       setBackgroundDrawerOpen,
       setTextValue,
+      slashTrigger,
+      textValue,
     ],
   );
 
@@ -448,17 +585,23 @@ export function SessionComposer({
     (model: ModelOption) => {
       setInternalModelId(model.id);
       setInternalModelLabel(model.label);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ model: model.id });
+      }
       onModelChange?.(model);
     },
-    [onModelChange],
+    [effectiveSessionId, onModelChange, updateActiveDraft],
   );
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
       setInternalEffort(nextEffort);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ reasoningEffort: nextEffort });
+      }
       onEffortChange?.(nextEffort);
     },
-    [onEffortChange],
+    [effectiveSessionId, onEffortChange, updateActiveDraft],
   );
 
   const handleServiceTierSelect = React.useCallback(
@@ -480,14 +623,24 @@ export function SessionComposer({
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
       setInternalPermissionMode(nextMode);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ permissionMode: nextMode });
+      }
       onPermissionModeChange?.(nextMode);
     },
-    [onPermissionModeChange],
+    [effectiveSessionId, onPermissionModeChange, updateActiveDraft],
   );
 
   const handleWorkspaceSelect = (name: string, path: string) => {
     setInternalProject(name);
     setActiveProjectPath(path);
+    if (!effectiveSessionId) {
+      const matched = workspaces.find((w) => w.path === path);
+      updateActiveDraft({
+        workingDir: path,
+        workspaceId: matched?.id ?? null,
+      });
+    }
     onProjectChange?.(name, path);
     setWorkspacePickerOpen(false);
   };
@@ -893,7 +1046,30 @@ export function SessionComposer({
               placeholder={effectivePlaceholder}
               data-testid="composer-textarea"
               aria-label="Message RayuCode"
-              onChange={(e) => setTextValue(e.target.value)}
+              onChange={(e) => {
+                const nextVal = e.target.value;
+                const nextCursor = resolveTextareaCursor(
+                  e.target,
+                  nextVal.length,
+                );
+                setCursorPos(nextCursor);
+                setTextValue(nextVal);
+              }}
+              onClick={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
+              onKeyUp={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
+              onSelect={(e) =>
+                setCursorPos(
+                  resolveTextareaCursor(e.currentTarget, textValue.length),
+                )
+              }
               onKeyDown={handleKeyDown}
               onPaste={(e) => void handlePaste(e)}
               className="rayu-prose max-h-[180px] min-h-[44px] w-full resize-none border-0 bg-transparent px-3.5 pt-2.5 pb-1.5 text-[13.5px] leading-[1.55] text-ink placeholder:text-muted-ink focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none disabled:opacity-50"

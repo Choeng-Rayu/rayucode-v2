@@ -6,12 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import {
   createLocalSkill,
   deleteCustomTemplate,
+  disposeWorkspaceRegistry,
+  ensureRegisteredWorkspace,
   listLocalExtensions,
   listWorkspaceFiles,
   readCustomTemplates,
   readDesktopPreferences,
   readDesktopSessionStore,
   readRecentWorkspaces,
+  readSidebarState,
   recordRecentWorkspace,
   removeLocalMcpServer,
   saveCustomTemplate,
@@ -19,6 +22,7 @@ import {
   upsertLocalMcpServer,
   writeDesktopPreferences,
   writeDesktopSessionStore,
+  writeSidebarState,
 } from "../storage-bridge"
 
 describe("storage-bridge persistence & local workspace scanning", () => {
@@ -28,9 +32,11 @@ describe("storage-bridge persistence & local workspace scanning", () => {
   beforeEach(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-storage-test-"))
     process.env.RAYU_HOME = path.join(tmpRoot, "rayu-home")
+    process.env.XDG_CONFIG_HOME = path.join(tmpRoot, "xdg")
   })
 
   afterEach(() => {
+    disposeWorkspaceRegistry()
     process.env = { ...originalEnv }
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
@@ -201,5 +207,57 @@ describe("storage-bridge persistence & local workspace scanning", () => {
 
     const afterDelete = deleteCustomTemplate(afterSave[0]!.id)
     expect(afterDelete).toHaveLength(0)
+  })
+
+  it("migrates legacy desktop workspaces/sidebar into canonical workspaces.json, deduplicates symlinks, and ignores desktop-sessions.json phantoms", async () => {
+    const realDir = path.join(tmpRoot, "real-repo")
+    const linkDir = path.join(tmpRoot, "symlink-repo")
+    fs.mkdirSync(realDir, { recursive: true })
+    fs.symlinkSync(realDir, linkDir)
+
+    // Seed legacy desktop-workspaces.json & desktop-sessions.json phantom
+    recordRecentWorkspace(realDir)
+    writeDesktopSessionStore({
+      sessions: [{ id: "phantom_ses_999", title: "Phantom" }],
+      turns: [],
+    })
+
+    const state = await readSidebarState()
+    expect(state.showProjectChatsInRecents).toBe(false)
+    expect(state.projects).toHaveLength(1)
+    expect(state.projects[0]?.id).toMatch(/^ws_/)
+
+    // Registering symlink to the same directory deduplicates to the exact same canonical workspace ID
+    const ensured = await ensureRegisteredWorkspace(linkDir, {
+      name: "real-repo",
+    })
+    expect(ensured.created).toBe(false)
+    expect(ensured.id).toBe(state.projects[0]?.id)
+
+    // Writing pinned/archived state syncs atomically to ~/.rayu/workspaces.json
+    const saved = await writeSidebarState({
+      ...state,
+      pinnedChatIds: ["ses_live_1"],
+      archivedChatIds: ["ses_old_2"],
+    })
+    expect(saved.pinnedChatIds).toEqual(["ses_live_1"])
+    expect(saved.archivedChatIds).toEqual(["ses_old_2"])
+
+    const workspacesJsonPath = path.join(process.env.RAYU_HOME!, "workspaces.json")
+    expect(fs.existsSync(workspacesJsonPath)).toBe(true)
+    const rawLedger = JSON.parse(
+      fs.readFileSync(workspacesJsonPath, "utf8")
+    ) as {
+      pinnedSessionIds: string[]
+      archivedSessionIds: string[]
+      migratedSources: string[]
+      workspaces: Array<{ sessionIds: string[] }>
+    }
+    expect(rawLedger.migratedSources).toContain("desktop-v1")
+    expect(rawLedger.pinnedSessionIds).toEqual(["ses_live_1"])
+    expect(rawLedger.archivedSessionIds).toEqual(["ses_old_2"])
+    expect(
+      rawLedger.workspaces.flatMap((w) => w.sessionIds)
+    ).not.toContain("phantom_ses_999")
   })
 })

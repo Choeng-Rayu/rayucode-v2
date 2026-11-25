@@ -15,7 +15,7 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { RayuProcessingMark, TechFileBadge } from "@/components/ui";
+import { RayuProcessingMark } from "@/components/ui";
 import {
   callRpc,
   cn,
@@ -27,6 +27,7 @@ import {
   type ListStep,
   type ShellCommandStep,
   type TraceStepItem,
+  type TraceTimelineItem,
   type WorkStepGroup,
 } from "@/lib";
 
@@ -220,6 +221,7 @@ export interface WorkTraceProps {
   connectionPhaseLabel?: string | null;
   notes: string[];
   groups: ExtendedWorkStepGroup[];
+  timeline?: TraceTimelineItem[];
   activeToolStatus?: string | null;
   showLiveBackgroundPill?: boolean;
   sessionId?: string;
@@ -292,8 +294,8 @@ function renderFileReadStep(
           aria-hidden="true"
         />
       )}
-      <span>{step.label}</span>
-      <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span>
+        {step.label}{" "}
         {step.files.map((target, idx) => {
           const lower = target.file.toLowerCase();
           const isMarkdown = lower.endsWith(".md");
@@ -302,7 +304,7 @@ function renderFileReadStep(
             lower.endsWith(".pptx") || lower.includes("slide");
           return (
             <React.Fragment key={`${step.id}-${target.path}-${target.line}`}>
-              {idx > 0 && <span className="text-faint">·</span>}
+              {idx > 0 && ", "}
               <button
                 type="button"
                 data-testid={`trace-file-link-${target.path}`}
@@ -322,10 +324,9 @@ function renderFileReadStep(
                     onOpenCodeFile(target.path, target.line);
                   }
                 }}
-                className="inline-flex cursor-pointer items-center gap-1 rounded-[5px] border border-hairline-soft bg-inset px-1.5 py-0.5 font-mono text-xs text-body transition-colors hover:border-premium hover:bg-active hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <TechFileBadge path={target.path} className="size-3.5" />
-                <span>{target.rangeLabel}</span>
+                {target.rangeLabel}
               </button>
             </React.Fragment>
           );
@@ -530,10 +531,11 @@ export function WorkTrace({
   connectionPhaseLabel,
   notes,
   groups,
+  timeline,
   activeToolStatus,
   showLiveBackgroundPill = false,
   sessionId,
-  defaultExpanded = false,
+  defaultExpanded,
   defaultOpenShellIds = [],
   onOpenCodeFile,
   onOpenDocPreview,
@@ -543,17 +545,13 @@ export function WorkTrace({
   const [userExpanded, setUserExpanded] = React.useState<boolean | null>(null);
   const bodyId = React.useId();
 
-  // Depth 0 is the calm single-line default; clicking expands Depth 1.
-  const expanded = userExpanded ?? defaultExpanded;
+  const hasTimeline = Boolean(timeline && timeline.length > 0);
+  // Auto-expand while live; collapse to "Worked for Xs" when done unless toggled.
+  const expanded = userExpanded ?? defaultExpanded ?? Boolean(isLive);
 
   const coalescedGroups = React.useMemo(
     () => coalesceTraceGroups(groups),
     [groups],
-  );
-
-  const metrics = React.useMemo(
-    () => summarizeWorkTraceMetrics(workedDuration, coalescedGroups),
-    [workedDuration, coalescedGroups],
   );
 
   const defaultOpenShellSet = React.useMemo(
@@ -602,31 +600,10 @@ export function WorkTrace({
   const interleaveCount = Math.max(notes.length, coalescedGroups.length);
 
   const liveHeaderLabel = React.useMemo(() => {
-    const trailing =
-      connectionPhaseLabel ??
-      activeToolStatus ??
-      (metrics.fileCount > 0 || metrics.cmdCount > 0
-        ? [
-            metrics.fileCount > 0
-              ? `${metrics.fileCount} ${metrics.fileCount === 1 ? "file" : "files"}`
-              : null,
-            metrics.cmdCount > 0
-              ? `${metrics.cmdCount} ${metrics.cmdCount === 1 ? "cmd" : "cmds"}`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")
-        : null);
-    return trailing
-      ? `Working · ${workedDuration} · ${trailing}`
+    return connectionPhaseLabel
+      ? `Working · ${workedDuration} · ${connectionPhaseLabel}`
       : `Working · ${workedDuration}`;
-  }, [
-    activeToolStatus,
-    connectionPhaseLabel,
-    metrics.cmdCount,
-    metrics.fileCount,
-    workedDuration,
-  ]);
+  }, [connectionPhaseLabel, workedDuration]);
 
   return (
     <div
@@ -654,7 +631,7 @@ export function WorkTrace({
             <RayuProcessingMark animated className="size-4 shrink-0" />
           )}
           <span data-testid="work-trace-summary" className="tabular-nums">
-            {isLive ? liveHeaderLabel : metrics.summaryText}
+            {isLive ? liveHeaderLabel : `Worked for ${workedDuration}`}
           </span>
           <ChevronRight
             className={cn(
@@ -688,34 +665,66 @@ export function WorkTrace({
           data-testid="work-trace-body"
           className="flex flex-col gap-2.5 pb-1.5"
         >
-          {Array.from({ length: interleaveCount }, (_, index) => {
-            const note = notes[index];
-            const group = coalescedGroups[index];
-            return (
-              <React.Fragment key={`trace-slice-${index}`}>
-                {note && (
-                  <div
-                    data-slot="work-note"
-                    className="max-w-[70ch] text-sm leading-[1.58] text-ink"
-                  >
-                    <EditorialMarkdown content={note} inline />
-                  </div>
-                )}
-                {group && (
+          {hasTimeline && timeline
+            ? timeline.map((entry) => {
+                if (entry.type === "note") {
+                  return (
+                    <div
+                      key={entry.id}
+                      data-slot="work-note"
+                      className="max-w-[70ch] text-sm leading-[1.6] text-ink"
+                    >
+                      <EditorialMarkdown content={entry.text} inline />
+                    </div>
+                  );
+                }
+                const coalescedGroup = {
+                  ...entry.group,
+                  steps: coalesceTraceSteps(entry.group.steps),
+                };
+                const isImagePreviewGroup = coalescedGroup.steps.some(
+                  (s) => s.kind === "previews",
+                );
+                return (
                   <TraceGroupSection
-                    group={group}
+                    key={coalescedGroup.id}
+                    group={coalescedGroup}
                     sessionId={sessionId}
-                    defaultOpen
+                    defaultOpen={isImagePreviewGroup || Boolean(isLive)}
                     defaultOpenShellSet={defaultOpenShellSet}
                     onOpenCodeFile={handleOpenCodeFile}
                     onOpenDocPreview={handleOpenDocPreview}
                   />
-                )}
-              </React.Fragment>
-            );
-          })}
+                );
+              })
+            : Array.from({ length: interleaveCount }, (_, index) => {
+                const note = notes[index];
+                const group = coalescedGroups[index];
+                return (
+                  <React.Fragment key={`trace-slice-${index}`}>
+                    {note && (
+                      <div
+                        data-slot="work-note"
+                        className="max-w-[70ch] text-sm leading-[1.58] text-ink"
+                      >
+                        <EditorialMarkdown content={note} inline />
+                      </div>
+                    )}
+                    {group && (
+                      <TraceGroupSection
+                        group={group}
+                        sessionId={sessionId}
+                        defaultOpen
+                        defaultOpenShellSet={defaultOpenShellSet}
+                        onOpenCodeFile={handleOpenCodeFile}
+                        onOpenDocPreview={handleOpenDocPreview}
+                      />
+                    )}
+                  </React.Fragment>
+                );
+              })}
 
-          {isLive && activeToolStatus && (
+          {isLive && activeToolStatus ? (
             <div
               data-testid="work-active-tool-status"
               className="inline-flex items-center gap-2 py-0.5 text-[13px] text-muted-ink"
@@ -726,7 +735,17 @@ export function WorkTrace({
               />
               <span className="animate-pulse">{activeToolStatus}</span>
             </div>
-          )}
+          ) : isLive &&
+            notes.length === 0 &&
+            coalescedGroups.length === 0 &&
+            !hasTimeline ? (
+            <div
+              data-testid="work-thinking-indicator"
+              className="py-0.5 pl-[25px] text-[12.5px] text-muted-ink"
+            >
+              Thinking...
+            </div>
+          ) : null}
         </div>
       )}
     </div>

@@ -37,6 +37,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client"
 import { useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
@@ -289,8 +290,9 @@ export function SettingsView({
           toast.error(res.error)
           return
         }
+        const versionLabel = formatDaemonVersionLabel(res.data.version)
         toast.success(
-          `Daemon healthy (${res.data.latencyMs} ms · v${res.data.version})`
+          `Daemon healthy (${res.data.latencyMs} ms${versionLabel ? ` · ${versionLabel}` : ""})`
         )
       },
     })
@@ -1682,7 +1684,7 @@ auto_compact = ${preferences.autoCompactContext}`}
                       </div>
                       <div className="mt-0.5 font-mono text-xs text-ink">
                         {daemonStatus?.version
-                          ? `v${daemonStatus.version}`
+                          ? formatDaemonVersionLabel(daemonStatus.version) || "—"
                           : "—"}
                       </div>
                     </div>

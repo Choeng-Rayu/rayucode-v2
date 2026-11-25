@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HarnessError, type RuntimeCommand } from "@rayu-dev/rayucode-sdk";
 import {
+  HistoryMessageViewSchema,
   RPC_METHODS,
   RpcContractSchemas,
   type DaemonStatusView,
@@ -13,6 +14,7 @@ import {
   mapRawFileChangeActionResponse,
   mapRawFileChangeDiff,
   mapRawFileChangesSnapshot,
+  mapRawHistoryMessage,
   normalizeCredentialProviderId,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
@@ -1686,4 +1688,51 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
     sessionId: "sess_fc",
   });
   assert.equal(fallbackRedo.ok, false);
+});
+
+test("HistoryMessageViewSchema and mapRawHistoryMessage forward tool, responseStats, and provenance fields", () => {
+  const legacyParsed = HistoryMessageViewSchema.parse({
+    id: "hist_1",
+    role: "user",
+    content: "hello",
+  });
+  assert.equal(legacyParsed.role, "user");
+  assert.equal(legacyParsed.responseStats, undefined);
+
+  const mapped = mapRawHistoryMessage(
+    {
+      role: "assistant",
+      content: "Done",
+      origin: "engine_internal",
+      visibility: "hidden",
+      attempt_id: "att_2",
+      attempt_reason: "reassess_refusal",
+      attempt_status: "answered",
+      stop_reason: "end_turn",
+      tool: { id: "call_1", name: "bash", input: { command: "pwd" } },
+      response_stats: {
+        duration_secs: 4.2,
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_read_tokens: 90,
+        cache_creation_tokens: 10,
+        rayu_credits: 0.15,
+      },
+    },
+    { id: "hist_2", model: "claude-opus-4-6" },
+  );
+
+  const parsed = HistoryMessageViewSchema.parse(mapped);
+  assert.equal(parsed.toolId, "call_1");
+  assert.equal(parsed.toolName, "bash");
+  assert.deepEqual(parsed.toolInput, { command: "pwd" });
+  assert.equal(parsed.origin, "engine_internal");
+  assert.equal(parsed.visibility, "hidden");
+  assert.equal(parsed.attemptId, "att_2");
+  assert.equal(parsed.attemptReason, "reassess_refusal");
+  assert.equal(parsed.attemptStatus, "answered");
+  assert.equal(parsed.stopReason, "end_turn");
+  assert.equal(parsed.responseStats?.durationSecs, 4.2);
+  assert.equal(parsed.responseStats?.cacheReadTokens, 90);
+  assert.equal(parsed.responseStats?.rayuCredits, 0.15);
 });

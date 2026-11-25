@@ -106,10 +106,14 @@ export function HomeView({
           ? `Image: ${payload.images[0]?.name ?? "attachment"}`
           : "")
 
+      const storeState = useAppStore.getState()
       const result = await createSessionMutation.mutateAsync({
         prompt: sessionTitlePrompt,
         project: payload.project,
-        workingDir: useAppStore.getState().activeWorkspacePath ?? undefined,
+        workingDir:
+          storeState.activeDraft?.workingDir ??
+          storeState.activeWorkspacePath ??
+          undefined,
         checkout: payload.checkout,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,

@@ -45,11 +45,13 @@ export function CompactTopBar({
   const activeRoute = useAppStore((s) => s.activeRoute);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle);
+  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const backgroundTasks = useAppStore((s) => s.backgroundTasks);
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
-  const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
+  const requestComposerFocus = useAppStore((s) => s.requestComposerFocus);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
   const cycleTheme = useAppStore((s) => s.cycleTheme);
   const toggleAccent = useAppStore((s) => s.toggleAccent);
@@ -128,8 +130,8 @@ export function CompactTopBar({
               aria-label="New session"
               data-testid="compact-new-session"
               onClick={() => {
-                setActiveSession(null);
-                setActiveRoute("home");
+                openNewChatDraft({ workingDir: activeProjectPath });
+                requestComposerFocus();
               }}
               className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
             >

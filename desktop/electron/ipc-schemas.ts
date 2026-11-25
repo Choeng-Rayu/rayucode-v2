@@ -49,6 +49,11 @@ export const WorkspaceSetPayloadSchema = z.object({
   path: z.string().min(1),
 })
 
+export const WorkspaceEnsurePayloadSchema = z.object({
+  path: z.string().trim().min(1).max(2048),
+  name: z.string().trim().min(1).max(120).optional(),
+})
+
 export const WorkspaceReadFilePayloadSchema = z.object({
   filePath: z.string().min(1),
 })

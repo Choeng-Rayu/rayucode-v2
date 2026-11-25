@@ -167,6 +167,7 @@ export interface StartLiveTurnInput {
   userRefFiles?: string
   initialNote?: string
   startedAtMs?: number
+  baseHistoryTurnCount?: number
 }
 
 export interface UseLiveTraceResult {

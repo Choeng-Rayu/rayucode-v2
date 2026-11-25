@@ -40,6 +40,9 @@ import {
   type FileDiffView,
   type FileReviewDecision,
   type GatewayStatusView,
+  type HistoryImageView,
+  type HistoryMessageView,
+  type HistoryResponseStatsView,
   type HookEntryView,
   type HookEventId,
   type HostToWebviewMessage,
@@ -79,6 +82,7 @@ import {
   type VoiceStatusView,
   type WorkspaceFolderView,
   type WorkspaceIntegrationsView,
+  type WorkspaceLedgerView,
 } from "../../shared/vscodeProtocol.js";
 import type {
   BackgroundProcessGroup,
@@ -282,6 +286,68 @@ export function normalizeHarnessRequestFrame(
     normalized.images = normalizeImageAttachments(normalized.images);
   }
   return normalized;
+}
+
+function mapRawResponseStats(raw: unknown): HistoryResponseStatsView | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const durationSecs = typeof r.duration_secs === "number" ? r.duration_secs : undefined;
+  const inputTokens = typeof r.input_tokens === "number" ? r.input_tokens : undefined;
+  const outputTokens = typeof r.output_tokens === "number" ? r.output_tokens : undefined;
+  const cacheReadTokens = typeof r.cache_read_tokens === "number" ? r.cache_read_tokens : undefined;
+  const cacheCreationTokens =
+    typeof r.cache_creation_tokens === "number" ? r.cache_creation_tokens : undefined;
+  const rayuCredits = typeof r.rayu_credits === "number" ? r.rayu_credits : undefined;
+  if (
+    durationSecs === undefined &&
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    cacheReadTokens === undefined &&
+    cacheCreationTokens === undefined &&
+    rayuCredits === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    ...(durationSecs !== undefined ? { durationSecs } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(rayuCredits !== undefined ? { rayuCredits } : {}),
+  };
+}
+
+export function mapRawHistoryMessage(
+  raw: Record<string, unknown>,
+  opts: { id: string; model?: string; images?: HistoryImageView[] },
+): HistoryMessageView {
+  const toolObj =
+    raw.tool && typeof raw.tool === "object" && !Array.isArray(raw.tool)
+      ? (raw.tool as Record<string, unknown>)
+      : null;
+  const responseStats = mapRawResponseStats(raw.response_stats);
+  return {
+    id: opts.id,
+    role: typeof raw.role === "string" ? raw.role : "assistant",
+    content: typeof raw.content === "string" ? raw.content : "",
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(typeof toolObj?.id === "string" ? { toolId: toolObj.id } : {}),
+    ...(typeof toolObj?.name === "string" ? { toolName: toolObj.name } : {}),
+    ...(toolObj && toolObj.input !== undefined ? { toolInput: toolObj.input } : {}),
+    ...(typeof raw.origin === "string" ? { origin: raw.origin } : {}),
+    ...(typeof raw.visibility === "string" ? { visibility: raw.visibility } : {}),
+    ...(raw.attempt_id === null || typeof raw.attempt_id === "string"
+      ? { attemptId: raw.attempt_id }
+      : {}),
+    ...(typeof raw.attempt_reason === "string" ? { attemptReason: raw.attempt_reason } : {}),
+    ...(typeof raw.attempt_status === "string" ? { attemptStatus: raw.attempt_status } : {}),
+    ...(raw.stop_reason === null || typeof raw.stop_reason === "string"
+      ? { stopReason: raw.stop_reason }
+      : {}),
+    ...(responseStats ? { responseStats } : {}),
+    ...(opts.images && opts.images.length > 0 ? { images: opts.images } : {}),
+  };
 }
 
 function classifyProcessGroup(toolName: string): BackgroundProcessGroup {
@@ -640,7 +706,7 @@ export interface FeatureRouterHub {
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
   getActivePermissionMode(): PermissionModeId;
-  getClient(): Promise<RayucodeClient>;
+  getClient(sessionId?: string): Promise<RayucodeClient>;
   listSessions(includeArchived?: boolean): Promise<{
     sessions: SessionSummaryView[];
     activeSessionId?: string;
@@ -710,6 +776,29 @@ export interface FeatureRouterHub {
     sessionId: string,
     snapshot: FileChangesSnapshotView,
   ): void;
+  getWorkspaceLedger?(): WorkspaceLedgerView;
+  loadWorkspaceLedger?(): Promise<WorkspaceLedgerView>;
+  ensureWorkspace?(
+    rawPath: string,
+    options?: { name?: string; unhide?: boolean },
+  ): Promise<WorkspaceLedgerView>;
+  removeWorkspace?(idOrPath: string): Promise<WorkspaceLedgerView>;
+  setWorkspaceCollapsed?(
+    workspaceId: string,
+    collapsed: boolean,
+  ): Promise<WorkspaceLedgerView>;
+  attachSessionToWorkspace?(
+    workspaceIdOrPath: string,
+    sessionId: string,
+  ): Promise<WorkspaceLedgerView>;
+  setSessionPinnedLedger?(
+    sessionId: string,
+    pinned: boolean,
+  ): Promise<WorkspaceLedgerView>;
+  setSessionArchivedLedger?(
+    sessionId: string,
+    archived: boolean,
+  ): Promise<WorkspaceLedgerView>;
 }
 
 export interface FeatureRouterAuthManager {
@@ -1376,6 +1465,94 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "workspace.listFolders": async () => ({
       folders: await deps.getWorkspaceFolders(),
     }),
+    "workspace.ledger.get": async () => {
+      if (typeof deps.sessionHub.loadWorkspaceLedger === "function") {
+        return deps.sessionHub.loadWorkspaceLedger();
+      }
+      if (typeof deps.sessionHub.getWorkspaceLedger === "function") {
+        return deps.sessionHub.getWorkspaceLedger();
+      }
+      const folders = await deps.getWorkspaceFolders();
+      const now = Date.now();
+      return {
+        version: 1 as const,
+        updatedAt: now,
+        workspaces: folders.map((f, idx) => ({
+          id: f.id ?? `ws_${idx}_${f.name}`,
+          name: f.name,
+          path: f.path,
+          canonicalPath: f.canonicalPath ?? f.path,
+          sessionIds: [],
+          createdAt: now,
+          updatedAt: now,
+          lastOpenedAt: now,
+          branch: f.branch,
+          icon: f.icon,
+          isPrimary: f.isPrimary,
+        })),
+        pinnedSessionIds: [],
+        archivedSessionIds: [],
+        collapsedWorkspaceIds: [],
+        manualWorkspaceOrder: [],
+        openFolderPaths: folders.map((f) => f.path),
+      };
+    },
+    "workspace.ledger.ensure": async (params) => {
+      if (typeof deps.sessionHub.ensureWorkspace === "function") {
+        return deps.sessionHub.ensureWorkspace(params.path, {
+          name: params.name,
+          unhide: params.unhide,
+        });
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.remove": async (params) => {
+      if (typeof deps.sessionHub.removeWorkspace === "function") {
+        return deps.sessionHub.removeWorkspace(params.idOrPath);
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setPinned": async (params) => {
+      if (typeof deps.sessionHub.setSessionPinnedLedger === "function") {
+        return deps.sessionHub.setSessionPinnedLedger(
+          params.sessionId,
+          params.pinned,
+        );
+      }
+      await deps.sessionHub.setSessionPinned(params.sessionId, params.pinned);
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setArchived": async (params) => {
+      if (typeof deps.sessionHub.setSessionArchivedLedger === "function") {
+        return deps.sessionHub.setSessionArchivedLedger(
+          params.sessionId,
+          params.archived,
+        );
+      }
+      await deps.sessionHub.setSessionArchived(
+        params.sessionId,
+        params.archived,
+      );
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.setCollapsed": async (params) => {
+      if (typeof deps.sessionHub.setWorkspaceCollapsed === "function") {
+        return deps.sessionHub.setWorkspaceCollapsed(
+          params.workspaceId,
+          params.collapsed,
+        );
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
+    "workspace.ledger.attachSession": async (params) => {
+      if (typeof deps.sessionHub.attachSessionToWorkspace === "function") {
+        return deps.sessionHub.attachSessionToWorkspace(
+          params.workspaceIdOrPath,
+          params.sessionId,
+        );
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
     "workspace.findFiles": async (params) => {
       const limit = params.limit ?? 50;
       const sid = params.sessionId ?? deps.sessionHub.getActiveSessionId();
@@ -1575,18 +1752,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "sessions.setPermissionMode": async (params) =>
       deps.sessionHub.setPermissionMode(params.sessionId, params.mode),
     "sessions.rewind": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       const index = Number.parseInt(params.turnId, 10);
       await client.rewind(params.sessionId, Number.isFinite(index) ? index : 0);
       return { ok: true };
     },
     "sessions.rewindUndo": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       await client.rewindUndo(params.sessionId);
       return { ok: true };
     },
     "sessions.softInterrupt": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       const interruptId = `si_${Date.now()}`;
       await client.softInterruptWithId(params.sessionId, params.text, {
         urgent: params.urgent ?? false,
@@ -1595,7 +1772,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, interruptId };
     },
     "sessions.cancelSoftInterrupts": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       if (params.interruptId) {
         await client.cancelSoftInterrupt(params.sessionId, params.interruptId);
       } else {
@@ -1608,7 +1785,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true };
     },
     "sessions.respondQuestion": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await deps.sessionHub.getClient(params.sessionId);
       const response = buildQuestionResponseWire(params.answers, params.notes);
       const reply = await client.request({
         req: "question_response",
