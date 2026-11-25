@@ -294,7 +294,6 @@ export function IconRail() {
   const usageWindows = [
     {
       id: "5h",
-      shortLabel: "5h",
       label: "5h session window",
       pct: fiveHourPct,
       valueLabel: fiveHourLabel,
@@ -302,7 +301,6 @@ export function IconRail() {
     },
     {
       id: "weekly",
-      shortLabel: "Week",
       label: "Weekly limit",
       pct: weeklyPct,
       valueLabel: weeklyLabel,
@@ -312,7 +310,6 @@ export function IconRail() {
       ? [
           {
             id: "monthly",
-            shortLabel: "Month",
             label: "Monthly allowance",
             pct: monthlyPct,
             valueLabel: monthlyLabel,
@@ -565,55 +562,6 @@ export function IconRail() {
           </div>
           <div className="mx-[18px] h-px bg-hairline" />
           <div className="flex flex-col gap-3.5 px-[18px] py-[15px] text-sm">
-            {isSignedIn && usageWindows.some((w) => w.pct != null) && (
-              <div
-                data-testid="usage-limits-graph"
-                aria-label="Usage capacity graph"
-                className="rounded-xl border border-hairline bg-inset px-3 py-2.5"
-              >
-                <div className="mb-2 flex items-center justify-between text-[10.5px] font-medium text-muted-ink">
-                  <span>Capacity overview</span>
-                  <span className="font-mono text-brand-text tabular-nums">
-                    Remaining
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "grid items-end gap-2.5",
-                    usageWindows.length >= 3 ? "grid-cols-3" : "grid-cols-2"
-                  )}
-                >
-                  {usageWindows.map((win) => {
-                    const pct = win.pct ?? 0
-                    return (
-                      <div
-                        key={`graph_${win.id}`}
-                        className="flex flex-col items-center gap-1"
-                      >
-                        <div className="flex h-11 w-full items-end overflow-hidden rounded-md bg-active p-0.5">
-                          <div
-                            className={cn(
-                              "w-full rounded-[4px] transition-all duration-300",
-                              usageBarFillClass(win.pct)
-                            )}
-                            style={{ height: `${Math.max(6, pct)}%` }}
-                          />
-                        </div>
-                        <div className="flex w-full items-baseline justify-between gap-1 text-[10px]">
-                          <span className="truncate text-muted-ink">
-                            {win.shortLabel}
-                          </span>
-                          <span className="font-mono font-medium text-ink tabular-nums">
-                            {win.pct != null ? `${Math.round(win.pct)}%` : "—"}
-                          </span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-
             {usageWindows.map((win) => (
               <div key={win.id} className="flex flex-col gap-1.5">
                 <div className="flex items-start justify-between gap-3">
