@@ -707,9 +707,22 @@ export interface FeatureRouterHub {
   getActiveProvider(): string | undefined;
   getActivePermissionMode(): PermissionModeId;
   getClient(sessionId?: string): Promise<RayucodeClient>;
-  listSessions(includeArchived?: boolean): Promise<{
+  listSessions(
+    includeArchived?: boolean,
+    options?: { includeExternal?: boolean; sources?: string[] },
+  ): Promise<{
     sessions: SessionSummaryView[];
     activeSessionId?: string;
+  }>;
+  listExternalProjects?(
+    source?: string,
+  ): Promise<{ projects: import("../../shared/vscodeProtocol.js").ExternalProjectView[] }>;
+  importExternalSessions?(
+    items: import("../../shared/vscodeProtocol.js").ImportExternalSessionItemView[],
+    options?: { forceResync?: boolean; forkOnConflict?: boolean },
+  ): Promise<{
+    sessions: SessionSummaryView[];
+    skipped: import("../../shared/vscodeProtocol.js").ImportSkipView[];
   }>;
   createSession(options?: {
     workingDir?: string;
@@ -790,6 +803,10 @@ export interface FeatureRouterHub {
   attachSessionToWorkspace?(
     workspaceIdOrPath: string,
     sessionId: string,
+  ): Promise<WorkspaceLedgerView>;
+  importProjectGroup?(
+    rawPath: string,
+    options: { name?: string; sessionIds: readonly string[] },
   ): Promise<WorkspaceLedgerView>;
   setSessionPinnedLedger?(
     sessionId: string,
@@ -1553,6 +1570,15 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
       return handlers["workspace.ledger.get"](undefined);
     },
+    "workspace.ledger.importProjectGroup": async (params) => {
+      if (typeof deps.sessionHub.importProjectGroup === "function") {
+        return deps.sessionHub.importProjectGroup(params.path, {
+          name: params.name,
+          sessionIds: params.sessionIds,
+        });
+      }
+      return handlers["workspace.ledger.get"](undefined);
+    },
     "workspace.findFiles": async (params) => {
       const limit = params.limit ?? 50;
       const sid = params.sessionId ?? deps.sessionHub.getActiveSessionId();
@@ -1651,13 +1677,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     "sessions.list": async (params) => {
       try {
-        return await deps.sessionHub.listSessions(params?.includeArchived ?? false);
+        return await deps.sessionHub.listSessions(
+          params?.includeArchived ?? false,
+          {
+            includeExternal: params?.includeExternal ?? true,
+            sources: params?.sources,
+          },
+        );
       } catch {
         return {
           sessions: [],
           activeSessionId: deps.sessionHub.getActiveSessionId(),
         };
       }
+    },
+    "sessions.listExternalProjects": async (params) => {
+      try {
+        if (typeof deps.sessionHub.listExternalProjects === "function") {
+          return await deps.sessionHub.listExternalProjects(params?.source);
+        }
+        return { projects: [] };
+      } catch {
+        return { projects: [] };
+      }
+    },
+    "sessions.importExternal": async (params) => {
+      if (typeof deps.sessionHub.importExternalSessions === "function") {
+        return await deps.sessionHub.importExternalSessions(params.items, {
+          forceResync: params.forceResync,
+          forkOnConflict: params.forkOnConflict,
+        });
+      }
+      return { sessions: [], skipped: [] };
     },
     "sessions.search": async (params) => {
       const queryWords = params.query.trim().split(/\s+/).filter(Boolean);

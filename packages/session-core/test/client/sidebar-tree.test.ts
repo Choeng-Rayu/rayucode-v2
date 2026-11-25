@@ -4,6 +4,9 @@ import {
   createOrReuseDraft,
   deriveSidebarTree,
   formatDaemonVersionLabel,
+  formatSessionSourceLabel,
+  normalizeSessionSource,
+  sessionSourceToFilterGroup,
   type SidebarSessionLike,
   type SidebarWorkspaceLike,
 } from "../../src/client/sidebar-tree.js";
@@ -135,5 +138,147 @@ describe("deriveSidebarTree", () => {
     expect(formatDaemonVersionLabel("0.1.0")).toBe("v0.1.0");
     expect(formatDaemonVersionLabel("v1.14.0")).toBe("v1.14.0");
     expect(formatDaemonVersionLabel("rayu-harness-v1")).toBe("rayu-harness-v1");
+  });
+
+  it("normalizes session sources, maps filter groups, and formats human labels", () => {
+    expect(normalizeSessionSource(undefined)).toBe("rayu");
+    expect(normalizeSessionSource(null)).toBe("rayu");
+    expect(normalizeSessionSource("unknown-tool")).toBe("rayu");
+    expect(normalizeSessionSource("claude_code")).toBe("claude_code");
+    expect(normalizeSessionSource("claude-desktop")).toBe("claude_desktop");
+    expect(normalizeSessionSource("codex")).toBe("codex");
+    expect(normalizeSessionSource("codex_desktop")).toBe("codex_desktop");
+    expect(normalizeSessionSource("cursor")).toBe("cursor");
+    expect(normalizeSessionSource("opencode")).toBe("opencode");
+    expect(normalizeSessionSource("pi")).toBe("pi");
+
+    expect(sessionSourceToFilterGroup("claude_code")).toBe("claude");
+    expect(sessionSourceToFilterGroup("claude_desktop")).toBe("claude");
+    expect(sessionSourceToFilterGroup("codex")).toBe("codex");
+    expect(sessionSourceToFilterGroup("codex_desktop")).toBe("codex");
+    expect(sessionSourceToFilterGroup("cursor")).toBe("cursor");
+    expect(sessionSourceToFilterGroup("opencode")).toBe("opencode");
+    expect(sessionSourceToFilterGroup("pi")).toBe("pi");
+    expect(sessionSourceToFilterGroup(undefined)).toBe("rayu");
+
+    expect(formatSessionSourceLabel("rayu")).toBe("RayuCode");
+    expect(formatSessionSourceLabel("claude_code")).toBe("Claude Code");
+    expect(formatSessionSourceLabel("claude_desktop")).toBe("Claude Desktop");
+    expect(formatSessionSourceLabel("codex")).toBe("Codex CLI");
+    expect(formatSessionSourceLabel("codex_desktop")).toBe("Codex Desktop");
+    expect(formatSessionSourceLabel("cursor")).toBe("Cursor");
+    expect(formatSessionSourceLabel("opencode")).toBe("OpenCode");
+    expect(formatSessionSourceLabel("pi")).toBe("Pi");
+  });
+
+  it("computes sourceCounts before sourceFilter and filters groups, ungrouped, pinned, and flat", () => {
+    const mixedSessions: SidebarSessionLike[] = [
+      {
+        id: "s-rayu",
+        title: "Native Rayu chat",
+        workingDir: "/Users/dev/rayucode-v2",
+        updatedAtMs: 700,
+        source: "rayu",
+      },
+      {
+        id: "s-claude-cli",
+        title: "Claude CLI chat",
+        workingDir: "/Users/dev/rayucode-v2",
+        updatedAtMs: 650,
+        source: "claude_code",
+        externalSessionId: "cc-1",
+        imported: false,
+      },
+      {
+        id: "s-claude-desktop",
+        title: "Claude Desktop chat",
+        workingDir: "",
+        updatedAtMs: 640,
+        source: "claude_desktop",
+        externalProjectName: "Desktop Project",
+        imported: true,
+        syncStale: true,
+      },
+      {
+        id: "s-codex-cli",
+        title: "Codex CLI chat",
+        workingDir: "/Users/dev/rayucode-v2",
+        updatedAtMs: 600,
+        source: "codex",
+      },
+      {
+        id: "s-codex-desktop",
+        title: "Codex Desktop chat",
+        workingDir: "/Users/dev/other-repo",
+        updatedAtMs: 590,
+        source: "codex_desktop",
+      },
+      {
+        id: "s-cursor",
+        title: "Cursor chat",
+        workingDir: "",
+        updatedAtMs: 550,
+        source: "cursor",
+      },
+      {
+        id: "s-archived-claude",
+        title: "Archived Claude chat",
+        workingDir: "/Users/dev/rayucode-v2",
+        updatedAtMs: 500,
+        source: "claude_code",
+        archived: true,
+      },
+    ];
+
+    const claudeTree = deriveSidebarTree({
+      sessions: mixedSessions,
+      workspaces,
+      pinnedSessionIds: ["s-rayu", "s-claude-cli", "s-codex-cli"],
+      sourceFilter: "claude",
+    });
+
+    expect(claudeTree.activeSourceFilter).toBe("claude");
+    // Counts include all non-archived, scope-visible sessions BEFORE applying sourceFilter
+    expect(claudeTree.sourceCounts).toEqual({
+      all: 6,
+      rayu: 1,
+      claude: 2,
+      codex: 2,
+      cursor: 1,
+      opencode: 0,
+      pi: 0,
+    });
+    expect(
+      claudeTree.groups.find((g) => g.workspace.id === "ws-a")?.sessions.map((s) => s.id)
+    ).toEqual(["s-claude-cli"]);
+    expect(
+      claudeTree.groups.find((g) => g.workspace.id === "ws-b")?.sessions.map((s) => s.id)
+    ).toEqual([]);
+    expect(claudeTree.ungrouped.map((s) => s.id)).toEqual(["s-claude-desktop"]);
+    expect(claudeTree.pinned.map((s) => s.id)).toEqual(["s-claude-cli"]);
+    expect(claudeTree.flat.map((s) => s.id)).toEqual([
+      "s-claude-cli",
+      "s-claude-desktop",
+    ]);
+
+    // Codex filter matches both codex and codex_desktop, respecting scopePaths for sourceCounts
+    const scopedCodexTree = deriveSidebarTree({
+      sessions: mixedSessions,
+      workspaces,
+      scopePaths: ["/Users/dev/rayucode-v2"],
+      showAllProjects: false,
+      sourceFilter: "codex",
+    });
+    // s-codex-desktop belongs to out-of-scope ws-b, so it is excluded from scope-visible sourceCounts
+    expect(scopedCodexTree.sourceCounts).toEqual({
+      all: 5,
+      rayu: 1,
+      claude: 2,
+      codex: 1,
+      cursor: 1,
+      opencode: 0,
+      pi: 0,
+    });
+    expect(scopedCodexTree.flat.map((s) => s.id)).toEqual(["s-codex-cli"]);
   });
 });

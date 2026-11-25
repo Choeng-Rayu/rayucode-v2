@@ -2,7 +2,7 @@
 
 Date: 2026-11-25
 Branch: `feature/improve-chat-experience`
-Status: DRAFT (Pending User Spec Review)
+Status: APPROVED
 
 ## 1. Goal & Problem Statement
 

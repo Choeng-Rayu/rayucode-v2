@@ -1318,6 +1318,27 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true, branch: String(params.branch ?? "main") } as RpcResult<M>;
 
     // --- Sessions ---
+    case "workspace.ledger.importProjectGroup": {
+      const targetPath = String(params.path ?? "").trim();
+      if (
+        targetPath &&
+        !mockState.workspaces.some((w) => w.path === targetPath)
+      ) {
+        const name =
+          typeof params.name === "string" && params.name.trim()
+            ? params.name.trim()
+            : targetPath.split(/[\\/]/).filter(Boolean).pop() ?? targetPath;
+        mockState.workspaces = [
+          ...mockState.workspaces,
+          { name, path: targetPath },
+        ];
+      }
+      return buildMockWorkspaceLedger() as RpcResult<M>;
+    }
+    case "sessions.listExternalProjects":
+      return { projects: [] } as RpcResult<M>;
+    case "sessions.importExternal":
+      return { sessions: [], skipped: [] } as RpcResult<M>;
     case "sessions.list": {
       const includeArchived = Boolean(params.includeArchived);
       const list = includeArchived

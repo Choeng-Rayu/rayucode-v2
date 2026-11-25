@@ -22,7 +22,15 @@ const rayuApi = {
     },
   },
   harness: {
-    listSessions: () => ipcRenderer.invoke("rayu:harness:list-sessions"),
+    listSessions: (options) =>
+      ipcRenderer.invoke("rayu:harness:list-sessions", options),
+    listExternalProjects: (source) =>
+      ipcRenderer.invoke(
+        "rayu:harness:list-external-projects",
+        source ? { source } : undefined
+      ),
+    importExternalSessions: (payload) =>
+      ipcRenderer.invoke("rayu:harness:import-external-sessions", payload),
     createSession: (workingDir, title) =>
       ipcRenderer.invoke("rayu:harness:create-session", { workingDir, title }),
     renameSession: (sessionId, title) =>
@@ -101,6 +109,12 @@ const rayuApi = {
     ensure: (targetPath, name) =>
       ipcRenderer.invoke("rayu:workspace:ensure", {
         path: targetPath,
+        ...(name ? { name } : {}),
+      }),
+    importProjectGroup: (targetPath, sessionIds, name) =>
+      ipcRenderer.invoke("rayu:workspace:import-project-group", {
+        path: targetPath,
+        sessionIds,
         ...(name ? { name } : {}),
       }),
     pickFolder: () => ipcRenderer.invoke("rayu:workspace:pick-folder"),

@@ -1,3 +1,93 @@
+export type SessionSourceId =
+  | "rayu"
+  | "claude_code"
+  | "claude_desktop"
+  | "codex"
+  | "codex_desktop"
+  | "cursor"
+  | "opencode"
+  | "pi";
+
+export type SessionSourceFilter =
+  | "all"
+  | "rayu"
+  | "claude"
+  | "codex"
+  | "cursor"
+  | "opencode"
+  | "pi";
+
+export function normalizeSessionSource(raw?: string | null): SessionSourceId {
+  const normalized = raw?.trim().toLowerCase().replace(/[\s-]+/g, "_") ?? "";
+  switch (normalized) {
+    case "claude_code":
+    case "claude":
+      return "claude_code";
+    case "claude_desktop":
+      return "claude_desktop";
+    case "codex":
+    case "codex_cli":
+      return "codex";
+    case "codex_desktop":
+      return "codex_desktop";
+    case "cursor":
+      return "cursor";
+    case "opencode":
+    case "open_code":
+      return "opencode";
+    case "pi":
+      return "pi";
+    case "rayu":
+    case "rayucode":
+    default:
+      return "rayu";
+  }
+}
+
+export function sessionSourceToFilterGroup(
+  source?: string | null
+): Exclude<SessionSourceFilter, "all"> {
+  switch (normalizeSessionSource(source)) {
+    case "claude_code":
+    case "claude_desktop":
+      return "claude";
+    case "codex":
+    case "codex_desktop":
+      return "codex";
+    case "cursor":
+      return "cursor";
+    case "opencode":
+      return "opencode";
+    case "pi":
+      return "pi";
+    case "rayu":
+    default:
+      return "rayu";
+  }
+}
+
+export function formatSessionSourceLabel(source?: string | null): string {
+  switch (normalizeSessionSource(source)) {
+    case "claude_code":
+      return "Claude Code";
+    case "claude_desktop":
+      return "Claude Desktop";
+    case "codex":
+      return "Codex CLI";
+    case "codex_desktop":
+      return "Codex Desktop";
+    case "cursor":
+      return "Cursor";
+    case "opencode":
+      return "OpenCode";
+    case "pi":
+      return "Pi";
+    case "rayu":
+    default:
+      return "RayuCode";
+  }
+}
+
 export interface SidebarWorkspaceLike {
   id: string;
   name: string;
@@ -19,6 +109,12 @@ export interface SidebarSessionLike {
   isLive?: boolean;
   needsAttention?: boolean;
   messageCount?: number;
+  source?: string | null;
+  externalSessionId?: string;
+  externalPath?: string;
+  externalProjectName?: string;
+  imported?: boolean;
+  syncStale?: boolean;
 }
 
 export interface ProvisionalDraftSession {
@@ -52,6 +148,7 @@ export interface DeriveSidebarTreeInput<TSession extends SidebarSessionLike> {
   viewMode?: "grouped" | "flat";
   sortBy?: "updated" | "manual";
   searchQuery?: string;
+  sourceFilter?: SessionSourceFilter;
   activeDraft?: ProvisionalDraftSession | null;
 }
 
@@ -65,6 +162,8 @@ export interface DerivedSidebarTree<TSession extends SidebarSessionLike> {
   archived: TSession[];
   hiddenOutOfScopeCount: number;
   sessionWorkspaceMap: Record<string, string>;
+  sourceCounts: Record<SessionSourceFilter, number>;
+  activeSourceFilter: SessionSourceFilter;
 }
 
 export function normalizeClientPath(raw?: string | null): string {
@@ -162,6 +261,7 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
   const viewMode = input.viewMode ?? "grouped";
   const sortBy = input.sortBy ?? "updated";
   const query = input.searchQuery?.trim().toLowerCase() ?? "";
+  const activeSourceFilter: SessionSourceFilter = input.sourceFilter ?? "all";
 
   const pinnedOrder = new Map<string, number>();
   (input.pinnedSessionIds ?? []).forEach((id, idx) => {
@@ -190,12 +290,18 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
     if (!query) return true;
     const title = (s.title ?? "").toLowerCase();
     const dir = (s.workingDir ?? "").toLowerCase();
+    const extProj = (s.externalProjectName ?? "").toLowerCase();
     return (
       title.includes(query) ||
       dir.includes(query) ||
+      extProj.includes(query) ||
       Boolean(wsName && wsName.toLowerCase().includes(query))
     );
   };
+
+  const matchesSourceFilter = (s: TSession): boolean =>
+    activeSourceFilter === "all" ||
+    sessionSourceToFilterGroup(s.source) === activeSourceFilter;
 
   // Partition archived vs active sessions
   const archived: TSession[] = [];
@@ -233,50 +339,6 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
     }
   }
 
-  // Assign each active session to AT MOST ONE workspace (never matching empty workingDir!)
-  const sessionsByWorkspace = new Map<string, TSession[]>();
-  const sessionWorkspaceMap: Record<string, string> = {};
-  const ungrouped: TSession[] = [];
-
-  for (const session of activeSessions) {
-    let ownerId = explicitSessionOwner.get(session.id);
-    if (!ownerId && session.workingDir) {
-      const sKey = pathComparisonKey(session.workingDir);
-      if (sKey) {
-        const directMatch = wsByPathKey.get(sKey);
-        if (directMatch) {
-          ownerId = directMatch.id;
-        }
-      }
-    }
-
-    if (ownerId && wsById.has(ownerId)) {
-      const ws = wsById.get(ownerId)!;
-      sessionWorkspaceMap[session.id] = ownerId;
-      if (!matchesQuery(session, ws.name)) continue;
-      let bucket = sessionsByWorkspace.get(ownerId);
-      if (!bucket) {
-        bucket = [];
-        sessionsByWorkspace.set(ownerId, bucket);
-      }
-      bucket.push(session);
-    } else {
-      if (matchesQuery(session)) {
-        ungrouped.push(session);
-      }
-    }
-  }
-
-  const sortSessions = (list: TSession[]): TSession[] =>
-    list.sort((a, b) => {
-      const aPin = pinnedOrder.has(a.id) ? pinnedOrder.get(a.id)! : Number.MAX_SAFE_INTEGER;
-      const bPin = pinnedOrder.has(b.id) ? pinnedOrder.get(b.id)! : Number.MAX_SAFE_INTEGER;
-      if (aPin !== bPin) return aPin - bPin;
-      return (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0);
-    });
-
-  sortSessions(ungrouped);
-
   // Determine VS Code open-folder scope filter if provided
   const scopeKeys = new Set(
     (input.scopePaths ?? []).map((p) => pathComparisonKey(p)).filter(Boolean)
@@ -299,6 +361,78 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
       hiddenOutOfScopeCount += 1;
     }
   }
+  const visibleWorkspaceIds = new Set(scopedWorkspaces.map((w) => w.id));
+
+  // Assign each active session to AT MOST ONE workspace (never matching empty workingDir!)
+  // and compute sourceCounts BEFORE applying sourceFilter over non-archived, scope-visible sessions.
+  const sessionsByWorkspace = new Map<string, TSession[]>();
+  const sessionWorkspaceMap: Record<string, string> = {};
+  const ungrouped: TSession[] = [];
+  const sourceCounts: Record<SessionSourceFilter, number> = {
+    all: 0,
+    rayu: 0,
+    claude: 0,
+    codex: 0,
+    cursor: 0,
+    opencode: 0,
+    pi: 0,
+  };
+
+  for (const session of activeSessions) {
+    let ownerId = explicitSessionOwner.get(session.id);
+    if (!ownerId && session.workingDir) {
+      const sKey = pathComparisonKey(session.workingDir);
+      if (sKey) {
+        const directMatch = wsByPathKey.get(sKey);
+        if (directMatch) {
+          ownerId = directMatch.id;
+        }
+      }
+    }
+
+    const validOwnerId = ownerId && wsById.has(ownerId) ? ownerId : undefined;
+    if (validOwnerId) {
+      sessionWorkspaceMap[session.id] = validOwnerId;
+    }
+
+    const isScopeVisible =
+      !applyScopeFilter ||
+      !validOwnerId ||
+      visibleWorkspaceIds.has(validOwnerId);
+    if (isScopeVisible) {
+      sourceCounts.all += 1;
+      sourceCounts[sessionSourceToFilterGroup(session.source)] += 1;
+    }
+
+    if (!matchesSourceFilter(session)) {
+      continue;
+    }
+
+    if (validOwnerId) {
+      const ws = wsById.get(validOwnerId)!;
+      if (!matchesQuery(session, ws.name)) continue;
+      let bucket = sessionsByWorkspace.get(validOwnerId);
+      if (!bucket) {
+        bucket = [];
+        sessionsByWorkspace.set(validOwnerId, bucket);
+      }
+      bucket.push(session);
+    } else {
+      if (matchesQuery(session)) {
+        ungrouped.push(session);
+      }
+    }
+  }
+
+  const sortSessions = (list: TSession[]): TSession[] =>
+    list.sort((a, b) => {
+      const aPin = pinnedOrder.has(a.id) ? pinnedOrder.get(a.id)! : Number.MAX_SAFE_INTEGER;
+      const bPin = pinnedOrder.has(b.id) ? pinnedOrder.get(b.id)! : Number.MAX_SAFE_INTEGER;
+      if (aPin !== bPin) return aPin - bPin;
+      return (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0);
+    });
+
+  sortSessions(ungrouped);
 
   // Determine where the single provisional draft attaches (at most 1 place)
   let draftWorkspaceId: string | null = null;
@@ -356,9 +490,9 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
     return b.latestUpdatedAtMs - a.latestUpdatedAtMs;
   });
 
-  // Pinned list (ordered by pinnedSessionIds, respecting scope if filtered)
-  const visibleWorkspaceIds = new Set(scopedWorkspaces.map((w) => w.id));
+  // Pinned & flat lists (respecting scope, search query, and sourceFilter)
   const scopedActiveSessions = activeSessions.filter((s) => {
+    if (!matchesSourceFilter(s)) return false;
     if (!matchesQuery(s, wsById.get(sessionWorkspaceMap[s.id] ?? "")?.name)) {
       return false;
     }
@@ -379,11 +513,13 @@ export function deriveSidebarTree<TSession extends SidebarSessionLike>(
     viewMode,
     pinned,
     groups,
-    ungrouped: applyScopeFilter && query ? ungrouped : ungrouped,
+    ungrouped,
     ungroupedHasDraft,
     flat,
     archived,
     hiddenOutOfScopeCount,
     sessionWorkspaceMap,
+    sourceCounts,
+    activeSourceFilter,
   };
 }

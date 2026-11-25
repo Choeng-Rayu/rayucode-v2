@@ -40,6 +40,12 @@ export interface HarnessSessionInfoLike {
   saved?: boolean
   archived?: boolean
   archived_at_ms?: number
+  source?: string
+  external_session_id?: string
+  external_path?: string
+  external_project_name?: string
+  imported?: boolean
+  sync_stale?: boolean
 }
 
 export function isTempDirectoryPath(raw?: string | null): boolean {
@@ -351,6 +357,12 @@ export function mapSessionInfoToSummary(
     connection: "local",
     saved: Boolean(info.saved),
     archived: Boolean(info.archived),
+    source: info.source ?? "rayu",
+    externalSessionId: info.external_session_id,
+    externalPath: info.external_path,
+    externalProjectName: info.external_project_name,
+    imported: info.imported,
+    syncStale: info.sync_stale,
     modelId: "claude-opus-5-5",
     modelLabel: "Claude Opus 5.5",
     effort: "Medium",

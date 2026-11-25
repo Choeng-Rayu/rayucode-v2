@@ -202,4 +202,68 @@ describe("WorkspaceRegistry", () => {
     expect(ledger.workspaces).toHaveLength(0);
     registry.dispose();
   });
+
+  it("importProjectGroup atomically creates/canonicalizes a workspace and attaches all sessions in a single write", async () => {
+    const root = makeTempDir();
+    const realProject = path.join(root, "desktop-project");
+    const symlinkProject = path.join(root, "desktop-project-link");
+    const otherProject = path.join(root, "other-project");
+    fs.mkdirSync(realProject);
+    fs.mkdirSync(otherProject);
+    fs.symlinkSync(realProject, symlinkProject);
+
+    const ledgerPath = path.join(root, "workspaces.json");
+    const registry = new WorkspaceRegistry({
+      filePath: ledgerPath,
+      enableWatch: false,
+    });
+
+    // Put s2 in another workspace first to verify single-owner invariant during import
+    const other = await registry.ensureWorkspace(otherProject);
+    await registry.attachSession(other.workspace.id, "s2");
+
+    let changeEvents = 0;
+    const unsub = registry.subscribe(() => {
+      changeEvents += 1;
+    });
+
+    const first = await registry.importProjectGroup(`${symlinkProject}/`, {
+      name: "Claude Desktop Project",
+      sessionIds: ["s1", "s2", "s1", "  ", "s3"],
+    });
+
+    expect(first.created).toBe(true);
+    expect(changeEvents).toBe(1);
+    expect(first.workspace.name).toBe("Claude Desktop Project");
+    expect(first.workspace.canonicalPath).toBe(
+      canonicalizeWorkspacePath(realProject).canonicalPath
+    );
+    expect(first.workspace.sessionIds).toEqual(["s1", "s2", "s3"]);
+    // s2 was moved out of otherProject
+    const updatedOther = first.ledger.workspaces.find(
+      (w) => w.id === other.workspace.id
+    )!;
+    expect(updatedOther.sessionIds).toEqual([]);
+
+    // Re-importing via the real path reuses the same workspace and merges new sessions
+    const second = await registry.importProjectGroup(realProject, {
+      sessionIds: ["s4", "s2"],
+    });
+
+    expect(second.created).toBe(false);
+    expect(changeEvents).toBe(2);
+    expect(second.workspace.id).toBe(first.workspace.id);
+    expect(second.workspace.name).toBe("Claude Desktop Project");
+    expect(second.workspace.sessionIds).toEqual(["s4", "s2", "s1", "s3"]);
+
+    // Verify persisted on disk
+    const reloaded = await registry.load();
+    const persisted = reloaded.workspaces.find(
+      (w) => w.id === first.workspace.id
+    )!;
+    expect(persisted.sessionIds).toEqual(["s4", "s2", "s1", "s3"]);
+
+    unsub();
+    registry.dispose();
+  });
 });

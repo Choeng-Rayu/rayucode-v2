@@ -893,9 +893,60 @@ export class RayuDaemonClient extends EventEmitter {
     return targetClient
   }
 
-  async listSessions(includeArchived = false): Promise<SessionInfo[]> {
+  async listSessions(
+    includeArchived = false,
+    options?: { includeExternal?: boolean; sources?: string[] }
+  ): Promise<SessionInfo[]> {
     const client = await this.connect()
-    return client.listSessions({ includeArchived, limit: 100 })
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false
+    const includeExternal =
+      (options?.includeExternal ?? true) && supportsExternal
+    return client.listSessions({
+      includeArchived,
+      limit: 200,
+      ...(includeExternal ? { includeExternal: true } : {}),
+      ...(includeExternal && options?.sources?.length
+        ? { sources: options.sources }
+        : {}),
+    })
+  }
+
+  async listExternalProjects(source?: string) {
+    const client = await this.connect()
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false
+    if (!supportsExternal || typeof client.listExternalProjects !== "function") {
+      return []
+    }
+    return client.listExternalProjects(source ? { source } : {})
+  }
+
+  async importExternalSessions(
+    items: Array<{
+      source: string
+      external_session_id: string
+      external_path?: string
+      working_dir?: string
+    }>,
+    options?: { forceResync?: boolean; forkOnConflict?: boolean }
+  ) {
+    const client = await this.connect()
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false
+    if (
+      !supportsExternal ||
+      typeof client.importExternalSessions !== "function"
+    ) {
+      return { sessions: [], skipped: [] }
+    }
+    return client.importExternalSessions(items, options)
   }
 
   async createSession(

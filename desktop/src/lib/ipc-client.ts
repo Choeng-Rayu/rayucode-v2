@@ -36,6 +36,12 @@ export interface SessionSummary {
   connection?: "local" | "cloud"
   saved?: boolean
   archived?: boolean
+  source?: string
+  externalSessionId?: string
+  externalPath?: string
+  externalProjectName?: string
+  imported?: boolean
+  syncStale?: boolean
   modelId: string
   modelLabel: string
   effort: ReasoningEffort
@@ -2817,7 +2823,36 @@ export interface RayuBridgeApi {
     ) => () => void
   }
   harness?: {
-    listSessions?: () => Promise<HarnessSessionInfoLike[]>
+    listSessions?: (options?: {
+      includeArchived?: boolean
+      includeExternal?: boolean
+      sources?: string[]
+    }) => Promise<HarnessSessionInfoLike[]>
+    listExternalProjects?: (source?: string) => Promise<
+      Array<{
+        id: string
+        source: string
+        name: string
+        working_dir?: string | null
+        session_count: number
+        updated_at_ms?: number
+        sessions: HarnessSessionInfoLike[]
+      }>
+    >
+    importExternalSessions?: (payload: {
+      items: ImportExternalSessionInput[]
+      forceResync?: boolean
+      forkOnConflict?: boolean
+    }) => Promise<{
+      sessions: HarnessSessionInfoLike[]
+      skipped: Array<{
+        external_session_id: string
+        source: string
+        reason: string
+        message: string
+        existing_session_id?: string | null
+      }>
+    }>
     createSession?: (
       workingDir?: string,
       title?: string
@@ -2883,6 +2918,17 @@ export interface RayuBridgeApi {
     setPath?: (targetPath: string) => Promise<WorkspaceInfo>
     ensure?: (
       targetPath: string,
+      name?: string
+    ) => Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }>
+    importProjectGroup?: (
+      targetPath: string,
+      sessionIds: string[],
       name?: string
     ) => Promise<{
       id: string
@@ -3440,6 +3486,31 @@ async function isHarnessLive(): Promise<boolean> {
   }
 }
 
+export interface ExternalProjectSummary {
+  id: string
+  source: string
+  name: string
+  workingDir?: string | null
+  sessionCount: number
+  updatedAtMs?: number
+  sessions: SessionSummary[]
+}
+
+export interface ImportExternalSessionInput {
+  source: string
+  external_session_id: string
+  external_path?: string
+  working_dir?: string
+}
+
+export interface ImportExternalSkipSummary {
+  externalSessionId: string
+  source: string
+  reason: string
+  message: string
+  existingSessionId?: string | null
+}
+
 let inFlightSessionsList: Promise<SessionSummary[]> | null = null
 
 export const ipcClient = {
@@ -3453,7 +3524,9 @@ export const ipcClient = {
         const bridge = getBridge()
         if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
           try {
-            const liveSessions = await bridge.harness.listSessions()
+            const liveSessions = await bridge.harness.listSessions({
+              includeExternal: true,
+            })
             lastKnownDaemonLive = true
             const mappedLive = liveSessions.map((info) => {
               const summary = mapSessionInfoToSummary(info)
@@ -3503,6 +3576,63 @@ export const ipcClient = {
         inFlightSessionsList = null
       })
       return inFlightSessionsList
+    },
+    async listExternalProjects(
+      source?: string
+    ): Promise<ExternalProjectSummary[]> {
+      const bridge = getBridge()
+      if (
+        !bridge?.harness?.listExternalProjects ||
+        IS_TEST_ENV ||
+        !(await isHarnessLive())
+      ) {
+        return []
+      }
+      try {
+        const raw = await bridge.harness.listExternalProjects(source)
+        return raw.map((proj) => ({
+          id: proj.id,
+          source: proj.source,
+          name: proj.name,
+          workingDir: proj.working_dir ?? null,
+          sessionCount: proj.session_count,
+          updatedAtMs: proj.updated_at_ms,
+          sessions: proj.sessions.map((s) => mapSessionInfoToSummary(s)),
+        }))
+      } catch {
+        return []
+      }
+    },
+    async importExternal(
+      items: ImportExternalSessionInput[],
+      options?: { forceResync?: boolean; forkOnConflict?: boolean }
+    ): Promise<{
+      sessions: SessionSummary[]
+      skipped: ImportExternalSkipSummary[]
+    }> {
+      const bridge = getBridge()
+      if (
+        !bridge?.harness?.importExternalSessions ||
+        IS_TEST_ENV ||
+        !(await isHarnessLive())
+      ) {
+        return { sessions: [], skipped: [] }
+      }
+      const res = await bridge.harness.importExternalSessions({
+        items,
+        forceResync: options?.forceResync,
+        forkOnConflict: options?.forkOnConflict,
+      })
+      return {
+        sessions: res.sessions.map((s) => mapSessionInfoToSummary(s)),
+        skipped: res.skipped.map((skip) => ({
+          externalSessionId: skip.external_session_id,
+          source: skip.source,
+          reason: skip.reason,
+          message: skip.message,
+          existingSessionId: skip.existing_session_id ?? null,
+        })),
+      }
     },
     async listProjects(): Promise<ProjectGroup[]> {
       const bridge = getBridge()
@@ -4406,6 +4536,23 @@ export const ipcClient = {
         canonicalPath: cleanPath,
         created: true,
       }
+    },
+    async importProjectGroup(
+      targetPath: string,
+      sessionIds: string[],
+      name?: string
+    ): Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }> {
+      const bridge = getBridge()
+      if (bridge?.workspace?.importProjectGroup && !IS_TEST_ENV) {
+        return bridge.workspace.importProjectGroup(targetPath, sessionIds, name)
+      }
+      return ipcClient.workspace.ensure(targetPath, name)
     },
     async listFiles(): Promise<
       Array<{ path: string; name: string; sizeBytes: number; language: string }>

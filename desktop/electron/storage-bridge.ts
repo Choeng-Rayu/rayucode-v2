@@ -936,6 +936,30 @@ export async function ensureRegisteredWorkspace(
   }
 }
 
+export async function importProjectGroupInRegistry(
+  rawPath: string,
+  options: { name?: string; sessionIds: readonly string[] }
+): Promise<{
+  id: string
+  name: string
+  path: string
+  canonicalPath: string
+  created: boolean
+}> {
+  const registry = await ensureWorkspaceRegistryReady()
+  const { workspace, created } = await registry.importProjectGroup(rawPath, {
+    name: options.name,
+    sessionIds: options.sessionIds,
+  })
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    path: workspace.path,
+    canonicalPath: workspace.canonicalPath,
+    created,
+  }
+}
+
 export async function syncSessionArchivedInRegistry(
   sessionId: string,
   archived: boolean

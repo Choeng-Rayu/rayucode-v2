@@ -22,6 +22,8 @@ pub mod timing;
 pub mod translate;
 
 #[cfg(all(test, unix))]
+mod external_sessions_tests;
+#[cfg(all(test, unix))]
 mod session_presence_tests;
 #[cfg(all(test, unix))]
 mod stdio_tests;
@@ -406,6 +408,7 @@ where
                 "todo_state",
                 "permissions",
                 "permission_modes",
+                "external_sessions",
             ]
             .into_iter()
             .map(str::to_string)
@@ -520,10 +523,64 @@ where
                         }
                     }
                 }
+                if matches!(
+                    request["req"].as_str(),
+                    Some("list_external_projects" | "import_external_sessions")
+                ) {
+                    let api_id = request["id"].as_u64().unwrap_or(0);
+                    let req_name = request["req"].as_str().unwrap_or("?").to_string();
+                    let req_clone = request.clone();
+                    let translate_started = std::time::Instant::now();
+                    let reply_frame = tokio::task::spawn_blocking(move || {
+                        if req_clone["req"] == "list_external_projects" {
+                            translate::list_external_projects_reply(api_id, &req_clone)
+                        } else {
+                            translate::import_external_sessions_reply(api_id, &req_clone)
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|err| {
+                        ServerFrame::reply(
+                            api_id,
+                            ApiEvent::Error {
+                                code: ErrorCode::Internal,
+                                message: format!("external session task failed: {err}"),
+                            },
+                        )
+                    });
+                    if let Some(id) = request["id"].as_u64() {
+                        pending.begin(id, &req_name, received, translate_started.elapsed());
+                    }
+                    drop(request);
+                    write_frame_timed(&mut write_half, &reply_frame, &mut pending, "bridge")
+                        .await?;
+                    allocator::trim();
+                    continue;
+                }
                 if request["req"] == "list_sessions" {
                     state.user_connected_sessions = if user_connections_supported {
                         daemon_user_connections(&legacy_socket).await
                     } else { Default::default() };
+                    if request["include_external"].as_bool().unwrap_or(false) {
+                        let scan_limit = request["limit"]
+                            .as_u64()
+                            .map(|limit| limit as usize)
+                            .unwrap_or(rayucode_base::import::discovery::DEFAULT_EXTERNAL_SCAN_LIMIT);
+                        let sources: Option<Vec<String>> = request
+                            .get("sources")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                        let scanned = tokio::task::spawn_blocking(move || {
+                            rayucode_base::import::discovery::list_external_sessions(
+                                scan_limit,
+                                sources.as_deref(),
+                            )
+                        })
+                        .await
+                        .unwrap_or_default();
+                        state.prefetched_external_sessions = Some(scanned);
+                    } else {
+                        state.prefetched_external_sessions = None;
+                    }
                 }
                 // Translation may inspect persisted session/archive files. Tell
                 // Tokio before entering that synchronous region so it can keep

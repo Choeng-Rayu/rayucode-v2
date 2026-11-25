@@ -33,6 +33,16 @@ pub enum ApiEvent {
     /// Reply to `ListSessions`.
     Sessions { sessions: Vec<SessionInfo> },
 
+    /// Reply to `ListExternalProjects`.
+    ExternalProjects { projects: Vec<ExternalProjectInfo> },
+
+    /// Reply to `ImportExternalSessions`.
+    ExternalSessionsImported {
+        sessions: Vec<SessionInfo>,
+        #[serde(default)]
+        skipped: Vec<ImportSkipInfo>,
+    },
+
     /// Reply to `CreateSession` / `AttachSession`.
     Attached { session: SessionInfo },
 
@@ -593,6 +603,50 @@ pub struct SessionInfo {
     pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at_ms: Option<u64>,
+    /// Origin coding agent for this session (`"rayu"`, `"claude_code"`,
+    /// `"claude_desktop"`, `"codex"`, `"codex_desktop"`, `"cursor"`,
+    /// `"opencode"`, `"pi"`). Absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Native session identifier inside an external coding agent's store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_session_id: Option<String>,
+    /// Filesystem path to the external transcript or metadata record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_path: Option<String>,
+    /// Project or workspace display name reported by the external tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_project_name: Option<String>,
+    /// Whether this external session is already materialized into Rayu's local store.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub imported: bool,
+    /// True when the external transcript file has newer edits than the local imported snapshot.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync_stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExternalProjectInfo {
+    pub id: String,
+    pub source: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    pub session_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<i64>,
+    pub sessions: Vec<SessionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportSkipInfo {
+    pub source: String,
+    pub external_session_id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

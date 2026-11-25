@@ -1,6 +1,8 @@
 import * as React from "react"
 import {
   deriveSidebarTree,
+  formatSessionSourceLabel,
+  type SessionSourceFilter,
   type SidebarWorkspaceLike,
 } from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
@@ -14,6 +16,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  Download,
   Eye,
   Folder,
   GitBranch,
@@ -58,9 +61,31 @@ import {
 } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
+import { AgentSourceBadge, AgentSourceIcon } from "./agent-source-badge"
 import { CreateProjectDialog } from "./create-project-dialog"
 import { EditProjectDialog } from "./edit-project-dialog"
+import { ImportSessionsDialog } from "./import-sessions-dialog"
 import { ProjectIconGlyph } from "./project-icon-picker"
+
+const SOURCE_FILTER_ORDER: SessionSourceFilter[] = [
+  "all",
+  "rayu",
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+]
+
+const SOURCE_FILTER_LABELS: Record<SessionSourceFilter, string> = {
+  all: "All",
+  rayu: "Rayu",
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  pi: "Pi",
+}
 
 interface ChatListItem {
   id: string
@@ -73,6 +98,12 @@ interface ChatListItem {
   relativeTime: string
   updatedAtMs: number
   saved?: boolean
+  source?: string
+  externalSessionId?: string
+  externalPath?: string
+  externalProjectName?: string
+  imported?: boolean
+  syncStale?: boolean
 }
 
 interface MergedProject extends SidebarProjectMeta {
@@ -172,6 +203,9 @@ export function SidebarProjectsPane({
   const [editingProject, setEditingProject] =
     React.useState<SidebarProjectMeta | null>(null)
   const [creatingProject, setCreatingProject] = React.useState(false)
+  const [importDialogOpen, setImportDialogOpen] = React.useState(false)
+  const [sourceFilter, setSourceFilter] =
+    React.useState<SessionSourceFilter>("all")
   const [creatingSection, setCreatingSection] = React.useState(false)
   const [newSectionName, setNewSectionName] = React.useState("")
   const [renamingChatId, setRenamingChatId] = React.useState<string | null>(
@@ -307,6 +341,7 @@ export function SidebarProjectsPane({
     filteredRecentChats,
     allFlatChats,
     ungroupedHasDraft,
+    sourceCounts,
   } = React.useMemo(() => {
     const baseById = new Map(baseProjects.map((bp) => [bp.id, bp]))
     const liveById = new Map(liveSessions.map((s) => [s.id, s]))
@@ -421,6 +456,12 @@ export function SidebarProjectsPane({
         ),
         updatedAtMs,
         saved: session.saved,
+        source: session.source ?? "rayu",
+        externalSessionId: session.externalSessionId,
+        externalPath: session.externalPath,
+        externalProjectName: session.externalProjectName,
+        imported: session.imported,
+        syncStale: session.syncStale,
       })
     }
 
@@ -535,6 +576,7 @@ export function SidebarProjectsPane({
       manualWorkspaceOrder: sidebarState.manualProjectOrder,
       viewMode: sidebarState.organizeBy === "flat" ? "flat" : "grouped",
       sortBy: sidebarState.sortBy,
+      sourceFilter,
       activeDraft,
     })
 
@@ -549,6 +591,7 @@ export function SidebarProjectsPane({
           viewMode: sidebarState.organizeBy === "flat" ? "flat" : "grouped",
           sortBy: sidebarState.sortBy,
           searchQuery: normalizedSearch,
+          sourceFilter,
           activeDraft,
         })
       : derivedAll
@@ -631,6 +674,7 @@ export function SidebarProjectsPane({
       filteredRecentChats: recentsList,
       allFlatChats: flatList,
       ungroupedHasDraft: derivedFiltered.ungroupedHasDraft,
+      sourceCounts: derivedAll.sourceCounts,
     }
   }, [
     activeDraft,
@@ -651,6 +695,7 @@ export function SidebarProjectsPane({
     sidebarState.projects,
     sidebarState.showProjectChatsInRecents,
     sidebarState.sortBy,
+    sourceFilter,
   ])
 
   const projectById = React.useMemo(
@@ -879,7 +924,7 @@ export function SidebarProjectsPane({
     toast(`New chat in ${proj.name}`)
   }
 
-  const handleOpenChat = (
+  const handleOpenChat = async (
     chat: ChatListItem,
     parentProj: MergedProject | null
   ) => {
@@ -897,6 +942,71 @@ export function SidebarProjectsPane({
         void queryClient.invalidateQueries({ queryKey: ["workspace", "files"] })
       })
     }
+
+    const needsImportOrSync =
+      Boolean(chat.externalSessionId) &&
+      (chat.imported === false || Boolean(chat.syncStale))
+
+    if (needsImportOrSync && chat.externalSessionId) {
+      try {
+        const result = await ipcClient.sessions.importExternal([
+          {
+            source: chat.source ?? "claude_code",
+            external_session_id: chat.externalSessionId,
+            external_path: chat.externalPath,
+            working_dir: targetDir,
+          },
+        ])
+        const imported = result.sessions[0]
+        if (imported) {
+          void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+          void queryClient.invalidateQueries({
+            queryKey: traceKeys.turns(imported.id),
+          })
+          onOpenSession(imported.id, chat.route, imported.title)
+          return
+        }
+        const conflict = result.skipped.find((s) => s.reason === "conflict")
+        if (conflict) {
+          const existingId = conflict.existingSessionId ?? chat.id
+          const externalId = chat.externalSessionId
+          const sourceLabel = formatSessionSourceLabel(chat.source)
+          toast(`Newer messages detected in ${sourceLabel}`, {
+            action: {
+              label: "Open synced copy",
+              onClick: () => {
+                void ipcClient.sessions
+                  .importExternal(
+                    [
+                      {
+                        source: chat.source ?? "claude_code",
+                        external_session_id: externalId,
+                        external_path: chat.externalPath,
+                        working_dir: targetDir,
+                      },
+                    ],
+                    { forkOnConflict: true }
+                  )
+                  .then((forked) => {
+                    const copy = forked.sessions[0]
+                    if (copy) {
+                      void queryClient.invalidateQueries({
+                        queryKey: ["sessions"],
+                      })
+                      onOpenSession(copy.id, chat.route, copy.title)
+                    }
+                  })
+              },
+            },
+          })
+          onOpenSession(existingId, chat.route, chat.title)
+          return
+        }
+      } catch {
+        // Fall through to opening existing session id
+      }
+    }
+
     onOpenSession(chat.id, chat.route, chat.title)
   }
 
@@ -1056,13 +1166,14 @@ export function SidebarProjectsPane({
       >
         <button
           type="button"
-          onClick={() => handleOpenChat(chat, parentProj)}
+          onClick={() => void handleOpenChat(chat, parentProj)}
           className={cn(
-            "min-w-0 flex-1 cursor-pointer truncate py-[6px] text-left text-[13.5px] leading-[1.38]",
+            "flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 py-[6px] text-left text-[13.5px] leading-[1.38]",
             isActive && "font-medium"
           )}
         >
-          {chat.title}
+          <AgentSourceBadge source={chat.source} />
+          <span className="min-w-0 flex-1 truncate">{chat.title}</span>
         </button>
 
         {isPinned ? (
@@ -1529,6 +1640,49 @@ export function SidebarProjectsPane({
   return (
     <>
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+        {/* Coding Agent Source Filter Bar (shown when external synced chats exist or filter active) */}
+        {(sourceCounts.all > sourceCounts.rayu || sourceFilter !== "all") && (
+          <div
+            role="group"
+            aria-label="Filter chats by coding agent"
+            data-testid="desktop-source-filter-bar"
+            className="flex flex-wrap items-center gap-1 px-2.5 pt-2 pb-1"
+          >
+            {SOURCE_FILTER_ORDER.filter(
+              (key) =>
+                key === "all" ||
+                key === "rayu" ||
+                sourceCounts[key] > 0 ||
+                sourceFilter === key
+            ).map((key) => {
+              const active = sourceFilter === key
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  data-testid={`desktop-source-filter-${key}`}
+                  aria-pressed={active}
+                  onClick={() => setSourceFilter(key)}
+                  className={cn(
+                    "inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] transition-colors",
+                    active
+                      ? "border-premium bg-active font-medium text-ink"
+                      : "border-hairline bg-pane text-muted hover:bg-hover hover:text-ink"
+                  )}
+                >
+                  {key !== "all" && (
+                    <AgentSourceIcon source={key} className="size-3" />
+                  )}
+                  <span>{SOURCE_FILTER_LABELS[key]}</span>
+                  <span className="font-mono text-[9.5px] opacity-75">
+                    {sourceCounts[key]}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
         {/* Projects Section (shown in "By project" mode) */}
         {sidebarState.organizeBy === "project" ? (
           <>
@@ -1547,6 +1701,20 @@ export function SidebarProjectsPane({
               </button>
               <div className="flex items-center gap-0.5">
                 {organizeMenu}
+                <button
+                  type="button"
+                  aria-label="Import sessions and projects"
+                  title="Import chats & projects from Claude, Codex, Cursor..."
+                  data-testid="desktop-sidebar-import-btn"
+                  onClick={() => setImportDialogOpen(true)}
+                  className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                >
+                  <Download
+                    className="size-3.5"
+                    strokeWidth={1.65}
+                    aria-hidden="true"
+                  />
+                </button>
                 <button
                   type="button"
                   aria-label="Create project"
@@ -1868,6 +2036,15 @@ export function SidebarProjectsPane({
           )}
         </div>
       ) : null}
+
+      {/* Import Sessions & Projects Dialog */}
+      <ImportSessionsDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        onImported={(imported) => {
+          onOpenSession(imported.id, undefined, imported.title)
+        }}
+      />
 
       {/* Create Project Dialog */}
       <CreateProjectDialog

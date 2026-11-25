@@ -203,6 +203,11 @@ pub struct Session {
     /// (`rayu cloud move` / `return`). Zero for sessions that never moved.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub migration_epoch: u64,
+    /// Number of visible user turns captured when this session was imported
+    /// from an external agent transcript. Used to detect local Rayu turns
+    /// added after import so re-sync never silently overwrites local work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_turn_count: Option<usize>,
     #[serde(skip)]
     persist_state: SessionPersistState,
     #[serde(skip)]
@@ -280,6 +285,8 @@ struct SessionStartupStub {
     save_label: Option<String>,
     #[serde(default)]
     migration_epoch: u64,
+    #[serde(default)]
+    imported_turn_count: Option<usize>,
 }
 
 const MAX_SESSION_JOURNAL_BYTES: u64 = 512 * 1024;
@@ -383,6 +390,7 @@ impl Session {
         session.saved = stub.saved;
         session.save_label = stub.save_label;
         session.migration_epoch = stub.migration_epoch;
+        session.imported_turn_count = stub.imported_turn_count;
         session.messages.clear();
         session.env_snapshots.clear();
         session.memory_injections.clear();
@@ -825,6 +833,7 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             migration_epoch: 0,
+            imported_turn_count: None,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
@@ -885,6 +894,7 @@ impl Session {
             memory_injections: Vec::new(),
             replay_events: Vec::new(),
             migration_epoch: 0,
+            imported_turn_count: None,
             persist_state: SessionPersistState::default(),
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),

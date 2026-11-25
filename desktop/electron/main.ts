@@ -53,6 +53,9 @@ import {
   GitStageAllPayloadSchema,
   GitToggleStagePayloadSchema,
   HarnessCreateSessionSchema,
+  HarnessImportExternalSessionsPayloadSchema,
+  HarnessListExternalProjectsPayloadSchema,
+  HarnessListSessionsPayloadSchema,
   HarnessPermissionResponseSchema,
   HarnessRenameSessionSchema,
   HarnessRuntimeCommandSchema,
@@ -87,6 +90,7 @@ import {
   TerminalPtyWritePayloadSchema,
   TerminalRunPayloadSchema,
   WorkspaceEnsurePayloadSchema,
+  WorkspaceImportProjectGroupPayloadSchema,
   WorkspaceReadFilePayloadSchema,
   WorkspaceSetPayloadSchema,
 } from "./ipc-schemas.js"
@@ -107,6 +111,7 @@ import {
   deleteCustomTemplate,
   disposeWorkspaceRegistry,
   ensureRegisteredWorkspace,
+  importProjectGroupInRegistry,
   listLocalExtensions,
   listWorkspaceFiles,
   readCustomTemplates,
@@ -196,17 +201,55 @@ function registerIpcHandlers(): void {
   })
 
   // Real RayuCode Harness API (@rayu-dev/rayucode-sdk)
-  ipcMain.handle("rayu:harness:list-sessions", async () => {
-    const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
-    if (!status.connected) {
-      return []
+  ipcMain.handle(
+    "rayu:harness:list-sessions",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessListSessionsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return []
+      }
+      try {
+        return await daemonClient.listSessions(parsed?.includeArchived ?? false, {
+          includeExternal: parsed?.includeExternal ?? true,
+          sources: parsed?.sources,
+        })
+      } catch {
+        return []
+      }
     }
-    try {
-      return await daemonClient.listSessions(false)
-    } catch {
-      return []
+  )
+
+  ipcMain.handle(
+    "rayu:harness:list-external-projects",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessListExternalProjectsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return []
+      }
+      try {
+        return await daemonClient.listExternalProjects(parsed?.source)
+      } catch {
+        return []
+      }
     }
-  })
+  )
+
+  ipcMain.handle(
+    "rayu:harness:import-external-sessions",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessImportExternalSessionsPayloadSchema.parse(rawPayload)
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return { sessions: [], skipped: [] }
+      }
+      return daemonClient.importExternalSessions(parsed.items, {
+        forceResync: parsed.forceResync,
+        forkOnConflict: parsed.forkOnConflict,
+      })
+    }
+  )
 
   ipcMain.handle(
     "rayu:harness:create-session",
@@ -415,6 +458,17 @@ function registerIpcHandlers(): void {
       return ensureRegisteredWorkspace(parsed.path, {
         name: parsed.name,
         unhide: true,
+      })
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:workspace:import-project-group",
+    async (_event, rawPayload: unknown) => {
+      const parsed = WorkspaceImportProjectGroupPayloadSchema.parse(rawPayload)
+      return importProjectGroupInRegistry(parsed.path, {
+        name: parsed.name,
+        sessionIds: parsed.sessionIds,
       })
     }
   )

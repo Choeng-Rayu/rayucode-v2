@@ -18,12 +18,17 @@ import {
   type WorkspaceLedger,
 } from "@rayu-dev/rayucode-session-core/host";
 import {
+  normalizeSessionSource,
+  sessionSourceToFilterGroup,
+} from "@rayu-dev/rayucode-session-core/client";
+import {
   fromHarnessPermissionMode,
   toHarnessPermissionMode,
   type AccountStatusView,
   type AppletStateView,
   type BackgroundProcessView,
   type DaemonStatusView,
+  type ExternalProjectView,
   type FileChangeActionKind,
   type FileChangeActionResultView,
   type FileChangesSnapshotView,
@@ -31,6 +36,8 @@ import {
   type HistoryImageView,
   type HistoryMessageView,
   type HostToWebviewMessage,
+  type ImportExternalSessionItemView,
+  type ImportSkipView,
   type PermissionModeId,
   type ProjectIconView,
   type SessionHistoryView,
@@ -315,6 +322,17 @@ export class SessionHubCore extends EventEmitter {
     const ledger = await this.workspaceRegistry.attachSession(
       workspaceIdOrPath,
       sessionId,
+    );
+    return this.buildWorkspaceLedgerView(ledger);
+  }
+
+  async importProjectGroup(
+    rawPath: string,
+    options: { name?: string; sessionIds: readonly string[] },
+  ): Promise<WorkspaceLedgerView> {
+    const { ledger } = await this.workspaceRegistry.importProjectGroup(
+      rawPath,
+      options,
     );
     return this.buildWorkspaceLedgerView(ledger);
   }
@@ -815,6 +833,9 @@ export class SessionHubCore extends EventEmitter {
     const isArchived =
       !isPinned && (archivedSet.has(info.session_id) || Boolean(info.archived));
 
+    const normalizedSource = normalizeSessionSource(info.source);
+    const sourceTool = sessionSourceToFilterGroup(normalizedSource);
+
     return {
       sessionId: info.session_id,
       title: info.save_label || info.title || info.agent_label || "Untitled session",
@@ -829,16 +850,38 @@ export class SessionHubCore extends EventEmitter {
       archived: isArchived,
       diffAdditions: info.edit_stats?.added,
       diffDeletions: info.edit_stats?.removed,
-      sourceTool: "rayu",
+      sourceTool,
+      source: normalizedSource,
+      externalSessionId: info.external_session_id,
+      externalPath: info.external_path,
+      externalProjectName: info.external_project_name,
+      imported: info.imported,
+      syncStale: info.sync_stale,
     };
   }
 
-  async listSessions(includeArchived = false): Promise<{
+  async listSessions(
+    includeArchived = false,
+    options?: { includeExternal?: boolean; sources?: string[] },
+  ): Promise<{
     sessions: SessionSummaryView[];
     activeSessionId?: string;
   }> {
     const client = await this.getClient();
-    const rawList = await client.listSessions({ includeArchived, limit: 100 });
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false;
+    const includeExternal =
+      (options?.includeExternal ?? true) && supportsExternal;
+    const rawList = await client.listSessions({
+      includeArchived,
+      limit: 200,
+      ...(includeExternal ? { includeExternal: true } : {}),
+      ...(includeExternal && options?.sources?.length
+        ? { sources: options.sources }
+        : {}),
+    });
     for (const info of rawList) {
       this.sessionInfoCache.set(info.session_id, info);
       if (info.working_dir) {
@@ -857,6 +900,78 @@ export class SessionHubCore extends EventEmitter {
     return {
       sessions: summaries,
       activeSessionId: this.activeSessionId,
+    };
+  }
+
+  async listExternalProjects(
+    source?: string,
+  ): Promise<{ projects: ExternalProjectView[] }> {
+    const client = await this.getClient();
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false;
+    if (!supportsExternal || typeof client.listExternalProjects !== "function") {
+      return { projects: [] };
+    }
+    const rawProjects = await client.listExternalProjects(
+      source ? { source } : {},
+    );
+    return {
+      projects: rawProjects.map((project) => ({
+        id: project.id,
+        source: normalizeSessionSource(project.source),
+        name: project.name,
+        workingDir: project.working_dir ?? null,
+        sessionCount: project.session_count,
+        updatedAtMs: project.updated_at_ms,
+        sessions: project.sessions.map((s) => this.mapSessionInfoToSummary(s)),
+      })),
+    };
+  }
+
+  async importExternalSessions(
+    items: ImportExternalSessionItemView[],
+    options?: { forceResync?: boolean; forkOnConflict?: boolean },
+  ): Promise<{ sessions: SessionSummaryView[]; skipped: ImportSkipView[] }> {
+    const client = await this.getClient();
+    const supportsExternal =
+      typeof client.supports === "function"
+        ? client.supports("external_sessions")
+        : false;
+    if (
+      !supportsExternal ||
+      typeof client.importExternalSessions !== "function"
+    ) {
+      return { sessions: [], skipped: [] };
+    }
+    const wireItems = items.map((item) => ({
+      source: item.source,
+      external_session_id: item.externalSessionId,
+      ...(item.externalPath ? { external_path: item.externalPath } : {}),
+      ...(item.workingDir ? { working_dir: item.workingDir } : {}),
+    }));
+    const result = await client.importExternalSessions(wireItems, {
+      forceResync: options?.forceResync,
+      forkOnConflict: options?.forkOnConflict,
+    });
+    for (const info of result.sessions) {
+      this.sessionInfoCache.set(info.session_id, info);
+      if (info.working_dir) {
+        this.sessionWorkingDirs.set(info.session_id, info.working_dir);
+      }
+    }
+    return {
+      sessions: result.sessions.map((info) =>
+        this.mapSessionInfoToSummary(info),
+      ),
+      skipped: result.skipped.map((skip) => ({
+        externalSessionId: skip.external_session_id,
+        source: skip.source,
+        reason: skip.reason,
+        message: skip.message,
+        existingSessionId: skip.existing_session_id ?? null,
+      })),
     };
   }
 

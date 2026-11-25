@@ -1,7 +1,9 @@
 import * as React from "react";
 import {
   deriveSidebarTree,
+  formatSessionSourceLabel,
   pathComparisonKey,
+  type SessionSourceFilter,
   type SidebarSessionLike,
   type SidebarWorkspaceLike,
 } from "@rayu-dev/rayucode-session-core/client";
@@ -11,6 +13,7 @@ import {
   ArchiveRestore,
   ChevronDown,
   ChevronRight,
+  Download,
   FolderOpen,
   GitFork,
   MoreHorizontal,
@@ -66,12 +69,34 @@ import { useAppStore } from "@/lib/app-store";
 import { callRpc } from "@/lib/rpc-client";
 import { basenameOf, cn, formatRelativeTime } from "@/lib/utils";
 
+import { AgentSourceBadge, AgentSourceIcon } from "./AgentSourceBadge";
+import { ImportSessionsDialog } from "./ImportSessionsDialog";
 import {
   ProjectIconPicker,
   toProjectIconSpec,
   toProjectIconView,
   type ProjectIconSpec,
 } from "./ProjectIconPicker";
+
+const SOURCE_FILTER_ORDER: SessionSourceFilter[] = [
+  "all",
+  "rayu",
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+  "pi",
+];
+
+const SOURCE_FILTER_LABELS: Record<SessionSourceFilter, string> = {
+  all: "All",
+  rayu: "Rayu",
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  opencode: "OpenCode",
+  pi: "Pi",
+};
 
 type OrganizeMode = "project" | "chronological";
 type SortMode = "updated" | "title";
@@ -132,6 +157,13 @@ export function SidebarProjectsPane({
   const [sourceScope, setSourceScope] = React.useState<
     "all" | SessionSourceTool
   >("all");
+  const [sourceFilter, setSourceFilter] =
+    React.useState<SessionSourceFilter>("all");
+  const [importDialogOpen, setImportDialogOpen] = React.useState(false);
+  const [syncConflict, setSyncConflict] = React.useState<{
+    session: SessionSummaryView;
+    message: string;
+  } | null>(null);
   const [organizeMode, setOrganizeMode] =
     React.useState<OrganizeMode>("project");
   const [sortMode, setSortMode] = React.useState<SortMode>("updated");
@@ -145,8 +177,12 @@ export function SidebarProjectsPane({
   const [renameTitle, setRenameTitle] = React.useState("");
 
   const sessionsQuery = useQuery({
-    queryKey: ["sessions", "list", { includeArchived: true }],
-    queryFn: () => callRpc("sessions.list", { includeArchived: true }),
+    queryKey: ["sessions", "list", { includeArchived: true, includeExternal: true }],
+    queryFn: () =>
+      callRpc("sessions.list", {
+        includeArchived: true,
+        includeExternal: true,
+      }),
     staleTime: 15_000,
   });
 
@@ -299,6 +335,12 @@ export function SidebarProjectsPane({
         status: session.status,
         archived: session.archived,
         isLive: Boolean(liveTurnsBySession[session.sessionId]?.isLive),
+        source: session.source ?? session.sourceTool ?? "rayu",
+        externalSessionId: session.externalSessionId,
+        externalPath: session.externalPath,
+        externalProjectName: session.externalProjectName,
+        imported: session.imported,
+        syncStale: session.syncStale,
         raw: session,
       })),
     [allSessions, liveTurnsBySession],
@@ -330,6 +372,7 @@ export function SidebarProjectsPane({
         viewMode: organizeMode === "chronological" ? "flat" : "grouped",
         sortBy: "updated",
         searchQuery,
+        sourceFilter,
         activeDraft,
       }),
     [
@@ -344,6 +387,7 @@ export function SidebarProjectsPane({
       searchQuery,
       showAllProjects,
       sidebarWorkspaces,
+      sourceFilter,
     ],
   );
 
@@ -398,6 +442,62 @@ export function SidebarProjectsPane({
   };
 
   const handleSelectSession = async (session: SessionSummaryView) => {
+    setSyncConflict(null);
+    const isExternalUnimported =
+      Boolean(session.externalSessionId) &&
+      (session.imported === false || Boolean(session.syncStale));
+
+    if (isExternalUnimported && session.externalSessionId) {
+      try {
+        const result = await callRpc("sessions.importExternal", {
+          items: [
+            {
+              source: session.source ?? session.sourceTool ?? "claude_code",
+              externalSessionId: session.externalSessionId,
+              externalPath: session.externalPath,
+              workingDir: session.workingDir,
+            },
+          ],
+        });
+        const imported = result.sessions[0];
+        if (imported) {
+          setActiveSession(imported.sessionId, imported.title);
+          if (imported.workingDir) setActiveProjectPath(imported.workingDir);
+          refreshSessions();
+          void queryClient.invalidateQueries({
+            queryKey: ["chat", "history", imported.sessionId],
+          });
+          onSessionSelected?.();
+          void callRpc("sessions.attach", { sessionId: imported.sessionId })
+            .then((res) => {
+              reconcileStaleLiveTurnForSession(
+                res.session.sessionId,
+                res.session.status,
+              );
+            })
+            .catch(() => {});
+          return;
+        }
+        const conflictSkip = result.skipped.find((s) => s.reason === "conflict");
+        if (conflictSkip) {
+          const targetId = conflictSkip.existingSessionId ?? session.sessionId;
+          setSyncConflict({
+            session,
+            message: `Newer messages in ${formatSessionSourceLabel(session.source ?? session.sourceTool)}`,
+          });
+          setActiveSession(targetId, session.title);
+          if (session.workingDir) setActiveProjectPath(session.workingDir);
+          onSessionSelected?.();
+          void callRpc("sessions.attach", { sessionId: targetId }).catch(
+            () => {},
+          );
+          return;
+        }
+      } catch {
+        // Fall through to standard attach if import RPC is unavailable
+      }
+    }
+
     setActiveSession(session.sessionId, session.title);
     if (session.workingDir) setActiveProjectPath(session.workingDir);
     onSessionSelected?.();
@@ -409,6 +509,35 @@ export function SidebarProjectsPane({
         );
       })
       .catch(() => {});
+  };
+
+  const handleOpenSyncedConflictCopy = async () => {
+    const s = syncConflict?.session;
+    const externalId = s?.externalSessionId;
+    if (!s || !externalId) return;
+    try {
+      const result = await callRpc("sessions.importExternal", {
+        items: [
+          {
+            source: s.source ?? s.sourceTool ?? "claude_code",
+            externalSessionId: externalId,
+            externalPath: s.externalPath,
+            workingDir: s.workingDir,
+          },
+        ],
+        forkOnConflict: true,
+      });
+      const copied = result.sessions[0];
+      if (copied) {
+        setSyncConflict(null);
+        setActiveSession(copied.sessionId, copied.title);
+        if (copied.workingDir) setActiveProjectPath(copied.workingDir);
+        refreshSessions();
+        onSessionSelected?.();
+      }
+    } catch {
+      setSyncConflict(null);
+    }
   };
 
   const handleToggleCollapse = (workspaceId: string, currentlyCollapsed: boolean) => {
@@ -546,9 +675,10 @@ export function SidebarProjectsPane({
             <button
               type="button"
               onClick={() => void handleSelectSession(session)}
-              className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left outline-none"
+              className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left outline-none"
             >
               <RunStatusPulse status={tone} />
+              <AgentSourceBadge source={session.source ?? session.sourceTool} />
               <span className="min-w-0 flex-1 truncate">{session.title}</span>
             </button>
 
@@ -702,6 +832,18 @@ export function SidebarProjectsPane({
 
         <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Import sessions and projects"
+          title="Import chats & projects from Claude, Codex, Cursor..."
+          data-testid="sidebar-import-btn"
+          onClick={() => setImportDialogOpen(true)}
+        >
+          <Download className="size-3.5" />
+        </Button>
+
+        <Button
+          type="button"
           variant={searchOpen ? "secondary" : "ghost"}
           size="icon-sm"
           aria-label="Search sessions"
@@ -824,6 +966,81 @@ export function SidebarProjectsPane({
                 <option value="pi">Pi</option>
               </select>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Coding Agent Source Filter Bar (shown whenever external sessions exist or filter active) */}
+      {(sidebarTree.sourceCounts.all > sidebarTree.sourceCounts.rayu ||
+        sourceFilter !== "all") && (
+        <div
+          role="group"
+          aria-label="Filter chats by coding agent"
+          data-testid="sidebar-source-filter-bar"
+          className="flex flex-wrap items-center gap-1 border-b border-hairline-soft px-2.5 py-1.5"
+        >
+          {SOURCE_FILTER_ORDER.filter(
+            (key) =>
+              key === "all" ||
+              key === "rayu" ||
+              sidebarTree.sourceCounts[key] > 0 ||
+              sourceFilter === key,
+          ).map((key) => {
+            const active = sourceFilter === key;
+            const count = sidebarTree.sourceCounts[key];
+            return (
+              <button
+                key={key}
+                type="button"
+                data-testid={`sidebar-source-filter-${key}`}
+                aria-pressed={active}
+                onClick={() => setSourceFilter(key)}
+                className={cn(
+                  "inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10.5px] transition-colors",
+                  active
+                    ? "border-brand/40 bg-brand-soft font-medium text-brand-text"
+                    : "border-hairline bg-pane text-muted-ink hover:border-premium hover:bg-hover hover:text-ink",
+                )}
+              >
+                {key !== "all" && (
+                  <AgentSourceIcon source={key} className="size-3" />
+                )}
+                <span>{SOURCE_FILTER_LABELS[key]}</span>
+                <span className="font-mono text-[9.5px] opacity-75">
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Non-blocking sync conflict banner */}
+      {syncConflict && (
+        <div
+          data-testid="sidebar-sync-conflict-banner"
+          className="flex items-center justify-between gap-2 border-b border-hairline-soft bg-pane px-2.5 py-1.5 text-[11px]"
+        >
+          <span className="min-w-0 truncate text-muted-ink">
+            {syncConflict.message}
+          </span>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              data-testid="sidebar-open-synced-copy-btn"
+              onClick={() => void handleOpenSyncedConflictCopy()}
+              className="cursor-pointer rounded bg-brand-soft px-1.5 py-0.5 text-[10.5px] font-medium text-brand-text hover:opacity-90"
+            >
+              Open synced copy
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss sync notice"
+              onClick={() => setSyncConflict(null)}
+              className="cursor-pointer text-muted-ink hover:text-ink"
+            >
+              <X className="size-3" />
+            </button>
           </div>
         </div>
       )}
@@ -975,6 +1192,17 @@ export function SidebarProjectsPane({
           </div>
         )}
       </ScrollArea>
+
+      {/* Import Sessions & Projects Dialog */}
+      <ImportSessionsDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        onImported={(imported) => {
+          setActiveSession(imported.sessionId, imported.title);
+          if (imported.workingDir) setActiveProjectPath(imported.workingDir);
+          onSessionSelected?.();
+        }}
+      />
 
       {/* Rename Session Dialog */}
       <Dialog

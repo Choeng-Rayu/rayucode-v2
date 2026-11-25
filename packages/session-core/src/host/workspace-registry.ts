@@ -535,6 +535,81 @@ export class WorkspaceRegistry {
     return { workspace, ledger, created };
   }
 
+  async importProjectGroup(
+    rawPath: string,
+    options: { name?: string; sessionIds: readonly string[] }
+  ): Promise<{
+    workspace: WorkspaceRecord;
+    ledger: WorkspaceLedger;
+    created: boolean;
+  }> {
+    const info = canonicalizeWorkspacePath(rawPath);
+    const cleanSessionIds = dedupeStrings(options.sessionIds);
+    const cleanSessionIdSet = new Set(cleanSessionIds);
+    let created = false;
+    let targetId = "";
+
+    const ledger = await this.mutate((draft) => {
+      let target = draft.workspaces.find(
+        (w) =>
+          canonicalizeWorkspacePath(w.canonicalPath || w.path).comparisonKey ===
+          info.comparisonKey
+      );
+      const now = Date.now();
+      if (target) {
+        targetId = target.id;
+        target.lastOpenedAt = now;
+        target.updatedAt = now;
+        target.missingOnDisk = info.missingOnDisk || undefined;
+        target.hidden = undefined;
+        if (options.name?.trim()) {
+          target.name = options.name.trim();
+        }
+      } else {
+        created = true;
+        const id = deriveStableWorkspaceId(info.canonicalPath);
+        targetId = id;
+        const displayName =
+          options.name?.trim() ||
+          path.basename(info.canonicalPath) ||
+          info.canonicalPath;
+        target = {
+          id,
+          name: displayName,
+          path: info.rawPath,
+          canonicalPath: info.canonicalPath,
+          sessionIds: [],
+          createdAt: now,
+          updatedAt: now,
+          lastOpenedAt: now,
+          ...(info.missingOnDisk ? { missingOnDisk: true } : {}),
+        };
+        draft.workspaces.unshift(target);
+      }
+
+      if (cleanSessionIds.length > 0) {
+        // Ensure every imported session belongs to at most one workspace
+        for (const ws of draft.workspaces) {
+          if (ws.id !== target.id) {
+            ws.sessionIds = ws.sessionIds.filter(
+              (id) => !cleanSessionIdSet.has(id)
+            );
+          }
+        }
+        target.sessionIds = [
+          ...cleanSessionIds,
+          ...target.sessionIds.filter((id) => !cleanSessionIdSet.has(id)),
+        ];
+        target.updatedAt = now;
+      }
+
+      return true;
+    });
+
+    const workspace = ledger.workspaces.find((w) => w.id === targetId)!;
+    return { workspace, ledger, created };
+  }
+
   async renameWorkspace(
     workspaceId: string,
     newName: string

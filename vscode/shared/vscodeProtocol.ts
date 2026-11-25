@@ -225,6 +225,18 @@ export const SessionSourceToolSchema = z.enum([
 ]);
 export type SessionSourceTool = z.infer<typeof SessionSourceToolSchema>;
 
+export const SessionSourceIdSchema = z.enum([
+  "rayu",
+  "claude_code",
+  "claude_desktop",
+  "codex",
+  "codex_desktop",
+  "cursor",
+  "pi",
+  "opencode",
+]);
+export type SessionSourceId = z.infer<typeof SessionSourceIdSchema>;
+
 export const SessionSummaryViewSchema = z.object({
   sessionId: z.string(),
   title: z.string(),
@@ -242,8 +254,44 @@ export const SessionSummaryViewSchema = z.object({
   diffDeletions: z.number().int().nonnegative().optional(),
   previewText: z.string().optional(),
   sourceTool: SessionSourceToolSchema.optional(),
+  source: SessionSourceIdSchema.optional(),
+  externalSessionId: z.string().optional(),
+  externalPath: z.string().optional(),
+  externalProjectName: z.string().optional(),
+  imported: z.boolean().optional(),
+  syncStale: z.boolean().optional(),
 });
 export type SessionSummaryView = z.infer<typeof SessionSummaryViewSchema>;
+
+export const ExternalProjectViewSchema = z.object({
+  id: z.string(),
+  source: SessionSourceIdSchema,
+  name: z.string(),
+  workingDir: z.string().nullable().optional(),
+  sessionCount: z.number().int().nonnegative(),
+  updatedAtMs: z.number().optional(),
+  sessions: z.array(SessionSummaryViewSchema),
+});
+export type ExternalProjectView = z.infer<typeof ExternalProjectViewSchema>;
+
+export const ImportExternalSessionItemSchema = z.object({
+  source: z.string().min(1),
+  externalSessionId: z.string().min(1),
+  externalPath: z.string().optional(),
+  workingDir: z.string().optional(),
+});
+export type ImportExternalSessionItemView = z.infer<
+  typeof ImportExternalSessionItemSchema
+>;
+
+export const ImportSkipViewSchema = z.object({
+  externalSessionId: z.string(),
+  source: z.string(),
+  reason: z.string(),
+  message: z.string(),
+  existingSessionId: z.string().nullable().optional(),
+});
+export type ImportSkipView = z.infer<typeof ImportSkipViewSchema>;
 
 export const SessionSearchHitViewSchema = z.object({
   sessionId: z.string(),
@@ -1241,6 +1289,14 @@ export const RpcContractSchemas = {
     }),
     result: WorkspaceLedgerViewSchema,
   },
+  "workspace.ledger.importProjectGroup": {
+    params: z.object({
+      path: z.string().min(1),
+      name: z.string().optional(),
+      sessionIds: z.array(z.string().min(1)),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
   "workspace.findFiles": {
     params: z.object({
       sessionId: z.string().optional(),
@@ -1289,10 +1345,33 @@ export const RpcContractSchemas = {
 
   // --- Sessions ---
   "sessions.list": {
-    params: z.object({ includeArchived: z.boolean().optional() }).optional(),
+    params: z
+      .object({
+        includeArchived: z.boolean().optional(),
+        includeExternal: z.boolean().optional(),
+        sources: z.array(z.string()).optional(),
+      })
+      .optional(),
     result: z.object({
       sessions: z.array(SessionSummaryViewSchema),
       activeSessionId: z.string().optional(),
+    }),
+  },
+  "sessions.listExternalProjects": {
+    params: z.object({ source: z.string().optional() }).optional(),
+    result: z.object({
+      projects: z.array(ExternalProjectViewSchema),
+    }),
+  },
+  "sessions.importExternal": {
+    params: z.object({
+      items: z.array(ImportExternalSessionItemSchema).min(1),
+      forceResync: z.boolean().optional(),
+      forkOnConflict: z.boolean().optional(),
+    }),
+    result: z.object({
+      sessions: z.array(SessionSummaryViewSchema),
+      skipped: z.array(ImportSkipViewSchema),
     }),
   },
   "sessions.search": {
