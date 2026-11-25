@@ -348,12 +348,14 @@ export function listLocalExtensions(
   workspaceDir: string
 ): LocalExtensionsSnapshot {
   const mcpConfigPath = path.join(getRayuConfigDir(), "mcp.json")
+  const workspaceRayuMcpPath = path.join(workspaceDir, ".rayu", "mcp.json")
   const workspaceMcpPath = path.join(workspaceDir, ".mcp.json")
   const claudeMcpPath = path.join(workspaceDir, ".claude", "mcp.json")
   const mcpServers: LocalMcpServerEntry[] = []
 
   const sources: Array<{ cfgPath: string; scope: "global" | "workspace" }> = [
     { cfgPath: mcpConfigPath, scope: "global" },
+    { cfgPath: workspaceRayuMcpPath, scope: "workspace" },
     { cfgPath: workspaceMcpPath, scope: "workspace" },
     { cfgPath: claudeMcpPath, scope: "workspace" },
   ]
@@ -368,12 +370,24 @@ export function listLocalExtensions(
             args?: string[]
             url?: string
             env?: Record<string, string>
+            enabled?: boolean
+            disabled?: boolean
           }
         >
       }
       if (raw.mcpServers && typeof raw.mcpServers === "object") {
         for (const [key, cfg] of Object.entries(raw.mcpServers)) {
+          const isEnabled =
+            cfg?.disabled === true ? false : cfg?.enabled !== false
           const existingIdx = mcpServers.findIndex((m) => m.id === key)
+          if (!isEnabled) {
+            // Respect Rust McpServerConfig::is_enabled() precedence: a disabled
+            // entry overrides any earlier enabled definition and is not active.
+            if (existingIdx >= 0) {
+              mcpServers.splice(existingIdx, 1)
+            }
+            continue
+          }
           const commandStr = cfg?.command
             ? [cfg.command, ...(Array.isArray(cfg.args) ? cfg.args : [])].join(" ")
             : undefined

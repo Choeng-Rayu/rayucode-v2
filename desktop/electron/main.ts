@@ -580,6 +580,9 @@ function registerIpcHandlers(): void {
       const parsed = ExtensionUpsertMcpSchema.parse(rawPayload)
       const snapshot = upsertLocalMcpServer(activeWorkspaceDir, parsed)
       await daemonClient.notifyAuthChanged("rayu")
+      await daemonClient
+        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
+        .catch(() => {})
       return snapshot
     }
   )
@@ -594,6 +597,9 @@ function registerIpcHandlers(): void {
         parsed.scope
       )
       await daemonClient.notifyAuthChanged("rayu")
+      await daemonClient
+        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
+        .catch(() => {})
       return snapshot
     }
   )

@@ -150,6 +150,25 @@ describe("storage-bridge persistence & local workspace scanning", () => {
     expect(snapshot.memories.some((m) => m.path === "CLAUDE.md")).toBe(true)
   })
 
+  it("discovers .rayu/mcp.json and filters out disabled MCP entries", () => {
+    const ws = path.join(tmpRoot, "disabled-mcp-project")
+    fs.mkdirSync(path.join(ws, ".rayu"), { recursive: true })
+    fs.writeFileSync(
+      path.join(ws, ".rayu", "mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          activeSrv: { command: "npx", args: ["-y", "active-mcp"] },
+          disabledFlag: { command: "npx", disabled: true },
+          enabledFalse: { command: "npx", enabled: false },
+        },
+      })
+    )
+    const snapshot = listLocalExtensions(ws)
+    expect(snapshot.mcpServers.some((m) => m.id === "activeSrv")).toBe(true)
+    expect(snapshot.mcpServers.some((m) => m.id === "disabledFlag")).toBe(false)
+    expect(snapshot.mcpServers.some((m) => m.id === "enabledFalse")).toBe(false)
+  })
+
   it("writes, updates, and removes real MCP servers in mcp.json and creates/toggles skills on disk", () => {
     const ws = path.join(tmpRoot, "mcp-write-project")
     fs.mkdirSync(ws, { recursive: true })
