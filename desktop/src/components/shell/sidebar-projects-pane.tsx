@@ -1,4 +1,8 @@
 import * as React from "react"
+import {
+  deriveSidebarTree,
+  type SidebarWorkspaceLike,
+} from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Archive,
@@ -73,6 +77,7 @@ interface ChatListItem {
 
 interface MergedProject extends SidebarProjectMeta {
   expanded: boolean
+  hasDraft: boolean
   lastActivityMs: number
   sessions: ChatListItem[]
 }
@@ -96,7 +101,7 @@ const EMPTY_SIDEBAR_STATE: SidebarState = {
   archivedChatIds: [],
   organizeBy: "project",
   sortBy: "updated",
-  showProjectChatsInRecents: true,
+  showProjectChatsInRecents: false,
   manualProjectOrder: [],
   collapsedProjectIds: [],
   hiddenProjectPaths: [],
@@ -135,11 +140,13 @@ export function SidebarProjectsPane({
   const queryClient = useQueryClient()
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const activeDraft = useAppStore((s) => s.activeDraft)
   const activeWorkspacePath = useAppStore((s) => s.activeWorkspacePath)
   const daemonMode = useAppStore((s) => s.daemonMode)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
   const setActiveSessionTitle = useAppStore((s) => s.setActiveSessionTitle)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft)
 
   const sessionsQuery = useQuery(sessionsQueryOptions())
   const projectsQuery = useQuery({
@@ -187,10 +194,21 @@ export function SidebarProjectsPane({
         hiddenProjectPaths: savedState.hiddenProjectPaths ?? [],
       })
     })
+    const unsubscribeExternal = ipcClient.sidebar.onStateChange((updated) => {
+      if (cancelled) return
+      setSidebarState({
+        ...EMPTY_SIDEBAR_STATE,
+        ...updated,
+        collapsedProjectIds: updated.collapsedProjectIds ?? [],
+        hiddenProjectPaths: updated.hiddenProjectPaths ?? [],
+      })
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    })
     return () => {
       cancelled = true
+      unsubscribeExternal()
     }
-  }, [daemonMode])
+  }, [daemonMode, queryClient])
 
   React.useEffect(() => {
     return () => {
@@ -280,8 +298,16 @@ export function SidebarProjectsPane({
     [sidebarState.hiddenProjectPaths]
   )
 
-  // Build deduplicated project list and distribute sessions strictly by matching folder path
-  const mergedProjects = React.useMemo<MergedProject[]>(() => {
+  const normalizedSearch = searchQuery.trim().toLowerCase()
+
+  // Build deduplicated project list and derive strict disjoint grouping via deriveSidebarTree
+  const {
+    mergedProjects,
+    filteredProjects,
+    filteredRecentChats,
+    allFlatChats,
+    ungroupedHasDraft,
+  } = React.useMemo(() => {
     const baseById = new Map(baseProjects.map((bp) => [bp.id, bp]))
     const liveById = new Map(liveSessions.map((s) => [s.id, s]))
 
@@ -293,10 +319,19 @@ export function SidebarProjectsPane({
     const seenNormFolders = new Set<string>()
 
     for (const saved of sidebarState.projects) {
+      if (seenIds.has(saved.id)) continue
+      const savedNormFolders = saved.folders
+        .map((f) => normalizePathForMatch(f))
+        .filter(Boolean)
+      if (
+        savedNormFolders.length > 0 &&
+        savedNormFolders.every((nf) => seenNormFolders.has(nf))
+      ) {
+        continue
+      }
       seenIds.add(saved.id)
-      for (const folder of saved.folders) {
-        const nf = normalizePathForMatch(folder)
-        if (nf) seenNormFolders.add(nf)
+      for (const nf of savedNormFolders) {
+        seenNormFolders.add(nf)
       }
       candidateMetas.push({
         meta: saved,
@@ -312,108 +347,106 @@ export function SidebarProjectsPane({
       })
     }
 
-    const hasSavedProjects = sidebarState.projects.length > 0
-    if (!hasSavedProjects) {
-      const maxAutoDiscovered =
-        import.meta.env?.MODE === "test" ? Number.POSITIVE_INFINITY : 1
-      let addedAuto = 0
-      for (const bp of baseProjects) {
-        if (addedAuto >= maxAutoDiscovered) break
-        if (seenIds.has(bp.id)) continue
-        if (isTempDirectoryPath(bp.path)) continue
-        const nf = normalizePathForMatch(bp.path)
-        if (nf && (seenNormFolders.has(nf) || hiddenPathSet.has(nf))) continue
-        if (nf) seenNormFolders.add(nf)
-        seenIds.add(bp.id)
-        addedAuto += 1
-        candidateMetas.push({
-          meta: {
-            id: bp.id,
-            name: bp.name,
-            folders: [bp.path],
-            iconKind: "icon",
-            iconValue: "folder",
-            iconColor: "folder",
-            pinned: false,
-            sectionId: null,
-            updatedAt: 0,
-          },
-          baseGroup: bp,
-        })
-      }
+    // Do NOT halt project auto-discovery simply because sidebarState.projects.length > 0;
+    // still skip temp directories and explicitly hidden paths.
+    for (const bp of baseProjects) {
+      if (seenIds.has(bp.id)) continue
+      if (isTempDirectoryPath(bp.path)) continue
+      const nf = normalizePathForMatch(bp.path)
+      if (nf && (seenNormFolders.has(nf) || hiddenPathSet.has(nf))) continue
+      if (nf) seenNormFolders.add(nf)
+      seenIds.add(bp.id)
+      candidateMetas.push({
+        meta: {
+          id: bp.id,
+          name: bp.name,
+          folders: [bp.path],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          pinned: false,
+          sectionId: null,
+          updatedAt: 0,
+        },
+        baseGroup: bp,
+      })
     }
 
-    // Map each non-archived liveSession with a workingDir to its longest matching project folder
-    const sessionsByProjectId = new Map<string, ChatListItem[]>()
-    for (const c of candidateMetas) {
-      sessionsByProjectId.set(c.meta.id, [])
-    }
+    const candidateById = new Map(
+      candidateMetas.map((entry) => [entry.meta.id, entry])
+    )
 
-    const assignedSessionIds = new Set<string>()
-    for (const session of liveSessions) {
-      if (session.archived || archivedSet.has(session.id)) continue
-      if (!session.workingDir) continue
+    // Collect unified deduplicated session pool from liveSessions, baseProjects, and baseRecents
+    const chatMap = new Map<string, ChatListItem>()
+    const explicitOwnerBySessionId = new Map<string, string>()
 
-      let bestProjId: string | null = null
-      let bestProjName = ""
-      let bestMatchLen = 0
-
+    const matchBestProject = (workingDir?: string): SidebarProjectMeta | null => {
+      if (!workingDir) return null
+      let best: SidebarProjectMeta | null = null
+      let bestLen = 0
       for (const { meta } of candidateMetas) {
         for (const folder of meta.folders) {
-          if (pathMatchesFolder(session.workingDir, folder)) {
-            const normLen = normalizePathForMatch(folder).length
-            if (normLen > bestMatchLen) {
-              bestMatchLen = normLen
-              bestProjId = meta.id
-              bestProjName = meta.name
+          if (pathMatchesFolder(workingDir, folder)) {
+            const len = normalizePathForMatch(folder).length
+            if (len > bestLen) {
+              bestLen = len
+              best = meta
             }
           }
         }
       }
+      return best
+    }
 
-      if (bestProjId) {
-        assignedSessionIds.add(session.id)
-        const updatedMs = session.updatedAtMs ?? 0
-        sessionsByProjectId.get(bestProjId)!.push({
-          id: session.id,
-          title: session.title,
-          projectId: bestProjId,
-          projectName: bestProjName,
-          workingDir: session.workingDir,
-          connection:
-            session.connection ??
-            (session.id.startsWith("ses_") ? "cloud" : "local"),
-          relativeTime: formatRelativeTimestamp(
-            session.updatedAtMs,
-            session.updatedAt || "Now"
-          ),
-          updatedAtMs: updatedMs,
-          saved: session.saved,
-        })
+    for (const session of liveSessions) {
+      if (session.archived || archivedSet.has(session.id)) continue
+      const owner = matchBestProject(session.workingDir)
+      if (!owner && isTempDirectoryPath(session.workingDir)) continue
+      if (owner) {
+        explicitOwnerBySessionId.set(session.id, owner.id)
       }
+      const updatedAtMs = session.updatedAtMs ?? 0
+      chatMap.set(session.id, {
+        id: session.id,
+        title: session.title,
+        projectId: owner?.id,
+        projectName: owner?.name,
+        workingDir: session.workingDir,
+        connection:
+          session.connection ??
+          (session.id.startsWith("ses_") ? "cloud" : "local"),
+        relativeTime: formatRelativeTimestamp(
+          session.updatedAtMs,
+          session.updatedAt || "Now"
+        ),
+        updatedAtMs,
+        saved: session.saved,
+      })
     }
 
     // Fallback for test/mock ProjectGroups whose sessions lack workingDir on liveSessions
     for (const { meta, baseGroup } of candidateMetas) {
       if (!baseGroup) continue
-      const bucket = sessionsByProjectId.get(meta.id)!
       for (const raw of baseGroup.sessions) {
-        if (archivedSet.has(raw.id) || assignedSessionIds.has(raw.id)) continue
+        if (archivedSet.has(raw.id)) continue
+        const existing = chatMap.get(raw.id)
+        if (existing) {
+          if (raw.route && !existing.route) {
+            existing.route = raw.route
+          }
+          continue
+        }
         if (raw.workingDir) {
-          // Only attach if it actually matches this project's folders
           const matchesOwn = meta.folders.some((f) =>
             pathMatchesFolder(raw.workingDir!, f)
           )
           if (!matchesOwn) continue
         }
         const live = liveById.get(raw.id)
-        if (live?.workingDir) {
-          // Live session had a workingDir that did NOT match this project — don't leak it here
-          continue
-        }
-        assignedSessionIds.add(raw.id)
+        if (live?.workingDir) continue
+        explicitOwnerBySessionId.set(raw.id, meta.id)
         const updatedAtMs = raw.updatedAtMs ?? live?.updatedAtMs ?? 0
-        bucket.push({
+        chatMap.set(raw.id, {
           id: raw.id,
           title: live?.title ?? raw.title,
           route: raw.route,
@@ -434,55 +467,189 @@ export function SidebarProjectsPane({
       }
     }
 
-    const result: MergedProject[] = candidateMetas.map(({ meta, baseGroup }) => {
-      const items = sessionsByProjectId.get(meta.id) ?? []
-      items.sort((a, b) => {
+    // Include any mock/recent sessions absent from liveSessions (e.g. swarm route entries)
+    for (const raw of baseRecents) {
+      if (archivedSet.has(raw.id)) continue
+      const existing = chatMap.get(raw.id)
+      if (existing) {
+        if (raw.route && !existing.route) {
+          existing.route = raw.route
+        }
+        continue
+      }
+      const live = liveById.get(raw.id)
+      const workingDir = raw.workingDir ?? live?.workingDir
+      const owner = matchBestProject(workingDir)
+      if (!owner && isTempDirectoryPath(workingDir)) continue
+      if (owner) {
+        explicitOwnerBySessionId.set(raw.id, owner.id)
+      }
+      const updatedAtMs = raw.updatedAtMs ?? live?.updatedAtMs ?? 0
+      chatMap.set(raw.id, {
+        id: raw.id,
+        title: live?.title ?? raw.title,
+        route: raw.route,
+        projectId: owner?.id,
+        projectName: owner?.name,
+        workingDir,
+        connection:
+          raw.connection ??
+          live?.connection ??
+          (raw.id.startsWith("ses_") ? "cloud" : "local"),
+        relativeTime: formatRelativeTimestamp(
+          updatedAtMs || undefined,
+          raw.updatedAt ?? live?.updatedAt ?? "Now"
+        ),
+        updatedAtMs,
+        saved: raw.saved ?? live?.saved,
+      })
+    }
+
+    const explicitIdsByWorkspace = new Map<string, string[]>()
+    for (const [sid, wsId] of explicitOwnerBySessionId.entries()) {
+      const bucket = explicitIdsByWorkspace.get(wsId) ?? []
+      bucket.push(sid)
+      explicitIdsByWorkspace.set(wsId, bucket)
+    }
+
+    const workspaceInputs: SidebarWorkspaceLike[] = candidateMetas.map(
+      ({ meta }) => ({
+        id: meta.id,
+        name: meta.name,
+        path: meta.folders[0] ?? "",
+        canonicalPath: meta.folders[0] ?? "",
+        sessionIds: explicitIdsByWorkspace.get(meta.id) ?? [],
+        hidden: false,
+        lastOpenedAt: meta.updatedAt,
+      })
+    )
+
+    const allSessions = Array.from(chatMap.values())
+
+    const derivedAll = deriveSidebarTree({
+      sessions: allSessions,
+      workspaces: workspaceInputs,
+      pinnedSessionIds: sidebarState.pinnedChatIds,
+      archivedSessionIds: sidebarState.archivedChatIds,
+      collapsedWorkspaceIds: sidebarState.collapsedProjectIds ?? [],
+      manualWorkspaceOrder: sidebarState.manualProjectOrder,
+      viewMode: sidebarState.organizeBy === "flat" ? "flat" : "grouped",
+      sortBy: sidebarState.sortBy,
+      activeDraft,
+    })
+
+    const derivedFiltered = normalizedSearch
+      ? deriveSidebarTree({
+          sessions: allSessions,
+          workspaces: workspaceInputs,
+          pinnedSessionIds: sidebarState.pinnedChatIds,
+          archivedSessionIds: sidebarState.archivedChatIds,
+          collapsedWorkspaceIds: sidebarState.collapsedProjectIds ?? [],
+          manualWorkspaceOrder: sidebarState.manualProjectOrder,
+          viewMode: sidebarState.organizeBy === "flat" ? "flat" : "grouped",
+          sortBy: sidebarState.sortBy,
+          searchQuery: normalizedSearch,
+          activeDraft,
+        })
+      : derivedAll
+
+    const toMergedProjects = (
+      tree: typeof derivedAll,
+      forceExpand: boolean
+    ): MergedProject[] => {
+      const mapped = tree.groups.map((group) => {
+        const entry = candidateById.get(group.workspace.id)
+        const meta: SidebarProjectMeta = entry?.meta ?? {
+          id: group.workspace.id,
+          name: group.workspace.name,
+          folders: group.workspace.path ? [group.workspace.path] : [],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          pinned: false,
+          sectionId: null,
+          updatedAt: group.latestUpdatedAtMs,
+        }
+        const expanded = forceExpand
+          ? true
+          : (expandedOverrides[meta.id] ??
+            (collapsedSet.has(meta.id)
+              ? false
+              : (entry?.baseGroup?.expanded ?? !group.isCollapsed)))
+        return {
+          ...meta,
+          expanded,
+          hasDraft: group.hasDraft,
+          lastActivityMs: Math.max(meta.updatedAt ?? 0, group.latestUpdatedAtMs),
+          sessions: group.sessions.map((s) => ({
+            ...s,
+            projectId: meta.id,
+            projectName: meta.name,
+          })),
+        }
+      })
+
+      // Keep pinned projects at the top while preserving deriveSidebarTree sort order within groups
+      const orderIdx = new Map(
+        sidebarState.manualProjectOrder.map((id, i) => [id, i])
+      )
+      mapped.sort((a, b) => {
+        const aPin = a.pinned ? 1 : 0
+        const bPin = b.pinned ? 1 : 0
+        if (aPin !== bPin) return bPin - aPin
+        if (sidebarState.sortBy === "manual") {
+          const ai = orderIdx.get(a.id) ?? Number.MAX_SAFE_INTEGER
+          const bi = orderIdx.get(b.id) ?? Number.MAX_SAFE_INTEGER
+          if (ai !== bi) return ai - bi
+        }
+        return b.lastActivityMs - a.lastActivityMs
+      })
+      return mapped
+    }
+
+    const allMerged = toMergedProjects(derivedAll, false)
+    const filteredMerged = normalizedSearch
+      ? toMergedProjects(derivedFiltered, true)
+      : allMerged
+
+    const sortFlatWithPins = (list: ChatListItem[]): ChatListItem[] =>
+      [...list].sort((a, b) => {
         const aPin = pinnedChatSet.has(a.id) ? 1 : 0
         const bPin = pinnedChatSet.has(b.id) ? 1 : 0
         if (aPin !== bPin) return bPin - aPin
         return b.updatedAtMs - a.updatedAtMs
       })
-      const latestChatMs = items.reduce(
-        (max, item) => Math.max(max, item.updatedAtMs),
-        0
-      )
-      const expanded =
-        expandedOverrides[meta.id] ??
-        (collapsedSet.has(meta.id) ? false : (baseGroup?.expanded ?? true))
-      return {
-        ...meta,
-        expanded,
-        lastActivityMs: Math.max(meta.updatedAt ?? 0, latestChatMs),
-        sessions: items,
-      }
-    })
 
-    const orderIdx = new Map(
-      sidebarState.manualProjectOrder.map((id, i) => [id, i])
-    )
-    result.sort((a, b) => {
-      const aPin = a.pinned ? 1 : 0
-      const bPin = b.pinned ? 1 : 0
-      if (aPin !== bPin) return bPin - aPin
-      if (sidebarState.sortBy === "manual") {
-        const ai = orderIdx.get(a.id) ?? 999
-        const bi = orderIdx.get(b.id) ?? 999
-        return ai - bi
-      }
-      return b.lastActivityMs - a.lastActivityMs
-    })
+    const flatList = sortFlatWithPins(derivedFiltered.flat)
+    const recentsList = sidebarState.showProjectChatsInRecents
+      ? flatList
+      : derivedFiltered.ungrouped
 
-    return result
+    return {
+      mergedProjects: allMerged,
+      filteredProjects: filteredMerged,
+      filteredRecentChats: recentsList,
+      allFlatChats: flatList,
+      ungroupedHasDraft: derivedFiltered.ungroupedHasDraft,
+    }
   }, [
+    activeDraft,
     archivedSet,
     baseProjects,
+    baseRecents,
     collapsedSet,
     expandedOverrides,
     hiddenPathSet,
     liveSessions,
+    normalizedSearch,
     pinnedChatSet,
+    sidebarState.archivedChatIds,
+    sidebarState.collapsedProjectIds,
     sidebarState.manualProjectOrder,
+    sidebarState.organizeBy,
+    sidebarState.pinnedChatIds,
     sidebarState.projects,
+    sidebarState.showProjectChatsInRecents,
     sidebarState.sortBy,
   ])
 
@@ -490,118 +657,6 @@ export function SidebarProjectsPane({
     () => new Map(mergedProjects.map((p) => [p.id, p])),
     [mergedProjects]
   )
-
-  const projectChatIds = React.useMemo(() => {
-    const ids = new Set<string>()
-    for (const p of mergedProjects) {
-      for (const s of p.sessions) ids.add(s.id)
-    }
-    return ids
-  }, [mergedProjects])
-
-  const showProjectChatsInRecents = sidebarState.showProjectChatsInRecents
-
-  const recentChats = React.useMemo<ChatListItem[]>(() => {
-    const projectForChat = new Map<string, MergedProject>()
-    for (const p of mergedProjects) {
-      for (const s of p.sessions) {
-        projectForChat.set(s.id, p)
-      }
-    }
-    const liveById = new Map(liveSessions.map((s) => [s.id, s]))
-
-    const sourceList: ProjectGroupSessionItem[] =
-      baseRecents.length > 0
-        ? baseRecents
-        : liveSessions.map((s) => ({
-            id: s.id,
-            title: s.title,
-            workingDir: s.workingDir,
-            updatedAtMs: s.updatedAtMs,
-            updatedAt: s.updatedAt,
-            connection: s.connection,
-            saved: s.saved,
-          }))
-
-    const items: ChatListItem[] = sourceList
-      .filter((r) => !archivedSet.has(r.id))
-      .filter((r) => showProjectChatsInRecents || !projectChatIds.has(r.id))
-      .map((r) => {
-        const parent = projectForChat.get(r.id)
-        const live = liveById.get(r.id)
-        const workingDir = r.workingDir ?? live?.workingDir ?? parent?.folders[0]
-        const updatedAtMs = r.updatedAtMs ?? live?.updatedAtMs ?? 0
-        return {
-          id: r.id,
-          title: live?.title ?? r.title,
-          route: r.route,
-          projectId: parent?.id,
-          projectName: parent?.name,
-          workingDir,
-          connection:
-            r.connection ??
-            live?.connection ??
-            (r.id.startsWith("ses_") ? "cloud" : "local"),
-          relativeTime: formatRelativeTimestamp(
-            updatedAtMs || undefined,
-            r.updatedAt ?? live?.updatedAt ?? "Now"
-          ),
-          updatedAtMs,
-          saved: r.saved ?? live?.saved,
-        }
-      })
-      .filter(
-        (item) =>
-          Boolean(item.projectId) || !isTempDirectoryPath(item.workingDir)
-      )
-
-    items.sort((a, b) => {
-      const aPin = pinnedChatSet.has(a.id) ? 1 : 0
-      const bPin = pinnedChatSet.has(b.id) ? 1 : 0
-      if (aPin !== bPin) return bPin - aPin
-      return b.updatedAtMs - a.updatedAtMs
-    })
-    return items
-  }, [
-    archivedSet,
-    baseRecents,
-    liveSessions,
-    mergedProjects,
-    pinnedChatSet,
-    projectChatIds,
-    showProjectChatsInRecents,
-  ])
-
-  const normalizedSearch = searchQuery.trim().toLowerCase()
-
-  const filteredProjects = React.useMemo(() => {
-    if (!normalizedSearch) return mergedProjects
-    return mergedProjects
-      .map((proj) => {
-        const nameMatches = proj.name.toLowerCase().includes(normalizedSearch)
-        const matchingSessions = proj.sessions.filter((s) =>
-          s.title.toLowerCase().includes(normalizedSearch)
-        )
-        if (!nameMatches && matchingSessions.length === 0) return null
-        return {
-          ...proj,
-          expanded: true,
-          sessions: nameMatches && matchingSessions.length === 0
-            ? proj.sessions
-            : matchingSessions,
-        }
-      })
-      .filter((p): p is MergedProject => p !== null)
-  }, [mergedProjects, normalizedSearch])
-
-  const filteredRecentChats = React.useMemo(() => {
-    if (!normalizedSearch) return recentChats
-    return recentChats.filter(
-      (c) =>
-        c.title.toLowerCase().includes(normalizedSearch) ||
-        (c.projectName?.toLowerCase().includes(normalizedSearch) ?? false)
-    )
-  }, [normalizedSearch, recentChats])
 
   const ensureProjectInState = React.useCallback(
     (
@@ -653,17 +708,26 @@ export function SidebarProjectsPane({
     const normNewFolders = new Set(
       project.folders.map((f) => normalizePathForMatch(f)).filter(Boolean)
     )
-    persistSidebarState((prev) => ({
-      ...prev,
-      projects: [project, ...prev.projects],
-      manualProjectOrder: [
-        project.id,
-        ...prev.manualProjectOrder.filter((x) => x !== project.id),
-      ],
-      hiddenProjectPaths: (prev.hiddenProjectPaths ?? []).filter(
-        (p) => !normNewFolders.has(normalizePathForMatch(p))
-      ),
-    }))
+    persistSidebarState((prev) => {
+      const remaining = prev.projects.filter(
+        (existing) =>
+          existing.id !== project.id &&
+          !existing.folders.some((f) =>
+            normNewFolders.has(normalizePathForMatch(f))
+          )
+      )
+      return {
+        ...prev,
+        projects: [project, ...remaining],
+        manualProjectOrder: [
+          project.id,
+          ...prev.manualProjectOrder.filter((x) => x !== project.id),
+        ],
+        hiddenProjectPaths: (prev.hiddenProjectPaths ?? []).filter(
+          (p) => !normNewFolders.has(normalizePathForMatch(p))
+        ),
+      }
+    })
     setExpandedOverrides((prev) => ({ ...prev, [project.id]: true }))
     setProjectsCollapsed(false)
     if (primary) {
@@ -808,8 +872,10 @@ export function SidebarProjectsPane({
       void queryClient.invalidateQueries({ queryKey: ["plugins"] })
       void queryClient.invalidateQueries({ queryKey: ["workspace", "files"] })
     }
-    setActiveSession(null)
-    setActiveRoute("home")
+    openNewChatDraft({
+      workingDir: targetPath ?? null,
+      workspaceId: proj.id,
+    })
     toast(`New chat in ${proj.name}`)
   }
 
@@ -1242,8 +1308,28 @@ export function SidebarProjectsPane({
         </div>
 
         {proj.expanded ? (
-          proj.sessions.length > 0 ? (
+          proj.sessions.length > 0 || proj.hasDraft ? (
             <div className="mt-0.5 flex flex-col gap-px pl-[18px]">
+              {proj.hasDraft ? (
+                <button
+                  type="button"
+                  data-testid="sidebar-draft-row"
+                  onClick={() =>
+                    openNewChatDraft({
+                      workingDir: proj.folders[0] ?? null,
+                      workspaceId: proj.id,
+                    })
+                  }
+                  className={cn(
+                    "flex w-full cursor-pointer items-center gap-1.5 rounded-[9px] px-2.5 py-[6px] text-left text-[13.5px] leading-[1.38] italic transition-colors",
+                    activeRoute === "home" && !activeSessionId
+                      ? "bg-active font-medium text-ink"
+                      : "text-muted-ink hover:bg-hover hover:text-ink"
+                  )}
+                >
+                  <span className="truncate">New chat</span>
+                </button>
+              ) : null}
               {visibleSessions.map((chat) => renderChatRow(chat, true))}
               {hiddenCount > 0 ? (
                 <button
@@ -1287,24 +1373,6 @@ export function SidebarProjectsPane({
     (p) =>
       !p.sectionId || !sidebarState.sections.some((s) => s.id === p.sectionId)
   )
-
-  const allFlatChats = React.useMemo<ChatListItem[]>(() => {
-    const map = new Map<string, ChatListItem>()
-    for (const p of filteredProjects) {
-      for (const s of p.sessions) map.set(s.id, s)
-    }
-    for (const r of filteredRecentChats) {
-      if (!map.has(r.id)) map.set(r.id, r)
-    }
-    const all = Array.from(map.values())
-    all.sort((a, b) => {
-      const aPin = pinnedChatSet.has(a.id) ? 1 : 0
-      const bPin = pinnedChatSet.has(b.id) ? 1 : 0
-      if (aPin !== bPin) return bPin - aPin
-      return b.updatedAtMs - a.updatedAtMs
-    })
-    return all
-  }, [filteredProjects, filteredRecentChats, pinnedChatSet])
 
   const organizeMenu = (
     <DropdownMenu onOpenChange={handleMenuOpenChange}>
@@ -1589,8 +1657,7 @@ export function SidebarProjectsPane({
               type="button"
               aria-label="New recent conversation"
               onClick={() => {
-                setActiveSession(null)
-                setActiveRoute("home")
+                openNewChatDraft({ workingDir: null, workspaceId: null })
               }}
               className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink"
             >
@@ -1638,12 +1705,29 @@ export function SidebarProjectsPane({
               allFlatChats.map((c) => renderChatRow(c, false))
             )}
           </div>
-        ) : filteredRecentChats.length === 0 ? (
+        ) : filteredRecentChats.length === 0 && !ungroupedHasDraft ? (
           <div className="px-2.5 py-1.5 text-[13px] text-faint">
             No conversations yet
           </div>
         ) : (
-          <div className="flex flex-col gap-px">
+          <div className="flex flex-col gap-px" data-testid="ungrouped-chat-list">
+            {ungroupedHasDraft ? (
+              <button
+                type="button"
+                data-testid="sidebar-draft-row"
+                onClick={() =>
+                  openNewChatDraft({ workingDir: null, workspaceId: null })
+                }
+                className={cn(
+                  "flex w-full cursor-pointer items-center gap-1.5 rounded-[9px] px-2.5 py-[6px] text-left text-[13.5px] leading-[1.38] italic transition-colors",
+                  activeRoute === "home" && !activeSessionId
+                    ? "bg-active font-medium text-ink"
+                    : "text-muted-ink hover:bg-hover hover:text-ink"
+                )}
+              >
+                <span className="truncate">New chat</span>
+              </button>
+            ) : null}
             {filteredRecentChats.map((c) => renderChatRow(c, false))}
           </div>
         )}

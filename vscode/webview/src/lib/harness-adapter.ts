@@ -1,3 +1,4 @@
+import { settleHarnessErrorFrame } from "@rayu-dev/rayucode-session-core/client";
 import type {
   HistoryImageView,
   HistoryResponseStatsView,
@@ -897,8 +898,8 @@ export interface HarnessStreamTracker {
   phaseHasCommands: boolean;
   phaseHasSearches: boolean;
   phaseCommandCount: number;
-  lastCredits?: string;
-  lastKvCachePct?: number;
+  lastCredits: string;
+  lastKvCachePct: number;
 }
 
 export function createHarnessStreamTracker(): HarnessStreamTracker {
@@ -913,6 +914,8 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     phaseHasCommands: false,
     phaseHasSearches: false,
     phaseCommandCount: 0,
+    lastCredits: "0.00 cr",
+    lastKvCachePct: 94,
   };
 }
 
@@ -1637,6 +1640,29 @@ export function mapHarnessFrameToLiveEvents(
           ? frame.message.trim()
           : "The model declined this request.";
       return [{ type: "answer-delta", delta: `\n\n${message}` }];
+    }
+    case "error": {
+      const settled = settleHarnessErrorFrame(frame, tracker, () => {
+        tracker.toolInputs.clear();
+        resetTrackerPhase(tracker);
+      });
+      if (!settled) {
+        return [];
+      }
+      return [
+        { type: "tool-status", label: null },
+        {
+          type: "answer-delta",
+          delta: `\n\n**Error:** ${settled.message}`,
+        },
+        {
+          type: "complete",
+          workedDuration: settled.workedDuration,
+          credits: settled.credits,
+          kvCachePct: settled.kvCachePct,
+          timestamp: "Just now",
+        },
+      ];
     }
     case "turn_done":
     case "turn_stopped": {

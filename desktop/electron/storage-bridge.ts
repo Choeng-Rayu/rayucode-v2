@@ -1,6 +1,12 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import {
+  WorkspaceRegistry,
+  canonicalizeWorkspacePath,
+  getDefaultWorkspacesFilePath,
+  type WorkspaceLedger,
+} from "@rayu-dev/rayucode-session-core/host"
 
 import { getRayuAppConfigDir, getRayuConfigDir } from "./auth-bridge.js"
 
@@ -700,7 +706,7 @@ const DEFAULT_SIDEBAR_STATE: PersistedSidebarState = {
   archivedChatIds: [],
   organizeBy: "project",
   sortBy: "updated",
-  showProjectChatsInRecents: true,
+  showProjectChatsInRecents: false,
   manualProjectOrder: [],
   collapsedProjectIds: [],
   hiddenProjectPaths: [],
@@ -712,6 +718,244 @@ function sidebarStatePath(): string {
 
 function windowBoundsPath(): string {
   return path.join(getRayuAppConfigDir(), "desktop-window-bounds.json")
+}
+
+let sharedRegistry: WorkspaceRegistry | null = null
+let sharedRegistryPath: string | null = null
+let registryInitPromise: Promise<WorkspaceRegistry> | null = null
+let registryInitPath: string | null = null
+
+export function getSharedWorkspaceRegistry(): WorkspaceRegistry {
+  const targetPath = getDefaultWorkspacesFilePath()
+  if (sharedRegistry && sharedRegistryPath === targetPath) {
+    return sharedRegistry
+  }
+  if (sharedRegistry) {
+    sharedRegistry.dispose()
+  }
+  sharedRegistry = new WorkspaceRegistry({ filePath: targetPath })
+  sharedRegistryPath = targetPath
+  registryInitPromise = null
+  registryInitPath = null
+  return sharedRegistry
+}
+
+export function disposeWorkspaceRegistry(): void {
+  if (sharedRegistry) {
+    sharedRegistry.dispose()
+    sharedRegistry = null
+  }
+  sharedRegistryPath = null
+  registryInitPromise = null
+  registryInitPath = null
+}
+
+function readRawDesktopSidebarFile(): Partial<PersistedSidebarState> {
+  return readJsonFile<Partial<PersistedSidebarState>>(sidebarStatePath(), {})
+}
+
+export async function ensureWorkspaceRegistryReady(): Promise<WorkspaceRegistry> {
+  const registry = getSharedWorkspaceRegistry()
+  const targetPath = registry.getFilePath()
+  if (registryInitPromise && registryInitPath === targetPath) {
+    return registryInitPromise
+  }
+  registryInitPath = targetPath
+  registryInitPromise = (async () => {
+    const ledger = await registry.load()
+    if (!ledger.migratedSources.includes("desktop-v1")) {
+      const legacySidebar = readRawDesktopSidebarFile()
+      const legacyRecent = readRecentWorkspaces()
+      const legacyWorkspaces: Array<{
+        id?: string
+        name?: string
+        path: string
+        createdAt?: number
+        lastOpenedAt?: number
+      }> = []
+
+      if (Array.isArray(legacySidebar.projects)) {
+        for (const proj of legacySidebar.projects) {
+          const primaryFolder = Array.isArray(proj?.folders)
+            ? proj.folders.find((f) => typeof f === "string" && f.trim())
+            : undefined
+          if (!primaryFolder) continue
+          legacyWorkspaces.push({
+            id: typeof proj.id === "string" ? proj.id : undefined,
+            name: typeof proj.name === "string" ? proj.name : undefined,
+            path: primaryFolder,
+            createdAt: typeof proj.updatedAt === "number" ? proj.updatedAt : undefined,
+            lastOpenedAt:
+              typeof proj.updatedAt === "number" ? proj.updatedAt : undefined,
+          })
+        }
+      }
+
+      for (const recent of legacyRecent) {
+        if (!recent?.path?.trim()) continue
+        legacyWorkspaces.push({
+          name: recent.name,
+          path: recent.path,
+          lastOpenedAt: recent.lastOpenedAt,
+        })
+      }
+
+      // Intentionally ignore desktop-sessions.json phantoms during migration.
+      await registry.migrateLegacy({
+        sourceKey: "desktop-v1",
+        workspaces: legacyWorkspaces,
+        pinnedSessionIds: Array.isArray(legacySidebar.pinnedChatIds)
+          ? legacySidebar.pinnedChatIds
+          : [],
+        archivedSessionIds: Array.isArray(legacySidebar.archivedChatIds)
+          ? legacySidebar.archivedChatIds
+          : [],
+        collapsedWorkspaceIds: Array.isArray(legacySidebar.collapsedProjectIds)
+          ? legacySidebar.collapsedProjectIds
+          : [],
+        manualWorkspaceOrder: Array.isArray(legacySidebar.manualProjectOrder)
+          ? legacySidebar.manualProjectOrder
+          : [],
+        hiddenWorkspacePaths: Array.isArray(legacySidebar.hiddenProjectPaths)
+          ? legacySidebar.hiddenProjectPaths
+          : [],
+      })
+    }
+    return registry
+  })()
+  return registryInitPromise
+}
+
+function mergeLedgerWithDesktopSidebar(
+  ledger: WorkspaceLedger,
+  desktopStored: Partial<PersistedSidebarState>
+): PersistedSidebarState {
+  const storedProjects = Array.isArray(desktopStored.projects)
+    ? desktopStored.projects.slice(0, 60)
+    : []
+  const storedById = new Map<string, PersistedSidebarProject>()
+  const storedByKey = new Map<string, PersistedSidebarProject>()
+  for (const proj of storedProjects) {
+    storedById.set(proj.id, proj)
+    for (const folder of proj.folders ?? []) {
+      const key = canonicalizeWorkspacePath(folder).comparisonKey
+      if (key && !storedByKey.has(key)) {
+        storedByKey.set(key, proj)
+      }
+    }
+  }
+
+  const projects: PersistedSidebarProject[] = []
+  const hiddenFromLedger: string[] = []
+
+  for (const ws of ledger.workspaces) {
+    if (ws.hidden) {
+      hiddenFromLedger.push(ws.canonicalPath || ws.path)
+      continue
+    }
+    const key = canonicalizeWorkspacePath(
+      ws.canonicalPath || ws.path
+    ).comparisonKey
+    const visual = storedById.get(ws.id) ?? storedByKey.get(key)
+    const primaryFolder = ws.canonicalPath || ws.path
+    const extraFolders = (visual?.folders ?? []).filter(
+      (f) => canonicalizeWorkspacePath(f).comparisonKey !== key
+    )
+    projects.push({
+      id: ws.id,
+      name: ws.name,
+      folders: [primaryFolder, ...extraFolders],
+      iconKind: visual?.iconKind ?? "icon",
+      iconValue: visual?.iconValue ?? "folder",
+      iconColor: visual?.iconColor ?? "folder",
+      pinned: visual?.pinned ?? false,
+      sectionId: visual?.sectionId ?? null,
+      ...(visual?.gitRemote ? { gitRemote: visual.gitRemote } : {}),
+      updatedAt: Math.max(
+        ws.updatedAt || 0,
+        ws.lastOpenedAt || 0,
+        visual?.updatedAt || 0
+      ),
+    })
+  }
+
+  const storedHidden = Array.isArray(desktopStored.hiddenProjectPaths)
+    ? desktopStored.hiddenProjectPaths
+    : []
+  const hiddenProjectPaths = Array.from(
+    new Set([...storedHidden, ...hiddenFromLedger])
+  ).slice(0, 100)
+
+  return {
+    projects: projects.slice(0, 60),
+    sections: Array.isArray(desktopStored.sections)
+      ? desktopStored.sections.slice(0, 30)
+      : [],
+    pinnedChatIds: ledger.pinnedSessionIds.slice(0, 100),
+    archivedChatIds: ledger.archivedSessionIds.slice(0, 200),
+    organizeBy:
+      desktopStored.organizeBy === "connection" ||
+      desktopStored.organizeBy === "flat"
+        ? desktopStored.organizeBy
+        : DEFAULT_SIDEBAR_STATE.organizeBy,
+    sortBy:
+      desktopStored.sortBy === "manual"
+        ? "manual"
+        : DEFAULT_SIDEBAR_STATE.sortBy,
+    showProjectChatsInRecents:
+      typeof desktopStored.showProjectChatsInRecents === "boolean"
+        ? desktopStored.showProjectChatsInRecents
+        : DEFAULT_SIDEBAR_STATE.showProjectChatsInRecents,
+    manualProjectOrder: ledger.manualWorkspaceOrder.slice(0, 60),
+    collapsedProjectIds: ledger.collapsedWorkspaceIds.slice(0, 100),
+    hiddenProjectPaths,
+  }
+}
+
+export async function ensureRegisteredWorkspace(
+  rawPath: string,
+  options?: { name?: string; unhide?: boolean }
+): Promise<{
+  id: string
+  name: string
+  path: string
+  canonicalPath: string
+  created: boolean
+}> {
+  const registry = await ensureWorkspaceRegistryReady()
+  const { workspace, created } = await registry.ensureWorkspace(rawPath, {
+    name: options?.name,
+    unhide: options?.unhide ?? true,
+  })
+  return {
+    id: workspace.id,
+    name: workspace.name,
+    path: workspace.path,
+    canonicalPath: workspace.canonicalPath,
+    created,
+  }
+}
+
+export async function syncSessionArchivedInRegistry(
+  sessionId: string,
+  archived: boolean
+): Promise<void> {
+  const registry = await ensureWorkspaceRegistryReady()
+  await registry.setArchived(sessionId, archived)
+}
+
+export function subscribeExternalWorkspaceChanges(
+  listener: (state: PersistedSidebarState) => void
+): () => void {
+  const registry = getSharedWorkspaceRegistry()
+  return registry.subscribe((event) => {
+    if (event.source !== "external") return
+    const merged = mergeLedgerWithDesktopSidebar(
+      event.ledger,
+      readRawDesktopSidebarFile()
+    )
+    listener(merged)
+  })
 }
 
 export function readWindowBounds(): PersistedWindowBounds | null {
@@ -749,61 +993,139 @@ export function writeWindowBounds(bounds: PersistedWindowBounds): void {
   writeJsonFile(windowBoundsPath(), bounds)
 }
 
-export function readSidebarState(): PersistedSidebarState {
-  const stored = readJsonFile<Partial<PersistedSidebarState>>(
-    sidebarStatePath(),
-    {}
-  )
-  return {
-    projects: Array.isArray(stored.projects) ? stored.projects.slice(0, 60) : [],
-    sections: Array.isArray(stored.sections) ? stored.sections.slice(0, 30) : [],
-    pinnedChatIds: Array.isArray(stored.pinnedChatIds)
-      ? stored.pinnedChatIds.slice(0, 100)
-      : [],
-    archivedChatIds: Array.isArray(stored.archivedChatIds)
-      ? stored.archivedChatIds.slice(0, 200)
-      : [],
-    organizeBy:
-      stored.organizeBy === "connection" || stored.organizeBy === "flat"
-        ? stored.organizeBy
-        : DEFAULT_SIDEBAR_STATE.organizeBy,
-    sortBy:
-      stored.sortBy === "manual" ? "manual" : DEFAULT_SIDEBAR_STATE.sortBy,
-    showProjectChatsInRecents:
-      typeof stored.showProjectChatsInRecents === "boolean"
-        ? stored.showProjectChatsInRecents
-        : DEFAULT_SIDEBAR_STATE.showProjectChatsInRecents,
-    manualProjectOrder: Array.isArray(stored.manualProjectOrder)
-      ? stored.manualProjectOrder.slice(0, 60)
-      : [],
-    collapsedProjectIds: Array.isArray(stored.collapsedProjectIds)
-      ? stored.collapsedProjectIds.slice(0, 100)
-      : [],
-    hiddenProjectPaths: Array.isArray(stored.hiddenProjectPaths)
-      ? stored.hiddenProjectPaths.slice(0, 100)
-      : [],
-  }
+export async function readSidebarState(): Promise<PersistedSidebarState> {
+  const registry = await ensureWorkspaceRegistryReady()
+  const ledger = await registry.load()
+  return mergeLedgerWithDesktopSidebar(ledger, readRawDesktopSidebarFile())
 }
 
-export function writeSidebarState(
+export async function writeSidebarState(
   next: PersistedSidebarState
-): PersistedSidebarState {
+): Promise<PersistedSidebarState> {
+  const registry = await ensureWorkspaceRegistryReady()
+  const priorStored = readRawDesktopSidebarFile()
+  let ledger = await registry.load()
+
+  const idRemap = new Map<string, string>()
+  const canonicalProjectsById = new Map<string, PersistedSidebarProject>()
+
+  for (const proj of next.projects.slice(0, 60)) {
+    const primaryFolder = proj.folders.find((f) => f.trim())
+    if (!primaryFolder) continue
+    const ensured = await registry.ensureWorkspace(primaryFolder, {
+      name: proj.name,
+      unhide: true,
+    })
+    ledger = ensured.ledger
+    const ws = ensured.workspace
+    idRemap.set(proj.id, ws.id)
+
+    const primaryKey = canonicalizeWorkspacePath(
+      ws.canonicalPath || ws.path
+    ).comparisonKey
+    const extraFolders = proj.folders.filter(
+      (f) => canonicalizeWorkspacePath(f).comparisonKey !== primaryKey
+    )
+    const canonicalProj: PersistedSidebarProject = {
+      ...proj,
+      id: ws.id,
+      name: ws.name,
+      folders: [ws.canonicalPath || ws.path, ...extraFolders],
+    }
+    canonicalProjectsById.set(ws.id, canonicalProj)
+  }
+
+  // Remove workspaces explicitly hidden or removed from desktop sidebar
+  const nextHiddenPaths = Array.isArray(next.hiddenProjectPaths)
+    ? next.hiddenProjectPaths.slice(0, 100)
+    : []
+  const hiddenKeys = new Set(
+    nextHiddenPaths.map((p) => canonicalizeWorkspacePath(p).comparisonKey)
+  )
+  const priorProjectIds = new Set(
+    (Array.isArray(priorStored.projects) ? priorStored.projects : []).map(
+      (p) => p.id
+    )
+  )
+  for (const ws of [...ledger.workspaces]) {
+    const wsKey = canonicalizeWorkspacePath(
+      ws.canonicalPath || ws.path
+    ).comparisonKey
+    const explicitlyHidden = hiddenKeys.has(wsKey)
+    const removedFromDesktop =
+      priorProjectIds.has(ws.id) && !canonicalProjectsById.has(ws.id)
+    if (explicitlyHidden || removedFromDesktop) {
+      ledger = await registry.removeWorkspace(ws.id)
+    }
+  }
+
+  // Sync pinned and archived session sets atomically with ~/.rayu/workspaces.json
+  const desiredPinned = new Set(next.pinnedChatIds.slice(0, 100))
+  const desiredArchived = new Set(next.archivedChatIds.slice(0, 200))
+
+  for (const sid of ledger.pinnedSessionIds) {
+    if (!desiredPinned.has(sid)) {
+      ledger = await registry.setPinned(sid, false)
+    }
+  }
+  for (const sid of desiredPinned) {
+    if (!ledger.pinnedSessionIds.includes(sid)) {
+      ledger = await registry.setPinned(sid, true)
+    }
+  }
+
+  for (const sid of ledger.archivedSessionIds) {
+    if (!desiredArchived.has(sid)) {
+      ledger = await registry.setArchived(sid, false)
+    }
+  }
+  for (const sid of desiredArchived) {
+    if (!ledger.archivedSessionIds.includes(sid)) {
+      ledger = await registry.setArchived(sid, true)
+    }
+  }
+
+  // Sync collapsed workspace IDs and manual workspace order using remapped canonical IDs
+  const remappedCollapsed = Array.from(
+    new Set(
+      (next.collapsedProjectIds ?? [])
+        .map((id) => idRemap.get(id) ?? id)
+        .filter(Boolean)
+    )
+  ).slice(0, 100)
+  const desiredCollapsedSet = new Set(remappedCollapsed)
+  for (const id of ledger.collapsedWorkspaceIds) {
+    if (!desiredCollapsedSet.has(id)) {
+      ledger = await registry.setCollapsed(id, false)
+    }
+  }
+  for (const id of desiredCollapsedSet) {
+    if (!ledger.collapsedWorkspaceIds.includes(id)) {
+      ledger = await registry.setCollapsed(id, true)
+    }
+  }
+
+  const remappedOrder = Array.from(
+    new Set(
+      next.manualProjectOrder
+        .map((id) => idRemap.get(id) ?? id)
+        .filter(Boolean)
+    )
+  ).slice(0, 60)
+  ledger = await registry.setManualOrder(remappedOrder)
+
   const bounded: PersistedSidebarState = {
-    projects: next.projects.slice(0, 60),
+    projects: Array.from(canonicalProjectsById.values()).slice(0, 60),
     sections: next.sections.slice(0, 30),
-    pinnedChatIds: next.pinnedChatIds.slice(0, 100),
-    archivedChatIds: next.archivedChatIds.slice(0, 200),
+    pinnedChatIds: ledger.pinnedSessionIds.slice(0, 100),
+    archivedChatIds: ledger.archivedSessionIds.slice(0, 200),
     organizeBy: next.organizeBy,
     sortBy: next.sortBy,
     showProjectChatsInRecents: next.showProjectChatsInRecents,
-    manualProjectOrder: next.manualProjectOrder.slice(0, 60),
-    collapsedProjectIds: Array.isArray(next.collapsedProjectIds)
-      ? next.collapsedProjectIds.slice(0, 100)
-      : [],
-    hiddenProjectPaths: Array.isArray(next.hiddenProjectPaths)
-      ? next.hiddenProjectPaths.slice(0, 100)
-      : [],
+    manualProjectOrder: ledger.manualWorkspaceOrder.slice(0, 60),
+    collapsedProjectIds: ledger.collapsedWorkspaceIds.slice(0, 100),
+    hiddenProjectPaths: nextHiddenPaths,
   }
   writeJsonFile(sidebarStatePath(), bounded)
-  return bounded
+  return mergeLedgerWithDesktopSidebar(ledger, bounded)
 }

@@ -151,13 +151,46 @@ export const DaemonStatusViewSchema = z.object({
 export type DaemonStatusView = z.infer<typeof DaemonStatusViewSchema>;
 
 export const WorkspaceFolderViewSchema = z.object({
+  id: z.string().optional(),
   name: z.string(),
   path: z.string(),
+  canonicalPath: z.string().optional(),
+  branch: z.string().optional(),
+  icon: ProjectIconViewSchema.optional(),
+  isPrimary: z.boolean().optional(),
+  missingOnDisk: z.boolean().optional(),
+  hidden: z.boolean().optional(),
+});
+export type WorkspaceFolderView = z.infer<typeof WorkspaceFolderViewSchema>;
+
+export const WorkspaceRecordViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string(),
+  canonicalPath: z.string(),
+  sessionIds: z.array(z.string()),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  lastOpenedAt: z.number(),
+  missingOnDisk: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   branch: z.string().optional(),
   icon: ProjectIconViewSchema.optional(),
   isPrimary: z.boolean().optional(),
 });
-export type WorkspaceFolderView = z.infer<typeof WorkspaceFolderViewSchema>;
+export type WorkspaceRecordView = z.infer<typeof WorkspaceRecordViewSchema>;
+
+export const WorkspaceLedgerViewSchema = z.object({
+  version: z.literal(1),
+  updatedAt: z.number(),
+  workspaces: z.array(WorkspaceRecordViewSchema),
+  pinnedSessionIds: z.array(z.string()),
+  archivedSessionIds: z.array(z.string()),
+  collapsedWorkspaceIds: z.array(z.string()),
+  manualWorkspaceOrder: z.array(z.string()),
+  openFolderPaths: z.array(z.string()),
+});
+export type WorkspaceLedgerView = z.infer<typeof WorkspaceLedgerViewSchema>;
 
 export const EditorSelectionViewSchema = z.object({
   filePath: z.string(),
@@ -1161,6 +1194,52 @@ export const RpcContractSchemas = {
   "workspace.listFolders": {
     params: EmptyParamsSchema,
     result: z.object({ folders: z.array(WorkspaceFolderViewSchema) }),
+  },
+  "workspace.ledger.get": {
+    params: EmptyParamsSchema,
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.ensure": {
+    params: z.object({
+      path: z.string().min(1),
+      name: z.string().optional(),
+      unhide: z.boolean().optional(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.remove": {
+    params: z.object({
+      idOrPath: z.string().min(1),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setPinned": {
+    params: z.object({
+      sessionId: z.string().min(1),
+      pinned: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setArchived": {
+    params: z.object({
+      sessionId: z.string().min(1),
+      archived: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setCollapsed": {
+    params: z.object({
+      workspaceId: z.string().min(1),
+      collapsed: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.attachSession": {
+    params: z.object({
+      workspaceIdOrPath: z.string().min(1),
+      sessionId: z.string().min(1),
+    }),
+    result: WorkspaceLedgerViewSchema,
   },
   "workspace.findFiles": {
     params: z.object({
@@ -2284,6 +2363,7 @@ export const HostToWebviewMessageSchema = z.union([
     capabilities: z.array(z.string()),
     daemonStatus: DaemonStatusViewSchema,
     workspaces: z.array(WorkspaceFolderViewSchema),
+    workspaceLedger: WorkspaceLedgerViewSchema.optional(),
     editorSelection: EditorSelectionViewSchema.nullable().optional(),
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
     accountStatus: AccountStatusViewSchema.optional(),
@@ -2319,6 +2399,11 @@ export const HostToWebviewMessageSchema = z.union([
   z.object({
     type: z.literal("rayucode.workspaces.changed"),
     workspaces: z.array(WorkspaceFolderViewSchema),
+    workspaceLedger: WorkspaceLedgerViewSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.workspaces.ledgerChanged"),
+    ledger: WorkspaceLedgerViewSchema,
   }),
   z.object({
     type: z.literal("rayucode.ui.navigate"),

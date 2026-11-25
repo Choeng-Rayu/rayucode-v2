@@ -295,4 +295,180 @@ describe("App-lifetime live trace persistence across screens & New chat", () => 
     expect(useAppStore.getState().activeRoute).toBe("workspace")
     expect(useAppStore.getState().activeSessionId).toBe("ses_retire_cache")
   })
+
+  it("settles liveTurn cleanly on ev: 'error' frame instead of spinning forever", async () => {
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: "real_sess_err",
+      activeSessionTitle: "Error turn test",
+    })
+    const bus = createHarnessBus()
+    vi.spyOn(ipcClient.trace, "sendPrompt").mockResolvedValue({
+      id: "live_err_1",
+      sessionId: "real_sess_err",
+      userPrompt: "Trigger an error",
+      workedDuration: "1s",
+      isLive: true,
+      notes: [],
+      groups: [],
+      answerIntro: "",
+      answerBullets: [],
+      diffCard: {
+        id: "diff_err",
+        file: "workspace",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "0.00 cr",
+      kvCachePct: 0,
+      pinned: false,
+    })
+    const recordSpy = vi.spyOn(ipcClient.trace, "recordTurn")
+    vi.spyOn(ipcClient.trace, "listTurns").mockResolvedValue([])
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_err",
+        prompt: "Trigger an error",
+        modelLabel: "Claude Opus 5.5",
+      })
+    })
+
+    await waitFor(() => {
+      expect(useAppStore.getState().isStreamActive).toBe(true)
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "error",
+        session_id: "real_sess_err",
+        message: "Provider quota exceeded",
+      })
+    })
+
+    await waitFor(() => {
+      expect(useAppStore.getState().isStreamActive).toBe(false)
+      expect(recordSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "real_sess_err",
+          isLive: false,
+          answerIntro: expect.stringContaining("Provider quota exceeded"),
+        })
+      )
+    })
+  })
+
+  it("reconciles mid-stream history without duplicating user prompt bubbles while preserving intentional repeated prompts", async () => {
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: "real_sess_dedup",
+      activeSessionTitle: "Dedup test",
+    })
+    const bus = createHarnessBus()
+    let historyTurns: Array<{
+      id: string
+      sessionId: string
+      userPrompt: string
+      workedDuration: string
+      notes: string[]
+      groups: []
+      answerIntro: string
+      answerBullets: []
+      diffCard: {
+        id: string
+        file: string
+        additions: number
+        deletions: number
+        hint: string
+        lines: []
+      }
+      timestamp: string
+      credits: string
+      kvCachePct: number
+      pinned: boolean
+    }> = [
+      {
+        id: "hist_1",
+        sessionId: "real_sess_dedup",
+        userPrompt: "Run tests",
+        workedDuration: "2s",
+        notes: [],
+        groups: [],
+        answerIntro: "First run passed.",
+        answerBullets: [],
+        diffCard: {
+          id: "d1",
+          file: "",
+          additions: 0,
+          deletions: 0,
+          hint: "",
+          lines: [],
+        },
+        timestamp: "1m",
+        credits: "0.01 cr",
+        kvCachePct: 90,
+        pinned: false,
+      },
+    ]
+
+    vi.spyOn(ipcClient.trace, "listTurns").mockImplementation(async () => [
+      ...historyTurns,
+    ])
+    vi.spyOn(ipcClient.trace, "sendPrompt").mockResolvedValue({
+      ...historyTurns[0]!,
+      id: "live_2",
+      isLive: true,
+      answerIntro: "",
+    })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("First run passed.")).toBeInTheDocument()
+    })
+
+    // User intentionally sends the EXACT same prompt "Run tests" a second time
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_dedup",
+        prompt: "Run tests",
+        modelLabel: "Claude Opus 5.5",
+      })
+    })
+
+    // Mid-stream, durable history resolves with the stub for turn #2
+    historyTurns = [
+      ...historyTurns,
+      {
+        ...historyTurns[0]!,
+        id: "hist_2",
+        answerIntro: "",
+      },
+    ]
+
+    act(() => {
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_dedup",
+        text: "Second run streaming...",
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/Second run streaming/)).toBeInTheDocument()
+    })
+
+    // Exactly 2 user bubbles (turn 1 + turn 2), NEVER 3!
+    const userBubbles = document.querySelectorAll('[data-slot="msg-user"]')
+    expect(userBubbles).toHaveLength(2)
+  })
 })

@@ -44,6 +44,7 @@ import type {
   WebviewToHostMessage,
   WorkspaceFolderView,
   WorkspaceIntegrationsView,
+  WorkspaceLedgerView,
 } from "@shared/vscodeProtocol";
 
 type HostMessageDispatch = (msg: HostToWebviewMessage) => void;
@@ -53,6 +54,7 @@ const NOW = Date.now();
 interface MockBridgeState {
   daemon: DaemonStatusView;
   workspaces: WorkspaceFolderView[];
+  collapsedWorkspaceIds: string[];
   sessions: SessionSummaryView[];
   sessionHistories: Record<string, HistoryMessageView[]>;
   activeSessionId: string | undefined;
@@ -138,6 +140,8 @@ const mockState: MockBridgeState = {
       icon: { kind: "icon", value: "database", color: "info" },
     },
   ],
+
+  collapsedWorkspaceIds: [],
 
   sessions: [
     {
@@ -1130,6 +1134,38 @@ function cloneAccount(account: AccountStatusView): AccountStatusView {
   };
 }
 
+function buildMockWorkspaceLedger(): WorkspaceLedgerView {
+  const now = Date.now();
+  return {
+    version: 1,
+    updatedAt: now,
+    workspaces: mockState.workspaces.map((w, idx) => ({
+      id: w.id ?? `ws_${w.name}_${idx}`,
+      name: w.name,
+      path: w.path,
+      canonicalPath: w.canonicalPath ?? w.path,
+      sessionIds: mockState.sessions
+        .filter((s) => s.workingDir === w.path)
+        .map((s) => s.sessionId),
+      createdAt: NOW - 86_400_000,
+      updatedAt: now,
+      lastOpenedAt: now,
+      branch: w.branch,
+      icon: w.icon,
+      isPrimary: w.isPrimary,
+    })),
+    pinnedSessionIds: mockState.sessions
+      .filter((s) => s.pinned)
+      .map((s) => s.sessionId),
+    archivedSessionIds: mockState.sessions
+      .filter((s) => s.archived)
+      .map((s) => s.sessionId),
+    collapsedWorkspaceIds: [...mockState.collapsedWorkspaceIds],
+    manualWorkspaceOrder: [],
+    openFolderPaths: mockState.workspaces.map((w) => w.path),
+  };
+}
+
 export async function handleMockRpcCall<M extends RpcMethod>(
   method: M,
   rawParams?: RpcParams<M>,
@@ -1155,6 +1191,81 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     // --- Workspace ---
     case "workspace.listFolders":
       return { folders: mockState.workspaces.map((w) => ({ ...w })) } as RpcResult<M>;
+    case "workspace.ledger.get":
+      return buildMockWorkspaceLedger() as RpcResult<M>;
+    case "workspace.ledger.ensure": {
+      const targetPath = String(params.path ?? "").trim();
+      if (
+        targetPath &&
+        !mockState.workspaces.some((w) => w.path === targetPath)
+      ) {
+        const name =
+          typeof params.name === "string" && params.name.trim()
+            ? params.name.trim()
+            : targetPath.split(/[\\/]/).filter(Boolean).pop() ?? targetPath;
+        mockState.workspaces = [
+          ...mockState.workspaces,
+          { name, path: targetPath },
+        ];
+      }
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.remove": {
+      const idOrPath = String(params.idOrPath ?? "");
+      mockState.workspaces = mockState.workspaces.filter(
+        (w, idx) =>
+          w.path !== idOrPath && (w.id ?? `ws_${w.name}_${idx}`) !== idOrPath,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setPinned": {
+      const id = String(params.sessionId ?? "");
+      const pinned = Boolean(params.pinned);
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === id ? { ...s, pinned, ...(pinned ? { archived: false } : {}) } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setArchived": {
+      const id = String(params.sessionId ?? "");
+      const archived = Boolean(params.archived);
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === id ? { ...s, archived, ...(archived ? { pinned: false } : {}) } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setCollapsed": {
+      const wsId = String(params.workspaceId ?? "");
+      const collapsed = Boolean(params.collapsed);
+      if (collapsed && !mockState.collapsedWorkspaceIds.includes(wsId)) {
+        mockState.collapsedWorkspaceIds = [...mockState.collapsedWorkspaceIds, wsId];
+      } else if (!collapsed) {
+        mockState.collapsedWorkspaceIds = mockState.collapsedWorkspaceIds.filter(
+          (id) => id !== wsId,
+        );
+      }
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.attachSession": {
+      const wsPath = String(params.workspaceIdOrPath ?? "");
+      const sid = String(params.sessionId ?? "");
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === sid ? { ...s, workingDir: wsPath } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
     case "workspace.findFiles": {
       const q = String(params.query ?? "").toLowerCase();
       const sample = [

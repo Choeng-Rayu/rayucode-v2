@@ -122,6 +122,32 @@ describe("vscode harness-adapter", () => {
     expect(done2).toEqual([]);
   });
 
+  it("settles ev: error frames with error text and complete event so turns never spin forever", () => {
+    const tracker = createHarnessStreamTracker();
+    mapHarnessFrameToLiveEvents({ ev: "turn_start" }, tracker);
+
+    const errEvents = mapHarnessFrameToLiveEvents(
+      { ev: "error", message: "Provider rate limited (429)" },
+      tracker,
+    );
+    expect(errEvents).toContainEqual({ type: "tool-status", label: null });
+    expect(errEvents).toContainEqual({
+      type: "answer-delta",
+      delta: "\n\n**Error:** Provider rate limited (429)",
+    });
+    expect(errEvents.some((e) => e.type === "complete")).toBe(true);
+    expect(tracker.turnActive).toBe(false);
+    expect(tracker.turnCompleted).toBe(true);
+
+    // Duplicate error frame after settlement produces no duplicate events
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "error", message: "Duplicate error" },
+        tracker,
+      ),
+    ).toEqual([]);
+  });
+
   it("cleans hidden recovery prompts, splits reasoning sentinels, and maps tool/stats/images in history", () => {
     const turns = mapHistoryMessagesToTurns("ses_hist", [
       {

@@ -1,10 +1,17 @@
 import * as React from "react";
+import {
+  deriveSidebarTree,
+  pathComparisonKey,
+  type SidebarSessionLike,
+  type SidebarWorkspaceLike,
+} from "@rayu-dev/rayucode-session-core/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
   ChevronDown,
   ChevronRight,
+  FolderOpen,
   GitFork,
   MoreHorizontal,
   Pencil,
@@ -16,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import type {
+  ProjectIconView,
   SessionSearchHitView,
   SessionSourceTool,
   SessionSummaryView,
@@ -49,6 +57,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { RunStatusPulse } from "@/components/ui/rayu-symbols";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  reconcileStaleLiveTurnForSession,
+  reconcileStaleLiveTurnsFromSessions,
+  useLiveTraceStore,
+} from "@/features/chat";
 import { useAppStore } from "@/lib/app-store";
 import { callRpc } from "@/lib/rpc-client";
 import { basenameOf, cn, formatRelativeTime } from "@/lib/utils";
@@ -62,6 +75,16 @@ import {
 
 type OrganizeMode = "project" | "chronological";
 type SortMode = "updated" | "title";
+
+interface AdaptedSidebarSession extends SidebarSessionLike {
+  raw: SessionSummaryView;
+}
+
+interface EnrichedSidebarWorkspace extends SidebarWorkspaceLike {
+  branch?: string;
+  icon?: ProjectIconView;
+  isPrimary?: boolean;
+}
 
 export interface SidebarProjectsPaneProps {
   onSessionSelected?: () => void;
@@ -77,12 +100,18 @@ export function SidebarProjectsPane({
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeProjectPath = useAppStore((s) => s.activeProjectPath);
+  const activeDraft = useAppStore((s) => s.activeDraft);
   const workspaces = useAppStore((s) => s.workspaces);
+  const storeLedger = useAppStore((s) => s.workspaceLedger);
   const sessionSearchFocusNonce = useAppStore((s) => s.sessionSearchFocusNonce);
   const setWorkspaces = useAppStore((s) => s.setWorkspaces);
+  const setWorkspaceLedger = useAppStore((s) => s.setWorkspaceLedger);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
-  const setActiveRoute = useAppStore((s) => s.setActiveRoute);
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
   const setActiveProjectPath = useAppStore((s) => s.setActiveProjectPath);
+  const requestComposerFocus = useAppStore((s) => s.requestComposerFocus);
+
+  const liveTurnsBySession = useLiveTraceStore((s) => s.liveTurnsBySession);
 
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
@@ -98,14 +127,16 @@ export function SidebarProjectsPane({
       });
     }
   }, [sessionSearchFocusNonce]);
+
   const [crossToolSearch, setCrossToolSearch] = React.useState(false);
-  const [sourceScope, setSourceScope] = React.useState<"all" | SessionSourceTool>(
-    "all",
-  );
+  const [sourceScope, setSourceScope] = React.useState<
+    "all" | SessionSourceTool
+  >("all");
   const [organizeMode, setOrganizeMode] =
     React.useState<OrganizeMode>("project");
   const [sortMode, setSortMode] = React.useState<SortMode>("updated");
-  const [collapsedProjects, setCollapsedProjects] = React.useState<
+  const [showAllProjects, setShowAllProjects] = React.useState(false);
+  const [localCollapsedIds, setLocalCollapsedIds] = React.useState<
     Record<string, boolean>
   >({});
   const [archivedExpanded, setArchivedExpanded] = React.useState(false);
@@ -128,11 +159,34 @@ export function SidebarProjectsPane({
     staleTime: 30_000,
   });
 
+  const ledgerQuery = useQuery({
+    queryKey: ["workspace", "ledger"],
+    queryFn: () => callRpc("workspace.ledger.get"),
+    staleTime: 30_000,
+  });
+
   React.useEffect(() => {
-    if (foldersQuery.data && foldersQuery.data.length > 0 && workspaces.length === 0) {
+    if (
+      foldersQuery.data &&
+      foldersQuery.data.length > 0 &&
+      workspaces.length === 0
+    ) {
       setWorkspaces(foldersQuery.data);
     }
   }, [foldersQuery.data, setWorkspaces, workspaces.length]);
+
+  React.useEffect(() => {
+    if (ledgerQuery.data && !storeLedger) {
+      setWorkspaceLedger(ledgerQuery.data);
+    }
+  }, [ledgerQuery.data, setWorkspaceLedger, storeLedger]);
+
+  // Reconcile stale liveTurn spinners when daemon session list reports idle
+  React.useEffect(() => {
+    if (sessionsQuery.data?.sessions) {
+      reconcileStaleLiveTurnsFromSessions(sessionsQuery.data.sessions);
+    }
+  }, [sessionsQuery.data?.sessions]);
 
   const crossSearchQuery = useQuery({
     queryKey: ["sessions", "search", searchQuery, sourceScope],
@@ -145,93 +199,237 @@ export function SidebarProjectsPane({
     staleTime: 10_000,
   });
 
+  const effectiveLedger = storeLedger ?? ledgerQuery.data ?? null;
+
   const allSessions = React.useMemo(
     () => sessionsQuery.data?.sessions ?? [],
     [sessionsQuery.data?.sessions],
   );
+
   const resolvedFolders: WorkspaceFolderView[] = React.useMemo(() => {
     if (workspaces.length > 0) return workspaces;
-    if (foldersQuery.data && foldersQuery.data.length > 0) return foldersQuery.data;
-    const rawDirs = allSessions
-      .map((s) => s.workingDir)
-      .filter((d): d is string => Boolean(d && d.trim().length > 0));
-    const dirs = Array.from(
+    if (foldersQuery.data && foldersQuery.data.length > 0) {
+      return foldersQuery.data;
+    }
+    return [];
+  }, [foldersQuery.data, workspaces]);
+
+  const folderMetaByKey = React.useMemo(() => {
+    const map = new Map<string, WorkspaceFolderView>();
+    for (const folder of resolvedFolders) {
+      const key = pathComparisonKey(folder.canonicalPath || folder.path);
+      if (key) map.set(key, folder);
+      const rawKey = pathComparisonKey(folder.path);
+      if (rawKey && !map.has(rawKey)) map.set(rawKey, folder);
+    }
+    return map;
+  }, [resolvedFolders]);
+
+  const sidebarWorkspaces: EnrichedSidebarWorkspace[] = React.useMemo(() => {
+    if (effectiveLedger && effectiveLedger.workspaces.length > 0) {
+      return effectiveLedger.workspaces.map((ws) => {
+        const meta =
+          folderMetaByKey.get(pathComparisonKey(ws.canonicalPath || ws.path)) ??
+          folderMetaByKey.get(pathComparisonKey(ws.path));
+        return {
+          id: ws.id,
+          name: ws.name,
+          path: ws.path,
+          canonicalPath: ws.canonicalPath,
+          sessionIds: ws.sessionIds,
+          hidden: ws.hidden,
+          missingOnDisk: ws.missingOnDisk,
+          lastOpenedAt: ws.lastOpenedAt,
+          branch: ws.branch ?? meta?.branch,
+          icon: ws.icon ?? meta?.icon,
+          isPrimary: ws.isPrimary ?? meta?.isPrimary,
+        };
+      });
+    }
+    if (resolvedFolders.length > 0) {
+      return resolvedFolders.map((folder, idx) => ({
+        id: folder.id ?? `ws_${idx}_${folder.path}`,
+        name: folder.name,
+        path: folder.path,
+        canonicalPath: folder.canonicalPath ?? folder.path,
+        branch: folder.branch,
+        icon: folder.icon,
+        isPrimary: folder.isPrimary,
+      }));
+    }
+    const fallbackDirs = Array.from(
       new Set(
-        rawDirs.length > 0
-          ? rawDirs
-          : activeProjectPath
-            ? [activeProjectPath]
-            : ["Workspace"],
+        allSessions
+          .map((s) => s.workingDir)
+          .filter((d): d is string => Boolean(d && d.trim().length > 0)),
       ),
     );
-    return dirs.map((path, idx) => ({
-      name: path === "Workspace" ? "Workspace" : basenameOf(path),
-      path,
+    return fallbackDirs.map((dir, idx) => ({
+      id: `ws_inferred_${idx}_${dir}`,
+      name: basenameOf(dir),
+      path: dir,
+      canonicalPath: dir,
       isPrimary: idx === 0,
     }));
-  }, [activeProjectPath, allSessions, foldersQuery.data, workspaces]);
+  }, [allSessions, effectiveLedger, folderMetaByKey, resolvedFolders]);
 
-  const filteredSessions = React.useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    const filtered = allSessions.filter((s) => {
-      if (!q) return true;
-      return (
-        s.title.toLowerCase().includes(q) ||
-        (s.previewText ?? "").toLowerCase().includes(q) ||
-        (s.workingDir ?? "").toLowerCase().includes(q)
-      );
-    });
-    return [...filtered].sort((a, b) => {
-      if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-        return a.pinned ? -1 : 1;
-      }
-      if (sortMode === "title") {
-        return a.title.localeCompare(b.title);
-      }
-      return b.updatedAtMs - a.updatedAtMs;
-    });
-  }, [allSessions, searchQuery, sortMode]);
+  const openFolderPaths = React.useMemo(() => {
+    if (effectiveLedger && effectiveLedger.openFolderPaths.length > 0) {
+      return effectiveLedger.openFolderPaths;
+    }
+    return resolvedFolders.map((f) => f.path);
+  }, [effectiveLedger, resolvedFolders]);
 
-  const activeSessions = React.useMemo(
-    () => filteredSessions.filter((s) => !s.archived),
-    [filteredSessions],
+  const collapsedWorkspaceIds = React.useMemo(() => {
+    const set = new Set<string>(effectiveLedger?.collapsedWorkspaceIds ?? []);
+    for (const [wsId, collapsed] of Object.entries(localCollapsedIds)) {
+      if (collapsed) set.add(wsId);
+      else set.delete(wsId);
+    }
+    return Array.from(set);
+  }, [effectiveLedger?.collapsedWorkspaceIds, localCollapsedIds]);
+
+  const adaptedSessions: AdaptedSidebarSession[] = React.useMemo(
+    () =>
+      allSessions.map((session) => ({
+        id: session.sessionId,
+        title: session.title,
+        workingDir: session.workingDir,
+        updatedAtMs: session.updatedAtMs,
+        status: session.status,
+        archived: session.archived,
+        isLive: Boolean(liveTurnsBySession[session.sessionId]?.isLive),
+        raw: session,
+      })),
+    [allSessions, liveTurnsBySession],
   );
-  const archivedSessions = React.useMemo(
-    () => filteredSessions.filter((s) => s.archived),
-    [filteredSessions],
+
+  const pinnedSessionIds = React.useMemo(() => {
+    const fromLedger = effectiveLedger?.pinnedSessionIds ?? [];
+    if (fromLedger.length > 0) return fromLedger;
+    return allSessions.filter((s) => s.pinned).map((s) => s.sessionId);
+  }, [allSessions, effectiveLedger?.pinnedSessionIds]);
+
+  const archivedSessionIds = React.useMemo(() => {
+    const fromLedger = effectiveLedger?.archivedSessionIds ?? [];
+    if (fromLedger.length > 0) return fromLedger;
+    return allSessions.filter((s) => s.archived).map((s) => s.sessionId);
+  }, [allSessions, effectiveLedger?.archivedSessionIds]);
+
+  const sidebarTree = React.useMemo(
+    () =>
+      deriveSidebarTree<AdaptedSidebarSession>({
+        sessions: adaptedSessions,
+        workspaces: sidebarWorkspaces,
+        pinnedSessionIds,
+        archivedSessionIds,
+        collapsedWorkspaceIds,
+        manualWorkspaceOrder: effectiveLedger?.manualWorkspaceOrder,
+        scopePaths: openFolderPaths,
+        showAllProjects,
+        viewMode: organizeMode === "chronological" ? "flat" : "grouped",
+        sortBy: "updated",
+        searchQuery,
+        activeDraft,
+      }),
+    [
+      activeDraft,
+      adaptedSessions,
+      archivedSessionIds,
+      collapsedWorkspaceIds,
+      effectiveLedger?.manualWorkspaceOrder,
+      openFolderPaths,
+      organizeMode,
+      pinnedSessionIds,
+      searchQuery,
+      showAllProjects,
+      sidebarWorkspaces,
+    ],
+  );
+
+  const pinnedSet = React.useMemo(
+    () => new Set(pinnedSessionIds),
+    [pinnedSessionIds],
+  );
+
+  const sortByUiMode = React.useCallback(
+    (list: AdaptedSidebarSession[]): AdaptedSidebarSession[] => {
+      if (sortMode !== "title") return list;
+      return [...list].sort((a, b) => {
+        const aPin = pinnedSet.has(a.id);
+        const bPin = pinnedSet.has(b.id);
+        if (aPin !== bPin) return aPin ? -1 : 1;
+        return a.title.localeCompare(b.title);
+      });
+    },
+    [pinnedSet, sortMode],
   );
 
   const refreshSessions = React.useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    void queryClient.invalidateQueries({ queryKey: ["workspace", "ledger"] });
   }, [queryClient]);
 
-  const handleCreateSession = async (workingDir?: string) => {
-    try {
-      const res = await callRpc("sessions.create", { workingDir });
-      setActiveSession(res.session.sessionId, res.session.title);
-      if (workingDir) setActiveProjectPath(workingDir);
-      refreshSessions();
-      onSessionSelected?.();
-    } catch {
-      setActiveSession(null);
-      setActiveRoute("home");
-      onSessionSelected?.();
-    }
+  // Lazy draft activation — zero eager `sessions.create` RPC until user submits!
+  const handleNewChatDraft = (workingDir?: string, workspaceId?: string) => {
+    const targetDir =
+      workingDir ??
+      activeProjectPath ??
+      openFolderPaths[0] ??
+      sidebarWorkspaces[0]?.path ??
+      null;
+    const matchedWs = workspaceId
+      ? sidebarWorkspaces.find((w) => w.id === workspaceId)
+      : targetDir
+        ? sidebarWorkspaces.find(
+            (w) =>
+              pathComparisonKey(w.canonicalPath || w.path) ===
+                pathComparisonKey(targetDir) ||
+              pathComparisonKey(w.path) === pathComparisonKey(targetDir),
+          )
+        : undefined;
+
+    openNewChatDraft({
+      workingDir: targetDir,
+      workspaceId: matchedWs?.id ?? workspaceId ?? null,
+    });
+    requestComposerFocus();
+    onSessionSelected?.();
   };
 
   const handleSelectSession = async (session: SessionSummaryView) => {
     setActiveSession(session.sessionId, session.title);
     if (session.workingDir) setActiveProjectPath(session.workingDir);
     onSessionSelected?.();
-    void callRpc("sessions.attach", { sessionId: session.sessionId }).catch(
-      () => {},
-    );
+    void callRpc("sessions.attach", { sessionId: session.sessionId })
+      .then((res) => {
+        reconcileStaleLiveTurnForSession(
+          res.session.sessionId,
+          res.session.status,
+        );
+      })
+      .catch(() => {});
+  };
+
+  const handleToggleCollapse = (workspaceId: string, currentlyCollapsed: boolean) => {
+    const nextCollapsed = !currentlyCollapsed;
+    setLocalCollapsedIds((prev) => ({ ...prev, [workspaceId]: nextCollapsed }));
+    void callRpc("workspace.ledger.setCollapsed", {
+      workspaceId,
+      collapsed: nextCollapsed,
+    })
+      .then((ledger) => {
+        setWorkspaceLedger(ledger);
+        queryClient.setQueryData(["workspace", "ledger"], ledger);
+      })
+      .catch(() => {});
   };
 
   const handleTogglePin = async (session: SessionSummaryView) => {
+    const nextPinned = !(pinnedSet.has(session.sessionId) || session.pinned);
     await callRpc("sessions.pin", {
       sessionId: session.sessionId,
-      pinned: !session.pinned,
+      pinned: nextPinned,
     });
     refreshSessions();
   };
@@ -274,21 +472,61 @@ export function SidebarProjectsPane({
     const updated = resolvedFolders.map((w) =>
       w.path === folderPath ? { ...w, icon: iconView } : w,
     );
-    setWorkspaces(updated);
+    if (updated.length > 0) {
+      setWorkspaces(updated);
+    }
     await callRpc("workspace.setProjectIcon", {
       workspacePath: folderPath,
       icon: iconView,
     });
   };
 
-  const renderSessionRow = (session: SessionSummaryView) => {
+  const renderDraftRow = () => {
+    if (!activeDraft) return null;
+    const isActive = activeSessionId === null;
+    return (
+      <button
+        key={activeDraft.draftId}
+        type="button"
+        data-testid="sidebar-draft-row"
+        data-active={isActive ? "true" : "false"}
+        onClick={() => {
+          openNewChatDraft({
+            workingDir: activeDraft.workingDir,
+            workspaceId: activeDraft.workspaceId,
+          });
+          requestComposerFocus();
+          onSessionSelected?.();
+        }}
+        className={cn(
+          "flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-2 text-left text-xs transition-colors",
+          isActive
+            ? "bg-active font-medium text-ink shadow-bevel-surface"
+            : "text-body hover:bg-hover hover:text-ink",
+        )}
+      >
+        <RunStatusPulse status="idle" />
+        <span className="min-w-0 flex-1 truncate">
+          {activeDraft.title || "New chat"}
+        </span>
+        <span className="shrink-0 font-mono text-[10px] text-muted-ink">
+          Draft
+        </span>
+      </button>
+    );
+  };
+
+  const renderSessionRow = (adapted: AdaptedSidebarSession) => {
+    const session = adapted.raw;
     const isActive = activeSessionId === session.sessionId;
+    const isPinned = pinnedSet.has(session.sessionId) || Boolean(session.pinned);
+    const effectiveStatus = adapted.isLive ? "running" : session.status;
     const tone =
-      session.status === "running"
+      effectiveStatus === "running"
         ? "running"
-        : session.status === "waiting"
+        : effectiveStatus === "waiting"
           ? "warn"
-          : session.status === "error"
+          : effectiveStatus === "error"
             ? "danger"
             : "idle";
 
@@ -314,7 +552,7 @@ export function SidebarProjectsPane({
               <span className="min-w-0 flex-1 truncate">{session.title}</span>
             </button>
 
-            {session.pinned && (
+            {isPinned && (
               <Pin
                 aria-label="Pinned"
                 className="size-3 shrink-0 text-brand-text opacity-80 group-hover/session:hidden"
@@ -346,7 +584,7 @@ export function SidebarProjectsPane({
               <DropdownMenuContent align="end" className="w-44">
                 <DropdownMenuItem onClick={() => void handleTogglePin(session)}>
                   <Pin className="size-3.5" />
-                  <span>{session.pinned ? "Unpin session" : "Pin session"}</span>
+                  <span>{isPinned ? "Unpin session" : "Pin session"}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
@@ -399,7 +637,10 @@ export function SidebarProjectsPane({
             )}
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-ink">
               {session.branch && (
-                <Badge variant="outline" className="px-1.5 py-0 font-mono text-[10px]">
+                <Badge
+                  variant="outline"
+                  className="px-1.5 py-0 font-mono text-[10px]"
+                >
                   {session.branch}
                 </Badge>
               )}
@@ -433,6 +674,9 @@ export function SidebarProjectsPane({
     </button>
   );
 
+  const showScopeToggle =
+    sidebarTree.hiddenOutOfScopeCount > 0 || showAllProjects;
+
   return (
     <aside
       aria-label="Sessions and projects"
@@ -449,7 +693,7 @@ export function SidebarProjectsPane({
           variant="default"
           size="sm"
           data-testid="sidebar-new-session-btn"
-          onClick={() => void handleCreateSession()}
+          onClick={() => handleNewChatDraft()}
           className="flex-1 justify-start gap-2 px-2.5 text-xs font-medium"
         >
           <Plus className="size-3.5 text-brand-text" />
@@ -584,6 +828,34 @@ export function SidebarProjectsPane({
         </div>
       )}
 
+      {/* Workspace Scope Toggle (shown when other projects exist outside open VS Code folders) */}
+      {showScopeToggle && (
+        <div className="flex items-center justify-between border-b border-hairline-soft px-2.5 py-1.5">
+          <span className="text-[10.5px] font-medium text-muted-ink">
+            {showAllProjects ? "All projects" : "Workspace scope"}
+          </span>
+          <button
+            type="button"
+            data-testid="sidebar-scope-toggle"
+            aria-pressed={showAllProjects}
+            onClick={() => setShowAllProjects((v) => !v)}
+            className={cn(
+              "inline-flex cursor-pointer items-center gap-1 rounded-md border px-2 py-0.5 text-[10.5px] font-medium transition-colors",
+              showAllProjects
+                ? "border-brand/40 bg-brand-soft text-brand-text"
+                : "border-hairline bg-pane text-muted-ink hover:border-premium hover:bg-hover hover:text-ink",
+            )}
+          >
+            <FolderOpen className="size-3" />
+            <span>
+              {showAllProjects
+                ? "Current workspace"
+                : `All Projects (+${sidebarTree.hiddenOutOfScopeCount})`}
+            </span>
+          </button>
+        </div>
+      )}
+
       {/* Sessions & Project Groups */}
       <ScrollArea className="min-h-0 flex-1 px-2 py-1.5">
         {crossToolSearch && searchQuery.trim().length > 0 ? (
@@ -595,29 +867,20 @@ export function SidebarProjectsPane({
           </div>
         ) : organizeMode === "chronological" ? (
           <div className="flex flex-col gap-0.5">
-            {activeSessions.map(renderSessionRow)}
+            {activeDraft && renderDraftRow()}
+            {sortByUiMode(sidebarTree.flat).map(renderSessionRow)}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {resolvedFolders.map((folder) => {
-              const isCollapsed = Boolean(collapsedProjects[folder.path]);
-              const folderSessions = activeSessions.filter(
-                (s) =>
-                  !s.workingDir ||
-                  s.workingDir === folder.path ||
-                  (folder.isPrimary &&
-                    !resolvedFolders.some(
-                      (other) =>
-                        other.path !== folder.path &&
-                        other.path === s.workingDir,
-                    )),
-              );
-              const iconSpec = toProjectIconSpec(folder.icon);
+            {sidebarTree.groups.map((group) => {
+              const ws = group.workspace as EnrichedSidebarWorkspace;
+              const folderSessions = sortByUiMode(group.sessions);
+              const iconSpec = toProjectIconSpec(ws.icon);
 
               return (
                 <div
-                  key={folder.path}
-                  data-testid={`project-group-${folder.name}`}
+                  key={ws.id}
+                  data-testid={`project-group-${ws.name}`}
                   className="flex flex-col gap-0.5"
                 >
                   <div className="group/proj flex h-7 items-center gap-1 rounded-md px-1 text-xs text-muted-ink hover:bg-hover hover:text-ink">
@@ -625,21 +888,18 @@ export function SidebarProjectsPane({
                       compact
                       value={iconSpec}
                       onChange={(next) =>
-                        void handleProjectIconChange(folder.path, next)
+                        void handleProjectIconChange(ws.path, next)
                       }
                     />
                     <button
                       type="button"
                       onClick={() =>
-                        setCollapsedProjects((prev) => ({
-                          ...prev,
-                          [folder.path]: !prev[folder.path],
-                        }))
+                        handleToggleCollapse(ws.id, group.isCollapsed)
                       }
                       className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 text-left font-medium text-ink"
                     >
-                      <span className="truncate">{folder.name}</span>
-                      {isCollapsed ? (
+                      <span className="truncate">{ws.name}</span>
+                      {group.isCollapsed ? (
                         <ChevronRight className="size-3 shrink-0 text-muted-ink" />
                       ) : (
                         <ChevronDown className="size-3 shrink-0 text-muted-ink" />
@@ -647,33 +907,50 @@ export function SidebarProjectsPane({
                     </button>
                     <button
                       type="button"
-                      aria-label={`New session in ${folder.name}`}
-                      onClick={() => void handleCreateSession(folder.path)}
+                      aria-label={`New session in ${ws.name}`}
+                      onClick={() => handleNewChatDraft(ws.path, ws.id)}
                       className="grid size-5 shrink-0 cursor-pointer place-items-center rounded-sm text-muted-ink opacity-0 transition-opacity hover:bg-active hover:text-ink group-hover/proj:opacity-100 focus-visible:opacity-100"
                     >
                       <Plus className="size-3" />
                     </button>
                   </div>
 
-                  {!isCollapsed && (
+                  {!group.isCollapsed && (
                     <div className="flex flex-col gap-0.5 pl-1.5">
+                      {group.hasDraft && renderDraftRow()}
                       {folderSessions.length > 0 ? (
                         folderSessions.map(renderSessionRow)
-                      ) : (
+                      ) : !group.hasDraft ? (
                         <div className="px-2 py-1.5 text-[11px] text-faint">
                           No sessions in this project
                         </div>
-                      )}
+                      ) : null}
                     </div>
                   )}
                 </div>
               );
             })}
+
+            {(sidebarTree.ungrouped.length > 0 ||
+              sidebarTree.ungroupedHasDraft) && (
+              <div
+                data-testid="project-group-ungrouped"
+                className="flex flex-col gap-0.5"
+              >
+                <div className="px-2 py-1 text-[10.5px] font-semibold tracking-wider text-muted-ink uppercase">
+                  Other sessions
+                </div>
+                <div className="flex flex-col gap-0.5 pl-1.5">
+                  {sidebarTree.ungroupedHasDraft && renderDraftRow()}
+                  {sortByUiMode(sidebarTree.ungrouped).map(renderSessionRow)}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* Collapsible Archived Section */}
-        {archivedSessions.length > 0 && (
+        {sidebarTree.archived.length > 0 && (
           <div className="mt-4 border-t border-hairline-soft pt-2">
             <button
               type="button"
@@ -682,7 +959,7 @@ export function SidebarProjectsPane({
             >
               <span className="inline-flex items-center gap-1.5">
                 <Archive className="size-3" />
-                <span>Archived ({archivedSessions.length})</span>
+                <span>Archived ({sidebarTree.archived.length})</span>
               </span>
               {archivedExpanded ? (
                 <ChevronDown className="size-3" />
@@ -692,7 +969,7 @@ export function SidebarProjectsPane({
             </button>
             {archivedExpanded && (
               <div className="mt-1 flex flex-col gap-0.5 opacity-80">
-                {archivedSessions.map(renderSessionRow)}
+                {sidebarTree.archived.map(renderSessionRow)}
               </div>
             )}
           </div>
@@ -710,7 +987,10 @@ export function SidebarProjectsPane({
           <DialogHeader>
             <DialogTitle>Rename session</DialogTitle>
           </DialogHeader>
-          <form onSubmit={(e) => void handleRenameSubmit(e)} className="flex flex-col gap-3">
+          <form
+            onSubmit={(e) => void handleRenameSubmit(e)}
+            className="flex flex-col gap-3"
+          >
             <Input
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}

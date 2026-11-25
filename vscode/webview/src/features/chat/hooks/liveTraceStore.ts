@@ -1,4 +1,5 @@
 import * as React from "react";
+import { shouldClearStaleLiveTurn } from "@rayu-dev/rayucode-session-core/client";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 
@@ -40,18 +41,23 @@ export interface StartSessionLiveTurnInput {
   userRefFiles?: string;
   userImages?: Array<{ name: string; dataUrl: string }>;
   startedAtMs?: number;
+  baseHistoryTurnCount?: number;
 }
 
 interface LiveTraceStoreState {
   liveTurnsBySession: Record<string, ChatTurnView>;
   completedTurnsBySession: Record<string, ChatTurnView[]>;
   pendingQuestionsBySession: Record<string, ClarifyingQuestionRequest | null>;
+  baseHistoryTurnCountBySession: Record<string, number>;
+  lastEventAtMsBySession: Record<string, number>;
 }
 
 export const useLiveTraceStore = create<LiveTraceStoreState>(() => ({
   liveTurnsBySession: {},
   completedTurnsBySession: {},
   pendingQuestionsBySession: {},
+  baseHistoryTurnCountBySession: {},
+  lastEventAtMsBySession: {},
 }));
 
 const trackersBySession = new Map<string, HarnessStreamTracker>();
@@ -269,12 +275,26 @@ export function startSessionLiveTurn(
     pinned: false,
   };
 
-  useLiveTraceStore.setState((state) => ({
-    liveTurnsBySession: {
-      ...state.liveTurnsBySession,
-      [input.sessionId]: turn,
-    },
-  }));
+  useLiveTraceStore.setState((state) => {
+    const nextBaseCounts = { ...state.baseHistoryTurnCountBySession };
+    if (
+      typeof input.baseHistoryTurnCount === "number" &&
+      input.baseHistoryTurnCount >= 0
+    ) {
+      nextBaseCounts[input.sessionId] = input.baseHistoryTurnCount;
+    }
+    return {
+      liveTurnsBySession: {
+        ...state.liveTurnsBySession,
+        [input.sessionId]: turn,
+      },
+      baseHistoryTurnCountBySession: nextBaseCounts,
+      lastEventAtMsBySession: {
+        ...state.lastEventAtMsBySession,
+        [input.sessionId]: Date.now(),
+      },
+    };
+  });
   ensureElapsedTimer();
   return turn;
 }
@@ -288,6 +308,7 @@ export function startLiveTurnFromOptimistic(
     userRefFiles: turn.refFiles,
     userImages: turn.images,
     startedAtMs: turn.createdAtMs,
+    baseHistoryTurnCount: turn.baseHistoryTurnCount,
   });
 }
 
@@ -334,12 +355,75 @@ export function clearSessionLiveTurn(sessionId: string): void {
   startedAtBySession.delete(sessionId);
   trackersBySession.delete(sessionId);
   useLiveTraceStore.setState((state) => {
-    if (!(sessionId in state.liveTurnsBySession)) return state;
-    const nextMap = { ...state.liveTurnsBySession };
-    delete nextMap[sessionId];
-    return { liveTurnsBySession: nextMap };
+    const hasLive = sessionId in state.liveTurnsBySession;
+    const hasBase = sessionId in state.baseHistoryTurnCountBySession;
+    const hasLast = sessionId in state.lastEventAtMsBySession;
+    if (!hasLive && !hasBase && !hasLast) return state;
+    const nextLive = { ...state.liveTurnsBySession };
+    const nextBase = { ...state.baseHistoryTurnCountBySession };
+    const nextLast = { ...state.lastEventAtMsBySession };
+    delete nextLive[sessionId];
+    delete nextBase[sessionId];
+    delete nextLast[sessionId];
+    return {
+      liveTurnsBySession: nextLive,
+      baseHistoryTurnCountBySession: nextBase,
+      lastEventAtMsBySession: nextLast,
+    };
   });
   stopElapsedTimerIfIdle();
+}
+
+export function reconcileStaleLiveTurnForSession(
+  sessionId: string,
+  sessionStatus: string | null | undefined,
+  options?: { nowMs?: number; gracePeriodMs?: number },
+): boolean {
+  if (!sessionId) return false;
+  const state = useLiveTraceStore.getState();
+  const liveTurn = state.liveTurnsBySession[sessionId];
+  if (!liveTurn) return false;
+  const lastEventAtMs =
+    state.lastEventAtMsBySession[sessionId] ??
+    startedAtBySession.get(sessionId) ??
+    0;
+  const stale = shouldClearStaleLiveTurn({
+    liveTurn: {
+      id: liveTurn.id,
+      userPrompt: liveTurn.userPrompt,
+      answerMarkdown: liveTurn.answerIntro,
+      isLive: liveTurn.isLive,
+      workGroups: liveTurn.groups,
+    },
+    sessionStatus,
+    lastEventAtMs,
+    nowMs: options?.nowMs,
+    gracePeriodMs: options?.gracePeriodMs,
+  });
+  if (stale) {
+    clearSessionLiveTurn(sessionId);
+    return true;
+  }
+  return false;
+}
+
+export function reconcileStaleLiveTurnsFromSessions(
+  sessions: readonly { sessionId: string; status?: string | null }[],
+  options?: { nowMs?: number; gracePeriodMs?: number },
+): string[] {
+  const cleared: string[] = [];
+  for (const session of sessions) {
+    if (
+      reconcileStaleLiveTurnForSession(
+        session.sessionId,
+        session.status,
+        options,
+      )
+    ) {
+      cleared.push(session.sessionId);
+    }
+  }
+  return cleared;
 }
 
 export function resetAllLiveTraces(): void {
@@ -358,6 +442,8 @@ export function resetAllLiveTraces(): void {
     liveTurnsBySession: {},
     completedTurnsBySession: {},
     pendingQuestionsBySession: {},
+    baseHistoryTurnCountBySession: {},
+    lastEventAtMsBySession: {},
   });
 }
 
@@ -390,6 +476,9 @@ function getOrCreateBatcher(
           };
         });
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        void queryClient.invalidateQueries({
+          queryKey: chatHistoryQueryKey(sessionId),
+        });
       }
       const perm = useAppStore.getState().pendingPermission;
       if (perm && (!perm.sessionId || perm.sessionId === sessionId)) {
@@ -403,6 +492,10 @@ function getOrCreateBatcher(
       liveTurnsBySession: {
         ...state.liveTurnsBySession,
         [sessionId]: updated,
+      },
+      lastEventAtMsBySession: {
+        ...state.lastEventAtMsBySession,
+        [sessionId]: Date.now(),
       },
     }));
   }, FRAME_BATCH_WINDOW_MS);
@@ -469,9 +562,29 @@ export function processHarnessFrame(
     return;
   }
 
+  const isTerminalFrame =
+    frame.ev === "turn_done" ||
+    frame.ev === "turn_stopped" ||
+    frame.ev === "error";
+
+  useLiveTraceStore.setState((state) => ({
+    lastEventAtMsBySession: {
+      ...state.lastEventAtMsBySession,
+      [targetSessionId]: Date.now(),
+    },
+  }));
+
   const tracker = getOrCreateTracker(targetSessionId);
   const mapped = mapHarnessFrameToLiveEvents(frame, tracker);
-  if (mapped.length === 0) return;
+  if (mapped.length === 0) {
+    if (isTerminalFrame) {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({
+        queryKey: chatHistoryQueryKey(targetSessionId),
+      });
+    }
+    return;
+  }
 
   const traceEvents: MappedLiveTraceEvent[] = [];
   for (const ev of mapped) {

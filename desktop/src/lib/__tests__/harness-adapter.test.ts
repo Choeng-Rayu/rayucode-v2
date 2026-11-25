@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createHarnessStreamTracker,
+  formatDaemonVersionLabel,
   formatDurationSeconds,
   formatHarnessModelSpec,
   isTempDirectoryPath,
@@ -484,5 +485,49 @@ describe("harness-adapter", () => {
           "You have 1 incomplete todo. Continue working, or update the todo tool.",
       }),
     ])
+  })
+
+  it("settles ev: 'error' frames cleanly via settleHarnessErrorFrame and ignores duplicate terminal frames", () => {
+    const tracker = createHarnessStreamTracker()
+    tracker.turnActive = true
+    tracker.turnCompleted = false
+    tracker.lastCredits = "0.02 cr"
+    tracker.lastKvCachePct = 88
+
+    const events = mapHarnessFrameToLiveEvents(
+      { ev: "error", message: "Upstream provider rate limited (429)" },
+      tracker
+    )
+
+    expect(events).toEqual([
+      { type: "tool-status", label: null },
+      {
+        type: "answer-delta",
+        delta: "\n\n**Error:** Upstream provider rate limited (429)",
+      },
+      expect.objectContaining({
+        type: "complete",
+        credits: "0.02 cr",
+        kvCachePct: 88,
+        timestamp: "Just now",
+      }),
+    ])
+    expect(tracker.turnActive).toBe(false)
+    expect(tracker.turnCompleted).toBe(true)
+
+    // Subsequent duplicate error or turn_done must not emit duplicate complete events
+    expect(
+      mapHarnessFrameToLiveEvents({ ev: "error", message: "duplicate" }, tracker)
+    ).toEqual([])
+    expect(mapHarnessFrameToLiveEvents({ ev: "turn_done" }, tracker)).toEqual([])
+  })
+
+  it("formats daemon version labels cleanly without double-prefixing or vrayu-* glitches", () => {
+    expect(formatDaemonVersionLabel("2.0.0")).toBe("v2.0.0")
+    expect(formatDaemonVersionLabel("v1.4.2")).toBe("v1.4.2")
+    expect(formatDaemonVersionLabel("rayu-harness-api-bridge/0.1.0")).toBe(
+      "v0.1.0"
+    )
+    expect(formatDaemonVersionLabel("")).toBe("")
   })
 })

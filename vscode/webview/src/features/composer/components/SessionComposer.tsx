@@ -249,6 +249,8 @@ export function SessionComposer({
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
   const storeProjectPath = useAppStore((s) => s.activeProjectPath);
+  const activeDraft = useAppStore((s) => s.activeDraft);
+  const updateActiveDraft = useAppStore((s) => s.updateActiveDraft);
   const setActiveProjectPath = useAppStore((s) => s.setActiveProjectPath);
   const storeWorkspaces = useAppStore((s) => s.workspaces);
   const storeEditorSelection = useAppStore((s) => s.editorSelection);
@@ -282,12 +284,14 @@ export function SessionComposer({
   }, [foldersQuery.data?.folders, storeWorkspaces]);
 
   const activeWorkspace = React.useMemo(() => {
-    if (storeProjectPath) {
-      const found = workspaces.find((w) => w.path === storeProjectPath);
+    const targetPath =
+      (!effectiveSessionId ? activeDraft?.workingDir : null) ?? storeProjectPath;
+    if (targetPath) {
+      const found = workspaces.find((w) => w.path === targetPath);
       if (found) return found;
     }
     return workspaces[0] ?? null;
-  }, [storeProjectPath, workspaces]);
+  }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
   const [internalValue, setInternalValue] = React.useState("");
   const [internalProject, setInternalProject] = React.useState(
@@ -581,17 +585,23 @@ export function SessionComposer({
     (model: ModelOption) => {
       setInternalModelId(model.id);
       setInternalModelLabel(model.label);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ model: model.id });
+      }
       onModelChange?.(model);
     },
-    [onModelChange],
+    [effectiveSessionId, onModelChange, updateActiveDraft],
   );
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
       setInternalEffort(nextEffort);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ reasoningEffort: nextEffort });
+      }
       onEffortChange?.(nextEffort);
     },
-    [onEffortChange],
+    [effectiveSessionId, onEffortChange, updateActiveDraft],
   );
 
   const handleServiceTierSelect = React.useCallback(
@@ -613,14 +623,24 @@ export function SessionComposer({
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
       setInternalPermissionMode(nextMode);
+      if (!effectiveSessionId) {
+        updateActiveDraft({ permissionMode: nextMode });
+      }
       onPermissionModeChange?.(nextMode);
     },
-    [onPermissionModeChange],
+    [effectiveSessionId, onPermissionModeChange, updateActiveDraft],
   );
 
   const handleWorkspaceSelect = (name: string, path: string) => {
     setInternalProject(name);
     setActiveProjectPath(path);
+    if (!effectiveSessionId) {
+      const matched = workspaces.find((w) => w.path === path);
+      updateActiveDraft({
+        workingDir: path,
+        workspaceId: matched?.id ?? null,
+      });
+    }
     onProjectChange?.(name, path);
     setWorkspacePickerOpen(false);
   };

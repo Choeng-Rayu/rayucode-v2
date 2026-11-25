@@ -1,4 +1,5 @@
 import * as React from "react";
+import { reconcileChatTurns } from "@rayu-dev/rayucode-session-core/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -369,6 +370,9 @@ export function useChatStream(
       ? (s.completedTurnsBySession[sessionId] ?? EMPTY_COMPLETED_TURNS)
       : EMPTY_COMPLETED_TURNS,
   );
+  const baseHistoryTurnCount = useLiveTraceStore((s) =>
+    sessionId ? s.baseHistoryTurnCountBySession[sessionId] : undefined,
+  );
   const pendingQuestion = useLiveTraceStore((s) =>
     sessionId ? (s.pendingQuestionsBySession[sessionId] ?? null) : null,
   );
@@ -405,16 +409,8 @@ export function useChatStream(
   const baseTurns = React.useMemo(() => {
     if (options.initialTurns) return options.initialTurns;
     if (isMockDemoSession) return DEFAULT_SAMPLE_TURNS;
-    const fetched = historyQuery.data ?? [];
-    if (completedTurns.length === 0) return fetched;
-    const seenKeys = new Set(
-      fetched.map((t) => `${t.userPrompt.trim()}::${t.answerIntro.trim()}`),
-    );
-    const extraCompleted = completedTurns.filter(
-      (t) => !seenKeys.has(`${t.userPrompt.trim()}::${t.answerIntro.trim()}`),
-    );
-    return extraCompleted.length > 0 ? [...fetched, ...extraCompleted] : fetched;
-  }, [completedTurns, historyQuery.data, isMockDemoSession, options.initialTurns]);
+    return historyQuery.data ?? [];
+  }, [historyQuery.data, isMockDemoSession, options.initialTurns]);
 
   const visibleHistoryTurns = React.useMemo(() => {
     const sliced = rewoundTurnId
@@ -495,6 +491,7 @@ export function useChatStream(
         userPrompt: trimmed,
         userRefFiles: opts?.refFiles,
         userImages: opts?.images,
+        baseHistoryTurnCount: visibleHistoryTurns.length,
       });
 
       sendHarnessRequest({
@@ -503,7 +500,7 @@ export function useChatStream(
         content: trimmed,
       });
     },
-    [isStreaming, sessionId],
+    [isStreaming, sessionId, visibleHistoryTurns.length],
   );
 
   const respondPermission = React.useCallback(
@@ -677,10 +674,34 @@ export function useChatStream(
     [sendPrompt, visibleHistoryTurns],
   );
 
-  const allTurns = React.useMemo(
-    () => (liveTurn ? [...visibleHistoryTurns, liveTurn] : visibleHistoryTurns),
-    [liveTurn, visibleHistoryTurns],
-  );
+  const allTurns = React.useMemo(() => {
+    const toReconcilable = (t: ChatTurnView) => ({
+      ...t,
+      answerMarkdown: t.answerIntro,
+      workGroups: t.groups,
+    });
+    const reconciled = reconcileChatTurns({
+      historyTurns: visibleHistoryTurns.map(toReconcilable),
+      liveTurn: liveTurn ? toReconcilable(liveTurn) : null,
+      completedLiveTurns: options.initialTurns
+        ? undefined
+        : completedTurns.map(toReconcilable),
+      baseHistoryTurnCount,
+    });
+    return reconciled.map((t) =>
+      pinnedOverrides[t.id] !== undefined
+        ? { ...t, pinned: pinnedOverrides[t.id]! }
+        : t,
+    );
+  }, [
+    baseHistoryTurnCount,
+    completedTurns,
+    isMockDemoSession,
+    liveTurn,
+    options.initialTurns,
+    pinnedOverrides,
+    visibleHistoryTurns,
+  ]);
 
   return {
     sessionId,

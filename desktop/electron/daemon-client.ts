@@ -25,6 +25,11 @@ import {
   type Transport,
 } from "@rayu-dev/rayucode-sdk"
 
+import {
+  SessionSocketPool,
+  type HarnessFrameLike,
+} from "@rayu-dev/rayucode-session-core/host"
+
 import { getRayuAppConfigDir, getRayuConfigDir } from "./auth-bridge.js"
 import {
   buildDesktopSdkTools,
@@ -293,7 +298,6 @@ export class RayuDaemonClient extends EventEmitter {
   private client: RayucodeClient | null = null
   private launchedClient: RayucodeClient | null = null
   private attachedSessionId: string | null = null
-  private attachQueue: Promise<unknown> = Promise.resolve()
   private connecting: Promise<RayucodeClient> | null = null
   private launching: Promise<DaemonConnectionStatus> | null = null
   private checking: Promise<DaemonConnectionStatus> | null = null
@@ -306,10 +310,10 @@ export class RayuDaemonClient extends EventEmitter {
   private pendingPermissionSync = new Map<string, PermissionModeId>()
   private pendingToolSync = new Set<string>()
   private configuredToolSessions = new Set<string>()
-  private sessionClients = new Map<string, RayucodeClient>()
-  private activeTurnSessions = new Set<string>()
-  private boundClients = new WeakSet<RayucodeClient>()
   private readonly MAX_SESSION_CLIENTS = 6
+  private readonly pool: SessionSocketPool<RayucodeClient>
+  private knownSessionIds = new Set<string>()
+  private boundPrimaryCloseClients = new WeakSet<RayucodeClient>()
   private historyRequestSeq = 0
   private latestHistorySessionId: string | null = null
   private status: DaemonConnectionStatus
@@ -326,6 +330,44 @@ export class RayuDaemonClient extends EventEmitter {
       mode: "demo",
       lastError: null,
     }
+    this.pool = new SessionSocketPool<RayucodeClient>({
+      maxIdleClients: this.MAX_SESSION_CLIENTS,
+      dialClient: async () => {
+        const fresh = await this.connectRawSocket(this.socketPath)
+        this.hasConnectedOnce = true
+        this.bindPrimaryCloseFallback(fresh)
+        return fresh
+      },
+      onFrame: (frame: HarnessFrameLike, sessionId: string, client: RayucodeClient) => {
+        this.emit("harness-event", frame as ServerFrame)
+        if (
+          (frame.ev === "turn_done" || frame.ev === "turn_stopped") &&
+          sessionId
+        ) {
+          if (this.pendingToolSync.has(sessionId)) {
+            this.pendingToolSync.delete(sessionId)
+            void this.syncSessionTools(client, sessionId)
+          }
+          const queuedMode = this.pendingPermissionSync.get(sessionId)
+          if (queuedMode) {
+            this.pendingPermissionSync.delete(sessionId)
+            void this.sendPermissionModeToClient(client, sessionId, queuedMode)
+          }
+        }
+      },
+      onClientEvicted: (sessionId: string) => {
+        this.knownSessionIds.delete(sessionId)
+        this.configuredToolSessions.delete(sessionId)
+      },
+      onSessionClosed: (sessionId: string, client: RayucodeClient) => {
+        this.knownSessionIds.delete(sessionId)
+        this.configuredToolSessions.delete(sessionId)
+        if (this.client === client) {
+          this.handlePrimaryClientDisconnected(client)
+        }
+      },
+      disconnectMessage: "Connection to Rayu daemon lost.",
+    })
   }
 
   configureDesktopRuntime(deps: DesktopToolDeps): void {
@@ -372,115 +414,53 @@ export class RayuDaemonClient extends EventEmitter {
     return this.getStatus()
   }
 
-  private hasPooledSessionForClient(client: RayucodeClient): boolean {
-    for (const pooled of this.sessionClients.values()) {
-      if (pooled === client) return true
+  private bindPrimaryCloseFallback(client: RayucodeClient): void {
+    if (this.boundPrimaryCloseClients.has(client)) return
+    this.boundPrimaryCloseClients.add(client)
+    client.once("close", () => {
+      if (this.client === client) {
+        this.handlePrimaryClientDisconnected(client)
+      }
+    })
+  }
+
+  private handlePrimaryClientDisconnected(closedClient: RayucodeClient): void {
+    if (this.client !== closedClient) return
+    let fallbackSid: string | null = null
+    let fallbackClient: RayucodeClient | null = null
+    for (const sid of this.knownSessionIds) {
+      const candidate = this.pool.get(sid)
+      if (candidate && candidate !== closedClient) {
+        fallbackSid = sid
+        fallbackClient = candidate
+      }
     }
-    return false
+    if (fallbackSid && fallbackClient) {
+      this.attachedSessionId = fallbackSid
+      this.client = fallbackClient
+      this.pool.setFocusedSession(fallbackSid)
+      return
+    }
+    this.client = null
+    this.attachedSessionId = null
+    this.configuredToolSessions.clear()
+    this.updateStatus({
+      connected: false,
+      reconnecting: false,
+      socketPath: this.socketPath,
+      version: "offline",
+      latencyMs: 0,
+      mode: "demo",
+      lastError: "Daemon socket closed",
+    })
   }
 
   private registerSessionClient(sessionId: string, client: RayucodeClient): void {
     if (!sessionId) return
-    this.sessionClients.delete(sessionId)
-    this.sessionClients.set(sessionId, client)
-    while (this.sessionClients.size > this.MAX_SESSION_CLIENTS) {
-      let evictKey: string | null = null
-      let evictClient: RayucodeClient | null = null
-      for (const [sid, candidate] of this.sessionClients) {
-        if (sid === sessionId) continue
-        if (this.activeTurnSessions.has(sid)) continue
-        if (candidate === this.client || candidate === this.launchedClient) continue
-        const sharedElsewhere = Array.from(this.sessionClients.entries()).some(
-          ([otherSid, otherClient]) =>
-            otherSid !== sid && otherClient === candidate
-        )
-        if (sharedElsewhere) continue
-        evictKey = sid
-        evictClient = candidate
-        break
-      }
-      if (!evictKey || !evictClient) break
-      this.sessionClients.delete(evictKey)
-      this.configuredToolSessions.delete(evictKey)
-      evictClient.close()
-    }
-  }
-
-  private bindClientListeners(client: RayucodeClient): void {
-    if (this.boundClients.has(client)) return
-    this.boundClients.add(client)
-
-    client.on("event", (frame: ServerFrame) => {
-      const sid = typeof frame.session_id === "string" ? frame.session_id : ""
-      if (sid) {
-        if (
-          frame.ev === "turn_start" ||
-          frame.ev === "text_delta" ||
-          frame.ev === "reasoning_delta" ||
-          frame.ev === "thinking_delta" ||
-          frame.ev === "tool_start" ||
-          frame.ev === "tool_input_delta"
-        ) {
-          this.activeTurnSessions.add(sid)
-        } else if (
-          frame.ev === "turn_done" ||
-          frame.ev === "turn_stopped" ||
-          frame.ev === "error"
-        ) {
-          this.activeTurnSessions.delete(sid)
-        }
-      }
-
-      this.emit("harness-event", frame)
-      if (
-        (frame.ev === "turn_done" || frame.ev === "turn_stopped") &&
-        sid
-      ) {
-        if (this.pendingToolSync.has(sid)) {
-          this.pendingToolSync.delete(sid)
-          void this.syncSessionTools(client, sid)
-        }
-        const queuedMode = this.pendingPermissionSync.get(sid)
-        if (queuedMode) {
-          this.pendingPermissionSync.delete(sid)
-          void this.sendPermissionModeToClient(client, sid, queuedMode)
-        }
-      }
-    })
-
-    const onDisconnect = () => {
-      for (const [sid, pooled] of Array.from(this.sessionClients.entries())) {
-        if (pooled === client) {
-          this.sessionClients.delete(sid)
-          this.activeTurnSessions.delete(sid)
-          this.configuredToolSessions.delete(sid)
-        }
-      }
-      if (this.client !== client) return
-      const fallbackEntry = Array.from(this.sessionClients.entries()).pop()
-      if (fallbackEntry) {
-        this.attachedSessionId = fallbackEntry[0]
-        this.client = fallbackEntry[1]
-        return
-      }
-      this.client = null
-      this.attachedSessionId = null
-      this.configuredToolSessions.clear()
-      this.updateStatus({
-        connected: false,
-        reconnecting: false,
-        socketPath: this.socketPath,
-        version: "offline",
-        latencyMs: 0,
-        mode: "demo",
-        lastError: "Daemon socket closed",
-      })
-    }
-
-    client.once("close", onDisconnect)
-    client.on("error", () => {
-      // Handled via close listener; avoid uncaught EventEmitter errors
-    })
+    this.bindPrimaryCloseFallback(client)
+    this.pool.register(sessionId, client)
+    this.pool.setFocusedSession(sessionId)
+    this.knownSessionIds.add(sessionId)
   }
 
   private attachClient(
@@ -492,7 +472,7 @@ export class RayuDaemonClient extends EventEmitter {
       this.client &&
       this.client !== client &&
       this.client !== this.launchedClient &&
-      !this.hasPooledSessionForClient(this.client)
+      !this.pool.isClientBound(this.client)
     ) {
       this.client.close()
     }
@@ -505,7 +485,8 @@ export class RayuDaemonClient extends EventEmitter {
       this.socketPath = activeSocketPath
     }
 
-    this.bindClientListeners(client)
+    this.pool.bindListeners(client)
+    this.bindPrimaryCloseFallback(client)
 
     this.updateStatus({
       connected: true,
@@ -547,13 +528,8 @@ export class RayuDaemonClient extends EventEmitter {
     return client
   }
 
-  private async dialSessionSocket(
-    targetSocket: string
-  ): Promise<RayucodeClient> {
-    const client = await this.connectRawSocket(targetSocket)
-    this.hasConnectedOnce = true
-    this.bindClientListeners(client)
-    return client
+  private async dialSessionSocket(): Promise<RayucodeClient> {
+    return this.pool.dialFreshClient()
   }
 
   async connect(
@@ -679,6 +655,7 @@ export class RayuDaemonClient extends EventEmitter {
           supportsPermissions?: boolean
         })
         this.launchedClient = launched
+        this.pool.pinClient(launched)
         const latencyMs = Math.max(1, Date.now() - startedAt)
         this.attachClient(launched, latencyMs, instanceSocket)
         return this.getStatus()
@@ -769,9 +746,7 @@ export class RayuDaemonClient extends EventEmitter {
   }
 
   private runSerialized<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.attachQueue.then(fn, fn)
-    this.attachQueue = next.catch(() => {})
-    return next
+    return this.pool.runSerialized(fn)
   }
 
   private async syncSessionTools(
@@ -864,7 +839,7 @@ export class RayuDaemonClient extends EventEmitter {
     if (!sessionId) {
       return client
     }
-    const pooled = this.sessionClients.get(sessionId)
+    const pooled = this.pool.get(sessionId)
     if (pooled) {
       this.client = pooled
       this.attachedSessionId = sessionId
@@ -898,10 +873,9 @@ export class RayuDaemonClient extends EventEmitter {
     // any active streaming session's socket.
     let targetClient = client
     const boundToOther =
-      this.attachedSessionId !== null ||
-      this.hasPooledSessionForClient(targetClient)
+      this.attachedSessionId !== null || this.pool.isClientBound(targetClient)
     if (boundToOther) {
-      targetClient = await this.dialSessionSocket(this.socketPath)
+      targetClient = await this.dialSessionSocket()
     }
     const info = await targetClient.attachSession(sessionId)
     this.client = targetClient
@@ -935,11 +909,8 @@ export class RayuDaemonClient extends EventEmitter {
       // provisional session on the first `create_session` subscribe. Open a
       // fresh session socket without closing previous session sockets so
       // background streams keep running uninterrupted.
-      if (
-        this.attachedSessionId !== null ||
-        this.sessionClients.size > 0
-      ) {
-        client = await this.dialSessionSocket(this.socketPath)
+      if (this.attachedSessionId !== null || this.pool.size() > 0) {
+        client = await this.dialSessionSocket()
       }
       const info = await client.createSession({ workingDir })
       this.client = client
@@ -970,7 +941,7 @@ export class RayuDaemonClient extends EventEmitter {
 
   async attachSession(sessionId: string): Promise<SessionInfo> {
     return this.runSerialized(async () => {
-      const pooled = this.sessionClients.get(sessionId)
+      const pooled = this.pool.get(sessionId)
       if (pooled) {
         this.client = pooled
         this.attachedSessionId = sessionId
@@ -1005,9 +976,9 @@ export class RayuDaemonClient extends EventEmitter {
       if (
         (this.attachedSessionId !== null &&
           this.attachedSessionId !== sessionId) ||
-        this.hasPooledSessionForClient(client)
+        this.pool.isClientBound(client)
       ) {
-        client = await this.dialSessionSocket(this.socketPath)
+        client = await this.dialSessionSocket()
       }
       const info = await client.attachSession(sessionId)
       this.client = client
@@ -1084,22 +1055,22 @@ export class RayuDaemonClient extends EventEmitter {
       const trimmed = content.trim()
       const finalContent =
         trimmed.length > 0 ? content : "Analyze the attached image(s)."
-      this.activeTurnSessions.add(sessionId)
+      this.pool.markTurnActive(sessionId)
       try {
         await client.sendMessage(sessionId, finalContent, {
           waitForAccept: true,
           ...(images && images.length > 0 ? { images } : {}),
         })
       } catch (err) {
-        this.activeTurnSessions.delete(sessionId)
+        this.pool.markTurnSettled(sessionId)
         throw err
       }
     })
   }
 
   async cancel(sessionId: string): Promise<void> {
-    const target = this.sessionClients.get(sessionId) ?? (await this.connect())
-    this.activeTurnSessions.delete(sessionId)
+    const target = this.pool.get(sessionId) ?? (await this.connect())
+    this.pool.markTurnSettled(sessionId)
     await target.cancel(sessionId)
   }
 
@@ -1108,7 +1079,8 @@ export class RayuDaemonClient extends EventEmitter {
     requestId: string,
     decision: PermissionDecision
   ): Promise<void> {
-    const target = this.sessionClients.get(sessionId) ?? (await this.connect())
+    const target = this.pool.get(sessionId) ?? (await this.connect())
+    this.pool.markPermissionPending(sessionId, false)
     await target.respondToPermission(sessionId, requestId, decision)
   }
 
@@ -1120,7 +1092,7 @@ export class RayuDaemonClient extends EventEmitter {
     if (!sessionId || sessionId.startsWith("ses_")) {
       return { ok: true }
     }
-    const pooled = this.sessionClients.get(sessionId)
+    const pooled = this.pool.get(sessionId)
     if (pooled) {
       if (this.syncedPermissionModeBySession.get(sessionId) === mode) {
         return { ok: true }
@@ -1257,7 +1229,7 @@ export class RayuDaemonClient extends EventEmitter {
     if (!sessionId || sessionId.startsWith("ses_")) {
       return emptyFileChangesSnapshot(sessionId)
     }
-    const pooled = this.sessionClients.get(sessionId)
+    const pooled = this.pool.get(sessionId)
     const activeClient =
       pooled ??
       (this.client && this.attachedSessionId === sessionId ? this.client : null)
@@ -1448,16 +1420,20 @@ export class RayuDaemonClient extends EventEmitter {
   }
 
   dispose(): void {
-    const toClose = new Set<RayucodeClient>(this.sessionClients.values())
-    if (this.client) toClose.add(this.client)
-    if (this.launchedClient) toClose.add(this.launchedClient)
+    const extraClients = new Set<RayucodeClient>()
+    if (this.client && !this.pool.isClientBound(this.client)) {
+      extraClients.add(this.client)
+    }
+    if (this.launchedClient && !this.pool.isClientBound(this.launchedClient)) {
+      extraClients.add(this.launchedClient)
+    }
     this.client = null
     this.launchedClient = null
     this.attachedSessionId = null
-    this.sessionClients.clear()
-    this.activeTurnSessions.clear()
+    this.knownSessionIds.clear()
     this.configuredToolSessions.clear()
-    for (const c of toClose) {
+    this.pool.closeAll()
+    for (const c of extraClients) {
       void c.close()
     }
   }

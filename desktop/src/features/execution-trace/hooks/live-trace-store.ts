@@ -1,4 +1,5 @@
 import * as React from "react"
+import { reconcileChatTurns } from "@rayu-dev/rayucode-session-core/client"
 import { useQueryClient, type QueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { create } from "zustand"
@@ -24,12 +25,35 @@ import {
 
 const FRAME_BATCH_WINDOW_MS = 16
 
+export type ReconcilableExecutionTurn = ExecutionTurn & {
+  answerMarkdown: string
+  workGroups: ExecutionTurn["groups"]
+}
+
+export function toReconcilableTurn(
+  turn: ExecutionTurn
+): ReconcilableExecutionTurn {
+  return {
+    ...turn,
+    answerMarkdown:
+      turn.answerIntro.trim() ||
+      (turn.answerBullets.length > 0 ? turn.answerBullets[0]!.body : ""),
+    workGroups: turn.groups,
+  }
+}
+
 interface LiveTraceStoreState {
   liveTurnsBySession: Record<string, ExecutionTurn>
+  completedLiveTurnsBySession: Record<string, ExecutionTurn[]>
+  baseHistoryTurnCountBySession: Record<string, number>
+  lastEventAtMsBySession: Record<string, number>
 }
 
 export const useLiveTraceStore = create<LiveTraceStoreState>(() => ({
   liveTurnsBySession: {},
+  completedLiveTurnsBySession: {},
+  baseHistoryTurnCountBySession: {},
+  lastEventAtMsBySession: {},
 }))
 
 const trackersBySession = new Map<string, HarnessStreamTracker>()
@@ -101,11 +125,13 @@ function prepareTrackerForPrompt(
   const tracker = getOrCreateTracker(sessionId)
   tracker.startedAtMs = startedAtMs
   tracker.turnActive = true
+  tracker.turnCompleted = false
   tracker.hasStreamedTextInPhase = false
   tracker.batchEpoch = 1
   tracker.phaseHasReads = false
   tracker.phaseHasCommands = false
   tracker.phaseHasSearches = false
+  tracker.phaseCommandCount = 0
   tracker.toolInputs.clear()
   return tracker
 }
@@ -144,6 +170,18 @@ export function startSessionLiveTurn(input: StartLiveTurnInput): ExecutionTurn {
       ...state.liveTurnsBySession,
       [input.sessionId]: turn,
     },
+    baseHistoryTurnCountBySession: {
+      ...state.baseHistoryTurnCountBySession,
+      [input.sessionId]:
+        typeof input.baseHistoryTurnCount === "number" &&
+        input.baseHistoryTurnCount >= 0
+          ? input.baseHistoryTurnCount
+          : (state.baseHistoryTurnCountBySession[input.sessionId] ?? 0),
+    },
+    lastEventAtMsBySession: {
+      ...state.lastEventAtMsBySession,
+      [input.sessionId]: startedAt,
+    },
   }))
   ensureElapsedTimer()
   return turn
@@ -159,10 +197,21 @@ export function clearSessionLiveTurn(sessionId: string): void {
   startedAtBySession.delete(sessionId)
   trackersBySession.delete(sessionId)
   useLiveTraceStore.setState((state) => {
-    if (!(sessionId in state.liveTurnsBySession)) return state
-    const nextMap = { ...state.liveTurnsBySession }
-    delete nextMap[sessionId]
-    return { liveTurnsBySession: nextMap }
+    const hasLive = sessionId in state.liveTurnsBySession
+    const hasBase = sessionId in state.baseHistoryTurnCountBySession
+    const hasEvent = sessionId in state.lastEventAtMsBySession
+    if (!hasLive && !hasBase && !hasEvent) return state
+    const nextLive = { ...state.liveTurnsBySession }
+    const nextBase = { ...state.baseHistoryTurnCountBySession }
+    const nextLastEvent = { ...state.lastEventAtMsBySession }
+    delete nextLive[sessionId]
+    delete nextBase[sessionId]
+    delete nextLastEvent[sessionId]
+    return {
+      liveTurnsBySession: nextLive,
+      baseHistoryTurnCountBySession: nextBase,
+      lastEventAtMsBySession: nextLastEvent,
+    }
   })
   stopElapsedTimerIfIdle()
 }
@@ -179,7 +228,12 @@ export function resetAllLiveTraces(): void {
     clearInterval(elapsedTimer)
     elapsedTimer = null
   }
-  useLiveTraceStore.setState({ liveTurnsBySession: {} })
+  useLiveTraceStore.setState({
+    liveTurnsBySession: {},
+    completedLiveTurnsBySession: {},
+    baseHistoryTurnCountBySession: {},
+    lastEventAtMsBySession: {},
+  })
 }
 
 function getOrCreateBatcher(
@@ -190,26 +244,46 @@ function getOrCreateBatcher(
   if (existing) return existing
 
   const batcher = createStreamBatcher<LiveTraceEvent>((events) => {
-    const current =
-      useLiveTraceStore.getState().liveTurnsBySession[sessionId] ?? null
+    const storeState = useLiveTraceStore.getState()
+    const current = storeState.liveTurnsBySession[sessionId] ?? null
     const updated = applyTraceEvents(current, events)
     if (!updated) return
 
     const hasComplete = events.some((ev) => ev.type === "complete")
     if (hasComplete) {
+      const baseHistoryCount =
+        storeState.baseHistoryTurnCountBySession[sessionId]
       if (!completedTurnIds.has(updated.id)) {
         completedTurnIds.add(updated.id)
         ipcClient.trace.recordTurn(updated)
+        useLiveTraceStore.setState((state) => {
+          const prevCompleted = state.completedLiveTurnsBySession[sessionId] ?? []
+          const nextCompleted = [
+            ...prevCompleted.filter((t) => t.id !== updated.id),
+            updated,
+          ].slice(-5)
+          return {
+            completedLiveTurnsBySession: {
+              ...state.completedLiveTurnsBySession,
+              [sessionId]: nextCompleted,
+            },
+          }
+        })
         queryClient.setQueryData<ExecutionTurn[]>(
           traceKeys.turns(sessionId),
           (prev) => {
-            if (!prev) return [updated]
-            return prev.some((t) => t.id === updated.id)
-              ? prev.map((t) => (t.id === updated.id ? updated : t))
-              : [...prev, updated]
+            const history = prev ?? []
+            return reconcileChatTurns({
+              historyTurns: history.map(toReconcilableTurn),
+              liveTurn: toReconcilableTurn(updated),
+              baseHistoryTurnCount: baseHistoryCount,
+            })
           }
         )
         void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+        void queryClient.invalidateQueries({
+          queryKey: traceKeys.turns(sessionId),
+        })
       }
       const perm = useAppStore.getState().pendingPermission
       if (perm && (!perm.sessionId || perm.sessionId === sessionId)) {
@@ -241,9 +315,29 @@ export function processHarnessFrame(
   const targetSessionId = frameSession || fallbackSessionId || ""
   if (!targetSessionId) return
 
+  const nowMs = Date.now()
+  useLiveTraceStore.setState((state) => ({
+    lastEventAtMsBySession: {
+      ...state.lastEventAtMsBySession,
+      [targetSessionId]: nowMs,
+    },
+  }))
+
+  const evName = typeof frame.ev === "string" ? frame.ev : ""
+  const isTerminalFrame =
+    evName === "turn_done" || evName === "turn_stopped" || evName === "error"
+
   const tracker = getOrCreateTracker(targetSessionId)
   const mapped = mapHarnessFrameToLiveEvents(frame, tracker)
-  if (mapped.length === 0) return
+  if (mapped.length === 0) {
+    if (isTerminalFrame) {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+      void queryClient.invalidateQueries({
+        queryKey: traceKeys.turns(targetSessionId),
+      })
+    }
+    return
+  }
 
   const store = useAppStore.getState()
   const traceEvents: LiveTraceEvent[] = []
@@ -271,18 +365,34 @@ export function processHarnessFrame(
     }
   }
 
-  if (traceEvents.length === 0) return
+  if (traceEvents.length === 0) {
+    if (isTerminalFrame) {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+      void queryClient.invalidateQueries({
+        queryKey: traceKeys.turns(targetSessionId),
+      })
+    }
+    return
+  }
 
   if (!useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]) {
+    const existingTurns =
+      queryClient.getQueryData<ExecutionTurn[]>(
+        traceKeys.turns(targetSessionId)
+      ) ?? []
     startSessionLiveTurn({
       sessionId: targetSessionId,
       userPrompt: "Live daemon turn",
+      baseHistoryTurnCount: existingTurns.filter((t) => !t.isLive).length,
     })
   }
 
   const batcher = getOrCreateBatcher(targetSessionId, queryClient)
   for (const ev of traceEvents) {
     batcher.push(ev)
+  }
+  if (isTerminalFrame) {
+    batcher.flushNow()
   }
 }
 
@@ -308,6 +418,7 @@ export function dispatchPendingStreamPrompt(
     const existingTurns =
       queryClient.getQueryData<ExecutionTurn[]>(traceKeys.turns(sessionId)) ??
       []
+    const baseHistoryTurnCount = existingTurns.filter((t) => !t.isLive).length
     const history: CloudChatMessage[] = []
     for (const t of existingTurns) {
       if (t.isLive) continue
@@ -326,6 +437,7 @@ export function dispatchPendingStreamPrompt(
       userPrompt: promptToSend.prompt,
       userImages: promptToSend.images,
       startedAtMs,
+      baseHistoryTurnCount,
     })
 
     void ipcClient.trace

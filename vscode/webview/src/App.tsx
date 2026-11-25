@@ -12,7 +12,12 @@ import {
   SettingsSkeleton,
   SwarmSkeleton,
 } from "@/components/ui";
-import { ChatWorkspaceView, LiveTraceController } from "@/features/chat";
+import {
+  ChatWorkspaceView,
+  LiveTraceController,
+  chatHistoryQueryKey,
+  type ChatTurnView,
+} from "@/features/chat";
 import {
   HomePage,
   SessionComposer,
@@ -90,6 +95,7 @@ export function App() {
   const isStreamActive = useAppStore((s) => s.isStreamActive);
 
   const setActiveSession = useAppStore((s) => s.setActiveSession);
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
   const setAccountStatus = useAppStore((s) => s.setAccountStatus);
   const setAuthLoaded = useAppStore((s) => s.setAuthLoaded);
@@ -138,6 +144,9 @@ export function App() {
       if (msg.type === "rayucode.host.init") {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({ queryKey: ["processes"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace", "ledger"],
+        });
         if (msg.accountStatus) {
           queryClient.setQueryData(["settings", "account"], msg.accountStatus);
           queryClient.setQueryData(
@@ -179,12 +188,21 @@ export function App() {
       if (msg.type === "rayucode.workspaces.changed") {
         void queryClient.invalidateQueries({ queryKey: ["composer"] });
         void queryClient.invalidateQueries({ queryKey: ["changes"] });
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace", "ledger"],
+        });
+        return;
+      }
+      if (msg.type === "rayucode.workspaces.ledgerChanged") {
+        queryClient.setQueryData(["workspace", "ledger"], msg.ledger);
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         return;
       }
       if (msg.type === "rayucode.host.command") {
         if (msg.command === "newSession") {
-          setActiveSession(null);
-          setActiveRoute("home");
+          openNewChatDraft({
+            workingDir: useAppStore.getState().activeProjectPath,
+          });
           requestComposerFocus();
         } else if (msg.command === "openBackgroundProcesses") {
           setBackgroundDrawerOpen(true);
@@ -202,32 +220,55 @@ export function App() {
       }
     });
   }, [
+    openNewChatDraft,
     queryClient,
     requestComposerFocus,
     requestSessionSearchFocus,
     setActiveRoute,
-    setActiveSession,
     setBackgroundDrawerOpen,
   ]);
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
-      let targetSessionId = useAppStore.getState().activeSessionId;
+      const storeState = useAppStore.getState();
+      const draft = storeState.activeDraft;
+      let targetSessionId = storeState.activeSessionId;
+      let isNewSession = false;
+      const effectiveWorkingDir =
+        payload.workingDir ??
+        draft?.workingDir ??
+        storeState.activeProjectPath ??
+        undefined;
+      const effectiveModel = payload.modelId ?? draft?.model;
+      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+      const effectivePermissionMode =
+        payload.permissionMode ??
+        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined);
 
       if (!targetSessionId) {
         try {
           const created = await callRpc("sessions.create", {
-            workingDir: payload.workingDir,
-            permissionMode: payload.permissionMode,
-            model: payload.modelId,
+            workingDir: effectiveWorkingDir,
+            permissionMode: effectivePermissionMode,
+            model: effectiveModel,
           });
           targetSessionId = created.session.sessionId;
+          isNewSession = true;
           setActiveSession(created.session.sessionId, created.session.title);
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["workspace", "ledger"],
+          });
         } catch {
           return;
         }
       }
+
+      const cachedHistory = isNewSession
+        ? []
+        : (queryClient.getQueryData<ChatTurnView[]>(
+            chatHistoryQueryKey(targetSessionId),
+          ) ?? []);
 
       const selectionContext = payload.editorSelection
         ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
@@ -247,6 +288,7 @@ export function App() {
           dataUrl: img.data,
         })),
         createdAtMs: Date.now(),
+        baseHistoryTurnCount: cachedHistory.length,
       });
 
       setIsStreamActive(true);
@@ -254,9 +296,10 @@ export function App() {
         req: "send_message",
         session_id: targetSessionId,
         content: `${payload.prompt}${selectionContext}`,
-        model: payload.modelId,
-        effort: payload.effort,
+        model: effectiveModel,
+        effort: effectiveEffort,
         images: payload.images,
+        ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
       });
     },
     [enqueueOptimisticTurn, queryClient, setActiveSession, setIsStreamActive],

@@ -86,6 +86,7 @@ import {
   TerminalPtyResizePayloadSchema,
   TerminalPtyWritePayloadSchema,
   TerminalRunPayloadSchema,
+  WorkspaceEnsurePayloadSchema,
   WorkspaceReadFilePayloadSchema,
   WorkspaceSetPayloadSchema,
 } from "./ipc-schemas.js"
@@ -104,6 +105,8 @@ import {
 import {
   createLocalSkill,
   deleteCustomTemplate,
+  disposeWorkspaceRegistry,
+  ensureRegisteredWorkspace,
   listLocalExtensions,
   listWorkspaceFiles,
   readCustomTemplates,
@@ -115,6 +118,8 @@ import {
   recordRecentWorkspace,
   removeLocalMcpServer,
   saveCustomTemplate,
+  subscribeExternalWorkspaceChanges,
+  syncSessionArchivedInRegistry,
   toggleLocalSkill,
   upsertLocalMcpServer,
   writeDesktopPreferences,
@@ -228,6 +233,7 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
       await daemonClient.archiveSession(parsed.sessionId)
+      await syncSessionArchivedInRegistry(parsed.sessionId, true).catch(() => {})
       return { ok: true }
     }
   )
@@ -237,6 +243,9 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
       await daemonClient.restoreSession(parsed.sessionId)
+      await syncSessionArchivedInRegistry(parsed.sessionId, false).catch(
+        () => {}
+      )
       return { ok: true }
     }
   )
@@ -395,14 +404,27 @@ function registerIpcHandlers(): void {
     const parsed = WorkspaceSetPayloadSchema.parse(rawPayload)
     activeWorkspaceDir = path.resolve(parsed.path)
     recordRecentWorkspace(activeWorkspaceDir)
+    void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
+
+  ipcMain.handle(
+    "rayu:workspace:ensure",
+    async (_event, rawPayload: unknown) => {
+      const parsed = WorkspaceEnsurePayloadSchema.parse(rawPayload)
+      return ensureRegisteredWorkspace(parsed.path, {
+        name: parsed.name,
+        unhide: true,
+      })
+    }
+  )
 
   ipcMain.handle("rayu:workspace:pick-folder", async () => {
     const chosen = await pickWorkspaceFolder(mainWindow)
     if (!chosen) return null
     activeWorkspaceDir = path.resolve(chosen)
     recordRecentWorkspace(activeWorkspaceDir)
+    void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
 
@@ -968,6 +990,12 @@ function registerIpcHandlers(): void {
     }
   })
 
+  subscribeExternalWorkspaceChanges((state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("rayu:storage:sidebar-changed", state)
+    }
+  })
+
   let wasSignedIn = authManager.getState().signedIn
   authManager.on("auth-changed", (state: RayuAuthState) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1155,6 +1183,7 @@ app.on("before-quit", () => {
   terminalPty.killAll()
   authManager.dispose()
   daemonClient.dispose()
+  disposeWorkspaceRegistry()
 })
 
 app.on("window-all-closed", () => {

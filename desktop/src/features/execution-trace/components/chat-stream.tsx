@@ -1,4 +1,8 @@
 import * as React from "react"
+import {
+  reconcileChatTurns,
+  shouldClearStaleLiveTurn,
+} from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowDown,
@@ -21,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
+import { sessionsQueryOptions } from "@/features/sessions"
 import { useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
@@ -31,6 +36,7 @@ import {
   dispatchPendingStreamPrompt,
   isLiveTraceControllerMounted,
   processHarnessFrame,
+  toReconcilableTurn,
   useLiveTraceStore,
 } from "../hooks/live-trace-store"
 import type {
@@ -390,6 +396,29 @@ export function ChatStream({
   const liveTurn = useLiveTraceStore((s) =>
     effectiveSessionId ? (s.liveTurnsBySession[effectiveSessionId] ?? null) : null
   )
+  const completedLiveTurns = useLiveTraceStore((s) =>
+    effectiveSessionId
+      ? (s.completedLiveTurnsBySession[effectiveSessionId] ?? undefined)
+      : undefined
+  )
+  const baseHistoryTurnCount = useLiveTraceStore((s) =>
+    effectiveSessionId
+      ? s.baseHistoryTurnCountBySession[effectiveSessionId]
+      : undefined
+  )
+  const lastEventAtMs = useLiveTraceStore((s) =>
+    effectiveSessionId ? s.lastEventAtMsBySession[effectiveSessionId] : undefined
+  )
+  const sessionsQuery = useQuery({
+    ...sessionsQueryOptions(),
+    enabled: effectiveSessionId.length > 0,
+  })
+  const activeSessionStatus = React.useMemo(
+    () =>
+      sessionsQuery.data?.find((s) => s.id === effectiveSessionId)?.status ??
+      null,
+    [effectiveSessionId, sessionsQuery.data]
+  )
   const isStreaming = Boolean(liveTurn?.isLive)
 
   const pendingPermission = useAppStore((s) => s.pendingPermission)
@@ -494,48 +523,92 @@ export function ChatStream({
     [pendingPermission, setPendingPermission]
   )
 
+  React.useEffect(() => {
+    if (!effectiveSessionId || !liveTurn?.isLive) return
+    if (activeSessionStatus?.trim().toLowerCase() !== "idle") return
+    const checkAndClear = () => {
+      if (
+        shouldClearStaleLiveTurn({
+          liveTurn: toReconcilableTurn(liveTurn),
+          sessionStatus: activeSessionStatus,
+          lastEventAtMs,
+        })
+      ) {
+        clearSessionLiveTurn(effectiveSessionId)
+        void queryClient.invalidateQueries({
+          queryKey: traceKeys.turns(effectiveSessionId),
+        })
+      }
+    }
+    const graceMs = 2_500
+    const elapsed = Date.now() - (lastEventAtMs ?? 0)
+    if (elapsed >= graceMs) {
+      checkAndClear()
+      return
+    }
+    const timer = window.setTimeout(
+      checkAndClear,
+      Math.max(50, graceMs - elapsed)
+    )
+    return () => window.clearTimeout(timer)
+  }, [
+    activeSessionStatus,
+    effectiveSessionId,
+    lastEventAtMs,
+    liveTurn,
+    queryClient,
+  ])
+
   const allTurns = React.useMemo(() => {
     const baseTurns = controlledTurns ?? fetchedTurns ?? []
-    const merged = [...baseTurns]
-    if (
-      liveTurn &&
-      liveTurn.sessionId === effectiveSessionId &&
-      !merged.some((t) => t.id === liveTurn.id)
-    ) {
-      merged.push(liveTurn)
-    } else if (
-      pendingStreamPrompt &&
-      pendingStreamPrompt.sessionId === effectiveSessionId
-    ) {
-      merged.push({
-        id: `optimistic_turn_${effectiveSessionId}`,
-        sessionId: effectiveSessionId,
-        userPrompt: pendingStreamPrompt.prompt,
-        userImages: pendingStreamPrompt.images,
-        workedDuration: "1s",
-        isLive: true,
-        notes: [],
-        groups: [],
-        timeline: [],
-        activeToolStatus: null,
-        answerIntro: "",
-        answerBullets: [],
-        diffCard: {
-          id: "diff_optimistic",
-          file: "",
-          additions: 0,
-          deletions: 0,
-          hint: "",
-          lines: [],
-        },
-        timestamp: "Just now",
-        credits: "0.00 cr",
-        kvCachePct: 0,
-        pinned: false,
-      })
-    }
-    return merged
+    const activeLiveTurn: ExecutionTurn | null =
+      liveTurn && liveTurn.sessionId === effectiveSessionId
+        ? liveTurn
+        : pendingStreamPrompt &&
+            pendingStreamPrompt.sessionId === effectiveSessionId
+          ? {
+              id: `optimistic_turn_${effectiveSessionId}`,
+              sessionId: effectiveSessionId,
+              userPrompt: pendingStreamPrompt.prompt,
+              userImages: pendingStreamPrompt.images,
+              workedDuration: "1s",
+              isLive: true,
+              notes: [],
+              groups: [],
+              timeline: [],
+              activeToolStatus: null,
+              answerIntro: "",
+              answerBullets: [],
+              diffCard: {
+                id: "diff_optimistic",
+                file: "",
+                additions: 0,
+                deletions: 0,
+                hint: "",
+                lines: [],
+              },
+              timestamp: "Just now",
+              credits: "0.00 cr",
+              kvCachePct: 0,
+              pinned: false,
+            }
+          : null
+
+    const sessionCompletedTurns =
+      controlledTurns === undefined ? (completedLiveTurns ?? []) : []
+
+    return reconcileChatTurns({
+      historyTurns: baseTurns.map(toReconcilableTurn),
+      liveTurn: activeLiveTurn ? toReconcilableTurn(activeLiveTurn) : null,
+      completedLiveTurns: sessionCompletedTurns.map(toReconcilableTurn),
+      baseHistoryTurnCount:
+        liveTurn && liveTurn.sessionId === effectiveSessionId
+          ? baseHistoryTurnCount
+          : baseTurns.length,
+    })
   }, [
+    baseHistoryTurnCount,
+    completedLiveTurns,
     controlledTurns,
     fetchedTurns,
     effectiveSessionId,
