@@ -62,6 +62,16 @@ fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
         .is_some_and(|text| text.starts_with("<system-reminder>"))
 }
 
+fn starts_with_bracket_system_reminder(msg: &super::StoredMessage) -> bool {
+    msg.content
+        .iter()
+        .find_map(|block| match block {
+            ContentBlock::Text { text, .. } => Some(text.trim_start()),
+            _ => None,
+        })
+        .is_some_and(|text| text.starts_with("[System reminder:"))
+}
+
 /// True when a stored user message is a synthetic auto-poke continuation
 /// (incomplete-todos poke or todo confidence summary). These are persisted as
 /// `Role::User` so the model treats them as a normal continuation turn, but
@@ -125,6 +135,7 @@ fn stored_message_is_user_turn(msg: &super::StoredMessage) -> bool {
         || is_auto_poke_user_message(msg)
         || super::is_scheduled_task_message(msg)
         || is_internal_system_reminder(msg)
+        || starts_with_bracket_system_reminder(msg)
     {
         return false;
     }
@@ -434,6 +445,7 @@ pub fn render_messages_and_images_with_compacted_history(
             tool_calls: Vec::new(),
             tool_data: None,
             stored_index: None,
+            is_engine_internal: false,
         });
     }
 
@@ -470,6 +482,7 @@ pub fn render_messages_and_images_with_compacted_history(
         tool_calls: Vec::new(),
         tool_data: None,
         stored_index: None,
+        is_engine_internal: false,
     };
     for (stored_index, msg) in session.messages.iter().enumerate().skip(render_start_idx) {
         while errors
@@ -484,11 +497,18 @@ pub fn render_messages_and_images_with_compacted_history(
             continue;
         }
 
+        let is_bracket_reminder = starts_with_bracket_system_reminder(msg);
+        let is_engine_internal = matches!(msg.display_role, Some(StoredDisplayRole::System))
+            || is_auto_poke_user_message(msg)
+            || super::is_scheduled_task_message(msg)
+            || is_bracket_reminder;
+
         let role = match msg.display_role {
             Some(StoredDisplayRole::System) => "system",
             Some(StoredDisplayRole::BackgroundTask) => "background_task",
             None if is_auto_poke_user_message(msg) => "system",
             None if super::is_scheduled_task_message(msg) => "system",
+            None if is_bracket_reminder => "system",
             None => match msg.role {
                 Role::User => "user",
                 Role::Assistant => "assistant",
@@ -506,6 +526,7 @@ pub fn render_messages_and_images_with_compacted_history(
                 tool_calls: Vec::new(),
                 tool_data: None,
                 stored_index: Some(stored_index),
+                is_engine_internal: true,
             });
             continue;
         }
@@ -582,6 +603,7 @@ pub fn render_messages_and_images_with_compacted_history(
                             tool_calls: tool_calls.clone(),
                             tool_data: None,
                             stored_index: Some(stored_index),
+                            is_engine_internal,
                         });
                     }
 
@@ -620,6 +642,7 @@ pub fn render_messages_and_images_with_compacted_history(
                         tool_calls: Vec::new(),
                         tool_data,
                         stored_index: Some(stored_index),
+                        is_engine_internal: false,
                     });
                 }
                 ContentBlock::Reasoning { text: t } | ContentBlock::ReasoningTrace { text: t } => {
@@ -681,6 +704,7 @@ pub fn render_messages_and_images_with_compacted_history(
                             tool_calls: std::mem::take(&mut tool_calls),
                             tool_data: None,
                             stored_index: Some(stored_index),
+                            is_engine_internal,
                         });
                     }
                     let tool_data = tool_map.get(&display.id).cloned().unwrap_or_else(|| {
@@ -701,6 +725,7 @@ pub fn render_messages_and_images_with_compacted_history(
                         tool_calls: Vec::new(),
                         tool_data: Some(tool_data),
                         stored_index: Some(stored_index),
+                        is_engine_internal: false,
                     });
                 }
                 ContentBlock::OpenAICompaction { .. } | ContentBlock::ToolReference { .. } => {}
@@ -720,6 +745,7 @@ pub fn render_messages_and_images_with_compacted_history(
                 tool_calls,
                 tool_data: None,
                 stored_index: Some(stored_index),
+                is_engine_internal,
             });
         } else if !pending_prompt_image_indices.is_empty() {
             // The message carried images but produced no rendered user prompt;
@@ -736,4 +762,49 @@ pub fn render_messages_and_images_with_compacted_history(
     rendered.extend(errors.map(|(_, content)| render_error(content)));
     response_stats::attach(&session.messages, &mut rendered);
     (rendered, images, compacted_info)
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    #[test]
+    fn synthetic_system_display_role_marks_rendered_message_engine_internal() {
+        let mut session = Session::create_with_id("prov_test".into(), None, None);
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "Normal user prompt".into(),
+                cache_control: None,
+            }],
+        );
+        session.add_message_ext_with_display_role(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "Reassess the user's request using its full context".into(),
+                cache_control: None,
+            }],
+            None,
+            None,
+            Some(StoredDisplayRole::System),
+        );
+        session.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "[System reminder: your previous response ended before completion]".into(),
+                cache_control: None,
+            }],
+        );
+
+        let rendered = render_messages(&session);
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(rendered[0].role, "user");
+        assert!(!rendered[0].is_engine_internal);
+
+        assert_eq!(rendered[1].role, "system");
+        assert!(rendered[1].is_engine_internal);
+
+        assert_eq!(rendered[2].role, "system");
+        assert!(rendered[2].is_engine_internal);
+    }
 }

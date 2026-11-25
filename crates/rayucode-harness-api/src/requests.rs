@@ -417,6 +417,23 @@ pub enum ApiRequest {
     /// `background_tool_result`, otherwise `Ok` whether or not a tool ran.
     BackgroundTool { session_id: String },
 
+    /// Discover curated engine slash commands, permission modes, and feature flags.
+    GetCapabilities {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+
+    /// Read the curated non-secret view of `~/.rayu/config.toml` plus field schema.
+    GetConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<String>>,
+    },
+
+    /// Validate and atomically patch curated fields in `~/.rayu/config.toml`.
+    PatchConfig {
+        patch: serde_json::Map<String, serde_json::Value>,
+    },
+
     /// Liveness check.
     Ping,
 

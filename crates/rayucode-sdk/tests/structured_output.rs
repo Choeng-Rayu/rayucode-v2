@@ -57,27 +57,11 @@ fn fake_harness(handle: impl Fn(&ClientFrame, &mut dyn Write) + Send + 'static) 
 }
 
 fn reply(frame: &ClientFrame, event: ApiEvent, writer: &mut dyn Write) {
-    write_frame(
-        &mut { writer },
-        &ServerFrame {
-            v: API_VERSION_MAJOR,
-            reply_to: Some(frame.id),
-            event,
-        },
-    )
-    .expect("reply");
+    write_frame(&mut { writer }, &ServerFrame::reply(frame.id, event)).expect("reply");
 }
 
 fn push(event: ApiEvent, writer: &mut dyn Write) {
-    write_frame(
-        &mut { writer },
-        &ServerFrame {
-            v: API_VERSION_MAJOR,
-            reply_to: None,
-            event,
-        },
-    )
-    .expect("event");
+    write_frame(&mut { writer }, &ServerFrame::event(event)).expect("event");
 }
 
 fn send_turn(writer: &mut dyn Write, session_id: &str, text: &str) {
@@ -285,6 +269,7 @@ fn structured_output_uses_final_message_not_process_narration() {
                     ApiEvent::TextDone {
                         session_id: session_id.clone(),
                         message_id: Some(id.into()),
+                        stop_reason: None,
                     },
                     writer,
                 );

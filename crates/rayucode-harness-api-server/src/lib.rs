@@ -18,6 +18,7 @@
 
 pub mod allocator;
 pub mod background_progress;
+pub mod capabilities;
 pub mod timing;
 pub mod translate;
 
@@ -27,6 +28,8 @@ mod external_sessions_tests;
 mod session_presence_tests;
 #[cfg(all(test, unix))]
 mod stdio_tests;
+#[cfg(all(test, unix))]
+mod v1_16_contract_tests;
 
 use anyhow::{Context, Result};
 use rayucode_harness_api::{API_VERSION_MAJOR, ApiEvent, ErrorCode, ServerFrame};
@@ -276,11 +279,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
         api_socket.display(),
         legacy_socket.display()
     );
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
     loop {
         let (stream, _) = listener.accept().await?;
         let legacy = legacy_socket.clone();
+        let config_bus = config_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_api_client(stream, legacy).await {
+            if let Err(error) = handle_api_client(stream, legacy, config_bus).await {
                 eprintln!("harness API bridge: client ended: {error:#}");
             }
             // A closed client drops its translation state and buffers.
@@ -289,9 +294,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
     }
 }
 
-async fn handle_api_client(stream: Stream, legacy_socket: PathBuf) -> Result<()> {
+async fn handle_api_client(
+    stream: Stream,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()> {
     let (read_half, write_half) = stream.into_split();
-    run_bridge_stream(read_half, write_half, legacy_socket).await
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
 }
 
 /// Serve the process's stdin/stdout as one API connection.
@@ -317,13 +326,29 @@ pub async fn run_bridge_stdio(legacy_socket: PathBuf) -> Result<()> {
 /// stdio. No API listener or filesystem socket is created for this connection.
 pub async fn run_bridge_stream<R, W>(
     read_half: R,
-    mut write_half: W,
+    write_half: W,
     legacy_socket: PathBuf,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
+}
+
+/// Serve one stable API connection sharing a `ConfigChanged` broadcast bus with peer clients.
+pub async fn run_bridge_stream_with_config_bus<R, W>(
+    read_half: R,
+    mut write_half: W,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut config_rx = config_tx.subscribe();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
     let mut pending = timing::Pending::default();
@@ -409,6 +434,9 @@ where
                 "permissions",
                 "permission_modes",
                 "external_sessions",
+                rayucode_harness_api::CAPABILITIES_CAPABILITY,
+                rayucode_harness_api::CONFIG_CAPABILITY,
+                rayucode_harness_api::FRAME_FIDELITY_CAPABILITY,
             ]
             .into_iter()
             .map(str::to_string)
@@ -607,10 +635,18 @@ where
                         translate::Outbound::Reply(frame) => {
                             write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                         }
+                        translate::Outbound::Broadcast(frame) => {
+                            let _ = config_tx.send(frame);
+                        }
                     }
                 }
                 if heavy {
                     allocator::trim();
+                }
+            }
+            broadcast = config_rx.recv() => {
+                if let Ok(frame) = broadcast {
+                    write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                 }
             }
             n = read_frame_bytes(&mut legacy_reader, &mut legacy_frame) => {

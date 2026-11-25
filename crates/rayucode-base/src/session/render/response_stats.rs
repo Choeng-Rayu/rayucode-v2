@@ -135,6 +135,7 @@ mod tests {
             tool_data: None,
             response_stats: None,
             tool_duration_ms: None,
+            is_engine_internal: false,
         }
     }
     fn tool_call(message: &mut StoredMessage) {

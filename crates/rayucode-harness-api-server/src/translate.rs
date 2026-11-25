@@ -10,8 +10,8 @@ mod turn_identity_tests;
 use crate::background_progress::parse_background_notification;
 use control_replies::SimpleKind;
 use rayucode_harness_api::{
-    ApiEvent, ErrorCode, ExternalProjectInfo, HistoryMessage, ImportSkipInfo, ModelRouteInfo,
-    ServerFrame, SessionInfo, TextMatch,
+    ApiEvent, ErrorCode, ExternalProjectInfo, HistoryMessage, ImportSkipInfo, MessageOrigin,
+    MessageVisibility, ModelRouteInfo, ServerFrame, SessionInfo, TextMatch,
 };
 use rusqlite::{Connection, params};
 use serde::Deserialize;
@@ -115,6 +115,8 @@ pub enum Outbound {
     Legacy(Value),
     /// Answer the API client directly (no daemon round trip needed).
     Reply(ServerFrame),
+    /// Broadcast an unsolicited server frame to all connected API clients.
+    Broadcast(ServerFrame),
 }
 
 type SessionFileStatus = (bool, String, Option<u64>, Option<u64>);
@@ -131,6 +133,8 @@ static NEXT_TEXT_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Default)]
 pub struct BridgeState {
     turn_fence: turn_identity::TurnFence,
+    /// Per-session monotonic stream frame counter (1-based on emitted stream events).
+    stream_seq: AtomicU64,
     /// Refreshed from an authoritative source-daemon Ping before each list.
     pub user_connected_sessions: std::collections::HashSet<String>,
     pub runtime_commands_supported: bool,
@@ -532,6 +536,78 @@ impl BridgeState {
         }
 
         match req {
+            "get_capabilities" => {
+                let session_id = request["session_id"].as_str();
+                vec![Outbound::Reply(ServerFrame::reply(
+                    api_id,
+                    crate::capabilities::build_capabilities_event(session_id),
+                ))]
+            }
+            "get_config" => {
+                let sections: Option<Vec<String>> = match request.get("sections") {
+                    None | Some(Value::Null) => None,
+                    Some(value) => match serde_json::from_value(value.clone()) {
+                        Ok(parsed) => Some(parsed),
+                        Err(err) => {
+                            return Self::error_reply(
+                                api_id,
+                                ErrorCode::InvalidRequest,
+                                &format!("invalid sections parameter: {err}"),
+                            );
+                        }
+                    },
+                };
+                match rayucode_base::config::rpc_config::read_curated_config(sections.as_deref()) {
+                    Ok(snapshot) => vec![Outbound::Reply(ServerFrame::reply(
+                        api_id,
+                        crate::capabilities::rpc_snapshot_to_api_event(snapshot),
+                    ))],
+                    Err(err) => Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        &err.to_string(),
+                    ),
+                }
+            }
+            "patch_config" => {
+                let Some(patch) = request.get("patch").and_then(Value::as_object) else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "patch_config requires a JSON object `patch` field",
+                    );
+                };
+                match rayucode_base::config::rpc_config::patch_curated_config(patch) {
+                    Ok(outcome) => {
+                        let broadcast = (!outcome.changed_keys.is_empty()).then(|| {
+                            let mut changed_values = serde_json::Map::new();
+                            for key in &outcome.changed_keys {
+                                if let Some(val) = outcome.snapshot.values.get(key) {
+                                    changed_values.insert(key.clone(), val.clone());
+                                }
+                            }
+                            ServerFrame::event(ApiEvent::ConfigChanged {
+                                changed_keys: outcome.changed_keys,
+                                requires_restart: outcome.requires_restart,
+                                values: changed_values,
+                            })
+                        });
+                        let mut out = vec![Outbound::Reply(ServerFrame::reply(
+                            api_id,
+                            crate::capabilities::rpc_snapshot_to_api_event(outcome.snapshot),
+                        ))];
+                        if let Some(frame) = broadcast {
+                            out.push(Outbound::Broadcast(frame));
+                        }
+                        out
+                    }
+                    Err(err) => Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        &err.to_string(),
+                    ),
+                }
+            }
             "archive_session" => {
                 let session_id = request["session_id"].as_str().unwrap_or("");
                 if Self::session_record_path(session_id).is_none_or(|path| !path.is_file()) {
@@ -1926,6 +2002,10 @@ impl BridgeState {
     }
 
     fn finish_text(&mut self) -> Vec<ServerFrame> {
+        self.finish_text_with_stop_reason(None)
+    }
+
+    fn finish_text_with_stop_reason(&mut self, stop_reason: Option<String>) -> Vec<ServerFrame> {
         let Some(id) = self.text_message_id.take() else {
             return vec![];
         };
@@ -1940,7 +2020,25 @@ impl BridgeState {
         vec![ServerFrame::event(ApiEvent::TextDone {
             session_id: self.session_id.clone().unwrap_or_default(),
             message_id: Some(id),
+            stop_reason,
         })]
+    }
+
+    fn next_stream_seq(&self) -> u64 {
+        self.stream_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn stamp_stream_frames(&self, frames: &mut [ServerFrame], turn_id: Option<&str>) {
+        for frame in frames {
+            if frame.reply_to.is_none() {
+                if frame.seq.is_none() {
+                    frame.seq = Some(self.next_stream_seq());
+                }
+                if frame.turn_id.is_none() {
+                    frame.turn_id = turn_id.map(str::to_string);
+                }
+            }
+        }
     }
 
     fn replace_text_suffix(&mut self, old_text: &str, new_text: &str) -> Vec<ServerFrame> {
@@ -2013,6 +2111,7 @@ impl BridgeState {
                 frames.push(ServerFrame::event(ApiEvent::TextDone {
                     session_id: self.session_id.clone().unwrap_or_default(),
                     message_id: Some(id.clone()),
+                    stop_reason: None,
                 }));
             }
         }
@@ -2024,7 +2123,8 @@ impl BridgeState {
 
     /// Translate one legacy server event (raw JSON) into API frames.
     pub fn legacy_event_to_api(&mut self, event: &Value) -> Vec<ServerFrame> {
-        match event["type"].as_str().unwrap_or("") {
+        let mut active_turn_id = self.turn_fence.active_turn_id();
+        let mut frames = match event["type"].as_str().unwrap_or("") {
             "turn_state" => {
                 if self.turn_fence.state(event) {
                     self.observed_turn_active = self.turn_fence.active();
@@ -2045,6 +2145,11 @@ impl BridgeState {
                         && self.turn_fence.is_latest(&event["identity"]))
                 {
                     return vec![];
+                }
+                if let Some(id) = event["identity"]["turn_id"].as_u64() {
+                    active_turn_id = Some(id.to_string());
+                } else if let Some(id) = event["identity"]["turn_id"].as_str() {
+                    active_turn_id = Some(id.to_string());
                 }
                 let payload = &event["event"];
                 if matches!(
@@ -2068,10 +2173,15 @@ impl BridgeState {
                     }
                     if event["type"] == "error" {
                         self.pending_message_id = None;
-                        return vec![ServerFrame::event(ApiEvent::Error {
-                            code: ErrorCode::Internal,
-                            message: event["message"].as_str().unwrap_or("").to_string(),
+                        let message = event["message"].as_str().unwrap_or("").to_string();
+                        let code =
+                            crate::capabilities::classify_daemon_error(&message, ErrorCode::Internal);
+                        let mut err_frames = vec![ServerFrame::event(ApiEvent::Error {
+                            code,
+                            message,
                         })];
+                        self.stamp_stream_frames(&mut err_frames, active_turn_id.as_deref());
+                        return err_frames;
                     }
                 }
                 if event["type"] == "error"
@@ -2083,12 +2193,12 @@ impl BridgeState {
                     let (_, api_id, _) = self.pending_simple.remove(index);
                     self.pending_control_done_ids.remove(&id);
                     self.pending_activity_snapshots.remove(&id);
+                    let message = event["message"].as_str().unwrap_or("").to_string();
+                    let code =
+                        crate::capabilities::classify_daemon_error(&message, ErrorCode::Internal);
                     return vec![ServerFrame::reply(
                         api_id,
-                        ApiEvent::Error {
-                            code: ErrorCode::Internal,
-                            message: event["message"].as_str().unwrap_or("").to_string(),
-                        },
+                        ApiEvent::Error { code, message },
                     )];
                 }
                 if self.pending_control_done_ids.contains(&id)
@@ -2131,7 +2241,9 @@ impl BridgeState {
                 self.legacy_event_to_api_inner(&snapshot)
             }
             _ => self.legacy_event_to_api_inner(event),
-        }
+        };
+        self.stamp_stream_frames(&mut frames, active_turn_id.as_deref());
+        frames
     }
 
     fn legacy_event_to_api_inner(&mut self, event: &Value) -> Vec<ServerFrame> {
@@ -2355,6 +2467,7 @@ impl BridgeState {
                         if self.session_id.as_deref() != Some(&session_id) {
                             self.text_message_id = None;
                             self.text_attempt.clear();
+                            self.stream_seq.store(0, Ordering::Relaxed);
                         }
                         self.session_id = Some(session_id.clone());
                     }
@@ -2487,9 +2600,13 @@ impl BridgeState {
                 self.text_response_ended = false;
                 frames
             }
-            "text_done" => self.finish_text(),
+            "text_done" => {
+                let stop_reason = event["stop_reason"].as_str().map(str::to_string);
+                self.finish_text_with_stop_reason(stop_reason)
+            }
             "message_end" => {
-                let frames = self.finish_text();
+                let stop_reason = event["stop_reason"].as_str().map(str::to_string);
+                let frames = self.finish_text_with_stop_reason(stop_reason);
                 // Post-processing can still replace wrapped-tool text after
                 // MessageEnd. Retain it until the next response's first delta.
                 self.text_response_ended = true;
@@ -2548,6 +2665,9 @@ impl BridgeState {
                 name: event["name"].as_str().unwrap_or("").to_string(),
                 output: event["output"].as_str().unwrap_or("").to_string(),
                 error: event["error"].as_str().map(str::to_string),
+                duration_ms: event["tool_duration_ms"]
+                    .as_u64()
+                    .or_else(|| event["duration_ms"].as_u64()),
             })],
             "side_panel_state" => {
                 let session_id = event["session_id"].as_str().or(self.session_id.as_deref());
@@ -2956,12 +3076,40 @@ impl BridgeState {
                     .map(|messages| {
                         messages
                             .iter()
-                            .map(|m| HistoryMessage {
-                                response_stats: serde_json::from_value(m["response_stats"].clone())
+                            .map(|m| {
+                                let role = m["role"].as_str().unwrap_or("").to_string();
+                                let content = m["content"].as_str().unwrap_or("").to_string();
+                                let trimmed = content.trim_start();
+                                let is_internal = m["is_engine_internal"].as_bool() == Some(true)
+                                    || (role == "system"
+                                        && !trimmed.starts_with("Earlier conversation compacted"))
+                                    || (role == "user"
+                                        && (trimmed.starts_with("[System reminder:")
+                                            || trimmed.starts_with("<system-reminder>")));
+                                let (origin, visibility) = if is_internal {
+                                    (
+                                        Some(MessageOrigin::EngineInternal),
+                                        Some(MessageVisibility::Hidden),
+                                    )
+                                } else if role == "user" {
+                                    (
+                                        Some(MessageOrigin::UserTyped),
+                                        Some(MessageVisibility::Visible),
+                                    )
+                                } else {
+                                    (None, Some(MessageVisibility::Visible))
+                                };
+                                HistoryMessage {
+                                    response_stats: serde_json::from_value(
+                                        m["response_stats"].clone(),
+                                    )
                                     .unwrap_or(None),
-                                role: m["role"].as_str().unwrap_or("").to_string(),
-                                content: m["content"].as_str().unwrap_or("").to_string(),
-                                tool: Self::history_tool(m),
+                                    role,
+                                    content,
+                                    tool: Self::history_tool(m),
+                                    origin,
+                                    visibility,
+                                }
                             })
                             .collect()
                     })
@@ -3044,7 +3192,10 @@ impl BridgeState {
                 // instead of a silent no-op that leaves the picker wrong.
                 if let Some(error) = event["error"].as_str() {
                     let frame = ApiEvent::Error {
-                        code: ErrorCode::InvalidRequest,
+                        code: crate::capabilities::classify_daemon_error(
+                            error,
+                            ErrorCode::InvalidRequest,
+                        ),
                         message: error.to_string(),
                     };
                     return match reply_to {
@@ -3116,7 +3267,10 @@ impl BridgeState {
                     Some(error) => vec![ServerFrame::reply(
                         api_id,
                         ApiEvent::Error {
-                            code: ErrorCode::InvalidRequest,
+                            code: crate::capabilities::classify_daemon_error(
+                                error,
+                                ErrorCode::InvalidRequest,
+                            ),
                             message: error.to_string(),
                         },
                     )],
@@ -3139,7 +3293,10 @@ impl BridgeState {
                     return vec![ServerFrame::reply(
                         api_id,
                         ApiEvent::Error {
-                            code: ErrorCode::InvalidRequest,
+                            code: crate::capabilities::classify_daemon_error(
+                                &message,
+                                ErrorCode::InvalidRequest,
+                            ),
                             message,
                         },
                     )];
@@ -3326,7 +3483,7 @@ impl BridgeState {
                         .map(|index| self.pending_simple.remove(index).1)
                 });
                 let frame_event = ApiEvent::Error {
-                    code: ErrorCode::Internal,
+                    code: crate::capabilities::classify_daemon_error(&message, ErrorCode::Internal),
                     message,
                 };
                 let mut frames = vec![match reply_to {
@@ -3463,14 +3620,19 @@ impl BridgeState {
             self.available_routes = routes
                 .iter()
                 .filter_map(|route| {
-                    Some(ModelRouteInfo {
+                    let mut info = ModelRouteInfo {
                         model: route["model"].as_str()?.to_string(),
                         provider: route["provider"].as_str()?.to_string(),
                         api_method: route["api_method"].as_str()?.to_string(),
                         available: route["available"].as_bool().unwrap_or(false),
                         detail: route["detail"].as_str().unwrap_or("").to_string(),
                         usage: serde_json::from_value(route["usage"].clone()).unwrap_or(None),
-                    })
+                        supported_efforts: Vec::new(),
+                        default_effort: None,
+                        context_window: route["context_window"].as_u64(),
+                    };
+                    crate::capabilities::enrich_model_route(&mut info);
+                    Some(info)
                 })
                 .collect();
             for route in &mut self.available_routes {
@@ -4126,12 +4288,24 @@ impl BridgeState {
                 if role != "user" && role != "assistant" {
                     return None;
                 }
+                if message["display_role"].as_str() == Some("system") {
+                    return None;
+                }
                 let content = flatten_content(&message["content"]);
+                let trimmed = content.trim_start();
+                if trimmed.starts_with("[System reminder:")
+                    || trimmed.starts_with("<system-reminder>")
+                {
+                    return None;
+                }
+                let origin = (role == "user").then_some(MessageOrigin::UserTyped);
                 (!content.trim().is_empty()).then(|| HistoryMessage {
                     response_stats: None,
                     role: role.to_string(),
                     content,
                     tool: None,
+                    origin,
+                    visibility: Some(MessageVisibility::Visible),
                 })
             })
             .take(limit)

@@ -408,6 +408,28 @@ fn rust_sdk_only_frame(variant: &str) -> bool {
     )
 }
 
+// PR 1 introduces the Rust v1.16 wire surface before PR 2 mirrors it into
+// `sdk/typescript/src/protocol.ts`. Once the TypeScript SDK bumps to minor 16,
+// this exemption automatically disables itself and enforces full parity.
+fn pending_ts_sdk_v1_16_mirror(sdk: &str, variant: &str, field: Option<&str>) -> bool {
+    if sdk.contains("API_VERSION_MINOR = 16") {
+        return false;
+    }
+    matches!(
+        (variant, field),
+        (
+            "get_capabilities"
+                | "get_config"
+                | "patch_config"
+                | "capabilities"
+                | "config_state"
+                | "config_changed",
+            _
+        ) | ("text_done", Some("stop_reason"))
+            | ("tool_done", Some("duration_ms"))
+    )
+}
+
 /// The TypeScript SDK mirrors the shared enums by hand, so a variant added here
 /// without a matching entry in `sdk/typescript/src/protocol.ts` silently
 /// leaves every JS client unable to name the new frame. Checking from the
@@ -422,7 +444,7 @@ fn typescript_sdk_lists_every_variant() {
     };
     for (file, enum_name) in [("requests.rs", "ApiRequest"), ("events.rs", "ApiEvent")] {
         for variant in enum_variants(file, enum_name) {
-            if rust_sdk_only_frame(&variant) {
+            if rust_sdk_only_frame(&variant) || pending_ts_sdk_v1_16_mirror(&sdk, &variant, None) {
                 continue;
             }
             assert!(
@@ -455,7 +477,7 @@ fn typescript_sdk_lists_every_field() {
         ("events.rs", "ApiEvent", "ev"),
     ] {
         for (variant, fields) in enum_variant_fields(file, enum_name) {
-            if rust_sdk_only_frame(&variant) {
+            if rust_sdk_only_frame(&variant) || pending_ts_sdk_v1_16_mirror(&sdk, &variant, None) {
                 continue;
             }
             let Some(block) = sdk_variant_block(&sdk, tag, &variant) else {
@@ -466,6 +488,9 @@ fn typescript_sdk_lists_every_field() {
             };
             for field in fields {
                 if variant == "hello" && field == "supports_user_questions" {
+                    continue;
+                }
+                if pending_ts_sdk_v1_16_mirror(&sdk, &variant, Some(&field)) {
                     continue;
                 }
                 assert!(
@@ -728,6 +753,7 @@ fn text_framing_is_additive_and_accepts_unframed_legacy_deltas() {
         ApiEvent::TextDone {
             session_id: "s1".into(),
             message_id: Some("m1".into()),
+            stop_reason: None,
         },
         ApiEvent::TextReplace {
             session_id: "s1".into(),
@@ -884,7 +910,7 @@ fn permission_mode_and_permission_frames_wire_shapes_and_aliases() {
         perm_hello
     );
 
-    assert_eq!(API_VERSION_MINOR, 15);
+    assert_eq!(API_VERSION_MINOR, 16);
 
     let event = ServerFrame::event(ApiEvent::PermissionRequest {
         session_id: "s1".into(),
@@ -1163,5 +1189,227 @@ fn external_sessions_wire_shapes_and_legacy_defaults() {
     assert_eq!(
         serde_json::from_value::<ServerFrame>(imported_wire).unwrap(),
         imported_frame
+    );
+}
+
+#[test]
+fn v1_16_capabilities_config_and_frame_fidelity_round_trip() {
+    assert_eq!(API_VERSION_MAJOR, 1);
+    assert_eq!(API_VERSION_MINOR, 16);
+    assert_eq!(CAPABILITIES_CAPABILITY, "capabilities_v1");
+    assert_eq!(CONFIG_CAPABILITY, "config_v1");
+    assert_eq!(FRAME_FIDELITY_CAPABILITY, "frame_fidelity_v1");
+
+    // GetCapabilities + Capabilities round-trip
+    let req = ClientFrame::new(
+        1,
+        ApiRequest::GetCapabilities {
+            session_id: Some("sess_1".into()),
+        },
+    );
+    let raw = serde_json::to_string(&req).unwrap();
+    assert!(raw.contains(r#""req":"get_capabilities""#));
+    assert_eq!(serde_json::from_str::<ClientFrame>(&raw).unwrap(), req);
+
+    let caps_reply = ServerFrame::reply(
+        1,
+        ApiEvent::Capabilities {
+            commands: vec![CommandDescriptor {
+                name: "compact".into(),
+                description: "Compact conversation history".into(),
+                category: CommandCategory::Session,
+                arg_hint: None,
+                requires_session: true,
+                dispatch: CommandDispatch::ApiRequest {
+                    req: "compact".into(),
+                },
+            }],
+            permission_modes: vec![PermissionModeDescriptor {
+                id: "default".into(),
+                label: "Default".into(),
+                description: "Prompt before mutating actions".into(),
+                is_default: true,
+            }],
+            features: vec![FeatureFlagDescriptor {
+                key: "features.memory".into(),
+                enabled: true,
+                description: "Enable memory retrieval".into(),
+                requires_restart: false,
+            }],
+        },
+    );
+    let raw_caps = serde_json::to_string(&caps_reply).unwrap();
+    assert!(raw_caps.contains(r#""ev":"capabilities""#));
+    assert_eq!(
+        serde_json::from_str::<ServerFrame>(&raw_caps).unwrap(),
+        caps_reply
+    );
+
+    // GetConfig / PatchConfig / ConfigState / ConfigChanged round-trip
+    let get_cfg = ClientFrame::new(
+        2,
+        ApiRequest::GetConfig {
+            sections: Some(vec!["display".into(), "compaction".into()]),
+        },
+    );
+    let raw_get_cfg = serde_json::to_string(&get_cfg).unwrap();
+    assert!(raw_get_cfg.contains(r#""req":"get_config""#));
+    assert_eq!(
+        serde_json::from_str::<ClientFrame>(&raw_get_cfg).unwrap(),
+        get_cfg
+    );
+
+    let mut patch = serde_json::Map::new();
+    patch.insert("display.emoji".into(), serde_json::json!(false));
+    let patch_cfg = ClientFrame::new(3, ApiRequest::PatchConfig { patch: patch.clone() });
+    let raw_patch = serde_json::to_string(&patch_cfg).unwrap();
+    assert!(raw_patch.contains(r#""req":"patch_config""#));
+    assert_eq!(
+        serde_json::from_str::<ClientFrame>(&raw_patch).unwrap(),
+        patch_cfg
+    );
+
+    let cfg_state = ServerFrame::reply(
+        2,
+        ApiEvent::ConfigState {
+            path: "/home/user/.rayu/config.toml".into(),
+            sections: vec!["display".into()],
+            values: patch.clone(),
+            schema: vec![ConfigFieldSchema {
+                key: "display.emoji".into(),
+                section: "display".into(),
+                label: "Emoji".into(),
+                description: "Render emoji in terminal output".into(),
+                kind: ConfigFieldKind::Boolean,
+                options: None,
+                default_value: serde_json::json!(true),
+                apply_mode: ConfigApplyMode::Immediate,
+            }],
+        },
+    );
+    let raw_cfg_state = serde_json::to_string(&cfg_state).unwrap();
+    assert!(raw_cfg_state.contains(r#""ev":"config_state""#));
+    assert_eq!(
+        serde_json::from_str::<ServerFrame>(&raw_cfg_state).unwrap(),
+        cfg_state
+    );
+
+    let cfg_changed = ServerFrame::event(ApiEvent::ConfigChanged {
+        changed_keys: vec!["display.emoji".into()],
+        requires_restart: false,
+        values: patch,
+    });
+    let raw_cfg_changed = serde_json::to_string(&cfg_changed).unwrap();
+    assert!(raw_cfg_changed.contains(r#""ev":"config_changed""#));
+    assert_eq!(
+        serde_json::from_str::<ServerFrame>(&raw_cfg_changed).unwrap(),
+        cfg_changed
+    );
+
+    // Frame fidelity: seq, turn_id, TextDone.stop_reason, ToolDone.duration_ms
+    let frame = ServerFrame::event(ApiEvent::TextDone {
+        session_id: "sess_1".into(),
+        message_id: Some("m1".into()),
+        stop_reason: Some("end_turn".into()),
+    })
+    .with_turn_meta(Some(42), Some("turn_7".into()));
+    let raw_frame = serde_json::to_string(&frame).unwrap();
+    assert!(raw_frame.contains(r#""seq":42"#));
+    assert!(raw_frame.contains(r#""turn_id":"turn_7""#));
+    assert!(raw_frame.contains(r#""stop_reason":"end_turn""#));
+    assert_eq!(
+        serde_json::from_str::<ServerFrame>(&raw_frame).unwrap(),
+        frame
+    );
+
+    let tool_done = ServerFrame::event(ApiEvent::ToolDone {
+        session_id: "sess_1".into(),
+        call_id: "c1".into(),
+        name: "bash".into(),
+        output: "ok".into(),
+        error: None,
+        duration_ms: Some(125),
+    });
+    let raw_tool = serde_json::to_string(&tool_done).unwrap();
+    assert!(raw_tool.contains(r#""duration_ms":125"#));
+    assert_eq!(
+        serde_json::from_str::<ServerFrame>(&raw_tool).unwrap(),
+        tool_done
+    );
+
+    // HistoryMessage provenance + legacy compatibility
+    let msg = HistoryMessage {
+        response_stats: None,
+        role: "system".into(),
+        content: "Reassess request".into(),
+        tool: None,
+        origin: Some(MessageOrigin::EngineInternal),
+        visibility: Some(MessageVisibility::Hidden),
+    };
+    let raw_msg = serde_json::to_string(&msg).unwrap();
+    assert!(raw_msg.contains(r#""origin":"engine_internal""#));
+    assert!(raw_msg.contains(r#""visibility":"hidden""#));
+    assert_eq!(
+        serde_json::from_str::<HistoryMessage>(&raw_msg).unwrap(),
+        msg
+    );
+
+    // ModelRouteInfo extensions + legacy compatibility
+    let route = ModelRouteInfo {
+        model: "claude-opus-4-7".into(),
+        provider: "anthropic".into(),
+        api_method: "messages".into(),
+        available: true,
+        detail: "ready".into(),
+        usage: None,
+        supported_efforts: vec![
+            "none".into(),
+            "low".into(),
+            "medium".into(),
+            "high".into(),
+            "xhigh".into(),
+            "max".into(),
+        ],
+        default_effort: Some("medium".into()),
+        context_window: Some(200_000),
+    };
+    let raw_route = serde_json::to_string(&route).unwrap();
+    assert!(raw_route.contains(r#""supported_efforts""#));
+    assert!(raw_route.contains(r#""default_effort":"medium""#));
+    assert!(raw_route.contains(r#""context_window":200000"#));
+    assert_eq!(
+        serde_json::from_str::<ModelRouteInfo>(&raw_route).unwrap(),
+        route
+    );
+    let legacy_route: ModelRouteInfo = serde_json::from_value(serde_json::json!({
+        "model": "m",
+        "provider": "p",
+        "api_method": "a",
+        "available": true,
+        "detail": "ok"
+    }))
+    .unwrap();
+    assert!(legacy_route.supported_efforts.is_empty());
+    assert_eq!(legacy_route.default_effort, None);
+    assert_eq!(legacy_route.context_window, None);
+
+    // ErrorCode::Busy and ErrorCode::Unsupported
+    let busy = ApiEvent::Error {
+        code: ErrorCode::Busy,
+        message: "turn in progress".into(),
+    };
+    assert!(
+        serde_json::to_string(&busy)
+            .unwrap()
+            .contains(r#""code":"busy""#)
+    );
+    let unsupported = ApiEvent::Error {
+        code: ErrorCode::Unsupported,
+        message: "effort unsupported".into(),
+    };
+    assert!(
+        serde_json::to_string(&unsupported)
+            .unwrap()
+            .contains(r#""code":"unsupported""#)
     );
 }
