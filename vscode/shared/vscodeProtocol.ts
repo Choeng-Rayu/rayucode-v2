@@ -36,6 +36,45 @@ export type AccentPreference = z.infer<typeof AccentPreferenceSchema>;
 export const DensityPreferenceSchema = z.enum(["comfortable", "compact"]);
 export type DensityPreference = z.infer<typeof DensityPreferenceSchema>;
 
+export const OpenLocationSchema = z.enum([
+  "secondarySidebar",
+  "beside",
+  "editorTab",
+]);
+export type OpenLocation = z.infer<typeof OpenLocationSchema>;
+
+export const WorkbenchPreferencesSchema = z.object({
+  openLocation: OpenLocationSchema,
+  contextActionsAutoSubmit: z.boolean(),
+  showEditorTitleIcon: z.boolean(),
+});
+export type WorkbenchPreferences = z.infer<typeof WorkbenchPreferencesSchema>;
+
+export const ComposerInjectionPayloadSchema = z.object({
+  id: z.string().min(1),
+  mentions: z.array(z.string().min(1)).optional(),
+  prompt: z.string().optional(),
+  mode: z.enum(["append", "replace"]).optional(),
+  selection: z
+    .object({
+      filePath: z.string(),
+      relativePath: z.string(),
+      languageId: z.string().optional(),
+      lineStart: z.number().int().min(1),
+      lineEnd: z.number().int().min(1),
+      lineCount: z.number().int().min(0),
+      selectedText: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+  workingDir: z.string().optional(),
+  autoSubmit: z.boolean().optional(),
+  sourceLabel: z.string().optional(),
+});
+export type ComposerInjectionPayload = z.infer<
+  typeof ComposerInjectionPayloadSchema
+>;
+
 export const PermissionModeIdSchema = z.enum([
   "default",
   "acceptEdits",
@@ -964,9 +1003,12 @@ export type AgentRoleOverrideView = z.infer<typeof AgentRoleOverrideViewSchema>;
 export const ModelRouteOptionViewSchema = z.object({
   id: z.string(),
   model: z.string(),
+  modelSpec: z.string().optional(),
   provider: z.string(),
   label: z.string(),
   apiMethod: z.string().optional(),
+  authMethod: z.enum(["oauth", "api_key", "env", "none"]).optional(),
+  accountLabel: z.string().optional(),
   available: z.boolean().optional(),
   detail: z.string().optional(),
   supportsEffort: z.boolean().optional(),
@@ -1262,7 +1304,11 @@ export const RpcContractSchemas = {
     result: z.object({ ok: z.boolean(), mode: PermissionModeIdSchema }),
   },
   "sessions.rewind": {
-    params: z.object({ sessionId: z.string(), turnId: z.string() }),
+    params: z.object({
+      sessionId: z.string(),
+      turnId: z.string(),
+      messageIndex: z.number().int().positive().optional(),
+    }),
     result: OkResultSchema,
   },
   "sessions.rewindUndo": {
@@ -1274,12 +1320,18 @@ export const RpcContractSchemas = {
       sessionId: z.string(),
       text: z.string().min(1),
       urgent: z.boolean().optional(),
+      clientId: z.string().min(1).optional(),
+      images: z.array(ImageAttachmentViewSchema).optional(),
     }),
     result: z.object({ ok: z.boolean(), interruptId: z.string().optional() }),
   },
   "sessions.cancelSoftInterrupts": {
     params: z.object({ sessionId: z.string(), interruptId: z.string().optional() }),
-    result: OkResultSchema,
+    result: z.object({
+      ok: z.boolean(),
+      cancelled: z.boolean().optional(),
+      message: z.string().optional(),
+    }),
   },
   "sessions.respondPermission": {
     params: z.object({
@@ -1316,7 +1368,7 @@ export const RpcContractSchemas = {
     result: BackgroundProcessOutputViewSchema,
   },
   "background.cancel": {
-    params: z.object({ taskId: z.string() }),
+    params: z.object({ taskId: z.string(), sessionId: z.string().optional() }),
     result: OkResultSchema,
   },
   "background.cleanup": {
@@ -2168,6 +2220,10 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("rayucode.ui.openEditorPanel"),
     route: AppRouteSchema.optional(),
     sessionId: z.string().optional(),
+    beside: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.focusSidebar"),
   }),
   z.object({
     type: z.literal("rayucode.ui.setAppearance"),
@@ -2175,6 +2231,12 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
     accent: AccentPreferenceSchema.optional(),
     density: DensityPreferenceSchema.optional(),
     reduceMotion: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.setWorkbench"),
+    openLocation: OpenLocationSchema.optional(),
+    contextActionsAutoSubmit: z.boolean().optional(),
+    showEditorTitleIcon: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("rayucode.editor.openFile"),
@@ -2270,6 +2332,7 @@ export const HostToWebviewMessageSchema = z.union([
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
     accountStatus: AccountStatusViewSchema.optional(),
     fileChanges: FileChangesSnapshotViewSchema.nullable().optional(),
+    workbench: WorkbenchPreferencesSchema.optional(),
   }),
   RpcResultSuccessSchema,
   RpcResultErrorSchema,
@@ -2292,6 +2355,7 @@ export const HostToWebviewMessageSchema = z.union([
   }),
   z.object({
     type: z.literal("rayucode.processes.snapshot"),
+    sessionId: z.string().optional(),
     tasks: z.array(BackgroundProcessViewSchema),
   }),
   z.object({
@@ -2314,6 +2378,14 @@ export const HostToWebviewMessageSchema = z.union([
     accent: AccentPreferenceSchema,
     density: DensityPreferenceSchema.optional(),
     reduceMotion: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.workbenchSync"),
+    workbench: WorkbenchPreferencesSchema,
+  }),
+  z.object({
+    type: z.literal("rayucode.composer.inject"),
+    injection: ComposerInjectionPayloadSchema,
   }),
   z.object({
     type: z.literal("rayucode.dialog.filesPicked"),

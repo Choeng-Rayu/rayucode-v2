@@ -35,6 +35,8 @@ import {
   SERVICE_TIER_OPTIONS,
   effortToIndex,
   formatEffortLabel,
+  formatHarnessModelSpec,
+  formatProviderBadgeLabel,
   getEffortStop,
   indexToEffort,
   normalizeEffortLevel,
@@ -100,8 +102,31 @@ export function ModelEffortPopover({
   const currentStop = getEffortStop(effort);
   const effortIndex = effortToIndex(effort);
   const isFastTier = serviceTier === "priority" || serviceTier === "ultrafast";
-  const catalog = models.length > 0 ? models : FALLBACK_MODELS;
-  const activeModel = catalog.find((m) => m.id === modelId) ?? catalog[0];
+  const catalog = models;
+
+  const getOptionKey = React.useCallback((model: ModelOption): string => {
+    if (model.modelSpec && model.modelSpec.includes(":")) {
+      return model.modelSpec;
+    }
+    return `${model.provider}:${model.modelSpec ?? model.id}`;
+  }, []);
+
+  const matchedActiveModel = React.useMemo(() => {
+    const exactSpec = catalog.filter((m) => m.modelSpec === modelId);
+    if (exactSpec.length > 0) {
+      return exactSpec.find((m) => m.available !== false) ?? exactSpec[0];
+    }
+    const byId = catalog.filter((m) => m.id === modelId);
+    if (byId.length > 0) {
+      return byId.find((m) => m.available !== false) ?? byId[0];
+    }
+    return undefined;
+  }, [catalog, modelId]);
+
+  const activeModel =
+    matchedActiveModel ??
+    catalog.find((m) => m.available !== false) ??
+    catalog[0];
 
   // Filter models while strictly preserving exact backend route order
   const filteredCatalog = React.useMemo(() => {
@@ -111,10 +136,21 @@ export function ModelEffortPopover({
       (m) =>
         m.label.toLowerCase().includes(q) ||
         m.id.toLowerCase().includes(q) ||
+        (m.modelSpec ?? "").toLowerCase().includes(q) ||
         m.provider.toLowerCase().includes(q) ||
+        formatProviderBadgeLabel(m.provider).toLowerCase().includes(q) ||
         (m.subtitle ?? "").toLowerCase().includes(q),
     );
   }, [catalog, searchQuery]);
+
+  const readyModels = React.useMemo(
+    () => filteredCatalog.filter((m) => m.available !== false),
+    [filteredCatalog],
+  );
+  const unavailableModels = React.useMemo(
+    () => filteredCatalog.filter((m) => m.available === false),
+    [filteredCatalog],
+  );
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
@@ -241,11 +277,18 @@ export function ModelEffortPopover({
 
   const handleReset = () => {
     const defaultModel =
-      catalog.find((m) => m.id === DEFAULT_MODEL_ID) ??
+      catalog.find(
+        (m) =>
+          (m.modelSpec === DEFAULT_MODEL_ID || m.id === DEFAULT_MODEL_ID) &&
+          m.available !== false,
+      ) ??
+      catalog.find((m) => m.available !== false) ??
       catalog[0] ?? {
         id: DEFAULT_MODEL_ID,
+        modelSpec: formatHarnessModelSpec(DEFAULT_MODEL_ID, "rayu", "rayu"),
         label: DEFAULT_MODEL_LABEL,
-        provider: "rayu-cloud",
+        provider: "rayu",
+        apiMethod: "rayu",
       };
     onSelectModel(defaultModel);
     onSelectEffort(DEFAULT_EFFORT);
@@ -254,10 +297,14 @@ export function ModelEffortPopover({
 
   const handleSelectModel = (model: ModelOption) => {
     onSelectModel(model);
+    const spec =
+      model.modelSpec ||
+      formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
+      model.id;
     sendHarnessRequest({
       req: "set_model",
       session_id: sessionId ?? undefined,
-      model: model.id,
+      model: spec,
     });
     setStage("effort");
     setOpen(false);
@@ -275,16 +322,17 @@ export function ModelEffortPopover({
 
   const authTag = React.useMemo(() => {
     if (!activeModel) return null;
+    const providerLabel = formatProviderBadgeLabel(activeModel.provider);
     if (activeModel.authMethod === "oauth") {
-      return `OAuth · ${activeModel.accountLabel ?? activeModel.provider}`;
+      return `OAuth · ${activeModel.accountLabel ?? providerLabel}`;
     }
     if (activeModel.authMethod === "api_key") {
-      return `API Key · ${activeModel.provider}`;
+      return `API Key · ${providerLabel}`;
     }
     if (activeModel.authMethod === "env") {
-      return `Env Key · ${activeModel.provider}`;
+      return `Env Key · ${providerLabel}`;
     }
-    return activeModel.provider;
+    return providerLabel;
   }, [activeModel]);
 
   return (
@@ -630,52 +678,150 @@ export function ModelEffortPopover({
                   aria-label="Select model"
                   className="flex flex-col gap-0.5 pr-1.5 pl-0.5"
                 >
-                  {filteredCatalog.map((model) => {
-                    const isSelected = model.id === modelId;
-                    const isUnavailable = model.available === false;
-                    return (
+                  {filteredCatalog.length === 0 ? (
+                    <div
+                      data-testid="model-list-empty"
+                      className="flex flex-col items-center justify-center gap-2.5 px-3 py-10 text-center"
+                    >
+                      <span className="text-xs text-muted-ink">
+                        {searchQuery.trim()
+                          ? "No models match your filter."
+                          : "No models available yet."}
+                      </span>
                       <button
-                        key={model.id}
                         type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        disabled={isUnavailable}
-                        data-model-id={model.id}
-                        onClick={() => handleSelectModel(model)}
-                        className={cn(
-                          "flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50",
-                          isSelected && "border-hairline bg-active",
-                        )}
+                        data-testid="model-empty-refresh-btn"
+                        disabled={isRefreshing}
+                        onClick={handleRefresh}
+                        className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-hairline bg-raised px-2.5 py-1 text-xs font-medium text-ink transition-colors hover:border-premium-hi hover:bg-hover disabled:opacity-50"
                       >
-                        <span className="flex min-w-0 flex-col gap-0.5">
-                          <span className="flex items-center gap-1.5">
-                            <span className="truncate text-sm leading-snug font-medium text-ink">
-                              {model.label}
-                            </span>
-                            <span className="shrink-0 rounded border border-hairline-soft bg-inset px-1.5 py-px text-[10px] font-normal text-muted-ink">
-                              {model.provider}
-                            </span>
-                          </span>
-                          {model.unavailableReason ? (
-                            <span className="truncate text-xs leading-tight text-warn">
-                              {model.unavailableReason}
-                            </span>
-                          ) : model.subtitle ? (
-                            <span className="truncate text-xs leading-tight text-muted-ink">
-                              {model.subtitle}
-                            </span>
-                          ) : null}
-                        </span>
-                        <Check
+                        <RefreshCw
                           className={cn(
-                            "size-[15px] shrink-0 text-ink transition-opacity duration-150",
-                            isSelected ? "opacity-100" : "opacity-0",
+                            "size-3",
+                            isRefreshing && "animate-spin",
                           )}
                           aria-hidden="true"
                         />
+                        <span>Refresh models</span>
                       </button>
-                    );
-                  })}
+                    </div>
+                  ) : (
+                    <>
+                      {readyModels.length > 0 && unavailableModels.length > 0 ? (
+                        <div
+                          data-testid="model-group-authenticated"
+                          className="px-2.5 pt-1 pb-0.5 text-[10.5px] font-medium text-muted-ink"
+                        >
+                          Authenticated models
+                        </div>
+                      ) : null}
+                      {readyModels.map((model) => {
+                        const key = getOptionKey(model);
+                        const isSelected = matchedActiveModel
+                          ? getOptionKey(matchedActiveModel) === key
+                          : model.modelSpec === modelId || model.id === modelId;
+                        const providerLabel = formatProviderBadgeLabel(
+                          model.provider,
+                        );
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            data-model-id={model.id}
+                            data-model-spec={model.modelSpec ?? model.id}
+                            data-provider={model.provider}
+                            onClick={() => handleSelectModel(model)}
+                            className={cn(
+                              "flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left transition-colors hover:bg-hover",
+                              isSelected && "border-hairline bg-active",
+                            )}
+                          >
+                            <span className="flex min-w-0 flex-col gap-0.5">
+                              <span className="flex items-center gap-1.5">
+                                <span className="truncate text-sm leading-snug font-medium text-ink">
+                                  {model.label}
+                                </span>
+                                <span className="shrink-0 rounded border border-hairline-soft bg-inset px-1.5 py-px text-[10px] font-normal text-muted-ink">
+                                  {providerLabel}
+                                </span>
+                              </span>
+                              {model.subtitle ? (
+                                <span className="truncate text-xs leading-tight text-muted-ink">
+                                  {model.subtitle}
+                                </span>
+                              ) : null}
+                            </span>
+                            <Check
+                              className={cn(
+                                "size-[15px] shrink-0 text-ink transition-opacity duration-150",
+                                isSelected ? "opacity-100" : "opacity-0",
+                              )}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        );
+                      })}
+
+                      {unavailableModels.length > 0 ? (
+                        <>
+                          <div
+                            data-testid="model-group-unavailable"
+                            className={cn(
+                              "px-2.5 pt-1.5 pb-0.5 text-[10.5px] font-medium text-muted-ink",
+                              readyModels.length > 0 &&
+                                "mt-1 border-t border-hairline-soft pt-2",
+                            )}
+                          >
+                            Other providers (configure key)
+                          </div>
+                          {unavailableModels.map((model) => {
+                            const key = getOptionKey(model);
+                            const isSelected = matchedActiveModel
+                              ? getOptionKey(matchedActiveModel) === key
+                              : false;
+                            const providerLabel = formatProviderBadgeLabel(
+                              model.provider,
+                            );
+                            return (
+                              <button
+                                key={key}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                disabled
+                                data-model-id={model.id}
+                                data-model-spec={model.modelSpec ?? model.id}
+                                data-provider={model.provider}
+                                className="flex w-full cursor-not-allowed items-center justify-between gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left opacity-55 transition-colors"
+                              >
+                                <span className="flex min-w-0 flex-col gap-0.5">
+                                  <span className="flex items-center gap-1.5">
+                                    <span className="truncate text-sm leading-snug font-medium text-ink">
+                                      {model.label}
+                                    </span>
+                                    <span className="shrink-0 rounded border border-hairline-soft bg-inset px-1.5 py-px text-[10px] font-normal text-muted-ink">
+                                      {providerLabel}
+                                    </span>
+                                  </span>
+                                  <span className="truncate text-xs leading-tight text-warn">
+                                    {model.unavailableReason ??
+                                      model.subtitle ??
+                                      `Requires ${providerLabel} API key`}
+                                  </span>
+                                </span>
+                                <Check
+                                  className="size-[15px] shrink-0 text-ink opacity-0"
+                                  aria-hidden="true"
+                                />
+                              </button>
+                            );
+                          })}
+                        </>
+                      ) : null}
+                    </>
+                  )}
                 </div>
               </ScrollArea>
             </div>

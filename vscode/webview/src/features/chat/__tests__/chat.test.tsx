@@ -1,6 +1,6 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -18,7 +18,12 @@ import {
   WorkTrace,
   type ExtendedWorkStepGroup,
 } from "@/features/chat";
-import { createQueryClient, useAppStore } from "@/lib";
+import * as rpcClient from "@/lib/rpc-client";
+import {
+  __dispatchHostMessageForTest,
+  createQueryClient,
+  useAppStore,
+} from "@/lib";
 
 function renderWithQuery(ui: React.ReactElement) {
   const client = createQueryClient();
@@ -29,12 +34,19 @@ function renderWithQuery(ui: React.ReactElement) {
 
 describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     useAppStore.setState({
       activeSessionId: "ses_vscode_shell",
       inspectorOpen: false,
       activeCodeFile: null,
       activeCodeLine: null,
       pendingPermission: null,
+      pendingUserTurn: null,
+      isStreamActive: false,
+      midTurnSendMode: "steer",
+      midTurnMessagesBySession: {},
+      pausedQueueSessions: {},
+      composerDrafts: {},
     });
   });
 
@@ -424,5 +436,423 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     expect(
       screen.getByText(/lowering p99 lookup latency by 38%/i),
     ).toBeTruthy();
+  });
+
+  it("prevents ghost turns when turn_stopped is followed by turn_done", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_stop_once",
+      pendingUserTurn: {
+        id: "opt_stop_1",
+        sessionId: "ses_stop_once",
+        prompt: "Run benchmark suite",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_stop_once" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_start",
+          session_id: "ses_stop_once",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_stop_once",
+          text: "Partial benchmark output before stop.",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_stopped",
+          session_id: "ses_stop_once",
+          reason: "cancelled",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_stop_once",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Partial benchmark output before stop."),
+      ).toBeTruthy();
+    });
+
+    const articles = document.querySelectorAll('[data-slot="execution-turn"]');
+    expect(articles).toHaveLength(1);
+  });
+
+  it("clears matching steer on soft_interrupt_injected by client_id and records a live trace note", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_steer_live",
+      pendingUserTurn: {
+        id: "opt_steer_1",
+        sessionId: "ses_steer_live",
+        prompt: "Refactor auth handler",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_steer_live: [
+          {
+            id: "si_match_1",
+            sessionId: "ses_steer_live",
+            mode: "steer",
+            text: "Keep token refresh idempotent",
+            createdAtMs: Date.now(),
+          },
+          {
+            id: "si_other_2",
+            sessionId: "ses_steer_live",
+            mode: "steer",
+            text: "Preserve backward-compatible error codes",
+            createdAtMs: Date.now() + 1,
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_steer_live" />);
+
+    expect(screen.getByTestId("midturn-item-si_match_1")).toBeTruthy();
+    expect(screen.getByTestId("midturn-item-si_other_2")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "soft_interrupt_injected",
+          session_id: "ses_steer_live",
+          client_ids: ["si_match_1"],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("midturn-item-si_match_1")).toBeNull();
+      expect(screen.getByTestId("midturn-item-si_other_2")).toBeTruthy();
+    });
+
+    // Expand WorkTrace to verify recorded steer note
+    fireEvent.click(screen.getByTestId("work-trace-toggle"));
+    expect(
+      screen.getByText("Steered: Keep token refresh idempotent"),
+    ).toBeTruthy();
+  });
+
+  it("auto-drains next queued message on natural turn_done, and pauses auto-drain while preserving queued items after Stop/turn_stopped", async () => {
+    const onDrain = vi.fn();
+
+    useAppStore.setState({
+      activeSessionId: "ses_drain_1",
+      pendingUserTurn: {
+        id: "opt_drain_1",
+        sessionId: "ses_drain_1",
+        prompt: "First task",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_drain_1: [
+          {
+            id: "q_next_1",
+            sessionId: "ses_drain_1",
+            mode: "queue",
+            text: "Second queued follow-up",
+            createdAtMs: Date.now(),
+          },
+          {
+            id: "q_next_2",
+            sessionId: "ses_drain_1",
+            mode: "queue",
+            text: "Third queued follow-up",
+            createdAtMs: Date.now() + 1,
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(
+      <ChatWorkspaceView
+        sessionId="ses_drain_1"
+        onDrainQueuedMessage={onDrain}
+      />,
+    );
+
+    // Natural turn_done drains first queued message via microtask
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_drain_1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "text_delta", session_id: "ses_drain_1", text: "Done #1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_done", session_id: "ses_drain_1" },
+      });
+    });
+
+    await waitFor(() => {
+      expect(onDrain).toHaveBeenCalledTimes(1);
+      expect(onDrain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "q_next_1",
+          mode: "queue",
+          text: "Second queued follow-up",
+        }),
+      );
+    });
+
+    // Now simulate an active turn that gets cancelled/stopped with a pending steer + queued message
+    onDrain.mockClear();
+    act(() => {
+      useAppStore.getState().addMidTurnMessage({
+        id: "si_pending_stop",
+        sessionId: "ses_drain_1",
+        mode: "steer",
+        text: "Uninjected steer note",
+        createdAtMs: Date.now() + 2,
+      });
+      useAppStore.getState().enqueueOptimisticTurn({
+        id: "opt_drain_2",
+        sessionId: "ses_drain_1",
+        prompt: "Second task",
+        createdAtMs: Date.now() + 3,
+      });
+    });
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_drain_1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_stopped",
+          session_id: "ses_drain_1",
+          reason: "cancelled",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().pausedQueueSessions["ses_drain_1"]).toBe(
+        true,
+      );
+    });
+
+    // Must NOT auto-drain on stop; queued item stays preserved and uninjected steer demoted to queue
+    expect(onDrain).not.toHaveBeenCalled();
+    const remaining =
+      useAppStore.getState().midTurnMessagesBySession["ses_drain_1"] ?? [];
+    expect(remaining.map((m) => ({ id: m.id, mode: m.mode }))).toEqual([
+      { id: "q_next_2", mode: "queue" },
+      { id: "si_pending_stop", mode: "queue" },
+    ]);
+  });
+
+  it("promotes a queued item to live steer via promote-to-steer-<id> without interrupting", async () => {
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+
+    useAppStore.setState({
+      activeSessionId: "ses_promote_1",
+      pendingUserTurn: {
+        id: "opt_promote_1",
+        sessionId: "ses_promote_1",
+        prompt: "Investigate slow query",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_promote_1: [
+          {
+            id: "q_promote_target",
+            sessionId: "ses_promote_1",
+            mode: "queue",
+            text: "Check composite index selectivity first",
+            createdAtMs: Date.now(),
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_promote_1" />);
+
+    const promoteBtn = screen.getByTestId("promote-to-steer-q_promote_target");
+    fireEvent.click(promoteBtn);
+
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("sessions.softInterrupt", {
+        sessionId: "ses_promote_1",
+        text: "Check composite index selectivity first",
+        urgent: false,
+        clientId: "q_promote_target",
+      });
+    });
+
+    const updated =
+      useAppStore.getState().midTurnMessagesBySession["ses_promote_1"] ?? [];
+    expect(updated[0]?.mode).toBe("steer");
+    expect(
+      screen
+        .getByTestId("midturn-item-q_promote_target")
+        .getAttribute("data-midturn-mode"),
+    ).toBe("steer");
+  });
+
+  it("handles Rust question_request + question_closed, catastrophic permission_request, and text_replace frames", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_rust_frames",
+      pendingUserTurn: {
+        id: "opt_rust_1",
+        sessionId: "ses_rust_frames",
+        prompt: "Apply schema update",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_rust_frames" />);
+
+    // 1. text_delta followed by text_replace replaces the answer text cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_rust_frames" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_rust_frames",
+          text: "Draft answer to be replaced",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_replace",
+          session_id: "ses_rust_frames",
+          text: "Authoritative replacement response",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Authoritative replacement response"),
+      ).toBeTruthy();
+      expect(screen.queryByText("Draft answer to be replaced")).toBeNull();
+    });
+
+    // 2. Rust permission_request with catastrophic (and legacy hard_deny -> catastrophic)
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_request",
+          session_id: "ses_rust_frames",
+          request_id: "perm_cat_1",
+          tool_name: "bash",
+          description: "Drop staging tables?",
+          risk_tier: "catastrophic",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-card")).toBeTruthy();
+      expect(screen.getByTestId("approval-risk-badge").textContent).toBe(
+        "Catastrophic",
+      );
+      expect(
+        screen.getByTestId("approval-card").getAttribute("data-risk-tier"),
+      ).toBe("catastrophic");
+    });
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_request",
+          session_id: "ses_rust_frames",
+          request_id: "perm_legacy_2",
+          tool_name: "bash",
+          description: "Delete backup archive?",
+          risk_tier: "hard_deny",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().pendingPermission?.riskTier).toBe(
+        "catastrophic",
+      );
+    });
+
+    // 3. Rust question_request with questions[0] + question_closed dismissal
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "question_request",
+          session_id: "ses_rust_frames",
+          request_id: "q_rust_1",
+          questions: [
+            {
+              question: "Which deployment target should be updated?",
+              multiSelect: false,
+              options: [
+                {
+                  label: "Canary",
+                  description: "Roll out to 5% traffic first",
+                },
+                {
+                  label: "Production",
+                  description: "Deploy directly to all regions",
+                },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("clarifying-question-card")).toBeTruthy();
+      expect(
+        screen.getByText("Which deployment target should be updated?"),
+      ).toBeTruthy();
+      expect(screen.getByText("Canary")).toBeTruthy();
+      expect(screen.getByText("Roll out to 5% traffic first")).toBeTruthy();
+    });
+
+    // question_closed dismisses pendingQuestion cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "question_closed",
+          session_id: "ses_rust_frames",
+          request_id: "q_rust_1",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("clarifying-question-card")).toBeNull();
+    });
   });
 });

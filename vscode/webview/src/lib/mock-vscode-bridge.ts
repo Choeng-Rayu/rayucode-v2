@@ -42,6 +42,7 @@ import type {
   TodoItemView,
   VoiceStatusView,
   WebviewToHostMessage,
+  WorkbenchPreferences,
   WorkspaceFolderView,
   WorkspaceIntegrationsView,
 } from "@shared/vscodeProtocol";
@@ -93,6 +94,7 @@ interface MockBridgeState {
     density: DensityPreference;
     reduceMotion: boolean;
   };
+  workbench: WorkbenchPreferences;
 }
 
 const mockState: MockBridgeState = {
@@ -816,22 +818,25 @@ const mockState: MockBridgeState = {
   ],
 
   modelSettings: {
-    defaultModel: "claude-sonnet-4-5",
+    defaultModel: "rayu:claude-sonnet-4-5",
     defaultEffort: "medium",
     serviceTier: "auto",
     cacheTtl: "5m",
     transport: "auto",
     roleOverrides: [
-      { role: "swarm", label: "Swarm Workers", model: "claude-sonnet-4-5", scope: "global" },
-      { role: "review", label: "Auto-Review", model: "claude-sonnet-4-5", scope: "global" },
+      { role: "swarm", label: "Swarm Workers", model: "rayu:claude-sonnet-4-5", scope: "global" },
+      { role: "review", label: "Auto-Review", model: "rayu:claude-sonnet-4-5", scope: "global" },
     ],
     routes: [
       {
         id: "claude-sonnet-4-5",
         model: "claude-sonnet-4-5",
-        provider: "rayu-cloud",
+        modelSpec: "rayu:claude-sonnet-4-5",
+        provider: "rayu",
         label: "Claude Sonnet 4.5",
-        apiMethod: "anthropic",
+        apiMethod: "rayu",
+        authMethod: "oauth",
+        accountLabel: "dev@rayucode.com",
         available: true,
         detail: "Balanced speed & reasoning",
         supportsEffort: true,
@@ -841,9 +846,12 @@ const mockState: MockBridgeState = {
       {
         id: "claude-opus-4-5",
         model: "claude-opus-4-5",
-        provider: "rayu-cloud",
+        modelSpec: "rayu:claude-opus-4-5",
+        provider: "rayu",
         label: "Claude Opus 4.5",
-        apiMethod: "anthropic",
+        apiMethod: "rayu",
+        authMethod: "oauth",
+        accountLabel: "dev@rayucode.com",
         available: true,
         detail: "Deep architecture & complex refactors",
         supportsEffort: true,
@@ -853,38 +861,16 @@ const mockState: MockBridgeState = {
       {
         id: "gpt-5.2",
         model: "gpt-5.2",
+        modelSpec: "gpt-5.2",
         provider: "openai",
         label: "GPT-5.2",
         apiMethod: "responses",
-        available: true,
-        detail: "Fast multi-file edits & verification",
+        authMethod: "none",
+        available: false,
+        detail: "Configure OpenAI API key",
         supportsEffort: true,
         supportsFast: true,
         contextWindow: 256_000,
-      },
-      {
-        id: "gemini-2.5-pro",
-        model: "gemini-2.5-pro",
-        provider: "google",
-        label: "Gemini 2.5 Pro",
-        apiMethod: "gemini",
-        available: true,
-        detail: "1M-token long-context synthesis",
-        supportsEffort: true,
-        supportsFast: false,
-        contextWindow: 1_000_000,
-      },
-      {
-        id: "deepseek-r1",
-        model: "deepseek-r1",
-        provider: "deepseek",
-        label: "DeepSeek R1",
-        apiMethod: "openai-compatible",
-        available: true,
-        detail: "Open-weight reasoning model",
-        supportsEffort: true,
-        supportsFast: false,
-        contextWindow: 128_000,
       },
     ],
   },
@@ -894,6 +880,12 @@ const mockState: MockBridgeState = {
     accent: "green",
     density: "comfortable",
     reduceMotion: false,
+  },
+
+  workbench: {
+    openLocation: "secondarySidebar",
+    contextActionsAutoSubmit: false,
+    showEditorTitleIcon: true,
   },
 };
 
@@ -913,6 +905,7 @@ export function createMockHostInitMessage(): Extract<
     accent: mockState.appearance.accent,
     density: mockState.appearance.density,
     reduceMotion: mockState.appearance.reduceMotion,
+    workbench: { ...mockState.workbench },
     route: "home",
     sessionId: mockState.activeSessionId,
     capabilities: [...mockState.daemon.capabilities],
@@ -1094,6 +1087,7 @@ export function __setMockAccountStateForTest(
         ? []
         : mockState.account.windows.map((w) => ({ ...w })),
   };
+  updateMockRayuProviderFromAccount();
   return {
     ...mockState.account,
     windows: mockState.account.windows.map((w) => ({ ...w })),
@@ -1102,19 +1096,30 @@ export function __setMockAccountStateForTest(
 
 function updateMockRayuProviderFromAccount(): void {
   const acct = mockState.account;
+  const authMethod = acct.signedIn
+    ? acct.authMethod === "apiKey"
+      ? ("api_key" as const)
+      : ("oauth" as const)
+    : ("none" as const);
+  const accountLabel = acct.signedIn
+    ? acct.email ?? acct.displayName ?? "Rayu Cloud"
+    : undefined;
   mockState.providers = mockState.providers.map((p) => {
     if (p.id !== "rayu") return p;
     return {
       ...p,
       status: acct.signedIn ? "ready" : "needs_key",
-      authMethod: acct.signedIn
-        ? acct.authMethod === "apiKey"
-          ? "api_key"
-          : "oauth"
-        : "none",
-      accountLabel: acct.signedIn
-        ? acct.email ?? acct.displayName ?? "Rayu Cloud"
-        : undefined,
+      authMethod,
+      accountLabel,
+    };
+  });
+  mockState.modelSettings.routes = mockState.modelSettings.routes.map((r) => {
+    if (r.provider !== "rayu") return r;
+    return {
+      ...r,
+      available: acct.signedIn,
+      authMethod,
+      accountLabel,
     };
   });
 }
@@ -1346,16 +1351,30 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true, mode: (params.mode as SessionSummaryView["permissionMode"]) ?? "default" } as RpcResult<M>;
     case "sessions.rewind":
     case "sessions.rewindUndo":
-    case "sessions.cancelSoftInterrupts":
     case "sessions.respondPermission":
     case "sessions.respondQuestion":
       return { ok: true } as RpcResult<M>;
-    case "sessions.softInterrupt":
-      return { ok: true, interruptId: `int_${Date.now()}` } as RpcResult<M>;
+    case "sessions.cancelSoftInterrupts":
+      return { ok: true, cancelled: true } as RpcResult<M>;
+    case "sessions.softInterrupt": {
+      const clientId =
+        typeof params.clientId === "string" && params.clientId.trim()
+          ? params.clientId.trim()
+          : `int_${Date.now()}`;
+      return { ok: true, interruptId: clientId } as RpcResult<M>;
+    }
 
     // --- Background ---
-    case "background.list":
-      return { tasks: mockState.backgroundTasks.map((t) => ({ ...t })) } as RpcResult<M>;
+    case "background.list": {
+      const sid =
+        typeof params.sessionId === "string" && params.sessionId.trim()
+          ? params.sessionId.trim()
+          : null;
+      const list = sid
+        ? mockState.backgroundTasks.filter((t) => t.sessionId === sid)
+        : mockState.backgroundTasks;
+      return { tasks: list.map((t) => ({ ...t })) } as RpcResult<M>;
+    }
     case "background.status": {
       const task =
         mockState.backgroundTasks.find((t) => t.taskId === params.taskId) ?? null;
@@ -1377,9 +1396,16 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true } as RpcResult<M>;
     }
     case "background.cleanup": {
+      const sid =
+        typeof params.sessionId === "string" && params.sessionId.trim()
+          ? params.sessionId.trim()
+          : null;
       const before = mockState.backgroundTasks.length;
       mockState.backgroundTasks = mockState.backgroundTasks.filter(
-        (t) => t.status === "running" || t.status === "stalled",
+        (t) =>
+          (sid !== null && t.sessionId !== sid) ||
+          t.status === "running" ||
+          t.status === "stalled",
       );
       return { ok: true, removedCount: before - mockState.backgroundTasks.length } as RpcResult<M>;
     }
@@ -2033,9 +2059,95 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     case "settings.shortcuts.list":
       return {
         shortcuts: [
-          { id: "toggle-sidebar", label: "Toggle Sessions Sidebar", keybinding: "Shift+Cmd+S" },
-          { id: "open-terminal", label: "Open Integrated Terminal", keybinding: "Cmd+J" },
-          { id: "pop-out", label: "Open Full Editor Panel", keybinding: "Cmd+Shift+E" },
+          {
+            id: "open-from-editor-title",
+            label: "Open / Focus RayuCode (Preferred Surface)",
+            keybinding: "Cmd/Ctrl+Alt+R",
+            when: "global",
+            commandId: "rayucode.openFromEditorTitle",
+          },
+          {
+            id: "open-beside",
+            label: "Open RayuCode Split Beside Editor",
+            keybinding: "Cmd/Ctrl+Alt+Shift+R",
+            when: "global",
+            commandId: "rayucode.openBeside",
+          },
+          {
+            id: "open-workspace-panel",
+            label: "Open Mission Control Panel",
+            keybinding: "Cmd/Ctrl+Shift+R",
+            when: "global",
+            commandId: "rayucode.openWorkspacePanel",
+          },
+          {
+            id: "send-selection",
+            label: "Add Selection to RayuCode Context",
+            keybinding: "Cmd/Ctrl+Shift+L",
+            when: "editorTextFocus",
+            commandId: "rayucode.sendSelection",
+          },
+          {
+            id: "open-background-processes",
+            label: "Open Background Processes Drawer",
+            keybinding: "Alt+Shift+B",
+            when: "global",
+            commandId: "rayucode.openBackgroundProcesses",
+          },
+          {
+            id: "add-to-context",
+            label: "Add File(s) to RayuCode Context (Explorer & Tab)",
+            keybinding: "Context Menu",
+            when: "explorerResourceScheme == file",
+            commandId: "rayucode.addToContext",
+          },
+          {
+            id: "explain-selection",
+            label: "Explain Selection with RayuCode",
+            keybinding: "Editor Menu",
+            when: "editorHasSelection",
+            commandId: "rayucode.explainSelection",
+          },
+          {
+            id: "refactor-selection",
+            label: "Refactor / Fix Selection with RayuCode",
+            keybinding: "Editor Menu",
+            when: "editorHasSelection",
+            commandId: "rayucode.refactorSelection",
+          },
+          {
+            id: "fix-diagnostic",
+            label: "Fix Error / Diagnostic with RayuCode (Quick Fix)",
+            keybinding: "Cmd/Ctrl+.",
+            when: "editorTextFocus",
+            commandId: "rayucode.fixDiagnostic",
+          },
+          {
+            id: "ask-terminal",
+            label: "Ask RayuCode about Terminal Output",
+            keybinding: "Terminal Menu",
+            when: "terminalFocus",
+            commandId: "rayucode.askTerminal",
+          },
+          {
+            id: "scm-open-changes",
+            label: "Review Git Changes in RayuCode (SCM Header)",
+            keybinding: "SCM Title",
+            when: "scmProvider == git",
+            commandId: "rayucode.scmOpenChanges",
+          },
+          {
+            id: "toggle-sessions-pane",
+            label: "Toggle Sessions & Projects Sidebar Pane",
+            keybinding: "Shift+Cmd/Ctrl+S",
+            commandId: "rayucode.toggleSessionsPane",
+          },
+          {
+            id: "open-integrated-terminal",
+            label: "Open Native VS Code Integrated Terminal",
+            keybinding: "Cmd/Ctrl+J",
+            commandId: "workbench.action.terminal.toggleTerminal",
+          },
         ],
       } as RpcResult<M>;
     case "settings.runtime.get":
@@ -2123,6 +2235,26 @@ export function handleMockHostMessage(
         density: mockState.appearance.density,
         reduceMotion: mockState.appearance.reduceMotion,
       });
+      return;
+    }
+    case "rayucode.ui.setWorkbench": {
+      if (msg.openLocation !== undefined) {
+        mockState.workbench.openLocation = msg.openLocation;
+      }
+      if (msg.contextActionsAutoSubmit !== undefined) {
+        mockState.workbench.contextActionsAutoSubmit =
+          msg.contextActionsAutoSubmit;
+      }
+      if (msg.showEditorTitleIcon !== undefined) {
+        mockState.workbench.showEditorTitleIcon = msg.showEditorTitleIcon;
+      }
+      dispatch({
+        type: "rayucode.ui.workbenchSync",
+        workbench: { ...mockState.workbench },
+      });
+      return;
+    }
+    case "rayucode.ui.focusSidebar": {
       return;
     }
     case "rayucode.editor.copy":

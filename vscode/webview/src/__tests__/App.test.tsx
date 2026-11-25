@@ -96,6 +96,27 @@ describe("App end-to-end integration", () => {
       backgroundDrawerOpen: false,
       backgroundTasks: [],
       editorSelection: null,
+      pendingComposerInjection: null,
+      composerDrafts: {},
+      workbench: {
+        openLocation: "secondarySidebar",
+        contextActionsAutoSubmit: false,
+        showEditorTitleIcon: true,
+      },
+      activeProjectPath: "/workspace/rayucode-v2",
+      workspaces: [
+        {
+          name: "rayucode-v2",
+          path: "/workspace/rayucode-v2",
+          branch: "main",
+          isPrimary: true,
+        },
+        {
+          name: "rayu-cloud-api",
+          path: "/workspace/rayu-cloud-api",
+          branch: "feat/kv-cache",
+        },
+      ],
       isStreamActive: false,
       pendingUserTurn: null,
     });
@@ -462,5 +483,222 @@ describe("App end-to-end integration", () => {
       configurable: true,
       value: 1280,
     });
+  });
+
+  it("handles rayucode.composer.inject across both home (controlled) and workspace (uncontrolled) routes and hydrates workbench prefs", async () => {
+    // 1. Home route (no activeSessionId -> controlled HomePage composer)
+    useAppStore.setState({
+      activeSessionId: null,
+      activeSessionTitle: null,
+      route: "settings",
+      activeRoute: "settings",
+    });
+
+    renderApp();
+    expect(await screen.findByTestId("settings-view")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_app_home_1",
+          mentions: ["src/index.ts", "src/helper.ts"],
+          prompt: "Explain how these modules interact",
+          workingDir: "/workspace/rayu-cloud-api",
+          autoSubmit: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("home-page")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@src/index.ts @src/helper.ts\n\nExplain how these modules interact",
+      );
+    });
+    expect(useAppStore.getState().activeProjectPath).toBe(
+      "/workspace/rayu-cloud-api",
+    );
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+
+    // 2. Workspace route (activeSessionId present -> switches from settings to uncontrolled SessionComposer)
+    act(() => {
+      useAppStore.setState({
+        activeSessionId: "ses_vscode_shell",
+        activeSessionTitle: "Build VS Code dual-form-factor shell",
+        route: "settings",
+        activeRoute: "settings",
+      });
+    });
+    expect(await screen.findByTestId("settings-view")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_app_ws_2",
+          mentions: ["crates/rayu-harness/src/lib.rs"],
+          prompt: "Fix compiler warning",
+          selection: {
+            filePath: "/workspace/rayucode-v2/crates/rayu-harness/src/lib.rs",
+            relativePath: "crates/rayu-harness/src/lib.rs",
+            languageId: "rust",
+            lineStart: 5,
+            lineEnd: 15,
+            lineCount: 11,
+          },
+          autoSubmit: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-workspace-view")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@crates/rayu-harness/src/lib.rs\n\nFix compiler warning",
+      );
+    });
+    expect(screen.getByTestId("active-selection-pill")).toBeTruthy();
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+
+    // 3. Workbench sync from host updates store cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.ui.workbenchSync",
+        workbench: {
+          openLocation: "beside",
+          contextActionsAutoSubmit: true,
+          showEditorTitleIcon: false,
+        },
+      });
+    });
+    expect(useAppStore.getState().workbench).toEqual({
+      openLocation: "beside",
+      contextActionsAutoSubmit: true,
+      showEditorTitleIcon: false,
+    });
+  });
+
+  it("preserves pendingComposerInjection across AuthWelcomeScreen gate until user bypasses/signs in", async () => {
+    useAppStore.setState({
+      activeSessionId: null,
+      activeSessionTitle: null,
+      daemonStatus: {
+        state: "disconnected",
+        capabilities: [],
+        error: "Bridge offline",
+      },
+      authBypassed: false,
+    });
+
+    renderApp();
+    expect(await screen.findByTestId("rayu-offline-gate")).toBeTruthy();
+
+    // Host injects context while composer is unmounted behind AuthWelcomeScreen
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_behind_gate_1",
+          mentions: ["src/auth.ts"],
+          prompt: "Explain this error after bypass",
+          autoSubmit: false,
+        },
+      });
+    });
+
+    // Injection remains queued in Zustand because composer is not mounted yet
+    expect(useAppStore.getState().pendingComposerInjection?.id).toBe(
+      "inj_behind_gate_1",
+    );
+
+    // User bypasses auth/offline gate -> Home mounts and immediately consumes the queued injection
+    fireEvent.click(screen.getByTestId("auth-continue-byok"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("home-page")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@src/auth.ts\n\nExplain this error after bypass",
+      );
+    });
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+  });
+
+  it("invalidates all composer & settings model/provider queries on rayucode.account.changed and rayucode.daemon.statusChanged (connected)", async () => {
+    const client = createQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={client}>
+        <TooltipProvider delayDuration={0}>
+          <App />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId("home-page")).toBeTruthy();
+
+    invalidateSpy.mockClear();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.account.changed",
+        account: {
+          signedIn: true,
+          authMethod: "oauth",
+          displayName: "Rayu Developer",
+          email: "dev@rayucode.com",
+          planName: "Plus",
+          windows: [],
+        },
+      });
+    });
+
+    const expectedModelAndProviderKeys = [
+      ["composer", "model-settings"],
+      ["composer", "providers"],
+      ["settings", "models"],
+      ["settings", "providers"],
+      ["models"],
+    ];
+
+    for (const key of expectedModelAndProviderKeys) {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: key }),
+      );
+    }
+
+    invalidateSpy.mockClear();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.daemon.statusChanged",
+        status: {
+          ...CONNECTED_DAEMON,
+          state: "reconnecting",
+        },
+      });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.daemon.statusChanged",
+        status: CONNECTED_DAEMON,
+      });
+    });
+    for (const key of expectedModelAndProviderKeys) {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: key }),
+      );
+    }
+
+    invalidateSpy.mockRestore();
   });
 });

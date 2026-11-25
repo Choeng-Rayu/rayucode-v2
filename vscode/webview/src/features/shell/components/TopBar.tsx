@@ -12,6 +12,7 @@ import {
   Minimize2,
   MoreHorizontal,
   Palette,
+  PanelRight,
   Pencil,
   Plus,
   Sparkles,
@@ -104,16 +105,32 @@ export function MoreOptionsMenu({
 
         {surface === "sidebar" && (
           <DropdownMenuItem
+            data-testid="more-menu-open-beside"
             onClick={() =>
               postToHost({
                 type: "rayucode.ui.openEditorPanel",
                 route: activeRoute,
                 sessionId: activeSessionId ?? undefined,
+                beside: true,
               })
             }
           >
             <ExternalLink className="size-3.5" />
-            <span>Open in Full Editor Panel</span>
+            <span>Open Beside Editor</span>
+          </DropdownMenuItem>
+        )}
+
+        {surface === "editorPanel" && (
+          <DropdownMenuItem
+            data-testid="more-menu-focus-sidebar"
+            onClick={() =>
+              postToHost({
+                type: "rayucode.ui.focusSidebar",
+              })
+            }
+          >
+            <PanelRight className="size-3.5" />
+            <span>Focus Secondary Sidebar</span>
           </DropdownMenuItem>
         )}
 
@@ -445,13 +462,14 @@ export function TopBar() {
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label="Open in Editor Tab"
+                aria-label="Open Beside Editor"
                 data-testid="topbar-open-editor-panel"
                 onClick={() =>
                   postToHost({
                     type: "rayucode.ui.openEditorPanel",
                     route: activeRoute,
                     sessionId: activeSessionId ?? undefined,
+                    beside: true,
                   })
                 }
                 className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
@@ -459,8 +477,29 @@ export function TopBar() {
                 <ExternalLink className="size-3.5" />
               </button>
             </TooltipTrigger>
+            <TooltipContent side="bottom">Open Beside Editor</TooltipContent>
+          </Tooltip>
+        )}
+
+        {surface === "editorPanel" && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Focus Secondary Sidebar"
+                data-testid="topbar-focus-sidebar"
+                onClick={() =>
+                  postToHost({
+                    type: "rayucode.ui.focusSidebar",
+                  })
+                }
+                className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+              >
+                <PanelRight className="size-3.5" />
+              </button>
+            </TooltipTrigger>
             <TooltipContent side="bottom">
-              Open in Full Editor Panel
+              Focus Secondary Sidebar
             </TooltipContent>
           </Tooltip>
         )}

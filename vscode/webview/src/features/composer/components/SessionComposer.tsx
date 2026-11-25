@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CornerDownLeft,
   GitBranch,
+  ListPlus,
   Square,
   X,
 } from "lucide-react";
@@ -30,12 +31,14 @@ import {
   ProjectIconGlyph,
   toProjectIconSpec,
 } from "@/features/shell";
-import { callRpc, cn, useAppStore } from "@/lib";
+import { callRpc, cn, useAppStore, type MidTurnSendMode } from "@/lib";
 
 import {
   DEFAULT_CHECKOUT,
   DEFAULT_PERMISSION_MODE_ID,
   DEFAULT_PROJECT,
+  formatHarnessModelSpec,
+  mergeComposerInjection,
   normalizeEffortLevel,
 } from "../constants";
 import {
@@ -177,6 +180,7 @@ export function SessionComposer({
   const queryClient = useQueryClient();
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
+  const accountStatus = useAppStore((s) => s.accountStatus);
   const storeProjectPath = useAppStore((s) => s.activeProjectPath);
   const setActiveProjectPath = useAppStore((s) => s.setActiveProjectPath);
   const storeWorkspaces = useAppStore((s) => s.workspaces);
@@ -188,9 +192,24 @@ export function SessionComposer({
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const composerFocusNonce = useAppStore((s) => s.composerFocusNonce);
+  const midTurnSendMode = useAppStore((s) => s.midTurnSendMode);
+  const setMidTurnSendMode = useAppStore((s) => s.setMidTurnSendMode);
+  const addMidTurnMessage = useAppStore((s) => s.addMidTurnMessage);
+  const setQueuePausedForSession = useAppStore(
+    (s) => s.setQueuePausedForSession,
+  );
+  const pendingComposerInjection = useAppStore(
+    (s) => s.pendingComposerInjection,
+  );
+  const consumeComposerInjection = useAppStore(
+    (s) => s.consumeComposerInjection,
+  );
 
   const effectiveSessionId =
     controlledSessionId !== undefined ? controlledSessionId : storeSessionId;
+  const draftKey = effectiveSessionId ?? "__home__";
+  const storedDraft = useAppStore((s) => s.composerDrafts[draftKey] ?? "");
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const isSubmitting =
     controlledIsSubmitting !== undefined
       ? controlledIsSubmitting
@@ -218,7 +237,6 @@ export function SessionComposer({
     return workspaces[0] ?? null;
   }, [storeProjectPath, workspaces]);
 
-  const [internalValue, setInternalValue] = React.useState("");
   const [internalProject, setInternalProject] = React.useState(
     activeWorkspace?.name ?? DEFAULT_PROJECT,
   );
@@ -254,6 +272,46 @@ export function SessionComposer({
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const lastFocusNonceRef = React.useRef(composerFocusNonce);
+  const pendingCursorToEndRef = React.useRef(false);
+  const lastConsumedInjectionIdRef = React.useRef<string | null>(null);
+  const userSelectedModelRef = React.useRef(false);
+
+  const isSignedIn = Boolean(accountStatus?.signedIn);
+  React.useEffect(() => {
+    userSelectedModelRef.current = false;
+  }, [effectiveSessionId, isSignedIn]);
+
+  React.useEffect(() => {
+    if (catalog.models.length === 0) return;
+    const matches = catalog.models.filter(
+      (m) => m.modelSpec === internalModelId || m.id === internalModelId,
+    );
+    const currentMatch =
+      matches.find((m) => m.available !== false) ?? matches[0];
+    const hasAvailableModel = catalog.models.some(
+      (m) => m.available !== false,
+    );
+    if (
+      !userSelectedModelRef.current ||
+      !currentMatch ||
+      (currentMatch.available === false && hasAvailableModel)
+    ) {
+      if (internalModelId !== catalog.defaultModelId) {
+        setInternalModelId(catalog.defaultModelId);
+      }
+      if (internalModelLabel !== catalog.defaultModelLabel) {
+        setInternalModelLabel(catalog.defaultModelLabel);
+      }
+    }
+  }, [
+    catalog.defaultModelId,
+    catalog.defaultModelLabel,
+    catalog.models,
+    effectiveSessionId,
+    internalModelId,
+    internalModelLabel,
+    isSignedIn,
+  ]);
 
   React.useEffect(() => {
     if (composerFocusNonce > lastFocusNonceRef.current) {
@@ -280,7 +338,7 @@ export function SessionComposer({
   );
 
   const textValue =
-    controlledValue !== undefined ? controlledValue : internalValue;
+    controlledValue !== undefined ? controlledValue : storedDraft;
   const activeProject =
     controlledProject !== undefined
       ? controlledProject
@@ -315,13 +373,22 @@ export function SessionComposer({
       ? controlledEditorSelection
       : storeEditorSelection;
 
-  // Auto-grow textarea height smoothly up to 180px
+  // Auto-grow textarea height smoothly up to 180px & place cursor at end after injection
   React.useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     const nextHeight = Math.min(180, Math.max(44, el.scrollHeight));
     el.style.height = `${nextHeight}px`;
+    if (pendingCursorToEndRef.current) {
+      pendingCursorToEndRef.current = false;
+      const end = el.value.length;
+      try {
+        el.setSelectionRange(end, end);
+      } catch {
+        // Ignore if selection API is unavailable
+      }
+    }
   }, [textValue]);
 
   const setTextValue = React.useCallback(
@@ -330,10 +397,10 @@ export function SessionComposer({
       if (onValueChange) {
         onValueChange(next);
       } else {
-        setInternalValue(next);
+        setComposerDraft(draftKey, next);
       }
     },
-    [onValueChange],
+    [draftKey, onValueChange, setComposerDraft],
   );
 
   // Detect `@query` file mention trigger
@@ -446,7 +513,12 @@ export function SessionComposer({
 
   const handleModelSelect = React.useCallback(
     (model: ModelOption) => {
-      setInternalModelId(model.id);
+      userSelectedModelRef.current = true;
+      const spec =
+        model.modelSpec ||
+        formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
+        model.id;
+      setInternalModelId(spec);
       setInternalModelLabel(model.label);
       onModelChange?.(model);
     },
@@ -523,39 +595,119 @@ export function SessionComposer({
     }
   };
 
-  const triggerSubmit = React.useCallback(
-    (urgentSteer = false) => {
-      const trimmed = textValue.trim();
+  const submitWithText = React.useCallback(
+    (
+      rawText: string,
+      useAlternateMidTurnMode = false,
+      overrides?: {
+        editorSelection?: EditorSelectionView | null;
+        selectionIncluded?: boolean;
+      },
+    ) => {
+      const trimmed = rawText.trim();
       if (disabled) return;
       if (!trimmed && images.length === 0) return;
 
-      if (isSubmitting && trimmed && effectiveSessionId) {
-        void callRpc("sessions.softInterrupt", {
+      const resolvedSelection =
+        overrides?.editorSelection !== undefined
+          ? overrides.editorSelection
+          : activeSelection;
+      const resolvedSelectionIncluded =
+        overrides?.selectionIncluded !== undefined
+          ? overrides.selectionIncluded
+          : selectionIncluded;
+
+      const matchedModels = catalog.models.filter(
+        (m) => m.modelSpec === activeModelId || m.id === activeModelId,
+      );
+      const activeModelOption =
+        matchedModels.find((m) => m.available !== false) ?? matchedModels[0];
+      const resolvedModelSpec =
+        activeModelOption?.modelSpec ||
+        (activeModelOption
+          ? formatHarnessModelSpec(
+              activeModelOption.id,
+              activeModelOption.provider,
+              activeModelOption.apiMethod,
+            )
+          : formatHarnessModelSpec(activeModelId)) ||
+        activeModelId;
+
+      if (isSubmitting) {
+        if (!effectiveSessionId) return;
+        const effectiveMidTurnMode: MidTurnSendMode = useAlternateMidTurnMode
+          ? midTurnSendMode === "steer"
+            ? "queue"
+            : "steer"
+          : midTurnSendMode;
+        const attachedImages = images.length > 0 ? images : undefined;
+
+        if (effectiveMidTurnMode === "steer") {
+          const steerText = trimmed || "[Image attachment]";
+          const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          addMidTurnMessage({
+            id: clientId,
+            sessionId: effectiveSessionId,
+            mode: "steer",
+            text: steerText,
+            createdAtMs: Date.now(),
+            images: attachedImages,
+          });
+          void callRpc("sessions.softInterrupt", {
+            sessionId: effectiveSessionId,
+            text: steerText,
+            urgent: false,
+            clientId,
+            ...(attachedImages ? { images: attachedImages } : {}),
+          }).catch(() => {});
+          setTextValue("");
+          setImages([]);
+          return;
+        }
+
+        const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        addMidTurnMessage({
+          id,
           sessionId: effectiveSessionId,
+          mode: "queue",
           text: trimmed,
-          urgent: urgentSteer,
-        }).catch(() => {});
+          createdAtMs: Date.now(),
+          images: attachedImages,
+          editorSelection:
+            resolvedSelection && resolvedSelectionIncluded
+              ? resolvedSelection
+              : null,
+          modelSpec: resolvedModelSpec,
+          apiMethod: activeModelOption?.apiMethod,
+          effort: activeEffort,
+        });
+        setQueuePausedForSession(effectiveSessionId, false);
         setTextValue("");
+        setImages([]);
         return;
       }
-
-      if (isSubmitting) return;
 
       const payload: ComposerSubmitPayload = {
         prompt: trimmed,
         images: images.length > 0 ? images : undefined,
         project: activeProject,
-        workingDir: activeWorkspace?.path ?? storeProjectPath ?? undefined,
+        workingDir: storeProjectPath ?? activeWorkspace?.path ?? undefined,
         checkout: activeCheckout,
-        modelId: activeModelId,
+        modelId: resolvedModelSpec,
+        modelSpec: resolvedModelSpec,
         modelLabel: activeModelLabel,
+        apiMethod: activeModelOption?.apiMethod,
         effort: activeEffort,
         serviceTier: activeServiceTier,
         cacheTtl: activeCacheTtl,
         permissionMode: activePermissionMode,
         editorSelection:
-          activeSelection && selectionIncluded ? activeSelection : null,
-        selectionIncluded: Boolean(activeSelection && selectionIncluded),
+          resolvedSelection && resolvedSelectionIncluded
+            ? resolvedSelection
+            : null,
+        selectionIncluded: Boolean(
+          resolvedSelection && resolvedSelectionIncluded,
+        ),
       };
 
       setTextValue("");
@@ -573,17 +725,89 @@ export function SessionComposer({
       activeSelection,
       activeServiceTier,
       activeWorkspace?.path,
+      addMidTurnMessage,
+      catalog.models,
       disabled,
       effectiveSessionId,
       images,
       isSubmitting,
+      midTurnSendMode,
       onSubmit,
       selectionIncluded,
+      setQueuePausedForSession,
       setTextValue,
       storeProjectPath,
-      textValue,
     ],
   );
+
+  const triggerSubmit = React.useCallback(
+    (useAlternateMidTurnMode = false) => {
+      submitWithText(textValue, useAlternateMidTurnMode);
+    },
+    [submitWithText, textValue],
+  );
+
+  // Atomically consume pending host composer injections across both controlled (HomePage) and uncontrolled (Workspace) composers.
+  React.useEffect(() => {
+    if (!pendingComposerInjection) return;
+    if (lastConsumedInjectionIdRef.current === pendingComposerInjection.id) {
+      return;
+    }
+    if (
+      useAppStore.getState().pendingComposerInjection?.id !==
+      pendingComposerInjection.id
+    ) {
+      return;
+    }
+    lastConsumedInjectionIdRef.current = pendingComposerInjection.id;
+
+    const injection = pendingComposerInjection;
+    const nextText = mergeComposerInjection(textValue, injection);
+    setTextValue(nextText);
+
+    if (injection.selection) {
+      setSelectionIncluded(true);
+    }
+
+    consumeComposerInjection(injection.id);
+
+    const el = textareaRef.current;
+    if (el) {
+      el.focus();
+      pendingCursorToEndRef.current = true;
+      const end = nextText.length;
+      try {
+        el.setSelectionRange(end, end);
+      } catch {
+        // Ignore if selection API is unavailable
+      }
+    }
+
+    if (
+      injection.autoSubmit === true &&
+      !isSubmitting &&
+      !disabled &&
+      nextText.trim().length > 0
+    ) {
+      submitWithText(nextText, false, {
+        editorSelection:
+          injection.selection !== undefined
+            ? injection.selection
+            : activeSelection,
+        selectionIncluded: injection.selection ? true : selectionIncluded,
+      });
+    }
+  }, [
+    activeSelection,
+    consumeComposerInjection,
+    disabled,
+    isSubmitting,
+    pendingComposerInjection,
+    selectionIncluded,
+    setTextValue,
+    submitWithText,
+    textValue,
+  ]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionTrigger && mentionFiles.length > 0) {
@@ -649,11 +873,16 @@ export function SessionComposer({
 
   const effectivePlaceholder = React.useMemo(() => {
     if (placeholder) return placeholder;
+    if (isSubmitting) {
+      return midTurnSendMode === "steer"
+        ? "Steer without interrupting... (Enter to steer, Alt+Enter to queue)"
+        : "Queue follow-up for after response... (Enter to queue, Alt+Enter to steer)";
+    }
     if (activePermissionMode === "plan") {
       return "Describe your task to generate a plan... (@ files, / commands)";
     }
     return "Message RayuCode... (@ files, / commands)";
-  }, [activePermissionMode, placeholder]);
+  }, [activePermissionMode, isSubmitting, midTurnSendMode, placeholder]);
 
   const contextUsedPercent = Math.round(
     contextQuery.data?.usedPercent ?? 17,
@@ -841,6 +1070,55 @@ export function SessionComposer({
             data-testid="composer-inner-surface"
             className="flex flex-col rounded-[14px] border border-hairline bg-raised transition-colors focus-within:border-premium-hi"
           >
+            {/* Mid-Turn Steer / Queue Mode Bar (shown while AI is actively responding) */}
+            {isSubmitting ? (
+              <div
+                data-testid="composer-midturn-bar"
+                className="flex min-w-0 items-center justify-between gap-2 border-b border-hairline-soft px-3 py-1.5"
+              >
+                <span className="min-w-0 truncate text-[11px] text-muted-ink @max-[360px]/composer:hidden">
+                  {midTurnSendMode === "steer"
+                    ? "Auto-sends at next safe step"
+                    : "Waits until response finishes"}
+                </span>
+                <div
+                  role="group"
+                  aria-label="Mid-turn send mode"
+                  data-testid="midturn-mode-toggle"
+                  className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-hairline bg-inset p-0.5"
+                >
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-steer"
+                    aria-pressed={midTurnSendMode === "steer"}
+                    onClick={() => setMidTurnSendMode("steer")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "steer"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink",
+                    )}
+                  >
+                    Steer
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-queue"
+                    aria-pressed={midTurnSendMode === "queue"}
+                    onClick={() => setMidTurnSendMode("queue")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "queue"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink",
+                    )}
+                  >
+                    Queue
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {/* Active VS Code Editor Selection Pill (above textarea) */}
             {activeSelection ? (
               <div className="px-3 pt-2.5 pb-0.5">
@@ -957,45 +1235,83 @@ export function SessionComposer({
                   </TooltipContent>
                 </Tooltip>
 
-                {isSubmitting && !hasPromptContent ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        data-testid="composer-stop-btn"
-                        aria-label="Abort active turn"
-                        onClick={() => onStop?.()}
-                        className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-premium bg-active text-ink shadow-bevel-surface transition-colors hover:border-danger hover:bg-danger-soft hover:text-danger focus:outline-none"
-                      >
-                        <Square
-                          className="size-3.5 fill-current"
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">Stop / Abort</TooltipContent>
-                  </Tooltip>
-                ) : isSubmitting && hasPromptContent ? (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        data-testid="composer-steer-btn"
-                        aria-label="Steer active turn"
-                        onClick={() => triggerSubmit(false)}
-                        className="rayu-primary-bevel grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-transform hover:bg-brand-bright active:scale-95 focus:outline-none"
-                      >
-                        <CornerDownLeft
-                          className="size-4"
-                          strokeWidth={2.2}
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      Queue / Steer active turn (Alt+Enter for urgent)
-                    </TooltipContent>
-                  </Tooltip>
+                {isSubmitting ? (
+                  <>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="composer-stop-btn"
+                          aria-label="Abort active turn"
+                          onClick={() => onStop?.()}
+                          className="grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-premium bg-active text-ink shadow-bevel-surface transition-colors hover:border-danger hover:bg-danger-soft hover:text-danger focus:outline-none"
+                        >
+                          <Square
+                            className="size-3.5 fill-current"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">Stop / Abort</TooltipContent>
+                    </Tooltip>
+
+                    {midTurnSendMode === "steer" ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            data-testid="composer-steer-btn"
+                            aria-label="Steer active turn without interrupting"
+                            disabled={disabled || !hasPromptContent}
+                            onClick={() => triggerSubmit(false)}
+                            className={cn(
+                              "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                              hasPromptContent && !disabled
+                                ? "rayu-primary-bevel cursor-pointer bg-brand text-brand-ink hover:bg-brand-bright active:scale-95"
+                                : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
+                            )}
+                          >
+                            <CornerDownLeft
+                              className="size-4"
+                              strokeWidth={2.2}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          Steer without interrupting (Enter · Alt+Enter to
+                          queue)
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            data-testid="composer-queue-btn"
+                            aria-label="Queue message for after response"
+                            disabled={disabled || !hasPromptContent}
+                            onClick={() => triggerSubmit(false)}
+                            className={cn(
+                              "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                              hasPromptContent && !disabled
+                                ? "cursor-pointer border border-premium bg-active text-ink shadow-bevel-surface hover:border-brand hover:bg-brand-soft hover:text-brand-text active:scale-95"
+                                : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
+                            )}
+                          >
+                            <ListPlus
+                              className="size-4"
+                              strokeWidth={2}
+                              aria-hidden="true"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          Queue for after response (Enter · Alt+Enter to steer)
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </>
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>

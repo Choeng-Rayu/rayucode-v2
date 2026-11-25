@@ -12,7 +12,7 @@ import type {
   ServiceTier,
 } from "@shared/vscodeProtocol";
 
-import { callRpc, isVsCodeWebview } from "@/lib";
+import { callRpc, isVsCodeWebview, useAppStore } from "@/lib";
 
 import {
   BUILTIN_SLASH_COMMANDS,
@@ -22,7 +22,9 @@ import {
   DEFAULT_MODEL_LABEL,
   DEFAULT_SERVICE_TIER,
   FALLBACK_MODELS,
+  formatHarnessModelSpec,
   normalizeEffortLevel,
+  normalizeProviderIdForLookup,
 } from "../constants";
 import type { ModelOption, SlashCommandItem } from "../types";
 
@@ -131,23 +133,47 @@ export function contextSnapshotQueryOptions(sessionId?: string | null) {
   });
 }
 
-function mapRouteToModelOption(route: ModelRouteOptionView): ModelOption {
+function stripModelSpecPrefix(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const colonIdx = trimmed.indexOf(":");
+  if (colonIdx === -1) return trimmed;
+  return trimmed.slice(colonIdx + 1) || trimmed;
+}
+
+function mapRouteToModelOption(route: ModelRouteOptionView): {
+  option: ModelOption;
+  explicitlyAvailable: boolean;
+} {
   const id = route.model || route.id;
+  const provider = normalizeProviderIdForLookup(route.provider || "rayu") || "rayu";
+  const modelSpec =
+    route.modelSpec ||
+    formatHarnessModelSpec(id, route.provider || provider, route.apiMethod) ||
+    id;
   return {
-    id,
-    label: route.label || id,
-    provider: route.provider || "rayu-cloud",
-    subtitle:
-      route.detail ||
-      (route.pricingLabel ? route.pricingLabel : undefined) ||
-      (route.available === false ? "Unavailable" : undefined),
-    available: route.available !== false,
-    supportedEfforts: route.supportsEffort === false ? [] : undefined,
+    option: {
+      id,
+      modelSpec,
+      label: route.label || id,
+      provider,
+      apiMethod: route.apiMethod,
+      authMethod: route.authMethod,
+      accountLabel: route.accountLabel,
+      subtitle:
+        route.detail ||
+        (route.pricingLabel ? route.pricingLabel : undefined) ||
+        (route.available === false ? "Unavailable" : undefined),
+      available: route.available !== false,
+      supportedEfforts: route.supportsEffort === false ? [] : undefined,
+    },
+    explicitlyAvailable: route.available === true,
   };
 }
 
 export function useComposerModelCatalog(sessionId?: string | null) {
   const queryClient = useQueryClient();
+  const accountStatus = useAppStore((s) => s.accountStatus);
   const modelSettingsQuery = useQuery(modelSettingsQueryOptions(sessionId));
   const providersQuery = useQuery(providersQueryOptions());
 
@@ -171,6 +197,9 @@ export function useComposerModelCatalog(sessionId?: string | null) {
       void queryClient.invalidateQueries({
         queryKey: ["composer", "providers"],
       });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "models"],
+      });
     },
   });
 
@@ -183,6 +212,9 @@ export function useComposerModelCatalog(sessionId?: string | null) {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "models"],
       });
     },
   });
@@ -197,56 +229,174 @@ export function useComposerModelCatalog(sessionId?: string | null) {
       void queryClient.invalidateQueries({
         queryKey: ["composer", "model-settings"],
       });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "models"],
+      });
     },
   });
 
-  // Preserve exact backend order from live discovered routes (fallback to FALLBACK_MODELS only when empty/offline),
-  // enriched with live provider auth metadata.
+  // Preserve exact backend order from live discovered routes.
+  // Never mix hardcoded FALLBACK_MODELS over real routes; in real VS Code webview return [] while loading/empty.
   const models: readonly ModelOption[] = (() => {
     const providers = providersQuery.data?.providers ?? [];
-    const providerMap = new Map(providers.map((p) => [p.id, p]));
-    const liveRoutes = modelSettingsQuery.data?.routes;
-    const baseList: ModelOption[] =
-      liveRoutes && liveRoutes.length > 0
-        ? liveRoutes.map(mapRouteToModelOption)
-        : [...FALLBACK_MODELS];
-
-    const configuredDefault = modelSettingsQuery.data?.defaultModel;
-    if (
-      configuredDefault &&
-      !baseList.some((m) => m.id === configuredDefault)
-    ) {
-      baseList.unshift({
-        id: configuredDefault,
-        label: configuredDefault,
-        provider: "rayu-cloud",
-        subtitle: "Configured runtime model",
-        available: true,
-      });
+    const providerMap = new Map<string, (typeof providers)[number]>();
+    for (const p of providers) {
+      const normId = normalizeProviderIdForLookup(p.id);
+      const existing = providerMap.get(normId);
+      if (!existing || (existing.status !== "ready" && p.status === "ready")) {
+        providerMap.set(normId, p);
+      }
     }
 
-    return baseList.map((m) => {
-      const p = providerMap.get(m.provider);
-      if (!p) return m;
+    const liveRoutes = modelSettingsQuery.data?.routes;
+    const baseEntries: Array<{
+      option: ModelOption;
+      explicitlyAvailable: boolean;
+    }> =
+      liveRoutes && liveRoutes.length > 0
+        ? liveRoutes.map(mapRouteToModelOption)
+        : isVsCodeWebview()
+          ? []
+          : FALLBACK_MODELS.map((m) => ({
+              option: {
+                ...m,
+                provider: normalizeProviderIdForLookup(m.provider) || m.provider,
+                modelSpec:
+                  m.modelSpec ||
+                  formatHarnessModelSpec(m.id, m.provider, m.apiMethod) ||
+                  m.id,
+              },
+              explicitlyAvailable: false,
+            }));
+
+    return baseEntries.map(({ option: m, explicitlyAvailable }) => {
+      const normProvider = normalizeProviderIdForLookup(m.provider) || m.provider;
+      const p = providerMap.get(normProvider);
+
+      if (normProvider === "rayu") {
+        if (accountStatus?.signedIn) {
+          return {
+            ...m,
+            provider: "rayu",
+            available: m.available !== false,
+            authMethod:
+              m.authMethod ??
+              (accountStatus.authMethod === "apiKey" ? "api_key" : "oauth"),
+            accountLabel:
+              m.accountLabel ??
+              accountStatus.email ??
+              accountStatus.displayName ??
+              "Rayu Cloud",
+            unavailableReason: undefined,
+          };
+        }
+        if (accountStatus !== null && !accountStatus.signedIn) {
+          return {
+            ...m,
+            provider: "rayu",
+            available: false,
+            unavailableReason: "Sign in to Rayu Cloud",
+          };
+        }
+        if (p) {
+          const unavailableByProvider =
+            p.status === "expired" ||
+            (p.status === "needs_key" && !explicitlyAvailable);
+          return {
+            ...m,
+            provider: "rayu",
+            authMethod: m.authMethod ?? p.authMethod,
+            accountLabel: m.accountLabel ?? p.accountLabel ?? p.name,
+            available: m.available !== false && !unavailableByProvider,
+            unavailableReason:
+              p.status === "expired"
+                ? `${p.name} session expired`
+                : p.status === "needs_key" && !explicitlyAvailable
+                  ? "Sign in to Rayu Cloud"
+                  : m.unavailableReason,
+          };
+        }
+        return { ...m, provider: "rayu" };
+      }
+
+      if (!p) {
+        return { ...m, provider: normProvider };
+      }
+
+      if (p.status === "expired") {
+        return {
+          ...m,
+          provider: normProvider,
+          authMethod: m.authMethod ?? p.authMethod,
+          accountLabel: m.accountLabel ?? p.accountLabel ?? p.name,
+          available: false,
+          unavailableReason: `${p.name} session expired`,
+        };
+      }
+
+      if (p.status === "needs_key" && !explicitlyAvailable) {
+        return {
+          ...m,
+          provider: normProvider,
+          authMethod: m.authMethod ?? p.authMethod,
+          accountLabel: m.accountLabel ?? p.accountLabel ?? p.name,
+          available: false,
+          unavailableReason: `Requires ${p.name} API key`,
+        };
+      }
+
       return {
         ...m,
-        authMethod: p.authMethod ?? m.authMethod,
-        accountLabel: p.accountLabel ?? p.name ?? m.accountLabel,
-        available: m.available !== false && p.status !== "expired",
+        provider: normProvider,
+        authMethod: m.authMethod ?? p.authMethod,
+        accountLabel: m.accountLabel ?? p.accountLabel ?? p.name,
+        available: m.available !== false,
         unavailableReason:
-          p.status === "needs_key"
-            ? `Requires ${p.name} API key`
-            : p.status === "expired"
-              ? `${p.name} session expired`
-              : undefined,
+          m.available === false
+            ? (m.unavailableReason ??
+              (p.status === "needs_key"
+                ? `Requires ${p.name} API key`
+                : undefined))
+            : undefined,
       };
     });
   })();
 
+  const configuredDefault =
+    modelSettingsQuery.data?.defaultModel?.trim() || undefined;
+  const matchedDefault: ModelOption | undefined = (() => {
+    if (models.length === 0) return undefined;
+    if (configuredDefault) {
+      const exactSpecMatches = models.filter(
+        (m) => m.modelSpec === configuredDefault,
+      );
+      if (exactSpecMatches.length > 0) {
+        const best =
+          exactSpecMatches.find((m) => m.available !== false) ??
+          exactSpecMatches[0];
+        if (best && best.available !== false) return best;
+      }
+      const idMatches = models.filter((m) => m.id === configuredDefault);
+      if (idMatches.length > 0) {
+        const best =
+          idMatches.find((m) => m.available !== false) ?? idMatches[0];
+        if (best && best.available !== false) return best;
+      }
+    }
+    return models.find((m) => m.available !== false) ?? models[0];
+  })();
+
   const defaultModelId =
-    modelSettingsQuery.data?.defaultModel ?? DEFAULT_MODEL_ID;
-  const matchedDefault = models.find((m) => m.id === defaultModelId);
-  const defaultModelLabel = matchedDefault?.label ?? DEFAULT_MODEL_LABEL;
+    matchedDefault?.modelSpec ||
+    matchedDefault?.id ||
+    configuredDefault ||
+    DEFAULT_MODEL_ID;
+  const defaultModelLabel =
+    matchedDefault?.label ||
+    (configuredDefault
+      ? stripModelSpecPrefix(configuredDefault)
+      : DEFAULT_MODEL_LABEL) ||
+    DEFAULT_MODEL_LABEL;
   const defaultEffort: EffortLevel = normalizeEffortLevel(
     modelSettingsQuery.data?.defaultEffort ?? DEFAULT_EFFORT,
   );
@@ -257,6 +407,7 @@ export function useComposerModelCatalog(sessionId?: string | null) {
 
   return {
     models,
+    defaultModel: matchedDefault,
     defaultModelId,
     defaultModelLabel,
     defaultEffort,

@@ -36,6 +36,7 @@ import {
   onHostMessage,
   sendHarnessRequest,
   useAppStore,
+  type MidTurnMessageItem,
 } from "@/lib";
 
 const SwarmView = React.lazy(() =>
@@ -134,6 +135,22 @@ export function App() {
 
   // Handle host commands and query invalidations pushed from Extension Host.
   React.useEffect(() => {
+    const invalidateModelAndProviderQueries = () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "models"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    };
+
     return onHostMessage((msg: HostToWebviewMessage) => {
       if (msg.type === "rayucode.host.init") {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
@@ -144,9 +161,9 @@ export function App() {
             ["shell", "account", "status"],
             msg.accountStatus,
           );
-          void queryClient.invalidateQueries({
-            queryKey: ["settings", "providers"],
-          });
+          invalidateModelAndProviderQueries();
+        } else if (msg.daemonStatus.state === "connected") {
+          invalidateModelAndProviderQueries();
         }
         return;
       }
@@ -159,13 +176,13 @@ export function App() {
         void queryClient.invalidateQueries({
           queryKey: ["shell", "account", "status"],
         });
-        void queryClient.invalidateQueries({
-          queryKey: ["settings", "providers"],
-        });
-        void queryClient.invalidateQueries({
-          queryKey: ["settings", "models"],
-        });
-        void queryClient.invalidateQueries({ queryKey: ["models"] });
+        invalidateModelAndProviderQueries();
+        return;
+      }
+      if (msg.type === "rayucode.daemon.statusChanged") {
+        if (msg.status.state === "connected") {
+          invalidateModelAndProviderQueries();
+        }
         return;
       }
       if (msg.type === "rayucode.processes.snapshot") {
@@ -213,13 +230,14 @@ export function App() {
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
       let targetSessionId = useAppStore.getState().activeSessionId;
+      const modelSpec = payload.modelSpec || payload.modelId || undefined;
 
       if (!targetSessionId) {
         try {
           const created = await callRpc("sessions.create", {
             workingDir: payload.workingDir,
             permissionMode: payload.permissionMode,
-            model: payload.modelId,
+            model: modelSpec,
           });
           targetSessionId = created.session.sessionId;
           setActiveSession(created.session.sessionId, created.session.title);
@@ -254,7 +272,8 @@ export function App() {
         req: "send_message",
         session_id: targetSessionId,
         content: `${payload.prompt}${selectionContext}`,
-        model: payload.modelId,
+        ...(modelSpec ? { model: modelSpec } : {}),
+        ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
         effort: payload.effort,
         images: payload.images,
       });
@@ -262,9 +281,37 @@ export function App() {
     [enqueueOptimisticTurn, queryClient, setActiveSession, setIsStreamActive],
   );
 
+  const handleDrainQueuedMessage = React.useCallback(
+    async (item: MidTurnMessageItem) => {
+      const state = useAppStore.getState();
+      const activeWs =
+        state.workspaces.find((w) => w.path === state.activeProjectPath) ??
+        state.workspaces[0];
+      await handleWorkspaceSubmit({
+        prompt: item.text,
+        images: item.images,
+        project: activeWs?.name ?? "workspace",
+        workingDir: state.activeProjectPath ?? activeWs?.path ?? undefined,
+        checkout: activeWs?.branch ?? "main",
+        modelId: item.modelSpec ?? "",
+        modelSpec: item.modelSpec,
+        modelLabel: item.modelSpec ?? "",
+        apiMethod: item.apiMethod,
+        effort: item.effort ?? "medium",
+        serviceTier: "auto",
+        cacheTtl: "5m",
+        permissionMode: "default",
+        editorSelection: item.editorSelection ?? null,
+        selectionIncluded: Boolean(item.editorSelection),
+      });
+    },
+    [handleWorkspaceSubmit],
+  );
+
   const handleWorkspaceStop = React.useCallback(() => {
     const sid = useAppStore.getState().activeSessionId;
     if (!sid) return;
+    useAppStore.getState().setQueuePausedForSession(sid, true);
     setIsStreamActive(false);
     sendHarnessRequest({
       req: "cancel",
@@ -332,6 +379,7 @@ export function App() {
           >
             <ChatWorkspaceView
               sessionId={activeSessionId}
+              onDrainQueuedMessage={handleDrainQueuedMessage}
               backgroundDockSlot={<BackgroundDockBar />}
               composerSlot={
                 <SessionComposer

@@ -15,6 +15,7 @@ import {
   type HarnessHistoryMessageLike,
   type InlineDiffCardData,
   type MappedLiveTraceEvent,
+  type MidTurnMessageItem,
   type OptimisticUserTurn,
 } from "@/lib";
 import type {
@@ -257,10 +258,13 @@ function toChatTurnViews(
   }));
 }
 
+const EMPTY_MIDTURN_MESSAGES: MidTurnMessageItem[] = [];
+
 export interface UseChatStreamOptions {
   sessionId?: string | null;
   initialTurns?: ChatTurnView[];
   initialFileChanges?: FileChangesSnapshotView | null;
+  onDrainQueuedMessage?: (item: MidTurnMessageItem) => void | Promise<void>;
 }
 
 export interface UseChatStreamResult {
@@ -272,6 +276,8 @@ export interface UseChatStreamResult {
   pendingPermission: ApprovalCardRequest | null;
   pendingQuestion: ClarifyingQuestionRequest | null;
   softInterrupts: SoftInterruptQueueItem[];
+  midTurnMessages: MidTurnMessageItem[];
+  isQueuePaused: boolean;
   rewoundTurnId: string | null;
   sendPrompt: (
     prompt: string,
@@ -298,6 +304,10 @@ export interface UseChatStreamResult {
   undoRewind: () => Promise<void>;
   queueSoftInterrupt: (text: string, urgent?: boolean) => Promise<void>;
   cancelSoftInterrupt: (interruptId?: string) => Promise<void>;
+  promoteQueuedToSteer: (id: string) => Promise<void>;
+  editMidTurnMessage: (id: string) => Promise<void>;
+  sendQueuedNow: (id: string) => Promise<void>;
+  cancelMidTurnMessage: (id?: string) => Promise<void>;
   forkFromTurn: (turnId: string) => Promise<SessionSummaryView | null>;
   togglePinTurn: (turnId: string, pinned: boolean) => void;
   retryTurn: (turnId: string) => void;
@@ -319,6 +329,26 @@ export function useChatStream(
 
   const sessionId =
     options.sessionId ?? storeSessionId ?? (!isVsCodeWebview() ? "ses_vscode_shell" : "");
+
+  const midTurnMessages = useAppStore((s) =>
+    sessionId
+      ? (s.midTurnMessagesBySession[sessionId] ?? EMPTY_MIDTURN_MESSAGES)
+      : EMPTY_MIDTURN_MESSAGES,
+  );
+  const isQueuePaused = useAppStore((s) =>
+    sessionId ? Boolean(s.pausedQueueSessions[sessionId]) : false,
+  );
+
+  const softInterrupts = React.useMemo<SoftInterruptQueueItem[]>(
+    () =>
+      midTurnMessages.map((item) => ({
+        id: item.id,
+        text: item.text,
+        urgent: false,
+        queuedAtMs: item.createdAtMs,
+      })),
+    [midTurnMessages],
+  );
 
   const storeFileChanges = useAppStore((s) =>
     sessionId ? (s.fileChangesBySession[sessionId] ?? null) : null,
@@ -386,6 +416,9 @@ export function useChatStream(
     if (options.initialTurns) return options.initialTurns;
     return isMockDemoSession ? DEFAULT_SAMPLE_TURNS : [];
   });
+  const turnsRef = React.useRef(turns);
+  turnsRef.current = turns;
+
   const [liveTurn, setLiveTurn] = React.useState<ChatTurnView | null>(() => {
     if (pendingUserTurn && (!sessionId || pendingUserTurn.sessionId === sessionId)) {
       return buildOptimisticLiveTurn(pendingUserTurn);
@@ -394,15 +427,17 @@ export function useChatStream(
   });
   const [pendingQuestion, setPendingQuestion] =
     React.useState<ClarifyingQuestionRequest | null>(null);
-  const [softInterrupts, setSoftInterrupts] = React.useState<
-    SoftInterruptQueueItem[]
-  >([]);
   const [rewoundTurnId, setRewoundTurnId] = React.useState<string | null>(null);
+
+  const onDrainQueuedMessageRef = React.useRef(options.onDrainQueuedMessage);
+  onDrainQueuedMessageRef.current = options.onDrainQueuedMessage;
+  const turnAbnormalStopRef = React.useRef(false);
 
   // Consume optimistic turns queued by HomePage or workspace SessionComposer
   React.useEffect(() => {
     if (!pendingUserTurn) return;
     if (sessionId && pendingUserTurn.sessionId !== sessionId) return;
+    turnAbnormalStopRef.current = false;
     setLiveTurn((prev) => {
       if (prev && prev.id === pendingUserTurn.id) return prev;
       return buildOptimisticLiveTurn(pendingUserTurn);
@@ -420,6 +455,7 @@ export function useChatStream(
     }
     if (prevSessionRef.current !== sessionId) {
       prevSessionRef.current = sessionId;
+      turnAbnormalStopRef.current = false;
       const pending = useAppStore.getState().pendingUserTurn;
       const hasMatchingPending =
         Boolean(pending && pending.sessionId === sessionId);
@@ -429,7 +465,6 @@ export function useChatStream(
           ? buildOptimisticLiveTurn(pending)
           : null;
       });
-      setSoftInterrupts([]);
       setRewoundTurnId(null);
       setTurns(
         !isVsCodeWebview() && sessionId === "ses_vscode_shell"
@@ -496,8 +531,12 @@ export function useChatStream(
             description: ev.description,
             riskTier: ev.riskTier,
           });
+        } else if (ev.type === "turn-stopped") {
+          turnAbnormalStopRef.current = true;
         }
       }
+
+      const hasComplete = batch.some((ev) => ev.type === "complete");
 
       setLiveTurn((prev) => {
         let current: ChatTurnView = prev ?? {
@@ -549,6 +588,25 @@ export function useChatStream(
                 ),
               };
               break;
+            case "connection-phase":
+              current = {
+                ...current,
+                connectionPhaseLabel: ev.phase,
+              };
+              break;
+            case "kv-cache-miss":
+              current = {
+                ...current,
+                kvCacheMissReason: ev.reason,
+              };
+              break;
+            case "turn-stopped":
+              current = {
+                ...current,
+                activeToolStatus: null,
+                connectionPhaseLabel: null,
+              };
+              break;
             case "step": {
               const gId = ev.groupId ?? "wg_live";
               const gTitle = ev.groupTitle ?? "Read files, ran commands";
@@ -583,6 +641,12 @@ export function useChatStream(
                 answerIntro: `${current.answerIntro}${ev.delta}`,
               };
               break;
+            case "answer-replace":
+              current = {
+                ...current,
+                answerIntro: ev.text,
+              };
+              break;
             case "duration":
               current = {
                 ...current,
@@ -594,6 +658,7 @@ export function useChatStream(
                 ...current,
                 isLive: false,
                 activeToolStatus: null,
+                connectionPhaseLabel: null,
                 showLiveBackgroundPill: false,
                 workedDuration: ev.workedDuration || current.workedDuration,
                 credits: ev.credits ?? current.credits,
@@ -608,12 +673,36 @@ export function useChatStream(
 
         if (completedTurn) {
           const finished = completedTurn;
-          setTurns((old) => [...old, finished]);
+          setTurns((old) =>
+            old.some((t) => t.id === finished.id) ? old : [...old, finished],
+          );
           return null;
         }
 
         return current;
       });
+
+      if (hasComplete && sessionId) {
+        const wasAbnormalStop = turnAbnormalStopRef.current;
+        turnAbnormalStopRef.current = false;
+        const store = useAppStore.getState();
+        const isPaused = Boolean(store.pausedQueueSessions[sessionId]);
+        if (wasAbnormalStop || isPaused) {
+          store.demotePendingSteersToQueue(sessionId);
+          store.setQueuePausedForSession(sessionId, true);
+        } else {
+          store.markSteersDelivered(sessionId);
+          const drain = onDrainQueuedMessageRef.current;
+          if (drain) {
+            const nextQueued = store.shiftNextQueuedMessage(sessionId);
+            if (nextQueued) {
+              queueMicrotask(() => {
+                void drain(nextQueued);
+              });
+            }
+          }
+        }
+      }
     },
     [sessionId, setStorePermission],
   );
@@ -646,7 +735,11 @@ export function useChatStream(
       }
       if (
         events.some(
-          (e) => e.type === "complete" || e.type === "permission-request",
+          (e) =>
+            e.type === "complete" ||
+            e.type === "permission-request" ||
+            e.type === "turn-stopped" ||
+            e.type === "note",
         )
       ) {
         batcher.flushNow();
@@ -663,17 +756,89 @@ export function useChatStream(
         typeof frame.session_id === "string" ? frame.session_id : null;
       if (frameSession && frameSession !== sessionId) return;
 
+      if (frame.ev === "soft_interrupt_injected") {
+        if (!sessionId) return;
+        const clientIds = Array.isArray(frame.client_ids)
+          ? frame.client_ids.filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            )
+          : [];
+        const store = useAppStore.getState();
+        const currentItems = store.midTurnMessagesBySession[sessionId] ?? [];
+        const matchedSteers = currentItems.filter(
+          (item) =>
+            item.mode === "steer" &&
+            (clientIds.length === 0 || clientIds.includes(item.id)),
+        );
+        store.markSteersDelivered(sessionId, clientIds);
+        if (matchedSteers.length > 0) {
+          const texts = matchedSteers
+            .map((item) => item.text.trim())
+            .filter(Boolean);
+          if (texts.length > 0) {
+            pushLiveEvents([
+              { type: "note", text: `Steered: ${texts.join(" · ")}` },
+            ]);
+          }
+        }
+        return;
+      }
+
+      if (frame.ev === "soft_interrupts_cancelled") {
+        if (!sessionId) return;
+        if (Array.isArray(frame.cancelled)) {
+          const store = useAppStore.getState();
+          for (const id of frame.cancelled) {
+            if (typeof id === "string" && id.length > 0) {
+              store.removeMidTurnMessage(sessionId, id);
+            }
+          }
+        }
+        return;
+      }
+
+      if (frame.ev === "question_closed") {
+        const closedReqId =
+          typeof frame.request_id === "string" ? frame.request_id : null;
+        setPendingQuestion((prev) => {
+          if (!prev) return null;
+          if (closedReqId && prev.requestId !== closedReqId) return prev;
+          return null;
+        });
+        return;
+      }
+
       if (frame.ev === "question_request" || frame.ev === "ask_user_question") {
         const reqId = String(frame.request_id ?? `q_${Date.now()}`);
+        const firstQuestion =
+          Array.isArray(frame.questions) &&
+          frame.questions[0] &&
+          typeof frame.questions[0] === "object"
+            ? (frame.questions[0] as Record<string, unknown>)
+            : null;
         const prompt = String(
-          frame.prompt ?? frame.question ?? "How would you like to proceed?",
+          firstQuestion?.question ??
+            firstQuestion?.prompt ??
+            frame.prompt ??
+            frame.question ??
+            "How would you like to proceed?",
         );
-        const rawOpts = Array.isArray(frame.options) ? frame.options : [];
+        const rawOpts = Array.isArray(firstQuestion?.options)
+          ? firstQuestion.options
+          : Array.isArray(frame.options)
+            ? frame.options
+            : [];
+        const multiSelect = Boolean(
+          firstQuestion?.multiSelect ??
+            firstQuestion?.multi_select ??
+            frame.multiSelect ??
+            frame.multi_select,
+        );
         setPendingQuestion({
           requestId: reqId,
           sessionId,
           prompt,
-          multiSelect: Boolean(frame.multi_select),
+          multiSelect,
           options:
             rawOpts.length > 0
               ? rawOpts.map((o, idx) => {
@@ -711,6 +876,53 @@ export function useChatStream(
         return;
       }
 
+      if (frame.ev === "session_status") {
+        const status = typeof frame.status === "string" ? frame.status : "";
+        if (
+          status === "running" ||
+          status === "generating" ||
+          status === "tool_running"
+        ) {
+          setLiveTurn((prev) => {
+            if (prev) {
+              return prev.isLive ? prev : { ...prev, isLive: true };
+            }
+            return {
+              id: `live_${sessionId}_${Date.now()}`,
+              sessionId,
+              userPrompt: "",
+              workedDuration: "1s",
+              isLive: true,
+              notes: [],
+              groups: [],
+              activeToolStatus:
+                status === "tool_running" ? "Running tool..." : "Thinking...",
+              answerIntro: "",
+              answerBullets: [],
+              diffCard: EMPTY_DIFF,
+              timestamp: "Just now",
+              credits: "0.00 cr",
+              kvCachePct: 94,
+              pinned: false,
+            };
+          });
+        } else if (status === "idle") {
+          setLiveTurn((prev) => {
+            if (!prev) return null;
+            if (
+              !prev.userPrompt.trim() &&
+              !prev.answerIntro.trim() &&
+              prev.groups.length === 0 &&
+              prev.notes.length === 0
+            ) {
+              return null;
+            }
+            return prev;
+          });
+        }
+        return;
+      }
+
       const mapped = mapHarnessFrameToLiveEvents(frame, tracker);
       if (mapped.length > 0) {
         pushLiveEvents(mapped);
@@ -731,19 +943,24 @@ export function useChatStream(
       if (!trimmed) return;
 
       if (isStreaming) {
-        const item: SoftInterruptQueueItem = {
-          id: `si_${Date.now()}`,
+        const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        useAppStore.getState().addMidTurnMessage({
+          id: clientId,
+          sessionId,
+          mode: "steer",
           text: trimmed,
-          queuedAtMs: Date.now(),
-        };
-        setSoftInterrupts((prev) => [...prev, item]);
+          createdAtMs: Date.now(),
+        });
         void callRpc("sessions.softInterrupt", {
           sessionId,
           text: trimmed,
+          urgent: false,
+          clientId,
         }).catch(() => {});
         return;
       }
 
+      turnAbnormalStopRef.current = false;
       setLiveTurn({
         id: `live_${sessionId}_${Date.now()}`,
         sessionId,
@@ -830,13 +1047,19 @@ export function useChatStream(
 
   const rewindToTurn = React.useCallback(
     async (turnId: string) => {
+      const idx = turnsRef.current.findIndex((t) => t.id === turnId);
+      const messageIndex = idx >= 0 ? idx + 1 : undefined;
       setRewoundTurnId(turnId);
       setTurns((prev) => {
-        const idx = prev.findIndex((t) => t.id === turnId);
-        return idx >= 0 ? prev.slice(0, idx + 1) : prev;
+        const prevIdx = prev.findIndex((t) => t.id === turnId);
+        return prevIdx >= 0 ? prev.slice(0, prevIdx + 1) : prev;
       });
       try {
-        await callRpc("sessions.rewind", { sessionId, turnId });
+        await callRpc("sessions.rewind", {
+          sessionId,
+          turnId,
+          ...(messageIndex !== undefined ? { messageIndex } : {}),
+        });
       } catch {
         // ignore offline errors
       }
@@ -846,32 +1069,49 @@ export function useChatStream(
 
   const undoRewind = React.useCallback(async () => {
     setRewoundTurnId(null);
-    if (!options.initialTurns) {
-      setTurns(DEFAULT_SAMPLE_TURNS);
-    }
     try {
       await callRpc("sessions.rewindUndo", { sessionId });
     } catch {
       // ignore offline errors
     }
-  }, [options.initialTurns, sessionId]);
+    if (options.initialTurns) return;
+    if (!isVsCodeWebview() && sessionId === "ses_vscode_shell") {
+      setTurns(DEFAULT_SAMPLE_TURNS);
+      return;
+    }
+    if (!sessionId) return;
+    try {
+      const res = await callRpc("sessions.history", { sessionId });
+      const messages: HarnessHistoryMessageLike[] = (res.messages ?? []).map(
+        (msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }),
+      );
+      hydrateHistory(messages);
+    } catch {
+      // ignore offline errors
+    }
+  }, [hydrateHistory, options.initialTurns, sessionId]);
 
   const queueSoftInterrupt = React.useCallback(
     async (text: string, urgent = false) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
-      const item: SoftInterruptQueueItem = {
-        id: `si_${Date.now()}`,
+      if (!trimmed || !sessionId) return;
+      const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      useAppStore.getState().addMidTurnMessage({
+        id: clientId,
+        sessionId,
+        mode: "steer",
         text: trimmed,
-        urgent,
-        queuedAtMs: Date.now(),
-      };
-      setSoftInterrupts((prev) => [...prev, item]);
+        createdAtMs: Date.now(),
+      });
       try {
         await callRpc("sessions.softInterrupt", {
           sessionId,
           text: trimmed,
           urgent,
+          clientId,
         });
       } catch {
         // ignore offline errors
@@ -880,21 +1120,121 @@ export function useChatStream(
     [sessionId],
   );
 
-  const cancelSoftInterrupt = React.useCallback(
-    async (interruptId?: string) => {
-      setSoftInterrupts((prev) =>
-        interruptId ? prev.filter((i) => i.id !== interruptId) : [],
+  const cancelMidTurnMessage = React.useCallback(
+    async (id?: string) => {
+      if (!sessionId) return;
+      const store = useAppStore.getState();
+      if (!id) {
+        const items = store.midTurnMessagesBySession[sessionId] ?? [];
+        const hasSteer = items.some((m) => m.mode === "steer");
+        for (const item of items) {
+          store.removeMidTurnMessage(sessionId, item.id);
+        }
+        if (hasSteer) {
+          try {
+            await callRpc("sessions.cancelSoftInterrupts", { sessionId });
+          } catch {
+            // ignore offline errors
+          }
+        }
+        return;
+      }
+      const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+        (m) => m.id === id,
       );
+      store.removeMidTurnMessage(sessionId, id);
+      if (!item || item.mode === "steer") {
+        try {
+          await callRpc("sessions.cancelSoftInterrupts", {
+            sessionId,
+            interruptId: id,
+          });
+        } catch {
+          // ignore offline errors
+        }
+      }
+    },
+    [sessionId],
+  );
+
+  const promoteQueuedToSteer = React.useCallback(
+    async (id: string) => {
+      if (!sessionId) return;
+      const store = useAppStore.getState();
+      const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+        (m) => m.id === id && m.mode === "queue",
+      );
+      if (!item) return;
+      store.updateMidTurnMessage(sessionId, id, { mode: "steer" });
+      const steerText = item.text.trim() || "[Image attachment]";
       try {
-        await callRpc("sessions.cancelSoftInterrupts", {
+        await callRpc("sessions.softInterrupt", {
           sessionId,
-          interruptId,
+          text: steerText,
+          urgent: false,
+          clientId: item.id,
+          ...(item.images && item.images.length > 0
+            ? { images: item.images }
+            : {}),
         });
       } catch {
         // ignore offline errors
       }
     },
     [sessionId],
+  );
+
+  const editMidTurnMessage = React.useCallback(
+    async (id: string) => {
+      if (!sessionId) return;
+      const store = useAppStore.getState();
+      const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+        (m) => m.id === id,
+      );
+      if (!item) return;
+      store.removeMidTurnMessage(sessionId, id);
+      if (item.mode === "steer") {
+        try {
+          await callRpc("sessions.cancelSoftInterrupts", {
+            sessionId,
+            interruptId: id,
+          });
+        } catch {
+          // ignore offline errors
+        }
+      }
+      store.setComposerDraft(sessionId, item.text);
+      store.requestComposerFocus();
+    },
+    [sessionId],
+  );
+
+  const sendQueuedNow = React.useCallback(
+    async (id: string) => {
+      if (!sessionId) return;
+      const store = useAppStore.getState();
+      const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+        (m) => m.id === id && m.mode === "queue",
+      );
+      if (!item) return;
+      store.removeMidTurnMessage(sessionId, id);
+      store.setQueuePausedForSession(sessionId, false);
+      const drain = onDrainQueuedMessageRef.current;
+      if (drain) {
+        await drain(item);
+      } else {
+        sendPrompt(item.text, {
+          refFiles: item.editorSelection
+            ? `${item.editorSelection.relativePath}:${item.editorSelection.lineStart}-${item.editorSelection.lineEnd}`
+            : undefined,
+          images: item.images?.map((img) => ({
+            name: img.name ?? "Attachment",
+            dataUrl: img.data,
+          })),
+        });
+      }
+    },
+    [sendPrompt, sessionId],
   );
 
   const forkFromTurn = React.useCallback(
@@ -946,6 +1286,8 @@ export function useChatStream(
     pendingPermission: storePermission,
     pendingQuestion,
     softInterrupts,
+    midTurnMessages,
+    isQueuePaused,
     rewoundTurnId,
     sendPrompt,
     pushLiveEvents,
@@ -957,7 +1299,11 @@ export function useChatStream(
     rewindToTurn,
     undoRewind,
     queueSoftInterrupt,
-    cancelSoftInterrupt,
+    cancelSoftInterrupt: cancelMidTurnMessage,
+    promoteQueuedToSteer,
+    editMidTurnMessage,
+    sendQueuedNow,
+    cancelMidTurnMessage,
     forkFromTurn,
     togglePinTurn,
     retryTurn,

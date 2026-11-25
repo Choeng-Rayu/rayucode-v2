@@ -5,6 +5,7 @@ import type {
   AgentRoleOverrideView,
   CacheTtl,
   EffortChoice,
+  ModelRouteOptionView,
   ServiceTier,
 } from "@shared/vscodeProtocol";
 
@@ -16,6 +17,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  formatHarnessModelSpec,
+  formatProviderBadgeLabel,
+} from "@/features/composer";
 import { cn } from "@/lib/utils";
 
 export interface ModelsAgentsSectionProps {
@@ -25,6 +30,7 @@ export interface ModelsAgentsSectionProps {
   cacheTtl: CacheTtl;
   roleOverrides: ReadonlyArray<AgentRoleOverrideView>;
   swarmAllowlist?: ReadonlyArray<string>;
+  routes?: ReadonlyArray<ModelRouteOptionView>;
   onSelectDefaultModel: (model: string) => void;
   onSelectDefaultEffort: (effort: EffortChoice) => void;
   onSelectServiceTier: (tier: ServiceTier) => Promise<unknown>;
@@ -39,18 +45,12 @@ export interface ModelsAgentsSectionProps {
 }
 
 const DISCOVERED_MODEL_ROUTES = [
-  "claude-sonnet-4-5",
-  "claude-opus-4-5",
+  "rayu:claude-sonnet-4-5",
+  "rayu:claude-opus-4-5",
   "gpt-5.2",
   "gemini-2.5-pro",
   "deepseek-r1",
   "grok-3",
-] as const;
-
-const ROLE_MODEL_CHOICES = [
-  "inherit",
-  "default",
-  ...DISCOVERED_MODEL_ROUTES,
 ] as const;
 
 export function ModelsAgentsSection({
@@ -60,6 +60,7 @@ export function ModelsAgentsSection({
   cacheTtl,
   roleOverrides,
   swarmAllowlist,
+  routes,
   onSelectDefaultModel,
   onSelectDefaultEffort,
   onSelectServiceTier,
@@ -71,6 +72,71 @@ export function ModelsAgentsSection({
   const [overrideScope, setOverrideScope] = React.useState<
     "session" | "global"
   >("global");
+
+  const modelChoices = React.useMemo(() => {
+    const out: Array<{ value: string; label: string }> = [];
+    const seen = new Set<string>();
+
+    if (routes && routes.length > 0) {
+      // Prefer available routes first while preserving backend order within each group
+      const ordered = [
+        ...routes.filter((r) => r.available !== false),
+        ...routes.filter((r) => r.available === false),
+      ];
+      for (const r of ordered) {
+        const rawModel = r.model || r.id;
+        if (!rawModel) continue;
+        const value =
+          r.modelSpec ||
+          formatHarnessModelSpec(rawModel, r.provider, r.apiMethod) ||
+          rawModel;
+        if (seen.has(value)) continue;
+        seen.add(value);
+        const providerBadge = formatProviderBadgeLabel(r.provider);
+        const baseLabel = r.label || rawModel;
+        out.push({
+          value,
+          label: `${baseLabel} (${providerBadge})`,
+        });
+      }
+    } else {
+      for (const m of DISCOVERED_MODEL_ROUTES) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        out.push({ value: m, label: m });
+      }
+    }
+
+    if (defaultModel && !seen.has(defaultModel)) {
+      seen.add(defaultModel);
+      out.unshift({ value: defaultModel, label: defaultModel });
+    }
+
+    return out;
+  }, [defaultModel, routes]);
+
+  const roleModelChoices = React.useMemo(() => {
+    const out: Array<{ value: string; label: string }> = [
+      { value: "inherit", label: "inherit" },
+      { value: "default", label: "default" },
+    ];
+    const seen = new Set<string>(["inherit", "default"]);
+
+    for (const choice of modelChoices) {
+      if (seen.has(choice.value)) continue;
+      seen.add(choice.value);
+      out.push(choice);
+    }
+
+    for (const row of roleOverrides) {
+      if (row.model && !seen.has(row.model)) {
+        seen.add(row.model);
+        out.push({ value: row.model, label: row.model });
+      }
+    }
+
+    return out;
+  }, [modelChoices, roleOverrides]);
 
   return (
     <section
@@ -122,14 +188,14 @@ export function ModelsAgentsSection({
             <SelectTrigger
               aria-label="Default model route"
               data-testid="default-model-select"
-              className="w-full sm:w-[210px]"
+              className="w-full sm:w-[250px]"
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
-              {DISCOVERED_MODEL_ROUTES.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m}
+              {modelChoices.map((choice) => (
+                <SelectItem key={choice.value} value={choice.value}>
+                  {choice.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -311,14 +377,14 @@ export function ModelsAgentsSection({
                 <SelectTrigger
                   aria-label={`${row.label} model`}
                   data-testid={`role-override-select-${row.role}`}
-                  className="w-full sm:w-[210px]"
+                  className="w-full sm:w-[250px]"
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="end">
-                  {ROLE_MODEL_CHOICES.map((m) => (
-                    <SelectItem key={m} value={m}>
-                      {m}
+                  {roleModelChoices.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      {choice.label}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -439,12 +439,13 @@ export function SettingsView({
 
                 {activeSection === "models" && (
                   <ModelsAgentsSection
-                    defaultModel={models.defaultModel ?? "claude-sonnet-4-5"}
+                    defaultModel={models.defaultModel ?? "rayu:claude-sonnet-4-5"}
                     defaultEffort={models.defaultEffort}
                     serviceTier={models.serviceTier}
                     cacheTtl={models.cacheTtl}
                     roleOverrides={models.roleOverrides}
                     swarmAllowlist={models.swarmAllowlist}
+                    routes={models.routes}
                     onSelectDefaultModel={setDefaultModel}
                     onSelectDefaultEffort={setDefaultEffort}
                     onSelectServiceTier={setFastTier}

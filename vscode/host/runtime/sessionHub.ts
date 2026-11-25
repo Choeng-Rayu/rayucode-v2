@@ -1,5 +1,16 @@
 import { EventEmitter } from "node:events";
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
+
+function tryGetVscode(): typeof vscode | undefined {
+  try {
+    if (typeof require === "function") {
+      return require("vscode") as typeof vscode;
+    }
+  } catch {
+    // Running outside VS Code extension host (e.g. Node unit tests)
+  }
+  return undefined;
+}
 import {
   API_VERSION_MAJOR,
   HarnessError,
@@ -39,6 +50,7 @@ import type { BridgeManager } from "./bridgeManager.js";
 import {
   buildQuestionResponseWire,
   emptyFileChangesSnapshot,
+  formatHarnessModelSpec,
   mapRawBackgroundTask,
   mapRawFileChangeActionResponse,
   mapRawFileChangeDiff,
@@ -67,7 +79,10 @@ interface RegisteredSurface {
 
 export class SessionHub extends EventEmitter implements vscode.Disposable {
   private readonly surfaces = new Map<string, RegisteredSurface>();
-  private readonly backgroundTasks = new Map<string, BackgroundProcessView>();
+  private readonly backgroundTasksBySession = new Map<
+    string,
+    Map<string, BackgroundProcessView>
+  >();
   private readonly sidePanelsBySession = new Map<
     string,
     { pages: SidePanelPageView[]; activePageId?: string }
@@ -85,6 +100,7 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   private activeModel: string | undefined;
   private activeProvider: string | undefined;
   private activePermissionMode: PermissionModeId;
+  private isTurnStreaming = false;
   private backgroundPollTimer: ReturnType<typeof setInterval> | null = null;
   private attachChain: Promise<unknown> = Promise.resolve();
 
@@ -98,6 +114,9 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     this.activePermissionMode = this.getDefaultPermissionMode();
 
     this.bridgeManager.on("statusChanged", (status) => {
+      if (status.state === "disconnected" || status.state === "error") {
+        this.isTurnStreaming = false;
+      }
       this.broadcast({ type: "rayucode.daemon.statusChanged", status });
       this.emit("stateChanged");
     });
@@ -116,9 +135,10 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   }
 
   getDefaultPermissionMode(): PermissionModeId {
-    const raw = vscode.workspace
-      .getConfiguration("rayucode")
-      .get<string>("defaultPermissionMode", "default");
+    const raw =
+      tryGetVscode()
+        ?.workspace.getConfiguration("rayucode")
+        .get<string>("defaultPermissionMode", "default") ?? "default";
     return fromHarnessPermissionMode(raw);
   }
 
@@ -138,12 +158,26 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     return this.activePermissionMode;
   }
 
+  getIsTurnStreaming(): boolean {
+    return this.isTurnStreaming;
+  }
+
+  private setTurnStreaming(next: boolean): void {
+    if (this.isTurnStreaming === next) return;
+    this.isTurnStreaming = next;
+    this.emit("stateChanged");
+  }
+
   getTotalSessionCredits(): number | undefined {
     return this.creditsAccumulator.totalCredits;
   }
 
-  getBackgroundTasks(): BackgroundProcessView[] {
-    return [...this.backgroundTasks.values()].sort(
+  getBackgroundTasks(sessionId?: string): BackgroundProcessView[] {
+    const targetSessionId = sessionId ?? this.activeSessionId;
+    if (!targetSessionId) {
+      return [];
+    }
+    return [...(this.backgroundTasksBySession.get(targetSessionId)?.values() ?? [])].sort(
       (a, b) => b.updatedAtMs - a.updatedAtMs,
     );
   }
@@ -275,9 +309,11 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     postMessage: (message: HostToWebviewMessage) => void,
   ): vscode.Disposable {
     this.surfaces.set(id, { id, surface, postMessage });
-    return new vscode.Disposable(() => {
-      this.surfaces.delete(id);
-    });
+    return {
+      dispose: () => {
+        this.surfaces.delete(id);
+      },
+    };
   }
 
   broadcast(message: HostToWebviewMessage): void {
@@ -287,6 +323,17 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       } catch {
         // ignore disposed surface
       }
+    }
+  }
+
+  postToSurface(surfaceId: string, message: HostToWebviewMessage): boolean {
+    const surface = this.surfaces.get(surfaceId);
+    if (!surface) return false;
+    try {
+      surface.postMessage(message);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -301,6 +348,11 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     const client = this.sessionClient ?? this.bridgeManager.getActiveClient();
     if (!client) return;
     await client.notifyAuthChanged(provider).catch(() => {});
+    if (this.activeSessionId) {
+      await client
+        .runtimeCommand(this.activeSessionId, "refresh_model_list", [])
+        .catch(() => {});
+    }
   }
 
   /**
@@ -320,6 +372,7 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   private bindSessionClient(client: RayucodeClient): void {
     const previous = this.sessionClient;
     this.sessionClient = client;
+    this.setTurnStreaming(false);
     if (previous && previous !== client && previous !== this.bridgeManager.getActiveClient()) {
       void previous.close();
     }
@@ -332,12 +385,53 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     const onClose = () => {
       if (this.sessionClient !== client) return;
       this.sessionClient = null;
+      this.setTurnStreaming(false);
     };
     client.once("close", onClose);
   }
 
   private ingestFrame(frame: ServerFrame): void {
     switch (frame.ev) {
+      case "message_accepted":
+      case "turn_start":
+      case "text_delta":
+      case "reasoning_delta":
+      case "thinking_delta":
+      case "tool_start":
+      case "tool_exec":
+      case "tool_call":
+      case "soft_interrupt_injected": {
+        this.setTurnStreaming(true);
+        break;
+      }
+      case "turn_done":
+      case "turn_stopped":
+      case "turn_aborted": {
+        this.setTurnStreaming(false);
+        break;
+      }
+      case "session_status": {
+        if (typeof frame.status === "string") {
+          const status = frame.status.trim().toLowerCase();
+          if (
+            status === "running" ||
+            status === "generating" ||
+            status === "tool_running" ||
+            status === "busy"
+          ) {
+            this.setTurnStreaming(true);
+          } else if (status === "idle") {
+            this.setTurnStreaming(false);
+          }
+        }
+        break;
+      }
+      case "error": {
+        if (frame.reply_to === undefined) {
+          this.setTurnStreaming(false);
+        }
+        break;
+      }
       case "permission_mode_changed": {
         if (typeof frame.mode === "string") {
           const uiMode = fromHarnessPermissionMode(frame.mode);
@@ -370,20 +464,38 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
         break;
       }
       case "background_progress": {
+        const frameSessionId =
+          typeof frame.session_id === "string" && frame.session_id.trim()
+            ? frame.session_id.trim()
+            : this.activeSessionId;
+        if (!frameSessionId) {
+          break;
+        }
+        let sessionTasks = this.backgroundTasksBySession.get(frameSessionId);
+        if (!sessionTasks) {
+          sessionTasks = new Map<string, BackgroundProcessView>();
+          this.backgroundTasksBySession.set(frameSessionId, sessionTasks);
+        }
         const existing =
           typeof frame.task_id === "string"
-            ? this.backgroundTasks.get(frame.task_id)
+            ? sessionTasks.get(frame.task_id)
             : undefined;
         const mapped = mapRawBackgroundTask(
           {
             ...existing,
             ...frame,
+            session_id: frameSessionId,
           },
-          this.activeSessionId,
+          frameSessionId,
         );
-        this.backgroundTasks.set(mapped.taskId, mapped);
-        this.broadcastProcessesSnapshot();
-        this.syncBackgroundPollTimer();
+        sessionTasks.set(mapped.taskId, {
+          ...mapped,
+          sessionId: frameSessionId,
+        });
+        if (frameSessionId === this.activeSessionId) {
+          this.broadcastProcessesSnapshot();
+          this.syncBackgroundPollTimer();
+        }
         break;
       }
       case "side_panel_state": {
@@ -586,16 +698,21 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     workingDir?: string;
     permissionMode?: PermissionModeId;
     model?: string;
+    provider?: string;
+    apiMethod?: string;
   } = {}): Promise<SessionSummaryView> {
     return this.runSerialized(async () => {
       const defaultDir =
         options.workingDir ??
-        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ??
+        tryGetVscode()?.workspace.workspaceFolders?.[0]?.uri.fsPath ??
         process.cwd();
       const client = await this.bridgeManager.dialClient();
       const info = await client.createSession({ workingDir: defaultDir });
       this.bindSessionClient(client);
       this.activeSessionId = info.session_id;
+      this.backgroundTasksBySession.set(info.session_id, new Map());
+      this.broadcastProcessesSnapshot();
+      this.syncBackgroundPollTimer();
       await this.context.workspaceState.update(ACTIVE_SESSION_KEY, info.session_id);
 
       const desiredMode = options.permissionMode ?? this.getDefaultPermissionMode();
@@ -608,8 +725,20 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
           .catch(() => {});
       }
       if (options.model) {
-        await client.setModel(info.session_id, options.model).catch(() => {});
-        this.activeModel = options.model;
+        const modelSpec = formatHarnessModelSpec(
+          options.model,
+          options.provider,
+          options.apiMethod,
+        );
+        if (modelSpec) {
+          await client.setModel(info.session_id, modelSpec).catch(() => {});
+          this.activeModel = modelSpec;
+          if (options.provider) {
+            this.activeProvider = options.provider;
+          } else if (modelSpec.startsWith("rayu:")) {
+            this.activeProvider = "rayu";
+          }
+        }
       }
 
       const runtimeInfo = await client.getRuntimeInfo(info.session_id).catch(() => null);
@@ -633,6 +762,9 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       const info = await client.attachSession(sessionId);
       this.bindSessionClient(client);
       this.activeSessionId = info.session_id;
+      this.broadcastProcessesSnapshot();
+      this.syncBackgroundPollTimer();
+      void this.refreshBackgroundProcesses(info.session_id).catch(() => {});
       await this.context.workspaceState.update(ACTIVE_SESSION_KEY, info.session_id);
 
       const savedMode = this.getPermissionModesMap()[info.session_id];
@@ -792,11 +924,14 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
           const workingDir =
             typeof apiReq.working_dir === "string"
               ? apiReq.working_dir
-              : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+              : tryGetVscode()?.workspace.workspaceFolders?.[0]?.uri.fsPath;
           const client = await this.bridgeManager.dialClient();
           const created = await client.createSession({ workingDir });
           this.bindSessionClient(client);
           this.activeSessionId = created.session_id;
+          this.backgroundTasksBySession.set(created.session_id, new Map());
+          this.broadcastProcessesSnapshot();
+          this.syncBackgroundPollTimer();
           await this.context.workspaceState.update(ACTIVE_SESSION_KEY, created.session_id);
           this.emit("stateChanged");
           return created;
@@ -813,6 +948,9 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
           const attached = await client.attachSession(targetSessionId);
           this.bindSessionClient(client);
           this.activeSessionId = attached.session_id;
+          this.broadcastProcessesSnapshot();
+          this.syncBackgroundPollTimer();
+          void this.refreshBackgroundProcesses(attached.session_id).catch(() => {});
           await this.context.workspaceState.update(ACTIVE_SESSION_KEY, attached.session_id);
           this.emit("stateChanged");
           return attached;
@@ -830,18 +968,44 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
         const images = normalizeImageAttachments(apiReq.images);
         const reminder =
           typeof apiReq.system_reminder === "string" ? apiReq.system_reminder : undefined;
-        const requestedModel =
+        const rawRequestedModel =
           typeof apiReq.model === "string" && apiReq.model.trim()
             ? apiReq.model.trim()
             : undefined;
+        const requestedProvider =
+          typeof apiReq.provider === "string" && apiReq.provider.trim()
+            ? apiReq.provider.trim()
+            : undefined;
+        const requestedApiMethod =
+          typeof apiReq.api_method === "string" && apiReq.api_method.trim()
+            ? apiReq.api_method.trim()
+            : typeof apiReq.apiMethod === "string" && apiReq.apiMethod.trim()
+              ? apiReq.apiMethod.trim()
+              : undefined;
+        const requestedModelSpec = rawRequestedModel
+          ? formatHarnessModelSpec(
+              rawRequestedModel,
+              requestedProvider,
+              requestedApiMethod,
+            )
+          : "";
         const requestedEffort =
           typeof apiReq.effort === "string" && apiReq.effort.trim()
             ? apiReq.effort.trim()
             : undefined;
 
-        if (requestedModel && requestedModel !== this.activeModel) {
-          await client.setModel(sessionId, requestedModel);
-          this.activeModel = requestedModel;
+        const activeModelSpec = this.activeModel
+          ? formatHarnessModelSpec(this.activeModel, this.activeProvider)
+          : "";
+
+        if (requestedModelSpec && requestedModelSpec !== activeModelSpec) {
+          await client.setModel(sessionId, requestedModelSpec);
+          this.activeModel = requestedModelSpec;
+          if (requestedProvider) {
+            this.activeProvider = requestedProvider;
+          } else if (requestedModelSpec.startsWith("rayu:")) {
+            this.activeProvider = "rayu";
+          }
           this.emit("stateChanged");
         }
         if (requestedEffort) {
@@ -867,9 +1031,31 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       }
 
       if (req === "set_model" && typeof apiReq.session_id === "string" && typeof apiReq.model === "string") {
-        await client.setModel(apiReq.session_id, apiReq.model);
-        this.activeModel = apiReq.model;
-        this.emit("stateChanged");
+        const requestedProvider =
+          typeof apiReq.provider === "string" && apiReq.provider.trim()
+            ? apiReq.provider.trim()
+            : undefined;
+        const requestedApiMethod =
+          typeof apiReq.api_method === "string" && apiReq.api_method.trim()
+            ? apiReq.api_method.trim()
+            : typeof apiReq.apiMethod === "string" && apiReq.apiMethod.trim()
+              ? apiReq.apiMethod.trim()
+              : undefined;
+        const modelSpec = formatHarnessModelSpec(
+          apiReq.model,
+          requestedProvider,
+          requestedApiMethod,
+        );
+        if (modelSpec) {
+          await client.setModel(apiReq.session_id, modelSpec);
+          this.activeModel = modelSpec;
+          if (requestedProvider) {
+            this.activeProvider = requestedProvider;
+          } else if (modelSpec.startsWith("rayu:")) {
+            this.activeProvider = "rayu";
+          }
+          this.emit("stateChanged");
+        }
         replyCallback({ ...replyMeta, ev: "ok" });
         return;
       }
@@ -877,6 +1063,51 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
       if (req === "set_permission_mode" && typeof apiReq.session_id === "string") {
         const uiMode = fromHarnessPermissionMode(String(apiReq.mode ?? "default"));
         await this.setPermissionMode(apiReq.session_id, uiMode);
+        replyCallback({ ...replyMeta, ev: "ok" });
+        return;
+      }
+
+      if (req === "soft_interrupt" && typeof apiReq.session_id === "string") {
+        const content = typeof apiReq.content === "string" ? apiReq.content : "";
+        const images = normalizeImageAttachments(apiReq.images);
+        const urgent = apiReq.urgent === true;
+        const clientId =
+          typeof apiReq.client_id === "string" && apiReq.client_id.length > 0
+            ? apiReq.client_id
+            : undefined;
+        await client.softInterruptWithId(apiReq.session_id, content, {
+          urgent,
+          clientId,
+          ...(images.length > 0 ? { images } : {}),
+        });
+        replyCallback({ ...replyMeta, ev: "ok" });
+        return;
+      }
+
+      if (req === "cancel_soft_interrupts" && typeof apiReq.session_id === "string") {
+        const clientIds = Array.isArray(apiReq.client_ids)
+          ? apiReq.client_ids.filter(
+              (x): x is string => typeof x === "string" && x.length > 0,
+            )
+          : [];
+        if (
+          clientIds.length > 0 &&
+          (typeof client.supports !== "function" ||
+            client.supports("soft_interrupt_ids"))
+        ) {
+          const res = await client.cancelSoftInterruptsById(
+            apiReq.session_id,
+            clientIds,
+          );
+          replyCallback({
+            ...replyMeta,
+            ev: "soft_interrupts_cancelled",
+            cancelled: res.cancelled,
+            not_queued: res.notQueued,
+          });
+          return;
+        }
+        await client.cancelSoftInterrupts(apiReq.session_id);
         replyCallback({ ...replyMeta, ev: "ok" });
         return;
       }
@@ -901,53 +1132,92 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   }
 
   async refreshBackgroundProcesses(sessionId?: string): Promise<BackgroundProcessView[]> {
+    const normalizedSessionId =
+      typeof sessionId === "string" && sessionId.trim()
+        ? sessionId.trim()
+        : undefined;
+    const targetSessionId = normalizedSessionId ?? this.activeSessionId;
+    if (!targetSessionId) {
+      if (!this.activeSessionId) {
+        this.broadcastProcessesSnapshot();
+      }
+      this.syncBackgroundPollTimer();
+      return [];
+    }
     try {
-      const out = await this.runtimeCommand("background", ["list"], sessionId);
+      const out = await this.runtimeCommand(
+        "background",
+        ["list", "session"],
+        targetSessionId,
+      );
       const data =
         typeof out.data === "object" && out.data !== null
           ? (out.data as Record<string, unknown>)
           : {};
       const rawTasks = Array.isArray(data.tasks) ? data.tasks : [];
-      this.backgroundTasks.clear();
+      const nextMap = new Map<string, BackgroundProcessView>();
       for (const item of rawTasks) {
         if (typeof item === "object" && item !== null) {
-          const mapped = mapRawBackgroundTask(
-            item as Record<string, unknown>,
-            out.session_id,
-          );
-          this.backgroundTasks.set(mapped.taskId, mapped);
+          const rec = item as Record<string, unknown>;
+          const explicitSessionId =
+            typeof rec.session_id === "string" && rec.session_id.trim()
+              ? rec.session_id.trim()
+              : typeof rec.sessionId === "string" && rec.sessionId.trim()
+                ? rec.sessionId.trim()
+                : undefined;
+          if (explicitSessionId && explicitSessionId !== targetSessionId) {
+            continue;
+          }
+          const mapped = mapRawBackgroundTask(rec, targetSessionId);
+          nextMap.set(mapped.taskId, {
+            ...mapped,
+            sessionId: targetSessionId,
+          });
         }
       }
-      this.broadcastProcessesSnapshot();
-      this.syncBackgroundPollTimer();
+      this.backgroundTasksBySession.set(targetSessionId, nextMap);
+      if (targetSessionId === this.activeSessionId) {
+        this.broadcastProcessesSnapshot();
+        this.syncBackgroundPollTimer();
+      }
     } catch {
       // keep existing snapshot if bridge is offline
     }
-    return this.getBackgroundTasks();
+    return this.getBackgroundTasks(targetSessionId);
   }
 
   removeCompletedBackgroundTasks(sessionId?: string): number {
+    const targetSessionId = sessionId ?? this.activeSessionId;
+    if (!targetSessionId) {
+      return 0;
+    }
+    const sessionTasks = this.backgroundTasksBySession.get(targetSessionId);
     let removed = 0;
-    for (const [id, task] of this.backgroundTasks.entries()) {
-      if (sessionId && task.sessionId !== sessionId) continue;
-      if (
-        task.status === "completed" ||
-        task.status === "failed" ||
-        task.status === "superseded"
-      ) {
-        this.backgroundTasks.delete(id);
-        removed += 1;
+    if (sessionTasks) {
+      for (const [id, task] of sessionTasks.entries()) {
+        if (
+          task.status === "completed" ||
+          task.status === "failed" ||
+          task.status === "superseded"
+        ) {
+          sessionTasks.delete(id);
+          removed += 1;
+        }
       }
     }
-    this.broadcastProcessesSnapshot();
-    this.syncBackgroundPollTimer();
+    if (targetSessionId === this.activeSessionId) {
+      this.broadcastProcessesSnapshot();
+      this.syncBackgroundPollTimer();
+    }
     return removed;
   }
 
   private broadcastProcessesSnapshot(): void {
-    const tasks = this.getBackgroundTasks();
+    const sessionId = this.activeSessionId;
+    const tasks = this.getBackgroundTasks(sessionId);
     this.broadcast({
       type: "rayucode.processes.snapshot",
+      sessionId,
       tasks,
     });
     this.emit("processesChanged", tasks);
@@ -955,12 +1225,14 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
   }
 
   private syncBackgroundPollTimer(): void {
-    const hasRunning = [...this.backgroundTasks.values()].some(
+    const hasRunning = this.getBackgroundTasks(this.activeSessionId).some(
       (t) => t.status === "running" || t.status === "stalled",
     );
     if (hasRunning && !this.backgroundPollTimer) {
       this.backgroundPollTimer = setInterval(() => {
-        void this.refreshBackgroundProcesses();
+        if (this.activeSessionId) {
+          void this.refreshBackgroundProcesses(this.activeSessionId);
+        }
       }, 3_000);
       this.backgroundPollTimer.unref?.();
     } else if (!hasRunning && this.backgroundPollTimer) {
@@ -976,6 +1248,7 @@ export class SessionHub extends EventEmitter implements vscode.Disposable {
     }
     const client = this.sessionClient;
     this.sessionClient = null;
+    this.isTurnStreaming = false;
     if (client && client !== this.bridgeManager.getActiveClient()) {
       void client.close();
     }

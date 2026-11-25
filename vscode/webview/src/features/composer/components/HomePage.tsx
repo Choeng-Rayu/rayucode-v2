@@ -90,7 +90,12 @@ export function HomePage({
   );
   const showCloudSignIn = accountStatus !== null && !accountStatus.signedIn && !userName;
 
-  const [composerValue, setComposerValue] = React.useState("");
+  const composerValue = useAppStore((s) => s.composerDrafts["__home__"] ?? "");
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
+  const setComposerValue = React.useCallback(
+    (next: string) => setComposerDraft("__home__", next),
+    [setComposerDraft],
+  );
   const [pendingSubmit, setPendingSubmit] = React.useState<{
     prompt: string;
     images?: ImageAttachmentView[];
@@ -155,10 +160,11 @@ export function HomePage({
       setComposerValue("");
 
       try {
+        const resolvedModel = payload.modelSpec || payload.modelId;
         const created = await createSessionMutation.mutateAsync({
           workingDir: payload.workingDir,
           permissionMode: payload.permissionMode,
-          model: payload.modelId,
+          model: resolvedModel,
         });
 
         if (submitAttemptRef.current !== attemptId) {
@@ -205,7 +211,8 @@ export function HomePage({
           req: "send_message",
           session_id: session.sessionId,
           content: `${payload.prompt}${formattedSelectionContext}`,
-          model: payload.modelId,
+          model: resolvedModel,
+          ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
           effort: payload.effort,
           images: payload.images,
         });

@@ -2,6 +2,7 @@ import { Check } from "lucide-react";
 import type {
   AccentPreference,
   DensityPreference,
+  OpenLocation,
   ThemePreference,
 } from "@shared/vscodeProtocol";
 
@@ -73,16 +74,27 @@ const DENSITY_OPTIONS: ReadonlyArray<{
   { id: "compact", label: "Compact" },
 ];
 
+const WORKBENCH_LOCATION_OPTIONS: ReadonlyArray<{
+  id: OpenLocation;
+  label: string;
+}> = [
+  { id: "secondarySidebar", label: "Secondary Sidebar (Right)" },
+  { id: "beside", label: "Split Beside Editor" },
+  { id: "editorTab", label: "Editor Tab" },
+];
+
 export function AppearanceSection({ className }: AppearanceSectionProps) {
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
   const density = useAppStore((s) => s.density);
   const reduceMotion = useAppStore((s) => s.reduceMotion);
+  const workbench = useAppStore((s) => s.workbench);
 
   const setTheme = useAppStore((s) => s.setTheme);
   const setAccent = useAppStore((s) => s.setAccent);
   const setDensity = useAppStore((s) => s.setDensity);
   const setReduceMotion = useAppStore((s) => s.setReduceMotion);
+  const setWorkbench = useAppStore((s) => s.setWorkbench);
 
   const handleSelectTheme = (nextTheme: ThemePreference) => {
     syncThemeToDom(nextTheme);
@@ -302,7 +314,7 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
         </div>
 
         <div className="flex items-center justify-between gap-4 py-3">
-          <div>
+          <div className="min-w-0">
             <div className="text-xs font-medium text-ink">Reduce motion</div>
             <div className="mt-0.5 text-[11px] text-muted-ink">
               Minimize popover, drawer, and orbital spinner animations
@@ -313,6 +325,92 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
             onCheckedChange={handleToggleReduceMotion}
             aria-label="Reduce motion"
             data-testid="reduce-motion-switch"
+          />
+        </div>
+      </div>
+
+      {/* VS Code Workbench Placement */}
+      <div data-testid="appearance-workbench-placement">
+        <h2 className="mb-2 border-b border-hairline-soft pb-2 text-xs font-semibold text-ink">
+          VS Code Workbench Placement
+        </h2>
+
+        <div className="flex flex-col gap-2.5 border-b border-hairline-soft py-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-ink">
+              Default Open Location
+            </div>
+            <div className="mt-0.5 text-[11px] text-muted-ink">
+              Choose where RayuCode opens from the Editor Tab Bar icon and
+              contextual editor, explorer, terminal, or git actions
+            </div>
+          </div>
+
+          <div
+            role="group"
+            aria-label="Default open location"
+            className="grid w-full grid-cols-1 gap-1 rounded-lg border border-hairline bg-pane p-1 sm:grid-cols-3"
+          >
+            {WORKBENCH_LOCATION_OPTIONS.map((opt) => {
+              const isSelected = workbench.openLocation === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  data-testid={`workbench-open-location-${opt.id}`}
+                  aria-pressed={isSelected}
+                  onClick={() => setWorkbench({ openLocation: opt.id }, true)}
+                  className={cn(
+                    "cursor-pointer rounded-md px-2.5 py-1.5 text-center text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    isSelected
+                      ? "border border-premium bg-active text-ink shadow-bevel-surface"
+                      : "border border-transparent text-muted-ink hover:text-ink",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 border-b border-hairline-soft py-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-ink">
+              Live Editor Tab Bar Icon
+            </div>
+            <div className="mt-0.5 text-[11px] text-muted-ink">
+              Show the RayuCode button in the top-right Editor Tab Bar (click to
+              focus, Alt+Click to split beside editor)
+            </div>
+          </div>
+          <Switch
+            checked={workbench.showEditorTitleIcon}
+            onCheckedChange={(checked) =>
+              setWorkbench({ showEditorTitleIcon: checked }, true)
+            }
+            aria-label="Live Editor Tab Bar Icon"
+            data-testid="workbench-editor-title-icon-switch"
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-4 py-3">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-ink">
+              Auto-Submit Context Actions
+            </div>
+            <div className="mt-0.5 text-[11px] text-muted-ink">
+              Immediately submit Explain, Refactor, Quick Fix, and Terminal
+              prompts instead of prefilling for review
+            </div>
+          </div>
+          <Switch
+            checked={workbench.contextActionsAutoSubmit}
+            onCheckedChange={(checked) =>
+              setWorkbench({ contextActionsAutoSubmit: checked }, true)
+            }
+            aria-label="Auto-Submit Context Actions"
+            data-testid="workbench-context-autosubmit-switch"
           />
         </div>
       </div>

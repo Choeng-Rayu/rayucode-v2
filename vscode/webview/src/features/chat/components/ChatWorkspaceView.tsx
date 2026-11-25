@@ -1,7 +1,7 @@
 import * as React from "react";
 
 import { ChatSkeleton, SectionErrorBoundary } from "@/components/ui";
-import { cn } from "@/lib";
+import { cn, type MidTurnMessageItem } from "@/lib";
 
 import { useChatStream, type ChatTurnView } from "../hooks/useChatStream";
 import type { ApprovalCardRequest } from "./ApprovalCard";
@@ -13,6 +13,7 @@ export interface ChatWorkspaceViewProps {
   initialTurns?: ChatTurnView[];
   pendingPermissionOverride?: ApprovalCardRequest | null;
   pendingQuestionOverride?: ClarifyingQuestionRequest | null;
+  onDrainQueuedMessage?: (item: MidTurnMessageItem) => void | Promise<void>;
   backgroundDockSlot?: React.ReactNode;
   composerSlot?: React.ReactNode;
   className?: string;
@@ -23,6 +24,7 @@ export function ChatWorkspaceView({
   initialTurns,
   pendingPermissionOverride,
   pendingQuestionOverride,
+  onDrainQueuedMessage,
   backgroundDockSlot,
   composerSlot,
   className,
@@ -30,6 +32,7 @@ export function ChatWorkspaceView({
   const stream = useChatStream({
     sessionId,
     initialTurns,
+    onDrainQueuedMessage,
   });
 
   const effectivePermission =
@@ -62,6 +65,8 @@ export function ChatWorkspaceView({
             pendingPermission={effectivePermission}
             pendingQuestion={effectiveQuestion}
             softInterrupts={stream.softInterrupts}
+            midTurnMessages={stream.midTurnMessages}
+            isQueuePaused={stream.isQueuePaused}
             rewoundTurnId={stream.rewoundTurnId}
             onPermissionDecision={(decision, req) => {
               void stream.respondPermission(decision, req);
@@ -72,6 +77,18 @@ export function ChatWorkspaceView({
             onQuestionDismiss={stream.dismissQuestion}
             onCancelSoftInterrupt={(id) => {
               void stream.cancelSoftInterrupt(id);
+            }}
+            onPromoteQueuedToSteer={(id) => {
+              void stream.promoteQueuedToSteer(id);
+            }}
+            onEditMidTurnMessage={(id) => {
+              void stream.editMidTurnMessage(id);
+            }}
+            onSendQueuedNow={(id) => {
+              void stream.sendQueuedNow(id);
+            }}
+            onCancelMidTurnMessage={(id) => {
+              void stream.cancelMidTurnMessage(id);
             }}
             onRewindTurn={(turnId) => {
               void stream.rewindToTurn(turnId);

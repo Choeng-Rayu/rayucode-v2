@@ -53,6 +53,7 @@ export function IconRail({
 }: IconRailProps) {
   const queryClient = useQueryClient();
   const activeRoute = useAppStore((s) => s.activeRoute);
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
@@ -107,10 +108,14 @@ export function IconRail({
 
   const activeBgCount = React.useMemo(
     () =>
-      backgroundTasks.filter(
-        (t) => t.status === "running" || t.status === "stalled",
-      ).length,
-    [backgroundTasks],
+      !activeSessionId
+        ? 0
+        : backgroundTasks.filter(
+            (t) =>
+              t.sessionId === activeSessionId &&
+              (t.status === "running" || t.status === "stalled"),
+          ).length,
+    [activeSessionId, backgroundTasks],
   );
 
   const hasLiveDotForRoute = (route: AppRoute): boolean => {

@@ -27,15 +27,17 @@ export type ComposerMode = "home" | "workspace" | "chat";
 
 export const ModelOptionSchema = z.object({
   id: z.string().min(1),
+  modelSpec: z.string().optional(),
   label: z.string().min(1),
   provider: z.string().min(1),
+  apiMethod: z.string().optional(),
   subtitle: z.string().optional(),
   authMethod: z.enum(["oauth", "api_key", "env", "none"]).optional(),
   accountLabel: z.string().optional(),
   recommended: z.boolean().optional(),
   available: z.boolean().optional(),
   unavailableReason: z.string().optional(),
-   supportedEfforts: z.array(EffortLevelSchema).optional(),
+  supportedEfforts: z.array(EffortLevelSchema).optional(),
 });
 export type ModelOption = z.infer<typeof ModelOptionSchema>;
 
@@ -86,7 +88,9 @@ export const ComposerSubmitPayloadSchema = z.object({
   workingDir: z.string().optional(),
   checkout: z.string(),
   modelId: z.string(),
+  modelSpec: z.string().optional(),
   modelLabel: z.string(),
+  apiMethod: z.string().optional(),
   effort: EffortLevelSchema,
   serviceTier: ServiceTierSchema.optional(),
   cacheTtl: CacheTtlSchema.optional(),

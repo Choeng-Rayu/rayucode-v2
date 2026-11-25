@@ -125,12 +125,14 @@ export interface HarnessHistoryMessageLike {
   };
 }
 
+export type PermissionRiskTier = RiskTier | "catastrophic";
+
 export interface PendingPermissionRequest {
   sessionId: string;
   requestId: string;
   toolName: string;
   description: string;
-  riskTier?: RiskTier;
+  riskTier?: PermissionRiskTier;
   command?: string;
   permissionMode?: PermissionModeId;
 }
@@ -147,9 +149,13 @@ export type MappedLiveTraceEvent =
       requestId: string;
       toolName: string;
       description: string;
-      riskTier?: RiskTier;
+      riskTier?: PermissionRiskTier;
     }
   | { type: "answer-delta"; delta: string }
+  | { type: "answer-replace"; text: string }
+  | { type: "connection-phase"; phase: string | null }
+  | { type: "kv-cache-miss"; reason: string }
+  | { type: "turn-stopped"; reason?: string; message?: string }
   | { type: "duration"; workedDuration: string }
   | {
       type: "complete";
@@ -326,6 +332,9 @@ export interface HarnessStreamTracker {
   startedAtMs: number;
   turnActive: boolean;
   batchEpoch: number;
+  stoppedInTurn: boolean;
+  hasBufferedText: boolean;
+  textDonePendingTool: boolean;
   lastCredits?: string;
   lastKvCachePct?: number;
 }
@@ -336,6 +345,9 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     startedAtMs: Date.now(),
     turnActive: false,
     batchEpoch: 1,
+    stoppedInTurn: false,
+    hasBufferedText: false,
+    textDonePendingTool: false,
   };
 }
 
@@ -345,10 +357,13 @@ export function mapHarnessFrameToLiveEvents(
 ): MappedLiveTraceEvent[] {
   const ev = typeof frame.ev === "string" ? frame.ev : "";
 
-  if (ev === "turn_start") {
+  if (ev === "turn_start" || ev === "message_accepted") {
     tracker.startedAtMs = Date.now();
     tracker.turnActive = true;
     tracker.batchEpoch = 1;
+    tracker.stoppedInTurn = false;
+    tracker.hasBufferedText = false;
+    tracker.textDonePendingTool = false;
     tracker.toolInputs.clear();
     return [];
   }
@@ -356,20 +371,38 @@ export function mapHarnessFrameToLiveEvents(
   if (
     !tracker.turnActive &&
     (ev === "text_delta" ||
+      ev === "text_replace" ||
       ev === "reasoning_delta" ||
       ev === "tool_start" ||
-      ev === "tool_call")
+      ev === "tool_call" ||
+      ev === "tool_exec")
   ) {
     tracker.startedAtMs = Date.now();
     tracker.turnActive = true;
+    tracker.stoppedInTurn = false;
   }
 
   switch (ev) {
     case "text_delta": {
       const text = typeof frame.text === "string" ? frame.text : "";
+      if (text.trim()) {
+        tracker.hasBufferedText = true;
+      }
       return text ? [{ type: "answer-delta", delta: text }] : [];
     }
+    case "text_replace": {
+      const text = typeof frame.text === "string" ? frame.text : "";
+      tracker.hasBufferedText = Boolean(text.trim());
+      tracker.textDonePendingTool = false;
+      return [{ type: "answer-replace", text }];
+    }
+    case "text_done": {
+      tracker.textDonePendingTool = tracker.hasBufferedText;
+      return [];
+    }
     case "promote_answer_to_note": {
+      tracker.hasBufferedText = false;
+      tracker.textDonePendingTool = false;
       tracker.batchEpoch += 1;
       return [{ type: "promote-note" }];
     }
@@ -387,7 +420,43 @@ export function mapHarnessFrameToLiveEvents(
           Object.keys(args).length > 0 ? JSON.stringify(args) : "",
         );
       }
-      return [{ type: "tool-status", label: describeActiveTool(name, args, intent) }];
+      const events: MappedLiveTraceEvent[] = [];
+      if (tracker.textDonePendingTool || tracker.hasBufferedText) {
+        events.push({ type: "promote-note" });
+        tracker.hasBufferedText = false;
+        tracker.textDonePendingTool = false;
+        tracker.batchEpoch += 1;
+      }
+      events.push({
+        type: "tool-status",
+        label: describeActiveTool(name, args, intent),
+      });
+      return events;
+    }
+    case "tool_exec": {
+      const callId = String(frame.call_id ?? "");
+      const name = String(frame.name ?? "tool");
+      const intent = typeof frame.intent === "string" ? frame.intent : undefined;
+      const args = parseToolArgs(
+        frame.tool_input ?? frame.input,
+        tracker.toolInputs.get(callId) ?? "",
+      );
+      return [
+        {
+          type: "tool-status",
+          label: describeActiveTool(name, args, intent),
+        },
+      ];
+    }
+    case "connection_phase": {
+      const phase = typeof frame.phase === "string" ? frame.phase : null;
+      return [{ type: "connection-phase", phase }];
+    }
+    case "kv_cache_miss": {
+      const reason = String(
+        frame.message ?? frame.reason ?? "Prompt cache miss",
+      );
+      return [{ type: "kv-cache-miss", reason }];
     }
     case "tool_input_delta": {
       const callId = String(frame.call_id ?? "");
@@ -551,13 +620,16 @@ export function mapHarnessFrameToLiveEvents(
         typeof frame.description === "string" && frame.description.trim()
           ? frame.description.trim()
           : `Allow RayuCode to run ${toolName}?`;
-      const riskTier =
-        frame.risk_tier === "safe" ||
-        frame.risk_tier === "bounded" ||
-        frame.risk_tier === "confirm" ||
-        frame.risk_tier === "hard_deny"
-          ? frame.risk_tier
-          : undefined;
+      const rawTier = frame.risk_tier;
+      const riskTier: PermissionRiskTier | undefined =
+        rawTier === "safe" ||
+        rawTier === "bounded" ||
+        rawTier === "confirm" ||
+        rawTier === "catastrophic"
+          ? rawTier
+          : rawTier === "hard_deny"
+            ? "catastrophic"
+            : undefined;
       return [
         {
           type: "permission-request",
@@ -590,15 +662,29 @@ export function mapHarnessFrameToLiveEvents(
       }
       return [];
     }
-    case "turn_done":
     case "turn_stopped": {
+      if (tracker.stoppedInTurn) {
+        return [];
+      }
       const elapsedSec = Math.max(
         1,
         Math.round((Date.now() - tracker.startedAtMs) / 1000),
       );
-      const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }];
+      const reason =
+        typeof frame.reason === "string" ? frame.reason : undefined;
+      const message =
+        typeof frame.message === "string" ? frame.message : undefined;
+      tracker.stoppedInTurn = true;
+      tracker.turnActive = false;
+      tracker.hasBufferedText = false;
+      tracker.textDonePendingTool = false;
+      tracker.toolInputs.clear();
+      const events: MappedLiveTraceEvent[] = [
+        { type: "tool-status", label: null },
+        { type: "connection-phase", phase: null },
+        { type: "turn-stopped", reason, message },
+      ];
       if (
-        ev === "turn_stopped" &&
         frame.reason === "failure" &&
         typeof frame.message === "string" &&
         frame.message.trim()
@@ -615,9 +701,32 @@ export function mapHarnessFrameToLiveEvents(
         kvCachePct: tracker.lastKvCachePct,
         timestamp: "Just now",
       });
-      tracker.turnActive = false;
-      tracker.toolInputs.clear();
       return events;
+    }
+    case "turn_done": {
+      if (tracker.stoppedInTurn) {
+        tracker.stoppedInTurn = false;
+        return [];
+      }
+      const elapsedSec = Math.max(
+        1,
+        Math.round((Date.now() - tracker.startedAtMs) / 1000),
+      );
+      tracker.turnActive = false;
+      tracker.hasBufferedText = false;
+      tracker.textDonePendingTool = false;
+      tracker.toolInputs.clear();
+      return [
+        { type: "tool-status", label: null },
+        { type: "connection-phase", phase: null },
+        {
+          type: "complete",
+          workedDuration: formatDurationSeconds(elapsedSec),
+          credits: tracker.lastCredits,
+          kvCachePct: tracker.lastKvCachePct,
+          timestamp: "Just now",
+        },
+      ];
     }
     default:
       return [];

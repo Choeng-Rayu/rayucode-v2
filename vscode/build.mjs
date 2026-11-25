@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
+import { generateIconAssets } from "./scripts/generate-icon-assets.mjs";
 
 const source = import.meta.dirname;
 const stage = new URL("./dist/extension/", import.meta.url);
@@ -59,7 +60,11 @@ await Promise.all([
     },
   }),
   buildWebview(),
-  cp(new URL("./assets/icon.svg", import.meta.url), new URL("icon.svg", media)),
+  generateIconAssets(fileURLToPath(media)),
+  cp(
+    new URL("./assets/rayu-fox-icon.svg", import.meta.url),
+    new URL("rayu-fox-icon.svg", media),
+  ),
   cp(
     new URL("./assets/rayu-fox.png", import.meta.url),
     new URL("rayu-fox.png", media),

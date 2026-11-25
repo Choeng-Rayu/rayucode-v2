@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   FileText,
   List,
+  Pencil,
   Presentation,
   RotateCcw,
   X,
@@ -19,7 +20,7 @@ import {
   ScrollArea,
   TechFileBadge,
 } from "@/components/ui";
-import { cn, postToHost, useAppStore } from "@/lib";
+import { cn, postToHost, useAppStore, type MidTurnMessageItem } from "@/lib";
 import type {
   FileChangesSnapshotView,
   SessionSummaryView,
@@ -382,6 +383,8 @@ export interface ChatStreamProps {
   pendingPermission?: ApprovalCardRequest | null;
   pendingQuestion?: ClarifyingQuestionRequest | null;
   softInterrupts?: SoftInterruptQueueItem[];
+  midTurnMessages?: MidTurnMessageItem[];
+  isQueuePaused?: boolean;
   rewoundTurnId?: string | null;
   onPermissionDecision?: (
     decision: "allow_once" | "allow_always" | "deny",
@@ -393,6 +396,10 @@ export interface ChatStreamProps {
   ) => void;
   onQuestionDismiss?: () => void;
   onCancelSoftInterrupt?: (interruptId?: string) => void;
+  onPromoteQueuedToSteer?: (id: string) => void;
+  onEditMidTurnMessage?: (id: string) => void;
+  onSendQueuedNow?: (id: string) => void;
+  onCancelMidTurnMessage?: (id?: string) => void;
   onRewindTurn?: (turnId: string) => void;
   onUndoRewind?: () => void;
   onBackgroundTool?: () => void;
@@ -412,11 +419,17 @@ export function ChatStream({
   pendingPermission,
   pendingQuestion,
   softInterrupts = [],
+  midTurnMessages,
+  isQueuePaused = false,
   rewoundTurnId,
   onPermissionDecision,
   onQuestionSubmit,
   onQuestionDismiss,
   onCancelSoftInterrupt,
+  onPromoteQueuedToSteer,
+  onEditMidTurnMessage,
+  onSendQueuedNow,
+  onCancelMidTurnMessage,
   onRewindTurn,
   onUndoRewind,
   onBackgroundTool,
@@ -506,7 +519,8 @@ export function ChatStream({
             />
           ))}
 
-          {hasFileChanges &&
+          {!isStreaming &&
+            hasFileChanges &&
             anchorSummaryInTurnIndex === -1 &&
             fileChangesSnapshot && (
               <TurnFileSummaryCard
@@ -557,35 +571,139 @@ export function ChatStream({
         </div>
       )}
 
-      {/* SoftInterruptQueueStrip above composer when user queues follow-up instructions mid-turn */}
-      {softInterrupts.length > 0 && (
-        <div
-          data-testid="soft-interrupt-queue-strip"
-          className="mx-auto mb-1.5 flex w-full max-w-[732px] flex-col gap-1 px-4 @min-[640px]/app:px-6"
-        >
-          {softInterrupts.map((item) => (
-            <div
-              key={item.id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-hairline bg-pane px-3 py-1.5 text-xs text-body"
-            >
-              <span className="truncate">
-                <strong className="font-medium text-ink">Queued steer:</strong>{" "}
-                {item.text}
-              </span>
-              {onCancelSoftInterrupt && (
-                <button
-                  type="button"
-                  aria-label="Cancel queued soft interrupt"
-                  onClick={() => onCancelSoftInterrupt(item.id)}
-                  className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-ink hover:bg-hover hover:text-ink"
+      {/* Unified Mid-Turn Steer & Queue Strip above composer */}
+      {(() => {
+        const stripItems: MidTurnMessageItem[] =
+          midTurnMessages && midTurnMessages.length > 0
+            ? midTurnMessages
+            : softInterrupts.map((item) => ({
+                id: item.id,
+                sessionId: sessionId ?? "",
+                mode: "steer" as const,
+                text: item.text,
+                createdAtMs: item.queuedAtMs,
+              }));
+        if (stripItems.length === 0) return null;
+        let queueIndex = 0;
+        const hasQueued = stripItems.some((item) => item.mode === "queue");
+        return (
+          <div
+            data-testid="soft-interrupt-queue-strip"
+            className="mx-auto mb-1.5 flex w-full max-w-[732px] min-w-0 flex-col gap-1 px-4 @min-[640px]/app:px-6"
+          >
+            {isQueuePaused && !isStreaming && hasQueued && (
+              <div className="truncate px-1 text-[11px] text-muted-ink">
+                Queue paused after stop — send or edit queued items below
+              </div>
+            )}
+            {stripItems.map((item) => {
+              const isSteer = item.mode === "steer";
+              if (!isSteer) {
+                queueIndex += 1;
+              }
+              const currentQueueRank = queueIndex;
+              const handleCancel = () => {
+                if (onCancelMidTurnMessage) {
+                  onCancelMidTurnMessage(item.id);
+                } else {
+                  onCancelSoftInterrupt?.(item.id);
+                }
+              };
+              return (
+                <div
+                  key={item.id}
+                  data-testid={`midturn-item-${item.id}`}
+                  data-midturn-mode={item.mode}
+                  className="flex min-w-0 items-center gap-1.5 overflow-hidden rounded-lg border border-hairline bg-pane px-2.5 py-1.5 text-xs text-body"
                 >
-                  <X className="size-3.5" aria-hidden="true" />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+                  {isSteer ? (
+                    <>
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 shrink-0 animate-pulse rounded-full bg-brand"
+                      />
+                      <span className="shrink-0 rounded bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-semibold text-brand-text">
+                        Steer
+                      </span>
+                      <span className="hidden shrink-0 text-[11px] text-muted-ink @min-[420px]/chat:inline">
+                        Auto-sending
+                      </span>
+                    </>
+                  ) : (
+                    <span className="shrink-0 rounded border border-hairline bg-inset px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-ink tabular-nums">
+                      Queued #{currentQueueRank}
+                    </span>
+                  )}
+
+                  <span className="min-w-0 flex-1 truncate text-ink">
+                    {item.text}
+                  </span>
+
+                  <div className="flex shrink-0 items-center gap-1">
+                    {!isSteer && isStreaming && onPromoteQueuedToSteer && (
+                      <button
+                        type="button"
+                        data-testid={`promote-to-steer-${item.id}`}
+                        title="Send as steer now without interrupting"
+                        onClick={() => onPromoteQueuedToSteer(item.id)}
+                        className="cursor-pointer rounded-md border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-[11px] font-medium text-brand-text transition-colors hover:border-brand/50"
+                      >
+                        Steer
+                      </button>
+                    )}
+
+                    {!isSteer && !isStreaming && onSendQueuedNow && (
+                      <button
+                        type="button"
+                        data-testid={`send-queued-now-${item.id}`}
+                        title="Send queued message now"
+                        onClick={() => onSendQueuedNow(item.id)}
+                        className="cursor-pointer rounded-md border border-premium bg-active px-1.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-brand hover:text-brand-text"
+                      >
+                        Send
+                      </button>
+                    )}
+
+                    {onEditMidTurnMessage && (
+                      <button
+                        type="button"
+                        data-testid={`edit-midturn-${item.id}`}
+                        aria-label={
+                          isSteer ? "Edit steer message" : "Edit queued message"
+                        }
+                        title="Edit in composer"
+                        onClick={() => onEditMidTurnMessage(item.id)}
+                        className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded px-1 text-[11px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                      >
+                        <Pencil className="size-3" aria-hidden="true" />
+                        <span className="hidden @min-[460px]/chat:inline">
+                          Edit
+                        </span>
+                      </button>
+                    )}
+
+                    {(onCancelMidTurnMessage || onCancelSoftInterrupt) && (
+                      <button
+                        type="button"
+                        data-testid={`cancel-midturn-${item.id}`}
+                        aria-label={
+                          isSteer
+                            ? "Cancel queued soft interrupt"
+                            : "Remove queued message"
+                        }
+                        onClick={handleCancel}
+                        className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-ink hover:bg-hover hover:text-ink"
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }

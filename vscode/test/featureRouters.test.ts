@@ -9,6 +9,8 @@ import {
 } from "../shared/vscodeProtocol.js";
 import {
   createFeatureRouter,
+  formatHarnessModelSpec,
+  mapModelRouteOption,
   mapRawBackgroundTask,
   mapRawFileChangeActionResponse,
   mapRawFileChangeDiff,
@@ -17,6 +19,7 @@ import {
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
   normalizeLogoutProviderId,
+  reconcileAuthConsistentRoutes,
   type FeatureRouterAuthManager,
   type FeatureRouterDeps,
 } from "../host/runtime/featureRouters.js";
@@ -1686,4 +1689,658 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
     sessionId: "sess_fc",
   });
   assert.equal(fallbackRedo.ok, false);
+});
+
+test("formatHarnessModelSpec, mapModelRouteOption, and reconcileAuthConsistentRoutes enforce auth consistency and rayu: routing", async () => {
+  // 1. formatHarnessModelSpec rules
+  assert.equal(formatHarnessModelSpec(""), "");
+  assert.equal(formatHarnessModelSpec("   "), "");
+  assert.equal(formatHarnessModelSpec("default"), "");
+  assert.equal(formatHarnessModelSpec("claude-opus-4-6", "rayu"), "rayu:claude-opus-4-6");
+  assert.equal(formatHarnessModelSpec("claude-opus-4-6", "rayu-cloud"), "rayu:claude-opus-4-6");
+  assert.equal(formatHarnessModelSpec("claude-opus-4-6", undefined, "rayu"), "rayu:claude-opus-4-6");
+  assert.equal(formatHarnessModelSpec("rayu:claude-opus-4-6", "rayu"), "rayu:claude-opus-4-6");
+  assert.equal(formatHarnessModelSpec("openrouter:foo/bar", "rayu"), "openrouter:foo/bar");
+  assert.equal(formatHarnessModelSpec("claude-opus-4-6", "anthropic", "messages"), "claude-opus-4-6");
+
+  // 2. mapModelRouteOption generates collision-free route IDs & modelSpec
+  const rayuRoute = mapModelRouteOption({
+    model: "rayu:claude-opus-4-6",
+    provider: "rayu-cloud",
+    label: "Claude Opus 4.6",
+    available: true,
+  });
+  assert.equal(rayuRoute?.id, "rayu:claude-opus-4-6");
+  assert.equal(rayuRoute?.model, "claude-opus-4-6");
+  assert.equal(rayuRoute?.modelSpec, "rayu:claude-opus-4-6");
+  assert.equal(rayuRoute?.provider, "rayu");
+  assert.equal(rayuRoute?.apiMethod, "rayu");
+
+  const anthropicRoute = mapModelRouteOption({
+    model: "claude-opus-4-6",
+    provider: "claude",
+    api_method: "messages",
+    available: false,
+    detail: "Missing ANTHROPIC_API_KEY",
+  });
+  assert.equal(anthropicRoute?.id, "messages:claude-opus-4-6");
+  assert.equal(anthropicRoute?.model, "claude-opus-4-6");
+  assert.equal(anthropicRoute?.modelSpec, "claude-opus-4-6");
+  assert.equal(anthropicRoute?.provider, "anthropic");
+  assert.notEqual(rayuRoute?.id, anthropicRoute?.id);
+
+  // 3. Reconcile deduplicates rayu vs unavailable anthropic for same model name & orders auth-first
+  const reconciledSignedIn = reconcileAuthConsistentRoutes({
+    rawRoutes: [
+      {
+        model: "claude-opus-4-6",
+        provider: "anthropic",
+        api_method: "messages",
+        available: false,
+        detail: "Missing ANTHROPIC_API_KEY",
+      },
+      {
+        model: "gpt-5.4",
+        provider: "openai",
+        api_method: "responses",
+        available: true,
+        detail: "OpenAI Direct",
+      },
+      {
+        model: "claude-opus-4-6",
+        provider: "rayu",
+        api_method: "rayu",
+        available: false,
+        detail: "Stale daemon status",
+      },
+    ],
+    hostAccount: {
+      signedIn: true,
+      authMethod: "oauth",
+      email: "alice@rayucode.com",
+      windows: [],
+    },
+    rayuHostedModels: [
+      { code: "claude-opus-4-6", label: "Claude Opus 4.6" },
+      {
+        code: "rayu-future-2099-pro",
+        label: "Rayu Future 2099 Pro",
+        description: "Next-gen coding",
+        supportsEffort: true,
+        supportsFast: true,
+      },
+    ],
+    runtimeModel: "claude-opus-4-6",
+    runtimeProvider: "anthropic",
+  });
+
+  // No duplicate rayu:claude-opus-4-6, distinct ID from messages:claude-opus-4-6,
+  // and stable auth-first partition: [available Rayu, available other, unavailable]
+  assert.deepEqual(
+    reconciledSignedIn.routes.map((r) => `${r.id}:${r.available}`),
+    [
+      "rayu:claude-opus-4-6:true",
+      "rayu:rayu-future-2099-pro:true",
+      "responses:gpt-5.4:true",
+      "messages:claude-opus-4-6:false",
+    ],
+  );
+  assert.equal(reconciledSignedIn.routes[0]?.authMethod, "oauth");
+  assert.equal(reconciledSignedIn.routes[0]?.accountLabel, "alice@rayucode.com");
+  assert.equal(reconciledSignedIn.routes[0]?.modelSpec, "rayu:claude-opus-4-6");
+  assert.equal(reconciledSignedIn.routes[1]?.modelSpec, "rayu:rayu-future-2099-pro");
+  // defaultModel MUST NOT point to unavailable anthropic — must pick first available authenticated route
+  assert.equal(reconciledSignedIn.defaultModel, "rayu:claude-opus-4-6");
+
+  // 4. Signed-out hostAccount marks daemon Rayu routes unavailable and selects available provider instead
+  const reconciledSignedOut = reconcileAuthConsistentRoutes({
+    rawRoutes: [
+      {
+        model: "claude-opus-4-6",
+        provider: "rayu",
+        api_method: "rayu",
+        available: true,
+        detail: "Rayu Cloud",
+      },
+      {
+        model: "gpt-5.4",
+        provider: "openai",
+        api_method: "responses",
+        available: true,
+        detail: "OpenAI Direct",
+      },
+    ],
+    hostAccount: {
+      signedIn: false,
+      authMethod: "none",
+      windows: [],
+    },
+    runtimeModel: "claude-opus-4-6",
+    runtimeProvider: "rayu",
+  });
+  assert.deepEqual(
+    reconciledSignedOut.routes.map((r) => `${r.id}:${r.available}`),
+    ["responses:gpt-5.4:true", "rayu:claude-opus-4-6:false"],
+  );
+  assert.equal(reconciledSignedOut.routes[1]?.detail, "Sign in to Rayu Cloud");
+  assert.equal(reconciledSignedOut.defaultModel, "gpt-5.4");
+});
+
+test("settings.models.get works with no active session (HomePage) and settings.models.refresh forces live refresh", async () => {
+  const fetchCalls: boolean[] = [];
+  const notifyCalls: string[] = [];
+  const runtimeCalls: string[] = [];
+  let hostedModels = [
+    {
+      code: "claude-sonnet-4-6",
+      label: "Claude Sonnet 4.6",
+      description: "Rayu Cloud default",
+      supportsEffort: true,
+    },
+    {
+      code: "claude-opus-4-6",
+      label: "Claude Opus 4.6",
+      description: "Flagship",
+    },
+  ];
+
+  const daemonStatus: DaemonStatusView = {
+    state: "connected",
+    version: "rayu-harness-v1.14",
+    protocolVersion: "1.14",
+    socketPath: "/tmp/rayu-test.sock",
+    latencyMs: 2,
+    capabilities: ["permissions"],
+    isRayuRepo: true,
+  };
+
+  const deps: FeatureRouterDeps = {
+    bridgeManager: {
+      getStatus: () => daemonStatus,
+      ping: async () => ({ ok: true, latencyMs: 2 }),
+      reconnect: async () => daemonStatus,
+      restart: async () => daemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => undefined,
+      getActiveModel: () => undefined,
+      getActiveProvider: () => undefined,
+      getActivePermissionMode: () => "default",
+      getClient: async () =>
+        ({
+          listSessions: async () => [],
+          getRuntimeInfo: async () => {
+            throw new Error("should not be called when no session exists");
+          },
+        }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+      listSessions: async () => ({ sessions: [] }),
+      createSession: async () => ({
+        sessionId: "sess_1",
+        title: "Session",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      attachSession: async (sessionId) => ({
+        sessionId,
+        title: "Session",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      runtimeCommand: async (command) => {
+        runtimeCalls.push(command);
+        if (command === "refresh_model_list") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              routes: [
+                {
+                  model: "claude-opus-4-6",
+                  provider: "anthropic",
+                  api_method: "messages",
+                  available: false,
+                  detail: "No API key",
+                },
+              ],
+            },
+            message: "refreshed",
+          };
+        }
+        return { session_id: "", command, data: {}, message: "ok" };
+      },
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      notifyDaemonAuthChanged: async (provider = "rayu") => {
+        notifyCalls.push(provider);
+      },
+    },
+    authManager: {
+      getAccountStatusSnapshot: () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        displayName: "Dev User",
+        windows: [],
+      }),
+      getAccountStatus: async () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        displayName: "Dev User",
+        windows: [],
+      }),
+      startBrowserSignIn: async () => ({
+        ok: true,
+        authUrl: "https://rayucode.com/vscode-login?state=1",
+        state: { signedIn: true, authMethod: "oauth", windows: [] },
+      }),
+      cancelSignIn: () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signInWithApiKey: async () => ({ signedIn: true, authMethod: "apiKey", windows: [] }),
+      completeManualCallback: async () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signOut: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      clearSavedApiKeyOnly: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      setBypassPacing: async (enabled) => ({ ok: true, enabled }),
+      getCachedHostedModels: () => [...hostedModels],
+      fetchHostedModels: async (forceRefresh = false) => {
+        fetchCalls.push(forceRefresh);
+        if (forceRefresh) {
+          hostedModels = [
+            ...hostedModels,
+            {
+              code: "rayu-quantum-2099",
+              label: "Rayu Quantum 2099",
+              description: "Arbitrary future model",
+            },
+          ];
+        }
+        return [...hostedModels];
+      },
+    },
+    gitBridge: {
+      getStatus: async () => ({
+        branch: "main",
+        totalAdditions: 0,
+        totalDeletions: 0,
+        files: [],
+        stagedCount: 0,
+      }),
+      getDiff: async ({ path }) => ({
+        path,
+        originalContent: "",
+        modifiedContent: "",
+        unifiedDiff: "",
+        additions: 0,
+        deletions: 0,
+      }),
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: () => ({ ok: true }),
+      undo: async () => ({ ok: true }),
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(_k: string, d: T) => d,
+    updateGlobalState: async () => {},
+    getRuntimeSettings: () => ({
+      socketPath: "/tmp/rayu-test.sock",
+      binaryPath: "/usr/local/bin/rayu",
+      autoStart: true,
+    }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  };
+
+  const router = createFeatureRouter(deps);
+
+  // 1. settings.models.get on HomePage (no active session) still returns signed-in Rayu models + rayu: defaultModel
+  const homeModels = await router.call("settings.models.get", undefined);
+  assert.deepEqual(fetchCalls, [false]);
+  assert.equal(homeModels.defaultModel, "rayu:claude-sonnet-4-6");
+  assert.deepEqual(
+    homeModels.routes?.map((r) => `${r.id}:${r.modelSpec}:${r.available}`),
+    [
+      "rayu:claude-sonnet-4-6:rayu:claude-sonnet-4-6:true",
+      "rayu:claude-opus-4-6:rayu:claude-opus-4-6:true",
+    ],
+  );
+  assert.equal(homeModels.routes?.[0]?.accountLabel, "dev@rayucode.com");
+  assert.equal(homeModels.routes?.[0]?.authMethod, "oauth");
+
+  // 2. settings.models.refresh forces fetchHostedModels(true) + notifies daemon + merges & orders routes
+  const refreshed = await router.call("settings.models.refresh", undefined);
+  assert.equal(refreshed.ok, true);
+  assert.deepEqual(fetchCalls, [false, true]);
+  assert.deepEqual(notifyCalls, ["rayu"]);
+  assert.ok(runtimeCalls.includes("refresh_model_list"));
+  assert.equal(refreshed.routeCount, 4);
+  assert.deepEqual(
+    refreshed.routes?.map((r) => `${r.id}:${r.available}`),
+    [
+      "rayu:claude-sonnet-4-6:true",
+      "rayu:claude-opus-4-6:true",
+      "rayu:rayu-quantum-2099:true",
+      "messages:claude-opus-4-6:false",
+    ],
+  );
+});
+
+test("featureRouters enforces background session isolation, softInterrupt/cancelSoftInterrupts parity, and rewind messageIndex parsing", async () => {
+  const softInterruptCalls: Array<{
+    sessionId: string;
+    text: string;
+    options?: { urgent?: boolean; clientId?: string; images?: Array<[string, string]> };
+  }> = [];
+  const cancelSingleCalls: Array<{ sessionId: string; interruptId: string }> = [];
+  const cancelAllCalls: string[] = [];
+  const rewindCalls: Array<{ sessionId: string; index: number }> = [];
+  const runtimeCalls: Array<{ command: string; args: string[]; sessionId?: string }> = [];
+  const refreshCalls: Array<string | undefined> = [];
+  const cleanupLocalCalls: Array<string | undefined> = [];
+
+  let activeSessionId: string | undefined = "sess_1";
+  let supportsSoftInterruptIds = true;
+  let singleCancelReturn = true;
+
+  const makeRouter = () =>
+    createFeatureRouter({
+      bridgeManager: {
+        getStatus: () => ({
+          state: "connected",
+          version: "rayu-harness-v1.14",
+          capabilities: supportsSoftInterruptIds
+            ? ["permissions", "soft_interrupt_ids"]
+            : ["permissions"],
+        }),
+        ping: async () => ({ ok: true, latencyMs: 1 }),
+        reconnect: async () => ({ state: "connected", capabilities: [] }),
+        restart: async () => ({ state: "connected", capabilities: [] }),
+        reloadDaemon: async () => ({ ok: true }),
+        openOutputLog: () => {},
+      },
+      sessionHub: {
+        getActiveSessionId: () => activeSessionId,
+        getActiveModel: () => "claude-opus-4-6",
+        getActiveProvider: () => "rayu",
+        getActivePermissionMode: () => "default",
+        getClient: async () =>
+          ({
+            supports: (cap: string) =>
+              cap === "soft_interrupt_ids" ? supportsSoftInterruptIds : true,
+            softInterruptWithId: async (
+              sessionId: string,
+              text: string,
+              options?: {
+                urgent?: boolean;
+                clientId?: string;
+                images?: Array<[string, string]>;
+              },
+            ) => {
+              softInterruptCalls.push({ sessionId, text, options });
+            },
+            cancelSoftInterrupt: async (sessionId: string, interruptId: string) => {
+              cancelSingleCalls.push({ sessionId, interruptId });
+              return singleCancelReturn;
+            },
+            cancelSoftInterrupts: async (sessionId: string) => {
+              cancelAllCalls.push(sessionId);
+            },
+            rewind: async (sessionId: string, index: number) => {
+              rewindCalls.push({ sessionId, index });
+            },
+          }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+        listSessions: async () => ({ sessions: [], activeSessionId }),
+        createSession: async () => ({
+          sessionId: "sess_1",
+          title: "S1",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        attachSession: async (sessionId) => ({
+          sessionId,
+          title: sessionId,
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+        setSessionPinned: async () => {},
+        setSessionArchived: async () => {},
+        setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+        respondPermission: async () => {},
+        runtimeCommand: async (command, args = [], sessionId) => {
+          runtimeCalls.push({ command, args, sessionId });
+          if (command === "background" && args[0] === "cleanup") {
+            return {
+              session_id: sessionId ?? "",
+              command,
+              data: { removed_files: 2 },
+              message: "ok",
+            };
+          }
+          return {
+            session_id: sessionId ?? "",
+            command,
+            data: { cancelled: true },
+            message: "ok",
+          };
+        },
+        getBackgroundTasks: () => [],
+        refreshBackgroundProcesses: async (sessionId) => {
+          refreshCalls.push(sessionId);
+          return [
+            {
+              taskId: "bg_s1",
+              sessionId: "sess_1",
+              group: "shells",
+              toolName: "bash",
+              displayName: "cargo test",
+              status: "running",
+              progressKind: "indeterminate",
+              summary: "Running",
+              startedAtMs: 1000,
+              updatedAtMs: 2000,
+            },
+            {
+              taskId: "bg_other",
+              sessionId: "sess_2",
+              group: "shells",
+              toolName: "bash",
+              displayName: "other task",
+              status: "running",
+              progressKind: "indeterminate",
+              summary: "Other",
+              startedAtMs: 1000,
+              updatedAtMs: 2100,
+            },
+          ];
+        },
+        removeCompletedBackgroundTasks: (sessionId) => {
+          cleanupLocalCalls.push(sessionId);
+          return 1;
+        },
+        getSidePanelState: () => ({ pages: [] }),
+        closeSidePanelPage: () => {},
+        getApplets: () => [],
+        getCachedTodos: () => [],
+        mapSessionInfoToSummary: (info) => ({
+          sessionId: info.session_id,
+          title: info.title ?? "Untitled",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+      },
+      gitBridge: {
+        getStatus: async () => ({
+          branch: "main",
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+          stagedCount: 0,
+        }),
+        getDiff: async ({ path }) => ({
+          path,
+          originalContent: "",
+          modifiedContent: "",
+          unifiedDiff: "",
+          additions: 0,
+          deletions: 0,
+        }),
+        stage: async () => ({ ok: true }),
+        unstage: async () => ({ ok: true }),
+        keep: () => ({ ok: true }),
+        undo: async () => ({ ok: true }),
+        commit: async () => ({ ok: true }),
+        createPr: async () => ({ ok: true }),
+        listBranches: async () => ({ current: "main", branches: ["main"] }),
+        checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+      },
+      editorBridge: {
+        openFile: async () => {},
+        openWorktreeWindow: async () => {},
+        openExternal: async () => {},
+        pickFiles: async () => [],
+        findWorkspaceFiles: async () => [],
+      },
+      getWorkspaceFolders: async () => [],
+      setProjectIcon: async () => {},
+      getGlobalState: <T>(_k: string, d: T) => d,
+      updateGlobalState: async () => {},
+      getRuntimeSettings: () => ({
+        socketPath: "/tmp/rayu-test.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+      }),
+      updateRuntimeSettings: async () => {},
+      openKeybindings: async () => {},
+    });
+
+  const router = makeRouter();
+
+  // 1. background.list filters strictly to targetSessionId and returns [] when no active session exists
+  const listForS1 = await router.call("background.list", undefined);
+  assert.deepEqual(
+    listForS1.tasks.map((t) => t.taskId),
+    ["bg_s1"],
+  );
+  assert.deepEqual(refreshCalls, ["sess_1"]);
+
+  activeSessionId = undefined;
+  const listWithNoSession = await router.call("background.list", undefined);
+  assert.deepEqual(listWithNoSession.tasks, []);
+  assert.equal(refreshCalls.length, 1); // Did NOT call refreshBackgroundProcesses
+
+  activeSessionId = "sess_1";
+
+  // 2. background.cancel and background.cleanup forward target sessionId
+  await router.call("background.cancel", { taskId: "bg_s1", sessionId: "sess_1" });
+  assert.deepEqual(runtimeCalls.at(-1), {
+    command: "background",
+    args: ["cancel", "bg_s1"],
+    sessionId: "sess_1",
+  });
+  assert.equal(refreshCalls.at(-1), "sess_1");
+
+  await router.call("background.cleanup", undefined);
+  assert.deepEqual(runtimeCalls.at(-1), {
+    command: "background",
+    args: ["cleanup"],
+    sessionId: "sess_1",
+  });
+  assert.equal(cleanupLocalCalls.at(-1), "sess_1");
+
+  // 3. sessions.softInterrupt forwards urgent: false, caller clientId, and normalized images
+  const siRes = await router.call("sessions.softInterrupt", {
+    sessionId: "sess_1",
+    text: "Use strict types",
+    clientId: "client_steer_42",
+    images: [
+      {
+        mediaType: "image/png",
+        data: "data:image/png;base64,iVBORw0KGgo=",
+      },
+    ],
+  });
+  assert.deepEqual(siRes, { ok: true, interruptId: "client_steer_42" });
+  assert.deepEqual(softInterruptCalls[0], {
+    sessionId: "sess_1",
+    text: "Use strict types",
+    options: {
+      urgent: false,
+      clientId: "client_steer_42",
+      images: [["image/png", "iVBORw0KGgo="]],
+    },
+  });
+
+  // 4. sessions.cancelSoftInterrupts uses cancelSoftInterrupt when capability is present, else falls back
+  singleCancelReturn = false;
+  const cancelByIdRes = await router.call("sessions.cancelSoftInterrupts", {
+    sessionId: "sess_1",
+    interruptId: "client_steer_42",
+  });
+  assert.deepEqual(cancelByIdRes, { ok: true, cancelled: false });
+  assert.deepEqual(cancelSingleCalls, [
+    { sessionId: "sess_1", interruptId: "client_steer_42" },
+  ]);
+
+  supportsSoftInterruptIds = false;
+  const fallbackCancelRes = await router.call("sessions.cancelSoftInterrupts", {
+    sessionId: "sess_1",
+    interruptId: "client_steer_42",
+  });
+  assert.deepEqual(fallbackCancelRes, { ok: true, cancelled: true });
+  assert.equal(cancelSingleCalls.length, 1);
+  assert.deepEqual(cancelAllCalls, ["sess_1"]);
+
+  // 5. sessions.rewind resolves messageIndex, hist_<sid>_<n>, numeric string, and fallback 0
+  await router.call("sessions.rewind", {
+    sessionId: "sess_1",
+    turnId: "hist_ses_abc_3",
+  });
+  await router.call("sessions.rewind", {
+    sessionId: "sess_1",
+    turnId: "hist_ses_abc_1",
+    messageIndex: 7,
+  });
+  await router.call("sessions.rewind", {
+    sessionId: "sess_1",
+    turnId: "5",
+  });
+  await router.call("sessions.rewind", {
+    sessionId: "sess_1",
+    turnId: "not_a_number",
+  });
+  assert.deepEqual(rewindCalls, [
+    { sessionId: "sess_1", index: 3 },
+    { sessionId: "sess_1", index: 7 },
+    { sessionId: "sess_1", index: 5 },
+    { sessionId: "sess_1", index: 0 },
+  ]);
 });

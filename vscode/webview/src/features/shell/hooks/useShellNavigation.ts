@@ -171,15 +171,22 @@ export function useShellNavigation() {
   );
 
   const openInEditorPanel = React.useCallback(
-    (route?: AppRoute, sessionId?: string | null) => {
+    (route?: AppRoute, sessionId?: string | null, beside = true) => {
       postToHost({
         type: "rayucode.ui.openEditorPanel",
         route: route ?? activeRoute,
         sessionId: (sessionId ?? activeSessionId) || undefined,
+        beside,
       });
     },
     [activeRoute, activeSessionId],
   );
+
+  const focusSidebar = React.useCallback(() => {
+    postToHost({
+      type: "rayucode.ui.focusSidebar",
+    });
+  }, []);
 
   const openIntegratedTerminal = React.useCallback(
     (cwd?: string) => {
@@ -209,6 +216,7 @@ export function useShellNavigation() {
     toggleInspector,
     openRightTab,
     openInEditorPanel,
+    focusSidebar,
     openIntegratedTerminal,
   };
 }

@@ -88,6 +88,7 @@ import {
   buildRayuPlanLadder,
   buildVscodeLoginUrl,
   getRayuWebBase,
+  type RayuCloudModelEntry,
   type RayuSignInMode,
 } from "../auth/rayuHostAuthManager.js";
 
@@ -113,19 +114,66 @@ function formatCountdown(seconds: number): string {
   return `${mins}m`;
 }
 
-function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
+export function formatHarnessModelSpec(
+  model: string,
+  provider?: string,
+  apiMethod?: string,
+): string {
+  const trimmed = model.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default") return "";
+  if (trimmed.includes(":")) return trimmed;
+  if (
+    normalizeUiProviderId(provider ?? "") === "rayu" ||
+    normalizeUiProviderId(apiMethod ?? "") === "rayu"
+  ) {
+    return `rayu:${trimmed}`;
+  }
+  return trimmed;
+}
+
+export function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
   const r = asRecord(raw);
-  const model = typeof r.model === "string" ? r.model.trim() : "";
-  if (!model) return null;
+  const rawModel = typeof r.model === "string" ? r.model.trim() : "";
+  if (!rawModel) return null;
+  const bareModel = rawModel.replace(/^rayu:/i, "").trim();
+  if (!bareModel) return null;
+  const rawProvider = typeof r.provider === "string" ? r.provider.trim() : "";
   const provider =
-    typeof r.provider === "string" && r.provider.trim() ? r.provider.trim() : "rayu";
-  const id = typeof r.id === "string" && r.id.trim() ? r.id.trim() : model;
-  const label = typeof r.label === "string" && r.label.trim() ? r.label.trim() : model;
-  const apiMethod =
-    typeof r.api_method === "string"
-      ? r.api_method
-      : typeof r.apiMethod === "string"
-        ? r.apiMethod
+    /^rayu:/i.test(rawModel) || !rawProvider
+      ? "rayu"
+      : normalizeUiProviderId(rawProvider);
+  const rawApiMethod =
+    typeof r.api_method === "string" && r.api_method.trim()
+      ? r.api_method.trim()
+      : typeof r.apiMethod === "string" && r.apiMethod.trim()
+        ? r.apiMethod.trim()
+        : undefined;
+  const apiMethod = rawApiMethod ?? (provider === "rayu" ? "rayu" : undefined);
+  const modelSpec = formatHarnessModelSpec(rawModel, provider, apiMethod);
+  const id =
+    provider === "rayu"
+      ? `rayu:${bareModel}`
+      : `${apiMethod || provider}:${bareModel}`;
+  const label =
+    typeof r.label === "string" && r.label.trim() ? r.label.trim() : bareModel;
+  const rawAuthMethod =
+    typeof r.auth_method === "string"
+      ? r.auth_method.trim().toLowerCase()
+      : typeof r.authMethod === "string"
+        ? r.authMethod.trim().toLowerCase()
+        : undefined;
+  const authMethod: ModelRouteOptionView["authMethod"] =
+    rawAuthMethod === "oauth" ||
+    rawAuthMethod === "api_key" ||
+    rawAuthMethod === "env" ||
+    rawAuthMethod === "none"
+      ? rawAuthMethod
+      : undefined;
+  const accountLabel =
+    typeof r.account_label === "string" && r.account_label.trim()
+      ? r.account_label.trim()
+      : typeof r.accountLabel === "string" && r.accountLabel.trim()
+        ? r.accountLabel.trim()
         : undefined;
   const available = typeof r.available === "boolean" ? r.available : undefined;
   const detail = typeof r.detail === "string" ? r.detail : undefined;
@@ -156,10 +204,13 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
 
   return {
     id,
-    model,
+    model: bareModel,
+    ...(modelSpec ? { modelSpec } : {}),
     provider,
     label,
     ...(apiMethod !== undefined ? { apiMethod } : {}),
+    ...(authMethod !== undefined ? { authMethod } : {}),
+    ...(accountLabel !== undefined ? { accountLabel } : {}),
     ...(available !== undefined ? { available } : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(supportsEffort !== undefined ? { supportsEffort } : {}),
@@ -167,6 +218,161 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(pricingLabel !== undefined ? { pricingLabel } : {}),
   };
+}
+
+export interface ReconcileAuthConsistentRoutesInput {
+  rawRoutes?: readonly unknown[];
+  hostAccount?: AccountStatusView;
+  rayuHostedModels?: readonly RayuCloudModelEntry[];
+  runtimeModel?: string;
+  runtimeProvider?: string;
+  fallbackActiveModel?: string;
+}
+
+export interface ReconcileAuthConsistentRoutesResult {
+  routes: ModelRouteOptionView[];
+  defaultModel?: string;
+}
+
+export function reconcileAuthConsistentRoutes(
+  input: ReconcileAuthConsistentRoutesInput,
+): ReconcileAuthConsistentRoutesResult {
+  const seenIds = new Set<string>();
+  const mapped: ModelRouteOptionView[] = [];
+  for (const raw of input.rawRoutes ?? []) {
+    const option = mapModelRouteOption(raw);
+    if (!option || seenIds.has(option.id)) continue;
+    seenIds.add(option.id);
+    mapped.push(option);
+  }
+
+  const hostAccount = input.hostAccount;
+  let reconciled: ModelRouteOptionView[];
+
+  if (hostAccount?.signedIn === true) {
+    const rayuAuthMethod: "api_key" | "oauth" =
+      hostAccount.authMethod === "apiKey" ? "api_key" : "oauth";
+    const rayuAccountLabel =
+      hostAccount.email ??
+      hostAccount.displayName ??
+      (hostAccount.authMethod === "apiKey" ? "Rayu API Key" : "Rayu Cloud");
+
+    const existingRayuCodes = new Set<string>();
+    reconciled = mapped.map((route) => {
+      if (route.provider !== "rayu") return route;
+      existingRayuCodes.add(route.model);
+      return {
+        ...route,
+        available: true,
+        authMethod: rayuAuthMethod,
+        accountLabel: rayuAccountLabel,
+        modelSpec: formatHarnessModelSpec(route.model, "rayu", "rayu"),
+      };
+    });
+
+    for (const entry of input.rayuHostedModels ?? []) {
+      const bare = entry.code.trim().replace(/^rayu:/i, "").trim();
+      if (!bare || existingRayuCodes.has(bare)) continue;
+      existingRayuCodes.add(bare);
+      reconciled.push({
+        id: `rayu:${bare}`,
+        model: bare,
+        modelSpec: `rayu:${bare}`,
+        provider: "rayu",
+        label: entry.label?.trim() || bare,
+        apiMethod: "rayu",
+        authMethod: rayuAuthMethod,
+        accountLabel: rayuAccountLabel,
+        available: true,
+        detail: entry.description?.trim() || "Rayu Cloud",
+        ...(entry.supportsEffort !== undefined
+          ? { supportsEffort: entry.supportsEffort }
+          : {}),
+        ...(entry.supportsFast !== undefined
+          ? { supportsFast: entry.supportsFast }
+          : {}),
+      });
+    }
+  } else if (hostAccount?.signedIn === false) {
+    reconciled = mapped.map((route) => {
+      if (route.provider !== "rayu") return route;
+      return {
+        ...route,
+        available: false,
+        detail: "Sign in to Rayu Cloud",
+      };
+    });
+  } else {
+    reconciled = mapped;
+  }
+
+  const availableRayuRoutes: ModelRouteOptionView[] = [];
+  const availableOtherRoutes: ModelRouteOptionView[] = [];
+  const unavailableRoutes: ModelRouteOptionView[] = [];
+
+  for (const route of reconciled) {
+    if (route.available === false) {
+      unavailableRoutes.push(route);
+    } else if (route.provider === "rayu") {
+      availableRayuRoutes.push(route);
+    } else {
+      availableOtherRoutes.push(route);
+    }
+  }
+
+  const routes = [
+    ...availableRayuRoutes,
+    ...availableOtherRoutes,
+    ...unavailableRoutes,
+  ];
+
+  const candidateModel =
+    input.runtimeModel?.trim() || input.fallbackActiveModel?.trim() || "";
+  const candidateBare = candidateModel.replace(/^rayu:/i, "").trim();
+  const candidateProvider = /^rayu:/i.test(candidateModel)
+    ? "rayu"
+    : input.runtimeProvider?.trim()
+      ? normalizeUiProviderId(input.runtimeProvider)
+      : undefined;
+
+  let matched: ModelRouteOptionView | undefined;
+  if (candidateModel) {
+    if (candidateProvider) {
+      matched = routes.find(
+        (r) =>
+          r.provider === candidateProvider &&
+          (r.modelSpec === candidateModel || r.model === candidateBare),
+      );
+    }
+    if (!matched) {
+      matched = routes.find((r) => r.modelSpec === candidateModel);
+    }
+    if (!matched && !candidateProvider) {
+      matched =
+        routes.find(
+          (r) =>
+            r.available !== false &&
+            (r.model === candidateBare || r.modelSpec === candidateModel),
+        ) ??
+        routes.find(
+          (r) => r.model === candidateBare || r.modelSpec === candidateModel,
+        );
+    }
+  }
+
+  let defaultModel: string | undefined;
+  if (matched && matched.available !== false) {
+    defaultModel = matched.modelSpec || matched.model;
+  } else {
+    const firstAvailable = routes.find((r) => r.available !== false);
+    if (firstAvailable) {
+      defaultModel = firstAvailable.modelSpec || firstAvailable.model;
+    } else {
+      defaultModel = input.runtimeModel ?? input.fallbackActiveModel;
+    }
+  }
+
+  return { routes, defaultModel };
 }
 
 const DATA_URL_PREFIX_RE = /^data:([^;]+);base64,/i;
@@ -649,6 +855,8 @@ export interface FeatureRouterHub {
     workingDir?: string;
     permissionMode?: PermissionModeId;
     model?: string;
+    provider?: string;
+    apiMethod?: string;
   }): Promise<SessionSummaryView>;
   attachSession(sessionId: string): Promise<SessionSummaryView>;
   getHistory(sessionId: string): Promise<SessionHistoryView>;
@@ -673,7 +881,7 @@ export interface FeatureRouterHub {
     data: unknown;
     message: string;
   }>;
-  getBackgroundTasks(): BackgroundProcessView[];
+  getBackgroundTasks(sessionId?: string): BackgroundProcessView[];
   refreshBackgroundProcesses(sessionId?: string): Promise<BackgroundProcessView[]>;
   removeCompletedBackgroundTasks(sessionId?: string): number;
   getSidePanelState(sessionId: string): {
@@ -726,6 +934,8 @@ export interface FeatureRouterAuthManager {
   signOut(): Promise<AccountStatusView>;
   clearSavedApiKeyOnly(): Promise<AccountStatusView>;
   setBypassPacing(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }>;
+  getCachedHostedModels?(): RayuCloudModelEntry[];
+  fetchHostedModels?(forceRefresh?: boolean): Promise<RayuCloudModelEntry[]>;
 }
 
 export interface FeatureRouterGit {
@@ -866,10 +1076,16 @@ const DEFAULT_TELEMETRY_CONFIG: TelemetryConfigView = {
 
 const DEFAULT_SHORTCUTS: ShortcutEntryView[] = [
   {
-    id: "cycle-permissions",
-    label: "Cycle Local Permission Mode",
-    keybinding: "Shift+Tab",
-    when: "Composer Focus",
+    id: "open-from-editor-title",
+    label: "Open RayuCode (Preferred Location)",
+    keybinding: "Cmd/Ctrl+Alt+R",
+    commandId: "rayucode.openFromEditorTitle",
+  },
+  {
+    id: "open-beside",
+    label: "Open RayuCode Beside Editor",
+    keybinding: "Cmd/Ctrl+Alt+Shift+R",
+    commandId: "rayucode.openBeside",
   },
   {
     id: "open-workspace-panel",
@@ -879,21 +1095,68 @@ const DEFAULT_SHORTCUTS: ShortcutEntryView[] = [
   },
   {
     id: "send-selection",
-    label: "Send Active Selection to RayuCode",
+    label: "Add Active Selection to RayuCode Context",
     keybinding: "Cmd/Ctrl+Shift+L",
+    when: "Editor Focus",
     commandId: "rayucode.sendSelection",
-  },
-  {
-    id: "background-tool",
-    label: "Move Running Tool to Background",
-    keybinding: "Alt+B",
-    when: "Active Turn",
   },
   {
     id: "open-background-drawer",
     label: "Open Background Processes Drawer",
     keybinding: "Alt+Shift+B",
     commandId: "rayucode.openBackgroundProcesses",
+  },
+  {
+    id: "add-to-context",
+    label: "Add File(s) to RayuCode Context",
+    keybinding: "Explorer / Tab Context",
+    commandId: "rayucode.addToContext",
+  },
+  {
+    id: "explain-selection",
+    label: "Explain Selection with RayuCode",
+    keybinding: "Editor Context Menu",
+    when: "Editor Selection",
+    commandId: "rayucode.explainSelection",
+  },
+  {
+    id: "refactor-selection",
+    label: "Refactor / Fix Selection with RayuCode",
+    keybinding: "Editor Context Menu",
+    when: "Editor Selection",
+    commandId: "rayucode.refactorSelection",
+  },
+  {
+    id: "fix-diagnostic",
+    label: "Fix Diagnostic with RayuCode",
+    keybinding: "Cmd/Ctrl+. (Quick Fix)",
+    when: "Diagnostic on Line",
+    commandId: "rayucode.fixDiagnostic",
+  },
+  {
+    id: "ask-terminal",
+    label: "Ask RayuCode about Terminal Output",
+    keybinding: "Terminal Context Menu",
+    commandId: "rayucode.askTerminal",
+  },
+  {
+    id: "scm-open-changes",
+    label: "Review Changes in RayuCode",
+    keybinding: "Source Control Header",
+    when: "Git Repository",
+    commandId: "rayucode.scmOpenChanges",
+  },
+  {
+    id: "cycle-permissions",
+    label: "Cycle Local Permission Mode",
+    keybinding: "Shift+Tab",
+    when: "Composer Focus",
+  },
+  {
+    id: "background-tool",
+    label: "Move Running Tool to Background",
+    keybinding: "Alt+B",
+    when: "Active Turn",
   },
   {
     id: "toggle-session-pane",
@@ -1576,8 +1839,28 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       deps.sessionHub.setPermissionMode(params.sessionId, params.mode),
     "sessions.rewind": async (params) => {
       const client = await deps.sessionHub.getClient();
-      const index = Number.parseInt(params.turnId, 10);
-      await client.rewind(params.sessionId, Number.isFinite(index) ? index : 0);
+      let index = 0;
+      if (
+        typeof params.messageIndex === "number" &&
+        Number.isInteger(params.messageIndex) &&
+        params.messageIndex > 0
+      ) {
+        index = params.messageIndex;
+      } else {
+        const suffixMatch = /_(\d+)$/.exec(params.turnId);
+        if (suffixMatch) {
+          const parsedSuffix = Number.parseInt(suffixMatch[1]!, 10);
+          if (Number.isFinite(parsedSuffix) && parsedSuffix >= 0) {
+            index = parsedSuffix;
+          }
+        } else {
+          const parsedDirect = Number.parseInt(params.turnId, 10);
+          if (Number.isFinite(parsedDirect) && parsedDirect >= 0) {
+            index = parsedDirect;
+          }
+        }
+      }
+      await client.rewind(params.sessionId, index);
       return { ok: true };
     },
     "sessions.rewindUndo": async (params) => {
@@ -1587,21 +1870,36 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "sessions.softInterrupt": async (params) => {
       const client = await deps.sessionHub.getClient();
-      const interruptId = `si_${Date.now()}`;
+      const interruptId =
+        params.clientId?.trim() ||
+        `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const images = normalizeImageAttachments(params.images);
       await client.softInterruptWithId(params.sessionId, params.text, {
         urgent: params.urgent ?? false,
         clientId: interruptId,
+        ...(images.length > 0 ? { images } : {}),
       });
       return { ok: true, interruptId };
     },
     "sessions.cancelSoftInterrupts": async (params) => {
       const client = await deps.sessionHub.getClient();
       if (params.interruptId) {
-        await client.cancelSoftInterrupt(params.sessionId, params.interruptId);
-      } else {
+        const supportsIds =
+          typeof client.supports === "function"
+            ? client.supports("soft_interrupt_ids")
+            : true;
+        if (supportsIds && typeof client.cancelSoftInterrupt === "function") {
+          const cancelled = await client.cancelSoftInterrupt(
+            params.sessionId,
+            params.interruptId,
+          );
+          return { ok: true, cancelled: Boolean(cancelled) };
+        }
         await client.cancelSoftInterrupts(params.sessionId);
+        return { ok: true, cancelled: true };
       }
-      return { ok: true };
+      await client.cancelSoftInterrupts(params.sessionId);
+      return { ok: true, cancelled: true };
     },
     "sessions.respondPermission": async (params) => {
       await deps.sessionHub.respondPermission(params);
@@ -1629,11 +1927,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 4. Background Tasks
     // -------------------------------------------------------------------------
     "background.list": async (params) => {
-      const tasks = await deps.sessionHub.refreshBackgroundProcesses(params?.sessionId);
-      const filtered = params?.sessionId
-        ? tasks.filter((t) => !t.sessionId || t.sessionId === params.sessionId)
-        : tasks;
-      return { tasks: filtered };
+      const targetSessionId =
+        params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (!targetSessionId) {
+        return { tasks: [] };
+      }
+      const tasks = await deps.sessionHub.refreshBackgroundProcesses(targetSessionId);
+      return { tasks: tasks.filter((t) => t.sessionId === targetSessionId) };
     },
     "background.status": async (params) => {
       const data = await safeRuntimeCmd("background", ["status", params.taskId]);
@@ -1690,11 +1990,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "background.cancel": async (params) => {
-      const { data, message } = await requireRuntimeCmd("background", [
-        "cancel",
-        params.taskId,
-      ]);
-      await deps.sessionHub.refreshBackgroundProcesses();
+      const { data, message } = await requireRuntimeCmd(
+        "background",
+        ["cancel", params.taskId],
+        params.sessionId,
+      );
+      await deps.sessionHub.refreshBackgroundProcesses(params.sessionId);
       const cancelled = data.cancelled !== false;
       return {
         ok: cancelled,
@@ -1702,14 +2003,15 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "background.cleanup": async (params) => {
+      const targetSessionId =
+        params?.sessionId ?? deps.sessionHub.getActiveSessionId();
       const { data } = await requireRuntimeCmd(
         "background",
         ["cleanup"],
-        params?.sessionId,
+        targetSessionId,
       );
-      const localRemoved = deps.sessionHub.removeCompletedBackgroundTasks(
-        params?.sessionId,
-      );
+      const localRemoved =
+        deps.sessionHub.removeCompletedBackgroundTasks(targetSessionId);
       const removedCount =
         typeof data.removed_files === "number"
           ? data.removed_files
@@ -3934,16 +4236,36 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { checks, ranAtMs: Date.now() };
     },
     "settings.models.get": async (params) => {
-      const targetSessionId =
+      let targetSessionId =
         params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      const [data, runtimeInfo] = await Promise.all([
+      if (!targetSessionId) {
+        targetSessionId = await deps.sessionHub
+          .getClient()
+          .then((c) =>
+            typeof c.listSessions === "function"
+              ? c.listSessions({ limit: 1 })
+              : [],
+          )
+          .then((sessions) => sessions[0]?.session_id)
+          .catch(() => undefined);
+      }
+
+      const hostAccount = deps.authManager?.getAccountStatusSnapshot();
+      const [data, runtimeInfo, rayuHostedModels] = await Promise.all([
         safeRuntimeCmd("agents", ["status"], targetSessionId),
         targetSessionId
           ? deps.sessionHub
               .getClient()
-              .then((c) => c.getRuntimeInfo(targetSessionId))
+              .then((c) =>
+                typeof c.getRuntimeInfo === "function"
+                  ? c.getRuntimeInfo(targetSessionId)
+                  : null,
+              )
               .catch(() => null)
           : Promise.resolve(null),
+        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
+          ? deps.authManager.fetchHostedModels(false).catch(() => [])
+          : Promise.resolve([]),
       ]);
 
       const roles: Array<{ role: AgentRoleId; label: string }> = [
@@ -3977,15 +4299,17 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         };
       });
 
-      // Preserve exact backend route order from runtimeInfo.routes
-      const routes: ModelRouteOptionView[] | undefined = runtimeInfo?.routes
-        ? runtimeInfo.routes
-            .map((r) => mapModelRouteOption(r))
-            .filter((r): r is ModelRouteOptionView => r !== null)
-        : undefined;
+      const { routes, defaultModel } = reconcileAuthConsistentRoutes({
+        rawRoutes: runtimeInfo?.routes,
+        hostAccount,
+        rayuHostedModels,
+        runtimeModel: runtimeInfo?.model,
+        runtimeProvider: runtimeInfo?.provider,
+        fallbackActiveModel: deps.sessionHub.getActiveModel(),
+      });
 
       return {
-        defaultModel: runtimeInfo?.model ?? deps.sessionHub.getActiveModel(),
+        defaultModel,
         defaultEffort: deps.getGlobalState<EffortChoice>(
           "rayucode.settings.defaultEffort",
           "medium",
@@ -4003,29 +4327,50 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         swarmAllowlist: Array.isArray(data.swarm_allowlist)
           ? data.swarm_allowlist.map(String)
           : undefined,
-        ...(routes ? { routes } : {}),
+        ...(routes.length > 0 || runtimeInfo?.routes !== undefined
+          ? { routes }
+          : {}),
       };
     },
     "settings.models.refresh": async (params) => {
-      const { data } = await requireRuntimeCmd(
-        "refresh_model_list",
-        [],
-        params?.sessionId,
-      );
-      const rawRoutes = asArray(data.routes);
-      const routes = rawRoutes
-        .map((r) => mapModelRouteOption(r))
-        .filter((r): r is ModelRouteOptionView => r !== null);
+      const hostAccount = deps.authManager?.getAccountStatusSnapshot();
+      const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
+
+      const [rayuHostedModels, daemonRefresh] = await Promise.all([
+        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
+          ? deps.authManager.fetchHostedModels(true).catch(() => [])
+          : Promise.resolve([]),
+        daemonConnected
+          ? (async () => {
+              await deps.sessionHub
+                .notifyDaemonAuthChanged?.("rayu")
+                .catch(() => {});
+              return execRuntimeCmd("refresh_model_list", [], params?.sessionId);
+            })()
+          : Promise.resolve({
+              ok: false,
+              data: {} as Record<string, unknown>,
+              rawData: undefined,
+              message: "",
+            }),
+      ]);
+
+      const rawRoutes = asArray(daemonRefresh.data.routes);
+      const { routes } = reconcileAuthConsistentRoutes({
+        rawRoutes,
+        hostAccount,
+        rayuHostedModels,
+      });
       const routeCount =
         routes.length > 0
           ? routes.length
-          : typeof data.route_count === "number"
-            ? data.route_count
+          : typeof daemonRefresh.data.route_count === "number"
+            ? daemonRefresh.data.route_count
             : 0;
       return {
         ok: true,
         routeCount,
-        ...(routes.length > 0 ? { routes } : {}),
+        routes,
       };
     },
     "settings.models.setFast": async (params) => {

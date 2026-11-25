@@ -1,18 +1,22 @@
 import { randomBytes } from "node:crypto";
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import {
   AccentPreferenceSchema,
+  AppRouteSchema,
   DensityPreferenceSchema,
+  OpenLocationSchema,
   ThemePreferenceSchema,
   parseWebviewToHostMessage,
   type AccentPreference,
   type AppRoute,
   type DensityPreference,
   type HostToWebviewMessage,
+  type OpenLocation,
   type ProjectIconView,
   type SurfaceKind,
   type ThemePreference,
   type WebviewToHostMessage,
+  type WorkbenchPreferences,
   type WorkspaceFolderView,
 } from "../../shared/vscodeProtocol.js";
 import type { RayuHostAuthManager } from "../auth/rayuHostAuthManager.js";
@@ -22,8 +26,16 @@ import type { BridgeManager } from "../runtime/bridgeManager.js";
 import type { FeatureRouter } from "../runtime/featureRouters.js";
 import type { SessionHub } from "../runtime/sessionHub.js";
 
+function getVscode(): typeof vscode {
+  return require("vscode") as typeof vscode;
+}
+
 export const SIDEBAR_VIEW_ID = "rayucode.chat";
 export const WORKSPACE_PANEL_VIEW_TYPE = "rayucode.workspace";
+export const SIDEBAR_SURFACE_ID = "sidebar-main";
+export const EDITOR_PANEL_SURFACE_ID = "editor-panel-main";
+
+export type SurfaceId = typeof SIDEBAR_SURFACE_ID | typeof EDITOR_PANEL_SURFACE_ID;
 
 const THEME_STATE_KEY = "rayucode.appearance.theme";
 const ACCENT_STATE_KEY = "rayucode.appearance.accent";
@@ -31,8 +43,124 @@ const DENSITY_STATE_KEY = "rayucode.appearance.density";
 const REDUCE_MOTION_KEY = "rayucode.appearance.reduceMotion";
 const PROJECT_ICONS_KEY = "rayucode.workspace.projectIcons";
 
+export interface SurfaceCommandQueueOptions {
+  maxPerSurface?: number;
+  ttlMs?: number;
+  now?: () => number;
+}
+
+/**
+ * Pure per-surface cold-start command queue with bounded capacity and TTL.
+ * Ensures one-shot commands (context injections, navigation, new/resume session)
+ * are delivered deterministically to a single target surface and never dropped
+ * during webview cold start.
+ */
+export class SurfaceCommandQueue<TMessage = HostToWebviewMessage> {
+  private readonly readySurfaces = new Set<string>();
+  private readonly pendingBySurface = new Map<
+    string,
+    Array<{ message: TMessage; expiresAt: number }>
+  >();
+  private readonly maxPerSurface: number;
+  private readonly ttlMs: number;
+  private readonly now: () => number;
+
+  constructor(options: SurfaceCommandQueueOptions = {}) {
+    this.maxPerSurface = Math.max(1, options.maxPerSurface ?? 10);
+    this.ttlMs = Math.max(0, options.ttlMs ?? 15_000);
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  isReady(surfaceId: string): boolean {
+    return this.readySurfaces.has(surfaceId);
+  }
+
+  /**
+   * Mark a surface ready and return all non-expired pending messages for it in FIFO order.
+   */
+  markReady(surfaceId: string): TMessage[] {
+    this.readySurfaces.add(surfaceId);
+    return this.flush(surfaceId);
+  }
+
+  /**
+   * Mark a surface as no longer ready (e.g. on dispose).
+   * Preserves buffered messages by default so a pending cold-start launch
+   * isn't lost if an old instance disposes right before a replacement attaches.
+   */
+  markDisposed(surfaceId: string, clearPending = false): void {
+    this.readySurfaces.delete(surfaceId);
+    if (clearPending) {
+      this.pendingBySurface.delete(surfaceId);
+    }
+  }
+
+  /**
+   * Deliver directly to `surfaceId` if ready and registered; otherwise enqueue
+   * for flush immediately after `rayucode.host.init`.
+   */
+  dispatch(
+    surfaceId: string,
+    message: TMessage,
+    deliver: (targetSurfaceId: string, msg: TMessage) => boolean,
+  ): "delivered" | "queued" {
+    if (this.readySurfaces.has(surfaceId) && deliver(surfaceId, message)) {
+      return "delivered";
+    }
+    this.enqueue(surfaceId, message);
+    return "queued";
+  }
+
+  enqueue(surfaceId: string, message: TMessage): void {
+    const currentTime = this.now();
+    const existing = this.pruneExpired(surfaceId, currentTime);
+    existing.push({
+      message,
+      expiresAt: currentTime + this.ttlMs,
+    });
+    if (existing.length > this.maxPerSurface) {
+      existing.splice(0, existing.length - this.maxPerSurface);
+    }
+    this.pendingBySurface.set(surfaceId, existing);
+  }
+
+  flush(surfaceId: string): TMessage[] {
+    const currentTime = this.now();
+    const valid = this.pruneExpired(surfaceId, currentTime);
+    this.pendingBySurface.delete(surfaceId);
+    return valid.map((entry) => entry.message);
+  }
+
+  pendingCount(surfaceId: string): number {
+    return this.pruneExpired(surfaceId, this.now()).length;
+  }
+
+  clear(): void {
+    this.readySurfaces.clear();
+    this.pendingBySurface.clear();
+  }
+
+  private pruneExpired(
+    surfaceId: string,
+    currentTime: number,
+  ): Array<{ message: TMessage; expiresAt: number }> {
+    const entries = this.pendingBySurface.get(surfaceId);
+    if (!entries || entries.length === 0) return [];
+    const valid = entries.filter((entry) => entry.expiresAt > currentTime);
+    if (valid.length === 0) {
+      this.pendingBySurface.delete(surfaceId);
+    } else if (valid.length !== entries.length) {
+      this.pendingBySurface.set(surfaceId, valid);
+    }
+    return valid;
+  }
+}
+
 export class WorkspacePanelManager
-  implements vscode.WebviewViewProvider, vscode.Disposable
+  implements
+    vscode.WebviewViewProvider,
+    vscode.WebviewPanelSerializer,
+    vscode.Disposable
 {
   private sidebarView?: vscode.WebviewView;
   private sidebarDisposable?: vscode.Disposable;
@@ -40,6 +168,10 @@ export class WorkspacePanelManager
   private editorPanelDisposable?: vscode.Disposable;
   private currentRoute: AppRoute = "home";
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly surfaceQueue = new SurfaceCommandQueue<HostToWebviewMessage>({
+    maxPerSurface: 10,
+    ttlMs: 15_000,
+  });
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -50,16 +182,17 @@ export class WorkspacePanelManager
     private readonly gitBridge: GitChangesBridge,
     private readonly authManager?: RayuHostAuthManager,
   ) {
+    const vscodeApi = getVscode();
     this.disposables.push(
-      vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      vscodeApi.workspace.onDidChangeWorkspaceFolders(() => {
         void this.broadcastWorkspacesChanged();
       }),
-      vscode.workspace.onDidChangeConfiguration((event) => {
+      vscodeApi.workspace.onDidChangeConfiguration((event) => {
         if (
           event.affectsConfiguration("rayucode.theme") ||
           event.affectsConfiguration("rayucode.accent")
         ) {
-          const cfg = vscode.workspace.getConfiguration("rayucode");
+          const cfg = vscodeApi.workspace.getConfiguration("rayucode");
           if (event.affectsConfiguration("rayucode.theme")) {
             void this.context.globalState.update(
               THEME_STATE_KEY,
@@ -75,6 +208,13 @@ export class WorkspacePanelManager
           this.broadcastAppearanceSync();
         }
         if (
+          event.affectsConfiguration("rayucode.openLocation") ||
+          event.affectsConfiguration("rayucode.contextActionsAutoSubmit") ||
+          event.affectsConfiguration("rayucode.showEditorTitleIcon")
+        ) {
+          this.broadcastWorkbenchSync();
+        }
+        if (
           event.affectsConfiguration("rayucode.apiSocketPath") ||
           event.affectsConfiguration("rayucode.runtime.socketPath") ||
           event.affectsConfiguration("rayucode.binaryPath")
@@ -85,13 +225,74 @@ export class WorkspacePanelManager
     );
   }
 
+  getWorkbenchSettings(): WorkbenchPreferences {
+    const vscodeApi = getVscode();
+    const cfg = vscodeApi.workspace.getConfiguration("rayucode");
+    const rawLocation = cfg.get<string>("openLocation", "secondarySidebar");
+    const parsedLocation = OpenLocationSchema.safeParse(rawLocation);
+    return {
+      openLocation: parsedLocation.success
+        ? parsedLocation.data
+        : "secondarySidebar",
+      contextActionsAutoSubmit: Boolean(
+        cfg.get<boolean>("contextActionsAutoSubmit", false),
+      ),
+      showEditorTitleIcon: Boolean(
+        cfg.get<boolean>("showEditorTitleIcon", true),
+      ),
+    };
+  }
+
+  async updateWorkbenchSettings(
+    patch: Partial<WorkbenchPreferences>,
+  ): Promise<void> {
+    const vscodeApi = getVscode();
+    const cfg = vscodeApi.workspace.getConfiguration("rayucode");
+    if (patch.openLocation !== undefined) {
+      await Promise.resolve(
+        cfg.update(
+          "openLocation",
+          patch.openLocation,
+          vscodeApi.ConfigurationTarget.Global,
+        ),
+      ).catch(() => {});
+    }
+    if (patch.contextActionsAutoSubmit !== undefined) {
+      await Promise.resolve(
+        cfg.update(
+          "contextActionsAutoSubmit",
+          patch.contextActionsAutoSubmit,
+          vscodeApi.ConfigurationTarget.Global,
+        ),
+      ).catch(() => {});
+    }
+    if (patch.showEditorTitleIcon !== undefined) {
+      await Promise.resolve(
+        cfg.update(
+          "showEditorTitleIcon",
+          patch.showEditorTitleIcon,
+          vscodeApi.ConfigurationTarget.Global,
+        ),
+      ).catch(() => {});
+    }
+    this.broadcastWorkbenchSync();
+  }
+
+  private broadcastWorkbenchSync(): void {
+    this.sessionHub.broadcast({
+      type: "rayucode.ui.workbenchSync",
+      workbench: this.getWorkbenchSettings(),
+    });
+  }
+
   getAppearance(): {
     theme: ThemePreference;
     accent: AccentPreference;
     density: DensityPreference;
     reduceMotion: boolean;
   } {
-    const cfg = vscode.workspace.getConfiguration("rayucode");
+    const vscodeApi = getVscode();
+    const cfg = vscodeApi.workspace.getConfiguration("rayucode");
     const inspectedTheme = cfg.inspect<string>("theme");
     const configuredTheme =
       inspectedTheme?.workspaceFolderValue ??
@@ -136,24 +337,28 @@ export class WorkspacePanelManager
     density?: DensityPreference;
     reduceMotion?: boolean;
   }): Promise<void> {
-    const cfg = vscode.workspace.getConfiguration("rayucode");
+    const vscodeApi = getVscode();
+    const cfg = vscodeApi.workspace.getConfiguration("rayucode");
     if (patch.theme !== undefined) {
       await this.context.globalState.update(THEME_STATE_KEY, patch.theme);
       await Promise.resolve(
-        cfg.update("theme", patch.theme, vscode.ConfigurationTarget.Global),
+        cfg.update("theme", patch.theme, vscodeApi.ConfigurationTarget.Global),
       ).catch(() => {});
     }
     if (patch.accent !== undefined) {
       await this.context.globalState.update(ACCENT_STATE_KEY, patch.accent);
       await Promise.resolve(
-        cfg.update("accent", patch.accent, vscode.ConfigurationTarget.Global),
+        cfg.update("accent", patch.accent, vscodeApi.ConfigurationTarget.Global),
       ).catch(() => {});
     }
     if (patch.density !== undefined) {
       await this.context.globalState.update(DENSITY_STATE_KEY, patch.density);
     }
     if (patch.reduceMotion !== undefined) {
-      await this.context.globalState.update(REDUCE_MOTION_KEY, patch.reduceMotion);
+      await this.context.globalState.update(
+        REDUCE_MOTION_KEY,
+        patch.reduceMotion,
+      );
     }
     this.broadcastAppearanceSync();
   }
@@ -191,13 +396,16 @@ export class WorkspacePanelManager
   }
 
   async getWorkspaceFoldersView(): Promise<WorkspaceFolderView[]> {
-    const folders = vscode.workspace.workspaceFolders ?? [];
+    const vscodeApi = getVscode();
+    const folders = vscodeApi.workspace.workspaceFolders ?? [];
     const icons = this.getProjectIcons();
     const views: WorkspaceFolderView[] = [];
     for (let i = 0; i < folders.length; i += 1) {
       const folder = folders[i]!;
       const fsPath = folder.uri.fsPath;
-      const branch = await this.gitBridge.getBranch(fsPath).catch(() => undefined);
+      const branch = await this.gitBridge
+        .getBranch(fsPath)
+        .catch(() => undefined);
       views.push({
         name: folder.name,
         path: fsPath,
@@ -217,13 +425,38 @@ export class WorkspacePanelManager
     });
   }
 
+  private buildPanelIconPath(mediaUri: vscode.Uri): {
+    light: vscode.Uri;
+    dark: vscode.Uri;
+  } {
+    const vscodeApi = getVscode();
+    const foxIconUri = vscodeApi.Uri.joinPath(mediaUri, "rayu-fox.png");
+    return {
+      light: foxIconUri,
+      dark: foxIconUri,
+    };
+  }
+
+  getEditorPanelViewColumn(): vscode.ViewColumn | undefined {
+    return this.editorPanel?.viewColumn;
+  }
+
+  dispatchToSurface(
+    surfaceId: string,
+    message: HostToWebviewMessage,
+  ): "delivered" | "queued" {
+    return this.surfaceQueue.dispatch(surfaceId, message, (targetId, msg) =>
+      this.sessionHub.postToSurface(targetId, msg),
+    );
+  }
+
   resolveWebviewView(view: vscode.WebviewView): void {
     this.sidebarDisposable?.dispose();
     this.sidebarView = view;
     this.sidebarDisposable = this.attachWebviewSurface(
       view.webview,
       "sidebar",
-      "sidebar-main",
+      SIDEBAR_SURFACE_ID,
       view.onDidDispose,
       () => {
         if (this.sidebarView === view) {
@@ -233,50 +466,103 @@ export class WorkspacePanelManager
     );
   }
 
-  async openWorkspacePanel(options: {
-    route?: AppRoute;
-    sessionId?: string;
-    openProcessesDrawer?: boolean;
-  } = {}): Promise<void> {
-    if (options.route) {
-      this.currentRoute = options.route;
-    }
+  async deserializeWebviewPanel(
+    panel: vscode.WebviewPanel,
+    rawState: unknown,
+  ): Promise<void> {
+    const vscodeApi = getVscode();
+    let restoredRoute: AppRoute | undefined;
+    let restoredSessionId: string | undefined;
 
-    if (this.editorPanel) {
-      this.editorPanel.reveal(vscode.ViewColumn.One);
-      if (options.route || options.sessionId || options.openProcessesDrawer) {
-        void this.editorPanel.webview.postMessage({
-          type: "rayucode.ui.navigate",
-          route: options.route ?? this.currentRoute,
-          sessionId: options.sessionId ?? this.sessionHub.getActiveSessionId(),
-          openProcessesDrawer: options.openProcessesDrawer,
-        } satisfies HostToWebviewMessage);
+    if (rawState && typeof rawState === "object") {
+      const rec = rawState as Record<string, unknown>;
+      const parsedRoute = AppRouteSchema.safeParse(rec.route);
+      if (parsedRoute.success) {
+        restoredRoute = parsedRoute.data;
       }
-      return;
+      if (typeof rec.sessionId === "string" && rec.sessionId.trim()) {
+        restoredSessionId = rec.sessionId.trim();
+      }
     }
 
-    const mediaUri = vscode.Uri.joinPath(this.context.extensionUri, "media");
-    const panel = vscode.window.createWebviewPanel(
-      WORKSPACE_PANEL_VIEW_TYPE,
-      "RayuCode Mission Control",
-      vscode.ViewColumn.One,
-      {
-        enableScripts: true,
-        retainContextWhenHidden: true,
-        localResourceRoots: [mediaUri],
-      },
-    );
-    panel.iconPath = {
-      light: vscode.Uri.joinPath(mediaUri, "icon.svg"),
-      dark: vscode.Uri.joinPath(mediaUri, "icon.svg"),
-    };
+    if (restoredRoute) {
+      this.currentRoute = restoredRoute;
+    }
+
+    const mediaUri = vscodeApi.Uri.joinPath(this.context.extensionUri, "media");
+    panel.iconPath = this.buildPanelIconPath(mediaUri);
 
     this.editorPanel = panel;
     this.editorPanelDisposable?.dispose();
     this.editorPanelDisposable = this.attachWebviewSurface(
       panel.webview,
       "editorPanel",
-      "editor-panel-main",
+      EDITOR_PANEL_SURFACE_ID,
+      panel.onDidDispose,
+      () => {
+        if (this.editorPanel === panel) {
+          this.editorPanel = undefined;
+        }
+      },
+      {
+        route: restoredRoute,
+        sessionId: restoredSessionId,
+      },
+    );
+  }
+
+  async openWorkspacePanel(options: {
+    route?: AppRoute;
+    sessionId?: string;
+    openProcessesDrawer?: boolean;
+    viewColumn?: vscode.ViewColumn;
+  } = {}): Promise<void> {
+    const vscodeApi = getVscode();
+    if (options.route) {
+      this.currentRoute = options.route;
+    }
+
+    if (this.editorPanel) {
+      this.editorPanel.reveal(
+        options.viewColumn ?? this.editorPanel.viewColumn,
+        false,
+      );
+      if (options.route || options.sessionId || options.openProcessesDrawer) {
+        this.dispatchToSurface(EDITOR_PANEL_SURFACE_ID, {
+          type: "rayucode.ui.navigate",
+          route: options.route ?? this.currentRoute,
+          sessionId: options.sessionId ?? this.sessionHub.getActiveSessionId(),
+          openProcessesDrawer: options.openProcessesDrawer,
+        });
+      }
+      return;
+    }
+
+    const mediaUri = vscodeApi.Uri.joinPath(this.context.extensionUri, "media");
+    const targetColumn =
+      options.viewColumn ??
+      (vscodeApi.window.activeTextEditor
+        ? vscodeApi.ViewColumn.Beside
+        : vscodeApi.ViewColumn.One);
+
+    const panel = vscodeApi.window.createWebviewPanel(
+      WORKSPACE_PANEL_VIEW_TYPE,
+      "RayuCode Mission Control",
+      targetColumn,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [mediaUri],
+      },
+    );
+    panel.iconPath = this.buildPanelIconPath(mediaUri);
+
+    this.editorPanel = panel;
+    this.editorPanelDisposable?.dispose();
+    this.editorPanelDisposable = this.attachWebviewSurface(
+      panel.webview,
+      "editorPanel",
+      EDITOR_PANEL_SURFACE_ID,
       panel.onDidDispose,
       () => {
         if (this.editorPanel === panel) {
@@ -287,6 +573,52 @@ export class WorkspacePanelManager
     );
   }
 
+  async openPreferredSurface(options: {
+    locationOverride?: OpenLocation;
+    route?: AppRoute;
+    sessionId?: string;
+    openProcessesDrawer?: boolean;
+  } = {}): Promise<SurfaceId> {
+    const vscodeApi = getVscode();
+    const effective =
+      options.locationOverride ?? this.getWorkbenchSettings().openLocation;
+
+    if (options.route) {
+      this.currentRoute = options.route;
+    }
+
+    if (effective === "beside") {
+      await this.openWorkspacePanel({
+        route: options.route,
+        sessionId: options.sessionId,
+        openProcessesDrawer: options.openProcessesDrawer,
+        viewColumn: vscodeApi.ViewColumn.Beside,
+      });
+      return EDITOR_PANEL_SURFACE_ID;
+    }
+
+    if (effective === "editorTab") {
+      await this.openWorkspacePanel({
+        route: options.route,
+        sessionId: options.sessionId,
+        openProcessesDrawer: options.openProcessesDrawer,
+        viewColumn: vscodeApi.ViewColumn.Active,
+      });
+      return EDITOR_PANEL_SURFACE_ID;
+    }
+
+    await vscodeApi.commands.executeCommand(`${SIDEBAR_VIEW_ID}.focus`);
+    if (options.route || options.sessionId || options.openProcessesDrawer) {
+      this.dispatchToSurface(SIDEBAR_SURFACE_ID, {
+        type: "rayucode.ui.navigate",
+        route: options.route ?? this.currentRoute,
+        sessionId: options.sessionId ?? this.sessionHub.getActiveSessionId(),
+        openProcessesDrawer: options.openProcessesDrawer,
+      });
+    }
+    return SIDEBAR_SURFACE_ID;
+  }
+
   async navigateAll(options: {
     route: AppRoute;
     sessionId?: string;
@@ -294,22 +626,30 @@ export class WorkspacePanelManager
     preferEditorPanel?: boolean;
   }): Promise<void> {
     this.currentRoute = options.route;
+    const navMsg: HostToWebviewMessage = {
+      type: "rayucode.ui.navigate",
+      route: options.route,
+      sessionId: options.sessionId ?? this.sessionHub.getActiveSessionId(),
+      openProcessesDrawer: options.openProcessesDrawer,
+    };
+
     if (options.preferEditorPanel || this.editorPanel) {
       await this.openWorkspacePanel({
         route: options.route,
         sessionId: options.sessionId,
         openProcessesDrawer: options.openProcessesDrawer,
       });
-    } else {
-      await vscode.commands.executeCommand(`${SIDEBAR_VIEW_ID}.focus`);
+      return;
     }
 
-    this.sessionHub.broadcast({
-      type: "rayucode.ui.navigate",
+    const surfaceId = await this.openPreferredSurface({
       route: options.route,
-      sessionId: options.sessionId ?? this.sessionHub.getActiveSessionId(),
+      sessionId: options.sessionId,
       openProcessesDrawer: options.openProcessesDrawer,
     });
+    if (surfaceId !== SIDEBAR_SURFACE_ID && surfaceId !== EDITOR_PANEL_SURFACE_ID) {
+      this.dispatchToSurface(surfaceId, navMsg);
+    }
   }
 
   sendHostCommand(command: string, payload?: unknown): void {
@@ -332,7 +672,8 @@ export class WorkspacePanelManager
       openProcessesDrawer?: boolean;
     },
   ): vscode.Disposable {
-    const mediaUri = vscode.Uri.joinPath(this.context.extensionUri, "media");
+    const vscodeApi = getVscode();
+    const mediaUri = vscodeApi.Uri.joinPath(this.context.extensionUri, "media");
     webview.options = {
       enableScripts: true,
       localResourceRoots: [mediaUri],
@@ -350,7 +691,11 @@ export class WorkspacePanelManager
 
     const sendInit = async (): Promise<void> => {
       const { theme, accent, density, reduceMotion } = this.getAppearance();
-      const mediaBaseUri = webview.asWebviewUri(mediaUri).toString().replace(/\/$/, "");
+      const workbench = this.getWorkbenchSettings();
+      const mediaBaseUri = webview
+        .asWebviewUri(mediaUri)
+        .toString()
+        .replace(/\/$/, "");
       const workspaces = await this.getWorkspaceFoldersView();
       const daemonStatus = this.bridgeManager.getStatus();
       const route = initialNav?.route ?? this.currentRoute;
@@ -377,9 +722,12 @@ export class WorkspacePanelManager
         daemonStatus,
         workspaces,
         editorSelection: this.editorBridge.getSelection(),
-        backgroundTasks: this.sessionHub.getBackgroundTasks(),
+        backgroundTasks: sessionId
+          ? this.sessionHub.getBackgroundTasks(sessionId)
+          : [],
         ...(accountStatus ? { accountStatus } : {}),
         fileChanges,
+        workbench,
       });
 
       if (initialNav?.openProcessesDrawer) {
@@ -390,28 +738,34 @@ export class WorkspacePanelManager
           openProcessesDrawer: true,
         });
       }
+
+      const queuedMessages = this.surfaceQueue.markReady(surfaceId);
+      for (const queued of queuedMessages) {
+        postToSurface(queued);
+      }
     };
 
     const msgListener = webview.onDidReceiveMessage(async (raw: unknown) => {
-      if (!vscode.workspace.isTrusted) return;
+      if (!vscodeApi.workspace.isTrusted) return;
       await this.handleWebviewMessage(raw, postToSurface, sendInit);
     });
 
-    const disposeListener = onDidDispose(() => {
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      this.surfaceQueue.markDisposed(surfaceId);
       hubRegistration.dispose();
       msgListener.dispose();
       disposeListener.dispose();
       onCleanup();
-    });
+    };
+
+    const disposeListener = onDidDispose(cleanup);
 
     webview.html = this.buildWebviewHtml(webview, mediaUri, surface);
 
-    return new vscode.Disposable(() => {
-      hubRegistration.dispose();
-      msgListener.dispose();
-      disposeListener.dispose();
-      onCleanup();
-    });
+    return new vscodeApi.Disposable(cleanup);
   }
 
   private async handleWebviewMessage(
@@ -419,9 +773,9 @@ export class WorkspacePanelManager
     postToSurface: (message: HostToWebviewMessage) => void,
     sendInit: () => Promise<void>,
   ): Promise<void> {
+    const vscodeApi = getVscode();
     const parsed = parseWebviewToHostMessage(raw);
     if (!parsed.success) {
-      // Check if it was an RPC call with an unknown method or malformed envelope
       if (
         typeof raw === "object" &&
         raw !== null &&
@@ -472,7 +826,15 @@ export class WorkspacePanelManager
         await this.openWorkspacePanel({
           route: message.route,
           sessionId: message.sessionId,
+          viewColumn:
+            message.beside !== false
+              ? vscodeApi.ViewColumn.Beside
+              : vscodeApi.ViewColumn.Active,
         });
+        break;
+      }
+      case "rayucode.ui.focusSidebar": {
+        await vscodeApi.commands.executeCommand(`${SIDEBAR_VIEW_ID}.focus`);
         break;
       }
       case "rayucode.ui.setAppearance": {
@@ -481,6 +843,14 @@ export class WorkspacePanelManager
           accent: message.accent,
           density: message.density,
           reduceMotion: message.reduceMotion,
+        });
+        break;
+      }
+      case "rayucode.ui.setWorkbench": {
+        await this.updateWorkbenchSettings({
+          openLocation: message.openLocation,
+          contextActionsAutoSubmit: message.contextActionsAutoSubmit,
+          showEditorTitleIcon: message.showEditorTitleIcon,
         });
         break;
       }
@@ -580,10 +950,18 @@ export class WorkspacePanelManager
     mediaUri: vscode.Uri,
     surface: SurfaceKind,
   ): string {
+    const vscodeApi = getVscode();
     const nonce = randomBytes(18).toString("base64");
-    const mediaBaseUri = webview.asWebviewUri(mediaUri).toString().replace(/\/$/, "");
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaUri, "webview.css"));
-    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaUri, "webview.js"));
+    const mediaBaseUri = webview
+      .asWebviewUri(mediaUri)
+      .toString()
+      .replace(/\/$/, "");
+    const cssUri = webview.asWebviewUri(
+      vscodeApi.Uri.joinPath(mediaUri, "webview.css"),
+    );
+    const jsUri = webview.asWebviewUri(
+      vscodeApi.Uri.joinPath(mediaUri, "webview.js"),
+    );
 
     const csp = [
       "default-src 'none'",
@@ -616,6 +994,7 @@ export class WorkspacePanelManager
   }
 
   dispose(): void {
+    this.surfaceQueue.clear();
     this.sidebarDisposable?.dispose();
     this.editorPanelDisposable?.dispose();
     this.editorPanel?.dispose();

@@ -28,7 +28,7 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc } from "@/lib/rpc-client";
+import { callRpc, sendHarnessRequest } from "@/lib/rpc-client";
 
 export type SettingsSectionId =
   | "account"
@@ -64,9 +64,9 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
     group: "App",
     label: "Appearance",
     description:
-      "Theme polarity (Auto, Warm Graphite Dark, Warm Paper Light, Match VS Code), Rayu Green & Ocean Blue accent, density",
+      "Theme polarity (Auto, Warm Graphite Dark, Warm Paper Light, Match VS Code), Rayu Green & Ocean Blue accent, density, and VS Code workbench placement",
     keywords:
-      "appearance theme dark light auto match vscode accent rayu green ocean blue density comfortable compact motion",
+      "appearance theme dark light auto match vscode accent rayu green ocean blue density comfortable compact motion workbench placement secondary sidebar editor tab bar icon beside auto-submit",
   },
   {
     id: "models",
@@ -294,6 +294,10 @@ export const ENTERPRISE_2_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
 function normalizeProviderIdForUi(rawId: string): string {
   switch (rawId.trim().toLowerCase()) {
     case "rayu-cloud":
+    case "rayu cloud":
+    case "rayu cloud gateway":
+    case "rayucode":
+    case "subscription":
     case "rayu":
       return "rayu";
     case "claude":
@@ -312,6 +316,7 @@ function normalizeProviderIdForUi(rawId: string): string {
     case "azure-openai":
     case "azure":
       return "azure";
+    case "google":
     case "google-gemini":
     case "gemini-api":
     case "gemini":
@@ -444,6 +449,94 @@ export const DEFAULT_5_ROLE_OVERRIDES: ReadonlyArray<AgentRoleOverrideView> = [
 export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
   ShortcutEntryView & { category: string }
 > = [
+  {
+    id: "open-from-editor-title",
+    label: "Open / Focus RayuCode (Preferred Surface)",
+    keybinding: "Cmd/Ctrl+Alt+R",
+    when: "global",
+    commandId: "rayucode.openFromEditorTitle",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "open-beside",
+    label: "Open RayuCode Split Beside Editor",
+    keybinding: "Cmd/Ctrl+Alt+Shift+R",
+    when: "global",
+    commandId: "rayucode.openBeside",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "open-workspace-panel",
+    label: "Open Mission Control Editor Panel",
+    keybinding: "Cmd/Ctrl+Shift+R",
+    when: "global",
+    commandId: "rayucode.openWorkspacePanel",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "send-selection",
+    label: "Add Active Editor Selection to RayuCode Context",
+    keybinding: "Cmd/Ctrl+Shift+L",
+    when: "editorTextFocus",
+    commandId: "rayucode.sendSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "open-background-processes",
+    label: "Open Background Processes Drawer",
+    keybinding: "Alt+Shift+B",
+    when: "global",
+    commandId: "rayucode.openBackgroundProcesses",
+    category: "Workspace & Navigation",
+  },
+  {
+    id: "add-to-context",
+    label: "Add File(s) to RayuCode Context (Explorer & Editor Tab)",
+    keybinding: "Context Menu",
+    when: "explorerResourceScheme == file",
+    commandId: "rayucode.addToContext",
+    category: "Context Actions",
+  },
+  {
+    id: "explain-selection",
+    label: "Explain Selection with RayuCode",
+    keybinding: "Editor Menu",
+    when: "editorHasSelection",
+    commandId: "rayucode.explainSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "refactor-selection",
+    label: "Refactor / Fix Selection with RayuCode",
+    keybinding: "Editor Menu",
+    when: "editorHasSelection",
+    commandId: "rayucode.refactorSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "fix-diagnostic",
+    label: "Fix Error / Diagnostic with RayuCode (Quick Fix)",
+    keybinding: "Cmd/Ctrl+.",
+    when: "editorTextFocus",
+    commandId: "rayucode.fixDiagnostic",
+    category: "Context Actions",
+  },
+  {
+    id: "ask-terminal",
+    label: "Ask RayuCode about Terminal Output",
+    keybinding: "Terminal Menu",
+    when: "terminalFocus",
+    commandId: "rayucode.askTerminal",
+    category: "Context Actions",
+  },
+  {
+    id: "scm-open-changes",
+    label: "Review Git Changes in RayuCode (SCM Header)",
+    keybinding: "SCM Title",
+    when: "scmProvider == git",
+    commandId: "rayucode.scmOpenChanges",
+    category: "Context Actions",
+  },
   {
     id: "cycle-permission-mode",
     label: "Cycle Permission Mode (Ask / Auto-edit / Plan / Full Manage / Orchestrator)",
@@ -655,6 +748,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       return normalized;
     },
@@ -728,9 +827,15 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         const roleOverrides = DEFAULT_5_ROLE_OVERRIDES.map(
           (def) => byRole.get(def.role) ?? def,
         );
+        const fallbackRoute =
+          res.routes?.find((r) => r.available !== false) ?? res.routes?.[0];
         return {
           ...res,
-          defaultModel: res.defaultModel ?? "claude-sonnet-4-5",
+          defaultModel:
+            res.defaultModel ??
+            fallbackRoute?.modelSpec ??
+            fallbackRoute?.model ??
+            "rayu:claude-sonnet-4-5",
           roleOverrides,
           swarmAllowlist: res.swarmAllowlist ?? [
             "claude-opus-4-5",
@@ -956,6 +1061,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -992,6 +1103,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -1033,6 +1150,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -1058,8 +1181,23 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         sessionId: activeSessionId ?? undefined,
       }),
     onSuccess: (res) => {
+      if (res.routes && res.routes.length > 0) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev ? { ...prev, routes: res.routes } : prev,
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
       setStatusMessage(
-        `Refreshed live model discovery catalog (${res.routeCount ?? 38} routes discovered).`,
+        `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
       );
     },
   });
@@ -1076,6 +1214,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, serviceTier: tier } : prev,
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Service tier updated to ${tier}.`);
     },
   });
@@ -1092,6 +1233,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, cacheTtl: ttl } : prev,
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Prompt KV-Cache TTL updated to ${ttl}.`);
     },
   });
@@ -1392,6 +1536,14 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, defaultModel: model } : prev,
       );
+      sendHarnessRequest({
+        req: "set_model",
+        session_id: activeSessionId ?? undefined,
+        model,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Default model route set to ${model}.`);
     },
     [activeSessionId, queryClient],

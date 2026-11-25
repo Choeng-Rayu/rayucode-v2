@@ -4,26 +4,34 @@ import type {
   AccountStatusView,
   AppRoute,
   BackgroundProcessView,
+  ComposerInjectionPayload,
   DaemonStatusView,
   DensityPreference,
   EditorSelectionView,
+  EffortLevel,
   FileChangesSnapshotView,
   HostToWebviewMessage,
+  ImageAttachmentView,
+  OpenLocation,
   SurfaceKind,
   ThemePreference,
+  WorkbenchPreferences,
   WorkspaceFolderView,
 } from "@shared/vscodeProtocol";
 
 import type { PendingPermissionRequest } from "./harness-adapter";
 import { setMediaBaseUri } from "./media-url";
-import { postToHost } from "./rpc-client";
+import { postToHost, setWebviewState } from "./rpc-client";
 
 export type {
   AccentPreference,
   AppRoute,
+  ComposerInjectionPayload,
   DensityPreference,
+  OpenLocation,
   SurfaceKind,
   ThemePreference,
+  WorkbenchPreferences,
 };
 
 export type ResolvedThemePolarity = "dark" | "light";
@@ -69,6 +77,21 @@ export interface OptimisticUserTurn {
   createdAtMs: number;
 }
 
+export type MidTurnSendMode = "steer" | "queue";
+
+export interface MidTurnMessageItem {
+  id: string;
+  sessionId: string;
+  mode: MidTurnSendMode;
+  text: string;
+  createdAtMs: number;
+  images?: ImageAttachmentView[];
+  editorSelection?: EditorSelectionView | null;
+  modelSpec?: string;
+  apiMethod?: string;
+  effort?: EffortLevel;
+}
+
 export interface AppStoreState {
   // Surface & navigation
   surface: SurfaceKind;
@@ -77,13 +100,14 @@ export interface AppStoreState {
   navHistory: NavHistoryEntry[];
   navHistoryIndex: number;
 
-  // Appearance
+  // Appearance & Workbench
   theme: ThemePreference;
   resolvedTheme: ResolvedThemePolarity;
   accent: AccentPreference;
   density: DensityPreference;
   reduceMotion: boolean;
   highContrast: boolean;
+  workbench: WorkbenchPreferences;
 
   // Sessions & workspace
   activeSessionId: string | null;
@@ -91,6 +115,7 @@ export interface AppStoreState {
   activeProjectPath: string | null;
   workspaces: WorkspaceFolderView[];
   editorSelection: EditorSelectionView | null;
+  pendingComposerInjection: ComposerInjectionPayload | null;
 
   // Shell chrome & drawers
   sidebarCollapsed: boolean;
@@ -123,6 +148,10 @@ export interface AppStoreState {
   unreadNotifications: number;
   activeDiagram: ActiveDiagramState;
   pendingUserTurn: OptimisticUserTurn | null;
+  composerDrafts: Record<string, string>;
+  midTurnSendMode: MidTurnSendMode;
+  midTurnMessagesBySession: Record<string, MidTurnMessageItem[]>;
+  pausedQueueSessions: Record<string, boolean>;
   sessionSearchFocusNonce: number;
   composerFocusNonce: number;
 
@@ -136,6 +165,10 @@ export interface AppStoreState {
   toggleAccent: () => void;
   setDensity: (density: DensityPreference, syncHost?: boolean) => void;
   setReduceMotion: (reduce: boolean, syncHost?: boolean) => void;
+  setWorkbench: (
+    patch: Partial<WorkbenchPreferences>,
+    syncHost?: boolean,
+  ) => void;
 
   setRoute: (route: AppRoute) => void;
   setActiveRoute: (route: AppRoute) => void;
@@ -144,6 +177,9 @@ export interface AppStoreState {
   setActiveProjectPath: (path: string | null) => void;
   setWorkspaces: (workspaces: WorkspaceFolderView[]) => void;
   setEditorSelection: (selection: EditorSelectionView | null) => void;
+  queueComposerInjection: (injection: ComposerInjectionPayload) => void;
+  consumeComposerInjection: (id: string) => void;
+  setComposerDraft: (key: string, value: string) => void;
   goBack: () => void;
   goForward: () => void;
 
@@ -181,6 +217,18 @@ export interface AppStoreState {
   setActiveDiagramSource: (source: string) => void;
   enqueueOptimisticTurn: (turn: OptimisticUserTurn) => void;
   consumeOptimisticTurn: (id: string) => void;
+  setMidTurnSendMode: (mode: MidTurnSendMode) => void;
+  addMidTurnMessage: (item: MidTurnMessageItem) => void;
+  removeMidTurnMessage: (sessionId: string, id: string) => void;
+  updateMidTurnMessage: (
+    sessionId: string,
+    id: string,
+    patch: Partial<MidTurnMessageItem>,
+  ) => void;
+  markSteersDelivered: (sessionId: string, clientIds?: string[]) => void;
+  demotePendingSteersToQueue: (sessionId: string) => void;
+  shiftNextQueuedMessage: (sessionId: string) => MidTurnMessageItem | null;
+  setQueuePausedForSession: (sessionId: string, paused: boolean) => void;
   requestSessionSearchFocus: () => void;
   requestComposerFocus: () => void;
   applyHostMessage: (msg: HostToWebviewMessage) => void;
@@ -189,6 +237,12 @@ export interface AppStoreState {
 const DEFAULT_DAEMON_STATUS: DaemonStatusView = {
   state: "connecting",
   capabilities: [],
+};
+
+const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = {
+  openLocation: "secondarySidebar",
+  contextActionsAutoSubmit: false,
+  showEditorTitleIcon: true,
 };
 
 const DEFAULT_TAB_PILLS: Record<RightTabId, string | null> = {
@@ -343,12 +397,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   density: "comfortable",
   reduceMotion: false,
   highContrast: detectVsCodeBodyPolarity().highContrast,
+  workbench: { ...DEFAULT_WORKBENCH_PREFERENCES },
 
   activeSessionId: null,
   activeSessionTitle: null,
   activeProjectPath: null,
   workspaces: [],
   editorSelection: null,
+  pendingComposerInjection: null,
 
   sidebarCollapsed: false,
   mobileSidebarOpen: false,
@@ -379,6 +435,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   unreadNotifications: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
   pendingUserTurn: null,
+  composerDrafts: {},
+  midTurnSendMode: "steer",
+  midTurnMessagesBySession: {},
+  pausedQueueSessions: {},
   sessionSearchFocusNonce: 0,
   composerFocusNonce: 0,
 
@@ -433,6 +493,21 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
 
+  setWorkbench: (patch, syncHost = true) => {
+    set((state) => ({
+      workbench: {
+        ...state.workbench,
+        ...patch,
+      },
+    }));
+    if (syncHost) {
+      postToHost({
+        type: "rayucode.ui.setWorkbench",
+        ...patch,
+      });
+    }
+  },
+
   setRoute: (route) => get().setActiveRoute(route),
 
   setActiveRoute: (activeRoute) => {
@@ -462,6 +537,13 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         inspectorOpen: activeRoute === "home" ? false : state.inspectorOpen,
       };
     });
+    const next = get();
+    if (next.surface === "editorPanel") {
+      setWebviewState({
+        route: next.activeRoute,
+        sessionId: next.activeSessionId ?? undefined,
+      });
+    }
   },
 
   setActiveSession: (activeSessionId, title) => {
@@ -502,8 +584,18 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeDocPill: null,
         fullView: false,
         chatCollapsedByRight: false,
+        backgroundTasks: activeSessionId
+          ? state.backgroundTasks.filter((t) => t.sessionId === activeSessionId)
+          : [],
       };
     });
+    const next = get();
+    if (next.surface === "editorPanel") {
+      setWebviewState({
+        route: next.activeRoute,
+        sessionId: next.activeSessionId ?? undefined,
+      });
+    }
   },
 
   setActiveSessionTitle: (activeSessionTitle) => set({ activeSessionTitle }),
@@ -519,6 +611,29 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setEditorSelection: (editorSelection) => set({ editorSelection }),
 
+  queueComposerInjection: (pendingComposerInjection) =>
+    set({ pendingComposerInjection }),
+
+  consumeComposerInjection: (id) =>
+    set((state) =>
+      state.pendingComposerInjection?.id === id
+        ? { pendingComposerInjection: null }
+        : state,
+    ),
+
+  setComposerDraft: (key, value) =>
+    set((state) => {
+      const current = state.composerDrafts[key] ?? "";
+      if (current === value) return state;
+      const next = { ...state.composerDrafts };
+      if (value.length === 0) {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+      return { composerDrafts: next };
+    }),
+
   goBack: () => {
     set((state) => {
       if (state.navHistoryIndex <= 0) return state;
@@ -533,6 +648,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeSessionTitle: target.sessionTitle,
         inspectorOpen: target.route === "home" ? false : state.inspectorOpen,
         chatCollapsedByRight: false,
+        backgroundTasks: target.sessionId
+          ? state.backgroundTasks.filter((t) => t.sessionId === target.sessionId)
+          : [],
       };
     });
   },
@@ -551,6 +669,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeSessionTitle: target.sessionTitle,
         inspectorOpen: target.route === "home" ? false : state.inspectorOpen,
         chatCollapsedByRight: false,
+        backgroundTasks: target.sessionId
+          ? state.backgroundTasks.filter((t) => t.sessionId === target.sessionId)
+          : [],
       };
     });
   },
@@ -744,6 +865,126 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       state.pendingUserTurn?.id === id ? { pendingUserTurn: null } : state,
     ),
 
+  setMidTurnSendMode: (midTurnSendMode) => set({ midTurnSendMode }),
+
+  addMidTurnMessage: (item) =>
+    set((state) => {
+      const existing = state.midTurnMessagesBySession[item.sessionId] ?? [];
+      if (existing.some((m) => m.id === item.id)) return state;
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [item.sessionId]: [...existing, item],
+        },
+      };
+    }),
+
+  removeMidTurnMessage: (sessionId, id) =>
+    set((state) => {
+      const existing = state.midTurnMessagesBySession[sessionId];
+      if (!existing || existing.length === 0) return state;
+      const filtered = existing.filter((m) => m.id !== id);
+      if (filtered.length === existing.length) return state;
+      const next = { ...state.midTurnMessagesBySession };
+      if (filtered.length === 0) {
+        delete next[sessionId];
+      } else {
+        next[sessionId] = filtered;
+      }
+      return { midTurnMessagesBySession: next };
+    }),
+
+  updateMidTurnMessage: (sessionId, id, patch) =>
+    set((state) => {
+      const existing = state.midTurnMessagesBySession[sessionId];
+      if (!existing || existing.length === 0) return state;
+      let changed = false;
+      const updated = existing.map((m) => {
+        if (m.id !== id) return m;
+        changed = true;
+        return { ...m, ...patch };
+      });
+      if (!changed) return state;
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [sessionId]: updated,
+        },
+      };
+    }),
+
+  markSteersDelivered: (sessionId, clientIds) =>
+    set((state) => {
+      const existing = state.midTurnMessagesBySession[sessionId];
+      if (!existing || existing.length === 0) return state;
+      const idSet =
+        clientIds && clientIds.length > 0 ? new Set(clientIds) : null;
+      const remaining = existing.filter((m) => {
+        if (m.mode !== "steer") return true;
+        if (!idSet) return false;
+        return !idSet.has(m.id);
+      });
+      if (remaining.length === existing.length) return state;
+      const next = { ...state.midTurnMessagesBySession };
+      if (remaining.length === 0) {
+        delete next[sessionId];
+      } else {
+        next[sessionId] = remaining;
+      }
+      return { midTurnMessagesBySession: next };
+    }),
+
+  demotePendingSteersToQueue: (sessionId) =>
+    set((state) => {
+      const existing = state.midTurnMessagesBySession[sessionId];
+      if (!existing || existing.length === 0) return state;
+      let changed = false;
+      const updated = existing.map((m) => {
+        if (m.mode !== "steer") return m;
+        changed = true;
+        return { ...m, mode: "queue" as const };
+      });
+      if (!changed) return state;
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [sessionId]: updated,
+        },
+      };
+    }),
+
+  shiftNextQueuedMessage: (sessionId) => {
+    const existing = get().midTurnMessagesBySession[sessionId];
+    if (!existing || existing.length === 0) return null;
+    const targetIdx = existing.findIndex((m) => m.mode === "queue");
+    if (targetIdx < 0) return null;
+    const item = existing[targetIdx];
+    const remaining = existing.filter((_, idx) => idx !== targetIdx);
+    set((state) => {
+      const next = { ...state.midTurnMessagesBySession };
+      if (remaining.length === 0) {
+        delete next[sessionId];
+      } else {
+        next[sessionId] = remaining;
+      }
+      return { midTurnMessagesBySession: next };
+    });
+    return item;
+  },
+
+  setQueuePausedForSession: (sessionId, paused) =>
+    set((state) => {
+      const currentlyPaused = Boolean(state.pausedQueueSessions[sessionId]);
+      if (currentlyPaused === paused) return state;
+      const next = { ...state.pausedQueueSessions };
+      if (paused) {
+        next[sessionId] = true;
+      } else {
+        delete next[sessionId];
+      }
+      return { pausedQueueSessions: next };
+    }),
+
   requestSessionSearchFocus: () =>
     set((state) => ({
       sessionSearchFocusNonce: state.sessionSearchFocusNonce + 1,
@@ -767,44 +1008,52 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         if (msg.reduceMotion !== undefined) {
           syncReduceMotionToDom(msg.reduceMotion);
         }
-        set((state) => ({
-          surface: msg.surface,
-          theme: msg.theme,
-          resolvedTheme,
-          accent: msg.accent,
-          density: msg.density ?? state.density,
-          reduceMotion: msg.reduceMotion ?? state.reduceMotion,
-          route: msg.route,
-          activeRoute: msg.route,
-          activeSessionId: msg.sessionId ?? state.activeSessionId,
-          capabilities: msg.capabilities,
-          daemonStatus: msg.daemonStatus,
-          workspaces: msg.workspaces,
-          activeProjectPath:
-            state.activeProjectPath ?? msg.workspaces[0]?.path ?? null,
-          editorSelection:
-            msg.editorSelection !== undefined
-              ? msg.editorSelection
-              : state.editorSelection,
-          backgroundTasks: msg.backgroundTasks ?? state.backgroundTasks,
-          ...(msg.sessionId && msg.fileChanges
-            ? {
-                fileChangesBySession: {
-                  ...state.fileChangesBySession,
-                  [msg.sessionId]: msg.fileChanges,
-                },
-              }
-            : {}),
-          ...(msg.accountStatus !== undefined
-            ? {
-                accountStatus: msg.accountStatus,
-                authLoaded: true,
-                ...(msg.accountStatus.signedIn
-                  ? { authBypassed: false, authDialogOpen: false }
-                  : {}),
-              }
-            : {}),
-        }));
+        set((state) => {
+          const resolvedSessionId = msg.sessionId ?? state.activeSessionId;
+          const rawTasks = msg.backgroundTasks ?? state.backgroundTasks;
+          const scopedTasks = resolvedSessionId
+            ? rawTasks.filter((t) => t.sessionId === resolvedSessionId)
+            : [];
+          return {
+            surface: msg.surface,
+            theme: msg.theme,
+            resolvedTheme,
+            accent: msg.accent,
+            density: msg.density ?? state.density,
+            reduceMotion: msg.reduceMotion ?? state.reduceMotion,
+            ...(msg.workbench ? { workbench: msg.workbench } : {}),
+            route: msg.route,
+            activeRoute: msg.route,
+            activeSessionId: resolvedSessionId,
+            capabilities: msg.capabilities,
+            daemonStatus: msg.daemonStatus,
+            workspaces: msg.workspaces,
+            activeProjectPath:
+              state.activeProjectPath ?? msg.workspaces[0]?.path ?? null,
+            editorSelection:
+              msg.editorSelection !== undefined
+                ? msg.editorSelection
+                : state.editorSelection,
+            backgroundTasks: scopedTasks,
+            ...(msg.sessionId && msg.fileChanges
+              ? {
+                  fileChangesBySession: {
+                    ...state.fileChangesBySession,
+                    [msg.sessionId]: msg.fileChanges,
+                  },
+                }
+              : {}),
+            ...(msg.accountStatus !== undefined
+              ? {
+                  accountStatus: msg.accountStatus,
+                  authLoaded: true,
+                  ...(msg.accountStatus.signedIn
+                    ? { authBypassed: false, authDialogOpen: false }
+                    : {}),
+                }
+              : {}),
+          };
+        });
         return;
       }
       case "rayucode.account.changed": {
@@ -833,6 +1082,65 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         }));
         return;
       }
+      case "rayucode.ui.workbenchSync": {
+        set({ workbench: msg.workbench });
+        return;
+      }
+      case "rayucode.composer.inject": {
+        const { injection } = msg;
+        set((state) => {
+          const nextRoute: AppRoute = state.activeSessionId
+            ? "workspace"
+            : "home";
+          const matchedWorkspace = injection.workingDir
+            ? state.workspaces.find((w) => w.path === injection.workingDir)
+            : undefined;
+          const nextProjectPath = matchedWorkspace
+            ? matchedWorkspace.path
+            : injection.workingDir && state.activeProjectPath === null
+              ? injection.workingDir
+              : state.activeProjectPath;
+          const nextEntry: NavHistoryEntry = {
+            route: nextRoute,
+            sessionId:
+              nextRoute === "workspace" ? state.activeSessionId : null,
+            sessionTitle:
+              nextRoute === "workspace" ? state.activeSessionTitle : null,
+          };
+          const current = state.navHistory[state.navHistoryIndex];
+          const isSame =
+            current &&
+            current.route === nextEntry.route &&
+            current.sessionId === nextEntry.sessionId;
+          const nextHistory = isSame
+            ? state.navHistory
+            : [
+                ...state.navHistory.slice(0, state.navHistoryIndex + 1),
+                nextEntry,
+              ].slice(-50);
+          return {
+            pendingComposerInjection: injection,
+            ...(injection.selection !== undefined
+              ? { editorSelection: injection.selection }
+              : {}),
+            activeProjectPath: nextProjectPath,
+            route: nextRoute,
+            activeRoute: nextRoute,
+            navHistory: nextHistory,
+            navHistoryIndex: nextHistory.length - 1,
+            inspectorOpen: nextRoute === "home" ? false : state.inspectorOpen,
+            composerFocusNonce: state.composerFocusNonce + 1,
+          };
+        });
+        const next = get();
+        if (next.surface === "editorPanel") {
+          setWebviewState({
+            route: next.activeRoute,
+            sessionId: next.activeSessionId ?? undefined,
+          });
+        }
+        return;
+      }
       case "rayucode.daemon.statusChanged":
         set({
           daemonStatus: msg.status,
@@ -850,7 +1158,20 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         set({ editorSelection: msg.selection });
         return;
       case "rayucode.processes.snapshot":
-        set({ backgroundTasks: msg.tasks });
+        set((state) => {
+          if (
+            msg.sessionId &&
+            state.activeSessionId &&
+            msg.sessionId !== state.activeSessionId
+          ) {
+            return state;
+          }
+          return {
+            backgroundTasks: state.activeSessionId
+              ? msg.tasks.filter((t) => t.sessionId === state.activeSessionId)
+              : [],
+          };
+        });
         return;
       case "rayucode.fileChanges.updated":
         set((state) => ({

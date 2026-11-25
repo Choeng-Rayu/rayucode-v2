@@ -1,12 +1,37 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import type { EditorSelectionView } from "../../shared/vscodeProtocol.js";
+
+function getVscode(): typeof vscode {
+  return require("vscode") as typeof vscode;
+}
 
 const SELECTION_DEBOUNCE_MS = 150;
 const MAX_SELECTION_CHARS = 32_000;
 export const ORIGINAL_DIFF_SCHEME = "rayucode-original";
+
+/**
+ * Pure helper resolving which editor column should host code files/diffs
+ * without overwriting RayuCode's own editor tab.
+ */
+export function resolveTargetCodeColumn(
+  lastTextEditorColumn: number | undefined,
+  panelColumn: number | undefined,
+): number {
+  if (
+    lastTextEditorColumn !== undefined &&
+    lastTextEditorColumn > 0 &&
+    lastTextEditorColumn !== panelColumn
+  ) {
+    return lastTextEditorColumn;
+  }
+  if (panelColumn === 1) {
+    return 2;
+  }
+  return 1;
+}
 
 interface TrackedDiffTab {
   path: string;
@@ -21,12 +46,21 @@ interface TrackedDiffTab {
 class VirtualDiffDocumentProvider implements vscode.TextDocumentContentProvider {
   private readonly contents = new Map<string, string>();
   private readonly uris = new Map<string, vscode.Uri>();
-  private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChange = this.emitter.event;
+  private readonly emitter: vscode.EventEmitter<vscode.Uri>;
+  readonly onDidChange: vscode.Event<vscode.Uri>;
+
+  constructor() {
+    const vscodeApi = getVscode();
+    this.emitter = new vscodeApi.EventEmitter<vscode.Uri>();
+    this.onDidChange = this.emitter.event;
+  }
 
   set(key: string, content: string, displayName: string): vscode.Uri {
+    const vscodeApi = getVscode();
     const safeName = encodeURIComponent(path.basename(displayName) || "document");
-    const uri = vscode.Uri.parse(`${ORIGINAL_DIFF_SCHEME}:/${safeName}?${encodeURIComponent(key)}`);
+    const uri = vscodeApi.Uri.parse(
+      `${ORIGINAL_DIFF_SCHEME}:/${safeName}?${encodeURIComponent(key)}`,
+    );
     this.contents.set(key, content);
     this.uris.set(key, uri);
     this.emitter.fire(uri);
@@ -67,25 +101,26 @@ function isAbsolutePath(filePath: string): boolean {
 }
 
 export function resolveWorkspaceFileUri(targetPath: string): vscode.Uri | null {
+  const vscodeApi = getVscode();
   const trimmed = targetPath.trim();
   if (!trimmed) return null;
   if (trimmed === "~") {
-    return vscode.Uri.file(os.homedir());
+    return vscodeApi.Uri.file(os.homedir());
   }
   if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
-    return vscode.Uri.joinPath(
-      vscode.Uri.file(os.homedir()),
+    return vscodeApi.Uri.joinPath(
+      vscodeApi.Uri.file(os.homedir()),
       trimmed.slice(2).replace(/\\/g, "/"),
     );
   }
   if (isAbsolutePath(trimmed)) {
-    return vscode.Uri.file(trimmed);
+    return vscodeApi.Uri.file(trimmed);
   }
-  const primaryFolder = vscode.workspace.workspaceFolders?.[0];
+  const primaryFolder = vscodeApi.workspace.workspaceFolders?.[0];
   if (!primaryFolder) {
-    return vscode.Uri.file(path.resolve(trimmed));
+    return vscodeApi.Uri.file(path.resolve(trimmed));
   }
-  return vscode.Uri.joinPath(primaryFolder.uri, trimmed);
+  return vscodeApi.Uri.joinPath(primaryFolder.uri, trimmed);
 }
 
 export class EditorBridge implements vscode.Disposable {
@@ -94,31 +129,43 @@ export class EditorBridge implements vscode.Disposable {
   private readonly openDiffTabs = new Map<string, TrackedDiffTab>();
   private readonly terminals = new Map<string, vscode.Terminal>();
   private lastActiveEditor: vscode.TextEditor | undefined;
+  private lastTextEditorColumn: vscode.ViewColumn | undefined;
+  private panelViewColumnResolver:
+    | (() => vscode.ViewColumn | undefined)
+    | undefined;
   private currentSelection: EditorSelectionView | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly onSelectionChanged: (selection: EditorSelectionView | null) => void,
   ) {
+    const vscodeApi = getVscode();
     this.disposables.push(
       this.diffProvider,
-      vscode.workspace.registerTextDocumentContentProvider(
+      vscodeApi.workspace.registerTextDocumentContentProvider(
         ORIGINAL_DIFF_SCHEME,
         this.diffProvider,
       ),
-      vscode.window.onDidChangeTextEditorSelection(() => this.scheduleSelectionFlush()),
-      vscode.window.onDidChangeActiveTextEditor((editor) => {
+      vscodeApi.window.onDidChangeTextEditorSelection(() =>
+        this.scheduleSelectionFlush(),
+      ),
+      vscodeApi.window.onDidChangeActiveTextEditor((editor) => {
         if (
           editor &&
           (editor.document.uri.scheme === "file" ||
             editor.document.uri.scheme === "untitled")
         ) {
           this.lastActiveEditor = editor;
+          if (editor.viewColumn !== undefined && editor.viewColumn > 0) {
+            this.lastTextEditorColumn = editor.viewColumn;
+          }
         }
         this.scheduleSelectionFlush();
       }),
-      vscode.workspace.onDidChangeTextDocument(() => this.scheduleSelectionFlush()),
-      vscode.workspace.onDidCloseTextDocument((closed) => {
+      vscodeApi.workspace.onDidChangeTextDocument(() =>
+        this.scheduleSelectionFlush(),
+      ),
+      vscodeApi.workspace.onDidCloseTextDocument((closed) => {
         if (closed.uri.scheme === ORIGINAL_DIFF_SCHEME) {
           const closedKey = decodeURIComponent(closed.uri.query);
           for (const [tabKey, tab] of this.openDiffTabs.entries()) {
@@ -131,17 +178,46 @@ export class EditorBridge implements vscode.Disposable {
         }
         this.scheduleSelectionFlush();
       }),
-      vscode.window.onDidCloseTerminal((closed) => {
+      vscodeApi.window.onDidCloseTerminal((closed) => {
         for (const [key, term] of this.terminals.entries()) {
           if (term === closed) this.terminals.delete(key);
         }
       }),
     );
 
-    if (vscode.window.activeTextEditor) {
-      this.lastActiveEditor = vscode.window.activeTextEditor;
+    const active = vscodeApi.window.activeTextEditor;
+    if (active) {
+      this.lastActiveEditor = active;
+      if (
+        (active.document.uri.scheme === "file" ||
+          active.document.uri.scheme === "untitled") &&
+        active.viewColumn !== undefined &&
+        active.viewColumn > 0
+      ) {
+        this.lastTextEditorColumn = active.viewColumn;
+      }
     }
     this.scheduleSelectionFlush();
+  }
+
+  setPanelViewColumnResolver(fn: () => vscode.ViewColumn | undefined): void {
+    this.panelViewColumnResolver = fn;
+  }
+
+  resolveCodeViewColumn(): vscode.ViewColumn {
+    const vscodeApi = getVscode();
+    const active = vscodeApi.window.activeTextEditor;
+    const activeColumn =
+      active &&
+      (active.document.uri.scheme === "file" ||
+        active.document.uri.scheme === "untitled") &&
+      active.viewColumn !== undefined &&
+      active.viewColumn > 0
+        ? active.viewColumn
+        : undefined;
+    const preferred = activeColumn ?? this.lastTextEditorColumn;
+    const panelColumn = this.panelViewColumnResolver?.();
+    return resolveTargetCodeColumn(preferred, panelColumn) as vscode.ViewColumn;
   }
 
   getSelection(): EditorSelectionView | null {
@@ -149,8 +225,9 @@ export class EditorBridge implements vscode.Disposable {
   }
 
   readActiveSelectionImmediate(): EditorSelectionView | null {
+    const vscodeApi = getVscode();
     const editor =
-      vscode.window.activeTextEditor ?? this.lastActiveEditor;
+      vscodeApi.window.activeTextEditor ?? this.lastActiveEditor;
     if (!editor) return null;
     const { document, selection } = editor;
     if (document.uri.scheme !== "file" && document.uri.scheme !== "untitled") {
@@ -158,7 +235,7 @@ export class EditorBridge implements vscode.Disposable {
     }
 
     const filePath = document.uri.fsPath || document.uri.path;
-    const relativePath = vscode.workspace.asRelativePath(document.uri, false);
+    const relativePath = vscodeApi.workspace.asRelativePath(document.uri, false);
     const languageId = document.languageId;
 
     if (selection.isEmpty) {
@@ -214,6 +291,7 @@ export class EditorBridge implements vscode.Disposable {
     column?: number;
     preview?: boolean;
   }): Promise<void> {
+    const vscodeApi = getVscode();
     const uri = resolveWorkspaceFileUri(options.path);
     if (!uri) return;
 
@@ -221,15 +299,20 @@ export class EditorBridge implements vscode.Disposable {
     const col0 = options.column && options.column > 0 ? options.column - 1 : 0;
     const selection =
       line0 !== undefined
-        ? new vscode.Range(line0, col0, line0, col0)
+        ? new vscodeApi.Range(line0, col0, line0, col0)
         : undefined;
 
-    const editor = await vscode.window.showTextDocument(uri, {
+    const viewColumn = this.resolveCodeViewColumn();
+    const editor = await vscodeApi.window.showTextDocument(uri, {
+      viewColumn,
       preview: options.preview ?? true,
       selection,
     });
     if (selection) {
-      editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+      editor.revealRange(
+        selection,
+        vscodeApi.TextEditorRevealType.InCenterIfOutsideViewport,
+      );
     }
   }
 
@@ -243,6 +326,7 @@ export class EditorBridge implements vscode.Disposable {
     isCreated?: boolean;
     isDeleted?: boolean;
   }): Promise<void> {
+    const vscodeApi = getVscode();
     const fileUri = resolveWorkspaceFileUri(options.path);
     if (!fileUri) return;
 
@@ -288,13 +372,18 @@ export class EditorBridge implements vscode.Disposable {
       : options.isDeleted
         ? " (Deleted)"
         : "";
-    await vscode.commands.executeCommand(
+    const panelColumn = this.panelViewColumnResolver?.();
+    const viewColumn =
+      panelColumn !== undefined
+        ? this.resolveCodeViewColumn()
+        : vscodeApi.ViewColumn.Beside;
+    await vscodeApi.commands.executeCommand(
       "vscode.diff",
       leftUri,
       rightUri,
       options.title ?? `${baseName}${suffix} — RayuCode Diff`,
       {
-        viewColumn: vscode.ViewColumn.Beside,
+        viewColumn,
         preview: false,
       },
     );
@@ -343,14 +432,21 @@ export class EditorBridge implements vscode.Disposable {
     mode: "cursor" | "diff";
     languageId?: string;
   }): Promise<void> {
-    const editor = vscode.window.activeTextEditor ?? this.lastActiveEditor;
+    const vscodeApi = getVscode();
+    const panelColumn = this.panelViewColumnResolver?.();
+    const targetColumn =
+      panelColumn !== undefined
+        ? this.resolveCodeViewColumn()
+        : vscodeApi.ViewColumn.Beside;
+
+    const editor = vscodeApi.window.activeTextEditor ?? this.lastActiveEditor;
     if (!editor) {
-      const doc = await vscode.workspace.openTextDocument({
+      const doc = await vscodeApi.workspace.openTextDocument({
         content: options.code,
         language: options.languageId ?? "plaintext",
       });
-      await vscode.window.showTextDocument(doc, {
-        viewColumn: vscode.ViewColumn.Beside,
+      await vscodeApi.window.showTextDocument(doc, {
+        viewColumn: targetColumn,
       });
       return;
     }
@@ -379,26 +475,27 @@ export class EditorBridge implements vscode.Disposable {
     const rightUri = this.diffProvider.set(`insert-prop:${filePath}`, proposedText, filePath);
     const baseName = path.basename(filePath) || "Snippet";
 
-    await vscode.commands.executeCommand(
+    await vscodeApi.commands.executeCommand(
       "vscode.diff",
       leftUri,
       rightUri,
       `${baseName} — Proposed Code`,
       {
-        viewColumn: vscode.ViewColumn.Beside,
+        viewColumn: targetColumn,
         preview: true,
       },
     );
   }
 
   openTerminal(options: { cwd?: string; name?: string } = {}): void {
-    const defaultCwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const vscodeApi = getVscode();
+    const defaultCwd = vscodeApi.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const cwd = options.cwd?.trim() || defaultCwd;
     const name = options.name?.trim() || "RayuCode";
     const key = `${name}:${cwd ?? ""}`;
     let terminal = this.terminals.get(key);
     if (!terminal || terminal.exitStatus !== undefined) {
-      terminal = vscode.window.createTerminal({
+      terminal = vscodeApi.window.createTerminal({
         name,
         cwd,
       });
@@ -408,42 +505,47 @@ export class EditorBridge implements vscode.Disposable {
   }
 
   async openWorktreeWindow(folderPath: string): Promise<void> {
+    const vscodeApi = getVscode();
     const uri = resolveWorkspaceFileUri(folderPath);
     if (!uri) return;
-    await vscode.commands.executeCommand("vscode.openFolder", uri, {
+    await vscodeApi.commands.executeCommand("vscode.openFolder", uri, {
       forceNewWindow: true,
     });
   }
 
   async openMarkdownPreview(filePath: string): Promise<void> {
+    const vscodeApi = getVscode();
     const uri = resolveWorkspaceFileUri(filePath);
     if (!uri) return;
     try {
-      await vscode.commands.executeCommand("markdown.showPreviewToSide", uri);
+      await vscodeApi.commands.executeCommand("markdown.showPreviewToSide", uri);
     } catch {
       await this.openFile({ path: filePath, preview: false });
     }
   }
 
   async openSimpleBrowser(url: string): Promise<void> {
+    const vscodeApi = getVscode();
     const trimmed = url.trim();
     if (!trimmed) return;
     try {
-      await vscode.commands.executeCommand("simpleBrowser.show", trimmed);
+      await vscodeApi.commands.executeCommand("simpleBrowser.show", trimmed);
     } catch {
       await this.openExternal(trimmed);
     }
   }
 
   async openExternal(url: string): Promise<void> {
+    const vscodeApi = getVscode();
     const trimmed = url.trim();
     if (!trimmed) return;
-    await vscode.env.openExternal(vscode.Uri.parse(trimmed));
+    await vscodeApi.env.openExternal(vscodeApi.Uri.parse(trimmed));
   }
 
   async copyToClipboard(text: string): Promise<void> {
+    const vscodeApi = getVscode();
     if (text.length <= 2_000_000) {
-      await vscode.env.clipboard.writeText(text);
+      await vscodeApi.env.clipboard.writeText(text);
     }
   }
 
@@ -452,23 +554,27 @@ export class EditorBridge implements vscode.Disposable {
     filters?: Record<string, string[]>;
     canSelectFolders?: boolean;
   } = {}): Promise<string[]> {
-    const uris = await vscode.window.showOpenDialog({
+    const vscodeApi = getVscode();
+    const uris = await vscodeApi.window.showOpenDialog({
       canSelectMany: options.canSelectMany ?? true,
       canSelectFiles: !options.canSelectFolders,
       canSelectFolders: options.canSelectFolders ?? false,
       filters: options.filters,
-      defaultUri: vscode.workspace.workspaceFolders?.[0]?.uri,
+      defaultUri: vscodeApi.workspace.workspaceFolders?.[0]?.uri,
     });
     return (uris ?? []).map((u) => u.fsPath);
   }
 
   async findWorkspaceFiles(query: string, limit = 50): Promise<string[]> {
-    const uris = await vscode.workspace.findFiles(
+    const vscodeApi = getVscode();
+    const uris = await vscodeApi.workspace.findFiles(
       "**/*",
       "**/{node_modules,.git,dist,target,.next,build,coverage,.turbo}/**",
       1500,
     );
-    const relativePaths = uris.map((u) => vscode.workspace.asRelativePath(u, false));
+    const relativePaths = uris.map((u) =>
+      vscodeApi.workspace.asRelativePath(u, false),
+    );
     const q = query.trim().toLowerCase();
     if (!q) {
       return relativePaths.sort().slice(0, limit);

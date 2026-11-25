@@ -5,6 +5,7 @@ import {
   Menu,
   MoreHorizontal,
   Palette,
+  PanelRight,
   Plus,
   RefreshCw,
   Settings,
@@ -42,6 +43,7 @@ export function CompactTopBar({
   onOpenInspectorSheet,
   className,
 }: CompactTopBarProps) {
+  const surface = useAppStore((s) => s.surface);
   const activeRoute = useAppStore((s) => s.activeRoute);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle);
@@ -63,10 +65,14 @@ export function CompactTopBar({
 
   const activeBgCount = React.useMemo(
     () =>
-      backgroundTasks.filter(
-        (t) => t.status === "running" || t.status === "stalled",
-      ).length,
-    [backgroundTasks],
+      !activeSessionId
+        ? 0
+        : backgroundTasks.filter(
+            (t) =>
+              t.sessionId === activeSessionId &&
+              (t.status === "running" || t.status === "stalled"),
+          ).length,
+    [activeSessionId, backgroundTasks],
   );
 
   const handlePopOutEditorPanel = () => {
@@ -74,6 +80,7 @@ export function CompactTopBar({
       type: "rayucode.ui.openEditorPanel",
       route: activeRoute,
       sessionId: activeSessionId ?? undefined,
+      beside: true,
     });
   };
 
@@ -218,12 +225,12 @@ export function CompactTopBar({
           <TooltipContent side="bottom">Context &amp; Inspector</TooltipContent>
         </Tooltip>
 
-        {/* [⤢] Expand to Full Editor Mission Control */}
+        {/* [⤢] Open Beside Editor */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              aria-label="Expand to Full Editor Panel"
+              aria-label="Open Beside Editor"
               data-testid="compact-expand-editor-panel"
               onClick={handlePopOutEditorPanel}
               className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
@@ -231,9 +238,7 @@ export function CompactTopBar({
               <ExternalLink className="size-3.5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Expand to Full Editor Panel
-          </TooltipContent>
+          <TooltipContent side="bottom">Open Beside Editor</TooltipContent>
         </Tooltip>
 
         {/* [⋯] Overflow DropdownMenu */}
@@ -270,6 +275,19 @@ export function CompactTopBar({
               <NavGlyph icon="processes" className="size-3.5" />
               <span>Background Processes</span>
             </DropdownMenuItem>
+            {surface === "editorPanel" && (
+              <DropdownMenuItem
+                data-testid="compact-focus-sidebar"
+                onClick={() =>
+                  postToHost({
+                    type: "rayucode.ui.focusSidebar",
+                  })
+                }
+              >
+                <PanelRight className="size-3.5" />
+                <span>Focus Secondary Sidebar</span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => setActiveRoute("settings")}>
               <UsageRingSvg className="size-3.5" />

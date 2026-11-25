@@ -9,6 +9,7 @@ import type {
 import {
   callRpc,
   createStreamBatcher,
+  isVsCodeWebview,
   onHarnessFrame,
   onHostMessage,
   postToHost,
@@ -252,13 +253,21 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     enableAltBShortcut = true,
   } = options;
 
-  const tasks = useAppStore((s) => s.backgroundTasks);
+  const rawTasks = useAppStore((s) => s.backgroundTasks);
   const storeDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const setBackgroundTasks = useAppStore((s) => s.setBackgroundTasks);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
+
+  const tasks = React.useMemo(
+    () =>
+      !activeSessionId
+        ? []
+        : rawTasks.filter((t) => t.sessionId === activeSessionId),
+    [activeSessionId, rawTasks],
+  );
 
   const isDrawerOpen =
     drawerOpenProp !== undefined ? drawerOpenProp : storeDrawerOpen;
@@ -303,8 +312,10 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     const batcher = createStreamBatcher<
       Partial<BackgroundProcessView> & { taskId: string }
     >((patches) => {
-      const current = useAppStore.getState().backgroundTasks;
-      if (current.length === 0) return;
+      const state = useAppStore.getState();
+      const current = state.backgroundTasks;
+      const currentSessionId = state.activeSessionId;
+      if (current.length === 0 || !currentSessionId) return;
       const patchMap = new Map<
         string,
         Partial<BackgroundProcessView> & { taskId: string }
@@ -315,6 +326,7 @@ export function useProcesses(options: UseProcessesOptions = {}) {
       }
       let changed = false;
       const next = current.map((task) => {
+        if (task.sessionId !== currentSessionId) return task;
         const patch = patchMap.get(task.taskId);
         if (!patch) return task;
         changed = true;
@@ -327,12 +339,36 @@ export function useProcesses(options: UseProcessesOptions = {}) {
 
     const unsubHost = onHostMessage((msg) => {
       if (msg.type === "rayucode.processes.snapshot") {
-        useAppStore.getState().setBackgroundTasks(msg.tasks);
+        const currentSessionId = useAppStore.getState().activeSessionId;
+        if (
+          msg.sessionId &&
+          currentSessionId &&
+          msg.sessionId !== currentSessionId
+        ) {
+          return;
+        }
+        useAppStore
+          .getState()
+          .setBackgroundTasks(
+            currentSessionId
+              ? msg.tasks.filter((t) => t.sessionId === currentSessionId)
+              : [],
+          );
       } else if (
         msg.type === "rayucode.host.init" &&
         Array.isArray(msg.backgroundTasks)
       ) {
-        useAppStore.getState().setBackgroundTasks(msg.backgroundTasks);
+        const currentSessionId =
+          msg.sessionId ?? useAppStore.getState().activeSessionId;
+        useAppStore
+          .getState()
+          .setBackgroundTasks(
+            currentSessionId
+              ? msg.backgroundTasks.filter(
+                  (t) => t.sessionId === currentSessionId,
+                )
+              : [],
+          );
       } else if (
         msg.type === "rayucode.ui.navigate" &&
         msg.openProcessesDrawer !== undefined
@@ -344,6 +380,16 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     });
 
     const unsubHarness = onHarnessFrame((frame) => {
+      const frameSessionId =
+        typeof frame.session_id === "string"
+          ? frame.session_id
+          : typeof frame.sessionId === "string"
+            ? frame.sessionId
+            : null;
+      const currentSessionId = useAppStore.getState().activeSessionId;
+      if (frameSessionId && frameSessionId !== currentSessionId) {
+        return;
+      }
       const patch = extractProgressPatchFromFrame(frame);
       if (patch) {
         batcher.push(patch);
@@ -458,14 +504,22 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   // RPC Actions
   const refreshProcesses = React.useCallback(
     async (sessionId?: string) => {
+      const targetSessionId =
+        sessionId ?? useAppStore.getState().activeSessionId;
+      if (!targetSessionId) {
+        setBackgroundTasks([]);
+        return [];
+      }
       setIsLoadingList(true);
       try {
-        const res = await callRpc(
-          "background.list",
-          sessionId ? { sessionId } : undefined,
-        );
-        setBackgroundTasks(res.tasks);
-        return res.tasks;
+        const res = await callRpc("background.list", {
+          sessionId: targetSessionId,
+        });
+        const scoped = res.tasks.filter((t) => t.sessionId === targetSessionId);
+        if (useAppStore.getState().activeSessionId === targetSessionId) {
+          setBackgroundTasks(scoped);
+        }
+        return scoped;
       } finally {
         setIsLoadingList(false);
       }
@@ -473,15 +527,29 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     [setBackgroundTasks],
   );
 
+  // Re-fetch scoped background processes when activeSessionId changes inside VS Code webview
+  React.useEffect(() => {
+    if (!isVsCodeWebview()) return;
+    if (!activeSessionId) {
+      setBackgroundTasks([]);
+      return;
+    }
+    void refreshProcesses(activeSessionId).catch(() => {});
+  }, [activeSessionId, refreshProcesses, setBackgroundTasks]);
+
   const fetchProcessStatus = React.useCallback(async (taskId: string) => {
     const res = await callRpc("background.status", { taskId });
     if (res.task) {
-      const current = useAppStore.getState().backgroundTasks;
+      const state = useAppStore.getState();
+      if (state.activeSessionId && res.task.sessionId !== state.activeSessionId) {
+        return res.task;
+      }
+      const current = state.backgroundTasks;
       const exists = current.some((t) => t.taskId === taskId);
       const next = exists
         ? current.map((t) => (t.taskId === taskId && res.task ? res.task : t))
         : [res.task, ...current];
-      useAppStore.getState().setBackgroundTasks(next);
+      state.setBackgroundTasks(next);
     }
     return res.task;
   }, []);
@@ -529,16 +597,23 @@ export function useProcesses(options: UseProcessesOptions = {}) {
 
   const cleanupProcesses = React.useCallback(
     async (sessionId?: string) => {
+      const targetSessionId =
+        sessionId ?? useAppStore.getState().activeSessionId ?? undefined;
       const res = await callRpc(
         "background.cleanup",
-        sessionId ? { sessionId } : undefined,
+        targetSessionId ? { sessionId: targetSessionId } : undefined,
       );
       if (res.ok) {
         const current = useAppStore.getState().backgroundTasks;
         useAppStore
           .getState()
           .setBackgroundTasks(
-            current.filter((t) => isProcessActive(t.status)),
+            current.filter(
+              (t) =>
+                (targetSessionId !== undefined &&
+                  t.sessionId !== targetSessionId) ||
+                isProcessActive(t.status),
+            ),
           );
       }
       return res;

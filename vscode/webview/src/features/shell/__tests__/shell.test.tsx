@@ -325,4 +325,143 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       expect(screen.getByText("Rayu Daemon Socket")).toBeTruthy();
     });
   });
+
+  it("posts beside: true from TopBar and CompactTopBar pop-out actions and focusSidebar on editorPanel surface", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
+
+    // 1. Wide TopBar on sidebar surface -> openEditorPanel includes beside: true
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 1280,
+    });
+    useAppStore.setState({
+      surface: "sidebar",
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_abc",
+    });
+
+    const { unmount } = renderWithQuery(
+      <AppShell>
+        <div>Sidebar Stage</div>
+      </AppShell>,
+    );
+
+    const openBesideBtn = screen.getByTestId("topbar-open-editor-panel");
+    expect(openBesideBtn.getAttribute("aria-label")).toBe("Open Beside Editor");
+    fireEvent.click(openBesideBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.openEditorPanel",
+      route: "workspace",
+      sessionId: "ses_abc",
+      beside: true,
+    });
+    unmount();
+
+    // 2. Wide TopBar on editorPanel surface -> Focus Secondary Sidebar posts focusSidebar
+    postSpy.mockClear();
+    useAppStore.setState({
+      surface: "editorPanel",
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_abc",
+    });
+
+    const { unmount: unmountEditor } = renderWithQuery(
+      <AppShell>
+        <div>Editor Panel Stage</div>
+      </AppShell>,
+    );
+
+    const focusSidebarBtn = screen.getByTestId("topbar-focus-sidebar");
+    expect(focusSidebarBtn.getAttribute("aria-label")).toBe(
+      "Focus Secondary Sidebar",
+    );
+    fireEvent.click(focusSidebarBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.focusSidebar",
+    });
+    unmountEditor();
+
+    // 3. CompactTopBar on sidebar surface -> expand button posts beside: true
+    postSpy.mockClear();
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 360,
+    });
+    useAppStore.setState({
+      surface: "sidebar",
+      route: "changes",
+      activeRoute: "changes",
+      activeSessionId: "ses_abc",
+    });
+
+    renderWithQuery(
+      <AppShell>
+        <div>Compact Stage</div>
+      </AppShell>,
+    );
+
+    const compactExpandBtn = screen.getByTestId("compact-expand-editor-panel");
+    expect(compactExpandBtn.getAttribute("aria-label")).toBe(
+      "Open Beside Editor",
+    );
+    fireEvent.click(compactExpandBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.openEditorPanel",
+      route: "changes",
+      sessionId: "ses_abc",
+      beside: true,
+    });
+
+    postSpy.mockRestore();
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 1280,
+    });
+  });
+
+  it("persists { route, sessionId } via setWebviewState on editorPanel navigation for WebviewPanelSerializer", () => {
+    const savedStates: unknown[] = [];
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: () => {},
+      getState: () => undefined,
+      setState: (state: unknown) => {
+        savedStates.push(state);
+      },
+    });
+
+    try {
+      useAppStore.setState({
+        surface: "editorPanel",
+        route: "home",
+        activeRoute: "home",
+        activeSessionId: null,
+      });
+
+      useAppStore.getState().setActiveSession("ses_persist_1", "Persisted");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "workspace",
+        sessionId: "ses_persist_1",
+      });
+
+      useAppStore.getState().setActiveRoute("changes");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "changes",
+        sessionId: "ses_persist_1",
+      });
+
+      // Sidebar surface should NOT write editorPanel serializer state
+      const countBeforeSidebar = savedStates.length;
+      useAppStore.setState({ surface: "sidebar" });
+      useAppStore.getState().setActiveRoute("settings");
+      expect(savedStates.length).toBe(countBeforeSidebar);
+    } finally {
+      window.acquireVsCodeApi = prevAcquire;
+    }
+  });
 });
