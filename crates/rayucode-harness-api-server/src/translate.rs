@@ -1940,6 +1940,7 @@ impl BridgeState {
         vec![ServerFrame::event(ApiEvent::TextDone {
             session_id: self.session_id.clone().unwrap_or_default(),
             message_id: Some(id),
+            stop_reason: None,
         })]
     }
 
@@ -2013,6 +2014,7 @@ impl BridgeState {
                 frames.push(ServerFrame::event(ApiEvent::TextDone {
                     session_id: self.session_id.clone().unwrap_or_default(),
                     message_id: Some(id.clone()),
+                    stop_reason: None,
                 }));
             }
         }
@@ -2548,6 +2550,9 @@ impl BridgeState {
                 name: event["name"].as_str().unwrap_or("").to_string(),
                 output: event["output"].as_str().unwrap_or("").to_string(),
                 error: event["error"].as_str().map(str::to_string),
+                duration_ms: event["tool_duration_ms"]
+                    .as_u64()
+                    .or_else(|| event["duration_ms"].as_u64()),
             })],
             "side_panel_state" => {
                 let session_id = event["session_id"].as_str().or(self.session_id.as_deref());
@@ -2962,6 +2967,8 @@ impl BridgeState {
                                 role: m["role"].as_str().unwrap_or("").to_string(),
                                 content: m["content"].as_str().unwrap_or("").to_string(),
                                 tool: Self::history_tool(m),
+                                origin: None,
+                                visibility: None,
                             })
                             .collect()
                     })
@@ -3470,6 +3477,9 @@ impl BridgeState {
                         available: route["available"].as_bool().unwrap_or(false),
                         detail: route["detail"].as_str().unwrap_or("").to_string(),
                         usage: serde_json::from_value(route["usage"].clone()).unwrap_or(None),
+                        supported_efforts: Vec::new(),
+                        default_effort: None,
+                        context_window: None,
                     })
                 })
                 .collect();
@@ -4132,6 +4142,8 @@ impl BridgeState {
                     role: role.to_string(),
                     content,
                     tool: None,
+                    origin: None,
+                    visibility: None,
                 })
             })
             .take(limit)

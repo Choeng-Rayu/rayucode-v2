@@ -73,15 +73,14 @@ fn fake_harness(handle: impl Fn(&ClientFrame, &mut dyn Write) + Send + 'static) 
         while let Ok(frame) = read_frame::<_, ClientFrame>(&mut reader) {
             // The handshake is boilerplate every test would repeat.
             if let ApiRequest::Hello { .. } = frame.request {
-                let reply = ServerFrame {
-                    v: API_VERSION_MAJOR,
-                    reply_to: Some(frame.id),
-                    event: ApiEvent::HelloOk {
+                let reply = ServerFrame::reply(
+                    frame.id,
+                    ApiEvent::HelloOk {
                         version: API_VERSION_MAJOR,
                         server: "fake-harness/1.0".to_string(),
                         capabilities: vec!["sessions".to_string()],
                     },
-                };
+                );
                 write_frame(&mut writer, &reply).expect("hello reply");
                 continue;
             }
@@ -100,20 +99,12 @@ fn fake_harness(handle: impl Fn(&ClientFrame, &mut dyn Write) + Send + 'static) 
 }
 
 fn reply(frame: &ClientFrame, event: ApiEvent, writer: &mut dyn Write) {
-    let out = ServerFrame {
-        v: API_VERSION_MAJOR,
-        reply_to: Some(frame.id),
-        event,
-    };
+    let out = ServerFrame::reply(frame.id, event);
     write_frame(&mut { writer }, &out).expect("reply");
 }
 
 fn push(event: ApiEvent, writer: &mut dyn Write) {
-    let out = ServerFrame {
-        v: API_VERSION_MAJOR,
-        reply_to: None,
-        event,
-    };
+    let out = ServerFrame::event(event);
     write_frame(&mut { writer }, &out).expect("push");
 }
 
@@ -321,6 +312,7 @@ fn run_collects_one_turn() {
                     name: "bash".to_string(),
                     output: "ok".to_string(),
                     error: None,
+                    duration_ms: None,
                 },
                 writer,
             );
@@ -448,15 +440,14 @@ fn a_lost_connection_fails_requests_in_flight() {
         let hello: ClientFrame = read_frame(&mut reader).expect("hello");
         write_frame(
             &mut writer,
-            &ServerFrame {
-                v: API_VERSION_MAJOR,
-                reply_to: Some(hello.id),
-                event: ApiEvent::HelloOk {
+            &ServerFrame::reply(
+                hello.id,
+                ApiEvent::HelloOk {
                     version: API_VERSION_MAJOR,
                     server: "fake/1.0".to_string(),
                     capabilities: vec![],
                 },
-            },
+            ),
         )
         .expect("hello reply");
         let _: ClientFrame = read_frame(&mut reader).expect("request");
@@ -522,6 +513,9 @@ fn model_switch_preserves_identity_and_catalog_events_around_the_reply() {
                     api_method: "responses".into(),
                     available: true,
                     detail: "ready".into(),
+                    supported_efforts: Vec::new(),
+                    default_effort: None,
+                    context_window: None,
                 }],
             },
             writer,
@@ -702,6 +696,7 @@ fn run_collects_framed_final_answer_and_retracts_completed_retry_output() {
                     ApiEvent::TextDone {
                         session_id: "s1".into(),
                         message_id: Some(id.into()),
+                        stop_reason: None,
                     },
                     writer,
                 );

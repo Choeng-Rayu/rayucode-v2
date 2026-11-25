@@ -74,6 +74,8 @@ impl ErrorKind {
                 rayucode_harness_api::ErrorCode::UnknownRequest => "unknown_request",
                 rayucode_harness_api::ErrorCode::UnknownSession => "unknown_session",
                 rayucode_harness_api::ErrorCode::InvalidRequest => "invalid_request",
+                rayucode_harness_api::ErrorCode::Busy => "busy",
+                rayucode_harness_api::ErrorCode::Unsupported => "unsupported",
                 rayucode_harness_api::ErrorCode::Internal => "internal",
             },
         }
