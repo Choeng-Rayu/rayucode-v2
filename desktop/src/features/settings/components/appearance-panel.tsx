@@ -2,6 +2,7 @@ import * as React from "react"
 import { Check } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import {
   Select,
   SelectContent,
@@ -17,6 +18,9 @@ import { CODE_FONT_OPTIONS } from "../schemas"
 import type { CodeFontFamily, FontScale } from "../types"
 
 export interface AppearancePanelProps {
+  showMiniPet?: boolean
+  onToggleMiniPet?: (checked: boolean) => void
+  miniPetDisabled?: boolean
   className?: string
 }
 
@@ -26,7 +30,12 @@ const FONT_SCALE_OPTIONS: Array<{ value: FontScale; label: string }> = [
   { value: "large", label: "Large" },
 ]
 
-export function AppearancePanel({ className }: AppearancePanelProps) {
+export function AppearancePanel({
+  showMiniPet,
+  onToggleMiniPet,
+  miniPetDisabled = false,
+  className,
+}: AppearancePanelProps) {
   const theme = useAppStore((s) => s.theme)
   const accent = useAppStore((s) => s.accent)
   const setTheme = useAppStore((s) => s.setTheme)
@@ -61,14 +70,20 @@ export function AppearancePanel({ className }: AppearancePanelProps) {
       aria-labelledby="sp-h-appearance"
       className={cn("flex flex-col", className)}
     >
-      <h1
-        id="sp-h-appearance"
-        className="mb-1.5 text-2xl font-medium tracking-[-0.025em] text-ink"
-      >
-        Appearance
-      </h1>
+      <div className="mb-1.5 flex flex-wrap items-center gap-2.5">
+        <h1
+          id="sp-h-appearance"
+          className="text-2xl font-medium tracking-[-0.025em] text-ink"
+        >
+          Appearance
+        </h1>
+        <Badge variant="outline" data-testid="settings-local-badge">
+          Local to Desktop
+        </Badge>
+      </div>
       <p className="mb-8 text-[13px] leading-[1.45] text-muted-ink">
-        Customize theme, brand accent, typography, and interface density
+        Customize theme, brand accent, typography, and local desktop workspace
+        preferences
       </p>
 
       {/* Theme Mode Picker */}
@@ -310,7 +325,7 @@ export function AppearancePanel({ className }: AppearancePanelProps) {
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-6 py-3.5">
+      <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium text-ink">Reduce motion</div>
           <div className="mt-0.5 text-xs text-muted-ink">
@@ -328,6 +343,32 @@ export function AppearancePanel({ className }: AppearancePanelProps) {
           }}
         />
       </div>
+
+      {typeof showMiniPet === "boolean" && onToggleMiniPet ? (
+        <div className="mt-6">
+          <h2 className="border-b border-hairline-soft pb-3 text-[13px] font-medium text-ink">
+            Local Workspace Preferences
+          </h2>
+          <div className="flex items-center justify-between gap-6 py-3.5">
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-medium text-ink">
+                Show Mini &amp; Pet companion
+              </div>
+              <div className="mt-0.5 text-xs text-muted-ink">
+                Keep the floating Rayu Fox companion visible above desktop
+                windows
+              </div>
+            </div>
+            <Switch
+              data-testid="mini-pet-switch"
+              aria-label="Show Mini & Pet companion"
+              checked={showMiniPet}
+              disabled={miniPetDisabled}
+              onCheckedChange={onToggleMiniPet}
+            />
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

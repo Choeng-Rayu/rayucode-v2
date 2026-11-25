@@ -8,7 +8,17 @@ import { useAppStore } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { createQueryClient } from "@/lib/query-client"
 
-import { FALLBACK_MODELS, usePersistedInferenceSettings } from "../index"
+import { usePersistedInferenceSettings, type ModelOption } from "../index"
+
+const TEST_CATALOG: readonly ModelOption[] = [
+  {
+    id: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    provider: "anthropic",
+    supportedEfforts: ["low", "medium", "high", "max"],
+    defaultEffort: "medium",
+  },
+]
 
 describe("usePersistedInferenceSettings engine sync", () => {
   beforeEach(() => {
@@ -37,17 +47,15 @@ describe("usePersistedInferenceSettings engine sync", () => {
     )
 
     const { result } = renderHook(
-      () => usePersistedInferenceSettings(FALLBACK_MODELS),
+      () => usePersistedInferenceSettings(TEST_CATALOG),
       { wrapper }
     )
 
-    const sonnet =
-      FALLBACK_MODELS.find((m) => m.id === "claude-sonnet-5") ??
-      FALLBACK_MODELS[1]
+    const sonnet = TEST_CATALOG[0]
 
     act(() => {
       result.current.setModel(sonnet)
-      result.current.setEffort("High")
+      result.current.setEffort("high")
     })
 
     expect(setModelSpy).toHaveBeenCalledWith("session_live_1", sonnet.id)
@@ -66,7 +74,7 @@ describe("usePersistedInferenceSettings engine sync", () => {
     )
 
     const { result } = renderHook(
-      () => usePersistedInferenceSettings(FALLBACK_MODELS),
+      () => usePersistedInferenceSettings(TEST_CATALOG),
       { wrapper }
     )
 

@@ -360,6 +360,13 @@ export function processHarnessFrame(
           queryKey: ["inspector", "changes"],
         })
       }
+    } else if (
+      ev.type === "text-done" ||
+      ev.type === "model-info" ||
+      ev.type === "permission-mode-changed" ||
+      ev.type === "config-changed"
+    ) {
+      // Handled at session/app level rather than live trace step reducer
     } else {
       traceEvents.push(ev)
     }

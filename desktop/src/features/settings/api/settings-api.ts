@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query"
 
 import { err, ok, type ActionResult } from "@/lib/action-result"
-import { ipcClient } from "@/lib/ipc-client"
+import { ipcClient, type ConfigStatePayload } from "@/lib/ipc-client"
 
 import {
   daemonStatusSchema,
@@ -18,6 +18,23 @@ export const settingsQueryKeys = {
   all: ["settings"] as const,
   state: () => [...settingsQueryKeys.all, "state"] as const,
   daemon: () => [...settingsQueryKeys.all, "daemon"] as const,
+  engineConfig: () => [...settingsQueryKeys.all, "engine-config"] as const,
+}
+
+export async function fetchEngineConfig(): Promise<ConfigStatePayload | null> {
+  try {
+    return await ipcClient.harness.getConfig()
+  } catch {
+    return null
+  }
+}
+
+export function engineConfigQueryOptions() {
+  return queryOptions({
+    queryKey: settingsQueryKeys.engineConfig(),
+    queryFn: fetchEngineConfig,
+    staleTime: 15_000,
+  })
 }
 
 export async function fetchSettingsState(): Promise<SettingsState> {
