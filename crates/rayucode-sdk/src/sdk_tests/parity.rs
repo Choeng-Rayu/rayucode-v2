@@ -52,6 +52,7 @@ const CAPABILITIES: &[Capability] = &[
     cap("rewind", "rewind"),
     cap("rewind_undo", "rewindUndo"),
     cap("respond_to_permission", "respondToPermission"),
+    cap("set_permission_mode", "setPermissionMode"),
     cap("list_models", "listModels"),
     cap("get_runtime_info", "getRuntimeInfo"),
     cap("runtime_command", "runtimeCommand"),
@@ -63,6 +64,12 @@ const CAPABILITIES: &[Capability] = &[
     cap("find_files", "findFiles"),
     cap("search_text", "searchText"),
     cap("file_status", "fileStatus"),
+    cap("get_file_changes", "getFileChanges"),
+    cap("get_file_change_diff", "getFileChangeDiff"),
+    cap("file_change_action", "fileChangeAction"),
+    cap("keep_file_change", "keepFileChange"),
+    cap("undo_file_change", "undoFileChange"),
+    cap("redo_file_change", "redoFileChange"),
     cap("todo_state", "todoState"),
     cap("ack_todo_follow_up", "ackTodoFollowUp"),
     cap("set_model", "setModel"),
@@ -203,6 +210,9 @@ const RUST_ONLY: &[&str] = &[
     "disconnect_reason",
     // TS reads `client.socketPath` as a field; Rust exposes it as an accessor.
     "socket_path",
+    // The questionnaire is opt-in and only exposed by the Rust SDK (see
+    // `rust_sdk_only_frame` in `rayucode-harness-api`'s schema snapshot tests).
+    "respond_to_question",
 ];
 
 /// Public TypeScript methods not yet represented by an equivalent Rust method.

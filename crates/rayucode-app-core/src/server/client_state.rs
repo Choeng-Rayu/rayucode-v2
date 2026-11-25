@@ -408,6 +408,7 @@ async fn build_model_catalog(
         activity: None,
         side_panel: Default::default(),
         applets: Default::default(),
+        file_changes: None,
     };
     Ok((event, source, build_ms))
 }
@@ -924,6 +925,10 @@ async fn send_history_from_persisted_session(
         activity,
         side_panel,
         applets: crate::applets::snapshot_for_session(session_id).unwrap_or_default(),
+        file_changes: {
+            let snapshot = crate::file_changes::snapshot_for_session(session_id);
+            (!snapshot.is_empty()).then_some(snapshot)
+        },
     };
 
     timing.stage("encode");
@@ -1170,7 +1175,7 @@ async fn send_history_with_guard(
     };
 
     let build_start = Instant::now();
-    let (agent_model_overrides, server_has_update, reload_recovery, applets, build_parts) =
+    let (agent_model_overrides, server_has_update, reload_recovery, applets, file_changes, build_parts) =
         super::run_blocking_io(|| {
             let t = Instant::now();
             let overrides = crate::session::Session::read_agent_model_overrides(session_id);
@@ -1187,13 +1192,20 @@ async fn send_history_with_guard(
             let t = Instant::now();
             let applets = crate::applets::snapshot_for_session(session_id).unwrap_or_default();
             let applets_ms = t.elapsed().as_millis();
+            let t = Instant::now();
+            let file_changes = {
+                let snapshot = crate::file_changes::snapshot_for_session(session_id);
+                (!snapshot.is_empty()).then_some(snapshot)
+            };
+            let file_changes_ms = t.elapsed().as_millis();
             (
                 overrides,
                 has_update,
                 recovery,
                 applets,
+                file_changes,
                 format!(
-                    "overrides={overrides_ms}ms, update_check={update_ms}ms, recovery={recovery_ms}ms, applets={applets_ms}ms"
+                    "overrides={overrides_ms}ms, update_check={update_ms}ms, recovery={recovery_ms}ms, applets={applets_ms}ms, file_changes={file_changes_ms}ms"
                 ),
             )
         });
@@ -1245,6 +1257,7 @@ async fn send_history_with_guard(
         activity,
         side_panel,
         applets,
+        file_changes,
     };
     let build_ms = build_start.elapsed().as_millis();
     timing.stage("encode");

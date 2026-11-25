@@ -17,6 +17,8 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-daemon-test-"))
     process.env.RAYU_HOME = tmpHome
+    process.env.XDG_CONFIG_HOME = path.join(tmpHome, "xdg")
+    delete process.env.RAYU_API_KEY
   })
 
   afterEach(() => {
@@ -358,5 +360,358 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
     expect(first.supports_permissions).toBe(true)
     expect(first.supports_user_response).toBe(true)
     expect(second).toEqual({ v: 1, id: 2, req: "ping" })
+  })
+
+  it("forwards file_changes_state frames and bridges getFileChanges/getFileChangeDiff/fileChangeAction with capability fallback", async () => {
+    const sampleSnapshot = {
+      session_id: "sess_fc_1",
+      latest_turn_id: 2,
+      total_pending_files: 1,
+      total_additions: 4,
+      total_deletions: 1,
+      files: [],
+    }
+    const sampleDiff = {
+      path: "/repo/src/lib.rs",
+      display_path: "src/lib.rs",
+      kind: "modified" as const,
+      status: "pending" as const,
+      additions: 4,
+      deletions: 1,
+      is_binary: false,
+      original_content: "old\n",
+      modified_content: "new\n",
+      unified_diff: "@@ -1 +1 @@\n-old\n+new\n",
+      hunks: [],
+    }
+    const sampleResponse = {
+      ok: true,
+      message: "Kept src/lib.rs",
+      conflicts: [],
+      snapshot: { ...sampleSnapshot, total_pending_files: 0 },
+    }
+
+    const capableClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["file_changes"],
+      supports: (cap: string) => cap === "file_changes",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_fc_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      getFileChanges: vi.fn().mockResolvedValue(sampleSnapshot),
+      getFileChangeDiff: vi.fn().mockResolvedValue(sampleDiff),
+      fileChangeAction: vi.fn().mockResolvedValue(sampleResponse),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(capableClient)
+
+    // Cold-start client auto-connects and attaches before querying file changes
+    const coldDaemon = new RayuDaemonClient("/tmp/fc-cold-rayu.sock")
+    expect(await coldDaemon.getFileChanges("sess_fc_1")).toEqual(sampleSnapshot)
+
+    const daemon = new RayuDaemonClient("/tmp/fc-test-rayu.sock")
+    const receivedFrames: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      receivedFrames.push(frame)
+    })
+
+    await daemon.attachSession("sess_fc_1")
+
+    capableClient.emit("event", {
+      v: 1,
+      ev: "file_changes_state",
+      session_id: "sess_fc_1",
+      snapshot: sampleSnapshot,
+    })
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "file_changes_state",
+        session_id: "sess_fc_1",
+      })
+    )
+
+    expect(await daemon.getFileChanges("sess_fc_1")).toEqual(sampleSnapshot)
+    expect(await daemon.getFileChangeDiff("sess_fc_1", "/repo/src/lib.rs")).toEqual(
+      sampleDiff
+    )
+    expect(
+      await daemon.fileChangeAction("sess_fc_1", "keep", {
+        path: "/repo/src/lib.rs",
+      })
+    ).toEqual(sampleResponse)
+
+    // Older daemon lacking file_changes capability degrades gracefully
+    const legacyClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-legacy",
+      capabilities: ["session_tools"],
+      supports: (cap: string) => cap === "session_tools",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_legacy",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      getFileChanges: vi.fn(),
+      getFileChangeDiff: vi.fn(),
+      fileChangeAction: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(legacyClient)
+    const legacyDaemon = new RayuDaemonClient("/tmp/fc-legacy-rayu.sock")
+    await legacyDaemon.attachSession("sess_legacy")
+
+    const empty = await legacyDaemon.getFileChanges("sess_legacy")
+    expect(empty.files).toEqual([])
+    expect(
+      await legacyDaemon.getFileChangeDiff("sess_legacy", "/repo/src/lib.rs")
+    ).toBeNull()
+    const unsupportedAction = await legacyDaemon.fileChangeAction(
+      "sess_legacy",
+      "keep",
+      { path: "/repo/src/lib.rs" }
+    )
+    expect(unsupportedAction.ok).toBe(false)
+    expect(unsupportedAction.message).toMatch(/does not support file_changes/i)
+  })
+
+  it("supersedes stale queued getHistory calls during rapid switches without dialing extra sockets or blocking on post-attach sync", async () => {
+    let releaseFirstAttach!: () => void
+    const firstClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseFirstAttach = () =>
+              resolve({
+                session_id: "sess_first",
+                working_dir: "/repo",
+                status: "idle",
+              })
+          })
+      ),
+      configureTools: vi.fn(() => new Promise(() => {})),
+      request: vi.fn(() => new Promise(() => {})),
+      getHistoryWithImages: vi
+        .fn()
+        .mockResolvedValue({ messages: [{ role: "user", content: "first" }], images: [] }),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const middleClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn(),
+      getHistoryWithImages: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const finalClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_final",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn(() => new Promise(() => {})),
+      request: vi.fn(() => new Promise(() => {})),
+      getHistoryWithImages: vi.fn().mockResolvedValue({
+        messages: [{ role: "user", content: "final prompt" }],
+        images: [],
+      }),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const connectSpy = vi
+      .spyOn(RayucodeClient, "connect")
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(finalClient)
+      .mockResolvedValueOnce(middleClient)
+
+    const daemon = new RayuDaemonClient("/tmp/rapid-switch-rayu.sock")
+    const pFirst = daemon.getHistory("sess_first")
+    await new Promise((r) => setTimeout(r, 5))
+    const pMiddle = daemon.getHistory("sess_middle")
+    const pFinal = daemon.getHistory("sess_final")
+
+    releaseFirstAttach()
+    const [resFirst, resMiddle, resFinal] = await Promise.all([
+      pFirst,
+      pMiddle,
+      pFinal,
+    ])
+
+    expect(resFirst.messages).toEqual([])
+    expect(resMiddle.messages).toEqual([])
+    expect(resFinal.messages).toEqual([{ role: "user", content: "final prompt" }])
+    expect(middleClient.attachSession).not.toHaveBeenCalled()
+    expect(connectSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it("returns explicit { ok: false, error } when setModel is rejected by the daemon", async () => {
+    const fakeClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_err",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      setModel: vi
+        .fn()
+        .mockRejectedValue(new Error("unknown model: qwen4-max-preview")),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(fakeClient)
+
+    const daemon = new RayuDaemonClient("/tmp/set-model-error-rayu.sock")
+    const result = await daemon.setModel("sess_err", "qwen4-max-preview")
+
+    expect(result).toEqual({
+      ok: false,
+      error: "unknown model: qwen4-max-preview",
+    })
+  })
+
+  it("keeps an active streaming session socket open when creating, attaching, or fetching history for another session", async () => {
+    const client1 = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_stream_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_stream_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      getHistoryWithImages: vi
+        .fn()
+        .mockResolvedValue({ messages: [{ role: "user", content: "hi" }], images: [] }),
+      cancel: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const client2 = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_new_2",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn(),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      getHistoryWithImages: vi
+        .fn()
+        .mockResolvedValue({ messages: [], images: [] }),
+      cancel: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const client3 = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_other_3",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      getHistoryWithImages: vi
+        .fn()
+        .mockResolvedValue({ messages: [], images: [] }),
+      cancel: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const connectSpy = vi
+      .spyOn(RayucodeClient, "connect")
+      .mockResolvedValueOnce(client1)
+      .mockResolvedValueOnce(client2)
+      .mockResolvedValueOnce(client3)
+
+    const daemon = new RayuDaemonClient("/tmp/pool-stream-rayu.sock")
+    const receivedFrames: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      receivedFrames.push(frame)
+    })
+
+    await daemon.createSession("/repo", "Chat 1")
+    await daemon.sendMessage("sess_stream_1", "Long task")
+
+    // Creating a second chat and viewing a third chat must keep client1 open
+    await daemon.createSession("/repo", "Chat 2")
+    await daemon.getHistory("sess_other_3")
+    expect(client1.close).not.toHaveBeenCalled()
+
+    // Background stream frames emitted on client1 still arrive on daemon
+    client1.emit("event", {
+      v: 1,
+      ev: "text_delta",
+      session_id: "sess_stream_1",
+      text: "still alive",
+    })
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "text_delta",
+        session_id: "sess_stream_1",
+        text: "still alive",
+      })
+    )
+
+    // Returning to sess_stream_1 reuses pooled client1 without dialing a 4th socket
+    await daemon.getHistory("sess_stream_1")
+    expect(connectSpy).toHaveBeenCalledTimes(3)
+    expect(client1.attachSession).not.toHaveBeenCalled()
+
+    // Cancel routes to client1 (owning sess_stream_1) rather than client3
+    await daemon.cancel("sess_stream_1")
+    expect(client1.cancel).toHaveBeenCalledWith("sess_stream_1")
+    expect(client3.cancel).not.toHaveBeenCalled()
+
+    client1.emit("event", {
+      v: 1,
+      ev: "turn_done",
+      session_id: "sess_stream_1",
+    })
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "turn_done",
+        session_id: "sess_stream_1",
+      })
+    )
   })
 })

@@ -1269,6 +1269,17 @@ fn test_ctrl_y_fallback_prefers_configured_rayu_fallback_model_over_gpt_generati
             app.pending_fallback_resend.as_ref().unwrap().content,
             "hello"
         );
+        app.clear_pending_fallback_offer();
+
+        // Local tool policy refusals must never trigger a Ctrl+Y model switch.
+        assert!(
+            !app.offer_fallback_after_error_with_payload(
+                "Tool 'rayu_docs' is disabled in self-development mode. Read the working tree documentation instead.",
+                None,
+            ),
+            "tool policy errors must not offer a model fallback switch"
+        );
+        assert!(app.pending_fallback_offer.is_none());
     });
 }
 

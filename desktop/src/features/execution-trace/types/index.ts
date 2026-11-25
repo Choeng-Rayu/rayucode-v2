@@ -1,5 +1,14 @@
 import type {
   ExecutionTurn,
+  FileChangeActionKind,
+  FileChangeActionResponse,
+  FileChangeConflict,
+  FileChangeDiffPayload,
+  FileChangeEntrySummary,
+  FileChangeHunk,
+  FileChangeKind,
+  FileChangesSnapshot,
+  FileChangeStatus,
   FileReadStep,
   InlineDiffCardData,
   InlineDiffHunkLine,
@@ -14,6 +23,15 @@ import type {
 
 export type {
   ExecutionTurn,
+  FileChangeActionKind,
+  FileChangeActionResponse,
+  FileChangeConflict,
+  FileChangeDiffPayload,
+  FileChangeEntrySummary,
+  FileChangeHunk,
+  FileChangeKind,
+  FileChangesSnapshot,
+  FileChangeStatus,
   FileReadStep,
   InlineDiffCardData,
   InlineDiffHunkLine,
@@ -55,6 +73,7 @@ export type LiveTraceEvent =
       step: TraceStepItem
     }
   | { type: "artifact"; artifact: TurnOutputArtifact }
+  | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
   | { type: "summary-title"; title: string }
   | { type: "bullet"; bullet: AnswerBullet }

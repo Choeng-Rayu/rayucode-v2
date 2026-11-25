@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
-import type { AppRoute } from "../shared/vscodeProtocol.js";
+import type { AccountStatusView, AppRoute } from "../shared/vscodeProtocol.js";
+import { registerHostRayuAuthProvider } from "./auth/rayuAuthProvider.js";
+import { RayuHostAuthManager } from "./auth/rayuHostAuthManager.js";
 import { EditorBridge } from "./bridges/editorBridge.js";
 import { GitChangesBridge } from "./bridges/gitChangesBridge.js";
 import { StatusBarBridge } from "./bridges/statusBarBridge.js";
@@ -26,6 +28,40 @@ export function activate(context: vscode.ExtensionContext): void {
     });
   });
 
+  const authManager = new RayuHostAuthManager({
+    watch: true,
+    daemonBridge: {
+      notifyAuthChanged: (provider) =>
+        sessionHub.notifyDaemonAuthChanged(provider),
+      setApiKey: async (provider, apiKey) => {
+        const client = bridgeManager.getActiveClient();
+        if (client) {
+          await client.setApiKey(provider, apiKey);
+        }
+      },
+      clearApiKey: async (provider) => {
+        const client = bridgeManager.getActiveClient();
+        if (client) {
+          await client.clearApiKey(provider);
+        }
+      },
+      logoutProvider: async (provider) => {
+        const client = bridgeManager.getActiveClient();
+        if (!client) return;
+        const sid = sessionHub.getActiveSessionId();
+        if (sid) {
+          await client.runtimeCommand(sid, "logout", [provider, "confirm"]);
+        }
+      },
+    },
+  });
+
+  const authProvider = registerHostRayuAuthProvider(
+    context,
+    authManager,
+    (url) => editorBridge.openExternal(url),
+  );
+
   let panelManager: WorkspacePanelManager;
 
   const featureRouter = createFeatureRouter({
@@ -33,6 +69,7 @@ export function activate(context: vscode.ExtensionContext): void {
     sessionHub,
     gitBridge,
     editorBridge,
+    authManager,
     getWorkspaceFolders: () => panelManager.getWorkspaceFoldersView(),
     setProjectIcon: (workspacePath, icon) =>
       panelManager.setProjectIcon(workspacePath, icon),
@@ -91,7 +128,14 @@ export function activate(context: vscode.ExtensionContext): void {
     featureRouter,
     editorBridge,
     gitBridge,
+    authManager,
   );
+
+  authManager.on("authChanged", (account: AccountStatusView) => {
+    sessionHub.broadcastAccountChanged(account);
+    authProvider.refresh();
+    void sessionHub.notifyDaemonAuthChanged("rayu");
+  });
 
   const syncStatusBar = (): void => {
     statusBar.update({
@@ -104,14 +148,52 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   sessionHub.on("stateChanged", syncStatusBar);
+  sessionHub.on(
+    "fileChangesUpdated",
+    ({ sessionId }: { sessionId: string }) => {
+      void editorBridge.refreshOpenDiffs(sessionId, async (filePath) => {
+        try {
+          const diff = await featureRouter.call("changes.diff", {
+            path: filePath,
+            sessionId,
+            scope: "session",
+          });
+          return {
+            originalContent: diff.originalContent,
+            modifiedContent: diff.modifiedContent,
+            isCreated: diff.kind === "created",
+            isDeleted: diff.kind === "deleted",
+          };
+        } catch {
+          return null;
+        }
+      });
+    },
+  );
   syncStatusBar();
 
   context.subscriptions.push(
+    authManager,
     bridgeManager,
     sessionHub,
     editorBridge,
     statusBar,
     panelManager,
+    vscode.window.registerUriHandler({
+      handleUri: async (uri: vscode.Uri) => {
+        const normalizedPath = uri.path.replace(/\/+$/, "").toLowerCase();
+        if (normalizedPath !== "/auth") return;
+        try {
+          const account = await authManager.handleUriCallback(uri.toString(true));
+          void vscode.window.showInformationMessage(
+            `Signed in to RayuCode${account.email ? ` as ${account.email}` : ""}.`,
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          void vscode.window.showErrorMessage(`RayuCode sign-in failed: ${msg}`);
+        }
+      },
+    }),
     vscode.window.registerWebviewViewProvider(SIDEBAR_VIEW_ID, panelManager, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -185,6 +267,19 @@ export function activate(context: vscode.ExtensionContext): void {
       } else {
         await panelManager.openWorkspacePanel();
       }
+    }),
+    vscode.commands.registerCommand("rayucode.signIn", async () => {
+      try {
+        const started = await authManager.startBrowserSignIn("vscode");
+        await editorBridge.openExternal(started.authUrl);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`RayuCode sign-in failed: ${msg}`);
+      }
+    }),
+    vscode.commands.registerCommand("rayucode.signOut", async () => {
+      await authManager.signOut();
+      void vscode.window.showInformationMessage("Signed out of RayuCode.");
     }),
   );
 }

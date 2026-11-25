@@ -22,22 +22,26 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
 import { useAppStore } from "@/lib/app-store"
-import {
-  createHarnessStreamTracker,
-  mapHarnessFrameToLiveEvents,
-} from "@/lib/harness-adapter"
-import {
-  ipcClient,
-  type CloudChatMessage,
-} from "@/lib/ipc-client"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import { traceKeys, traceTurnsQueryOptions } from "../api/trace-api"
-import { useLiveTrace } from "../hooks/use-live-trace"
-import type { ExecutionTurn, LiveTraceEvent, SessionSummary } from "../types"
+import {
+  clearSessionLiveTurn,
+  dispatchPendingStreamPrompt,
+  isLiveTraceControllerMounted,
+  processHarnessFrame,
+  useLiveTraceStore,
+} from "../hooks/live-trace-store"
+import type {
+  ExecutionTurn,
+  FileChangesSnapshot,
+  SessionSummary,
+} from "../types"
 import { CiteLink, EditorialMarkdown } from "./cite-link"
 import { InlineDiffCard } from "./inline-diff-card"
 import { TurnActions } from "./turn-actions"
+import { TurnFileSummaryCard } from "./turn-file-summary-card"
 import { WorkTrace } from "./work-trace"
 
 function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
@@ -63,6 +67,7 @@ function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
 
 interface TurnViewProps {
   turn: ExecutionTurn
+  fileChangesSnapshot?: FileChangesSnapshot | null
   onForked?: (session: SessionSummary) => void
   onPinToggled?: (turnId: string, pinned: boolean) => void
   onReplayTrace?: () => void
@@ -70,6 +75,7 @@ interface TurnViewProps {
 
 function TurnView({
   turn,
+  fileChangesSnapshot,
   onForked,
   onPinToggled,
   onReplayTrace,
@@ -81,7 +87,10 @@ function TurnView({
 
   const hasAnswer =
     turn.answerIntro.trim().length > 0 || turn.answerBullets.length > 0
-  const hasDiffLines = turn.diffCard.lines.length > 0
+  const hasFileSummary =
+    !turn.isLive &&
+    Boolean(fileChangesSnapshot && fileChangesSnapshot.files.length > 0)
+  const hasDiffLines = !hasFileSummary && turn.diffCard.lines.length > 0
 
   return (
     <article
@@ -156,6 +165,13 @@ function TurnView({
             groups={turn.groups}
             timeline={turn.timeline}
             activeToolStatus={turn.activeToolStatus}
+            defaultExpanded={
+              !turn.isLive &&
+              !hasAnswer &&
+              (turn.notes.length > 0 || turn.groups.length > 0)
+                ? true
+                : undefined
+            }
           />
         )}
 
@@ -207,6 +223,13 @@ function TurnView({
               </ol>
             )}
           </div>
+        )}
+
+        {hasFileSummary && fileChangesSnapshot && (
+          <TurnFileSummaryCard
+            sessionId={turn.sessionId}
+            snapshot={fileChangesSnapshot}
+          />
         )}
 
         {hasDiffLines && <InlineDiffCard diff={turn.diffCard} />}
@@ -363,182 +386,80 @@ export function ChatStream({
     enabled: controlledTurns === undefined && effectiveSessionId.length > 0,
   })
 
-  const [completedSimulatedTurns, setCompletedSimulatedTurns] = React.useState<
-    ExecutionTurn[]
-  >([])
   const bottomAnchorRef = React.useRef<HTMLDivElement | null>(null)
-
-  const {
-    liveTurn,
-    isStreaming,
-    startLiveTurn,
-    pushEvent,
-    resetLiveTurn,
-  } = useLiveTrace({
-    onComplete: (completedTurn) => {
-      ipcClient.trace.recordTurn(completedTurn)
-      queryClient.setQueryData<ExecutionTurn[]>(
-        traceKeys.turns(effectiveSessionId),
-        (prev) => (prev ? [...prev, completedTurn] : [completedTurn])
-      )
-      resetLiveTurn()
-    },
-  })
+  const liveTurn = useLiveTraceStore((s) =>
+    effectiveSessionId ? (s.liveTurnsBySession[effectiveSessionId] ?? null) : null
+  )
+  const isStreaming = Boolean(liveTurn?.isLive)
 
   const pendingPermission = useAppStore((s) => s.pendingPermission)
   const setPendingPermission = useAppStore((s) => s.setPendingPermission)
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive)
-  const daemonMode = useAppStore((s) => s.daemonMode)
-  const authState = useAppStore((s) => s.authState)
-  const activeLiveTurnRef = React.useRef(false)
-  const turnsForHistoryRef = React.useRef<ExecutionTurn[]>([])
+  const sessionFileChanges = useAppStore((s) =>
+    effectiveSessionId ? s.sessionFileChangesBySession[effectiveSessionId] : undefined
+  )
+  const setSessionFileChanges = useAppStore((s) => s.setSessionFileChanges)
+
+  // Hydrate persisted/session file changes AFTER history finishes loading so
+  // getFileChanges never competes ahead of getHistory on daemonClient.attachQueue.
+  React.useEffect(() => {
+    if (!effectiveSessionId || isLoading) return
+    const pending = useAppStore.getState().pendingStreamPrompt
+    if (pending && pending.sessionId === effectiveSessionId) return
+    let cancelled = false
+    void ipcClient.fileChanges
+      .get(effectiveSessionId)
+      .then((snapshot) => {
+        if (cancelled || !snapshot) return
+        const existing =
+          useAppStore.getState().sessionFileChangesBySession[effectiveSessionId]
+        if (snapshot.files.length > 0 || !existing) {
+          setSessionFileChanges(effectiveSessionId, snapshot)
+        }
+      })
+      .catch(() => {
+        // Gracefully ignore when daemon does not support file_changes
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveSessionId, isLoading, setSessionFileChanges])
 
   React.useEffect(() => {
+    if (isLiveTraceControllerMounted()) return
     setIsStreamActive(isStreaming)
   }, [isStreaming, setIsStreamActive])
 
+  // Standalone harness fallback when <ChatStream /> is mounted without <App /> / <LiveTraceController />
   React.useEffect(() => {
-    return () => {
-      useAppStore.getState().setIsStreamActive(false)
-    }
-  }, [])
-
-  // Stream live RayuCode harness frames directly into the rAF-batched trace
-  React.useEffect(() => {
-    const tracker = createHarnessStreamTracker()
-
+    if (isLiveTraceControllerMounted()) return
     const unsubscribe = ipcClient.harness.onEvent((frame) => {
       const frameSession =
         typeof frame.session_id === "string" ? frame.session_id : null
       if (frameSession && frameSession !== effectiveSessionId) return
-
-      const mapped = mapHarnessFrameToLiveEvents(frame, tracker)
-      if (mapped.length === 0) return
-
-      const traceEvents: LiveTraceEvent[] = []
-      for (const ev of mapped) {
-        if (ev.type === "permission-request") {
-          setPendingPermission({
-            sessionId: ev.sessionId || effectiveSessionId,
-            requestId: ev.requestId,
-            toolName: ev.toolName,
-            description: ev.description,
-          })
-        } else {
-          traceEvents.push(ev)
-        }
-      }
-
-      if (traceEvents.length === 0) return
-
-      if (!activeLiveTurnRef.current) {
-        activeLiveTurnRef.current = true
-        startLiveTurn({
-          sessionId: effectiveSessionId,
-          userPrompt: "Live daemon turn",
-        })
-      }
-
-      for (const ev of traceEvents) {
-        pushEvent(ev)
-        if (ev.type === "complete") {
-          activeLiveTurnRef.current = false
-          setPendingPermission(null)
-        }
-      }
+      processHarnessFrame(frame, queryClient, effectiveSessionId)
     })
+    return () => {
+      unsubscribe()
+      if (!isLiveTraceControllerMounted() && effectiveSessionId) {
+        clearSessionLiveTurn(effectiveSessionId)
+      }
+    }
+  }, [effectiveSessionId, queryClient])
 
-    return unsubscribe
-  }, [effectiveSessionId, pushEvent, setPendingPermission, startLiveTurn])
-
-  // Dispatch queued prompt AFTER ChatStream mounts its live event listener (0 dropped tokens)
   React.useEffect(() => {
+    if (isLiveTraceControllerMounted()) return
     if (!pendingStreamPrompt) return
     if (pendingStreamPrompt.sessionId !== effectiveSessionId) return
-
-    const promptToSend = pendingStreamPrompt
     setPendingStreamPrompt(null)
-
-    const isLiveDaemon =
-      !effectiveSessionId.startsWith("ses_") &&
-      (daemonMode === "live" ||
-        (typeof window !== "undefined" &&
-          Boolean(window.rayu?.harness?.sendMessage)))
-    const isCloudLive = Boolean(
-      authState?.signedIn &&
-        typeof window !== "undefined" &&
-        (window.rayu?.cloud?.streamChat ||
-          (import.meta.env.DEV && import.meta.env.MODE !== "test"))
-    )
-
-    if (isLiveDaemon || isCloudLive) {
-      const history: CloudChatMessage[] = []
-      for (const t of turnsForHistoryRef.current) {
-        if (t.userPrompt.trim()) {
-          history.push({ role: "user", content: t.userPrompt })
-        }
-        if (t.answerIntro.trim()) {
-          history.push({ role: "assistant", content: t.answerIntro })
-        }
-      }
-
-      activeLiveTurnRef.current = true
-      startLiveTurn({
-        sessionId: effectiveSessionId,
-        userPrompt: promptToSend.prompt,
-        userImages: promptToSend.images,
-      })
-      void ipcClient.trace
-        .sendPrompt({
-          sessionId: effectiveSessionId,
-          prompt: promptToSend.prompt,
-          images: promptToSend.images,
-          modelId: promptToSend.modelId,
-          modelLabel: promptToSend.modelLabel,
-          history,
-        })
-        .catch((error: unknown) => {
-          activeLiveTurnRef.current = false
-          resetLiveTurn()
-          const msg =
-            error instanceof Error
-              ? error.message
-              : "Failed to stream response from Rayu Cloud"
-          toast.error(msg)
-        })
-      return
-    }
-
-    void ipcClient.trace
-      .sendPrompt({
-        sessionId: effectiveSessionId,
-        prompt: promptToSend.prompt,
-        images: promptToSend.images,
-        modelId: promptToSend.modelId,
-        modelLabel: promptToSend.modelLabel,
-      })
-      .then((turn) => {
-        queryClient.setQueryData<ExecutionTurn[]>(
-          traceKeys.turns(effectiveSessionId),
-          (prev) => (prev ? [...prev, turn] : [turn])
-        )
-      })
-      .catch((error: unknown) => {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to send prompt"
-        )
-      })
+    dispatchPendingStreamPrompt(pendingStreamPrompt, queryClient)
   }, [
-    authState?.signedIn,
-    daemonMode,
     effectiveSessionId,
     pendingStreamPrompt,
     queryClient,
-    resetLiveTurn,
     setPendingStreamPrompt,
-    startLiveTurn,
   ])
 
   const handlePermissionDecision = React.useCallback(
@@ -575,11 +496,12 @@ export function ChatStream({
 
   const allTurns = React.useMemo(() => {
     const baseTurns = controlledTurns ?? fetchedTurns ?? []
-    const sessionCompleted = completedSimulatedTurns.filter(
-      (t) => t.sessionId === effectiveSessionId
-    )
-    const merged = [...baseTurns, ...sessionCompleted]
-    if (liveTurn && liveTurn.sessionId === effectiveSessionId) {
+    const merged = [...baseTurns]
+    if (
+      liveTurn &&
+      liveTurn.sessionId === effectiveSessionId &&
+      !merged.some((t) => t.id === liveTurn.id)
+    ) {
       merged.push(liveTurn)
     } else if (
       pendingStreamPrompt &&
@@ -616,15 +538,10 @@ export function ChatStream({
   }, [
     controlledTurns,
     fetchedTurns,
-    completedSimulatedTurns,
     effectiveSessionId,
     liveTurn,
     pendingStreamPrompt,
   ])
-
-  React.useEffect(() => {
-    turnsForHistoryRef.current = allTurns.filter((t) => !t.isLive)
-  }, [allTurns])
 
   React.useEffect(() => {
     if (typeof bottomAnchorRef.current?.scrollIntoView === "function") {
@@ -650,12 +567,16 @@ export function ChatStream({
         (prev) =>
           prev?.map((t) => (t.id === turnId ? { ...t, pinned } : t)) ?? prev
       )
-      setCompletedSimulatedTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, pinned } : t))
-      )
     },
     [effectiveSessionId, queryClient]
   )
+
+  const latestFinishedTurnIdx = React.useMemo(() => {
+    for (let i = allTurns.length - 1; i >= 0; i -= 1) {
+      if (!allTurns[i]?.isLive) return i
+    }
+    return -1
+  }, [allTurns])
 
   const bottomComposer = composerSlot ?? children
 
@@ -683,14 +604,28 @@ export function ChatStream({
           allTurns.length === 0 ? (
             <ChatSkeleton />
           ) : (
-            allTurns.map((turn) => (
-              <TurnView
-                key={turn.id}
-                turn={turn}
-                onForked={handleForked}
-                onPinToggled={handlePinToggled}
-              />
-            ))
+            <>
+              {allTurns.map((turn, idx) => (
+                <TurnView
+                  key={turn.id}
+                  turn={turn}
+                  fileChangesSnapshot={
+                    idx === latestFinishedTurnIdx ? sessionFileChanges : null
+                  }
+                  onForked={handleForked}
+                  onPinToggled={handlePinToggled}
+                />
+              ))}
+              {!isStreaming &&
+                latestFinishedTurnIdx === -1 &&
+                sessionFileChanges &&
+                sessionFileChanges.files.length > 0 && (
+                  <TurnFileSummaryCard
+                    sessionId={effectiveSessionId}
+                    snapshot={sessionFileChanges}
+                  />
+                )}
+            </>
           )}
           <div ref={bottomAnchorRef} />
         </div>

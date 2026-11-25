@@ -666,6 +666,7 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
+    app.refresh_local_file_changes();
     app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
     let followup_scheduled = app.schedule_turn_end_followups_after_response(
         app.last_stream_error.is_none() && app.streaming.response_output.has_final_response(),

@@ -25,7 +25,16 @@
     },
     "virtualWorkspaces": false
   },
+  "activationEvents": [
+    "onAuthenticationRequest:rayu"
+  ],
   "contributes": {
+    "authentication": [
+      {
+        "id": "rayu",
+        "label": "Rayu"
+      }
+    ],
     "configuration": {
       "title": "RayuCode",
       "properties": {
@@ -156,6 +165,18 @@
         "command": "rayucode.statusBarAction",
         "title": "RayuCode Status Action",
         "category": "RayuCode"
+      },
+      {
+        "command": "rayucode.signIn",
+        "title": "Sign In to RayuCode",
+        "category": "RayuCode",
+        "icon": "$(account)"
+      },
+      {
+        "command": "rayucode.signOut",
+        "title": "Sign Out of RayuCode",
+        "category": "RayuCode",
+        "icon": "$(sign-out)"
       }
     ],
     "menus": {

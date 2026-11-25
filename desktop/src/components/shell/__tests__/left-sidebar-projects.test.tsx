@@ -164,4 +164,548 @@ describe("SidebarProjectsPane (Codex-style projects, hover cards, edit dialog & 
       "Client Work"
     )
   })
+
+  it("groups sessions strictly by workingDir under matching projects and shows 'No chats' for empty projects", async () => {
+    const now = Date.now()
+    vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
+      projects: [
+        {
+          id: "proj_youtube",
+          name: "youtube",
+          folders: ["/Users/dev/workspace/youtube"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now - 10_000,
+        },
+        {
+          id: "proj_rayucode",
+          name: "rayucode",
+          folders: ["/Users/dev/workspace/rayu/rayucode-v2"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now - 5_000,
+        },
+        {
+          id: "proj_movie_farm",
+          name: "movie-farm",
+          folders: ["/Users/dev/workspace/movie-farm"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now - 1_000,
+        },
+      ],
+      sections: [],
+      pinnedChatIds: [],
+      archivedChatIds: [],
+      organizeBy: "project",
+      sortBy: "updated",
+      showProjectChatsInRecents: true,
+      manualProjectOrder: [],
+    })
+    vi.spyOn(ipcClient.sessions, "list").mockResolvedValue([
+      {
+        id: "ses_rayu_1",
+        title: "Fix sidebar routing",
+        project: "rayucode-v2",
+        workingDir: "/Users/dev/workspace/rayu/rayucode-v2",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "3h",
+        updatedAtMs: now - 3 * 3600_000,
+        connection: "cloud",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+      {
+        id: "ses_movie_1",
+        title: "Tell me about movie-farm",
+        project: "movie-farm",
+        workingDir: "/Users/dev/workspace/movie-farm",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "5m",
+        updatedAtMs: now - 5 * 60_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "listProjects").mockResolvedValue([
+      {
+        id: "proj_movie_farm_discovered",
+        name: "movie-farm",
+        path: "/Users/dev/workspace/movie-farm",
+        expanded: true,
+        sessions: [
+          {
+            id: "ses_movie_1",
+            title: "Tell me about movie-farm",
+            workingDir: "/Users/dev/workspace/movie-farm",
+          },
+        ],
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "listRecents").mockResolvedValue([
+      { id: "ses_movie_1", title: "Tell me about movie-farm" },
+      { id: "ses_rayu_1", title: "Fix sidebar routing" },
+    ])
+
+    renderPane()
+
+    const rayuGroup = (await screen.findByText("rayucode")).closest(
+      '[data-testid="sidebar-project-group"]'
+    )!
+    const movieGroup = screen
+      .getByText("movie-farm")
+      .closest('[data-testid="sidebar-project-group"]')!
+    const youtubeGroup = screen
+      .getByText("youtube")
+      .closest('[data-testid="sidebar-project-group"]')!
+
+    expect(rayuGroup).toHaveTextContent("Fix sidebar routing")
+    expect(rayuGroup).not.toHaveTextContent("Tell me about movie-farm")
+    expect(movieGroup).toHaveTextContent("Tell me about movie-farm")
+    expect(movieGroup).not.toHaveTextContent("Fix sidebar routing")
+    expect(youtubeGroup).toHaveTextContent("No chats")
+
+    // Hover card renders real timestamp ("3h") and real connection ("cloud")
+    const rayuChatRow = rayuGroup.querySelector('[data-chat-id="ses_rayu_1"]')!
+    fireEvent.mouseEnter(rayuChatRow)
+    const chatHoverCard = await screen.findByTestId("chat-hover-card")
+    expect(chatHoverCard).toHaveTextContent("3h")
+    expect(chatHoverCard.querySelector('[data-connection="cloud"]')).toBeTruthy()
+  })
+
+  it("archives active chat via ipcClient.sessions.archive, clears activeSessionId, and switches workspace on chat click", async () => {
+    const now = Date.now()
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: "ses_a",
+      activeWorkspacePath: "/Users/dev/workspace/proj-a",
+    })
+    const archiveSpy = vi
+      .spyOn(ipcClient.sessions, "archive")
+      .mockResolvedValue(undefined)
+    const setPathSpy = vi
+      .spyOn(ipcClient.workspace, "setPath")
+      .mockResolvedValue(null)
+    vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
+      projects: [
+        {
+          id: "proj_a",
+          name: "proj-a",
+          folders: ["/Users/dev/workspace/proj-a"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now,
+        },
+        {
+          id: "proj_b",
+          name: "proj-b",
+          folders: ["/Users/dev/workspace/proj-b"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now - 1000,
+        },
+      ],
+      sections: [],
+      pinnedChatIds: [],
+      archivedChatIds: [],
+      organizeBy: "project",
+      sortBy: "updated",
+      showProjectChatsInRecents: false,
+      manualProjectOrder: [],
+    })
+    vi.spyOn(ipcClient.sessions, "list").mockResolvedValue([
+      {
+        id: "ses_a",
+        title: "Alpha chat",
+        project: "proj-a",
+        workingDir: "/Users/dev/workspace/proj-a",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "Now",
+        updatedAtMs: now,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+      {
+        id: "ses_b",
+        title: "Beta chat",
+        project: "proj-b",
+        workingDir: "/Users/dev/workspace/proj-b",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "10m",
+        updatedAtMs: now - 600_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+    ])
+
+    const onOpenSession = vi.fn()
+    renderPane(onOpenSession)
+
+    // Click Beta chat -> switches activeWorkspacePath to proj-b
+    const betaBtn = await screen.findByRole("button", { name: "Beta chat" })
+    fireEvent.click(betaBtn)
+    expect(onOpenSession).toHaveBeenCalledWith("ses_b", undefined, "Beta chat")
+    expect(useAppStore.getState().activeWorkspacePath).toBe(
+      "/Users/dev/workspace/proj-b"
+    )
+    expect(setPathSpy).toHaveBeenCalledWith("/Users/dev/workspace/proj-b")
+
+    // Archive active chat Alpha -> clears activeSessionId and calls sessions.archive
+    fireEvent.click(screen.getByTestId("chat-archive-btn-ses_a"))
+    await waitFor(() => {
+      expect(archiveSpy).toHaveBeenCalledWith("ses_a")
+      expect(useAppStore.getState().activeSessionId).toBeNull()
+    })
+  })
+
+  it("caps visible chats per project at 5 with a Show more toggle and filters by searchQuery", async () => {
+    const now = Date.now()
+    const manySessions = Array.from({ length: 7 }, (_, i) => ({
+      id: `ses_${i + 1}`,
+      title: `Task item ${i + 1}`,
+      project: "big-proj",
+      workingDir: "/Users/dev/workspace/big-proj",
+      checkout: "Local Checkout",
+      branch: "main",
+      updatedAt: `${i + 1}m`,
+      updatedAtMs: now - (i + 1) * 60_000,
+      connection: "local" as const,
+      modelId: "claude-opus-5-5",
+      modelLabel: "Claude Opus 5.5",
+      effort: "Medium" as const,
+      permissionMode: "default" as const,
+      kvWarmPct: 0,
+      creditsUsed: 0,
+    }))
+    vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
+      projects: [
+        {
+          id: "proj_big",
+          name: "big-proj",
+          folders: ["/Users/dev/workspace/big-proj"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now,
+        },
+      ],
+      sections: [],
+      pinnedChatIds: [],
+      archivedChatIds: [],
+      organizeBy: "project",
+      sortBy: "updated",
+      showProjectChatsInRecents: false,
+      manualProjectOrder: [],
+    })
+    vi.spyOn(ipcClient.sessions, "list").mockResolvedValue(manySessions)
+
+    const client = createQueryClient()
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <TooltipProvider delayDuration={0}>
+          <SidebarProjectsPane onOpenSession={vi.fn()} searchQuery="" />
+        </TooltipProvider>
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByText("Task item 1")).toBeInTheDocument()
+    expect(screen.queryByText("Task item 6")).not.toBeInTheDocument()
+    const showMoreBtn = screen.getByRole("button", { name: /Show 2 more/i })
+    fireEvent.click(showMoreBtn)
+    expect(await screen.findByText("Task item 6")).toBeInTheDocument()
+    expect(screen.getByText("Task item 7")).toBeInTheDocument()
+
+    // Search filters chats live
+    rerender(
+      <QueryClientProvider client={client}>
+        <TooltipProvider delayDuration={0}>
+          <SidebarProjectsPane onOpenSession={vi.fn()} searchQuery="item 6" />
+        </TooltipProvider>
+      </QueryClientProvider>
+    )
+    expect(screen.getByText("Task item 6")).toBeInTheDocument()
+    expect(screen.queryByText("Task item 1")).not.toBeInTheDocument()
+  })
+
+  it("excludes auto-discovered OS temp directories (/tmp, /private/tmp, /var/folders) from Projects and Recents while keeping real project folders", async () => {
+    const now = Date.now()
+    vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
+      projects: [],
+      sections: [],
+      pinnedChatIds: [],
+      archivedChatIds: [],
+      organizeBy: "project",
+      sortBy: "updated",
+      showProjectChatsInRecents: true,
+      manualProjectOrder: [],
+      collapsedProjectIds: [],
+      hiddenProjectPaths: [],
+    })
+    vi.spyOn(ipcClient.sessions, "list").mockResolvedValue([
+      {
+        id: "ses_tmp_1",
+        title: "<conversation_history> Use this context",
+        project: "tmp",
+        workingDir: "/tmp",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "Now",
+        updatedAtMs: now,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+      {
+        id: "ses_tmp_2",
+        title: "Temp folder test",
+        project: "T",
+        workingDir: "/var/folders/aa/bb/T/sub",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "5m",
+        updatedAtMs: now - 300_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+      {
+        id: "ses_real_1",
+        title: "Real project task",
+        project: "rayucode-v2",
+        workingDir: "/Users/tester/workspace/rayucode-v2",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "1m",
+        updatedAtMs: now - 60_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "listProjects").mockResolvedValue([
+      {
+        id: "proj_tmp",
+        name: "tmp",
+        path: "/tmp",
+        expanded: true,
+        sessions: [
+          {
+            id: "ses_tmp_1",
+            title: "<conversation_history> Use this context",
+            workingDir: "/tmp",
+          },
+        ],
+      },
+      {
+        id: "proj_real",
+        name: "rayucode",
+        path: "/Users/tester/workspace/rayucode-v2",
+        expanded: true,
+        sessions: [
+          {
+            id: "ses_real_1",
+            title: "Real project task",
+            workingDir: "/Users/tester/workspace/rayucode-v2",
+          },
+        ],
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "listRecents").mockResolvedValue([
+      {
+        id: "ses_tmp_1",
+        title: "<conversation_history> Use this context",
+        workingDir: "/tmp",
+      },
+      {
+        id: "ses_tmp_2",
+        title: "Temp folder test",
+        workingDir: "/var/folders/aa/bb/T/sub",
+      },
+      {
+        id: "ses_real_1",
+        title: "Real project task",
+        workingDir: "/Users/tester/workspace/rayucode-v2",
+      },
+    ])
+
+    renderPane()
+
+    expect(await screen.findByText("rayucode")).toBeInTheDocument()
+    expect(screen.getAllByText("Real project task").length).toBeGreaterThan(0)
+    expect(screen.queryByText("tmp")).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("<conversation_history> Use this context")
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Temp folder test")).not.toBeInTheDocument()
+  })
+
+  it("shows only user-created projects in Projects when sidebarState.projects is non-empty and does not auto-add uncreated folders", async () => {
+    const now = Date.now()
+    vi.spyOn(ipcClient.sidebar, "getState").mockResolvedValue({
+      projects: [
+        {
+          id: "proj_rayucode",
+          name: "rayucode",
+          folders: ["/Users/dev/workspace/rayu/rayucode-v2"],
+          iconKind: "icon",
+          iconValue: "folder",
+          iconColor: "folder",
+          updatedAt: now,
+        },
+      ],
+      sections: [],
+      pinnedChatIds: [],
+      archivedChatIds: [],
+      organizeBy: "project",
+      sortBy: "updated",
+      showProjectChatsInRecents: true,
+      manualProjectOrder: [],
+      collapsedProjectIds: [],
+      hiddenProjectPaths: [],
+    })
+    vi.spyOn(ipcClient.sessions, "listProjects").mockResolvedValue([
+      {
+        id: "proj_rayucode_auto",
+        name: "rayucode-v2",
+        path: "/Users/dev/workspace/rayu/rayucode-v2",
+        expanded: true,
+        sessions: [],
+      },
+      {
+        id: "proj_core",
+        name: "rayucode-app-core",
+        path: "/Users/dev/workspace/rayu/rayucode-v2/crates/rayucode-app-core",
+        expanded: true,
+        sessions: [],
+      },
+      {
+        id: "proj_nek",
+        name: "nek-rean-it",
+        path: "/Users/dev/workspace/nek-rean-it",
+        expanded: true,
+        sessions: [],
+      },
+      {
+        id: "proj_youtube",
+        name: "Youtube",
+        path: "/Users/dev/workspace/Youtube",
+        expanded: true,
+        sessions: [],
+      },
+      {
+        id: "proj_rayu",
+        name: "rayu",
+        path: "/Users/dev/workspace/rayu",
+        expanded: true,
+        sessions: [],
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "list").mockResolvedValue([
+      {
+        id: "ses_rayu_chat",
+        title: "Fix sidebar routing",
+        project: "rayucode-v2",
+        workingDir: "/Users/dev/workspace/rayu/rayucode-v2",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "2m",
+        updatedAtMs: now - 120_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+      {
+        id: "ses_yt_chat",
+        title: "Build remotion pipeline",
+        project: "Youtube",
+        workingDir: "/Users/dev/workspace/Youtube",
+        checkout: "Local Checkout",
+        branch: "main",
+        updatedAt: "5m",
+        updatedAtMs: now - 300_000,
+        connection: "local",
+        modelId: "claude-opus-5-5",
+        modelLabel: "Claude Opus 5.5",
+        effort: "Medium",
+        permissionMode: "default",
+        kvWarmPct: 0,
+        creditsUsed: 0,
+      },
+    ])
+    vi.spyOn(ipcClient.sessions, "listRecents").mockResolvedValue([
+      {
+        id: "ses_rayu_chat",
+        title: "Fix sidebar routing",
+        workingDir: "/Users/dev/workspace/rayu/rayucode-v2",
+        updatedAt: "2m",
+        updatedAtMs: now - 120_000,
+      },
+      {
+        id: "ses_yt_chat",
+        title: "Build remotion pipeline",
+        workingDir: "/Users/dev/workspace/Youtube",
+        updatedAt: "5m",
+        updatedAtMs: now - 300_000,
+      },
+    ])
+
+    renderPane()
+
+    expect(await screen.findByText("rayucode")).toBeInTheDocument()
+    const rows = screen.getAllByTestId("sidebar-project-row")
+    expect(rows).toHaveLength(1)
+    expect(screen.queryByText("rayucode-app-core")).not.toBeInTheDocument()
+    expect(screen.queryByText("nek-rean-it")).not.toBeInTheDocument()
+    expect(screen.queryByText("Youtube")).not.toBeInTheDocument()
+    expect(screen.queryByText("rayu")).not.toBeInTheDocument()
+
+    // Chats from non-project folders remain accessible in Recents
+    expect(
+      screen.getByRole("button", { name: "Build remotion pipeline" })
+    ).toBeInTheDocument()
+  })
 })

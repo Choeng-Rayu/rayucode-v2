@@ -309,3 +309,8 @@ npm run check:ts
 - Desktop App (Slint + Rust): [docs/PRODUCT_DESKTOP_DEV.md](docs/PRODUCT_DESKTOP_DEV.md)
 - VS Code Extension: [docs/PRODUCT_VSCODE_DEV.md](docs/PRODUCT_VSCODE_DEV.md)
 - RayuCode Web (Next.js): [docs/PRODUCT_WEB_DEV.md](docs/PRODUCT_WEB_DEV.md)
+
+
+
+
+desktop/scripts/dev.sh

@@ -1644,6 +1644,120 @@ pub(super) async fn handle_client(
                 });
             }
 
+            Request::GetFileChanges { .. } => {
+                let sid = client_session_id.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    crate::file_changes::snapshot_for_session(&sid)
+                })
+                .await
+                .unwrap_or_else(|_| {
+                    crate::file_changes::FileChangesSnapshot::empty(&client_session_id)
+                });
+                let _ = client_event_tx.send(ServerEvent::FileChangesState { snapshot });
+            }
+
+            Request::GetFileChangeDiff { id, path } => {
+                let sid = client_session_id.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::file_changes::get_diff(&sid, &path)
+                })
+                .await;
+                let event = match result {
+                    Ok(Ok(diff)) => ServerEvent::FileChangeDiff { id, diff },
+                    Ok(Err(error)) => ServerEvent::Error {
+                        id,
+                        message: error.to_string(),
+                        retry_after_secs: None,
+                    },
+                    Err(error) => ServerEvent::Error {
+                        id,
+                        message: format!("Failed to load file change diff: {error}"),
+                        retry_after_secs: None,
+                    },
+                };
+                let _ = client_event_tx.send(event);
+            }
+
+            Request::FileChangeAction {
+                id,
+                action,
+                path,
+                force,
+            } => {
+                let mutation_lease = if client_is_processing
+                    || crate::turn_cancel_registry::has_active_turn(&client_session_id)
+                {
+                    None
+                } else if let Ok(agent_guard) = agent.try_lock() {
+                    agent_guard.claim_runtime_mutation().ok()
+                } else {
+                    None
+                };
+                let Some(_mutation_lease) = mutation_lease else {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message: "Cannot modify file changes while a turn is processing."
+                            .to_string(),
+                        retry_after_secs: Some(1),
+                    });
+                    continue;
+                };
+
+                let sid_paths = client_session_id.clone();
+                let path_for_lock = path.clone();
+                let paths = tokio::task::spawn_blocking(move || {
+                    crate::file_changes::affected_paths_for_action(
+                        &sid_paths,
+                        action,
+                        path_for_lock.as_deref(),
+                    )
+                })
+                .await
+                .unwrap_or_default();
+                let _file_locks = crate::tool::file_lock::lock_all(paths).await;
+
+                let sid = client_session_id.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::file_changes::apply_action(&sid, action, path.as_deref(), force)
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(response)) => {
+                        let broadcast_snapshot = response.snapshot.clone();
+                        let _ = client_event_tx
+                            .send(ServerEvent::FileChangeActionResult { id, response });
+                        let delivered = super::fanout_live_client_event(
+                            &swarm_members,
+                            &client_session_id,
+                            ServerEvent::FileChangesState {
+                                snapshot: broadcast_snapshot.clone(),
+                            },
+                        )
+                        .await;
+                        if delivered == 0 {
+                            let _ = client_event_tx.send(ServerEvent::FileChangesState {
+                                snapshot: broadcast_snapshot,
+                            });
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: error.to_string(),
+                            retry_after_secs: None,
+                        });
+                    }
+                    Err(error) => {
+                        let _ = client_event_tx.send(ServerEvent::Error {
+                            id,
+                            message: format!("Failed to execute file change action: {error}"),
+                            retry_after_secs: None,
+                        });
+                    }
+                }
+            }
+
             Request::GetState { id } => {
                 if handle_get_state(
                     id,
@@ -4265,6 +4379,279 @@ mod v1_14_socket_tests {
         until(&mut client_reader, |e| matches!(e, ServerEvent::Ack { id: 31 })).await;
         until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 3 })).await;
 
+        drop(client_writer);
+        drop(client_reader);
+        tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("server task shutdown")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[derive(Clone, Default)]
+    struct FileEditTurnProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for FileEditTurnProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<EventStream> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = match call {
+                0 => vec![
+                    StreamEvent::ToolUseStart {
+                        id: "call_write_1".into(),
+                        name: "write".into(),
+                    },
+                    StreamEvent::ToolInputDelta(
+                        r#"{"file_path":"demo.txt","content":"line 1\nline 2\n"}"#.into(),
+                    ),
+                    StreamEvent::ToolUseEnd,
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("tool_use".into()),
+                    },
+                ],
+                _ => vec![
+                    StreamEvent::TextDelta("Wrote demo.txt".into()),
+                    StreamEvent::MessageEnd {
+                        stop_reason: Some("end_turn".into()),
+                    },
+                ],
+            };
+            Ok(Box::pin(stream::iter(events.into_iter().map(Ok))))
+        }
+
+        fn name(&self) -> &str {
+            "file-edit-turn-test"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn file_changes_end_to_end_turn_history_diff_action_and_clear() {
+        use serde_json::json;
+
+        let _lock = crate::storage::lock_test_env();
+        let home = TempHomeGuard::new();
+        let ws = tempfile::tempdir().unwrap();
+        let provider_template: Arc<dyn Provider> = Arc::new(FileEditTurnProvider::default());
+        let sessions: SessionAgents =
+            Arc::new(crate::server::SessionManager::from_agents(HashMap::new()));
+        let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+        let server_task = tokio::spawn(handle_client(
+            server_stream,
+            Arc::clone(&sessions),
+            broadcast::channel(8).0,
+            provider_template,
+            Arc::new(RwLock::new(false)),
+            Arc::new(RwLock::new(String::new())),
+            Arc::new(RwLock::new(0usize)),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            FileTouchService::new(),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(ClientDebugState::default())),
+            broadcast::channel(8).0,
+            Arc::new(RwLock::new(std::collections::VecDeque::new())),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            broadcast::channel(8).0,
+            "rayu-test".to_string(),
+            "T".to_string(),
+            Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(RwLock::new(HashMap::new())),
+            AwaitMembersRuntime::default(),
+            SwarmMutationRuntime::default(),
+        ));
+
+        let (client_reader, mut client_writer) = client_stream.into_split();
+        let mut client_reader = BufReader::new(client_reader);
+
+        async fn send(writer: &mut crate::transport::WriteHalf, value: serde_json::Value) {
+            writer
+                .write_all(format!("{value}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+        async fn until(
+            reader: &mut BufReader<crate::transport::ReadHalf>,
+            predicate: impl Fn(&ServerEvent) -> bool,
+        ) -> ServerEvent {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).await.unwrap() > 0);
+                    let event: ServerEvent = serde_json::from_str(&line).unwrap();
+                    if predicate(&event) {
+                        return event;
+                    }
+                }
+            })
+            .await
+            .expect("daemon event timeout")
+        }
+
+        // Subscribe in the workspace.
+        send(
+            &mut client_writer,
+            json!({
+                "type": "subscribe",
+                "id": 1,
+                "working_dir": ws.path(),
+            }),
+        )
+        .await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 1 })).await;
+
+        // Run a turn that writes demo.txt; expect FileChangesState before Done.
+        send(
+            &mut client_writer,
+            json!({"type": "message", "id": 2, "content": "create demo"}),
+        )
+        .await;
+        let mut saw_file_changes_state = None;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let mut line = String::new();
+                assert!(client_reader.read_line(&mut line).await.unwrap() > 0);
+                let event: ServerEvent = serde_json::from_str(&line).unwrap();
+                if let ServerEvent::FileChangesState { snapshot } = &event {
+                    saw_file_changes_state = Some(snapshot.clone());
+                }
+                if matches!(event, ServerEvent::Done { id: 2 }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("turn completion timeout");
+        let snap = saw_file_changes_state.expect("turn must emit FileChangesState");
+        assert_eq!(snap.total_pending_files, 1);
+        assert_eq!(snap.total_additions, 2);
+        assert_eq!(snap.files[0].display_path, "demo.txt");
+        assert!(ws.path().join("demo.txt").exists());
+
+        // GetHistory must hydrate `file_changes`.
+        send(&mut client_writer, json!({"type": "get_history", "id": 3})).await;
+        let ServerEvent::History { file_changes, .. } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::History { id: 3, .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        let hydrated = file_changes.expect("History must hydrate non-empty file_changes");
+        assert_eq!(hydrated.total_pending_files, 1);
+        assert_eq!(hydrated.files[0].display_path, "demo.txt");
+
+        // GetFileChangeDiff returns full content & hunks.
+        send(
+            &mut client_writer,
+            json!({"type": "get_file_change_diff", "id": 4, "path": "demo.txt"}),
+        )
+        .await;
+        let ServerEvent::FileChangeDiff { diff, .. } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::FileChangeDiff { id: 4, .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(diff.modified_content, "line 1\nline 2\n");
+        assert_eq!(diff.additions, 2);
+
+        // FileChangeAction undo removes the created file and broadcasts updated FileChangesState.
+        send(
+            &mut client_writer,
+            json!({"type": "file_change_action", "id": 5, "action": "undo", "path": "demo.txt"}),
+        )
+        .await;
+        let ServerEvent::FileChangeActionResult { response, .. } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::FileChangeActionResult { id: 5, .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert!(response.ok);
+        assert!(!ws.path().join("demo.txt").exists());
+        assert_eq!(response.snapshot.total_pending_files, 0);
+
+        // FileChangeAction redo restores the file and returns it to pending.
+        send(
+            &mut client_writer,
+            json!({"type": "file_change_action", "id": 6, "action": "redo", "path": "demo.txt"}),
+        )
+        .await;
+        let ServerEvent::FileChangeActionResult { response, .. } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::FileChangeActionResult { id: 6, .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert!(response.ok);
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("demo.txt")).unwrap(),
+            "line 1\nline 2\n"
+        );
+        assert_eq!(response.snapshot.total_pending_files, 1);
+
+        // GetFileChanges returns current snapshot.
+        send(&mut client_writer, json!({"type": "get_file_changes", "id": 7})).await;
+        let ServerEvent::FileChangesState { snapshot } = until(&mut client_reader, |e| {
+            matches!(e, ServerEvent::FileChangesState { .. })
+        })
+        .await
+        else {
+            unreachable!();
+        };
+        assert_eq!(snapshot.total_pending_files, 1);
+
+        // Clear session emits an empty FileChangesState for the fresh session before Done.
+        send(&mut client_writer, json!({"type": "clear", "id": 8})).await;
+        let mut cleared_snap = None;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let mut line = String::new();
+                assert!(client_reader.read_line(&mut line).await.unwrap() > 0);
+                let event: ServerEvent = serde_json::from_str(&line).unwrap();
+                if let ServerEvent::FileChangesState { snapshot } = &event
+                    && snapshot.is_empty()
+                {
+                    cleared_snap = Some(snapshot.clone());
+                }
+                if matches!(event, ServerEvent::Done { id: 8 }) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("clear completion timeout");
+        let cleared = cleared_snap.expect("clear must emit empty FileChangesState");
+        assert!(cleared.is_empty());
+
+        // Persist the cleared session so disconnect cleanup doesn't enter the
+        // 30-second unsaved-empty-root reconnect grace period.
+        send(&mut client_writer, json!({"type": "persist_session", "id": 9})).await;
+        until(&mut client_reader, |e| matches!(e, ServerEvent::Done { id: 9 })).await;
+
+        let _ = home;
         drop(client_writer);
         drop(client_reader);
         tokio::time::timeout(Duration::from_secs(5), server_task)

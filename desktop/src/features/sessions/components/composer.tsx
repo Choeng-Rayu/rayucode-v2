@@ -235,6 +235,99 @@ function resolveBuiltinSkillToken(rawCommand: string): ActiveSkillToken {
   }
 }
 
+interface ActiveSlashTrigger {
+  slashIndex: number
+  endIndex: number
+  query: string
+}
+
+interface CompletedSlashTokenMatch {
+  tokenStart: number
+  tokenEnd: number
+  commandName: string
+}
+
+type SlashMenuItem =
+  | {
+      kind: "builtin"
+      key: string
+      label: string
+      description: string
+      icon: SkillTokenIconId
+      insertText: string
+    }
+  | {
+      kind: "skill"
+      key: string
+      label: string
+      description: string
+      skillId: string
+    }
+
+function clampCursorIndex(value: string, cursor: number): number {
+  return Math.max(0, Math.min(cursor, value.length))
+}
+
+function resolveTextareaCursor(
+  target: HTMLTextAreaElement,
+  valueLength: number
+): number {
+  const sel = target.selectionStart
+  if (
+    typeof sel === "number" &&
+    (document.activeElement === target || sel > 0 || valueLength === 0)
+  ) {
+    return sel
+  }
+  return valueLength
+}
+
+function getActiveSlashTrigger(
+  value: string,
+  cursor: number = value.length
+): ActiveSlashTrigger | null {
+  const safeCursor = clampCursorIndex(value, cursor)
+  const beforeCursor = value.slice(0, safeCursor)
+  const match = /(?:^|\s)(\/([^\s/]*))$/.exec(beforeCursor)
+  if (!match) return null
+  return {
+    slashIndex: safeCursor - match[1].length,
+    endIndex: safeCursor,
+    query: match[2] ?? "",
+  }
+}
+
+function matchCompletedSlashToken(
+  value: string,
+  cursor: number = value.length
+): CompletedSlashTokenMatch | null {
+  const safeCursor = clampCursorIndex(value, cursor)
+  const beforeCursor = value.slice(0, safeCursor)
+  const match = /(?:^|\s)(\/([a-zA-Z0-9._-]+))\s$/.exec(beforeCursor)
+  if (!match) return null
+  return {
+    tokenStart: safeCursor - match[1].length - 1,
+    tokenEnd: safeCursor,
+    commandName: match[2],
+  }
+}
+
+function stripSlashRange(
+  value: string,
+  start: number,
+  end: number
+): { nextValue: string; nextCursor: number } {
+  const before = value.slice(0, start)
+  let after = value.slice(end)
+  if (before.length > 0 && /\s$/.test(before) && /^\s/.test(after)) {
+    after = after.replace(/^\s+/, "")
+  }
+  return {
+    nextValue: `${before}${after}`,
+    nextCursor: before.length,
+  }
+}
+
 function PluginBadgeIcon({
   kind,
   size = "md",
@@ -491,6 +584,12 @@ export function SessionComposer({
     Array<{ name: string; path?: string }>
   >(() => (isTestEnv ? HOME_PROJECTS.map((name) => ({ name })) : []))
   const [slashOpen, setSlashOpen] = React.useState(false)
+  const [cursorPos, setCursorPos] = React.useState<number | null>(null)
+  const [pendingCaret, setPendingCaret] = React.useState<{
+    pos: number
+    seq: number
+  } | null>(null)
+  const [slashHighlightIndex, setSlashHighlightIndex] = React.useState(0)
   const [plusMenuView, setPlusMenuView] = React.useState<"add" | "slash" | "mention">("add")
   const [slashTipOpen, setSlashTipOpen] = React.useState(false)
   const [projectOpen, setProjectOpen] = React.useState(false)
@@ -514,7 +613,7 @@ export function SessionComposer({
   const pluginsQuery = useQuery({
     queryKey: ["plugins", "state"],
     queryFn: () => ipcClient.plugins.getState(),
-    enabled: !isTestEnv && slashOpen,
+    enabled: !isTestEnv || slashOpen,
     staleTime: 30_000,
   })
 
@@ -646,6 +745,59 @@ export function SessionComposer({
     }
     return "Ask anything, @ to mention, / for actions"
   }, [activePermissionMode, placeholder, skillTokens.length])
+
+  const effectiveCursor =
+    cursorPos === null ? textValue.length : clampCursorIndex(textValue, cursorPos)
+
+  const activeSlashTrigger = React.useMemo(
+    () => getActiveSlashTrigger(textValue, effectiveCursor),
+    [effectiveCursor, textValue]
+  )
+
+  const activeSlashQuery = (activeSlashTrigger?.query ?? "").trim().toLowerCase()
+
+  const slashMenuItems = React.useMemo<SlashMenuItem[]>(() => {
+    const builtins: SlashMenuItem[] = SLASH_COMMANDS.filter((item) => {
+      if (!activeSlashQuery) return true
+      return (
+        item.command.toLowerCase().includes(activeSlashQuery) ||
+        item.description.toLowerCase().includes(activeSlashQuery)
+      )
+    }).map((item) => {
+      const tok = resolveBuiltinSkillToken(item.insertText)
+      return {
+        kind: "builtin",
+        key: item.command,
+        label: tok.label,
+        description: item.description,
+        icon: tok.icon,
+        insertText: item.insertText,
+      }
+    })
+
+    const skills: SlashMenuItem[] = enabledLocalSkills
+      .filter((skill) => {
+        if (!activeSlashQuery) return true
+        return (
+          skill.name.toLowerCase().includes(activeSlashQuery) ||
+          skill.description.toLowerCase().includes(activeSlashQuery)
+        )
+      })
+      .map((skill) => ({
+        kind: "skill",
+        key: skill.id,
+        label: skill.name,
+        description: skill.description,
+        skillId: skill.id,
+      }))
+
+    return [...builtins, ...skills]
+  }, [activeSlashQuery, enabledLocalSkills])
+
+  const clampedSlashHighlightIndex =
+    slashMenuItems.length > 0
+      ? Math.min(slashHighlightIndex, slashMenuItems.length - 1)
+      : 0
 
   // Derive active `@query` from either composer textarea or popup search box
   const activeMentionQuery = React.useMemo(() => {
@@ -1249,13 +1401,59 @@ export function SessionComposer({
     void submitComposedPayload(finalPrompt)
   }
 
+  React.useLayoutEffect(() => {
+    if (!pendingCaret) return
+    const el = localTextareaRef.current
+    if (!el) return
+    el.focus()
+    const safePos = clampCursorIndex(el.value, pendingCaret.pos)
+    el.setSelectionRange(safePos, safePos)
+  }, [pendingCaret])
+
+  const restoreCaret = (pos: number) => {
+    setCursorPos(pos)
+    setPendingCaret((prev) => ({ pos, seq: (prev?.seq ?? 0) + 1 }))
+  }
+
+  const handleSelectSlashItem = (item: SlashMenuItem) => {
+    if (item.kind === "builtin") {
+      const token = resolveBuiltinSkillToken(item.insertText)
+      addSkillToken(token)
+      if (token.id === "plan" && activePermissionMode !== "plan") {
+        handlePermissionSelect("plan")
+      }
+    } else {
+      addSkillToken({
+        id: item.skillId,
+        label: item.label,
+        command: `/${item.label}`,
+        icon: "skill",
+      })
+    }
+
+    const trigger = getActiveSlashTrigger(textValue, effectiveCursor)
+    if (trigger) {
+      const { nextValue, nextCursor } = stripSlashRange(
+        textValue,
+        trigger.slashIndex,
+        trigger.endIndex
+      )
+      setTextValue(nextValue)
+      restoreCaret(nextCursor)
+    } else {
+      restoreCaret(effectiveCursor)
+    }
+    setSlashOpen(false)
+  }
+
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value
+    const cursor = resolveTextareaCursor(event.target, next.length)
 
-    // Auto-convert typed built-in `/goal `, `/plan `, `/swarm `, etc. on trailing space into clean inline skill tokens
-    const typedBuiltinMatch = /^\/([a-zA-Z0-9-]+)\s$/.exec(next)
-    if (typedBuiltinMatch) {
-      const cmdName = typedBuiltinMatch[1].toLowerCase()
+    // Auto-convert typed `/goal `, `/plan `, `/swarm `, or local `/skill ` on trailing space into clean inline skill tokens
+    const completedMatch = matchCompletedSlashToken(next, cursor)
+    if (completedMatch) {
+      const cmdName = completedMatch.commandName.toLowerCase()
       const knownCmd = SLASH_COMMANDS.find(
         (c) => c.command.slice(1).toLowerCase() === cmdName
       )
@@ -1268,8 +1466,14 @@ export function SessionComposer({
         if (token.id === "plan" && activePermissionMode !== "plan") {
           handlePermissionSelect("plan")
         }
-        setTextValue("")
+        const { nextValue, nextCursor } = stripSlashRange(
+          next,
+          completedMatch.tokenStart,
+          completedMatch.tokenEnd
+        )
+        setTextValue(nextValue)
         setSlashOpen(false)
+        restoreCaret(nextCursor)
         return
       }
       if (knownSkill) {
@@ -1279,20 +1483,41 @@ export function SessionComposer({
           command: `/${knownSkill.name}`,
           icon: "skill",
         })
-        setTextValue("")
+        const { nextValue, nextCursor } = stripSlashRange(
+          next,
+          completedMatch.tokenStart,
+          completedMatch.tokenEnd
+        )
+        setTextValue(nextValue)
         setSlashOpen(false)
+        restoreCaret(nextCursor)
         return
       }
     }
 
     setTextValue(next)
-    if (next.startsWith("/")) {
+    setCursorPos(cursor)
+
+    if (getActiveSlashTrigger(next, cursor)) {
       setPlusMenuView("slash")
+      setSlashHighlightIndex(0)
       setSlashOpen(true)
-    } else if (/(?:^|\s)@[^\s]*$/.test(next)) {
+    } else if (/(?:^|\s)@[^\s]*$/.test(next.slice(0, cursor))) {
       setPlusMenuView("mention")
       setSlashOpen(true)
     } else if (plusMenuView === "slash" || plusMenuView === "mention") {
+      setSlashOpen(false)
+    }
+  }
+
+  const syncTextareaCursor = (target: HTMLTextAreaElement) => {
+    const cursor = resolveTextareaCursor(target, target.value.length)
+    setCursorPos(cursor)
+    if (
+      slashOpen &&
+      plusMenuView === "slash" &&
+      !getActiveSlashTrigger(target.value, cursor)
+    ) {
       setSlashOpen(false)
     }
   }
@@ -1304,6 +1529,31 @@ export function SessionComposer({
       event.preventDefault()
       setSlashOpen(false)
       return
+    }
+    if (slashOpen && plusMenuView === "slash" && slashMenuItems.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault()
+        setSlashHighlightIndex(
+          (clampedSlashHighlightIndex + 1) % slashMenuItems.length
+        )
+        return
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault()
+        setSlashHighlightIndex(
+          (clampedSlashHighlightIndex - 1 + slashMenuItems.length) %
+            slashMenuItems.length
+        )
+        return
+      }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+        const selected = slashMenuItems[clampedSlashHighlightIndex]
+        if (selected) {
+          event.preventDefault()
+          handleSelectSlashItem(selected)
+          return
+        }
+      }
     }
     if (
       event.key === "Backspace" &&
@@ -1320,17 +1570,6 @@ export function SessionComposer({
       event.preventDefault()
       void handleSend()
     }
-  }
-
-  const handleInsertSlashCommand = (insertText: string) => {
-    const token = resolveBuiltinSkillToken(insertText)
-    addSkillToken(token)
-    if (token.id === "plan" && activePermissionMode !== "plan") {
-      handlePermissionSelect("plan")
-    }
-    setTextValue("")
-    setSlashOpen(false)
-    localTextareaRef.current?.focus()
   }
 
   return (
@@ -1727,6 +1966,9 @@ export function SessionComposer({
                 disabled={disabled || isSubmitting}
                 onChange={handleInputChange}
                 onKeyDown={handleInputKeyDown}
+                onKeyUp={(e) => syncTextareaCursor(e.currentTarget)}
+                onClick={(e) => syncTextareaCursor(e.currentTarget)}
+                onSelect={(e) => syncTextareaCursor(e.currentTarget)}
                 onPaste={handlePaste}
                 placeholder={effectivePlaceholder}
                 aria-label={
@@ -1742,9 +1984,11 @@ export function SessionComposer({
                 open={slashOpen}
                 onOpenChange={(open) => {
                   if (open) {
-                    if (textValue.startsWith("/")) {
+                    if (getActiveSlashTrigger(textValue, effectiveCursor)) {
                       setPlusMenuView("slash")
-                    } else if (/(?:^|\s)@[^\s]*$/.test(textValue)) {
+                    } else if (
+                      /(?:^|\s)@[^\s]*$/.test(textValue.slice(0, effectiveCursor))
+                    ) {
                       setPlusMenuView("mention")
                     } else {
                       setPlusMenuView("add")
@@ -1767,7 +2011,7 @@ export function SessionComposer({
                         aria-label="Add files and more"
                         data-testid="composer-plus-trigger"
                         onClick={() => {
-                          if (!textValue.startsWith("/")) {
+                          if (!getActiveSlashTrigger(textValue, effectiveCursor)) {
                             setPlusMenuView("add")
                           }
                         }}
@@ -1813,7 +2057,7 @@ export function SessionComposer({
                   className={cn(
                     "rayu-card-bevel max-w-[calc(100vw-32px)] border border-premium-hi bg-popover-solid shadow-rayu-2",
                     plusMenuView === "slash"
-                      ? "w-[390px] rounded-[14px] p-1.5"
+                      ? "w-[min(560px,calc(100vw-48px))] rounded-[14px] p-1.5"
                       : "w-[min(720px,calc(100vw-48px))] rounded-[18px] p-2"
                   )}
                 >
@@ -1822,70 +2066,48 @@ export function SessionComposer({
                       <div className="px-2.5 pt-1.5 pb-1 text-[10px] font-semibold tracking-[0.06em] text-muted-ink uppercase">
                         Built-in Skills &amp; Commands
                       </div>
-                      <div className="flex max-h-[280px] flex-col overflow-y-auto">
-                        {SLASH_COMMANDS.filter((item) => {
-                          const q = textValue.slice(1).trim().toLowerCase()
-                          if (!q) return true
-                          return (
-                            item.command.toLowerCase().includes(q) ||
-                            item.description.toLowerCase().includes(q)
-                          )
-                        }).map((item) => {
-                          const tok = resolveBuiltinSkillToken(item.insertText)
-                          return (
-                            <button
-                              key={item.command}
-                              type="button"
-                              onClick={() =>
-                                handleInsertSlashCommand(item.insertText)
-                              }
-                              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-hover"
-                            >
-                              <SkillTokenIcon icon={tok.icon} />
-                              <span className="min-w-[88px] font-medium text-ink">
-                                {tok.label}
-                              </span>
-                              <span className="truncate text-muted-ink">
-                                {item.description}
-                              </span>
-                            </button>
-                          )
-                        })}
-                        {enabledLocalSkills
-                          .filter((skill) => {
-                            const q = textValue.slice(1).trim().toLowerCase()
-                            if (!q) return true
+                      <div
+                        data-testid="composer-slash-menu"
+                        className="flex max-h-[280px] flex-col overflow-y-auto"
+                      >
+                        {slashMenuItems.length > 0 ? (
+                          slashMenuItems.map((item, idx) => {
+                            const isHighlighted =
+                              idx === clampedSlashHighlightIndex
                             return (
-                              skill.name.toLowerCase().includes(q) ||
-                              skill.description.toLowerCase().includes(q)
+                              <button
+                                key={item.key}
+                                type="button"
+                                data-active={isHighlighted ? "true" : "false"}
+                                aria-current={isHighlighted ? "true" : undefined}
+                                onMouseEnter={() => setSlashHighlightIndex(idx)}
+                                onClick={() => handleSelectSlashItem(item)}
+                                className={cn(
+                                  "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                                  isHighlighted ? "bg-active" : "hover:bg-hover"
+                                )}
+                              >
+                                <SkillTokenIcon
+                                  icon={
+                                    item.kind === "builtin"
+                                      ? item.icon
+                                      : "skill"
+                                  }
+                                />
+                                <span className="max-w-[180px] min-w-[88px] truncate font-medium text-ink">
+                                  {item.label}
+                                </span>
+                                <span className="truncate text-muted-ink">
+                                  {item.description}
+                                </span>
+                              </button>
                             )
                           })
-                          .map((skill) => (
-                            <button
-                              key={skill.id}
-                              type="button"
-                              onClick={() => {
-                                addSkillToken({
-                                  id: skill.id,
-                                  label: skill.name,
-                                  command: `/${skill.name}`,
-                                  icon: "skill",
-                                })
-                                setTextValue("")
-                                setSlashOpen(false)
-                                localTextareaRef.current?.focus()
-                              }}
-                              className="flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-hover"
-                            >
-                              <SkillTokenIcon icon="skill" />
-                              <span className="min-w-[88px] truncate font-medium text-ink">
-                                {skill.name}
-                              </span>
-                              <span className="truncate text-muted-ink">
-                                {skill.description}
-                              </span>
-                            </button>
-                          ))}
+                        ) : (
+                          <div className="px-2.5 py-3 text-xs text-muted-ink">
+                            No matching skills or commands
+                          </div>
+                        )}
                       </div>
                     </>
                   ) : plusMenuView === "mention" ? (

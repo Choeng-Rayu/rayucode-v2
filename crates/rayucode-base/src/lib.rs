@@ -44,6 +44,7 @@ pub mod embedding_backend;
 pub mod embedding_stub;
 pub mod env;
 pub mod external_auth;
+pub mod file_changes;
 pub mod gateway;
 pub mod generated_image;
 pub mod github;

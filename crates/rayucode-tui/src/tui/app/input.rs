@@ -2327,7 +2327,9 @@ pub(super) fn is_scroll_only_key(app: &App, code: KeyCode, modifiers: KeyModifie
     let mut modifiers = modifiers;
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
-    if app.toggle_keys.commit_log.matches(code, modifiers) {
+    if app.toggle_keys.commit_log.matches(code, modifiers)
+        || super::file_changes::is_file_review_hotkey(code, modifiers)
+    {
         return false;
     }
 
@@ -2537,12 +2539,20 @@ pub(super) fn handle_pre_control_shortcuts(
         app.handle_new_terminal_hotkey();
         return true;
     }
+    if app.has_file_changes() && super::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
+        return true;
+    }
     if app.open_resume_key_matches(code, modifiers) {
         app.record_keybinding_fast(super::shortcut_hints::LearnableAction::Resume);
         app.open_session_picker();
         if let Some(picker) = app.session_picker_overlay.as_ref() {
             picker.borrow_mut().activate_search();
         }
+        return true;
+    }
+    if super::file_changes::is_file_review_hotkey(code, modifiers) {
+        app.toggle_file_review_overlay();
         return true;
     }
     if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
@@ -2722,6 +2732,10 @@ pub(super) fn handle_modal_key(
 ) -> Result<bool> {
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
+        return Ok(true);
+    }
+
+    if app.handle_file_review_overlay_key(code, modifiers)? {
         return Ok(true);
     }
 

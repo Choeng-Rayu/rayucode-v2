@@ -21,13 +21,24 @@ import {
   type BackgroundProcessOutputView,
   type BackgroundProcessView,
   type CacheTtl,
+  type ChangedFileStatus,
+  type ChangedFileView,
   type ChangesStatusView,
   type ContextSnapshotView,
   type DaemonStatusView,
   type DoctorCheckView,
   type EffortChoice,
   type FeatureFlagsView,
+  type FileChangeActionKind,
+  type FileChangeActionResultView,
+  type FileChangeConflictView,
+  type FileChangeEntryView,
+  type FileChangeHunkView,
+  type FileChangeKind,
+  type FileChangeStatus,
+  type FileChangesSnapshotView,
   type FileDiffView,
+  type FileReviewDecision,
   type GatewayStatusView,
   type HookEntryView,
   type HookEventId,
@@ -73,6 +84,12 @@ import type {
   BackgroundProcessGroup,
   BackgroundProcessStatus,
 } from "../../shared/vscodeProtocol.js";
+import {
+  buildRayuPlanLadder,
+  buildVscodeLoginUrl,
+  getRayuWebBase,
+  type RayuSignInMode,
+} from "../auth/rayuHostAuthManager.js";
 
 function parseTimestampMs(val: unknown, fallback = Date.now()): number {
   if (typeof val === "number" && Number.isFinite(val)) {
@@ -386,6 +403,229 @@ export function mapRawBackgroundTask(
   };
 }
 
+function inferFileLanguageId(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const map: Record<string, string> = {
+    ".ts": "typescript",
+    ".tsx": "typescriptreact",
+    ".js": "javascript",
+    ".jsx": "javascriptreact",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".rs": "rust",
+    ".py": "python",
+    ".go": "go",
+    ".json": "json",
+    ".md": "markdown",
+    ".css": "css",
+    ".html": "html",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".sh": "shellscript",
+    ".sql": "sql",
+  };
+  return map[ext] ?? "plaintext";
+}
+
+function normalizeFileChangeKind(raw: unknown): FileChangeKind {
+  switch (raw) {
+    case "created":
+    case "modified":
+    case "deleted":
+    case "renamed":
+      return raw;
+    default:
+      return "modified";
+  }
+}
+
+function normalizeFileChangeStatus(raw: unknown): FileChangeStatus {
+  switch (raw) {
+    case "pending":
+    case "kept":
+    case "undone":
+      return raw;
+    default:
+      return "pending";
+  }
+}
+
+function toNonNegInt(val: unknown, fallback = 0): number {
+  return typeof val === "number" && Number.isFinite(val)
+    ? Math.max(0, Math.round(val))
+    : fallback;
+}
+
+export function emptyFileChangesSnapshot(
+  sessionId: string,
+): FileChangesSnapshotView {
+  return {
+    sessionId,
+    latestTurnId: 0,
+    totalPendingFiles: 0,
+    totalAdditions: 0,
+    totalDeletions: 0,
+    files: [],
+  };
+}
+
+export function mapRawFileChangeHunk(raw: unknown): FileChangeHunkView | null {
+  const r = asRecord(raw);
+  const header = typeof r.header === "string" ? r.header : "";
+  const lines = asArray(r.lines).filter((l): l is string => typeof l === "string");
+  if (!header && lines.length === 0) return null;
+  return {
+    oldStart: toNonNegInt(r.old_start ?? r.oldStart, 0),
+    oldLines: toNonNegInt(r.old_lines ?? r.oldLines, 0),
+    newStart: toNonNegInt(r.new_start ?? r.newStart, 0),
+    newLines: toNonNegInt(r.new_lines ?? r.newLines, 0),
+    header,
+    lines,
+  };
+}
+
+export function mapRawFileChangeEntry(raw: unknown): FileChangeEntryView | null {
+  const r = asRecord(raw);
+  const filePath = typeof r.path === "string" ? r.path : "";
+  if (!filePath) return null;
+  const displayPath =
+    typeof r.display_path === "string" && r.display_path
+      ? r.display_path
+      : typeof r.displayPath === "string" && r.displayPath
+        ? r.displayPath
+        : filePath;
+  const oldPath =
+    typeof r.old_path === "string"
+      ? r.old_path
+      : typeof r.oldPath === "string"
+        ? r.oldPath
+        : undefined;
+  const previewHunks = asArray(r.preview_hunks ?? r.previewHunks)
+    .map(mapRawFileChangeHunk)
+    .filter((h): h is FileChangeHunkView => h !== null);
+
+  return {
+    path: filePath,
+    displayPath,
+    ...(oldPath ? { oldPath } : {}),
+    kind: normalizeFileChangeKind(r.kind),
+    status: normalizeFileChangeStatus(r.status),
+    additions: toNonNegInt(r.additions, 0),
+    deletions: toNonNegInt(r.deletions, 0),
+    changedInLatestTurn: Boolean(
+      r.changed_in_latest_turn ?? r.changedInLatestTurn ?? false,
+    ),
+    turnId: toNonNegInt(r.turn_id ?? r.turnId, 0),
+    editCount: toNonNegInt(r.edit_count ?? r.editCount, 1),
+    isBinary: Boolean(r.is_binary ?? r.isBinary ?? false),
+    undoable:
+      typeof r.undoable === "boolean" ? r.undoable : true,
+    canRedo: Boolean(r.can_redo ?? r.canRedo ?? false),
+    previewHunks,
+    previewTruncated: Boolean(
+      r.preview_truncated ?? r.previewTruncated ?? false,
+    ),
+    updatedAtMs: parseTimestampMs(r.updated_at_ms ?? r.updatedAtMs),
+  };
+}
+
+export function mapRawFileChangesSnapshot(
+  raw: unknown,
+  fallbackSessionId = "",
+): FileChangesSnapshotView {
+  const r = asRecord(raw);
+  const files = asArray(r.files)
+    .map(mapRawFileChangeEntry)
+    .filter((f): f is FileChangeEntryView => f !== null);
+  const computedPending = files.filter((f) => f.status === "pending").length;
+  const computedAdditions = files.reduce((acc, f) => acc + f.additions, 0);
+  const computedDeletions = files.reduce((acc, f) => acc + f.deletions, 0);
+
+  return {
+    sessionId: String(r.session_id ?? r.sessionId ?? fallbackSessionId),
+    latestTurnId: toNonNegInt(r.latest_turn_id ?? r.latestTurnId, 0),
+    totalPendingFiles: toNonNegInt(
+      r.total_pending_files ?? r.totalPendingFiles,
+      computedPending,
+    ),
+    totalAdditions: toNonNegInt(
+      r.total_additions ?? r.totalAdditions,
+      computedAdditions,
+    ),
+    totalDeletions: toNonNegInt(
+      r.total_deletions ?? r.totalDeletions,
+      computedDeletions,
+    ),
+    files,
+  };
+}
+
+export function mapRawFileChangeDiff(
+  raw: unknown,
+  fallbackPath = "",
+): FileDiffView {
+  const r = asRecord(raw);
+  const filePath = String(r.path ?? fallbackPath);
+  const displayPath = String(r.display_path ?? r.displayPath ?? filePath);
+  const oldPath =
+    typeof r.old_path === "string"
+      ? r.old_path
+      : typeof r.oldPath === "string"
+        ? r.oldPath
+        : undefined;
+  const hunks = asArray(r.hunks)
+    .map(mapRawFileChangeHunk)
+    .filter((h): h is FileChangeHunkView => h !== null);
+
+  return {
+    path: filePath,
+    originalContent: String(r.original_content ?? r.originalContent ?? ""),
+    modifiedContent: String(r.modified_content ?? r.modifiedContent ?? ""),
+    unifiedDiff: String(r.unified_diff ?? r.unifiedDiff ?? ""),
+    additions: toNonNegInt(r.additions, 0),
+    deletions: toNonNegInt(r.deletions, 0),
+    languageId: inferFileLanguageId(displayPath || filePath),
+    isBinary: Boolean(r.is_binary ?? r.isBinary ?? false),
+    kind: normalizeFileChangeKind(r.kind),
+    status: normalizeFileChangeStatus(r.status),
+    ...(oldPath ? { oldPath } : {}),
+    ...(hunks.length > 0 ? { hunks } : {}),
+  };
+}
+
+export function mapRawFileChangeActionResponse(
+  raw: unknown,
+  fallbackSessionId = "",
+): FileChangeActionResultView {
+  const r = asRecord(raw);
+  const conflicts: FileChangeConflictView[] = asArray(r.conflicts)
+    .map((item) => {
+      const c = asRecord(item);
+      const p = typeof c.path === "string" ? c.path : "";
+      if (!p) return null;
+      return {
+        path: p,
+        displayPath: String(c.display_path ?? c.displayPath ?? p),
+        reason: String(c.reason ?? "Conflict detected"),
+      };
+    })
+    .filter((c): c is FileChangeConflictView => c !== null);
+
+  const snapshot =
+    r.snapshot && typeof r.snapshot === "object"
+      ? mapRawFileChangesSnapshot(r.snapshot, fallbackSessionId)
+      : undefined;
+
+  return {
+    ok: Boolean(r.ok),
+    message: typeof r.message === "string" ? r.message : undefined,
+    conflict: conflicts.length > 0,
+    conflicts,
+    ...(snapshot ? { snapshot } : {}),
+  };
+}
+
 export interface FeatureRouterBridge {
   getStatus(): DaemonStatusView;
   ping(): Promise<{ ok: boolean; latencyMs: number; version?: string }>;
@@ -453,6 +693,39 @@ export interface FeatureRouterHub {
     updated_at_ms?: number;
     archived?: boolean;
   }): SessionSummaryView;
+  notifyDaemonAuthChanged?(provider?: string): Promise<void>;
+  broadcastAccountChanged?(account: AccountStatusView): void;
+  getFileChangesSnapshot?(sessionId: string): FileChangesSnapshotView | undefined;
+  fetchFileChanges?(sessionId?: string): Promise<FileChangesSnapshotView | null>;
+  getFileChangeDiff?(
+    sessionId: string,
+    filePath: string,
+  ): Promise<FileDiffView | null>;
+  runFileChangeAction?(
+    sessionId: string,
+    action: FileChangeActionKind,
+    opts?: { path?: string; force?: boolean },
+  ): Promise<FileChangeActionResultView | null>;
+  broadcastFileChanges?(
+    sessionId: string,
+    snapshot: FileChangesSnapshotView,
+  ): void;
+}
+
+export interface FeatureRouterAuthManager {
+  getAccountStatusSnapshot(): AccountStatusView;
+  getAccountStatus(forceRefresh?: boolean): Promise<AccountStatusView>;
+  startBrowserSignIn(mode?: RayuSignInMode): Promise<{
+    ok: boolean;
+    authUrl: string;
+    state: AccountStatusView;
+  }>;
+  cancelSignIn(): AccountStatusView;
+  signInWithApiKey(apiKey: string): Promise<AccountStatusView>;
+  completeManualCallback(rawUrl: string): Promise<AccountStatusView>;
+  signOut(): Promise<AccountStatusView>;
+  clearSavedApiKeyOnly(): Promise<AccountStatusView>;
+  setBypassPacing(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }>;
 }
 
 export interface FeatureRouterGit {
@@ -515,6 +788,7 @@ export interface FeatureRouterDeps {
   sessionHub: FeatureRouterHub;
   gitBridge: FeatureRouterGit;
   editorBridge: FeatureRouterEditor;
+  authManager?: FeatureRouterAuthManager;
   getWorkspaceFolders: () => Promise<WorkspaceFolderView[]>;
   setProjectIcon: (
     workspacePath: string,
@@ -638,8 +912,128 @@ const DEFAULT_SHORTCUTS: ShortcutEntryView[] = [
   },
 ];
 
+export function normalizeCredentialProviderId(providerId: string): string {
+  const key = providerId.trim().toLowerCase();
+  switch (key) {
+    case "rayu":
+    case "rayu-cloud":
+    case "rayucode":
+    case "subscription":
+      return "rayu";
+    case "anthropic":
+    case "claude":
+    case "claude-api":
+    case "anthropic-api":
+    case "anthropic-key":
+    case "claude-key":
+      return "claude-api";
+    case "openai":
+    case "openai-api":
+    case "openai-key":
+    case "openai-apikey":
+      return "openai-api";
+    case "github-copilot":
+    case "copilot":
+      return "copilot";
+    case "aws-bedrock":
+    case "bedrock":
+      return "bedrock";
+    case "azure-openai":
+    case "azure":
+      return "azure";
+    case "google-gemini":
+    case "gemini-api":
+    case "gemini":
+      return "gemini";
+    case "google-workspace-vertex":
+    case "google-workspace":
+    case "google_workspace":
+      return "google_workspace";
+    default:
+      return key;
+  }
+}
+
+export function normalizeLogoutProviderId(providerId: string): string {
+  const key = providerId.trim().toLowerCase();
+  switch (key) {
+    case "rayu":
+    case "rayu-cloud":
+    case "rayucode":
+    case "subscription":
+      return "rayu";
+    case "anthropic":
+    case "claude":
+      return "claude";
+    case "claude-api":
+    case "anthropic-api":
+      return "claude-api";
+    case "openai":
+      return "openai";
+    case "openai-api":
+      return "openai-api";
+    case "github-copilot":
+    case "copilot":
+      return "copilot";
+    case "aws-bedrock":
+    case "bedrock":
+      return "bedrock";
+    case "azure-openai":
+    case "azure":
+      return "azure";
+    case "google-gemini":
+    case "gemini-api":
+    case "gemini":
+      return "gemini";
+    case "google-workspace-vertex":
+    case "google-workspace":
+    case "google_workspace":
+      return "google_workspace";
+    default:
+      return key;
+  }
+}
+
+function normalizeUiProviderId(providerId: string): string {
+  const key = providerId.trim().toLowerCase();
+  switch (key) {
+    case "rayu":
+    case "rayu-cloud":
+    case "rayucode":
+    case "subscription":
+      return "rayu";
+    case "claude":
+    case "claude-api":
+    case "anthropic":
+    case "anthropic-api":
+      return "anthropic";
+    case "openai":
+    case "openai-api":
+      return "openai";
+    case "github-copilot":
+    case "copilot":
+      return "copilot";
+    case "aws-bedrock":
+    case "bedrock":
+      return "bedrock";
+    case "azure-openai":
+    case "azure":
+      return "azure";
+    case "google-gemini":
+    case "gemini-api":
+    case "gemini":
+      return "gemini";
+    case "google-workspace-vertex":
+    case "google-workspace":
+    case "google_workspace":
+      return "google_workspace";
+    default:
+      return key;
+  }
+}
+
 const DEFAULT_PROVIDERS: ProviderEntryView[] = [
-  { id: "rayu", name: "Rayu Cloud Gateway", category: "native", status: "ready", authMethod: "oauth", supportsOAuth: true },
+  { id: "rayu", name: "Rayu Cloud Gateway", category: "native", status: "needs_key", authMethod: "oauth", supportsOAuth: true },
   { id: "anthropic", name: "Anthropic (Claude)", category: "native", status: "needs_key", authMethod: "api_key", supportsOAuth: true },
   { id: "openai", name: "OpenAI", category: "native", status: "needs_key", authMethod: "api_key", supportsOAuth: true },
   { id: "gemini", name: "Google Gemini", category: "native", status: "needs_key", authMethod: "api_key", supportsOAuth: true },
@@ -710,6 +1104,105 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     args: string[] = [],
     sessionId?: string,
   ): Promise<Record<string, unknown>> => (await execRuntimeCmd(command, args, sessionId)).data;
+
+  const clientSupportsFileChanges = (client: RayucodeClient): boolean => {
+    if (typeof client.supports === "function") {
+      return client.supports("file_changes");
+    }
+    return deps.bridgeManager.getStatus().capabilities.includes("file_changes");
+  };
+
+  const resolveTrackedSessionPath = (
+    sessionId: string,
+    rawPath: string,
+  ): string => {
+    const cached = deps.sessionHub.getFileChangesSnapshot?.(sessionId);
+    const matched = cached?.files.find(
+      (f) => f.path === rawPath || f.displayPath === rawPath,
+    );
+    return matched?.path ?? rawPath;
+  };
+
+  const resolveEngineSnapshot = async (
+    sessionId: string,
+  ): Promise<FileChangesSnapshotView | null> => {
+    if (typeof deps.sessionHub.fetchFileChanges === "function") {
+      return deps.sessionHub.fetchFileChanges(sessionId);
+    }
+    try {
+      const client = await deps.sessionHub.getClient();
+      if (
+        clientSupportsFileChanges(client) &&
+        typeof client.getFileChanges === "function"
+      ) {
+        const raw = await client.getFileChanges(sessionId);
+        return mapRawFileChangesSnapshot(raw, sessionId);
+      }
+    } catch {
+      // Fall back to cached snapshot or GitChangesBridge
+    }
+    return deps.sessionHub.getFileChangesSnapshot?.(sessionId) ?? null;
+  };
+
+  const tryEngineFileChangeDiff = async (
+    sessionId: string,
+    rawPath: string,
+  ): Promise<FileDiffView | null> => {
+    const targetPath = resolveTrackedSessionPath(sessionId, rawPath);
+    if (typeof deps.sessionHub.getFileChangeDiff === "function") {
+      try {
+        return await deps.sessionHub.getFileChangeDiff(sessionId, targetPath);
+      } catch {
+        return null;
+      }
+    }
+    try {
+      const client = await deps.sessionHub.getClient();
+      if (
+        clientSupportsFileChanges(client) &&
+        typeof client.getFileChangeDiff === "function"
+      ) {
+        const raw = await client.getFileChangeDiff(sessionId, targetPath);
+        return mapRawFileChangeDiff(raw, rawPath);
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const tryEngineFileChangeAction = async (
+    sessionId: string,
+    action: FileChangeActionKind,
+    opts?: { path?: string; force?: boolean },
+  ): Promise<FileChangeActionResultView | null> => {
+    const targetPath =
+      opts?.path !== undefined
+        ? resolveTrackedSessionPath(sessionId, opts.path)
+        : undefined;
+    if (typeof deps.sessionHub.runFileChangeAction === "function") {
+      return deps.sessionHub.runFileChangeAction(sessionId, action, {
+        ...(targetPath !== undefined ? { path: targetPath } : {}),
+        ...(opts?.force !== undefined ? { force: opts.force } : {}),
+      });
+    }
+    const client = await deps.sessionHub.getClient();
+    if (
+      !clientSupportsFileChanges(client) ||
+      typeof client.fileChangeAction !== "function"
+    ) {
+      return null;
+    }
+    const raw = await client.fileChangeAction(sessionId, action, {
+      ...(targetPath !== undefined ? { path: targetPath } : {}),
+      ...(opts?.force !== undefined ? { force: opts.force } : {}),
+    });
+    const mapped = mapRawFileChangeActionResponse(raw, sessionId);
+    if (mapped.snapshot) {
+      deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
+    }
+    return mapped;
+  };
 
   /**
    * Mutation runtime command helper that propagates daemon errors cleanly instead of faking `{ ok: true }`.
@@ -2430,29 +2923,331 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     // 8. Changes & PR Guardrail
     // -------------------------------------------------------------------------
-    "changes.status": async (params) =>
-      deps.gitBridge.getStatus({
-        sessionId: params?.sessionId ?? deps.sessionHub.getActiveSessionId(),
+    "changes.status": async (params) => {
+      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      const gitStatus = await deps.gitBridge.getStatus({
+        sessionId,
         scope: params?.scope,
-      }),
-    "changes.diff": async (params) =>
-      deps.gitBridge.getDiff({
-        path: params.path,
-        sessionId: params.sessionId ?? deps.sessionHub.getActiveSessionId(),
-        scope: params.scope,
-      }),
+      });
+
+      if (!sessionId) {
+        return gitStatus;
+      }
+
+      const snapshot = await resolveEngineSnapshot(sessionId);
+      if (!snapshot || snapshot.files.length === 0) {
+        return gitStatus;
+      }
+
+      const gitByPath = new Map<string, ChangedFileView>();
+      for (const gf of gitStatus.files) {
+        gitByPath.set(gf.path, gf);
+      }
+
+      const toChangedStatus = (kind: FileChangeKind): ChangedFileStatus => {
+        if (kind === "created") return "added";
+        if (kind === "deleted") return "deleted";
+        if (kind === "renamed") return "renamed";
+        return "modified";
+      };
+
+      const toReviewDecision = (status: FileChangeStatus): FileReviewDecision => {
+        if (status === "kept") return "accepted";
+        if (status === "undone") return "rejected";
+        return "pending";
+      };
+
+      if (params?.scope === "session") {
+        const files: ChangedFileView[] = snapshot.files.map((entry) => {
+          const matchedGit =
+            gitByPath.get(entry.displayPath) ?? gitByPath.get(entry.path);
+          return {
+            path: entry.displayPath,
+            status: toChangedStatus(entry.kind),
+            staged: matchedGit?.staged ?? false,
+            additions: entry.additions,
+            deletions: entry.deletions,
+            ownerBadge: matchedGit?.ownerBadge ?? "agent",
+            decision: toReviewDecision(entry.status),
+            fromSession: true,
+            ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+          };
+        });
+        return {
+          ...gitStatus,
+          files,
+          totalAdditions: files.reduce((acc, f) => acc + f.additions, 0),
+          totalDeletions: files.reduce((acc, f) => acc + f.deletions, 0),
+          stagedCount: files.filter((f) => f.staged).length,
+        };
+      }
+
+      const seen = new Set<string>();
+      const mergedFiles = gitStatus.files.map((gf) => {
+        const matched = snapshot.files.find(
+          (entry) => entry.displayPath === gf.path || entry.path === gf.path,
+        );
+        if (!matched) return gf;
+        seen.add(matched.path);
+        return {
+          ...gf,
+          fromSession: true,
+          decision: toReviewDecision(matched.status),
+        };
+      });
+
+      for (const entry of snapshot.files) {
+        if (seen.has(entry.path)) continue;
+        mergedFiles.push({
+          path: entry.displayPath,
+          status: toChangedStatus(entry.kind),
+          staged: false,
+          additions: entry.additions,
+          deletions: entry.deletions,
+          ownerBadge: "agent",
+          decision: toReviewDecision(entry.status),
+          fromSession: true,
+          ...(entry.oldPath ? { oldPath: entry.oldPath } : {}),
+        });
+      }
+
+      return {
+        ...gitStatus,
+        files: mergedFiles,
+        totalAdditions: mergedFiles.reduce((acc, f) => acc + f.additions, 0),
+        totalDeletions: mergedFiles.reduce((acc, f) => acc + f.deletions, 0),
+        stagedCount: mergedFiles.filter((f) => f.staged).length,
+      };
+    },
+    "changes.getSessionSummary": async (params) => {
+      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (!sessionId) {
+        return emptyFileChangesSnapshot("");
+      }
+
+      const engineSnapshot = await resolveEngineSnapshot(sessionId);
+      if (engineSnapshot) {
+        return engineSnapshot;
+      }
+
+      const fallbackStatus = await deps.gitBridge
+        .getStatus({ sessionId, scope: "session" })
+        .catch(() => null);
+      if (!fallbackStatus) {
+        return emptyFileChangesSnapshot(sessionId);
+      }
+
+      const sessionFiles = fallbackStatus.files.filter((f) => f.fromSession);
+      const mappedFiles: FileChangeEntryView[] = sessionFiles.map((f) => ({
+        path: f.path,
+        displayPath: f.path,
+        ...(f.oldPath ? { oldPath: f.oldPath } : {}),
+        kind:
+          f.status === "added" || f.status === "untracked"
+            ? "created"
+            : f.status === "deleted"
+              ? "deleted"
+              : f.status === "renamed"
+                ? "renamed"
+                : "modified",
+        status:
+          f.decision === "accepted"
+            ? "kept"
+            : f.decision === "rejected"
+              ? "undone"
+              : "pending",
+        additions: f.additions,
+        deletions: f.deletions,
+        changedInLatestTurn: true,
+        turnId: 1,
+        editCount: 1,
+        isBinary: false,
+        undoable: true,
+        canRedo: false,
+        previewHunks: [],
+        previewTruncated: false,
+        updatedAtMs: Date.now(),
+      }));
+
+      return {
+        sessionId,
+        latestTurnId: mappedFiles.length > 0 ? 1 : 0,
+        totalPendingFiles: mappedFiles.filter((f) => f.status === "pending").length,
+        totalAdditions: mappedFiles.reduce((acc, f) => acc + f.additions, 0),
+        totalDeletions: mappedFiles.reduce((acc, f) => acc + f.deletions, 0),
+        files: mappedFiles,
+      };
+    },
+    "changes.diff": async (params) => {
+      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (params.scope === "session" && sessionId) {
+        const engineDiff = await tryEngineFileChangeDiff(sessionId, params.path);
+        if (engineDiff) {
+          return engineDiff;
+        }
+      }
+      try {
+        const gitDiff = await deps.gitBridge.getDiff({
+          path: params.path,
+          sessionId,
+          scope: params.scope,
+        });
+        if (
+          sessionId &&
+          !gitDiff.unifiedDiff.trim() &&
+          !gitDiff.originalContent &&
+          !gitDiff.modifiedContent
+        ) {
+          const engineDiff = await tryEngineFileChangeDiff(sessionId, params.path);
+          if (engineDiff) {
+            return engineDiff;
+          }
+        }
+        return gitDiff;
+      } catch (err) {
+        if (sessionId) {
+          const engineDiff = await tryEngineFileChangeDiff(sessionId, params.path);
+          if (engineDiff) {
+            return engineDiff;
+          }
+        }
+        throw err;
+      }
+    },
     "changes.stage": async (params) => deps.gitBridge.stage(params.paths),
     "changes.unstage": async (params) => deps.gitBridge.unstage(params.paths),
-    "changes.keep": async (params) =>
-      deps.gitBridge.keep({
+    "changes.keep": async (params) => {
+      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(sessionId, "keep", {
+          path: params.path,
+        });
+        if (engineRes) return engineRes;
+      }
+      return deps.gitBridge.keep({
         path: params.path,
-        sessionId: params.sessionId ?? deps.sessionHub.getActiveSessionId(),
-      }),
-    "changes.undo": async (params) =>
-      deps.gitBridge.undo({
+        sessionId,
+      });
+    },
+    "changes.undo": async (params) => {
+      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(sessionId, "undo", {
+          path: params.path,
+          force: params.force,
+        });
+        if (engineRes) return engineRes;
+      }
+      const res = await deps.gitBridge.undo({
         path: params.path,
-        sessionId: params.sessionId ?? deps.sessionHub.getActiveSessionId(),
-      }),
+        sessionId,
+      });
+      return {
+        ...res,
+        ...(res.conflict
+          ? {
+              conflicts: [
+                {
+                  path: params.path,
+                  displayPath: params.path,
+                  reason:
+                    res.message ??
+                    "File changed on disk since the session snapshot.",
+                },
+              ],
+            }
+          : {}),
+      };
+    },
+    "changes.redo": async (params) => {
+      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(sessionId, "redo", {
+          path: params.path,
+          force: params.force,
+        });
+        if (engineRes) return engineRes;
+      }
+      return {
+        ok: false,
+        message: "Redo requires a RayuCode bridge supporting file_changes.",
+      };
+    },
+    "changes.keepAll": async (params) => {
+      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(
+          sessionId,
+          "keep_all",
+        );
+        if (engineRes) return engineRes;
+      }
+      const status = await deps.gitBridge.getStatus({
+        sessionId,
+        scope: "session",
+      });
+      const targets = status.files.filter((f) => f.fromSession);
+      for (const file of targets) {
+        deps.gitBridge.keep({ path: file.path, sessionId });
+      }
+      return {
+        ok: true,
+        message: `Kept ${targets.length} file(s).`,
+        conflicts: [],
+      };
+    },
+    "changes.undoAll": async (params) => {
+      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(
+          sessionId,
+          "undo_all",
+          { force: params?.force },
+        );
+        if (engineRes) return engineRes;
+      }
+      const status = await deps.gitBridge.getStatus({
+        sessionId,
+        scope: "session",
+      });
+      const targets = status.files.filter((f) => f.fromSession);
+      const conflicts: FileChangeConflictView[] = [];
+      for (const file of targets) {
+        const res = await deps.gitBridge.undo({ path: file.path, sessionId });
+        if (!res.ok || res.conflict) {
+          conflicts.push({
+            path: file.path,
+            displayPath: file.path,
+            reason:
+              res.message ?? "File changed on disk since the session snapshot.",
+          });
+        }
+      }
+      return {
+        ok: conflicts.length === 0,
+        conflict: conflicts.length > 0,
+        conflicts,
+        message:
+          conflicts.length > 0
+            ? `${conflicts.length} file(s) had conflicts during undo.`
+            : `Reverted ${targets.length} file(s).`,
+      };
+    },
+    "changes.redoAll": async (params) => {
+      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (sessionId) {
+        const engineRes = await tryEngineFileChangeAction(
+          sessionId,
+          "redo_all",
+          { force: params?.force },
+        );
+        if (engineRes) return engineRes;
+      }
+      return {
+        ok: false,
+        message: "Redo all requires a RayuCode bridge supporting file_changes.",
+      };
+    },
     "changes.commit": async (params) => deps.gitBridge.commit(params.message),
     "changes.createPr": async (params) => deps.gitBridge.createPr(params),
 
@@ -2683,11 +3478,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 10. Settings
     // -------------------------------------------------------------------------
     "settings.account.get": async (): Promise<AccountStatusView> => {
+      if (deps.authManager) {
+        return deps.authManager.getAccountStatus(false);
+      }
+
       const data = await safeRuntimeCmd("subscription", ["status"]);
       const credits = asRecord(data.credits);
+      const user = asRecord(data.user);
       const signedIn = Boolean(
         data.configured ?? data.signed_in ?? data.signedIn ?? false,
       );
+      const planCode =
+        typeof credits.plan === "string" ? credits.plan : undefined;
       const planName =
         typeof credits.plan_name === "string"
           ? credits.plan_name
@@ -2695,9 +3497,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? credits.plan
             : typeof data.plan_name === "string"
               ? data.plan_name
-              : signedIn
-                ? "Rayu Pro"
-                : "Free";
+              : undefined;
       const creditsPerPeriod =
         typeof credits.credits_per_period === "number"
           ? credits.credits_per_period
@@ -2730,6 +3530,62 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         typeof credits.period_end === "string" ? credits.period_end : undefined;
 
       const windows: AccountStatusView["windows"] = [];
+      const creditsPer5h =
+        typeof credits.credits_per_5h === "number"
+          ? credits.credits_per_5h
+          : undefined;
+      const windowUsed =
+        typeof credits.window_used_credits === "number"
+          ? credits.window_used_credits
+          : 0;
+      const windowResetSecs =
+        typeof credits.window_reset_seconds === "number"
+          ? credits.window_reset_seconds
+          : undefined;
+      if (creditsPer5h !== undefined && creditsPer5h > 0) {
+        const usedPct = Math.min(
+          100,
+          Math.max(0, Math.round((windowUsed / creditsPer5h) * 100)),
+        );
+        windows.push({
+          label: "5h session window",
+          remainingPercent: Math.max(0, 100 - usedPct),
+          usedPercent: usedPct,
+          resetCountdown:
+            windowResetSecs !== undefined && windowResetSecs > 0
+              ? formatCountdown(windowResetSecs)
+              : undefined,
+        });
+      }
+
+      const creditsPerWeek =
+        typeof credits.credits_per_week === "number"
+          ? credits.credits_per_week
+          : undefined;
+      const weekUsed =
+        typeof credits.week_used_credits === "number"
+          ? credits.week_used_credits
+          : 0;
+      const weekResetSecs =
+        typeof credits.week_reset_seconds === "number"
+          ? credits.week_reset_seconds
+          : undefined;
+      if (creditsPerWeek !== undefined && creditsPerWeek > 0) {
+        const usedPct = Math.min(
+          100,
+          Math.max(0, Math.round((weekUsed / creditsPerWeek) * 100)),
+        );
+        windows.push({
+          label: "Weekly limit",
+          remainingPercent: Math.max(0, 100 - usedPct),
+          usedPercent: usedPct,
+          resetCountdown:
+            weekResetSecs !== undefined && weekResetSecs > 0
+              ? formatCountdown(weekResetSecs)
+              : undefined,
+        });
+      }
+
       if (creditsPerPeriod !== undefined && creditsPerPeriod > 0) {
         const usedPct = Math.min(
           100,
@@ -2749,12 +3605,39 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         });
       }
 
-      const lowerPlan = planName.toLowerCase();
+      const rawAuthMethod =
+        typeof data.auth_method === "string" ? data.auth_method : undefined;
+      const authMethod: AccountStatusView["authMethod"] =
+        rawAuthMethod === "oauth"
+          ? "oauth"
+          : rawAuthMethod === "api_key" || rawAuthMethod === "apiKey"
+            ? "apiKey"
+            : signedIn
+              ? "oauth"
+              : "none";
+
       return {
         signedIn,
+        authMethod,
+        signingIn: false,
+        pendingAuthUrl: null,
+        pendingMode: null,
+        webBase: getRayuWebBase(),
+        error: null,
         displayName:
-          typeof data.display_name === "string" ? data.display_name : undefined,
-        email: typeof data.email === "string" ? data.email : undefined,
+          typeof user.display_name === "string"
+            ? user.display_name
+            : typeof data.display_name === "string"
+              ? data.display_name
+              : undefined,
+        email:
+          typeof user.email === "string"
+            ? user.email
+            : typeof data.email === "string"
+              ? data.email
+              : undefined,
+        avatarUrl:
+          typeof user.avatar_url === "string" ? user.avatar_url : undefined,
         planName,
         creditsRemaining,
         creditsPerPeriod,
@@ -2768,37 +3651,29 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           false,
         ),
         windows,
-        planLadder: [
-          {
-            id: "free",
-            name: "Free",
-            priceLabel: "$0",
-            current: !signedIn || lowerPlan.includes("free"),
-            highlights: ["BYOK & Local models"],
-          },
-          {
-            id: "pro",
-            name: "Pro",
-            priceLabel: "$20/mo",
-            current:
-              signedIn &&
-              (lowerPlan.includes("pro") || lowerPlan.includes("plus")),
-            highlights: ["Rayu Gateway + Fast tier"],
-          },
-          {
-            id: "max",
-            name: "Max",
-            priceLabel: "$100/mo",
-            current: signedIn && lowerPlan.includes("max"),
-            highlights: ["5x Swarm & Overnight quota"],
-          },
-        ],
+        planLadder: buildRayuPlanLadder(signedIn, planCode, planName),
       };
     },
-    "settings.account.refresh": async () =>
-      handlers["settings.account.get"](undefined),
-    "settings.account.signInBrowser": async () => {
-      const authUrl = "https://rayucode.com/auth/vscode";
+    "settings.account.refresh": async () => {
+      if (deps.authManager) {
+        return deps.authManager.getAccountStatus(true);
+      }
+      return handlers["settings.account.get"](undefined);
+    },
+    "settings.account.signInBrowser": async (params) => {
+      if (deps.authManager) {
+        const res = await deps.authManager.startBrowserSignIn(
+          params?.mode ?? "vscode",
+        );
+        await deps.editorBridge.openExternal(res.authUrl);
+        return {
+          ok: res.ok,
+          authUrl: res.authUrl,
+          state: res.state,
+        };
+      }
+      const fallbackState = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+      const authUrl = buildVscodeLoginUrl(getRayuWebBase(), fallbackState);
       await deps.editorBridge.openExternal(authUrl);
       const state = await handlers["settings.account.get"](undefined);
       return {
@@ -2807,18 +3682,42 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         state,
       };
     },
-    "settings.account.signInApiKey": async (params) => {
-      const client = await deps.sessionHub.getClient();
-      await client.setApiKey("rayu", params.apiKey);
+    "settings.account.cancelSignIn": async () => {
+      if (deps.authManager) {
+        return deps.authManager.cancelSignIn();
+      }
       return handlers["settings.account.get"](undefined);
     },
-    "settings.account.completeCallback": async () =>
-      handlers["settings.account.get"](undefined),
+    "settings.account.signInApiKey": async (params) => {
+      if (deps.authManager) {
+        return deps.authManager.signInWithApiKey(params.apiKey);
+      }
+      const client = await deps.sessionHub.getClient();
+      await client.setApiKey("rayu", params.apiKey);
+      await deps.sessionHub.notifyDaemonAuthChanged?.("rayu").catch(() => {});
+      return handlers["settings.account.get"](undefined);
+    },
+    "settings.account.completeCallback": async (params) => {
+      if (deps.authManager) {
+        return deps.authManager.completeManualCallback(params.callbackUrl);
+      }
+      throw new HarnessError(
+        "internal",
+        "Host authentication manager is not configured for callback redemption.",
+      );
+    },
     "settings.account.signOut": async () => {
+      if (deps.authManager) {
+        return deps.authManager.signOut();
+      }
       await requireRuntimeCmd("logout", ["rayu", "confirm"]);
+      await deps.sessionHub.notifyDaemonAuthChanged?.("rayu").catch(() => {});
       return handlers["settings.account.get"](undefined);
     },
     "settings.account.setBypassPacing": async (params) => {
+      if (deps.authManager) {
+        return deps.authManager.setBypassPacing(params.enabled);
+      }
       await deps.updateGlobalState("rayucode.account.bypassPacing", params.enabled);
       return { ok: true, enabled: params.enabled };
     },
@@ -2836,12 +3735,14 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       if (Array.isArray(data.providers)) {
         for (const item of data.providers) {
           const rec = asRecord(item);
-          const id = typeof rec.id === "string" ? rec.id.toLowerCase() : "";
-          if (id) remoteById.set(id, rec);
+          const rawId = typeof rec.id === "string" ? rec.id.trim() : "";
+          if (!rawId) continue;
+          const uiId = normalizeUiProviderId(rawId);
+          remoteById.set(uiId, rec);
         }
       } else {
         for (const [k, v] of Object.entries(asRecord(data.providers))) {
-          remoteById.set(k.toLowerCase(), asRecord(v));
+          remoteById.set(normalizeUiProviderId(k), asRecord(v));
         }
       }
 
@@ -2886,12 +3787,29 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         return fallback;
       };
 
+      const hostAccount = deps.authManager?.getAccountStatusSnapshot();
       const seen = new Set<string>();
       const providers: ProviderEntryView[] = DEFAULT_PROVIDERS.map((p) => {
-        seen.add(p.id.toLowerCase());
-        const remote =
-          remoteById.get(p.id.toLowerCase()) ??
-          (p.id === "anthropic" ? remoteById.get("claude") : undefined);
+        const uiId = normalizeUiProviderId(p.id);
+        seen.add(uiId);
+
+        if (uiId === "rayu" && hostAccount) {
+          return {
+            ...p,
+            status: hostAccount.signedIn ? "ready" : "needs_key",
+            authMethod:
+              hostAccount.authMethod === "apiKey" ? "api_key" : "oauth",
+            accountLabel: hostAccount.signedIn
+              ? hostAccount.email ??
+                hostAccount.displayName ??
+                (hostAccount.authMethod === "apiKey"
+                  ? "Rayu API Key"
+                  : "Signed in")
+              : undefined,
+          };
+        }
+
+        const remote = remoteById.get(uiId);
         if (!remote) return p;
         return {
           ...p,
@@ -2912,7 +3830,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       });
 
       for (const [id, remote] of remoteById.entries()) {
-        if (seen.has(id) || (id === "claude" && seen.has("anthropic"))) continue;
+        if (seen.has(id)) continue;
         providers.push({
           id,
           name:
@@ -2932,21 +3850,49 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { providers };
     },
     "settings.providers.setApiKey": async (params) => {
+      const normalized = normalizeCredentialProviderId(params.providerId);
+      if (normalized === "rayu" && deps.authManager) {
+        await deps.authManager.signInWithApiKey(params.apiKey);
+        return { ok: true };
+      }
       // Transmit straight to Rust daemon — never write secrets to VS Code storage
       const client = await deps.sessionHub.getClient();
-      await client.setApiKey(params.providerId, params.apiKey);
+      await client.setApiKey(normalized, params.apiKey);
+      if (deps.sessionHub.notifyDaemonAuthChanged) {
+        await deps.sessionHub.notifyDaemonAuthChanged(normalized).catch(() => {});
+      } else {
+        await client.notifyAuthChanged?.(normalized).catch(() => {});
+      }
       return { ok: true };
     },
     "settings.providers.clearApiKey": async (params) => {
+      const normalized = normalizeCredentialProviderId(params.providerId);
+      if (normalized === "rayu" && deps.authManager) {
+        await deps.authManager.clearSavedApiKeyOnly();
+        return { ok: true };
+      }
       const client = await deps.sessionHub.getClient();
-      await client.clearApiKey(params.providerId);
+      await client.clearApiKey(normalized);
+      if (deps.sessionHub.notifyDaemonAuthChanged) {
+        await deps.sessionHub.notifyDaemonAuthChanged(normalized).catch(() => {});
+      } else {
+        await client.notifyAuthChanged?.(normalized).catch(() => {});
+      }
       return { ok: true };
     },
     "settings.providers.logout": async (params) => {
+      const normalized = normalizeLogoutProviderId(params.providerId);
+      if (normalized === "rayu" && deps.authManager) {
+        await deps.authManager.signOut();
+        return { ok: true, message: "Signed out of Rayu." };
+      }
       const { message } = await requireRuntimeCmd("logout", [
-        params.providerId,
+        normalized,
         "confirm",
       ]);
+      await deps.sessionHub
+        .notifyDaemonAuthChanged?.(normalizeCredentialProviderId(normalized))
+        .catch(() => {});
       return { ok: true, message: message || undefined };
     },
     "settings.doctor.run": async (params) => {

@@ -22,6 +22,7 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Send,
   SquareSplitHorizontal,
@@ -47,12 +48,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { changesQueryKeys } from "@/features/changes"
 import { useAppStore } from "@/lib/app-store"
 import { tokenizeCodeLine } from "@/lib/file-icon-theme"
-import { ipcClient, type ChangedFileDiff } from "@/lib/ipc-client"
+import {
+  ipcClient,
+  type ChangedFileDiff,
+  type FileChangeActionKind,
+  type FileChangeDiffPayload,
+  type FileChangeEntrySummary,
+  type FileChangeHunk,
+  type InlineDiffHunkLine,
+} from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
-import { openFileInVSCode } from "../api/inspector-api"
+import { inspectorKeys, openFileInVSCode } from "../api/inspector-api"
 import {
   useDiffDecisionMutation,
   useInspectorChanges,
@@ -143,6 +153,92 @@ function resolveCodeFileKey(path: string): string {
   return path
 }
 
+function normalizeDiffPath(raw: string): string {
+  return raw.replace(/\\/g, "/").replace(/^\.\//, "")
+}
+
+function pathsMatch(a: string, b: string): boolean {
+  const na = normalizeDiffPath(a)
+  const nb = normalizeDiffPath(b)
+  if (!na || !nb) return false
+  return na === nb || na.endsWith(`/${nb}`) || nb.endsWith(`/${na}`)
+}
+
+function fileChangeHunksToDiffLines(
+  hunks: FileChangeHunk[]
+): InlineDiffHunkLine[] {
+  const result: InlineDiffHunkLine[] = []
+  for (const hunk of hunks) {
+    result.push({
+      lineNumber: null,
+      type: "hunk",
+      mark: "@@",
+      content: hunk.header,
+    })
+    let oldLine = Math.max(1, hunk.old_start || 1)
+    let newLine = Math.max(1, hunk.new_start || 1)
+    for (const raw of hunk.lines) {
+      if (raw.startsWith("+")) {
+        result.push({
+          lineNumber: newLine,
+          type: "add",
+          mark: "+",
+          content: raw.slice(1),
+        })
+        newLine += 1
+      } else if (raw.startsWith("-")) {
+        result.push({
+          lineNumber: oldLine,
+          type: "del",
+          mark: "−",
+          content: raw.slice(1),
+        })
+        oldLine += 1
+      } else {
+        result.push({
+          lineNumber: newLine,
+          type: "ctx",
+          mark: "",
+          content: raw.startsWith(" ") ? raw.slice(1) : raw,
+        })
+        oldLine += 1
+        newLine += 1
+      }
+    }
+  }
+  return result
+}
+
+function mapSessionEntryToChangedFile(
+  entry: FileChangeEntrySummary,
+  fullDiff?: FileChangeDiffPayload | null
+): ChangedFileDiff {
+  const hunks =
+    fullDiff && fullDiff.hunks.length > 0
+      ? fullDiff.hunks
+      : (entry.preview_hunks ?? [])
+  return {
+    id: `session:${entry.path}`,
+    path: entry.display_path || entry.path,
+    additions: entry.additions,
+    deletions: entry.deletions,
+    deleted: entry.kind === "deleted",
+    ownerBadge:
+      entry.kind === "created"
+        ? "new"
+        : entry.kind === "deleted"
+          ? "deleted"
+          : entry.kind === "renamed"
+            ? "moved"
+            : "session",
+    hint: `${entry.edit_count} ${entry.edit_count === 1 ? "edit" : "edits"} in session`,
+    accepted: entry.status === "kept",
+    rejected: entry.status === "undone",
+    staged: false,
+    lines: fileChangeHunksToDiffLines(hunks),
+  }
+}
+
 function FileStatusBox({
   file,
   onToggleStage,
@@ -218,14 +314,29 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
   const openDocPreview = useAppStore((s) => s.openDocPreview)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const selectedDiffFilePath = useAppStore((s) => s.selectedDiffFilePath)
+  const sessionFileChanges = useAppStore((s) =>
+    s.activeSessionId ? s.sessionFileChangesBySession[s.activeSessionId] : undefined
+  )
+  const setSessionFileChanges = useAppStore((s) => s.setSessionFileChanges)
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
   const fullView = useAppStore((s) => s.fullView)
   const setFullView = useAppStore((s) => s.setFullView)
   const toggleRightSidebar = useAppStore((s) => s.toggleRightSidebar)
 
-  const [selectedFileId, setSelectedFileId] = React.useState<string | null>(
-    null
+  const [manualSelection, setManualSelection] = React.useState<{
+    forStoreTarget: string | null
+    fileId: string | null
+  }>({ forStoreTarget: null, fileId: null })
+  const setSelectedFileId = React.useCallback(
+    (fileId: string | null) => {
+      setManualSelection({ forStoreTarget: selectedDiffFilePath, fileId })
+    },
+    [selectedDiffFilePath]
   )
+  const [sessionActionBusyPath, setSessionActionBusyPath] = React.useState<
+    string | null
+  >(null)
   const [scope, setScope] = React.useState<"branch" | "uncommitted" | "staged">(
     "branch"
   )
@@ -260,20 +371,214 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
   const [isCommitting, setIsCommitting] = React.useState(false)
   const [commitsOpen, setCommitsOpen] = React.useState(false)
 
+  const findSessionEntry = React.useCallback(
+    (filePath: string): FileChangeEntrySummary | undefined => {
+      if (!sessionFileChanges?.files.length) return undefined
+      return sessionFileChanges.files.find(
+        (entry) =>
+          pathsMatch(entry.path, filePath) ||
+          pathsMatch(entry.display_path, filePath)
+      )
+    },
+    [sessionFileChanges]
+  )
+
+  const mergedFiles = React.useMemo<ChangedFileDiff[]>(() => {
+    const gitFiles = changes?.files ?? []
+    const sessionEntries = sessionFileChanges?.files ?? []
+    if (sessionEntries.length === 0) return gitFiles
+
+    const combined: ChangedFileDiff[] = gitFiles.map((file) => {
+      const matched = sessionEntries.find(
+        (entry) =>
+          pathsMatch(entry.path, file.path) ||
+          pathsMatch(entry.display_path, file.path)
+      )
+      if (!matched) return file
+      return {
+        ...file,
+        accepted: matched.status === "kept",
+        rejected: matched.status === "undone",
+      }
+    })
+
+    for (const entry of sessionEntries) {
+      const alreadyPresent = combined.some(
+        (file) =>
+          pathsMatch(entry.path, file.path) ||
+          pathsMatch(entry.display_path, file.path)
+      )
+      if (!alreadyPresent) {
+        combined.push(mapSessionEntryToChangedFile(entry))
+      }
+    }
+
+    return combined
+  }, [changes?.files, sessionFileChanges?.files])
+
+  const storeMatchedFileId = React.useMemo(() => {
+    if (!selectedDiffFilePath || mergedFiles.length === 0) return null
+    const matched = mergedFiles.find((file) => {
+      if (pathsMatch(file.path, selectedDiffFilePath)) return true
+      const entry = findSessionEntry(file.path)
+      return Boolean(
+        entry &&
+          (pathsMatch(entry.path, selectedDiffFilePath) ||
+            pathsMatch(entry.display_path, selectedDiffFilePath))
+      )
+    })
+    return matched?.id ?? null
+  }, [findSessionEntry, mergedFiles, selectedDiffFilePath])
+
+  const selectedFileId =
+    manualSelection.forStoreTarget === selectedDiffFilePath &&
+    manualSelection.fileId !== null
+      ? manualSelection.fileId
+      : storeMatchedFileId
+
   const filteredFiles = React.useMemo(() => {
-    const list = changes?.files ?? []
-    return list.filter((file) => {
+    return mergedFiles.filter((file) => {
+      if (file.id === selectedFileId && selectedFileId === storeMatchedFileId) {
+        return true
+      }
       if (scope === "staged" && !file.staged && !file.accepted) return false
       if (scope === "uncommitted" && file.staged) return false
       const q = fileFilter.trim().toLowerCase()
       if (!q) return true
       return file.path.toLowerCase().includes(q)
     })
-  }, [changes?.files, fileFilter, scope])
+  }, [fileFilter, mergedFiles, scope, selectedFileId, storeMatchedFileId])
 
   const diffTree = React.useMemo(
     () => buildDiffTree(filteredFiles),
     [filteredFiles]
+  )
+
+  const activeFileIndex = Math.max(
+    0,
+    filteredFiles.findIndex((f) => f.id === selectedFileId)
+  )
+  const rawActiveFile = filteredFiles[activeFileIndex] ?? filteredFiles[0] ?? null
+  const activeSessionEntry = rawActiveFile
+    ? findSessionEntry(rawActiveFile.path)
+    : undefined
+
+  const fullSessionDiffQuery = useQuery({
+    queryKey: [
+      "inspector",
+      "file-change-diff",
+      activeSessionId ?? "",
+      activeSessionEntry?.path ?? "",
+      activeSessionEntry?.updated_at_ms ?? 0,
+    ],
+    queryFn: () =>
+      activeSessionId && activeSessionEntry
+        ? ipcClient.fileChanges.diff(activeSessionId, activeSessionEntry.path)
+        : Promise.resolve(null),
+    enabled: Boolean(activeSessionId && activeSessionEntry),
+    staleTime: 10_000,
+  })
+
+  const activeFile = React.useMemo<ChangedFileDiff | null>(() => {
+    if (!rawActiveFile) return null
+    if (activeSessionEntry && fullSessionDiffQuery.data) {
+      if (fullSessionDiffQuery.data.hunks.length > 0) {
+        return {
+          ...rawActiveFile,
+          lines: fileChangeHunksToDiffLines(fullSessionDiffQuery.data.hunks),
+        }
+      }
+      if (
+        rawActiveFile.lines.length === 0 &&
+        fullSessionDiffQuery.data.unified_diff.trim().length > 0
+      ) {
+        return {
+          ...rawActiveFile,
+          lines: [
+            {
+              lineNumber: null,
+              type: "hunk",
+              mark: "@@",
+              content: fullSessionDiffQuery.data.unified_diff.trim(),
+            },
+          ],
+        }
+      }
+    }
+    return rawActiveFile
+  }, [activeSessionEntry, fullSessionDiffQuery.data, rawActiveFile])
+
+  const handleSessionFileAction = React.useCallback(
+    async (
+      entry: FileChangeEntrySummary,
+      action: FileChangeActionKind,
+      force = false
+    ) => {
+      const execute = async (forceFlag: boolean) => {
+        if (!activeSessionId) return
+        setSessionActionBusyPath(entry.path)
+        try {
+          const res = await ipcClient.fileChanges.action(
+            activeSessionId,
+            action,
+            {
+              path: entry.path,
+              ...(forceFlag ? { force: true } : {}),
+            }
+          )
+          if (res.snapshot) {
+            setSessionFileChanges(
+              res.snapshot.session_id || activeSessionId,
+              res.snapshot
+            )
+          }
+          await Promise.all([
+            queryClient.invalidateQueries({
+              queryKey: changesQueryKeys.state(),
+            }),
+            queryClient.invalidateQueries({
+              queryKey: inspectorKeys.changes(),
+            }),
+          ])
+          if (res.conflicts.length > 0) {
+            const reason =
+              res.conflicts[0]?.reason ||
+              res.message ||
+              `Conflict while updating ${entry.display_path}`
+            if (!forceFlag && (action === "undo" || action === "redo")) {
+              toast.error(reason, {
+                action: {
+                  label: action === "undo" ? "Force Undo" : "Force Redo",
+                  onClick: () => {
+                    void execute(true)
+                  },
+                },
+              })
+            } else {
+              toast.error(reason)
+            }
+            return
+          }
+          if (!res.ok) {
+            toast.error(res.message || `Failed to update ${entry.display_path}`)
+            return
+          }
+          if (res.message) {
+            toast(res.message)
+          }
+        } catch (err) {
+          toast.error(
+            err instanceof Error
+              ? err.message
+              : `Failed to update ${entry.display_path}`
+          )
+        } finally {
+          setSessionActionBusyPath(null)
+        }
+      }
+      await execute(force)
+    },
+    [activeSessionId, queryClient, setSessionFileChanges]
   )
 
   if (isLoading) {
@@ -299,13 +604,8 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
     )
   }
 
-  const activeFileIndex = Math.max(
-    0,
-    filteredFiles.findIndex((f) => f.id === selectedFileId)
-  )
-  const activeFile = filteredFiles[activeFileIndex] ?? filteredFiles[0] ?? null
   const commits = commitsQuery.data ?? []
-  const stagedCount = changes.files.filter((f) => f.staged || f.accepted).length
+  const stagedCount = mergedFiles.filter((f) => f.staged || f.accepted).length
 
   const goToFileDelta = (delta: number) => {
     if (filteredFiles.length === 0) return
@@ -420,14 +720,21 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
   const renderDiffFileBlock = (file: ChangedFileDiff) => {
     const { prefix, name } = formatCompactDir(file.path)
     const isViewed = Boolean(viewedFiles[file.id])
+    const sessionEntry = findSessionEntry(file.path)
+    const isSessionBusy =
+      sessionEntry !== undefined && sessionActionBusyPath === sessionEntry.path
     const q = diffSearchQuery.trim().toLowerCase()
     const visibleLines = q
       ? file.lines.filter((l) => l.content.toLowerCase().includes(q))
       : file.lines
 
     return (
-      <div key={file.id} className="flex min-h-0 flex-1 flex-col">
-        {/* Per-file header bar: TechFileBadge, path, +add -del, viewed, note, menu */}
+      <div
+        key={file.id}
+        data-testid={`inspector-diff-file-${file.path}`}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        {/* Per-file header bar: TechFileBadge, path, +add -del, session actions, viewed, note, menu */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-hairline-soft bg-canvas px-3.5 select-none">
           <TechFileBadge path={file.path} />
           <div className="flex min-w-0 flex-1 items-baseline truncate text-[13px]">
@@ -436,7 +743,12 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                 {prefix}
               </span>
             )}
-            <span className="truncate font-medium text-ink">{name}</span>
+            <span
+              data-testid="inspector-diff-active-filename"
+              className="truncate font-medium text-ink"
+            >
+              {name}
+            </span>
           </div>
 
           <span className="shrink-0 font-mono text-[12px] font-medium tabular-nums">
@@ -447,6 +759,64 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
               -{file.deletions.toLocaleString()}
             </span>
           </span>
+
+          {sessionEntry && (
+            <div className="ml-1 flex shrink-0 items-center gap-1">
+              {sessionEntry.status === "kept" && (
+                <span className="rounded-full bg-brand-soft px-2 py-0.5 text-[10.5px] font-medium text-brand-text">
+                  Kept
+                </span>
+              )}
+              {sessionEntry.status === "undone" && (
+                <span className="rounded-full bg-warn-soft px-2 py-0.5 text-[10.5px] font-medium text-warn">
+                  Undone
+                </span>
+              )}
+              {sessionEntry.status === "pending" && (
+                <>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    disabled={isSessionBusy || !sessionEntry.undoable}
+                    data-testid="inspector-diff-undo-btn"
+                    onClick={() =>
+                      void handleSessionFileAction(sessionEntry, "undo")
+                    }
+                  >
+                    Undo
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="xs"
+                    disabled={isSessionBusy}
+                    data-testid="inspector-diff-keep-btn"
+                    onClick={() =>
+                      void handleSessionFileAction(sessionEntry, "keep")
+                    }
+                  >
+                    Keep
+                  </Button>
+                </>
+              )}
+              {sessionEntry.status === "undone" && sessionEntry.can_redo && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  disabled={isSessionBusy}
+                  data-testid="inspector-diff-redo-btn"
+                  onClick={() =>
+                    void handleSessionFileAction(sessionEntry, "redo")
+                  }
+                >
+                  <RotateCcw className="size-3" aria-hidden="true" />
+                  <span>Redo</span>
+                </Button>
+              )}
+            </div>
+          )}
 
           <div className="ml-1 flex items-center gap-0.5">
             <Tooltip>
@@ -521,6 +891,10 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
+                    if (sessionEntry) {
+                      void handleSessionFileAction(sessionEntry, "keep")
+                      return
+                    }
                     decisionMutation.mutate(
                       { fileId: file.id, decision: "accept" },
                       { onSuccess: () => toast(`Accepted diff for ${name}`) }
@@ -528,10 +902,14 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                   }}
                 >
                   <Check className="size-3.5 text-brand-text" />
-                  <span>Accept changes</span>
+                  <span>{sessionEntry ? "Keep changes" : "Accept changes"}</span>
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => {
+                    if (sessionEntry) {
+                      void handleSessionFileAction(sessionEntry, "undo")
+                      return
+                    }
                     decisionMutation.mutate(
                       { fileId: file.id, decision: "reject" },
                       { onSuccess: () => toast(`Discarded changes in ${name}`) }
@@ -539,7 +917,7 @@ export function DiffTabPanel({ className }: DiffTabPanelProps) {
                   }}
                 >
                   <X className="size-3.5 text-danger" />
-                  <span>Discard changes</span>
+                  <span>{sessionEntry ? "Undo changes" : "Discard changes"}</span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem

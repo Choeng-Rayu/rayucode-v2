@@ -322,6 +322,11 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             return Ok(());
         }
 
+        if app_mod::file_changes::handle_file_change_command(app, trimmed) {
+            super::flush_pending_remote_file_change_requests(app, remote).await;
+            return Ok(());
+        }
+
         if app_mod::commands_dispatch::handle_ssh_unsupported_command(app, trimmed) {
             return Ok(());
         }
@@ -1114,6 +1119,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             app.swarm_plan_version = None;
             app.swarm_plan_swarm_id = None;
             super::super::commands_review::clear_side_panel_for_new_session(app);
+            app.clear_file_changes_state();
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
             app.set_status_notice("Session cleared");

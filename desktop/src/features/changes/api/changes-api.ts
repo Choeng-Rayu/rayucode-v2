@@ -1,7 +1,8 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query"
 
 import { err, ok, type ActionResult } from "@/lib/action-result"
-import { ipcClient } from "@/lib/ipc-client"
+import { useAppStore } from "@/lib/app-store"
+import { ipcClient, type FileChangeActionKind } from "@/lib/ipc-client"
 
 import {
   changesStateSchema,
@@ -68,7 +69,8 @@ export function prefetchChangesState(client: QueryClient): Promise<void> {
 
 /**
  * Applies a per-file review decision (`accepted`, `rejected`, or `pending` undo)
- * via the daemon bridge when available, falling back to `acceptFile`/`rejectFile`.
+ * via the session file-change engine (`ipcClient.fileChanges.action`) when tracked
+ * by the active session, falling back to the git bridge (`acceptFile`/`rejectFile`).
  */
 export async function reviewChangedFile(
   fileId: string,
@@ -81,6 +83,82 @@ export async function reviewChangedFile(
   }
 
   try {
+    const store = useAppStore.getState()
+    const activeSessionId = store.activeSessionId
+    const sessionSnapshot = activeSessionId
+      ? store.sessionFileChangesBySession[activeSessionId]
+      : undefined
+    const targetPath =
+      currentState?.files.find((f) => f.id === fileId)?.path ?? fileId
+    const normalizedTarget = targetPath.replace(/\\/g, "/")
+    const matchedSessionEntry = sessionSnapshot?.files.find((entry) => {
+      const entryPath = entry.path.replace(/\\/g, "/")
+      const entryDisplay = entry.display_path.replace(/\\/g, "/")
+      return (
+        entryPath === normalizedTarget ||
+        entryDisplay === normalizedTarget ||
+        entryPath.endsWith(`/${normalizedTarget}`) ||
+        normalizedTarget.endsWith(`/${entryDisplay}`)
+      )
+    })
+
+    if (
+      activeSessionId &&
+      matchedSessionEntry &&
+      typeof ipcClient.fileChanges?.action === "function"
+    ) {
+      let actionKind: FileChangeActionKind | null = null
+      if (parsedDecision.data === "accepted") {
+        actionKind = "keep"
+      } else if (parsedDecision.data === "rejected") {
+        actionKind = "undo"
+      } else if (
+        parsedDecision.data === "pending" &&
+        matchedSessionEntry.status === "undone" &&
+        matchedSessionEntry.can_redo
+      ) {
+        actionKind = "redo"
+      }
+
+      if (actionKind) {
+        const response = await ipcClient.fileChanges.action(
+          activeSessionId,
+          actionKind,
+          { path: matchedSessionEntry.path }
+        )
+        if (response.snapshot) {
+          store.setSessionFileChanges(
+            response.snapshot.session_id || activeSessionId,
+            response.snapshot
+          )
+        }
+        if (response.conflicts.length > 0) {
+          return err(
+            response.conflicts[0]?.reason ||
+              response.message ||
+              "Manual edits conflict with undo"
+          )
+        }
+        if (!response.ok) {
+          return err(response.message || "Failed to update file change state")
+        }
+        const baseState = currentState ?? (await fetchChangesState())
+        const nextState: ChangesState = {
+          ...baseState,
+          files: baseState.files.map((file) =>
+            file.id === fileId || file.path === targetPath
+              ? {
+                  ...file,
+                  accepted: parsedDecision.data === "accepted",
+                  rejected: parsedDecision.data === "rejected",
+                }
+              : file
+          ),
+        }
+        return ok(changesStateSchema.parse(nextState))
+      }
+    }
+
     const bridge = getChangesBridge()
     if (bridge.reviewFile) {
       const raw = await bridge.reviewFile(fileId, parsedDecision.data)

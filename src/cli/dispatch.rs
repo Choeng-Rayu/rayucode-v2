@@ -884,7 +884,16 @@ async fn run_default_command(args: Args) -> Result<()> {
         setup_hints::record_launch_dirs(&cwd, repo_dir.as_deref());
     }
 
-    if in_rayu_repo && !already_in_selfdev && !args.no_selfdev {
+    // Resuming an existing non-selfdev session from inside the rayu repo must
+    // preserve that session's normal mode (including `rayu_docs`) rather than
+    // silently flipping it into canary self-dev. Explicit `rayu self-dev --resume`
+    // already sets `CLIENT_SELFDEV_ENV` (`already_in_selfdev == true`).
+    let resuming_regular_session = args.resume.as_deref().is_some_and(|target| {
+        crate::session::Session::load(target)
+            .map(|session| !session.is_canary)
+            .unwrap_or(false)
+    });
+    if in_rayu_repo && !already_in_selfdev && !args.no_selfdev && !resuming_regular_session {
         output::stderr_info("📍 Detected rayu repository - enabling self-dev mode");
         output::stderr_info("   Using shared server with self-dev session mode");
         output::stderr_info("   (use --no-selfdev to disable auto-detection)");

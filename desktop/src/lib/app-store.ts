@@ -1,6 +1,7 @@
 import { create } from "zustand"
 
 import type {
+  FileChangesSnapshot,
   OfficeExcelWorkbookData,
   PromptImageAttachment,
   RayuAuthState,
@@ -92,6 +93,21 @@ export interface PendingStreamPrompt {
   images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
+  startedAtMs?: number
+}
+
+export interface SessionTokenUsageSnapshot {
+  input: number
+  output: number
+  cacheRead: number
+  cacheCreation: number
+  effectiveBudget: number | null
+}
+
+export interface SessionModelInfoSnapshot {
+  model?: string
+  provider?: string
+  reasoningEffort?: string
 }
 
 export interface AppStoreState {
@@ -130,6 +146,10 @@ export interface AppStoreState {
   liveExcelWorkbook: OfficeExcelWorkbookData | null
   liveExcelWorkbookVersion: number
   activeDiagram: ActiveDiagramState
+  sessionFileChangesBySession: Record<string, FileChangesSnapshot>
+  sessionTokenUsageBySession: Record<string, SessionTokenUsageSnapshot>
+  sessionModelInfoBySession: Record<string, SessionModelInfoSnapshot>
+  selectedDiffFilePath: string | null
 
   setTheme: (theme: ThemeMode) => void
   toggleTheme: () => void
@@ -154,6 +174,20 @@ export interface AppStoreState {
   setRightCollapsed: (collapsed: boolean) => void
   openRightTab: (tab: RightTabId, pillLabel?: string | null) => void
   openCodeFile: (file: string, line?: number | null) => void
+  openDiffFile: (filePath: string, sessionId?: string) => void
+  setSessionFileChanges: (
+    sessionId: string,
+    snapshot: FileChangesSnapshot
+  ) => void
+  setSessionTokenUsage: (
+    sessionId: string,
+    usage: SessionTokenUsageSnapshot
+  ) => void
+  setSessionModelInfo: (
+    sessionId: string,
+    info: SessionModelInfoSnapshot
+  ) => void
+  setSelectedDiffFilePath: (filePath: string | null) => void
   openDocPreview: (kind: DocPreviewKind, pillLabel: string) => void
   closeDocTab: (pill: string) => void
   closeDocumentToContext: () => void
@@ -388,6 +422,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   liveExcelWorkbook: null,
   liveExcelWorkbookVersion: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
+  sessionFileChangesBySession: {},
+  sessionTokenUsageBySession: {},
+  sessionModelInfoBySession: {},
+  selectedDiffFilePath: null,
 
   setTheme: (theme) => {
     syncThemeToDom(theme)
@@ -618,6 +656,60 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
             { tab: "code" as RightTabId, pill: file },
           ].slice(-5),
     }))
+  },
+
+  openDiffFile: (filePath, sessionId) => {
+    const pill = DEFAULT_TAB_PILLS.diff ?? "Changes"
+    set((state) => ({
+      rightCollapsed: false,
+      rightMode: "document",
+      activeRightTab: "diff",
+      activeDocPill: pill,
+      selectedDiffFilePath: filePath,
+      activeSessionId: sessionId ?? state.activeSessionId,
+      openDocTabs: state.openDocTabs.some(
+        (t) => t.tab === "diff" && t.pill === pill
+      )
+        ? state.openDocTabs
+        : [
+            ...state.openDocTabs,
+            { tab: "diff" as RightTabId, pill },
+          ].slice(-5),
+    }))
+  },
+
+  setSessionFileChanges: (sessionId, snapshot) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionFileChangesBySession: {
+        ...state.sessionFileChangesBySession,
+        [sessionId]: snapshot,
+      },
+    }))
+  },
+
+  setSessionTokenUsage: (sessionId, usage) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionTokenUsageBySession: {
+        ...state.sessionTokenUsageBySession,
+        [sessionId]: usage,
+      },
+    }))
+  },
+
+  setSessionModelInfo: (sessionId, info) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionModelInfoBySession: {
+        ...state.sessionModelInfoBySession,
+        [sessionId]: info,
+      },
+    }))
+  },
+
+  setSelectedDiffFilePath: (selectedDiffFilePath) => {
+    set({ selectedDiffFilePath })
   },
 
   openDocPreview: (kind, pillLabel) => {
@@ -914,6 +1006,16 @@ export function applyUrlQueryParamsToStore(search?: string): void {
         store.openCodeFile(
           fileParam,
           lineParam !== null ? Number(lineParam) : null
+        )
+      }
+    } else if (rightTab === "diff") {
+      const fileParam = params.get("file")
+      if (fileParam) {
+        store.openDiffFile(fileParam, sessionParam ?? undefined)
+      } else {
+        store.openRightTab(
+          rightTab,
+          pillParam !== null ? pillParam : DEFAULT_TAB_PILLS[rightTab]
         )
       }
     } else {

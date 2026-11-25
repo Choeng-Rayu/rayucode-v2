@@ -401,6 +401,7 @@ where
                 "session_archive",
                 "session_retention",
                 "session_files",
+                "file_changes",
                 "session_fork",
                 "todo_state",
                 "permissions",
@@ -678,9 +679,12 @@ mod public_acceptance_tests {
         let (_daemon, _) = listener.accept().await.unwrap();
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&line).unwrap()["ev"],
-            "hello_ok"
+        let hello_reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(hello_reply["ev"], "hello_ok");
+        assert!(
+            hello_reply["capabilities"]
+                .as_array()
+                .is_some_and(|caps| caps.iter().any(|cap| cap == "file_changes"))
         );
         write_json_line(&mut client_write, &json!({"v":1,"id":2,"req":"ping"}))
             .await

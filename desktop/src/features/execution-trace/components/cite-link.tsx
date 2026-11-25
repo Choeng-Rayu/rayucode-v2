@@ -45,43 +45,21 @@ const markdownProcessor = unified().use(remarkParse).use(remarkGfm)
 function getInlineCodeClasses(category: InlineCodeCategory): string {
   switch (category) {
     case "folder":
-      return "text-folder hover:bg-folder-soft/60"
     case "file-ts":
-      return "text-code-fn hover:bg-info-soft/60"
     case "file-rust":
-      return "text-code-num hover:bg-pill-think-bg/60"
     case "file-doc":
-      return "text-code-type hover:bg-pill-edit-bg/60"
     case "file-data":
-      return "text-office-excel hover:bg-office-excel-soft/60"
-    case "component":
-      return "text-code-type"
+      // Single clean theme accent (Rayu Green or Ocean Blue based on user theme)
+      return "text-brand-text hover:bg-brand-soft/60"
     case "command":
-      return "bg-hover/65 text-code-kw"
+    case "component":
     case "symbol":
-      return "text-code-fn"
     default:
       return "bg-hover/55 text-ink"
   }
 }
 
-function getLanguageBadgeClass(lang?: string | null): string {
-  const lower = (lang ?? "").trim().toLowerCase()
-  if (["ts", "tsx", "typescript", "js", "jsx", "javascript"].includes(lower)) {
-    return "text-code-fn bg-info-soft"
-  }
-  if (["rs", "rust", "go", "c", "cpp"].includes(lower)) {
-    return "text-code-num bg-pill-think-bg"
-  }
-  if (["sh", "bash", "zsh", "shell"].includes(lower)) {
-    return "text-code-kw bg-brand-softer"
-  }
-  if (["json", "yaml", "yml", "toml"].includes(lower)) {
-    return "text-code-str bg-warn-soft/70"
-  }
-  if (["mermaid", "md", "markdown"].includes(lower)) {
-    return "text-code-type bg-pill-edit-bg"
-  }
+function getLanguageBadgeClass(_lang?: string | null): string {
   return "text-muted-ink bg-active/70"
 }
 
@@ -255,7 +233,7 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline-soft bg-inset/80 px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="inline-flex items-center gap-1 rounded-md bg-pill-edit-bg px-2 py-0.5 font-mono text-[10.5px] font-medium tracking-wide text-code-type uppercase">
+          <span className="inline-flex items-center gap-1 rounded-md bg-brand-soft px-2 py-0.5 font-mono text-[10.5px] font-medium tracking-wide text-brand-text uppercase">
             <Network className="size-3 shrink-0" aria-hidden="true" />
             <span>mermaid</span>
           </span>
@@ -436,7 +414,11 @@ function renderMdastNode(
       )
     case "inlineCode": {
       const value = node.value ?? ""
-      if (isDiagramInlineToken(value)) {
+      const isExplicitMermaidFile = /\.(?:mmd|mermaid)$/i.test(value.trim())
+      if (
+        isDiagramInlineToken(value) &&
+        (Boolean(contextDiagramSource) || isExplicitMermaidFile)
+      ) {
         return (
           <button
             key={key}
@@ -451,7 +433,7 @@ function renderMdastNode(
                 store.openDocPreview("diagram", value)
               }
             }}
-            className="inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all text-code-type transition-colors hover:bg-pill-edit-bg/60 hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all text-brand-text transition-colors hover:bg-brand-soft/60 hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Network className="size-3 shrink-0" aria-hidden="true" />
             <span className="min-w-0 break-all">{value}</span>
@@ -492,7 +474,9 @@ function renderMdastNode(
           >
             {category === "folder" ? (
               <Folder className="size-3 shrink-0" aria-hidden="true" />
-            ) : null}
+            ) : (
+              <FileText className="size-3 shrink-0" aria-hidden="true" />
+            )}
             <span className="min-w-0 break-all">{value}</span>
           </button>
         )
@@ -640,7 +624,7 @@ function renderMdastNode(
           href={node.url ?? "#"}
           target="_blank"
           rel="noreferrer"
-          className="font-medium text-code-fn underline-offset-3 hover:text-brand-bright hover:underline"
+          className="font-medium text-brand-text underline-offset-3 hover:text-brand-bright hover:underline"
         >
           {renderMdastChildren(node.children, key, contextDiagramSource)}
         </a>
@@ -740,32 +724,23 @@ export function CiteLink({ citation, onNavigate, className }: CiteLinkProps) {
     >
       {citation.kind === "code" && (
         <span
-          className="font-mono text-[11.5px] text-code-fn opacity-95"
+          className="font-mono text-[11.5px] opacity-95"
           aria-hidden="true"
         >
           &lt;/&gt;
         </span>
       )}
       {citation.kind === "browser" && (
-        <Globe className="size-3 shrink-0 text-info" aria-hidden="true" />
+        <Globe className="size-3 shrink-0" aria-hidden="true" />
       )}
       {citation.kind === "excel" && (
-        <FileSpreadsheet
-          className="size-3 shrink-0 text-office-excel"
-          aria-hidden="true"
-        />
+        <FileSpreadsheet className="size-3 shrink-0" aria-hidden="true" />
       )}
       {citation.kind === "markdown" && (
-        <FileText
-          className="size-3 shrink-0 text-code-type"
-          aria-hidden="true"
-        />
+        <FileText className="size-3 shrink-0" aria-hidden="true" />
       )}
       {citation.kind === "slide" && (
-        <Presentation
-          className="size-3 shrink-0 text-office-ppt"
-          aria-hidden="true"
-        />
+        <Presentation className="size-3 shrink-0" aria-hidden="true" />
       )}
       <span>{citation.label}</span>
     </button>

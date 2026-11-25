@@ -7,20 +7,21 @@ impl BridgeState {
         provider: &str,
     ) -> Option<(&'static str, &'static [&'static str], &'static str)> {
         match provider.trim().to_ascii_lowercase().as_str() {
-            "claude-api" | "anthropic-api" | "anthropic-key" | "claude-key" => {
-                Some(("claude-api", &["ANTHROPIC_API_KEY"], "anthropic.env"))
-            }
-            "openai-api" | "openai-key" | "openai-apikey" => {
+            "claude-api" | "anthropic-api" | "anthropic-key" | "claude-key" | "anthropic"
+            | "claude" => Some(("claude-api", &["ANTHROPIC_API_KEY"], "anthropic.env")),
+            "openai-api" | "openai-key" | "openai-apikey" | "openai" => {
                 Some(("openai-api", &["OPENAI_API_KEY"], "openai.env"))
             }
             "openrouter" => Some(("openrouter", &["OPENROUTER_API_KEY"], "openrouter.env")),
             "cursor" => Some(("cursor", &["CURSOR_API_KEY"], "cursor.env")),
-            "gemini" | "gemini-api" | "google-gemini" => Some((
+            "gemini" | "gemini-api" | "google" | "google-gemini" => Some((
                 "gemini",
                 &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
                 "gemini.env",
             )),
-            "rayu" | "rayucode" | "subscription" => Some(("rayu", &["RAYU_API_KEY"], "rayu.env")),
+            "rayu" | "rayucode" | "rayu-cloud" | "subscription" => {
+                Some(("rayu", &["RAYU_API_KEY"], "rayu.env"))
+            }
             _ => None,
         }
     }
@@ -200,5 +201,74 @@ impl BridgeState {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_binding_resolves_canonical_ids_and_provider_aliases() {
+        for alias in [
+            "claude-api",
+            "anthropic-api",
+            "anthropic-key",
+            "claude-key",
+            "anthropic",
+            "claude",
+            " Anthropic ",
+            "CLAUDE",
+        ] {
+            assert_eq!(
+                BridgeState::credential_binding(alias),
+                Some(("claude-api", &["ANTHROPIC_API_KEY"][..], "anthropic.env")),
+                "alias `{alias}` should resolve to claude-api"
+            );
+        }
+
+        for alias in [
+            "openai-api",
+            "openai-key",
+            "openai-apikey",
+            "openai",
+            " OpenAI ",
+        ] {
+            assert_eq!(
+                BridgeState::credential_binding(alias),
+                Some(("openai-api", &["OPENAI_API_KEY"][..], "openai.env")),
+                "alias `{alias}` should resolve to openai-api"
+            );
+        }
+
+        for alias in ["rayu", "rayucode", "rayu-cloud", "subscription", "RAYU-CLOUD"] {
+            assert_eq!(
+                BridgeState::credential_binding(alias),
+                Some(("rayu", &["RAYU_API_KEY"][..], "rayu.env")),
+                "alias `{alias}` should resolve to rayu"
+            );
+        }
+
+        for alias in ["gemini", "gemini-api", "google", "google-gemini", "Google"] {
+            assert_eq!(
+                BridgeState::credential_binding(alias),
+                Some((
+                    "gemini",
+                    &["GEMINI_API_KEY", "GOOGLE_API_KEY"][..],
+                    "gemini.env"
+                )),
+                "alias `{alias}` should resolve to gemini"
+            );
+        }
+
+        assert_eq!(
+            BridgeState::credential_binding("openrouter"),
+            Some(("openrouter", &["OPENROUTER_API_KEY"][..], "openrouter.env"))
+        );
+        assert_eq!(
+            BridgeState::credential_binding("cursor"),
+            Some(("cursor", &["CURSOR_API_KEY"][..], "cursor.env"))
+        );
+        assert_eq!(BridgeState::credential_binding("unknown-provider"), None);
     }
 }

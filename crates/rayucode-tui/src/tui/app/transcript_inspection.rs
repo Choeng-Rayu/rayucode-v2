@@ -15,6 +15,7 @@ impl App {
             || self.login_picker_overlay.is_some()
             || self.account_picker_overlay.is_some()
             || self.help_scroll.is_some()
+            || self.file_review_overlay.is_some()
             || self.prompt_history_search.is_some()
     }
 

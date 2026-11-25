@@ -5,9 +5,11 @@ import {
   connectTelegramBotToken,
   disconnectTelegramBridge,
   resolveTelegramApproval,
+  selectTelegramSession,
   sendTelegramTestPing,
   setTelegramMode,
   setTelegramRemoteUninstall,
+  startHostedTelegramPairing,
   telegramQueryKeys,
   telegramQueryOptions,
 } from "../api/telegram-api"
@@ -19,7 +21,20 @@ import type {
 } from "../types"
 
 export function useTelegramState() {
-  return useQuery(telegramQueryOptions())
+  return useQuery({
+    ...telegramQueryOptions(),
+    refetchInterval: (query) => {
+      const state = query.state.data
+      if (!state) return false
+      if (!state.linked && Boolean(state.qrPath || state.pairingLink)) {
+        return 2_000
+      }
+      if (state.linked) {
+        return 5_000
+      }
+      return false
+    },
+  })
 }
 
 export function useSetTelegramMode() {
@@ -52,6 +67,22 @@ export function useSetTelegramMode() {
         }
         return
       }
+      queryClient.setQueryData<TelegramState>(
+        telegramQueryKeys.state(),
+        result.data
+      )
+    },
+  })
+}
+
+export function useStartHostedPairing() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (replaceExisting: boolean = false) =>
+      startHostedTelegramPairing(replaceExisting),
+    onSuccess: (result) => {
+      if (!result.ok) return
       queryClient.setQueryData<TelegramState>(
         telegramQueryKeys.state(),
         result.data
@@ -159,21 +190,39 @@ export function useSetRemoteUninstall() {
   })
 }
 
-export function useTelegramBridgeActions() {
+export function useSelectTelegramSession() {
   const queryClient = useQueryClient()
-  const [isDisconnected, setIsDisconnected] = React.useState(false)
 
-  const disconnect = React.useCallback(async () => {
-    const result = await disconnectTelegramBridge()
-    if (result.ok) {
-      setIsDisconnected(true)
+  return useMutation({
+    mutationFn: (sessionId: string) => selectTelegramSession(sessionId),
+    onSuccess: (result) => {
+      if (!result.ok) return
       queryClient.setQueryData<TelegramState>(
         telegramQueryKeys.state(),
         result.data
       )
-    }
-    return result
-  }, [queryClient])
+    },
+  })
+}
+
+export function useTelegramBridgeActions() {
+  const queryClient = useQueryClient()
+  const [isDisconnected, setIsDisconnected] = React.useState(false)
+
+  const disconnect = React.useCallback(
+    async (localOnly = false) => {
+      const result = await disconnectTelegramBridge(localOnly)
+      if (result.ok) {
+        setIsDisconnected(true)
+        queryClient.setQueryData<TelegramState>(
+          telegramQueryKeys.state(),
+          result.data
+        )
+      }
+      return result
+    },
+    [queryClient]
+  )
 
   const reconnect = React.useCallback(async () => {
     const result = await setTelegramMode("connected")
@@ -187,39 +236,6 @@ export function useTelegramBridgeActions() {
     return result
   }, [queryClient])
 
-  const regeneratePairing = React.useCallback(() => {
-    const token = `rayu_${Math.random().toString(36).slice(2, 10)}`
-    queryClient.setQueryData<TelegramState>(
-      telegramQueryKeys.state(),
-      (prev) => {
-        if (!prev) return prev
-        const botHandle = prev.connectedBotHandle.replace(/^@/, "") || "RayuCodeBot"
-        return {
-          ...prev,
-          pairingCommand: `/pair ${token}`,
-          pairingLink: `https://t.me/${botHandle}?start=${token}`,
-        }
-      }
-    )
-    return token
-  }, [queryClient])
-
-  const attachSession = React.useCallback(
-    (sessionLabel: string) => {
-      queryClient.setQueryData<TelegramState>(
-        telegramQueryKeys.state(),
-        (prev) => {
-          if (!prev) return prev
-          return {
-            ...prev,
-            drivingSession: sessionLabel,
-          }
-        }
-      )
-    },
-    [queryClient]
-  )
-
   const ping = React.useCallback(async () => {
     return sendTelegramTestPing()
   }, [])
@@ -229,8 +245,6 @@ export function useTelegramBridgeActions() {
     setIsDisconnected,
     disconnect,
     reconnect,
-    regeneratePairing,
-    attachSession,
     ping,
   }
 }

@@ -282,7 +282,8 @@ fn logout(args: &[String]) -> Result<(Value, String)> {
         .with_context(|| format!("Unknown provider `{name}`. Nothing was removed."))?;
     let supported = matches!(
         provider.target,
-        LoginProviderTarget::Claude
+        LoginProviderTarget::Rayu
+            | LoginProviderTarget::Claude
             | LoginProviderTarget::ClaudeApiKey
             | LoginProviderTarget::OpenAi
             | LoginProviderTarget::OpenAiApiKey
@@ -302,7 +303,7 @@ fn logout(args: &[String]) -> Result<(Value, String)> {
         return Ok((
             json!({"confirmation_required": true, "provider": provider.id, "scope": "runtime host"}),
             format!(
-                "To remove {} credentials stored by Rayu on the attached runtime host, run `/logout {} confirm`. For Claude/OpenAI this removes every Rayu-managed OAuth account and the saved API key for that provider. Other apps' credentials and externally supplied environment keys are not revoked. No credential was removed.",
+                "To remove {} credentials stored by Rayu on the attached runtime host, run `/logout {} confirm`. For Rayu/Claude/OpenAI this removes every Rayu-managed OAuth account and the saved API key for that provider. Other apps' credentials and externally supplied environment keys are not revoked. No credential was removed.",
                 provider.display_name, provider.id
             ),
         ));
@@ -317,7 +318,39 @@ fn logout(args: &[String]) -> Result<(Value, String)> {
             Ok(()) => cleared_api_key = true,
             Err(error) => errors.push(format!("Saved API-key removal failed: {error}")),
         };
+    let has_saved_rayu_api_key = || {
+        let prefix = format!("{}=", crate::rayu::RAYU_API_KEY_ENV);
+        crate::storage::app_config_dir()
+            .ok()
+            .and_then(|dir| std::fs::read_to_string(dir.join("rayu.env")).ok())
+            .is_some_and(|content| {
+                content.lines().any(|line| {
+                    line.trim_start()
+                        .strip_prefix(&prefix)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+            })
+    };
     match provider.target {
+        LoginProviderTarget::Rayu => {
+            let had_session = crate::rayu::config_dir().join("rayu-auth.json").exists();
+            let had_saved_api_key = has_saved_rayu_api_key();
+            match crate::rayu::logout() {
+                Ok(()) => {
+                    removed_oauth_accounts = usize::from(had_session);
+                    if had_saved_api_key {
+                        if has_saved_rayu_api_key() {
+                            errors.push(
+                                "Saved API-key removal failed: RAYU_API_KEY is still present in rayu.env".into(),
+                            );
+                        } else {
+                            cleared_api_key = true;
+                        }
+                    }
+                }
+                Err(error) => errors.push(format!("Rayu credential removal failed: {error}")),
+            }
+        }
         LoginProviderTarget::Claude => {
             clear_key("ANTHROPIC_API_KEY", "anthropic.env");
             match crate::auth::claude::clear_accounts() {
@@ -367,7 +400,7 @@ fn logout(args: &[String]) -> Result<(Value, String)> {
     }
     crate::auth::AuthStatus::invalidate_cached_status();
     let data = json!({"provider": provider.id, "scope": "runtime host", "removed_oauth_accounts": removed_oauth_accounts,
-        "saved_api_key_cleared": cleared_api_key, "errors": errors, "live_provider_reloaded": false,
+        "saved_api_key_cleared": cleared_api_key, "cleared": errors.is_empty(), "errors": errors, "live_provider_reloaded": false,
         "external_credentials_revoked": false});
     let mut message = format!(
         "{} stored credential cleanup: removed {removed_oauth_accounts} Rayu-managed OAuth account(s); saved API key cleared: {cleared_api_key}. Existing provider instances may still hold in-memory credentials until reconnect/reinitialization. External credentials and upstream tokens were not revoked.",
@@ -2211,5 +2244,116 @@ endpoint = \"https://example.invalid\"
         assert!(search_data["matches"].is_array());
         assert!(search_data["results"].is_array());
         assert_eq!(search_data["count"], 0);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn logout_rayu_confirm_removes_session_env_key_and_caches() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let keys = [
+            "RAYU_AUTH_CONFIG_DIR",
+            "RAYU_HOME",
+            "RAYU_CONFIG_DIR",
+            "RAYU_API_KEY",
+        ];
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> = keys
+            .iter()
+            .map(|key| (*key, std::env::var_os(key)))
+            .collect();
+        struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    match value {
+                        Some(val) => crate::env::set_var(key, val),
+                        None => crate::env::remove_var(key),
+                    }
+                }
+            }
+        }
+        let _restore = RestoreEnv(saved);
+        for key in keys {
+            crate::env::remove_var(key);
+        }
+        crate::env::set_var("RAYU_AUTH_CONFIG_DIR", temp.path());
+        crate::env::set_var("RAYU_HOME", temp.path());
+
+        let session = crate::rayu::RayuSession {
+            access_token: "test-access-token".into(),
+            refresh_token: "test-refresh-token".into(),
+            expires_at: chrono::Utc::now().timestamp_millis() + 3_600_000,
+            user: crate::rayu::RayuSessionUser {
+                id: 7,
+                email: Some("dev@example.invalid".into()),
+                display_name: Some("Rayu Tester".into()),
+                avatar_url: Some("https://example.invalid/avatar.png".into()),
+                role: "user".into(),
+            },
+        };
+        crate::rayu::write_session(&session).unwrap();
+        let env_path = crate::rayu::save_api_key("rayu_sk_live_logout_test_key").unwrap();
+        std::fs::write(temp.path().join("rayu-apikey-state.json"), "{}").unwrap();
+        std::fs::write(temp.path().join("rayu-entitlements.json"), "{}").unwrap();
+        std::fs::write(temp.path().join("rayu-feature-usage.json"), "{}").unwrap();
+        let cache_dir = temp.path().join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let rayu_cache = cache_dir.join("rayu_models_0123456789abcdef.json");
+        let other_cache = cache_dir.join("openrouter_models.json");
+        std::fs::write(&rayu_cache, "{}").unwrap();
+        std::fs::write(&other_cache, "{}").unwrap();
+
+        let (prompt_data, prompt_msg) = logout(&["rayu".into()]).unwrap();
+        assert_eq!(prompt_data["confirmation_required"], true);
+        assert_eq!(prompt_data["provider"], "rayu");
+        assert!(prompt_msg.contains("No credential was removed"));
+        assert!(temp.path().join("rayu-auth.json").exists());
+
+        let ctx = LockFreeCommandContext {
+            session_id: "sess-rayu-logout".into(),
+            working_dir: Some(temp.path().to_path_buf()),
+            registry: None,
+            provider_name: "rayu".into(),
+            provider_model: "test-model".into(),
+            provider_context_window: 128_000,
+            provider_transport: None,
+            route_counts: None,
+        };
+        let (data, _) = try_execute_lock_free(
+            &ctx,
+            RuntimeCommand::Logout,
+            &["rayu".into(), "confirm".into()],
+        )
+        .await
+        .expect("logout is lock-free")
+        .unwrap();
+
+        assert_eq!(data["provider"], "rayu");
+        assert_eq!(data["cleared"], true);
+        assert_eq!(data["removed_oauth_accounts"], 1);
+        assert_eq!(data["saved_api_key_cleared"], true);
+        assert_eq!(data["errors"].as_array().map(Vec::len), Some(0));
+        assert!(!temp.path().join("rayu-auth.json").exists());
+        assert!(!temp.path().join("rayu-apikey-state.json").exists());
+        assert!(!temp.path().join("rayu-entitlements.json").exists());
+        assert!(!temp.path().join("rayu-feature-usage.json").exists());
+        assert!(!rayu_cache.exists());
+        assert!(other_cache.exists());
+        assert!(
+            !env_path.exists()
+                || !std::fs::read_to_string(&env_path)
+                    .unwrap()
+                    .contains("RAYU_API_KEY=")
+        );
+        assert!(crate::rayu::read_session().is_none());
+        assert!(!crate::rayu::has_api_key());
+
+        // Second logout when already signed out succeeds cleanly without errors.
+        let (second_data, _) = logout(&["rayu".into(), "confirm".into()]).unwrap();
+        assert_eq!(second_data["provider"], "rayu");
+        assert_eq!(second_data["cleared"], true);
+        assert_eq!(second_data["removed_oauth_accounts"], 0);
+        assert_eq!(second_data["saved_api_key_cleared"], false);
+        assert_eq!(second_data["errors"].as_array().map(Vec::len), Some(0));
     }
 }

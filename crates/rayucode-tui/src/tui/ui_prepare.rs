@@ -626,6 +626,7 @@ pub(super) fn prepare_messages(
         inline_images_visible: app.inline_images_visible(),
         expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
+        file_changes_version: app.file_changes_version(),
         latex_rendering: crate::config::config().display.latex_rendering,
         show_link_urls: crate::config::config().display.show_link_urls,
     };
@@ -803,7 +804,8 @@ fn prepare_messages_inner(
     let is_initial_empty = app.onboarding_preview_mode()
         || (app.display_messages().is_empty()
             && !app.is_processing()
-            && app.streaming_text().is_empty());
+            && app.streaming_text().is_empty()
+            && !app.file_changes().is_some_and(|s| !s.is_empty()));
 
     if is_initial_empty {
         let compose_start = Instant::now();
@@ -923,6 +925,11 @@ fn prepare_messages_inner(
     } else {
         header_prepared
     };
+    let todo_blockers_prefix_blank = !body_prepared.wrapped_lines.is_empty()
+        || !inline_images_prepared.wrapped_lines.is_empty()
+        || !batch_progress_prepared.wrapped_lines.is_empty()
+        || !streaming_prepared.wrapped_lines.is_empty()
+        || !reasoning_prepared.wrapped_lines.is_empty();
     let frame = PreparedChatFrame::from_sections(vec![
         (PreparedSectionKind::Header, padded_header),
         (PreparedSectionKind::Body, body_prepared),
@@ -932,7 +939,11 @@ fn prepare_messages_inner(
         (PreparedSectionKind::Reasoning, reasoning_prepared),
         (
             PreparedSectionKind::TodoBlockers,
-            Arc::new(prepare_todo_blockers(app, width)),
+            Arc::new(prepare_todo_blockers(
+                app,
+                width,
+                todo_blockers_prefix_blank,
+            )),
         ),
     ]);
     super::note_full_prep_phase_metrics(super::FullPrepPhaseMetrics {
@@ -945,14 +956,51 @@ fn prepare_messages_inner(
     frame
 }
 
-fn prepare_todo_blockers(app: &dyn TuiState, width: u16) -> PreparedMessages {
-    wrap_lines(
+fn prepare_todo_blockers(app: &dyn TuiState, width: u16, prefix_blank: bool) -> PreparedMessages {
+    let todo_prepared = wrap_lines(
         messages::todo_blocker_notes(app.pinned_todos_payload()),
         &[],
         &[],
         &[],
         width,
-    )
+    );
+    let Some(snapshot) = app.file_changes().filter(|s| !s.is_empty()) else {
+        return todo_prepared;
+    };
+    let empty_expanded = std::collections::HashSet::new();
+    let expanded = app.expanded_file_change_paths().unwrap_or(&empty_expanded);
+    let card = super::file_changes_card::render_card_cached(
+        snapshot,
+        app.file_changes_version(),
+        expanded,
+        app.file_changes_receipt_expanded(),
+        width,
+        app.centered_mode(),
+        prefix_blank,
+    );
+    if card.lines.is_empty() {
+        return todo_prepared;
+    }
+    let mut wrapped_lines = card.lines.clone();
+    wrapped_lines.extend(todo_prepared.wrapped_lines);
+    let count = wrapped_lines.len();
+    let wrapped_plain_lines = Arc::new(wrapped_lines.iter().map(ui::line_plain_text).collect());
+    PreparedMessages {
+        wrapped_lines,
+        wrapped_plain_lines,
+        wrapped_copy_offsets: Arc::new(vec![0; count]),
+        raw_plain_lines: Arc::new(Vec::new()),
+        wrapped_line_map: Arc::new(Vec::new()),
+        wrapped_user_indices: Vec::new(),
+        wrapped_user_prompt_starts: Vec::new(),
+        wrapped_user_prompt_ends: Vec::new(),
+        user_prompt_texts: Vec::new(),
+        image_regions: Vec::new(),
+        edit_tool_ranges: Vec::new(),
+        copy_targets: Vec::new(),
+        message_boundaries: Vec::new(),
+        mermaid_pending_epoch: None,
+    }
 }
 
 /// TTL + cheap-signature cache for the prepared (built + wrapped) header.

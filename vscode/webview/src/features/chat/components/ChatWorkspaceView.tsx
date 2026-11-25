@@ -57,6 +57,8 @@ export function ChatWorkspaceView({
             sessionId={stream.sessionId}
             turns={stream.turns}
             isStreaming={stream.isStreaming}
+            fileChangesSnapshot={stream.fileChangesSnapshot}
+            onFileChangesUpdated={stream.setFileChangesSnapshot}
             pendingPermission={effectivePermission}
             pendingQuestion={effectiveQuestion}
             softInterrupts={stream.softInterrupts}

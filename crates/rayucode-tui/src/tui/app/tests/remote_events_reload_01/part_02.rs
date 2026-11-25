@@ -454,6 +454,7 @@ fn test_remote_rewind_completion_shows_undo_hint_after_history_refresh() {
             activity: None,
             side_panel: crate::side_panel::SidePanelSnapshot::default(),
             applets: Default::default(),
+            file_changes: None,
         },
         &mut remote,
     );

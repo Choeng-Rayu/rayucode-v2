@@ -20,6 +20,7 @@ import {
   resolveFormFactorFromWidth,
 } from "@/features/shell";
 import {
+  __setMockAccountStateForTest,
   callRpc,
   createQueryClient,
   createStreamBatcher,
@@ -28,6 +29,7 @@ import {
   setMediaBaseUri,
   useAppStore,
 } from "@/lib";
+import * as rpcClient from "@/lib/rpc-client";
 
 function renderWithQuery(ui: React.ReactElement) {
   const client = createQueryClient();
@@ -206,20 +208,121 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     );
   });
 
-  it("renders AuthWelcomeScreen with Rayu Fox hero, Doctor check, and BYOK bypass", async () => {
+  it("renders Desktop-matched AuthWelcomeScreen with browser waiting flow, localhost fallback, cancel, sign-up, manual API key & callback URL, and Open workspace bypass", async () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
+    const signedOut = __setMockAccountStateForTest({
+      signedIn: false,
+      authMethod: "none",
+      signingIn: false,
+      pendingAuthUrl: null,
+      pendingMode: null,
+      displayName: undefined,
+      email: undefined,
+      windows: [],
+    });
+    useAppStore.setState({
+      accountStatus: signedOut,
+      authLoaded: true,
+      authBypassed: false,
+      daemonStatus: { state: "connected", capabilities: [] },
+    });
+
     const onContinue = vi.fn();
     renderWithQuery(<AuthWelcomeScreen onContinue={onContinue} />);
 
     expect(screen.getByTestId("auth-welcome-screen")).toBeTruthy();
-    fireEvent.click(screen.getByTestId("auth-run-doctor"));
+    expect(screen.getByText("Welcome to RayuCode")).toBeTruthy();
+    expect(screen.getByText("Sign in or create an account")).toBeTruthy();
+    // Engine offline strip stays hidden when daemon is connected
+    expect(screen.queryByTestId("auth-daemon-offline-strip")).toBeNull();
 
+    // Sign up opens external sign-up page
+    fireEvent.click(screen.getByTestId("auth-signup-btn"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rayucode.editor.openExternal",
+        url: "https://rayucode.com/sign-up",
+      }),
+    );
+
+    // Log in -> Waiting state -> Copy sign-in link -> Use localhost fallback -> Cancel
+    fireEvent.click(screen.getByTestId("auth-signin-browser"));
+    await waitFor(() => {
+      expect(screen.getByTestId("auth-waiting-card")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("copy-signin-link-btn"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rayucode.editor.copy",
+        text: expect.stringContaining("/vscode-login?state="),
+      }),
+    );
+
+    fireEvent.click(screen.getByTestId("auth-loopback-fallback-btn"));
+    await waitFor(() => {
+      expect(
+        useAppStore.getState().accountStatus?.pendingAuthUrl ?? "",
+      ).toContain("/cli-login?port=");
+    });
+
+    fireEvent.click(screen.getByTestId("auth-cancel-signin-btn"));
+    await waitFor(() => {
+      expect(screen.queryByTestId("auth-waiting-card")).toBeNull();
+    });
+
+    // Connect manually: API Key rejects invalid prefix, Get API key opens dashboard, valid key succeeds
+    fireEvent.click(screen.getByTestId("auth-switch-apikey"));
+    expect(screen.getByTestId("manual-auth-panel")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("auth-get-apikey-link"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rayucode.editor.openExternal",
+        url: "https://rayucode.com/dashboard/api-keys",
+      }),
+    );
+
+    fireEvent.change(screen.getByTestId("manual-apikey-input"), {
+      target: { value: "invalid_key" },
+    });
+    fireEvent.click(screen.getByTestId("manual-submit-apikey"));
+    expect(await screen.findByTestId("auth-error-message")).toBeTruthy();
+
+    // Callback URL tab accepts vscode:// deep-link callback
+    fireEvent.click(screen.getByTestId("manual-tab-callback"));
+    fireEvent.change(screen.getByTestId("manual-callback-input"), {
+      target: {
+        value: "vscode://rayucode.rayucode/auth?code=test_code&state=test_state",
+      },
+    });
+    fireEvent.click(screen.getByTestId("manual-submit-callback"));
+    await waitFor(() => {
+      expect(useAppStore.getState().accountStatus?.signedIn).toBe(true);
+    });
+    expect(onContinue).toHaveBeenCalledTimes(1);
+
+    // Open workspace bypass
+    fireEvent.click(screen.getByTestId("auth-continue-byok"));
+    expect(useAppStore.getState().authBypassed).toBe(true);
+    postSpy.mockRestore();
+  });
+
+  it("shows compact offline engine strip with Run Doctor only when daemon is disconnected", async () => {
+    useAppStore.setState({
+      daemonStatus: {
+        state: "disconnected",
+        capabilities: [],
+        error: "Socket unavailable",
+      },
+    });
+
+    renderWithQuery(<AuthWelcomeScreen />);
+    expect(screen.getByTestId("auth-daemon-offline-strip")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("auth-run-doctor"));
     await waitFor(() => {
       expect(screen.getByText("Rayu Daemon Socket")).toBeTruthy();
     });
-
-    fireEvent.click(screen.getByText("Back"));
-    fireEvent.click(screen.getByTestId("auth-continue-byok"));
-    expect(onContinue).toHaveBeenCalledTimes(1);
-    expect(useAppStore.getState().authBypassed).toBe(true);
   });
 });

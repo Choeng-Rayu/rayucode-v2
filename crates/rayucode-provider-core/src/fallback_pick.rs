@@ -54,14 +54,23 @@ fn strip_rayu_prefix(model: &str) -> &str {
     }
 }
 
-/// Whether `route` matches a configured preferred fallback model spec (such as
-/// `RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud` or
-/// `RAYU_FALLBACK_MODEL=rayu:deepseek-v4.1-flash-1017-cloud`).
-pub fn fallback_model_matches(route: &ModelRoute, configured: &str) -> bool {
-    let configured = configured.trim();
-    if configured.is_empty() {
-        return false;
-    }
+/// Return the 0-based preference index if `route` matches a configured
+/// preferred fallback model spec. Supports either a single model
+/// (`RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud`) or an ordered
+/// comma-separated fallback list
+/// (`RAYU_FALLBACK_MODEL=deepseek-v4.1-flash-1017-cloud,glm-5.3-flash-cloud`)
+/// so a backup model is honored even when the first preferred model is the
+/// active model that failed.
+pub fn preferred_fallback_position(route: &ModelRoute, configured: &str) -> Option<usize> {
+    configured
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .enumerate()
+        .find_map(|(idx, entry)| fallback_model_entry_matches(route, entry).then_some(idx))
+}
+
+fn fallback_model_entry_matches(route: &ModelRoute, configured: &str) -> bool {
     if models_match(&route.model, configured) {
         return true;
     }
@@ -79,6 +88,12 @@ pub fn fallback_model_matches(route: &ModelRoute, configured: &str) -> bool {
         return models_match(route_bare, configured);
     }
     false
+}
+
+/// Whether `route` matches a configured preferred fallback model spec (single
+/// model or comma-separated list, with optional `provider:` prefix).
+pub fn fallback_model_matches(route: &ModelRoute, configured: &str) -> bool {
+    preferred_fallback_position(route, configured).is_some()
 }
 
 fn api_methods_match(a: &str, b: &str) -> bool {
@@ -557,16 +572,23 @@ pub fn rank_fallback_routes_with_preferred_model(
             let prefers_oauth = u8::from(!api_method_is_oauth(&ModelRouteApiMethod::parse(
                 &route.api_method,
             )));
-            let is_preferred =
-                preferred_model.is_some_and(|preferred| fallback_model_matches(route, preferred));
-            let key = if is_preferred {
-                (0u8, usize::from(tier), pool_position, prefers_oauth)
+            let preferred_index = preferred_model
+                .and_then(|preferred| preferred_fallback_position(route, preferred));
+            let key = if let Some(preferred_idx) = preferred_index {
+                (
+                    0u8,
+                    preferred_idx,
+                    usize::from(tier),
+                    pool_position,
+                    prefers_oauth,
+                )
             } else {
                 (
                     1u8,
                     pool_position,
                     model_generation_rank(&route.model),
-                    (tier << 1) | prefers_oauth,
+                    usize::from(tier),
+                    prefers_oauth,
                 )
             };
             Some((key, index))
@@ -765,5 +787,24 @@ mod preferred_fallback_tests {
             Some("openrouter:deepseek-v4.1-flash-1017-cloud"),
         );
         assert_eq!(routes[explicit_or[0]].provider, "OpenRouter");
+    }
+
+    #[test]
+    fn preferred_fallback_list_uses_second_entry_when_first_is_active_model() {
+        let routes = vec![
+            route("gpt-6.1-sol", "Rayu", "rayu"),
+            route("glm-5.3-flash-cloud", "Rayu", "rayu"),
+            route("deepseek-v4.1-flash-1017-cloud", "Rayu", "rayu"),
+        ];
+        let ranked = rank_fallback_routes_with_preferred_model(
+            &routes,
+            "deepseek-v4.1-flash-1017-cloud",
+            "Rayu",
+            "rayu",
+            FallbackPickOptions::default(),
+            &[],
+            Some("deepseek-v4.1-flash-1017-cloud, glm-5.3-flash-cloud"),
+        );
+        assert_eq!(routes[ranked[0]].model, "glm-5.3-flash-cloud");
     }
 }

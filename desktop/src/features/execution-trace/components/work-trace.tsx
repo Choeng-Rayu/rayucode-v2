@@ -11,6 +11,7 @@ import {
   LayoutGrid,
   Monitor,
   Search,
+  Terminal,
   Wrench,
 } from "lucide-react"
 
@@ -50,6 +51,9 @@ function TraceGroupIcon({ title }: { title: string }) {
   if (lower.includes("loaded a tool") || lower.includes("skill")) {
     return <Wrench className={iconClass} aria-hidden="true" />
   }
+  if (lower.includes("read files")) {
+    return <Folder className={iconClass} aria-hidden="true" />
+  }
   if (lower.includes("searched")) {
     return <Search className={iconClass} aria-hidden="true" />
   }
@@ -75,9 +79,9 @@ function TraceGroupIcon({ title }: { title: string }) {
     return <LayoutGrid className={iconClass} aria-hidden="true" />
   }
   if (lower.includes("ran a command") || lower.includes("ran command")) {
-    return <Monitor className={iconClass} aria-hidden="true" />
+    return <Terminal className={iconClass} aria-hidden="true" />
   }
-  return <BookOpen className={iconClass} aria-hidden="true" />
+  return <Folder className={iconClass} aria-hidden="true" />
 }
 
 function renderFileReadStep(
@@ -266,12 +270,15 @@ function renderListOrPreviewStep(
         />
       )}
       <span>
-        {step.text}{" "}
-        {step.highlight && (
-          <strong className="font-semibold text-body">
-            {step.highlight}
-          </strong>
-        )}
+        {step.text}
+        {step.highlight ? (
+          <>
+            {" "}
+            <strong className="font-semibold text-body">
+              {step.highlight}
+            </strong>
+          </>
+        ) : null}
       </span>
     </div>
   )

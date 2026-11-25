@@ -1,12 +1,23 @@
 import type {
   ExecutionTurn,
+  FileChangeEntrySummary,
+  FileChangeHunk,
+  FileChangeKind,
+  FileChangesSnapshot,
+  FileChangeStatus,
   FileReadStep,
+  HiddenInternalMessage,
   InlineDiffCardData,
   ListStep,
+  MessageOrigin,
+  MessageVisibility,
   ModelOption,
   SessionSummary,
   ShellCommandStep,
   TraceStepItem,
+  TurnAttempt,
+  TurnAttemptReason,
+  TurnOutcome,
   TurnOutputArtifact,
 } from "./ipc-client"
 
@@ -17,6 +28,56 @@ export interface HarnessSessionInfoLike {
   status?: string
   agent_label?: string
   edit_stats?: { added: number; removed: number; approximate: boolean }
+  updated_at_ms?: number
+  last_active_at_ms?: number
+  saved?: boolean
+  archived?: boolean
+  archived_at_ms?: number
+}
+
+export function isTempDirectoryPath(raw?: string | null): boolean {
+  if (!raw) return false
+  const normalized = raw.trim().replace(/\\/g, "/").replace(/\/+$/, "")
+  if (!normalized) return false
+  const lower = normalized.toLowerCase()
+  if (
+    lower === "/tmp" ||
+    lower.startsWith("/tmp/") ||
+    lower === "/private/tmp" ||
+    lower.startsWith("/private/tmp/") ||
+    lower === "/var/tmp" ||
+    lower.startsWith("/var/tmp/") ||
+    lower === "/private/var/tmp" ||
+    lower.startsWith("/private/var/tmp/") ||
+    lower === "/var/folders" ||
+    lower.startsWith("/var/folders/") ||
+    lower === "/private/var/folders" ||
+    lower.startsWith("/private/var/folders/")
+  ) {
+    return true
+  }
+  if (/^[a-z]:\/(temp|tmp)(\/|$)/.test(lower)) return true
+  if (/\/appdata\/local\/temp(\/|$)/.test(lower)) return true
+  return false
+}
+
+export function formatRelativeTimestamp(
+  ms?: number | null,
+  fallback = "Now"
+): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) {
+    return fallback
+  }
+  const diffMs = Math.max(0, Date.now() - ms)
+  const mins = Math.floor(diffMs / 60_000)
+  if (mins < 1) return "Now"
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+  const weeks = Math.floor(days / 7)
+  return `${weeks}w`
 }
 
 export interface HarnessModelRouteLike {
@@ -30,6 +91,17 @@ export interface HarnessModelRouteLike {
 export interface HarnessHistoryMessageLike {
   role: string
   content: string
+  origin?: MessageOrigin
+  visibility?: MessageVisibility
+  attempt_id?: string | null
+  attempt_reason?: TurnAttemptReason
+  attempt_status?: TurnOutcome
+  stop_reason?: string | null
+  tool?: {
+    id?: string
+    name?: string
+    input?: unknown
+  } | null
   response_stats?: {
     duration_secs?: number
     input_tokens?: number
@@ -60,6 +132,7 @@ export type MappedLiveTraceEvent =
       toolName: string
       description: string
     }
+  | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
   | { type: "duration"; workedDuration: string }
   | {
@@ -80,10 +153,16 @@ const EMPTY_DIFF: InlineDiffCardData = {
 }
 
 export function formatDurationSeconds(secs?: number): string {
-  if (!secs || secs <= 0) return "1s"
-  if (secs < 60) return `${Math.max(1, Math.round(secs))}s`
-  const mins = Math.floor(secs / 60)
-  const rem = Math.round(secs % 60)
+  if (!secs || !Number.isFinite(secs) || secs <= 0) return "1s"
+  const totalSec = Math.max(1, Math.round(secs))
+  if (totalSec < 60) return `${totalSec}s`
+  const hours = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const rem = totalSec % 60
+  if (hours > 0) {
+    if (rem > 0) return `${hours}h ${mins}m ${rem}s`
+    return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
+  }
   return rem > 0 ? `${mins}m ${rem}s` : `${mins}m`
 }
 
@@ -117,21 +196,82 @@ function describeActiveTool(
   name: string,
   args: Record<string, unknown>
 ): string {
+  const intent =
+    typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+  if (intent) {
+    return intent.endsWith("...") ? intent : `${intent}...`
+  }
   const lower = name.toLowerCase()
+  if (lower === "batch") {
+    const calls = Array.isArray(args.tool_calls) ? args.tool_calls : []
+    if (calls.length > 0) {
+      const first = calls[0] as Record<string, unknown> | undefined
+      const firstIntent =
+        typeof first?.intent === "string" && first.intent.trim()
+          ? first.intent.trim()
+          : ""
+      if (firstIntent) {
+        return firstIntent.endsWith("...") ? firstIntent : `${firstIntent}...`
+      }
+      return calls.length === 1
+        ? "Inspecting workspace..."
+        : `Running ${calls.length} parallel checks...`
+    }
+    return "Inspecting workspace..."
+  }
   if (lower === "read_file" || lower === "read") {
-    const p = typeof args.path === "string" ? args.path : ""
+    const p =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.file_path === "string"
+          ? args.file_path
+          : ""
     return p ? `Reading ${basenameOf(p)}...` : "Reading files..."
   }
-  if (lower === "list_files" || lower === "ls") {
-    const d = typeof args.directory === "string" ? args.directory : ""
-    return d && d !== "." ? `Listing files in ${d}...` : "Listing workspace files..."
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    const d =
+      typeof args.directory === "string"
+        ? args.directory
+        : typeof args.path === "string"
+          ? args.path
+          : ""
+    return d && d !== "." ? `Listing files in ${d}...` : "Listing files..."
   }
-  if (lower === "search_files" || lower === "grep" || lower === "rg") {
-    const q = typeof args.query === "string" ? args.query : ""
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    const q =
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.pattern === "string"
+          ? args.pattern
+          : ""
     return q ? `Searching for "${q}"...` : "Searching files..."
   }
   if (lower === "run_command" || lower === "bash" || lower === "shell") {
     return "Running command..."
+  }
+  if (lower === "edit" || lower === "write" || lower === "apply_patch") {
+    const p =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.path === "string"
+          ? args.path
+          : ""
+    return p ? `Updating ${basenameOf(p)}...` : "Updating files..."
+  }
+  if (lower === "webfetch" || lower === "websearch") {
+    return lower === "websearch" ? "Searching web..." : "Fetching page..."
+  }
+  if (lower === "todo" || lower === "todowrite") {
+    return "Updating plan..."
   }
   if (lower === "create_powerpoint") {
     const title = typeof args.title === "string" ? args.title.trim() : ""
@@ -181,13 +321,28 @@ export function mapSessionInfoToSummary(
     info.title?.trim() ||
     info.agent_label?.trim() ||
     `Session ${info.session_id.slice(0, 8)}`
+  const updatedAtMs =
+    typeof info.last_active_at_ms === "number" && info.last_active_at_ms > 0
+      ? info.last_active_at_ms
+      : typeof info.updated_at_ms === "number" && info.updated_at_ms > 0
+        ? info.updated_at_ms
+        : undefined
+  const fallbackLabel = info.status === "running" ? "Live" : "Active"
   return {
     id: info.session_id,
     title,
     project: basenameOf(info.working_dir),
+    workingDir: info.working_dir,
     checkout: info.working_dir ? "Local Checkout" : "Daemon Session",
     branch: "main",
-    updatedAt: info.status === "running" ? "Live" : "Active",
+    updatedAt:
+      info.status === "running"
+        ? "Live"
+        : formatRelativeTimestamp(updatedAtMs, fallbackLabel),
+    updatedAtMs,
+    connection: "local",
+    saved: Boolean(info.saved),
+    archived: Boolean(info.archived),
     modelId: "claude-opus-5-5",
     modelLabel: "Claude Opus 5.5",
     effort: "Medium",
@@ -195,6 +350,22 @@ export function mapSessionInfoToSummary(
     kvWarmPct: 94,
     creditsUsed: 0,
   }
+}
+
+export function formatHarnessModelSpec(
+  modelId: string,
+  provider?: string,
+  apiMethod?: string
+): string {
+  const trimmed = modelId.trim()
+  if (!trimmed || trimmed === "default") return ""
+  if (trimmed.includes(":")) return trimmed
+  const normalizedApi = apiMethod?.trim().toLowerCase() ?? ""
+  const normalizedProvider = provider?.trim().toLowerCase() ?? ""
+  if (normalizedApi === "rayu" || normalizedProvider === "rayu") {
+    return `rayu:${trimmed}`
+  }
+  return trimmed
 }
 
 export function mapModelRoutesToOptions(
@@ -207,14 +378,76 @@ export function mapModelRoutesToOptions(
     seen.add(route.model)
     out.push({
       id: route.model,
-      label: route.model,
+      label: route.model.replace(/^rayu:/i, "") || route.model,
       subtitle:
         route.detail || (route.available ? "Available" : "Configure key"),
       provider: route.provider || "Rayu",
+      apiMethod: route.api_method,
       recommended: route.available === true && out.length < 2,
     })
   }
   return out
+}
+
+const REASONING_SENTINEL = "\u{2063}"
+const REASONING_LINE_RE = new RegExp(
+  `^\\*${REASONING_SENTINEL}([\\s\\S]*)${REASONING_SENTINEL}\\*[ \\t]*$`
+)
+
+function splitReasoningFromAssistantContent(raw: string): {
+  reasoningNotes: string[]
+  answerText: string
+} {
+  if (!raw.includes(REASONING_SENTINEL)) {
+    return { reasoningNotes: [], answerText: raw }
+  }
+  const reasoningNotes: string[] = []
+  const answerLines: string[] = []
+  let paragraphLines: string[] = []
+  let sawReasoning = false
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) return
+    const text = paragraphLines.join("\n").trim()
+    if (text) reasoningNotes.push(text)
+    paragraphLines = []
+  }
+
+  for (const rawLine of raw.split("\n")) {
+    const line = rawLine.replace(/\r$/, "")
+    const match = REASONING_LINE_RE.exec(line)
+    if (match) {
+      const unescaped = match[1].replace(/\\([\\*_`[\]<>&~|$])/g, "$1")
+      if (unescaped.trim().length > 0) {
+        paragraphLines.push(unescaped)
+      }
+      sawReasoning = true
+      continue
+    }
+    if (sawReasoning && line.trim() === "") {
+      flushParagraph()
+      sawReasoning = false
+      continue
+    }
+    flushParagraph()
+    sawReasoning = false
+    answerLines.push(line)
+  }
+  flushParagraph()
+
+  return {
+    reasoningNotes,
+    answerText: answerLines.join("\n").trim(),
+  }
+}
+
+function summarizeNotificationLine(trimmed: string): string {
+  const firstLine = (trimmed.split("\n")[0] ?? trimmed)
+    .replace(/\*\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  return firstLine.slice(0, 140) || "Notification"
 }
 
 function classifySyntheticUserMessage(
@@ -248,6 +481,34 @@ function classifySyntheticUserMessage(
   }
 
   if (
+    /^\*\*Background task(?:\s+(?:started|progress|stalled))?\*\*/i.test(
+      trimmed
+    )
+  ) {
+    return {
+      groupTitle: "Background task",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (/^(?:\u{1F41D}\s*)?\*\*Swarm\b/iu.test(trimmed)) {
+    return {
+      groupTitle: "Swarm update",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (/^\[Scheduled task\]/i.test(trimmed)) {
+    return {
+      groupTitle: "Scheduled task",
+      command: summarizeNotificationLine(trimmed),
+      output: trimmed.slice(0, 1200),
+    }
+  }
+
+  if (
     /^<(?:system-reminder|command-message|local-command-stdout|local-command-caveat)\b/i.test(
       trimmed
     )
@@ -262,6 +523,77 @@ function classifySyntheticUserMessage(
   return null
 }
 
+const ENGINE_INTERNAL_RECOVERY_PREFIXES = [
+  "Reassess the user's request using its full context and likely intent rather than isolated keywords.",
+  "Review the request again and distinguish legitimate coding, debugging, defensive, educational, or analytical work",
+  "Perform one final, independent policy check. Prefer a safe and useful constrained response when possible.",
+  "[System reminder: your previous response ended ",
+  "[Attached image associated with the preceding tool result:",
+] as const
+
+function isEngineInternalRecoveryPrompt(content: string): boolean {
+  const trimmed = content.trimStart()
+  if (/^You have \d+ incomplete todos?\b/i.test(trimmed)) {
+    return true
+  }
+  return ENGINE_INTERNAL_RECOVERY_PREFIXES.some((prefix) =>
+    trimmed.startsWith(prefix)
+  )
+}
+
+function summarizeHistoryToolCall(
+  tool: HarnessHistoryMessageLike["tool"]
+): { command: string; displayCommand: string } {
+  if (!tool?.name) {
+    return { command: "tool output", displayCommand: "tool execution" }
+  }
+  const input =
+    tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
+      ? (tool.input as Record<string, unknown>)
+      : null
+  if (input) {
+    const directCommand =
+      typeof input.command === "string"
+        ? input.command
+        : typeof input.file_path === "string"
+          ? input.file_path
+          : typeof input.path === "string"
+            ? input.path
+            : typeof input.pattern === "string"
+              ? input.pattern
+              : typeof input.query === "string"
+                ? input.query
+                : null
+    if (directCommand && directCommand.trim()) {
+      return {
+        command: directCommand.trim(),
+        displayCommand: `${tool.name} ${directCommand.trim()}`,
+      }
+    }
+  }
+  return { command: tool.name, displayCommand: tool.name }
+}
+
+function resolveAttemptStatus(
+  trimmedText: string,
+  explicitStatus?: TurnOutcome,
+  stopReason?: string | null
+): TurnOutcome {
+  const isRefusal =
+    typeof stopReason === "string" &&
+    /(refusal|content_filter|safety|guardrail|policy_violation)/i.test(
+      stopReason
+    )
+  if (explicitStatus) {
+    if (explicitStatus === "answered" && trimmedText.length === 0) {
+      return isRefusal ? "declined" : "failed"
+    }
+    return explicitStatus
+  }
+  if (isRefusal) return "declined"
+  return trimmedText.length > 0 ? "answered" : "failed"
+}
+
 export function mapHistoryMessagesToTurns(
   sessionId: string,
   messages: HarnessHistoryMessageLike[]
@@ -269,8 +601,13 @@ export function mapHistoryMessagesToTurns(
   const turns: ExecutionTurn[] = []
   let currentUserPrompt: string | null = null
   let assistantChunks: string[] = []
+  let workNotes: string[] = []
   let toolSteps: TraceStepItem[] = []
   let lastStats: HarnessHistoryMessageLike["response_stats"]
+  let attempts: TurnAttempt[] = []
+  let attemptIndexById = new Map<string, number>()
+  let hasExplicitAttemptMeta = false
+  let hiddenInternalMessages: HiddenInternalMessage[] = []
 
   const flushTurn = () => {
     if (currentUserPrompt === null) return
@@ -285,13 +622,32 @@ export function mapHistoryMessagesToTurns(
       typeof stats?.rayu_credits === "number"
         ? `${stats.rayu_credits.toFixed(2)} cr`
         : "0.00 cr"
+    const finalAttempt =
+      attempts.length > 0 ? attempts[attempts.length - 1] : null
+    const finalAttemptId = finalAttempt ? finalAttempt.id : null
+    const latestAnsweredAttempt = [...attempts]
+      .reverse()
+      .find((attempt) => attempt.answerText.trim().length > 0)
+    const answerIntro =
+      finalAttempt?.answerText.trim() ||
+      latestAnsweredAttempt?.answerText.trim() ||
+      assistantChunks.join("\n\n").trim()
+    const outcome: TurnOutcome | undefined = finalAttempt
+      ? finalAttempt.answerText.trim().length > 0
+        ? finalAttempt.status === "answered_partial"
+          ? "answered_partial"
+          : "answered"
+        : finalAttempt.status === "answered"
+          ? "failed"
+          : finalAttempt.status
+      : undefined
 
     turns.push({
       id: `hist_${sessionId}_${turns.length + 1}`,
       sessionId,
       userPrompt: currentUserPrompt,
       workedDuration: formatDurationSeconds(stats?.duration_secs),
-      notes: [],
+      notes: workNotes,
       groups:
         toolSteps.length > 0
           ? [
@@ -302,27 +658,50 @@ export function mapHistoryMessagesToTurns(
               },
             ]
           : [],
-      answerIntro: assistantChunks.join("\n\n").trim(),
+      answerIntro,
       answerBullets: [],
       diffCard: EMPTY_DIFF,
       timestamp: "History",
       credits,
       kvCachePct,
       pinned: false,
+      ...(outcome ? { outcome } : {}),
+      ...(attempts.length > 0 ? { attempts, finalAttemptId } : {}),
+      ...(hiddenInternalMessages.length > 0
+        ? { hiddenInternalMessages }
+        : {}),
     })
     currentUserPrompt = null
     assistantChunks = []
+    workNotes = []
     toolSteps = []
     lastStats = undefined
+    attempts = []
+    attemptIndexById = new Map()
+    hasExplicitAttemptMeta = false
+    hiddenInternalMessages = []
   }
 
   for (const msg of messages) {
     if (msg.role === "user") {
+      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
+        hiddenInternalMessages.push({
+          origin: msg.origin ?? "engine_internal",
+          visibility: msg.visibility ?? "hidden",
+          content: msg.content,
+        })
+        continue
+      }
+      if (isEngineInternalRecoveryPrompt(msg.content)) {
+        hiddenInternalMessages.push({
+          origin: "engine_internal",
+          visibility: "hidden",
+          content: msg.content,
+        })
+        continue
+      }
       const synthetic = classifySyntheticUserMessage(msg.content)
       if (synthetic) {
-        if (currentUserPrompt === null) {
-          currentUserPrompt = synthetic.groupTitle
-        }
         const step: ShellCommandStep = {
           id: `tool_${turns.length}_${toolSteps.length}`,
           kind: "command",
@@ -333,17 +712,43 @@ export function mapHistoryMessagesToTurns(
           statusLabel: "Loaded",
           isMono: false,
         }
-        toolSteps.push(step)
+        if (currentUserPrompt !== null) {
+          toolSteps.push(step)
+        } else if (turns.length > 0) {
+          const prevTurn = turns[turns.length - 1]
+          if (prevTurn.groups.length > 0) {
+            prevTurn.groups[0].steps.push(step)
+          } else {
+            prevTurn.groups.push({
+              id: `wg_${turns.length}`,
+              title: synthetic.groupTitle,
+              steps: [step],
+            })
+          }
+        } else {
+          currentUserPrompt = synthetic.groupTitle
+          toolSteps.push(step)
+        }
         continue
       }
       flushTurn()
       currentUserPrompt = msg.content
     } else if (msg.role === "tool") {
+      if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
+        for (const chunk of assistantChunks) {
+          const clean = chunk.trim()
+          if (clean) workNotes.push(clean)
+        }
+        assistantChunks = []
+        attempts = []
+        attemptIndexById = new Map()
+      }
+      const summary = summarizeHistoryToolCall(msg.tool)
       const step: ShellCommandStep = {
         id: `tool_${turns.length}_${toolSteps.length}`,
         kind: "command",
-        command: "tool output",
-        displayCommand: "tool execution",
+        command: summary.command,
+        displayCommand: summary.displayCommand,
         output: msg.content.slice(0, 1200),
         exitCode: 0,
         statusLabel: "Success",
@@ -351,8 +756,63 @@ export function mapHistoryMessagesToTurns(
       }
       toolSteps.push(step)
     } else if (msg.role === "assistant") {
-      if (msg.content.trim()) {
-        assistantChunks.push(msg.content)
+      const { reasoningNotes, answerText } = splitReasoningFromAssistantContent(
+        msg.content
+      )
+      for (const note of reasoningNotes) {
+        workNotes.push(note)
+      }
+      const trimmed = answerText.trim()
+      if (trimmed) {
+        assistantChunks.push(answerText)
+      }
+      const hasExplicitAttempt =
+        msg.attempt_id != null ||
+        msg.attempt_status !== undefined ||
+        msg.stop_reason != null
+      if (hasExplicitAttempt) {
+        hasExplicitAttemptMeta = true
+      }
+      if (trimmed.length > 0 || hasExplicitAttempt) {
+        const attemptId =
+          msg.attempt_id ??
+          (hasExplicitAttempt ? `att_${attempts.length + 1}` : "att_1")
+        const existingIdx = attemptIndexById.get(attemptId)
+        if (existingIdx !== undefined) {
+          const existing = attempts[existingIdx]
+          const combinedText = [existing.answerText, trimmed]
+            .filter(Boolean)
+            .join("\n\n")
+          attempts[existingIdx] = {
+            ...existing,
+            reason: msg.attempt_reason ?? existing.reason,
+            answerText: combinedText,
+            stopReason: msg.stop_reason ?? existing.stopReason,
+            status: resolveAttemptStatus(
+              combinedText,
+              msg.attempt_status ??
+                (combinedText.length > 0 ? existing.status : undefined),
+              msg.stop_reason ?? existing.stopReason
+            ),
+          }
+        } else {
+          attemptIndexById.set(attemptId, attempts.length)
+          attempts.push({
+            id: attemptId,
+            reason:
+              msg.attempt_reason ??
+              (attempts.length === 0 ? "initial" : "reassess_refusal"),
+            status: resolveAttemptStatus(
+              trimmed,
+              msg.attempt_status,
+              msg.stop_reason
+            ),
+            answerText: trimmed,
+            ...(msg.stop_reason !== undefined
+              ? { stopReason: msg.stop_reason }
+              : {}),
+          })
+        }
       }
       if (msg.response_stats) {
         lastStats = msg.response_stats
@@ -368,7 +828,13 @@ export interface HarnessStreamTracker {
   toolInputs: Map<string, string>
   startedAtMs: number
   turnActive: boolean
+  turnCompleted?: boolean
   batchEpoch: number
+  hasStreamedTextInPhase: boolean
+  phaseHasReads: boolean
+  phaseHasCommands: boolean
+  phaseHasSearches: boolean
+  phaseCommandCount: number
   lastCredits?: string
   lastKvCachePct?: number
 }
@@ -378,7 +844,404 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     toolInputs: new Map(),
     startedAtMs: Date.now(),
     turnActive: false,
+    turnCompleted: false,
     batchEpoch: 1,
+    hasStreamedTextInPhase: false,
+    phaseHasReads: false,
+    phaseHasCommands: false,
+    phaseHasSearches: false,
+    phaseCommandCount: 0,
+  }
+}
+
+function resetTrackerPhase(tracker: HarnessStreamTracker): void {
+  tracker.phaseHasReads = false
+  tracker.phaseHasCommands = false
+  tracker.phaseHasSearches = false
+  tracker.phaseCommandCount = 0
+}
+
+function computePhaseGroupTitle(tracker: HarnessStreamTracker): string {
+  const hasReadOrSearch = tracker.phaseHasReads || tracker.phaseHasSearches
+  if (hasReadOrSearch && tracker.phaseHasCommands) {
+    return "Read files, ran commands"
+  }
+  if (tracker.phaseHasReads) {
+    return "Read files"
+  }
+  if (tracker.phaseHasSearches) {
+    return "Searched files"
+  }
+  if (tracker.phaseHasCommands) {
+    return tracker.phaseCommandCount > 1 ? "Ran commands" : "Ran a command"
+  }
+  return "Read files, ran commands"
+}
+
+interface ParsedBatchOutputSection {
+  index: number
+  tool: string
+  output: string
+  isError: boolean
+}
+
+function splitBatchOutputSections(rawOutput: string): ParsedBatchOutputSection[] {
+  if (!rawOutput.trim()) return []
+  const cleaned = rawOutput.replace(/^\[batch timing:[^\]]*\]\s*/i, "")
+  const headerRegex = /---\s*\[(\d+)\]\s*([^\n-]+?)\s*---/g
+  const matches: Array<{
+    index: number
+    tool: string
+    start: number
+    contentStart: number
+  }> = []
+  let m: RegExpExecArray | null
+  while ((m = headerRegex.exec(cleaned)) !== null) {
+    matches.push({
+      index: Number.parseInt(m[1], 10),
+      tool: m[2].trim(),
+      start: m.index,
+      contentStart: m.index + m[0].length,
+    })
+  }
+  if (matches.length === 0) return []
+  return matches.map((cur, idx) => {
+    const end = idx + 1 < matches.length ? matches[idx + 1].start : cleaned.length
+    const sectionText = cleaned.slice(cur.contentStart, end).trim()
+    return {
+      index: cur.index,
+      tool: cur.tool,
+      output: sectionText,
+      isError: /^error:/i.test(sectionText),
+    }
+  })
+}
+
+function extractBatchSubcallArgs(entry: Record<string, unknown>): {
+  tool: string
+  args: Record<string, unknown>
+} {
+  const tool =
+    typeof entry.tool === "string" && entry.tool.trim()
+      ? entry.tool.trim()
+      : typeof entry.name === "string" && entry.name.trim()
+        ? entry.name.trim()
+        : typeof entry.tool_name === "string" && entry.tool_name.trim()
+          ? entry.tool_name.trim()
+          : "tool"
+  const nested =
+    (entry.parameters && typeof entry.parameters === "object"
+      ? (entry.parameters as Record<string, unknown>)
+      : null) ??
+    (entry.arguments && typeof entry.arguments === "object"
+      ? (entry.arguments as Record<string, unknown>)
+      : null) ??
+    (entry.args && typeof entry.args === "object"
+      ? (entry.args as Record<string, unknown>)
+      : null) ??
+    (entry.input && typeof entry.input === "object"
+      ? (entry.input as Record<string, unknown>)
+      : null)
+
+  const merged: Record<string, unknown> = { ...(nested ?? {}) }
+  for (const [k, v] of Object.entries(entry)) {
+    if (
+      k === "tool" ||
+      k === "name" ||
+      k === "tool_name" ||
+      k === "parameters" ||
+      k === "arguments" ||
+      k === "args" ||
+      k === "input"
+    ) {
+      continue
+    }
+    if (merged[k] === undefined) {
+      merged[k] = v
+    }
+  }
+  return { tool, args: merged }
+}
+
+function mapSingleWorkStep(
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+  output: string,
+  error: string | undefined,
+  tracker: HarnessStreamTracker
+): TraceStepItem {
+  const lower = name.toLowerCase()
+  const intent =
+    typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+
+  if (lower === "read_file" || lower === "read") {
+    tracker.phaseHasReads = true
+    const relPath =
+      typeof args.path === "string"
+        ? args.path
+        : typeof args.file_path === "string"
+          ? args.file_path
+          : "file"
+    const startLine =
+      typeof args.start_line === "number"
+        ? args.start_line
+        : typeof args.offset === "number"
+          ? args.offset
+          : 1
+    const endLine = typeof args.end_line === "number" ? args.end_line : null
+    const displayLabel = endLine
+      ? `${relPath}:${startLine}-${endLine}`
+      : relPath
+    const fileStep: FileReadStep = {
+      id: callId,
+      kind: "read",
+      label: "Read",
+      files: [
+        {
+          file: basenameOf(relPath),
+          path: relPath,
+          line: startLine,
+          rangeLabel: displayLabel,
+        },
+      ],
+    }
+    return fileStep
+  }
+
+  if (lower === "edit" || lower === "write" || lower === "apply_patch") {
+    tracker.phaseHasReads = true
+    const relPath =
+      typeof args.file_path === "string"
+        ? args.file_path
+        : typeof args.path === "string"
+          ? args.path
+          : "file"
+    const fileStep: FileReadStep = {
+      id: callId,
+      kind: "read",
+      label: lower === "write" ? "Wrote" : "Edited",
+      files: [
+        {
+          file: basenameOf(relPath),
+          path: relPath,
+          line: 1,
+          rangeLabel: relPath,
+        },
+      ],
+    }
+    return fileStep
+  }
+
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    tracker.phaseHasReads = true
+    const rawDir =
+      typeof args.directory === "string"
+        ? args.directory.trim()
+        : typeof args.path === "string"
+          ? args.path.trim()
+          : ""
+    const hasSubdir = Boolean(rawDir && rawDir !== "." && rawDir !== "./")
+    const listStep: ListStep = {
+      id: callId,
+      kind: "list",
+      text: hasSubdir ? "Listed files in" : "Listed files",
+      ...(hasSubdir ? { highlight: rawDir } : {}),
+    }
+    return listStep
+  }
+
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    tracker.phaseHasSearches = true
+    const query =
+      typeof args.query === "string"
+        ? args.query
+        : typeof args.pattern === "string"
+          ? args.pattern
+          : "workspace"
+    const searchStep: ListStep = {
+      id: callId,
+      kind: "search",
+      text: lower === "glob" || lower === "find_files" ? "Found files matching" : "Searched for",
+      highlight: query,
+    }
+    return searchStep
+  }
+
+  if (lower === "webfetch" || lower === "websearch") {
+    tracker.phaseHasSearches = true
+    const target =
+      typeof args.url === "string"
+        ? args.url
+        : typeof args.query === "string"
+          ? args.query
+          : name
+    const webStep: ListStep = {
+      id: callId,
+      kind: "search",
+      text: lower === "websearch" ? "Searched web for" : "Fetched",
+      highlight: target,
+    }
+    return webStep
+  }
+
+  if (lower === "todo" || lower === "todowrite") {
+    tracker.phaseHasReads = true
+    const todoStep: ListStep = {
+      id: callId,
+      kind: "list",
+      text: intent || "Updated task list",
+    }
+    return todoStep
+  }
+
+  // Shell commands & fallback tool calls
+  const isShell =
+    lower === "run_command" || lower === "bash" || lower === "shell"
+  tracker.phaseHasCommands = true
+  tracker.phaseCommandCount += 1
+
+  let command = name
+  let displayCommand: string
+  if (typeof args.command === "string" && args.command.trim()) {
+    command = args.command.trim()
+    displayCommand = error ? `Command failed (${command})` : command
+  } else if (intent) {
+    command = intent
+    displayCommand = intent
+  } else if (typeof args.path === "string" || typeof args.file_path === "string") {
+    const target =
+      typeof args.path === "string" ? args.path : String(args.file_path)
+    command = `${name} ${target}`
+    displayCommand = command
+  } else {
+    displayCommand = error ? `${name} (retrying)` : name
+  }
+
+  const shellStep: ShellCommandStep = {
+    id: callId,
+    kind: "command",
+    command,
+    displayCommand,
+    output: (error ?? output).slice(0, 2400) || "(no output)",
+    exitCode: error ? 1 : 0,
+    statusLabel: error ? "Failed" : "Success",
+    isFailed: Boolean(error),
+    isMono: isShell && !error,
+  }
+  return shellStep
+}
+
+function normalizeFileChangeKind(value: unknown): FileChangeKind {
+  if (
+    value === "created" ||
+    value === "modified" ||
+    value === "deleted" ||
+    value === "renamed"
+  ) {
+    return value
+  }
+  return "modified"
+}
+
+function normalizeFileChangeStatus(value: unknown): FileChangeStatus {
+  if (value === "pending" || value === "kept" || value === "undone") {
+    return value
+  }
+  return "pending"
+}
+
+function normalizeFileChangeHunk(raw: unknown): FileChangeHunk | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  return {
+    old_start: typeof r.old_start === "number" ? r.old_start : 1,
+    old_lines: typeof r.old_lines === "number" ? r.old_lines : 0,
+    new_start: typeof r.new_start === "number" ? r.new_start : 1,
+    new_lines: typeof r.new_lines === "number" ? r.new_lines : 0,
+    header: typeof r.header === "string" ? r.header : "@@",
+    lines: Array.isArray(r.lines)
+      ? r.lines.filter((line): line is string => typeof line === "string")
+      : [],
+  }
+}
+
+function normalizeFileChangeEntry(raw: unknown): FileChangeEntrySummary | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const path = typeof r.path === "string" ? r.path : ""
+  if (!path) return null
+  const displayPath =
+    typeof r.display_path === "string" && r.display_path.trim()
+      ? r.display_path
+      : path
+  const previewHunks = Array.isArray(r.preview_hunks)
+    ? r.preview_hunks
+        .map(normalizeFileChangeHunk)
+        .filter((h): h is FileChangeHunk => h !== null)
+    : []
+  return {
+    path,
+    display_path: displayPath,
+    ...(typeof r.old_path === "string" ? { old_path: r.old_path } : {}),
+    kind: normalizeFileChangeKind(r.kind),
+    status: normalizeFileChangeStatus(r.status),
+    additions: typeof r.additions === "number" ? r.additions : 0,
+    deletions: typeof r.deletions === "number" ? r.deletions : 0,
+    changed_in_latest_turn: Boolean(r.changed_in_latest_turn),
+    turn_id: typeof r.turn_id === "number" ? r.turn_id : 0,
+    edit_count: typeof r.edit_count === "number" ? r.edit_count : 1,
+    is_binary: Boolean(r.is_binary),
+    undoable: r.undoable !== false,
+    can_redo: Boolean(r.can_redo),
+    preview_hunks: previewHunks,
+    preview_truncated: Boolean(r.preview_truncated),
+    updated_at_ms:
+      typeof r.updated_at_ms === "number" ? r.updated_at_ms : Date.now(),
+  }
+}
+
+export function normalizeFileChangesSnapshot(
+  raw: unknown,
+  fallbackSessionId = ""
+): FileChangesSnapshot | null {
+  if (!raw || typeof raw !== "object") return null
+  const r = raw as Record<string, unknown>
+  const files = Array.isArray(r.files)
+    ? r.files
+        .map(normalizeFileChangeEntry)
+        .filter((entry): entry is FileChangeEntrySummary => entry !== null)
+    : []
+  const sessionId =
+    typeof r.session_id === "string" && r.session_id
+      ? r.session_id
+      : fallbackSessionId
+  const pendingFiles = files.filter((f) => f.status === "pending")
+  return {
+    session_id: sessionId,
+    latest_turn_id: typeof r.latest_turn_id === "number" ? r.latest_turn_id : 0,
+    total_pending_files:
+      typeof r.total_pending_files === "number"
+        ? r.total_pending_files
+        : pendingFiles.length,
+    total_additions:
+      typeof r.total_additions === "number"
+        ? r.total_additions
+        : files.reduce((sum, f) => sum + f.additions, 0),
+    total_deletions:
+      typeof r.total_deletions === "number"
+        ? r.total_deletions
+        : files.reduce((sum, f) => sum + f.deletions, 0),
+    files,
   }
 }
 
@@ -392,6 +1255,8 @@ export function mapHarnessFrameToLiveEvents(
     tracker.startedAtMs = Date.now()
     tracker.turnActive = true
     tracker.batchEpoch = 1
+    tracker.hasStreamedTextInPhase = false
+    resetTrackerPhase(tracker)
     tracker.toolInputs.clear()
     return []
   }
@@ -405,15 +1270,23 @@ export function mapHarnessFrameToLiveEvents(
   ) {
     tracker.startedAtMs = Date.now()
     tracker.turnActive = true
+    tracker.turnCompleted = false
   }
 
   switch (ev) {
     case "text_delta": {
+      tracker.turnCompleted = false
       const text = typeof frame.text === "string" ? frame.text : ""
-      return text ? [{ type: "answer-delta", delta: text }] : []
+      if (text) {
+        tracker.hasStreamedTextInPhase = true
+        return [{ type: "answer-delta", delta: text }]
+      }
+      return []
     }
     case "promote_answer_to_note": {
+      tracker.hasStreamedTextInPhase = false
       tracker.batchEpoch += 1
+      resetTrackerPhase(tracker)
       return [{ type: "promote-note" }]
     }
     case "reasoning_delta": {
@@ -434,7 +1307,18 @@ export function mapHarnessFrameToLiveEvents(
           Object.keys(args).length > 0 ? JSON.stringify(args) : ""
         )
       }
-      return [{ type: "tool-status", label: describeActiveTool(name, args) }]
+      const events: MappedLiveTraceEvent[] = []
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        events.push({ type: "promote-note" })
+      }
+      events.push({
+        type: "tool-status",
+        label: describeActiveTool(name, args),
+      })
+      return events
     }
     case "tool_input_delta": {
       const callId = String(frame.call_id ?? "")
@@ -447,6 +1331,26 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "tool_exec": {
+      const callId = String(frame.call_id ?? "")
+      const name = String(frame.name ?? "tool")
+      const args = parseToolArgs(
+        frame.tool_input ?? frame.input,
+        callId ? (tracker.toolInputs.get(callId) ?? "") : ""
+      )
+      const events: MappedLiveTraceEvent[] = []
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        events.push({ type: "promote-note" })
+      }
+      events.push({
+        type: "tool-status",
+        label: describeActiveTool(name, args),
+      })
+      return events
+    }
     case "tool_call": {
       const callId = String(frame.call_id ?? "")
       if (callId && frame.input !== undefined) {
@@ -455,6 +1359,12 @@ export function mapHarnessFrameToLiveEvents(
             ? frame.input
             : JSON.stringify(frame.input)
         tracker.toolInputs.set(callId, serialized)
+      }
+      if (tracker.hasStreamedTextInPhase) {
+        tracker.hasStreamedTextInPhase = false
+        tracker.batchEpoch += 1
+        resetTrackerPhase(tracker)
+        return [{ type: "promote-note" }]
       }
       return []
     }
@@ -475,88 +1385,90 @@ export function mapHarnessFrameToLiveEvents(
       )
 
       const epoch = tracker.batchEpoch
+      const workGroupId = `codex_work_${epoch}`
 
-      // Map read_file / Read into crisp clickable FileReadStep under "Read files"
-      if (lower === "read_file" || lower === "read") {
-        const relPath =
-          typeof args.path === "string"
-            ? args.path
-            : typeof args.file_path === "string"
-              ? args.file_path
-              : "file"
-        const startLine =
-          typeof args.start_line === "number" ? args.start_line : 1
-        const endLine = typeof args.end_line === "number" ? args.end_line : null
-        const fileStep: FileReadStep = {
-          id: callId,
-          kind: "read",
-          label: "Read",
-          files: [
-            {
-              file: basenameOf(relPath),
-              path: relPath,
-              line: startLine,
-              rangeLabel: endLine ? `${relPath}:${startLine}-${endLine}` : relPath,
-            },
-          ],
-        }
-        return [
-          { type: "tool-status", label: null },
-          {
-            type: "step",
-            groupId: `codex_read_${epoch}`,
-            groupTitle: "Read files",
-            step: fileStep,
-          },
-        ]
-      }
+      // Unpack Rust daemon `batch` calls into individual Codex-style steps under one clean group
+      if (lower === "batch") {
+        const rawCalls = Array.isArray(args.tool_calls)
+          ? (args.tool_calls.filter(
+              (c): c is Record<string, unknown> =>
+                Boolean(c) && typeof c === "object" && !Array.isArray(c)
+            ))
+          : []
+        const sections = splitBatchOutputSections(output)
+        const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }]
 
-      // Map list_files / ls into ListStep under "Read files"
-      if (lower === "list_files" || lower === "ls") {
-        const dir =
-          typeof args.directory === "string" && args.directory.trim() !== "."
-            ? args.directory.trim()
-            : "workspace"
-        const listStep: ListStep = {
-          id: callId,
-          kind: "list",
-          text: "Listed files in",
-          highlight: dir,
+        if (rawCalls.length > 0) {
+          for (let i = 0; i < rawCalls.length; i += 1) {
+            const { tool: subTool, args: subArgs } = extractBatchSubcallArgs(
+              rawCalls[i]
+            )
+            const section = sections[i]
+            const subOutput = section?.output ?? (i === 0 ? output : "")
+            const subError =
+              error ?? (section?.isError ? section.output : undefined)
+            const step = mapSingleWorkStep(
+              `${callId}_${i + 1}`,
+              subTool,
+              subArgs,
+              subOutput,
+              subError,
+              tracker
+            )
+            events.push({
+              type: "step",
+              groupId: workGroupId,
+              groupTitle: computePhaseGroupTitle(tracker),
+              step,
+            })
+          }
+          return events
         }
-        return [
-          { type: "tool-status", label: null },
-          {
-            type: "step",
-            groupId: `codex_read_${epoch}`,
-            groupTitle: "Read files",
-            step: listStep,
-          },
-        ]
-      }
 
-      // Map search_files / grep into ListStep under "Searched files"
-      if (lower === "search_files" || lower === "grep" || lower === "rg") {
-        const query =
-          typeof args.query === "string"
-            ? args.query
-            : typeof args.pattern === "string"
-              ? args.pattern
-              : "workspace"
-        const searchStep: ListStep = {
-          id: callId,
-          kind: "search",
-          text: "Searched for",
-          highlight: query,
+        if (sections.length > 0) {
+          for (let i = 0; i < sections.length; i += 1) {
+            const section = sections[i]
+            const step = mapSingleWorkStep(
+              `${callId}_${i + 1}`,
+              section.tool,
+              {},
+              section.output,
+              section.isError ? section.output : error,
+              tracker
+            )
+            events.push({
+              type: "step",
+              groupId: workGroupId,
+              groupTitle: computePhaseGroupTitle(tracker),
+              step,
+            })
+          }
+          return events
         }
-        return [
-          { type: "tool-status", label: null },
-          {
+
+        // Batch failed before running sub-calls (e.g. schema retry) — keep quiet & compact
+        if (error) {
+          tracker.phaseHasCommands = true
+          tracker.phaseCommandCount += 1
+          const retryStep: ShellCommandStep = {
+            id: callId,
+            kind: "command",
+            command: "batch",
+            displayCommand: "Retried parallel tool call",
+            output: error.slice(0, 1200),
+            exitCode: 1,
+            statusLabel: "Retried",
+            isFailed: true,
+            isMono: false,
+          }
+          events.push({
             type: "step",
-            groupId: `codex_search_${epoch}`,
-            groupTitle: "Searched files",
-            step: searchStep,
-          },
-        ]
+            groupId: workGroupId,
+            groupTitle: computePhaseGroupTitle(tracker),
+            step: retryStep,
+          })
+        }
+        return events
       }
 
       // Map create_powerpoint into visual slide preview thumbnail card with real deck metadata
@@ -699,40 +1611,15 @@ export function mapHarnessFrameToLiveEvents(
         ]
       }
 
-      // Commands & other tool calls
-      let displayCommand = name
-      if (typeof args.command === "string") {
-        displayCommand = args.command
-      } else if (typeof args.path === "string") {
-        displayCommand = `${name} ${args.path}`
-      } else {
-        const fallbackRaw = tracker.toolInputs.get(callId) ?? ""
-        if (fallbackRaw && fallbackRaw !== "{}") {
-          displayCommand = `${name} ${fallbackRaw.slice(0, 80)}`.trim()
-        }
-      }
-
-      const isShell =
-        lower === "run_command" || lower === "bash" || lower === "shell"
-      const step: ShellCommandStep = {
-        id: callId,
-        kind: "command",
-        command: displayCommand,
-        displayCommand,
-        output: (error ?? output).slice(0, 2400) || "(no output)",
-        exitCode: error ? 1 : 0,
-        statusLabel: error ? "Failed" : "Success",
-        isFailed: Boolean(error),
-        isMono: isShell,
-      }
+      // Standard workspace tools (read, ls, grep, glob, bash, edit, write, todo, etc.)
+      // all coalesce into one clean Codex-style group per work phase.
+      const step = mapSingleWorkStep(callId, name, args, output, error, tracker)
       return [
         { type: "tool-status", label: null },
         {
           type: "step",
-          groupId: isShell
-            ? `codex_cmd_${epoch}`
-            : `codex_tool_${epoch}`,
-          groupTitle: isShell ? "Ran a command" : `Loaded a tool, ${name}`,
+          groupId: workGroupId,
+          groupTitle: computePhaseGroupTitle(tracker),
           step,
         },
       ]
@@ -757,6 +1644,13 @@ export function mapHarnessFrameToLiveEvents(
         },
       ]
     }
+    case "file_changes_state": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      const snapshot = normalizeFileChangesSnapshot(frame.snapshot, sessionId)
+      if (!snapshot) return []
+      return [{ type: "file-changes", snapshot }]
+    }
     case "token_usage": {
       const input = typeof frame.input === "number" ? frame.input : 0
       const cacheRead =
@@ -778,11 +1672,23 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "provider_guardrail": {
+      tracker.turnCompleted = false
+      const message =
+        typeof frame.message === "string" && frame.message.trim()
+          ? frame.message.trim()
+          : "The model declined this request."
+      return [{ type: "answer-delta", delta: `\n\n${message}` }]
+    }
     case "turn_done":
     case "turn_stopped": {
+      if (tracker.turnCompleted) {
+        return []
+      }
+      tracker.turnCompleted = true
       const elapsedSec = Math.max(
         1,
-        Math.round((Date.now() - tracker.startedAtMs) / 1000)
+        Math.floor((Date.now() - tracker.startedAtMs) / 1000)
       )
       const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }]
       if (
@@ -805,6 +1711,8 @@ export function mapHarnessFrameToLiveEvents(
       })
       tracker.batchEpoch = 1
       tracker.turnActive = false
+      tracker.hasStreamedTextInPhase = false
+      resetTrackerPhase(tracker)
       return events
     }
     default:

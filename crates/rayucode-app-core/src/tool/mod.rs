@@ -26,6 +26,7 @@ mod discover_secrets;
 mod edit;
 mod edit_stats;
 mod feedback;
+mod file_changes;
 mod file_diff;
 pub(crate) mod file_lock;
 mod gmail;

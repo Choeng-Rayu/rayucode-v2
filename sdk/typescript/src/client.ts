@@ -25,6 +25,10 @@ import {
   type AnyApiEvent,
   type ApiEvent,
   type ApiRequest,
+  type FileChangeActionKind,
+  type FileChangeActionResponse,
+  type FileChangeDiffPayload,
+  type FileChangesSnapshot,
   type HistoryMessage,
   type ImageAttachment,
   type ModelRouteInfo,
@@ -67,6 +71,13 @@ export interface FileStatus {
   kind: string;
   size?: number;
   modifiedMs?: number;
+}
+
+export interface FileChangeActionOptions {
+  /** Target file path for single-file actions (`keep`, `undo`, `redo`). */
+  path?: string;
+  /** Override stale-edit conflict protection on `undo`, `undo_all`, `redo`, or `redo_all`. */
+  force?: boolean;
 }
 
 
@@ -939,6 +950,99 @@ export class RayucodeClient extends EventEmitter {
       size: frame.size,
       modifiedMs: frame.modified_ms,
     };
+  }
+
+  /**
+   * Fetch the session's tracked file-change review snapshot.
+   * Requires the `file_changes` capability.
+   */
+  async getFileChanges(sessionId: string): Promise<FileChangesSnapshot> {
+    const frame = await this.expectReply(
+      { req: "get_file_changes", session_id: sessionId },
+      "file_changes_state",
+    );
+    return frame.snapshot;
+  }
+
+  /**
+   * Fetch the full uncapped diff payload for one tracked file change in the session.
+   * Requires the `file_changes` capability.
+   */
+  async getFileChangeDiff(sessionId: string, path: string): Promise<FileChangeDiffPayload> {
+    const frame = await this.expectReply(
+      { req: "get_file_change_diff", session_id: sessionId, path },
+      "file_change_diff",
+    );
+    return frame.diff;
+  }
+
+  /**
+   * Apply a review action (`keep`, `undo`, `redo`, `keep_all`, `undo_all`, `redo_all`)
+   * to one or all tracked file changes in the session.
+   * Requires the `file_changes` capability.
+   */
+  async fileChangeAction(
+    sessionId: string,
+    action: FileChangeActionKind,
+    opts?: FileChangeActionOptions,
+  ): Promise<FileChangeActionResponse> {
+    const frame = await this.expectReply(
+      {
+        req: "file_change_action",
+        session_id: sessionId,
+        action,
+        ...(opts?.path !== undefined ? { path: opts.path } : {}),
+        ...(opts?.force !== undefined ? { force: opts.force } : {}),
+      },
+      "file_change_action_result",
+    );
+    return frame.response;
+  }
+
+  /** Accept one tracked file change (`keep`), or all pending changes when `path` is omitted (`keep_all`). */
+  async keepFileChange(sessionId: string, path?: string): Promise<FileChangeActionResponse> {
+    if (path !== undefined) {
+      return this.fileChangeAction(sessionId, "keep", { path });
+    }
+    return this.fileChangeAction(sessionId, "keep_all");
+  }
+
+  /** Safely restore one tracked file (`undo`), or all tracked files when `path` is omitted (`undo_all`). */
+  async undoFileChange(
+    sessionId: string,
+    path?: string,
+    opts?: Pick<FileChangeActionOptions, "force">,
+  ): Promise<FileChangeActionResponse> {
+    if (path !== undefined) {
+      return this.fileChangeAction(sessionId, "undo", {
+        path,
+        ...(opts?.force !== undefined ? { force: opts.force } : {}),
+      });
+    }
+    return this.fileChangeAction(
+      sessionId,
+      "undo_all",
+      opts?.force !== undefined ? { force: opts.force } : undefined,
+    );
+  }
+
+  /** Safely re-apply one undone file (`redo`), or all undone files when `path` is omitted (`redo_all`). */
+  async redoFileChange(
+    sessionId: string,
+    path?: string,
+    opts?: Pick<FileChangeActionOptions, "force">,
+  ): Promise<FileChangeActionResponse> {
+    if (path !== undefined) {
+      return this.fileChangeAction(sessionId, "redo", {
+        path,
+        ...(opts?.force !== undefined ? { force: opts.force } : {}),
+      });
+    }
+    return this.fileChangeAction(
+      sessionId,
+      "redo_all",
+      opts?.force !== undefined ? { force: opts.force } : undefined,
+    );
   }
 
   /**

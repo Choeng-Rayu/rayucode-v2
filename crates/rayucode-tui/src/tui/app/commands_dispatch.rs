@@ -300,6 +300,7 @@ fn dispatch_single_local_command(app: &mut App, trimmed: &str) -> bool {
         || super::commands::handle_latex_command(app, trimmed)
         || super::commands_colors::handle_colors_command(app, trimmed)
         || super::commands::handle_log_command(app, trimmed)
+        || super::file_changes::handle_file_change_command(app, trimmed)
         || super::commands::handle_diff_command(app, trimmed)
         || super::commands::handle_model_status_command(app, trimmed)
         || super::debug::handle_debug_command(app, trimmed)

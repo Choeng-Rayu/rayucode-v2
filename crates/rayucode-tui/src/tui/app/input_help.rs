@@ -68,6 +68,18 @@ impl App {
             "git" => {
                 "/git\nShow git status --short --branch for the current session working directory.\n\n/git status\nAlias for /git."
             }
+            "changes" => {
+                "/changes [path]\nOpen the interactive file changes review overlay (also Alt+R).\n\nBrowse tracked session file edits, inspect unified diffs, keep/undo/redo per file or in batch, force-override conflicts (f), or open a file in $VISUAL/$EDITOR (o)."
+            }
+            "keep" => {
+                "/keep\nKeep (accept) all pending tracked file changes for this session.\n\n/keep <path>\nKeep a single tracked file change."
+            }
+            "undo" => {
+                "/undo\nRevert the most recently changed pending file.\n\n/undo all\nRevert all pending tracked file changes.\n\n/undo [--force] <path|all>\nRevert a specific file (or all files), using --force to overwrite external edits if a conflict is detected."
+            }
+            "redo" => {
+                "/redo\nRe-apply all undone tracked file changes.\n\n/redo <path>\nRe-apply a single undone file change."
+            }
             "commit" => {
                 "/commit\nAsk the agent to inspect current uncommitted changes and create interactive, logical commits.\n\nThe agent should group related files or hunks, preserve unrelated work, validate as appropriate, and report the commits created plus anything left uncommitted."
             }

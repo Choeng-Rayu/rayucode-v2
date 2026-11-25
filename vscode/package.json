@@ -6,7 +6,7 @@
     "dev:webview": "vite --port 5174",
     "typecheck": "tsc --noEmit",
     "lint:design": "node scripts/lint-design.mjs",
-    "test:host": "esbuild test/harnessSession.test.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/harnessSession.test.mjs && node --test dist/harnessSession.test.mjs",
+    "test:host": "esbuild test/harnessSession.test.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/harnessSession.test.mjs && esbuild test/rayuHostAuthManager.test.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/rayuHostAuthManager.test.mjs && node --test dist/harnessSession.test.mjs dist/rayuHostAuthManager.test.mjs",
     "test:webview": "vitest run --passWithNoTests",
     "test": "npm run test:host && npm run test:webview",
     "build": "tsc --noEmit && node build.mjs",

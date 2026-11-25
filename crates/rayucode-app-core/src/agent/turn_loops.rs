@@ -1137,7 +1137,35 @@ impl Agent {
                 // the tool itself later fails: it resets the malformed-round
                 // bound in handle_malformed_tool_round below.
                 executed_valid_call = true;
-                self.validate_tool_allowed(&tc.name)?;
+                if let Err(err) = self.validate_tool_allowed(&tc.name) {
+                    let err_msg = err.to_string();
+                    logging::info(&format!(
+                        "Tool '{}' rejected by session policy: {}",
+                        tc.name, err_msg
+                    ));
+                    Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                        session_id: self.session.id.clone(),
+                        message_id: message_id.clone(),
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        status: ToolStatus::Error,
+                        intent: tc.intent.clone(),
+                        title: None,
+                    }));
+                    if print_output {
+                        println!("\n  → {}", err_msg);
+                    }
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id,
+                            content: err_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
 
                 let is_native_tool = RAYU_NATIVE_TOOLS.contains(&tc.name.as_str());
 

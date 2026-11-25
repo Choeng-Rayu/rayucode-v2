@@ -27,6 +27,10 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:harness:create-session", { workingDir, title }),
     renameSession: (sessionId, title) =>
       ipcRenderer.invoke("rayu:harness:rename-session", { sessionId, title }),
+    archiveSession: (sessionId) =>
+      ipcRenderer.invoke("rayu:harness:archive-session", { sessionId }),
+    restoreSession: (sessionId) =>
+      ipcRenderer.invoke("rayu:harness:restore-session", { sessionId }),
     attachSession: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:attach-session", { sessionId }),
     forkSession: (sessionId) =>
@@ -73,6 +77,22 @@ const rayuApi = {
         ipcRenderer.removeListener("rayu:harness:event", listener)
       }
     },
+  },
+  fileChanges: {
+    get: (sessionId) =>
+      ipcRenderer.invoke("rayu:file-changes:get", { sessionId }),
+    diff: (sessionId, filePath) =>
+      ipcRenderer.invoke("rayu:file-changes:diff", {
+        sessionId,
+        path: filePath,
+      }),
+    action: (sessionId, action, opts) =>
+      ipcRenderer.invoke("rayu:file-changes:action", {
+        sessionId,
+        action,
+        ...(opts && opts.path !== undefined ? { path: opts.path } : {}),
+        ...(opts && opts.force !== undefined ? { force: opts.force } : {}),
+      }),
   },
   workspace: {
     getInfo: () => ipcRenderer.invoke("rayu:workspace:info"),
@@ -235,6 +255,25 @@ const rayuApi = {
         ipcRenderer.removeListener("rayu:browser:ensure-open", listener)
       }
     },
+  },
+  telegram: {
+    getState: () => ipcRenderer.invoke("rayu:telegram:state"),
+    startHosted: (replaceExisting) =>
+      ipcRenderer.invoke("rayu:telegram:start-hosted", { replaceExisting }),
+    connectBotToken: (input) =>
+      ipcRenderer.invoke("rayu:telegram:connect-bot-token", input),
+    disconnect: (localOnly) =>
+      ipcRenderer.invoke("rayu:telegram:disconnect", { localOnly }),
+    resolveApproval: (approvalId, decision) =>
+      ipcRenderer.invoke("rayu:telegram:resolve-approval", {
+        approvalId,
+        decision,
+      }),
+    setRemoteUninstall: (enabled) =>
+      ipcRenderer.invoke("rayu:telegram:set-remote-uninstall", { enabled }),
+    selectSession: (sessionId) =>
+      ipcRenderer.invoke("rayu:telegram:select-session", { sessionId }),
+    sendTestPing: () => ipcRenderer.invoke("rayu:telegram:ping"),
   },
 }
 

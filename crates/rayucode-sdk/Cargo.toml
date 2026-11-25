@@ -33,3 +33,4 @@ default = []
 ssh-native = ["dep:russh", "dep:rand", "dep:tokio"]
 
 [dev-dependencies]
+rayucode-provider-metadata = { path = "../rayucode-provider-metadata", features = ["test-support"] }

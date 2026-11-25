@@ -153,6 +153,26 @@ pub enum ApiEvent {
         snapshot: rayucode_applet_types::AgentApplets,
     },
 
+    /// Complete session-scoped snapshot of tracked file changes for review UIs.
+    /// Replace the previous snapshot, including when `files` is empty. Sent live
+    /// on edits, during attachment hydration, and in reply to `GetFileChanges`.
+    FileChangesState {
+        session_id: String,
+        snapshot: crate::FileChangesSnapshot,
+    },
+
+    /// Reply to `GetFileChangeDiff`: full uncapped diff payload for one tracked file.
+    FileChangeDiff {
+        session_id: String,
+        diff: crate::FileChangeDiffPayload,
+    },
+
+    /// Reply to `FileChangeAction`: structured result with updated snapshot and any conflicts.
+    FileChangeActionResult {
+        session_id: String,
+        response: crate::FileChangeActionResponse,
+    },
+
     /// Usage for the latest provider call, not cumulative session or turn totals.
     /// Input/cache accounting is provider-specific: Anthropic reports cache
     /// reads and writes separately, while OpenAI includes cache reads in input.

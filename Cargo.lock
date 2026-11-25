@@ -6103,6 +6103,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.10.9",
+ "similar",
  "tempfile",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",

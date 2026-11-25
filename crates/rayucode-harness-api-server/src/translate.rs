@@ -72,6 +72,9 @@ const REQUIRES_ATTACH: &[&str] = &[
     "find_files",
     "search_text",
     "file_status",
+    "get_file_changes",
+    "get_file_change_diff",
+    "file_change_action",
 ];
 
 const DEFAULT_FILE_BYTES: u64 = 1024 * 1024;
@@ -1163,6 +1166,129 @@ impl BridgeState {
                     Err((code, message)) => Self::error_reply(api_id, code, &message),
                 }
             }
+            "get_file_changes" => {
+                let Ok(rayucode_harness_api::ApiRequest::GetFileChanges { session_id }) =
+                    serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Invalid get_file_changes request",
+                    );
+                };
+                if session_id.is_empty() {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "session_id must not be empty",
+                    );
+                }
+                if let Some((_, _, Some(target))) = &self.pending_attach_id
+                    && self.session_id.is_none()
+                    && session_id != *target
+                {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::UnknownSession,
+                        "request does not match the pending attachment",
+                    );
+                }
+                let id = self.legacy_id();
+                self.pending_simple
+                    .push((id, api_id, SimpleKind::FileChanges));
+                vec![Outbound::Legacy(json!({
+                    "type": "get_file_changes",
+                    "id": id,
+                }))]
+            }
+            "get_file_change_diff" => {
+                let Ok(rayucode_harness_api::ApiRequest::GetFileChangeDiff { session_id, path }) =
+                    serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Invalid get_file_change_diff request",
+                    );
+                };
+                if session_id.is_empty() {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "session_id must not be empty",
+                    );
+                }
+                if path.trim().is_empty() {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "path must not be empty",
+                    );
+                }
+                if let Some((_, _, Some(target))) = &self.pending_attach_id
+                    && self.session_id.is_none()
+                    && session_id != *target
+                {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::UnknownSession,
+                        "request does not match the pending attachment",
+                    );
+                }
+                let id = self.legacy_id();
+                self.pending_simple
+                    .push((id, api_id, SimpleKind::FileChangeDiff));
+                vec![Outbound::Legacy(json!({
+                    "type": "get_file_change_diff",
+                    "id": id,
+                    "path": path,
+                }))]
+            }
+            "file_change_action" => {
+                let Ok(rayucode_harness_api::ApiRequest::FileChangeAction {
+                    session_id,
+                    action,
+                    path,
+                    force,
+                }) = serde_json::from_value(request.clone())
+                else {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "Invalid file_change_action request",
+                    );
+                };
+                if session_id.is_empty() {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::InvalidRequest,
+                        "session_id must not be empty",
+                    );
+                }
+                if let Some((_, _, Some(target))) = &self.pending_attach_id
+                    && self.session_id.is_none()
+                    && session_id != *target
+                {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::UnknownSession,
+                        "request does not match the pending attachment",
+                    );
+                }
+                let id = self.legacy_id();
+                self.pending_simple
+                    .push((id, api_id, SimpleKind::FileChangeAction));
+                let mut legacy = json!({
+                    "type": "file_change_action",
+                    "id": id,
+                    "action": action,
+                    "force": force,
+                });
+                if let Some(path) = path {
+                    legacy["path"] = json!(path);
+                }
+                vec![Outbound::Legacy(legacy)]
+            }
             "set_context_cap" => {
                 let cap = &request["max_context_tokens"];
                 if !cap.is_null() && cap.as_u64().and_then(|n| usize::try_from(n).ok()).is_none() {
@@ -1707,6 +1833,25 @@ impl BridgeState {
         }))
     }
 
+    fn file_changes_frame(session_id: &str, snapshot: &Value) -> Option<ServerFrame> {
+        if snapshot.is_null() {
+            return None;
+        }
+        let snapshot: rayucode_harness_api::FileChangesSnapshot =
+            serde_json::from_value(snapshot.clone()).ok()?;
+        let resolved_session_id = if !session_id.is_empty() {
+            session_id.to_string()
+        } else if !snapshot.session_id.is_empty() {
+            snapshot.session_id.clone()
+        } else {
+            return None;
+        };
+        Some(ServerFrame::event(ApiEvent::FileChangesState {
+            session_id: resolved_session_id,
+            snapshot,
+        }))
+    }
+
     fn text_message_id(&mut self) -> String {
         if let Some(id) = &self.text_message_id {
             return id.clone();
@@ -2216,6 +2361,9 @@ impl BridgeState {
                     if let Some(snapshot) = event.get("applets") {
                         frames.extend(Self::applet_frame(&session_id, snapshot));
                     }
+                    if let Some(snapshot) = event.get("file_changes") {
+                        frames.extend(Self::file_changes_frame(&session_id, snapshot));
+                    }
                     if fresh_activity {
                         frames.push(ServerFrame::event(ApiEvent::SessionStatus {
                             session_id,
@@ -2342,6 +2490,98 @@ impl BridgeState {
                     }
                     _ => vec![],
                 }
+            }
+            "file_changes_state" => {
+                let take_pending_file_changes = |state: &mut Self| {
+                    event["id"]
+                        .as_u64()
+                        .and_then(|id| state.take_simple(id, SimpleKind::FileChanges))
+                        .or_else(|| {
+                            let index = state
+                                .pending_simple
+                                .iter()
+                                .position(|(_, _, kind)| *kind == SimpleKind::FileChanges)?;
+                            Some(state.pending_simple.remove(index).1)
+                        })
+                };
+                let snapshot = match serde_json::from_value::<
+                    rayucode_harness_api::FileChangesSnapshot,
+                >(event["snapshot"].clone())
+                {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return match take_pending_file_changes(self) {
+                            Some(api_id) => vec![ServerFrame::reply(
+                                api_id,
+                                ApiEvent::Error {
+                                    code: ErrorCode::Internal,
+                                    message: format!(
+                                        "invalid daemon file_changes_state response: {error}"
+                                    ),
+                                },
+                            )],
+                            None => vec![],
+                        };
+                    }
+                };
+                let session_id = event["session_id"]
+                    .as_str()
+                    .filter(|sid| !sid.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        (!snapshot.session_id.is_empty()).then(|| snapshot.session_id.clone())
+                    })
+                    .unwrap_or_else(|| session(self));
+                if let Some(attached) = self.session_id.as_deref()
+                    && !session_id.is_empty()
+                    && session_id != attached
+                {
+                    return vec![];
+                }
+                let api_event = ApiEvent::FileChangesState {
+                    session_id,
+                    snapshot,
+                };
+                match take_pending_file_changes(self) {
+                    Some(api_id) => vec![ServerFrame::reply(api_id, api_event)],
+                    None => vec![ServerFrame::event(api_event)],
+                }
+            }
+            "file_change_diff" => {
+                let id = event["id"].as_u64().unwrap_or(0);
+                let Some(api_id) = self.take_simple(id, SimpleKind::FileChangeDiff) else {
+                    return vec![];
+                };
+                let reply = match serde_json::from_value(event["diff"].clone()) {
+                    Ok(diff) => ApiEvent::FileChangeDiff {
+                        session_id: session(self),
+                        diff,
+                    },
+                    Err(error) => ApiEvent::Error {
+                        code: ErrorCode::Internal,
+                        message: format!("invalid daemon file_change_diff response: {error}"),
+                    },
+                };
+                vec![ServerFrame::reply(api_id, reply)]
+            }
+            "file_change_action_result" => {
+                let id = event["id"].as_u64().unwrap_or(0);
+                let Some(api_id) = self.take_simple(id, SimpleKind::FileChangeAction) else {
+                    return vec![];
+                };
+                let reply = match serde_json::from_value(event["response"].clone()) {
+                    Ok(response) => ApiEvent::FileChangeActionResult {
+                        session_id: session(self),
+                        response,
+                    },
+                    Err(error) => ApiEvent::Error {
+                        code: ErrorCode::Internal,
+                        message: format!(
+                            "invalid daemon file_change_action_result response: {error}"
+                        ),
+                    },
+                };
+                vec![ServerFrame::reply(api_id, reply)]
             }
             "side_pane_images" => vec![ServerFrame::event(ApiEvent::SidePaneImages {
                 session_id: event["session_id"]
@@ -2589,6 +2829,10 @@ impl BridgeState {
                         event["session_id"].as_str().unwrap_or(""),
                         &event["applets"],
                     ));
+                    frames.extend(Self::file_changes_frame(
+                        event["session_id"].as_str().unwrap_or(""),
+                        &event["file_changes"],
+                    ));
                     return frames;
                 }
                 // The catalog probe rides the same `history` reply shape but
@@ -2673,6 +2917,10 @@ impl BridgeState {
                 {
                     frames.extend(Self::side_panel_frame(&session(self), &event["side_panel"]));
                     frames.extend(Self::applet_frame(&session(self), &event["applets"]));
+                    frames.extend(Self::file_changes_frame(
+                        &session(self),
+                        &event["file_changes"],
+                    ));
                 }
                 frames
             }

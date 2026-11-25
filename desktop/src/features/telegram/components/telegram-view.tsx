@@ -1,10 +1,14 @@
 import * as React from "react"
 import {
+  AlertCircle,
   Check,
   Copy,
+  ExternalLink,
   Eye,
   EyeOff,
+  Loader2,
   Lock,
+  QrCode,
   RefreshCw,
   Send,
   ShieldAlert,
@@ -31,8 +35,10 @@ import { cn } from "@/lib/utils"
 import {
   useConnectBotToken,
   useResolveTelegramApproval,
+  useSelectTelegramSession,
   useSetRemoteUninstall,
   useSetTelegramMode,
+  useStartHostedPairing,
   useTelegramBridgeActions,
   useTelegramState,
 } from "../hooks/use-telegram"
@@ -88,27 +94,89 @@ async function copyTextWithFeedback(
   }
 }
 
-function PairingQrMatrix() {
+async function openExternalTelegramUrl(url: string): Promise<void> {
+  if (!url) return
+  try {
+    if (typeof window !== "undefined" && window.rayu?.native?.openExternal) {
+      await window.rayu.native.openExternal(url)
+      return
+    }
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer")
+    }
+  } catch {
+    if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer")
+    }
+  }
+}
+
+interface PairingQrMatrixProps {
+  qrSize?: number | null
+  qrPath?: string | null
+  isGenerating: boolean
+  isExpired: boolean
+}
+
+function PairingQrMatrix({
+  qrSize,
+  qrPath,
+  isGenerating,
+  isExpired,
+}: PairingQrMatrixProps) {
+  if (isGenerating) {
+    return (
+      <div
+        aria-label="Generating Telegram pairing QR code"
+        data-testid="tg-qr-loading"
+        className="flex size-[184px] shrink-0 flex-col items-center justify-center gap-2 rounded-[14px] border border-premium bg-inset p-4 text-center"
+      >
+        <Loader2
+          className="size-6 animate-spin text-brand-text"
+          aria-hidden="true"
+        />
+        <span className="text-xs font-medium text-body">Generating QR…</span>
+      </div>
+    )
+  }
+
+  if (qrPath && qrSize && !isExpired) {
+    return (
+      <div
+        aria-label="Telegram pairing QR code"
+        data-testid="tg-qr-matrix"
+        className="flex size-[184px] shrink-0 items-center justify-center rounded-[14px] border border-premium bg-white p-3 shadow-bevel-surface"
+      >
+        <svg
+          viewBox={`0 0 ${qrSize} ${qrSize}`}
+          width="156"
+          height="156"
+          shapeRendering="crispEdges"
+          role="img"
+          aria-label="RayuCode Telegram pairing QR matrix"
+        >
+          <rect width={qrSize} height={qrSize} className="fill-white" />
+          <path className="fill-black" d={qrPath} />
+        </svg>
+      </div>
+    )
+  }
+
   return (
     <div
-      aria-label="Telegram pairing QR code"
-      data-testid="tg-qr-matrix"
-      className="flex size-[184px] shrink-0 items-center justify-center rounded-[14px] border border-premium bg-white p-3 shadow-bevel-surface"
+      aria-label="Telegram pairing QR code placeholder"
+      data-testid="tg-qr-placeholder"
+      className="flex size-[184px] shrink-0 flex-col items-center justify-center gap-2 rounded-[14px] border border-dashed border-premium bg-inset p-4 text-center"
     >
-      <svg
-        viewBox="0 0 21 21"
-        width="156"
-        height="156"
-        shapeRendering="crispEdges"
-        role="img"
-        aria-label="RayuCode Telegram pairing QR matrix"
-      >
-        <rect width="21" height="21" className="fill-white" />
-        <path
-          className="fill-black"
-          d="M0 0h7v7H0V0Zm1 1v5h5V1H1Zm1 1h3v3H2V2ZM14 0h7v7h-7V0Zm1 1v5h5V1h-5Zm1 1h3v3h-3V2ZM0 14h7v7H0v-7Zm1 1v5h5v-5H1Zm1 1h3v3H2v-3ZM9 1h2v2H9V1Zm3 0h1v3h-1V1ZM8 4h2v2H8V4Zm3 2h2v2h-2V6ZM1 9h3v1H1V9Zm4 0h2v2H5V9Zm3-1h2v3H8V8Zm3 1h3v2h-3V9Zm4-1h2v2h-2V8Zm3 1h3v2h-3V9ZM1 11h2v2H1v-2Zm3 1h3v1H4v-1Zm5 0h2v3H9v-3Zm3 1h2v2h-2v-2Zm3-1h2v3h-2v-3Zm3 1h3v2h-3v-2ZM9 16h2v2H9v-2Zm3-1h3v2h-3v-2Zm4 1h2v2h-2v-2Zm3 0h2v4h-2v-4ZM8 19h4v2H8v-2Zm5 0h3v2h-3v-2Zm4 0h1v2h-1v-2Z"
-        />
-      </svg>
+      <QrCode className="size-8 text-muted-ink" aria-hidden="true" />
+      <span className="text-xs font-medium text-body">
+        {isExpired ? "Pairing code expired" : "No active QR"}
+      </span>
+      <span className="text-[11px] text-muted-ink">
+        {isExpired
+          ? "Click Regenerate QR to create a new code"
+          : "Click Generate QR to start pairing"}
+      </span>
     </div>
   )
 }
@@ -209,22 +277,20 @@ function ApprovalRow({ item, isResolving, onResolve }: ApprovalRowProps) {
 export function TelegramView({ className }: TelegramViewProps) {
   const { data, isPending, isError, error, refetch } = useTelegramState()
   const setModeMutation = useSetTelegramMode()
+  const startHostedMutation = useStartHostedPairing()
   const connectBotMutation = useConnectBotToken()
   const resolveApprovalMutation = useResolveTelegramApproval()
   const setRemoteUninstallMutation = useSetRemoteUninstall()
+  const selectSessionMutation = useSelectTelegramSession()
 
-  const {
-    isDisconnected,
-    setIsDisconnected,
-    disconnect,
-    reconnect,
-    regeneratePairing,
-    attachSession,
-    ping,
-  } = useTelegramBridgeActions()
+  const { isDisconnected, setIsDisconnected, disconnect, reconnect, ping } =
+    useTelegramBridgeActions()
 
   const activeSessionId = useAppStore((s) => s.activeSessionId)
 
+  const [selectedTab, setSelectedTab] =
+    React.useState<TelegramConnectionMode | null>(null)
+  const [hostedError, setHostedError] = React.useState<string | null>(null)
   const [botToken, setBotToken] = React.useState("")
   const [allowedChatId, setAllowedChatId] = React.useState("")
   const [showToken, setShowToken] = React.useState(false)
@@ -233,6 +299,33 @@ export function TelegramView({ className }: TelegramViewProps) {
     allowedChatId?: string
   }>({})
   const [lastPingNote, setLastPingNote] = React.useState<string | null>(null)
+  const [nowSec, setNowSec] = React.useState(() =>
+    Math.floor(Date.now() / 1000)
+  )
+
+  const prevLinkedRef = React.useRef<boolean | undefined>(undefined)
+
+  React.useEffect(() => {
+    const prevLinked = prevLinkedRef.current
+    const currentLinked = data?.linked
+    if (prevLinked === false && currentLinked === true && data) {
+      setSelectedTab("connected")
+      setHostedError(null)
+      setIsDisconnected(false)
+      toast.success(
+        `Telegram connected (${data.connectedBotHandle} · Chat ID ${data.chatId})`
+      )
+    }
+    prevLinkedRef.current = currentLinked
+  }, [data, setIsDisconnected])
+
+  React.useEffect(() => {
+    if (!data?.pendingUntil || data.linked) return
+    const timer = setInterval(() => {
+      setNowSec(Math.floor(Date.now() / 1000))
+    }, 15_000)
+    return () => clearInterval(timer)
+  }, [data?.pendingUntil, data?.linked])
 
   const handleModeChange = async (nextMode: string) => {
     if (
@@ -242,16 +335,31 @@ export function TelegramView({ className }: TelegramViewProps) {
     ) {
       return
     }
-    const result = await setModeMutation.mutateAsync(
-      nextMode as TelegramConnectionMode
-    )
+    const mode = nextMode as TelegramConnectionMode
+    setSelectedTab(mode)
+    setHostedError(null)
+    const result = await setModeMutation.mutateAsync(mode)
     if (!result.ok) {
       toast.error(result.error)
       return
     }
-    if (nextMode === "connected") {
+    if (mode === "connected") {
       setIsDisconnected(false)
     }
+  }
+
+  const handleStartHosted = async (replaceExisting: boolean) => {
+    setHostedError(null)
+    setSelectedTab("hosted")
+    const result = await startHostedMutation.mutateAsync(replaceExisting)
+    if (!result.ok) {
+      setHostedError(result.error)
+      toast.error(result.error)
+      return
+    }
+    setNowSec(Math.floor(Date.now() / 1000))
+    setIsDisconnected(false)
+    toast.success("Generated fresh 10-minute Telegram pairing QR")
   }
 
   const handleSendTestPing = async () => {
@@ -261,26 +369,35 @@ export function TelegramView({ className }: TelegramViewProps) {
       toast.error(result.error)
       return
     }
-    const message = `Sent test ping to ${data.connectedBotHandle} (Chat ID ${data.chatId})`
+    const targetHandle = result.data.target ?? data.connectedBotHandle
+    const targetChatId = result.data.chatId ?? data.chatId
+    const message = `Sent test ping to ${targetHandle} (Chat ID ${targetChatId})`
     setLastPingNote(message)
     toast.success(message)
   }
 
-  const handleDriveActiveSession = () => {
-    const label = activeSessionId
-      ? `${activeSessionId} · rayucode-v2`
-      : "ses_retire_cache · Retire legacy session cache"
-    attachSession(label)
-    toast.success(`Attached ${label} to Telegram bridge`)
+  const handleDriveActiveSession = async () => {
+    if (!activeSessionId) {
+      toast.info("Open or select a session first to drive it from Telegram.")
+      return
+    }
+    const result = await selectSessionMutation.mutateAsync(activeSessionId)
+    if (!result.ok) {
+      toast.error(result.error)
+      return
+    }
+    toast.success(`Attached ${activeSessionId} to Telegram bridge`)
   }
 
   const handleDisconnect = async () => {
     if (!data) return
+    setSelectedTab("connected")
     const result = await disconnect()
     if (!result.ok) {
       toast.error(result.error)
       return
     }
+    setLastPingNote(null)
     toast.info(`Disconnected ${data.connectedBotHandle} from this host`)
   }
 
@@ -292,11 +409,6 @@ export function TelegramView({ className }: TelegramViewProps) {
       return
     }
     toast.success(`Reconnected ${data.connectedBotHandle}`)
-  }
-
-  const handleRegenerateQr = () => {
-    const code = regeneratePairing()
-    toast.success(`Generated fresh 10-minute pairing code (${code})`)
   }
 
   const handleByoSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -338,6 +450,7 @@ export function TelegramView({ className }: TelegramViewProps) {
     setBotToken("")
     setAllowedChatId("")
     setIsDisconnected(false)
+    setSelectedTab(result.data.linked === false ? "hosted" : "connected")
     toast.success(
       `Verified and connected ${result.data.connectedBotHandle} (Chat ID ${result.data.chatId})`
     )
@@ -399,6 +512,22 @@ export function TelegramView({ className }: TelegramViewProps) {
 
   if (!data) return null
 
+  const activeTab = selectedTab ?? data.mode
+  const isDaemonOffline = data.daemonConnected === false
+  const isLinked = (data.linked ?? !isDisconnected) && !isDisconnected
+  const isListening = isLinked && !isDaemonOffline
+  const isQrExpired = Boolean(
+    !isLinked && data.pendingUntil && data.pendingUntil <= nowSec
+  )
+  const hasActiveQr = Boolean(data.qrPath && data.qrSize && !isQrExpired)
+  const remainingMinutes = data.pendingUntil
+    ? Math.max(1, Math.ceil((data.pendingUntil - nowSec) / 60))
+    : 10
+  const showReplaceAction = Boolean(
+    hostedError &&
+      /already has a Telegram link|replace-existing/i.test(hostedError)
+  )
+
   const pendingApprovalsCount = data.approvals.filter(
     (item) => item.status === "pending"
   ).length
@@ -433,6 +562,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                   type="button"
                   variant="default"
                   size="sm"
+                  disabled={!isListening}
                   data-testid="tg-header-ping-btn"
                   onClick={() => {
                     void handleSendTestPing()
@@ -443,7 +573,9 @@ export function TelegramView({ className }: TelegramViewProps) {
                 </Button>
               </TooltipTrigger>
               <TooltipContent>
-                Send a round-trip ping to {data.connectedBotHandle}
+                {isListening
+                  ? `Send a round-trip ping to ${data.connectedBotHandle}`
+                  : "Pair Telegram to send a test ping"}
               </TooltipContent>
             </Tooltip>
 
@@ -451,17 +583,46 @@ export function TelegramView({ className }: TelegramViewProps) {
               type="button"
               variant="primary"
               size="sm"
+              disabled={!isListening || selectSessionMutation.isPending}
               data-testid="tg-drive-session-btn"
-              onClick={handleDriveActiveSession}
+              onClick={() => {
+                void handleDriveActiveSession()
+              }}
             >
               Drive active session
             </Button>
           </div>
         </header>
 
+        {isDaemonOffline ? (
+          <div
+            data-testid="tg-daemon-offline-banner"
+            role="status"
+            className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-[12px] border border-premium bg-warn-soft px-4 py-3 text-xs text-warn"
+          >
+            <div className="flex items-center gap-2">
+              <AlertCircle className="size-4 shrink-0" aria-hidden="true" />
+              <span>
+                {data.daemonError ??
+                  "Local Rust daemon is offline. Sign in to Rayu Cloud or start the daemon to pair Telegram."}
+              </span>
+            </div>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={() => {
+                void refetch()
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        ) : null}
+
         {/* Section 1: Bot Connection & 3-Mode Switcher */}
         <section id="tg-connection" className="mt-7.5 border-t border-hairline pt-5.5">
-          <Tabs value={data.mode} onValueChange={handleModeChange} className="gap-3.5">
+          <Tabs value={activeTab} onValueChange={handleModeChange} className="gap-3.5">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="m-0 text-sm font-semibold tracking-[-0.015em] text-ink">
                 Bot Connection
@@ -486,7 +647,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                 <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-[13px]">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
-                      {isDisconnected ? (
+                      {!isListening ? (
                         <span
                           className="size-1.5 shrink-0 rounded-full bg-danger"
                           aria-hidden="true"
@@ -501,36 +662,53 @@ export function TelegramView({ className }: TelegramViewProps) {
                         </span>
                       )}
                       <span>
-                        {isDisconnected
-                          ? "Telegram bridge disconnected"
-                          : "Telegram is connected"}
+                        {isDaemonOffline
+                          ? "Rust daemon offline"
+                          : !isLinked
+                            ? "Telegram bridge disconnected"
+                            : "Telegram is connected"}
                       </span>
                       <span
                         data-testid="tg-connection-status-badge"
                         className={cn(
                           "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium whitespace-nowrap",
-                          isDisconnected
+                          !isListening
                             ? "bg-danger-soft text-danger"
                             : "bg-brand-soft text-brand-text"
                         )}
                       >
-                        {isDisconnected ? "Disconnected" : "Listening"}
+                        {isDaemonOffline
+                          ? "Offline"
+                          : isDisconnected
+                            ? "Disconnected"
+                            : !isLinked
+                              ? data.statusLabel || "Not paired"
+                              : "Listening"}
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-muted-ink">
-                      Linked through{" "}
-                      <strong className="font-medium text-body">
-                        {data.connectedBotHandle}
-                      </strong>
-                      . Verified Chat ID{" "}
-                      <code className="rounded bg-inset px-1.5 py-0.5 font-mono text-[11px] text-body tabular-nums">
-                        {data.chatId}
-                      </code>
-                      {lastPingNote ? (
-                        <span className="ml-2 text-brand-text">
-                          · {lastPingNote}
+                      {isLinked ? (
+                        <>
+                          Linked through{" "}
+                          <strong className="font-medium text-body">
+                            {data.connectedBotHandle}
+                          </strong>
+                          . Verified Chat ID{" "}
+                          <code className="rounded bg-inset px-1.5 py-0.5 font-mono text-[11px] text-body tabular-nums">
+                            {data.chatId}
+                          </code>
+                          {lastPingNote ? (
+                            <span className="ml-2 text-brand-text">
+                              · {lastPingNote}
+                            </span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span>
+                          Pair with the shared Rayu bot QR or connect your own
+                          @BotFather token to drive sessions from Telegram.
                         </span>
-                      ) : null}
+                      )}
                     </div>
                   </div>
 
@@ -539,7 +717,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                       type="button"
                       variant="default"
                       size="sm"
-                      disabled={isDisconnected}
+                      disabled={!isListening}
                       data-testid="tg-connected-ping-btn"
                       onClick={() => {
                         void handleSendTestPing()
@@ -559,6 +737,18 @@ export function TelegramView({ className }: TelegramViewProps) {
                         }}
                       >
                         Reconnect
+                      </Button>
+                    ) : !isLinked ? (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        data-testid="tg-pair-qr-btn"
+                        onClick={() => {
+                          void handleModeChange("hosted")
+                        }}
+                      >
+                        Pair via QR
                       </Button>
                     ) : (
                       <Button
@@ -585,7 +775,10 @@ export function TelegramView({ className }: TelegramViewProps) {
                       here.
                     </div>
                   </div>
-                  <span className="font-mono text-xs text-body tabular-nums">
+                  <span
+                    data-testid="tg-driving-session"
+                    className="font-mono text-xs text-body tabular-nums"
+                  >
                     {data.drivingSession}
                   </span>
                 </div>
@@ -630,13 +823,21 @@ export function TelegramView({ className }: TelegramViewProps) {
             <TabsContent value="hosted" data-testid="tg-panel-hosted">
               <div className="rayu-card-bevel overflow-hidden rounded-[14px] border border-premium bg-pane">
                 <div className="grid grid-cols-1 items-center gap-6 p-5 md:grid-cols-[184px_minmax(0,1fr)]">
-                  <PairingQrMatrix />
+                  <PairingQrMatrix
+                    qrSize={data.qrSize}
+                    qrPath={data.qrPath}
+                    isGenerating={startHostedMutation.isPending}
+                    isExpired={isQrExpired}
+                  />
 
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
                       <span>Rayu shared bot — recommended</span>
-                      <span className="inline-flex items-center rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-medium text-brand-text">
-                        @RayuCodeOfficialBot
+                      <span
+                        data-testid="tg-hosted-bot-badge"
+                        className="inline-flex items-center rounded-full bg-brand-soft px-2 py-0.5 text-[11px] font-medium text-brand-text"
+                      >
+                        {data.connectedBotHandle}
                       </span>
                     </div>
                     <p className="mt-1.5 text-[13px] text-muted-ink">
@@ -647,82 +848,168 @@ export function TelegramView({ className }: TelegramViewProps) {
                       in Telegram and send:
                     </p>
 
-                    <div className="my-3 flex flex-col gap-1.5">
-                      <label
-                        htmlFor="tg-pairing-command"
-                        className="text-xs font-medium text-body"
+                    {hostedError ? (
+                      <div
+                        data-testid="tg-hosted-error"
+                        role="alert"
+                        className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-[10px] border border-premium bg-danger-soft px-3 py-2 text-xs text-danger"
                       >
-                        One-click pairing command
-                      </label>
-                      <input
-                        id="tg-pairing-command"
-                        data-testid="tg-pairing-command-input"
-                        type="text"
-                        readOnly
-                        value={data.pairingCommand}
-                        aria-label="Pairing command"
-                        className="w-full max-w-[440px] rounded-[10px] border border-premium bg-inset px-3 py-2 font-mono text-xs text-ink outline-none focus:border-brand"
-                      />
-                    </div>
+                        <span>{hostedError}</span>
+                        {showReplaceAction ? (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            disabled={startHostedMutation.isPending}
+                            data-testid="tg-replace-existing-btn"
+                            onClick={() => {
+                              void handleStartHosted(true)
+                            }}
+                          >
+                            Move link to this host
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
 
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-ink">
-                      <span>Deep link:</span>
-                      <code
-                        data-testid="tg-pairing-link"
-                        className="rounded bg-inset px-2 py-1 font-mono text-[11.5px] text-brand-text"
-                      >
-                        {data.pairingLink}
-                      </code>
-                    </div>
+                    {hasActiveQr ? (
+                      <>
+                        <div className="my-3 flex flex-col gap-1.5">
+                          <label
+                            htmlFor="tg-pairing-command"
+                            className="text-xs font-medium text-body"
+                          >
+                            One-click pairing command
+                          </label>
+                          <input
+                            id="tg-pairing-command"
+                            data-testid="tg-pairing-command-input"
+                            type="text"
+                            readOnly
+                            value={data.pairingCommand}
+                            aria-label="Pairing command"
+                            className="w-full max-w-[440px] rounded-[10px] border border-premium bg-inset px-3 py-2 font-mono text-xs text-ink outline-none focus:border-brand"
+                          />
+                        </div>
 
-                    <div className="mt-3.5 flex flex-wrap items-center gap-2">
-                      <Button
-                        type="button"
-                        variant="primary"
-                        size="sm"
-                        data-testid="tg-copy-command-btn"
-                        onClick={() => {
-                          void copyTextWithFeedback(
-                            data.pairingCommand,
-                            `Copied ${data.pairingCommand}`
-                          )
-                        }}
-                      >
-                        <Copy className="size-3.5" aria-hidden="true" />
-                        Copy command
-                      </Button>
+                        {data.pairingLink ? (
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-ink">
+                            <span>Deep link:</span>
+                            <code
+                              data-testid="tg-pairing-link"
+                              className="rounded bg-inset px-2 py-1 font-mono text-[11.5px] text-brand-text"
+                            >
+                              {data.pairingLink}
+                            </code>
+                          </div>
+                        ) : null}
 
-                      <Button
-                        type="button"
-                        variant="default"
-                        size="sm"
-                        data-testid="tg-copy-link-btn"
-                        onClick={() => {
-                          void copyTextWithFeedback(
-                            data.pairingLink,
-                            `Copied ${data.pairingLink}`
-                          )
-                        }}
-                      >
-                        Copy pairing link
-                      </Button>
+                        <div className="mt-3.5 flex flex-wrap items-center gap-2">
+                          {data.pairingLink ? (
+                            <Button
+                              type="button"
+                              variant="primary"
+                              size="sm"
+                              data-testid="tg-open-link-btn"
+                              onClick={() => {
+                                void openExternalTelegramUrl(data.pairingLink)
+                              }}
+                            >
+                              <ExternalLink
+                                className="size-3.5"
+                                aria-hidden="true"
+                              />
+                              Open in Telegram
+                            </Button>
+                          ) : null}
 
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        data-testid="tg-regenerate-qr-btn"
-                        onClick={handleRegenerateQr}
-                      >
-                        <RefreshCw className="size-3.5" aria-hidden="true" />
-                        Regenerate QR
-                      </Button>
-                    </div>
+                          <Button
+                            type="button"
+                            variant="default"
+                            size="sm"
+                            data-testid="tg-copy-command-btn"
+                            onClick={() => {
+                              void copyTextWithFeedback(
+                                data.pairingCommand,
+                                `Copied ${data.pairingCommand}`
+                              )
+                            }}
+                          >
+                            <Copy className="size-3.5" aria-hidden="true" />
+                            Copy command
+                          </Button>
 
-                    <p className="mt-2.5 text-xs text-muted-ink">
-                      Waiting for link in Telegram… pairing code valid for 10
-                      minutes.
-                    </p>
+                          {data.pairingLink ? (
+                            <Button
+                              type="button"
+                              variant="default"
+                              size="sm"
+                              data-testid="tg-copy-link-btn"
+                              onClick={() => {
+                                void copyTextWithFeedback(
+                                  data.pairingLink,
+                                  `Copied ${data.pairingLink}`
+                                )
+                              }}
+                            >
+                              Copy pairing link
+                            </Button>
+                          ) : null}
+
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={startHostedMutation.isPending}
+                            data-testid="tg-regenerate-qr-btn"
+                            onClick={() => {
+                              void handleStartHosted(true)
+                            }}
+                          >
+                            <RefreshCw
+                              className={cn(
+                                "size-3.5",
+                                startHostedMutation.isPending && "animate-spin"
+                              )}
+                              aria-hidden="true"
+                            />
+                            Regenerate QR
+                          </Button>
+                        </div>
+
+                        <p className="mt-2.5 text-xs text-muted-ink tabular-nums">
+                          Waiting for link in Telegram… pairing code valid for{" "}
+                          {remainingMinutes} minute
+                          {remainingMinutes === 1 ? "" : "s"}.
+                        </p>
+                      </>
+                    ) : (
+                      <div className="mt-4 flex flex-col items-start gap-2.5">
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          disabled={
+                            startHostedMutation.isPending || isDaemonOffline
+                          }
+                          data-testid="tg-generate-qr-btn"
+                          onClick={() => {
+                            void handleStartHosted(isQrExpired)
+                          }}
+                        >
+                          <QrCode className="size-3.5" aria-hidden="true" />
+                          {startHostedMutation.isPending
+                            ? "Generating QR…"
+                            : isQrExpired
+                              ? "Regenerate QR"
+                              : "Generate QR"}
+                        </Button>
+                        <p className="text-xs text-muted-ink">
+                          Creates a single-use 10-minute pairing QR bound to
+                          your signed-in Rayu account.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -868,7 +1155,7 @@ export function TelegramView({ className }: TelegramViewProps) {
                       type="submit"
                       variant="primary"
                       size="sm"
-                      disabled={connectBotMutation.isPending}
+                      disabled={connectBotMutation.isPending || isDaemonOffline}
                       data-testid="tg-byo-submit-btn"
                     >
                       {connectBotMutation.isPending

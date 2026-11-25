@@ -10,12 +10,19 @@ import {
 import {
   createFeatureRouter,
   mapRawBackgroundTask,
+  mapRawFileChangeActionResponse,
+  mapRawFileChangeDiff,
+  mapRawFileChangesSnapshot,
+  normalizeCredentialProviderId,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
+  normalizeLogoutProviderId,
+  type FeatureRouterAuthManager,
   type FeatureRouterDeps,
 } from "../host/runtime/featureRouters.js";
 
 interface TestRouterOptions {
+  authManager?: FeatureRouterAuthManager;
   runtimeHandler?: (
     command: RuntimeCommand,
     args: string[],
@@ -35,6 +42,7 @@ function createTestFeatureRouter(options: TestRouterOptions = {}) {
   const runtimeCommandsCalled: Array<{ command: string; args: string[] }> = [];
   const rawRequestsCalled: Array<Record<string, unknown>> = [];
   const externalUrlsOpened: string[] = [];
+  const apiKeyCalls: Array<{ action: "set" | "clear" | "notify"; provider: string; key?: string }> = [];
   let currentPermissionMode: PermissionModeId = "default";
 
   const daemonStatus: DaemonStatusView = {
@@ -135,8 +143,15 @@ function createTestFeatureRouter(options: TestRouterOptions = {}) {
             gate_observations: [],
             long_session_review_due: false,
           }),
-          setApiKey: async () => {},
-          clearApiKey: async () => {},
+          setApiKey: async (provider: string, key: string) => {
+            apiKeyCalls.push({ action: "set", provider, key });
+          },
+          clearApiKey: async (provider: string) => {
+            apiKeyCalls.push({ action: "clear", provider });
+          },
+          notifyAuthChanged: async (provider: string) => {
+            apiKeyCalls.push({ action: "notify", provider });
+          },
           appletAction: async () => {},
           closeApplet: async () => {},
         }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
@@ -273,7 +288,11 @@ function createTestFeatureRouter(options: TestRouterOptions = {}) {
         status: "idle",
         updatedAtMs: Date.now(),
       }),
+      notifyDaemonAuthChanged: async (provider = "rayu") => {
+        apiKeyCalls.push({ action: "notify", provider });
+      },
     },
+    authManager: options.authManager,
     gitBridge: {
       getStatus: async () => ({
         branch: "main",
@@ -348,6 +367,7 @@ function createTestFeatureRouter(options: TestRouterOptions = {}) {
     runtimeCommandsCalled,
     rawRequestsCalled,
     externalUrlsOpened,
+    apiKeyCalls,
   };
 }
 
@@ -1037,4 +1057,633 @@ test("featureRouters rejects unknown RPC methods and invalid params with VALIDAT
   if (!badParams.ok) {
     assert.equal(badParams.code, "VALIDATION_ERROR");
   }
+});
+
+test("featureRouters wires settings.account.* to authManager and normalizes provider IDs with daemon notifications", async () => {
+  const authCalls: string[] = [];
+  let signedIn = false;
+  let signingIn = false;
+  let pendingMode: "vscode" | "loopback" | null = null;
+  let pendingAuthUrl: string | null = null;
+
+  const mockSnapshot = () => ({
+    signedIn,
+    authMethod: (signedIn ? "oauth" : "none") as "oauth" | "apiKey" | "none",
+    signingIn,
+    pendingAuthUrl,
+    pendingMode,
+    webBase: "https://rayucode.com",
+    error: null,
+    displayName: signedIn ? "Test User" : undefined,
+    email: signedIn ? "test@rayucode.com" : undefined,
+    windows: [],
+  });
+
+  const authManager: FeatureRouterAuthManager = {
+    getAccountStatusSnapshot: () => mockSnapshot(),
+    getAccountStatus: async (forceRefresh) => {
+      authCalls.push(`get:${Boolean(forceRefresh)}`);
+      return mockSnapshot();
+    },
+    startBrowserSignIn: async (mode = "vscode") => {
+      authCalls.push(`signInBrowser:${mode}`);
+      signingIn = true;
+      pendingMode = mode;
+      pendingAuthUrl =
+        mode === "loopback"
+          ? "https://rayucode.com/cli-login?port=12345&state=abc"
+          : "https://rayucode.com/vscode-login?state=abc";
+      return { ok: true, authUrl: pendingAuthUrl, state: mockSnapshot() };
+    },
+    cancelSignIn: () => {
+      authCalls.push("cancelSignIn");
+      signingIn = false;
+      pendingMode = null;
+      pendingAuthUrl = null;
+      return mockSnapshot();
+    },
+    signInWithApiKey: async (apiKey) => {
+      authCalls.push(`signInApiKey:${apiKey}`);
+      signedIn = true;
+      return mockSnapshot();
+    },
+    completeManualCallback: async (callbackUrl) => {
+      authCalls.push(`completeCallback:${callbackUrl}`);
+      signedIn = true;
+      signingIn = false;
+      pendingAuthUrl = null;
+      pendingMode = null;
+      return mockSnapshot();
+    },
+    signOut: async () => {
+      authCalls.push("signOut");
+      signedIn = false;
+      signingIn = false;
+      return mockSnapshot();
+    },
+    clearSavedApiKeyOnly: async () => {
+      authCalls.push("clearSavedApiKeyOnly");
+      return mockSnapshot();
+    },
+    setBypassPacing: async (enabled) => {
+      authCalls.push(`setBypassPacing:${enabled}`);
+      return { ok: true, enabled };
+    },
+  };
+
+  const { router, externalUrlsOpened, apiKeyCalls, runtimeCommandsCalled } =
+    createTestFeatureRouter({ authManager });
+
+  // Provider normalization unit assertions
+  assert.equal(normalizeCredentialProviderId("rayu-cloud"), "rayu");
+  assert.equal(normalizeCredentialProviderId("anthropic"), "claude-api");
+  assert.equal(normalizeCredentialProviderId("claude"), "claude-api");
+  assert.equal(normalizeCredentialProviderId("openai"), "openai-api");
+  assert.equal(normalizeCredentialProviderId("github-copilot"), "copilot");
+  assert.equal(normalizeLogoutProviderId("anthropic"), "claude");
+  assert.equal(normalizeLogoutProviderId("rayu-cloud"), "rayu");
+  assert.equal(normalizeLogoutProviderId("github-copilot"), "copilot");
+
+  // Default rayu provider status reflects signed-out host authManager (never fake "ready")
+  const provsSignedOut = await router.call("settings.providers.list", undefined);
+  assert.equal(
+    provsSignedOut.providers.find((p) => p.id === "rayu")?.status,
+    "needs_key",
+  );
+
+  // Browser sign-in (vscode & loopback) + cancelSignIn
+  const signInVscode = await router.call("settings.account.signInBrowser", undefined);
+  assert.equal(signInVscode.ok, true);
+  assert.match(signInVscode.authUrl ?? "", /\/vscode-login\?state=/);
+  assert.equal(externalUrlsOpened.at(-1), signInVscode.authUrl);
+
+  const cancelled = await router.call("settings.account.cancelSignIn", undefined);
+  assert.equal(cancelled.signingIn, false);
+
+  const signInLoopback = await router.call("settings.account.signInBrowser", {
+    mode: "loopback",
+  });
+  assert.match(signInLoopback.authUrl ?? "", /\/cli-login\?port=/);
+
+  // Complete callback + refresh + bypass pacing + signOut
+  const completed = await router.call("settings.account.completeCallback", {
+    callbackUrl: "vscode://rayucode.rayucode/auth?code=c1&state=s1",
+  });
+  assert.equal(completed.signedIn, true);
+
+  const provsSignedIn = await router.call("settings.providers.list", undefined);
+  assert.equal(
+    provsSignedIn.providers.find((p) => p.id === "rayu")?.status,
+    "ready",
+  );
+  assert.equal(
+    provsSignedIn.providers.find((p) => p.id === "rayu")?.accountLabel,
+    "test@rayucode.com",
+  );
+
+  const pacing = await router.call("settings.account.setBypassPacing", {
+    enabled: true,
+  });
+  assert.deepEqual(pacing, { ok: true, enabled: true });
+
+  await router.call("settings.account.refresh", undefined);
+  const signedOut = await router.call("settings.account.signOut", undefined);
+  assert.equal(signedOut.signedIn, false);
+
+  // Provider credential mutations normalize IDs and notify daemon
+  await router.call("settings.providers.setApiKey", {
+    providerId: "anthropic",
+    apiKey: "sk-ant-test",
+  });
+  await router.call("settings.providers.setApiKey", {
+    providerId: "openai",
+    apiKey: "sk-openai-test",
+  });
+  await router.call("settings.providers.clearApiKey", {
+    providerId: "anthropic",
+  });
+  await router.call("settings.providers.logout", {
+    providerId: "anthropic",
+  });
+  await router.call("settings.providers.logout", {
+    providerId: "rayu-cloud",
+  });
+
+  assert.deepEqual(apiKeyCalls, [
+    { action: "set", provider: "claude-api", key: "sk-ant-test" },
+    { action: "notify", provider: "claude-api" },
+    { action: "set", provider: "openai-api", key: "sk-openai-test" },
+    { action: "notify", provider: "openai-api" },
+    { action: "clear", provider: "claude-api" },
+    { action: "notify", provider: "claude-api" },
+    { action: "notify", provider: "claude-api" },
+  ]);
+  assert.deepEqual(
+    runtimeCommandsCalled.find((c) => c.command === "logout")?.args,
+    ["claude", "confirm"],
+  );
+  assert.ok(authCalls.includes("signInBrowser:vscode"));
+  assert.ok(authCalls.includes("signInBrowser:loopback"));
+  assert.ok(authCalls.includes("cancelSignIn"));
+  assert.ok(authCalls.includes("setBypassPacing:true"));
+  assert.ok(authCalls.includes("get:true"));
+  assert.equal(authCalls.filter((c) => c === "signOut").length, 2);
+});
+
+test("featureRouters routes session file-change RPCs through Rust RayucodeClient when file_changes capability is present and falls back on older bridges", async () => {
+  const engineActions: Array<{
+    sessionId: string;
+    action: string;
+    opts?: { path?: string; force?: boolean };
+  }> = [];
+  const engineDiffPaths: string[] = [];
+  const broadcasted: Array<{ sessionId: string; pending: number }> = [];
+  const gitFallbackCalls: string[] = [];
+
+  const rawSnapshot = {
+    session_id: "sess_fc",
+    latest_turn_id: 4,
+    total_pending_files: 2,
+    total_additions: 14,
+    total_deletions: 3,
+    files: [
+      {
+        path: "/repo/src/new_file.ts",
+        display_path: "src/new_file.ts",
+        kind: "created" as const,
+        status: "pending" as const,
+        additions: 10,
+        deletions: 0,
+        changed_in_latest_turn: true,
+        turn_id: 4,
+        edit_count: 1,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [
+          {
+            old_start: 0,
+            old_lines: 0,
+            new_start: 1,
+            new_lines: 2,
+            header: "@@ -0,0 +1,2 @@",
+            lines: ["+export const ok = true;", "+export const n = 1;"],
+          },
+        ],
+        preview_truncated: false,
+        updated_at_ms: 1_700_000_000_000,
+      },
+      {
+        path: "/repo/src/app.ts",
+        display_path: "src/app.ts",
+        kind: "modified" as const,
+        status: "pending" as const,
+        additions: 4,
+        deletions: 3,
+        changed_in_latest_turn: false,
+        turn_id: 2,
+        edit_count: 2,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [],
+        preview_truncated: false,
+        updated_at_ms: 1_700_000_000_100,
+      },
+    ],
+  };
+
+  // Pure mapper roundtrip checks
+  const mappedSnap = mapRawFileChangesSnapshot(rawSnapshot);
+  assert.equal(mappedSnap.sessionId, "sess_fc");
+  assert.equal(mappedSnap.latestTurnId, 4);
+  assert.equal(mappedSnap.files[0]?.displayPath, "src/new_file.ts");
+  assert.equal(mappedSnap.files[0]?.previewHunks[0]?.newStart, 1);
+
+  const mappedDiff = mapRawFileChangeDiff({
+    path: "/repo/src/new_file.ts",
+    display_path: "src/new_file.ts",
+    kind: "created",
+    status: "pending",
+    additions: 2,
+    deletions: 0,
+    is_binary: false,
+    original_content: "",
+    modified_content: "export const ok = true;\n",
+    unified_diff: "@@ -0,0 +1,1 @@\n+export const ok = true;\n",
+    hunks: rawSnapshot.files[0]!.preview_hunks,
+  });
+  assert.equal(mappedDiff.kind, "created");
+  assert.equal(mappedDiff.languageId, "typescript");
+  assert.equal(mappedDiff.hunks?.length, 1);
+
+  const mappedConflict = mapRawFileChangeActionResponse({
+    ok: false,
+    message: "1 conflict",
+    conflicts: [
+      {
+        path: "/repo/src/app.ts",
+        display_path: "src/app.ts",
+        reason: "Manual edits detected",
+      },
+    ],
+    snapshot: rawSnapshot,
+  });
+  assert.equal(mappedConflict.ok, false);
+  assert.equal(mappedConflict.conflict, true);
+  assert.equal(mappedConflict.conflicts?.[0]?.displayPath, "src/app.ts");
+
+  const makeEngineRouter = (supportsFileChanges: boolean) => {
+    const cachedSnapshots = new Map<string, ReturnType<typeof mapRawFileChangesSnapshot>>();
+    if (supportsFileChanges) {
+      cachedSnapshots.set("sess_fc", mappedSnap);
+    }
+
+    const daemonStatus: DaemonStatusView = {
+      state: "connected",
+      version: "rayu-harness-v1.14",
+      protocolVersion: "1.14",
+      socketPath: "/tmp/rayu-test.sock",
+      latencyMs: 2,
+      capabilities: supportsFileChanges
+        ? ["permissions", "file_changes"]
+        : ["permissions"],
+      isRayuRepo: true,
+    };
+
+    const deps: FeatureRouterDeps = {
+      bridgeManager: {
+        getStatus: () => daemonStatus,
+        ping: async () => ({ ok: true, latencyMs: 2 }),
+        reconnect: async () => daemonStatus,
+        restart: async () => daemonStatus,
+        reloadDaemon: async () => ({ ok: true }),
+        openOutputLog: () => {},
+      },
+      sessionHub: {
+        getActiveSessionId: () => "sess_fc",
+        getActiveModel: () => "claude-opus-4-6",
+        getActiveProvider: () => "rayu",
+        getActivePermissionMode: () => "default",
+        getClient: async () =>
+          ({
+            supports: (cap: string) =>
+              supportsFileChanges && cap === "file_changes",
+            getFileChanges: async () => rawSnapshot,
+            getFileChangeDiff: async (_sid: string, targetPath: string) => {
+              engineDiffPaths.push(targetPath);
+              return {
+                path: targetPath,
+                display_path: "src/app.ts",
+                kind: "modified",
+                status: "pending",
+                additions: 4,
+                deletions: 3,
+                is_binary: false,
+                original_content: "engine-original\n",
+                modified_content: "engine-modified\n",
+                unified_diff: "@@ -1 +1 @@\n-engine-original\n+engine-modified\n",
+                hunks: [
+                  {
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 1,
+                    header: "@@ -1 +1 @@",
+                    lines: ["-engine-original", "+engine-modified"],
+                  },
+                ],
+              };
+            },
+            fileChangeAction: async (
+              sessionId: string,
+              action: string,
+              opts?: { path?: string; force?: boolean },
+            ) => {
+              engineActions.push({ sessionId, action, opts });
+              if (action === "undo" && !opts?.force) {
+                return {
+                  ok: false,
+                  message: "Manual edit detected",
+                  conflicts: [
+                    {
+                      path: "/repo/src/app.ts",
+                      display_path: "src/app.ts",
+                      reason: "File changed on disk",
+                    },
+                  ],
+                  snapshot: rawSnapshot,
+                };
+              }
+              return {
+                ok: true,
+                message: `Applied ${action}`,
+                conflicts: [],
+                snapshot: {
+                  ...rawSnapshot,
+                  total_pending_files: action === "keep_all" || action === "undo_all" ? 0 : 1,
+                },
+              };
+            },
+          }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+        listSessions: async () => ({ sessions: [], activeSessionId: "sess_fc" }),
+        createSession: async () => ({
+          sessionId: "sess_fc",
+          title: "Session",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        attachSession: async (sessionId) => ({
+          sessionId,
+          title: "Session",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+        setSessionPinned: async () => {},
+        setSessionArchived: async () => {},
+        setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+        respondPermission: async () => {},
+        runtimeCommand: async (command, _args, sessionId) => ({
+          session_id: sessionId ?? "sess_fc",
+          command,
+          data: {},
+          message: "ok",
+        }),
+        getBackgroundTasks: () => [],
+        refreshBackgroundProcesses: async () => [],
+        removeCompletedBackgroundTasks: () => 0,
+        getSidePanelState: () => ({ pages: [] }),
+        closeSidePanelPage: () => {},
+        getApplets: () => [],
+        getCachedTodos: () => [],
+        mapSessionInfoToSummary: (info) => ({
+          sessionId: info.session_id,
+          title: info.title ?? "Untitled",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getFileChangesSnapshot: (sid) => cachedSnapshots.get(sid),
+        broadcastFileChanges: (sid, snap) => {
+          cachedSnapshots.set(sid, snap);
+          broadcasted.push({ sessionId: sid, pending: snap.totalPendingFiles });
+        },
+      },
+      gitBridge: {
+        getStatus: async () => ({
+          branch: "main",
+          baseBranch: "main",
+          totalAdditions: 4,
+          totalDeletions: 3,
+          files: [
+            {
+              path: "src/app.ts",
+              status: "modified",
+              staged: false,
+              additions: 4,
+              deletions: 3,
+              decision: "pending",
+              fromSession: true,
+            },
+          ],
+          stagedCount: 0,
+          hasGhCli: true,
+        }),
+        getDiff: async ({ path: p }) => {
+          gitFallbackCalls.push(`diff:${p}`);
+          if (p === "src/new_file.ts") {
+            return {
+              path: p,
+              originalContent: "",
+              modifiedContent: "",
+              unifiedDiff: "",
+              additions: 0,
+              deletions: 0,
+              languageId: "typescript",
+            };
+          }
+          return {
+            path: p,
+            originalContent: "git-head\n",
+            modifiedContent: "git-working\n",
+            unifiedDiff: "@@ -1 +1 @@\n-git-head\n+git-working\n",
+            additions: 1,
+            deletions: 1,
+            languageId: "typescript",
+          };
+        },
+        stage: async () => ({ ok: true }),
+        unstage: async () => ({ ok: true }),
+        keep: ({ path: p }) => {
+          gitFallbackCalls.push(`keep:${p}`);
+          return { ok: true };
+        },
+        undo: async ({ path: p }) => {
+          gitFallbackCalls.push(`undo:${p}`);
+          return { ok: true, conflict: false };
+        },
+        commit: async () => ({ ok: true }),
+        createPr: async () => ({ ok: true }),
+        listBranches: async () => ({ current: "main", branches: ["main"] }),
+        checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+      },
+      editorBridge: {
+        openFile: async () => {},
+        openWorktreeWindow: async () => {},
+        openExternal: async () => {},
+        pickFiles: async () => [],
+        findWorkspaceFiles: async () => [],
+      },
+      getWorkspaceFolders: async () => [],
+      setProjectIcon: async () => {},
+      getGlobalState: <T>(_k: string, d: T) => d,
+      updateGlobalState: async () => {},
+      getRuntimeSettings: () => ({
+        socketPath: "/tmp/rayu-test.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+      }),
+      updateRuntimeSettings: async () => {},
+      openKeybindings: async () => {},
+    };
+
+    return createFeatureRouter(deps);
+  };
+
+  // 1. Engine-backed routing when bridge supports "file_changes"
+  const engineRouter = makeEngineRouter(true);
+
+  const summary = await engineRouter.call("changes.getSessionSummary", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(summary.sessionId, "sess_fc");
+  assert.equal(summary.files.length, 2);
+  assert.equal(summary.totalPendingFiles, 2);
+
+  // Session scope diff uses engine originalContent & resolves displayPath -> absolute engine path
+  const sessionDiff = await engineRouter.call("changes.diff", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+    scope: "session",
+  });
+  assert.equal(sessionDiff.originalContent, "engine-original\n");
+  assert.deepEqual(engineDiffPaths, ["/repo/src/app.ts"]);
+
+  // Git scope diff uses GitChangesBridge when git has diff, and falls back to engine diff for untracked/non-git session files
+  const gitDiff = await engineRouter.call("changes.diff", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+    scope: "git",
+  });
+  assert.equal(gitDiff.originalContent, "git-head\n");
+  assert.ok(gitFallbackCalls.includes("diff:src/app.ts"));
+
+  const untrackedGitScopeDiff = await engineRouter.call("changes.diff", {
+    path: "src/new_file.ts",
+    sessionId: "sess_fc",
+    scope: "git",
+  });
+  assert.equal(untrackedGitScopeDiff.originalContent, "engine-original\n");
+  assert.ok(engineDiffPaths.includes("/repo/src/new_file.ts"));
+
+  // Session status reflects engine files
+  const sessionStatus = await engineRouter.call("changes.status", {
+    sessionId: "sess_fc",
+    scope: "session",
+  });
+  assert.equal(sessionStatus.files.length, 2);
+  assert.equal(sessionStatus.files[0]?.status, "added");
+
+  // Keep, Undo (conflict + force), Redo, KeepAll, UndoAll, RedoAll
+  const keepRes = await engineRouter.call("changes.keep", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+  });
+  assert.equal(keepRes.ok, true);
+
+  const undoConflict = await engineRouter.call("changes.undo", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+  });
+  assert.equal(undoConflict.ok, false);
+  assert.equal(undoConflict.conflict, true);
+  assert.equal(undoConflict.conflicts?.length, 1);
+
+  const undoForced = await engineRouter.call("changes.undo", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+    force: true,
+  });
+  assert.equal(undoForced.ok, true);
+
+  const redoRes = await engineRouter.call("changes.redo", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+  });
+  assert.equal(redoRes.ok, true);
+
+  const keepAllRes = await engineRouter.call("changes.keepAll", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(keepAllRes.ok, true);
+
+  const undoAllRes = await engineRouter.call("changes.undoAll", {
+    sessionId: "sess_fc",
+    force: true,
+  });
+  assert.equal(undoAllRes.ok, true);
+
+  const redoAllRes = await engineRouter.call("changes.redoAll", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(redoAllRes.ok, true);
+
+  assert.deepEqual(
+    engineActions.map((a) => `${a.action}:${a.opts?.path ?? "*"}:${Boolean(a.opts?.force)}`),
+    [
+      "keep:/repo/src/app.ts:false",
+      "undo:/repo/src/app.ts:false",
+      "undo:/repo/src/app.ts:true",
+      "redo:/repo/src/app.ts:false",
+      "keep_all:*:false",
+      "undo_all:*:true",
+      "redo_all:*:false",
+    ],
+  );
+  assert.ok(broadcasted.length >= 6);
+
+  // 2. Graceful fallback when older bridge lacks "file_changes"
+  gitFallbackCalls.length = 0;
+  const legacyRouter = makeEngineRouter(false);
+
+  const fallbackSummary = await legacyRouter.call("changes.getSessionSummary", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(fallbackSummary.files.length, 1);
+  assert.equal(fallbackSummary.files[0]?.displayPath, "src/app.ts");
+
+  const fallbackDiff = await legacyRouter.call("changes.diff", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+    scope: "session",
+  });
+  assert.equal(fallbackDiff.originalContent, "git-head\n");
+
+  const fallbackKeepAll = await legacyRouter.call("changes.keepAll", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(fallbackKeepAll.ok, true);
+  assert.ok(gitFallbackCalls.includes("keep:src/app.ts"));
+
+  const fallbackUndoAll = await legacyRouter.call("changes.undoAll", {
+    sessionId: "sess_fc",
+  });
+  assert.equal(fallbackUndoAll.ok, true);
+  assert.ok(gitFallbackCalls.includes("undo:src/app.ts"));
+
+  const fallbackRedo = await legacyRouter.call("changes.redo", {
+    path: "src/app.ts",
+    sessionId: "sess_fc",
+  });
+  assert.equal(fallbackRedo.ok, false);
 });

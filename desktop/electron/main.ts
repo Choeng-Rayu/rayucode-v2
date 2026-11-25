@@ -9,6 +9,7 @@ import {
   Menu,
   nativeImage,
   powerSaveBlocker,
+  screen,
 } from "electron"
 import type { RuntimeCommand, ServerFrame } from "@rayu-dev/rayucode-sdk"
 
@@ -41,6 +42,9 @@ import {
   ExtensionRemoveMcpSchema,
   ExtensionToggleSkillSchema,
   ExtensionUpsertMcpSchema,
+  FileChangesActionPayloadSchema,
+  FileChangesDiffPayloadSchema,
+  FileChangesGetPayloadSchema,
   GitCheckoutBranchPayloadSchema,
   GitCommitPayloadSchema,
   GitCreatePrPayloadSchema,
@@ -71,6 +75,12 @@ import {
   StorageSaveTemplateSchema,
   StorageSessionStoreSchema,
   StorageSidebarStateSchema,
+  TelegramConnectBotTokenSchema,
+  TelegramDisconnectSchema,
+  TelegramResolveApprovalSchema,
+  TelegramSelectSessionSchema,
+  TelegramSetRemoteUninstallSchema,
+  TelegramStartHostedSchema,
   TerminalPtyCreatePayloadSchema,
   TerminalPtyKillPayloadSchema,
   TerminalPtyResizePayloadSchema,
@@ -101,6 +111,7 @@ import {
   readDesktopSessionStore,
   readRecentWorkspaces,
   readSidebarState,
+  readWindowBounds,
   recordRecentWorkspace,
   removeLocalMcpServer,
   saveCustomTemplate,
@@ -109,8 +120,10 @@ import {
   writeDesktopPreferences,
   writeDesktopSessionStore,
   writeSidebarState,
+  writeWindowBounds,
 } from "./storage-bridge.js"
 import { runTerminalCommand, TerminalPtyManager } from "./terminal-bridge.js"
+import { RayuTelegramManager } from "./telegram-bridge.js"
 import {
   getWorkspaceInfo,
   pickWorkspaceFiles,
@@ -137,6 +150,10 @@ app.setName("RayuCode")
 
 let activeWorkspaceDir =
   process.env.RAYU_WORKSPACE_DIR ?? path.resolve(__dirname, "..", "..")
+const telegramManager = new RayuTelegramManager(
+  daemonClient,
+  () => activeWorkspaceDir
+)
 let mainWindow: BrowserWindow | null = null
 let keepAwakeBlockerId: number | null = null
 
@@ -202,6 +219,24 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessRenameSessionSchema.parse(rawPayload)
       await daemonClient.renameSession(parsed.sessionId, parsed.title)
+      return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:archive-session",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessSessionIdSchema.parse(rawPayload)
+      await daemonClient.archiveSession(parsed.sessionId)
+      return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:restore-session",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessSessionIdSchema.parse(rawPayload)
+      await daemonClient.restoreSession(parsed.sessionId)
       return { ok: true }
     }
   )
@@ -287,11 +322,13 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetModelSchema.parse(rawPayload)
       try {
-        await daemonClient.setModel(parsed.sessionId, parsed.model)
-      } catch {
-        // Non-fatal when provider has a fixed model route
+        return await daemonClient.setModel(parsed.sessionId, parsed.model)
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
       }
-      return { ok: true }
     }
   )
 
@@ -317,6 +354,34 @@ function registerIpcHandlers(): void {
         parsed.command as RuntimeCommand,
         parsed.args ?? []
       )
+    }
+  )
+
+  // Session-scoped File Change Summary & Review Engine
+  ipcMain.handle(
+    "rayu:file-changes:get",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesGetPayloadSchema.parse(rawPayload)
+      return daemonClient.getFileChanges(parsed.sessionId)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:file-changes:diff",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesDiffPayloadSchema.parse(rawPayload)
+      return daemonClient.getFileChangeDiff(parsed.sessionId, parsed.path)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:file-changes:action",
+    async (_event, rawPayload: unknown) => {
+      const parsed = FileChangesActionPayloadSchema.parse(rawPayload)
+      return daemonClient.fileChangeAction(parsed.sessionId, parsed.action, {
+        path: parsed.path,
+        force: parsed.force,
+      })
     }
   )
 
@@ -833,6 +898,63 @@ function registerIpcHandlers(): void {
     return browserCdp.screenshot()
   })
 
+  // Real Telegram Remote (backed by Rust rayu daemon telegram_remote & telegram_bridge)
+  ipcMain.handle("rayu:telegram:state", async () => {
+    return telegramManager.getState()
+  })
+
+  ipcMain.handle(
+    "rayu:telegram:start-hosted",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramStartHostedSchema.parse(rawPayload ?? {})
+      return telegramManager.startHosted(Boolean(parsed.replaceExisting))
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:telegram:connect-bot-token",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramConnectBotTokenSchema.parse(rawPayload)
+      return telegramManager.connectBotToken(parsed)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:telegram:disconnect",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramDisconnectSchema.parse(rawPayload ?? {})
+      return telegramManager.disconnect(Boolean(parsed.localOnly))
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:telegram:resolve-approval",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramResolveApprovalSchema.parse(rawPayload)
+      return telegramManager.resolveApproval(parsed.approvalId, parsed.decision)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:telegram:set-remote-uninstall",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramSetRemoteUninstallSchema.parse(rawPayload)
+      return telegramManager.setRemoteUninstall(parsed.enabled)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:telegram:select-session",
+    async (_event, rawPayload: unknown) => {
+      const parsed = TelegramSelectSessionSchema.parse(rawPayload)
+      return telegramManager.selectSession(parsed.sessionId)
+    }
+  )
+
+  ipcMain.handle("rayu:telegram:ping", async () => {
+    return telegramManager.sendTestPing()
+  })
+
   // Push events -> Renderer
   daemonClient.on("status", (status) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -877,9 +999,43 @@ async function createMainWindow(): Promise<void> {
   const preloadPath =
     preloadCandidates.find((p) => fs.existsSync(p)) ?? preloadCandidates[0]
 
+  const primaryWorkArea = screen.getPrimaryDisplay().workArea
+  const defaultWidth = Math.min(
+    1680,
+    Math.max(1280, Math.round(primaryWorkArea.width * 0.92))
+  )
+  const defaultHeight = Math.min(
+    1060,
+    Math.max(820, Math.round(primaryWorkArea.height * 0.92))
+  )
+  const savedBounds = readWindowBounds()
+  const isSavedBoundsVisible =
+    savedBounds !== null &&
+    savedBounds.x !== undefined &&
+    savedBounds.y !== undefined &&
+    screen.getAllDisplays().some((display) => {
+      const wa = display.workArea
+      return (
+        savedBounds.x! + savedBounds.width > wa.x + 80 &&
+        savedBounds.x! < wa.x + wa.width - 80 &&
+        savedBounds.y! + savedBounds.height > wa.y + 80 &&
+        savedBounds.y! < wa.y + wa.height - 80
+      )
+    })
+
+  const initialWidth = savedBounds
+    ? Math.min(primaryWorkArea.width, Math.max(1024, savedBounds.width))
+    : Math.min(primaryWorkArea.width, defaultWidth)
+  const initialHeight = savedBounds
+    ? Math.min(primaryWorkArea.height, Math.max(680, savedBounds.height))
+    : Math.min(primaryWorkArea.height, defaultHeight)
+
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 934,
+    width: initialWidth,
+    height: initialHeight,
+    ...(isSavedBoundsVisible && savedBounds
+      ? { x: savedBounds.x, y: savedBounds.y }
+      : {}),
     minWidth: 1024,
     minHeight: 680,
     title: "RayuCode",
@@ -893,6 +1049,44 @@ async function createMainWindow(): Promise<void> {
       sandbox: true,
       webviewTag: true,
     },
+  })
+
+  if (savedBounds?.isMaximized) {
+    mainWindow.maximize()
+  }
+
+  let saveBoundsTimer: ReturnType<typeof setTimeout> | null = null
+  const persistCurrentBounds = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const isMaximized = mainWindow.isMaximized()
+    const normal = isMaximized ? mainWindow.getNormalBounds() : mainWindow.getBounds()
+    writeWindowBounds({
+      width: normal.width,
+      height: normal.height,
+      x: normal.x,
+      y: normal.y,
+      isMaximized,
+    })
+  }
+  const schedulePersistBounds = () => {
+    if (saveBoundsTimer !== null) {
+      clearTimeout(saveBoundsTimer)
+    }
+    saveBoundsTimer = setTimeout(() => {
+      saveBoundsTimer = null
+      persistCurrentBounds()
+    }, 250)
+  }
+  mainWindow.on("resize", schedulePersistBounds)
+  mainWindow.on("move", schedulePersistBounds)
+  mainWindow.on("maximize", schedulePersistBounds)
+  mainWindow.on("unmaximize", schedulePersistBounds)
+  mainWindow.on("close", () => {
+    if (saveBoundsTimer !== null) {
+      clearTimeout(saveBoundsTimer)
+      saveBoundsTimer = null
+    }
+    persistCurrentBounds()
   })
 
   mainWindow.webContents.on("preload-error", (_event, scriptPath, error) => {

@@ -202,6 +202,12 @@ pub(in crate::tui::app) fn handle_server_event(
         super::fail_pending_automatic_failover(app, message);
         return true;
     }
+    if let ServerEvent::Error { id, message, .. } = &event
+        && app.pending_remote_file_change_request_ids.remove(id)
+    {
+        app.handle_remote_file_change_error(message);
+        return true;
+    }
     let (event, identity) = match event {
         ServerEvent::TurnState {
             session_id,
@@ -1819,6 +1825,7 @@ fn handle_server_event_inner(
             activity,
             token_usage_totals,
             side_panel,
+            file_changes,
             ..
         } => {
             if let Some(base_count) = messages_base_count {
@@ -2056,6 +2063,7 @@ fn handle_server_event_inner(
                 app.swarm_plan_items.clear();
                 app.swarm_plan_version = None;
                 app.swarm_plan_swarm_id = None;
+                app.clear_file_changes_state();
                 remote.reset_call_output_tokens_seen();
             }
             if session_changed {
@@ -2128,6 +2136,11 @@ fn handle_server_event_inner(
             let authoritative = session_changed || carries_server_identity;
             if authoritative || !side_panel.pages.is_empty() {
                 app.set_side_panel_snapshot(side_panel);
+            }
+            if let Some(snapshot) = file_changes {
+                app.apply_file_changes_snapshot(snapshot);
+            } else if authoritative {
+                app.clear_file_changes_state();
             }
             if !authoritative && images.is_empty() {
                 // A catalog refresh does not carry an image snapshot.
@@ -3595,6 +3608,31 @@ fn handle_server_event_inner(
         }
         ServerEvent::PeerUserMessage { content } => {
             app.handle_peer_user_message(&content);
+            true
+        }
+        ServerEvent::FileChangesState { snapshot } => {
+            app.apply_file_changes_snapshot(snapshot);
+            true
+        }
+        ServerEvent::FileChangeDiff { id, diff } => {
+            app.pending_remote_file_change_request_ids.remove(&id);
+            app.apply_file_change_diff(diff);
+            true
+        }
+        ServerEvent::FileChangeActionResult { id, response } => {
+            app.pending_remote_file_change_request_ids.remove(&id);
+            let attempted = app
+                .file_review_overlay
+                .as_ref()
+                .and_then(|o| o.conflict_action.clone());
+            app.apply_file_change_action_response(response, attempted);
+            if let Some(selected_path) = app
+                .file_review_overlay
+                .as_ref()
+                .and_then(|o| o.selected_path.clone())
+            {
+                app.request_file_change_diff(selected_path);
+            }
             true
         }
         _ => false,

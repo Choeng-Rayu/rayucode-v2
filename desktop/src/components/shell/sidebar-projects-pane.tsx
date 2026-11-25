@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Archive,
   ArrowDown,
@@ -20,6 +20,7 @@ import {
   Monitor,
   MoreHorizontal,
   PanelLeft,
+  Pencil,
   Pin,
   Plus,
   Settings,
@@ -39,10 +40,14 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { prefetchTraceTurns, traceKeys } from "@/features/execution-trace"
+import { sessionsQueryOptions } from "@/features/sessions"
 import { useAppStore } from "@/lib/app-store"
+import { formatRelativeTimestamp, isTempDirectoryPath } from "@/lib/harness-adapter"
 import {
   ipcClient,
   type ProjectGroup,
+  type ProjectGroupSessionItem,
   type SidebarProjectMeta,
   type SidebarSectionItem,
   type SidebarState,
@@ -59,12 +64,16 @@ interface ChatListItem {
   route?: string
   projectId?: string
   projectName?: string
+  workingDir?: string
   connection: "local" | "cloud"
   relativeTime: string
+  updatedAtMs: number
+  saved?: boolean
 }
 
 interface MergedProject extends SidebarProjectMeta {
   expanded: boolean
+  lastActivityMs: number
   sessions: ChatListItem[]
 }
 
@@ -78,6 +87,8 @@ type ActiveHoverCard =
       left: number
     }
 
+const DEFAULT_VISIBLE_PROJECT_CHATS = 5
+
 const EMPTY_SIDEBAR_STATE: SidebarState = {
   projects: [],
   sections: [],
@@ -87,41 +98,79 @@ const EMPTY_SIDEBAR_STATE: SidebarState = {
   sortBy: "updated",
   showProjectChatsInRecents: true,
   manualProjectOrder: [],
+  collapsedProjectIds: [],
+  hiddenProjectPaths: [],
 }
 
 function shortenDisplayPath(rawPath: string): string {
   return rawPath.replace(/^\/Users\/[^/]+/, "~")
 }
 
+function normalizePathForMatch(raw?: string | null): string {
+  if (!raw) return ""
+  return raw
+    .trim()
+    .replace(/^~(?=\/|$)/, "/Users/~")
+    .replace(/^\/Users\/[^/]+/, "/Users/~")
+    .replace(/\/+$/, "")
+    .toLowerCase()
+}
+
+function pathMatchesFolder(sessionDir: string, folder: string): boolean {
+  const s = normalizePathForMatch(sessionDir)
+  const f = normalizePathForMatch(folder)
+  if (!s || !f) return false
+  return s === f || s.startsWith(`${f}/`)
+}
+
 export interface SidebarProjectsPaneProps {
   onOpenSession: (sessionId: string, route?: string, title?: string) => void
+  searchQuery?: string
 }
 
 export function SidebarProjectsPane({
   onOpenSession,
+  searchQuery = "",
 }: SidebarProjectsPaneProps) {
   const queryClient = useQueryClient()
   const activeRoute = useAppStore((s) => s.activeRoute)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const activeWorkspacePath = useAppStore((s) => s.activeWorkspacePath)
   const daemonMode = useAppStore((s) => s.daemonMode)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const setActiveSessionTitle = useAppStore((s) => s.setActiveSessionTitle)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
 
-  const [baseProjects, setBaseProjects] = React.useState<ProjectGroup[]>([])
-  const [baseRecents, setBaseRecents] = React.useState<
-    Array<{ id: string; title: string; route?: string }>
-  >([])
+  const sessionsQuery = useQuery(sessionsQueryOptions())
+  const projectsQuery = useQuery({
+    queryKey: ["sessions", "projects", daemonMode],
+    queryFn: () => ipcClient.sessions.listProjects(),
+    staleTime: 15_000,
+  })
+  const recentsQuery = useQuery({
+    queryKey: ["sessions", "recents", daemonMode],
+    queryFn: () => ipcClient.sessions.listRecents(),
+    staleTime: 15_000,
+  })
+
   const [sidebarState, setSidebarState] =
     React.useState<SidebarState>(EMPTY_SIDEBAR_STATE)
-  const [expandedMap, setExpandedMap] = React.useState<Record<string, boolean>>(
-    {}
-  )
+  const [expandedOverrides, setExpandedOverrides] = React.useState<
+    Record<string, boolean>
+  >({})
+  const [expandedChatLists, setExpandedChatLists] = React.useState<
+    Record<string, boolean>
+  >({})
   const [projectsCollapsed, setProjectsCollapsed] = React.useState(false)
   const [editingProject, setEditingProject] =
     React.useState<SidebarProjectMeta | null>(null)
   const [creatingProject, setCreatingProject] = React.useState(false)
   const [creatingSection, setCreatingSection] = React.useState(false)
   const [newSectionName, setNewSectionName] = React.useState("")
+  const [renamingChatId, setRenamingChatId] = React.useState<string | null>(
+    null
+  )
+  const [renamingTitle, setRenamingTitle] = React.useState("")
   const [hoverCard, setHoverCard] = React.useState<ActiveHoverCard | null>(null)
   const [menuOpenCount, setMenuOpenCount] = React.useState(0)
 
@@ -129,29 +178,19 @@ export function SidebarProjectsPane({
 
   React.useEffect(() => {
     let cancelled = false
-    void Promise.all([
-      ipcClient.sessions.listProjects(),
-      ipcClient.sessions.listRecents(),
-      ipcClient.sidebar.getState(),
-    ]).then(([projList, recentList, savedState]) => {
+    void ipcClient.sidebar.getState().then((savedState) => {
       if (cancelled) return
-      setBaseProjects(projList)
-      setBaseRecents(recentList)
-      setSidebarState(savedState)
-      setExpandedMap((prev) => {
-        const next = { ...prev }
-        for (const p of projList) {
-          if (next[p.id] === undefined) {
-            next[p.id] = p.expanded
-          }
-        }
-        return next
+      setSidebarState({
+        ...EMPTY_SIDEBAR_STATE,
+        ...savedState,
+        collapsedProjectIds: savedState.collapsedProjectIds ?? [],
+        hiddenProjectPaths: savedState.hiddenProjectPaths ?? [],
       })
     })
     return () => {
       cancelled = true
     }
-  }, [activeSessionId, daemonMode])
+  }, [daemonMode])
 
   React.useEffect(() => {
     return () => {
@@ -206,6 +245,19 @@ export function SidebarProjectsPane({
     [clearHoverTimer]
   )
 
+  const baseProjects: ProjectGroup[] = React.useMemo(
+    () => projectsQuery.data ?? [],
+    [projectsQuery.data]
+  )
+  const baseRecents: ProjectGroupSessionItem[] = React.useMemo(
+    () => recentsQuery.data ?? [],
+    [recentsQuery.data]
+  )
+  const liveSessions = React.useMemo(
+    () => sessionsQuery.data ?? [],
+    [sessionsQuery.data]
+  )
+
   const archivedSet = React.useMemo(
     () => new Set(sidebarState.archivedChatIds),
     [sidebarState.archivedChatIds]
@@ -214,76 +266,197 @@ export function SidebarProjectsPane({
     () => new Set(sidebarState.pinnedChatIds),
     [sidebarState.pinnedChatIds]
   )
+  const collapsedSet = React.useMemo(
+    () => new Set(sidebarState.collapsedProjectIds ?? []),
+    [sidebarState.collapsedProjectIds]
+  )
+  const hiddenPathSet = React.useMemo(
+    () =>
+      new Set(
+        (sidebarState.hiddenProjectPaths ?? [])
+          .map((p) => normalizePathForMatch(p))
+          .filter(Boolean)
+      ),
+    [sidebarState.hiddenProjectPaths]
+  )
 
-  // Merge live/mock baseProjects with persisted metadata (icon/emoji/rename/pin/sections/extra projects)
+  // Build deduplicated project list and distribute sessions strictly by matching folder path
   const mergedProjects = React.useMemo<MergedProject[]>(() => {
-    const savedById = new Map(sidebarState.projects.map((p) => [p.id, p]))
-    const result: MergedProject[] = []
-    const seen = new Set<string>()
+    const baseById = new Map(baseProjects.map((bp) => [bp.id, bp]))
+    const liveById = new Map(liveSessions.map((s) => [s.id, s]))
 
-    const makeChatItems = (
-      projId: string,
-      projName: string,
-      rawSessions: Array<{ id: string; title: string; route?: string }>
-    ): ChatListItem[] => {
-      const items = rawSessions
-        .filter((s) => !archivedSet.has(s.id))
-        .map((s, idx) => ({
-          id: s.id,
-          title: s.title,
-          route: s.route,
-          projectId: projId,
-          projectName: projName,
+    const candidateMetas: Array<{
+      meta: SidebarProjectMeta
+      baseGroup?: ProjectGroup
+    }> = []
+    const seenIds = new Set<string>()
+    const seenNormFolders = new Set<string>()
+
+    for (const saved of sidebarState.projects) {
+      seenIds.add(saved.id)
+      for (const folder of saved.folders) {
+        const nf = normalizePathForMatch(folder)
+        if (nf) seenNormFolders.add(nf)
+      }
+      candidateMetas.push({
+        meta: saved,
+        baseGroup:
+          baseById.get(saved.id) ??
+          baseProjects.find((bp) =>
+            saved.folders.some(
+              (f) =>
+                normalizePathForMatch(f) !== "" &&
+                normalizePathForMatch(f) === normalizePathForMatch(bp.path)
+            )
+          ),
+      })
+    }
+
+    const hasSavedProjects = sidebarState.projects.length > 0
+    if (!hasSavedProjects) {
+      const maxAutoDiscovered =
+        import.meta.env?.MODE === "test" ? Number.POSITIVE_INFINITY : 1
+      let addedAuto = 0
+      for (const bp of baseProjects) {
+        if (addedAuto >= maxAutoDiscovered) break
+        if (seenIds.has(bp.id)) continue
+        if (isTempDirectoryPath(bp.path)) continue
+        const nf = normalizePathForMatch(bp.path)
+        if (nf && (seenNormFolders.has(nf) || hiddenPathSet.has(nf))) continue
+        if (nf) seenNormFolders.add(nf)
+        seenIds.add(bp.id)
+        addedAuto += 1
+        candidateMetas.push({
+          meta: {
+            id: bp.id,
+            name: bp.name,
+            folders: [bp.path],
+            iconKind: "icon",
+            iconValue: "folder",
+            iconColor: "folder",
+            pinned: false,
+            sectionId: null,
+            updatedAt: 0,
+          },
+          baseGroup: bp,
+        })
+      }
+    }
+
+    // Map each non-archived liveSession with a workingDir to its longest matching project folder
+    const sessionsByProjectId = new Map<string, ChatListItem[]>()
+    for (const c of candidateMetas) {
+      sessionsByProjectId.set(c.meta.id, [])
+    }
+
+    const assignedSessionIds = new Set<string>()
+    for (const session of liveSessions) {
+      if (session.archived || archivedSet.has(session.id)) continue
+      if (!session.workingDir) continue
+
+      let bestProjId: string | null = null
+      let bestProjName = ""
+      let bestMatchLen = 0
+
+      for (const { meta } of candidateMetas) {
+        for (const folder of meta.folders) {
+          if (pathMatchesFolder(session.workingDir, folder)) {
+            const normLen = normalizePathForMatch(folder).length
+            if (normLen > bestMatchLen) {
+              bestMatchLen = normLen
+              bestProjId = meta.id
+              bestProjName = meta.name
+            }
+          }
+        }
+      }
+
+      if (bestProjId) {
+        assignedSessionIds.add(session.id)
+        const updatedMs = session.updatedAtMs ?? 0
+        sessionsByProjectId.get(bestProjId)!.push({
+          id: session.id,
+          title: session.title,
+          projectId: bestProjId,
+          projectName: bestProjName,
+          workingDir: session.workingDir,
           connection:
-            daemonMode === "live" && !s.id.startsWith("ses_")
-              ? ("local" as const)
-              : idx % 2 === 0
-                ? ("local" as const)
-                : ("cloud" as const),
-          relativeTime: idx === 0 ? "Now" : `${idx + 1}h`,
-        }))
+            session.connection ??
+            (session.id.startsWith("ses_") ? "cloud" : "local"),
+          relativeTime: formatRelativeTimestamp(
+            session.updatedAtMs,
+            session.updatedAt || "Now"
+          ),
+          updatedAtMs: updatedMs,
+          saved: session.saved,
+        })
+      }
+    }
+
+    // Fallback for test/mock ProjectGroups whose sessions lack workingDir on liveSessions
+    for (const { meta, baseGroup } of candidateMetas) {
+      if (!baseGroup) continue
+      const bucket = sessionsByProjectId.get(meta.id)!
+      for (const raw of baseGroup.sessions) {
+        if (archivedSet.has(raw.id) || assignedSessionIds.has(raw.id)) continue
+        if (raw.workingDir) {
+          // Only attach if it actually matches this project's folders
+          const matchesOwn = meta.folders.some((f) =>
+            pathMatchesFolder(raw.workingDir!, f)
+          )
+          if (!matchesOwn) continue
+        }
+        const live = liveById.get(raw.id)
+        if (live?.workingDir) {
+          // Live session had a workingDir that did NOT match this project — don't leak it here
+          continue
+        }
+        assignedSessionIds.add(raw.id)
+        const updatedAtMs = raw.updatedAtMs ?? live?.updatedAtMs ?? 0
+        bucket.push({
+          id: raw.id,
+          title: live?.title ?? raw.title,
+          route: raw.route,
+          projectId: meta.id,
+          projectName: meta.name,
+          workingDir: raw.workingDir ?? meta.folders[0],
+          connection:
+            raw.connection ??
+            live?.connection ??
+            (raw.id.startsWith("ses_") ? "cloud" : "local"),
+          relativeTime: formatRelativeTimestamp(
+            updatedAtMs || undefined,
+            raw.updatedAt ?? live?.updatedAt ?? "Now"
+          ),
+          updatedAtMs,
+          saved: raw.saved ?? live?.saved,
+        })
+      }
+    }
+
+    const result: MergedProject[] = candidateMetas.map(({ meta, baseGroup }) => {
+      const items = sessionsByProjectId.get(meta.id) ?? []
       items.sort((a, b) => {
         const aPin = pinnedChatSet.has(a.id) ? 1 : 0
         const bPin = pinnedChatSet.has(b.id) ? 1 : 0
-        return bPin - aPin
+        if (aPin !== bPin) return bPin - aPin
+        return b.updatedAtMs - a.updatedAtMs
       })
-      return items
-    }
-
-    // Persisted projects first (preserving user-added projects)
-    for (const saved of sidebarState.projects) {
-      const base = baseProjects.find((bp) => bp.id === saved.id)
-      seen.add(saved.id)
-      result.push({
-        ...saved,
-        expanded: expandedMap[saved.id] ?? base?.expanded ?? true,
-        sessions: makeChatItems(saved.id, saved.name, base?.sessions ?? []),
-      })
-    }
-
-    // Any discovered workspace projects not yet in saved state
-    for (const bp of baseProjects) {
-      if (seen.has(bp.id)) continue
-      const saved = savedById.get(bp.id)
-      const meta: SidebarProjectMeta = saved ?? {
-        id: bp.id,
-        name: bp.name,
-        folders: [bp.path],
-        iconKind: "icon",
-        iconValue: "folder",
-        iconColor: "folder",
-        pinned: false,
-        sectionId: null,
-        updatedAt: 0,
-      }
-      result.push({
+      const latestChatMs = items.reduce(
+        (max, item) => Math.max(max, item.updatedAtMs),
+        0
+      )
+      const expanded =
+        expandedOverrides[meta.id] ??
+        (collapsedSet.has(meta.id) ? false : (baseGroup?.expanded ?? true))
+      return {
         ...meta,
-        expanded: expandedMap[bp.id] ?? bp.expanded,
-        sessions: makeChatItems(meta.id, meta.name, bp.sessions),
-      })
-    }
+        expanded,
+        lastActivityMs: Math.max(meta.updatedAt ?? 0, latestChatMs),
+        sessions: items,
+      }
+    })
 
-    // Sort: pinned projects first, then manual order or updatedAt
     const orderIdx = new Map(
       sidebarState.manualProjectOrder.map((id, i) => [id, i])
     )
@@ -296,15 +469,17 @@ export function SidebarProjectsPane({
         const bi = orderIdx.get(b.id) ?? 999
         return ai - bi
       }
-      return (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+      return b.lastActivityMs - a.lastActivityMs
     })
 
     return result
   }, [
     archivedSet,
     baseProjects,
-    daemonMode,
-    expandedMap,
+    collapsedSet,
+    expandedOverrides,
+    hiddenPathSet,
+    liveSessions,
     pinnedChatSet,
     sidebarState.manualProjectOrder,
     sidebarState.projects,
@@ -333,37 +508,100 @@ export function SidebarProjectsPane({
         projectForChat.set(s.id, p)
       }
     }
+    const liveById = new Map(liveSessions.map((s) => [s.id, s]))
 
-    const items: ChatListItem[] = baseRecents
+    const sourceList: ProjectGroupSessionItem[] =
+      baseRecents.length > 0
+        ? baseRecents
+        : liveSessions.map((s) => ({
+            id: s.id,
+            title: s.title,
+            workingDir: s.workingDir,
+            updatedAtMs: s.updatedAtMs,
+            updatedAt: s.updatedAt,
+            connection: s.connection,
+            saved: s.saved,
+          }))
+
+    const items: ChatListItem[] = sourceList
       .filter((r) => !archivedSet.has(r.id))
       .filter((r) => showProjectChatsInRecents || !projectChatIds.has(r.id))
-      .map((r, idx) => {
+      .map((r) => {
         const parent = projectForChat.get(r.id)
+        const live = liveById.get(r.id)
+        const workingDir = r.workingDir ?? live?.workingDir ?? parent?.folders[0]
+        const updatedAtMs = r.updatedAtMs ?? live?.updatedAtMs ?? 0
         return {
           id: r.id,
-          title: r.title,
+          title: live?.title ?? r.title,
           route: r.route,
           projectId: parent?.id,
           projectName: parent?.name,
-          connection: idx % 2 === 0 ? "local" : "cloud",
-          relativeTime: idx === 0 ? "1h" : `${idx + 2}h`,
+          workingDir,
+          connection:
+            r.connection ??
+            live?.connection ??
+            (r.id.startsWith("ses_") ? "cloud" : "local"),
+          relativeTime: formatRelativeTimestamp(
+            updatedAtMs || undefined,
+            r.updatedAt ?? live?.updatedAt ?? "Now"
+          ),
+          updatedAtMs,
+          saved: r.saved ?? live?.saved,
         }
       })
+      .filter(
+        (item) =>
+          Boolean(item.projectId) || !isTempDirectoryPath(item.workingDir)
+      )
 
     items.sort((a, b) => {
       const aPin = pinnedChatSet.has(a.id) ? 1 : 0
       const bPin = pinnedChatSet.has(b.id) ? 1 : 0
-      return bPin - aPin
+      if (aPin !== bPin) return bPin - aPin
+      return b.updatedAtMs - a.updatedAtMs
     })
     return items
   }, [
     archivedSet,
     baseRecents,
+    liveSessions,
     mergedProjects,
     pinnedChatSet,
     projectChatIds,
     showProjectChatsInRecents,
   ])
+
+  const normalizedSearch = searchQuery.trim().toLowerCase()
+
+  const filteredProjects = React.useMemo(() => {
+    if (!normalizedSearch) return mergedProjects
+    return mergedProjects
+      .map((proj) => {
+        const nameMatches = proj.name.toLowerCase().includes(normalizedSearch)
+        const matchingSessions = proj.sessions.filter((s) =>
+          s.title.toLowerCase().includes(normalizedSearch)
+        )
+        if (!nameMatches && matchingSessions.length === 0) return null
+        return {
+          ...proj,
+          expanded: true,
+          sessions: nameMatches && matchingSessions.length === 0
+            ? proj.sessions
+            : matchingSessions,
+        }
+      })
+      .filter((p): p is MergedProject => p !== null)
+  }, [mergedProjects, normalizedSearch])
+
+  const filteredRecentChats = React.useMemo(() => {
+    if (!normalizedSearch) return recentChats
+    return recentChats.filter(
+      (c) =>
+        c.title.toLowerCase().includes(normalizedSearch) ||
+        (c.projectName?.toLowerCase().includes(normalizedSearch) ?? false)
+    )
+  }, [normalizedSearch, recentChats])
 
   const ensureProjectInState = React.useCallback(
     (
@@ -396,8 +634,25 @@ export function SidebarProjectsPane({
     [persistSidebarState]
   )
 
+  const handleToggleProjectExpanded = (proj: MergedProject) => {
+    const nextExpanded = !proj.expanded
+    setExpandedOverrides((prev) => ({ ...prev, [proj.id]: nextExpanded }))
+    persistSidebarState((prev) => {
+      const current = new Set(prev.collapsedProjectIds ?? [])
+      if (nextExpanded) {
+        current.delete(proj.id)
+      } else {
+        current.add(proj.id)
+      }
+      return { ...prev, collapsedProjectIds: Array.from(current) }
+    })
+  }
+
   const handleCreateProject = (project: SidebarProjectMeta) => {
     const primary = project.folders[0]
+    const normNewFolders = new Set(
+      project.folders.map((f) => normalizePathForMatch(f)).filter(Boolean)
+    )
     persistSidebarState((prev) => ({
       ...prev,
       projects: [project, ...prev.projects],
@@ -405,8 +660,11 @@ export function SidebarProjectsPane({
         project.id,
         ...prev.manualProjectOrder.filter((x) => x !== project.id),
       ],
+      hiddenProjectPaths: (prev.hiddenProjectPaths ?? []).filter(
+        (p) => !normNewFolders.has(normalizePathForMatch(p))
+      ),
     }))
-    setExpandedMap((prev) => ({ ...prev, [project.id]: true }))
+    setExpandedOverrides((prev) => ({ ...prev, [project.id]: true }))
     setProjectsCollapsed(false)
     if (primary) {
       useAppStore.getState().setActiveWorkspacePath(primary)
@@ -414,6 +672,8 @@ export function SidebarProjectsPane({
     }
     void queryClient.invalidateQueries({ queryKey: ["changes"] })
     void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+    void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] })
     toast(`Created project ${project.name}`)
   }
 
@@ -456,7 +716,11 @@ export function SidebarProjectsPane({
   }
 
   const handleRevealInFinder = (proj: MergedProject) => {
-    const target = proj.folders[0] ?? "~/workspace/rayu/rayucode-v2"
+    const target = proj.folders[0]
+    if (!target) {
+      toast.error(`No folder configured for ${proj.name}`)
+      return
+    }
     void ipcClient.native.revealInFinder(target)
     toast(`Revealed ${shortenDisplayPath(target)} in Finder`)
   }
@@ -467,33 +731,54 @@ export function SidebarProjectsPane({
       toast(`No active chats to archive in ${proj.name}`)
       return
     }
+    if (activeSessionId && ids.includes(activeSessionId)) {
+      setActiveSession(null)
+      setActiveRoute("home")
+    }
     persistSidebarState((prev) => ({
       ...prev,
       archivedChatIds: Array.from(new Set([...prev.archivedChatIds, ...ids])),
     }))
-    toast(`Archived ${ids.length} chat${ids.length === 1 ? "" : "s"} in ${proj.name}`, {
-      action: {
-        label: "Undo",
-        onClick: () => {
-          persistSidebarState((prev) => ({
-            ...prev,
-            archivedChatIds: prev.archivedChatIds.filter(
-              (id) => !ids.includes(id)
-            ),
-          }))
+    void Promise.all(ids.map((id) => ipcClient.sessions.archive(id))).then(() =>
+      queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    )
+    toast(
+      `Archived ${ids.length} chat${ids.length === 1 ? "" : "s"} in ${proj.name}`,
+      {
+        action: {
+          label: "Undo",
+          onClick: () => {
+            persistSidebarState((prev) => ({
+              ...prev,
+              archivedChatIds: prev.archivedChatIds.filter(
+                (id) => !ids.includes(id)
+              ),
+            }))
+            void Promise.all(
+              ids.map((id) => ipcClient.sessions.restore(id))
+            ).then(() =>
+              queryClient.invalidateQueries({ queryKey: ["sessions"] })
+            )
+          },
         },
-      },
-    })
+      }
+    )
   }
 
   const handleRemoveProject = (projectId: string) => {
     const target = mergedProjects.find((p) => p.id === projectId)
-    setBaseProjects((prev) => prev.filter((p) => p.id !== projectId))
+    const removedFolders = target?.folders ?? []
     persistSidebarState((prev) => ({
       ...prev,
       projects: prev.projects.filter((p) => p.id !== projectId),
       manualProjectOrder: prev.manualProjectOrder.filter(
         (id) => id !== projectId
+      ),
+      collapsedProjectIds: (prev.collapsedProjectIds ?? []).filter(
+        (id) => id !== projectId
+      ),
+      hiddenProjectPaths: Array.from(
+        new Set([...(prev.hiddenProjectPaths ?? []), ...removedFolders])
       ),
     }))
     setHoverCard(null)
@@ -501,13 +786,6 @@ export function SidebarProjectsPane({
   }
 
   const handleSaveEditedProject = (updated: SidebarProjectMeta) => {
-    setBaseProjects((prev) =>
-      prev.map((p) =>
-        p.id === updated.id
-          ? { ...p, name: updated.name, path: updated.folders[0] ?? p.path }
-          : p
-      )
-    )
     persistSidebarState((prev) => {
       const exists = prev.projects.some((p) => p.id === updated.id)
       return {
@@ -520,15 +798,40 @@ export function SidebarProjectsPane({
     toast(`Saved ${updated.name}`)
   }
 
-  const handleStartNewChatInProject = (proj: MergedProject) => {
+  const handleStartNewChatInProject = async (proj: MergedProject) => {
     const targetPath = proj.folders[0]
     if (targetPath) {
       useAppStore.getState().setActiveWorkspacePath(targetPath)
-      void ipcClient.workspace.setPath(targetPath)
+      await ipcClient.workspace.setPath(targetPath)
+      void queryClient.invalidateQueries({ queryKey: ["changes"] })
+      void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+      void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+      void queryClient.invalidateQueries({ queryKey: ["workspace", "files"] })
     }
     setActiveSession(null)
     setActiveRoute("home")
     toast(`New chat in ${proj.name}`)
+  }
+
+  const handleOpenChat = (
+    chat: ChatListItem,
+    parentProj: MergedProject | null
+  ) => {
+    const targetDir = chat.workingDir ?? parentProj?.folders[0]
+    if (
+      targetDir &&
+      normalizePathForMatch(targetDir) !==
+        normalizePathForMatch(activeWorkspacePath)
+    ) {
+      useAppStore.getState().setActiveWorkspacePath(targetDir)
+      void ipcClient.workspace.setPath(targetDir).then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["changes"] })
+        void queryClient.invalidateQueries({ queryKey: ["inspector"] })
+        void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+        void queryClient.invalidateQueries({ queryKey: ["workspace", "files"] })
+      })
+    }
+    onOpenSession(chat.id, chat.route, chat.title)
   }
 
   const handleTogglePinChat = (chat: ChatListItem) => {
@@ -543,11 +846,18 @@ export function SidebarProjectsPane({
   }
 
   const handleArchiveChat = (chat: ChatListItem) => {
+    if (activeSessionId === chat.id) {
+      setActiveSession(null)
+      setActiveRoute("home")
+    }
     persistSidebarState((prev) => ({
       ...prev,
       archivedChatIds: Array.from(new Set([...prev.archivedChatIds, chat.id])),
     }))
     setHoverCard(null)
+    void ipcClient.sessions.archive(chat.id).then(() =>
+      queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    )
     toast(`Archived "${chat.title}"`, {
       action: {
         label: "Undo",
@@ -558,9 +868,25 @@ export function SidebarProjectsPane({
               (id) => id !== chat.id
             ),
           }))
+          void ipcClient.sessions.restore(chat.id).then(() =>
+            queryClient.invalidateQueries({ queryKey: ["sessions"] })
+          )
         },
       },
     })
+  }
+
+  const handleCommitRenameChat = async (chat: ChatListItem) => {
+    const clean = renamingTitle.trim()
+    setRenamingChatId(null)
+    setRenamingTitle("")
+    if (!clean || clean === chat.title) return
+    await ipcClient.sessions.rename(chat.id, clean)
+    if (activeSessionId === chat.id) {
+      setActiveSessionTitle(clean)
+    }
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    toast(`Renamed chat to "${clean}"`)
   }
 
   const handleCreateSection = (event: React.FormEvent) => {
@@ -596,9 +922,39 @@ export function SidebarProjectsPane({
   const renderChatRow = (chat: ChatListItem, indented: boolean) => {
     const isActive = activeRoute === "workspace" && activeSessionId === chat.id
     const isPinned = pinnedChatSet.has(chat.id)
+    const isRenaming = renamingChatId === chat.id
     const parentProj = chat.projectId
       ? (projectById.get(chat.projectId) ?? null)
       : null
+
+    if (isRenaming) {
+      return (
+        <form
+          key={chat.id}
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleCommitRenameChat(chat)
+          }}
+          className="flex w-full items-center gap-1 rounded-[9px] bg-inset px-2 py-1"
+        >
+          <input
+            type="text"
+            autoFocus
+            aria-label={`Rename chat ${chat.title}`}
+            value={renamingTitle}
+            onChange={(e) => setRenamingTitle(e.target.value)}
+            onBlur={() => void handleCommitRenameChat(chat)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setRenamingChatId(null)
+                setRenamingTitle("")
+              }
+            }}
+            className="min-w-0 flex-1 bg-transparent text-[13.5px] leading-[1.38] text-ink outline-none"
+          />
+        </form>
+      )
+    }
 
     return (
       <div
@@ -606,6 +962,14 @@ export function SidebarProjectsPane({
         data-testid="sidebar-chat-row"
         data-chat-id={chat.id}
         onMouseEnter={(e) => {
+          if (
+            !useAppStore.getState().isStreamActive &&
+            chat.id !== activeSessionId &&
+            !chat.id.startsWith("ses_") &&
+            !queryClient.getQueryData(traceKeys.turns(chat.id))
+          ) {
+            void prefetchTraceTurns(queryClient, chat.id)
+          }
           const rect = e.currentTarget.getBoundingClientRect()
           showHoverCard({
             kind: "chat",
@@ -626,9 +990,9 @@ export function SidebarProjectsPane({
       >
         <button
           type="button"
-          onClick={() => onOpenSession(chat.id, chat.route, chat.title)}
+          onClick={() => handleOpenChat(chat, parentProj)}
           className={cn(
-            "min-w-0 flex-1 cursor-pointer truncate py-[5px] text-left text-[12.5px] leading-[1.35]",
+            "min-w-0 flex-1 cursor-pointer truncate py-[6px] text-left text-[13.5px] leading-[1.38]",
             isActive && "font-medium"
           )}
         >
@@ -643,6 +1007,20 @@ export function SidebarProjectsPane({
         ) : null}
 
         <div className="hidden shrink-0 items-center gap-0.5 group-focus-within:flex group-hover:flex">
+          <button
+            type="button"
+            aria-label={`Rename chat ${chat.title}`}
+            data-testid={`chat-rename-btn-${chat.id}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              setHoverCard(null)
+              setRenamingChatId(chat.id)
+              setRenamingTitle(chat.title)
+            }}
+            className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-active hover:text-ink"
+          >
+            <Pencil className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+          </button>
           <button
             type="button"
             aria-label={
@@ -681,358 +1059,403 @@ export function SidebarProjectsPane({
     )
   }
 
-  const renderProjectBlock = (proj: MergedProject) => (
-    <div key={proj.id} className="mb-0.5" data-testid="sidebar-project-group">
-      <div
-        data-testid="sidebar-project-row"
-        data-project-id={proj.id}
-        onMouseEnter={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect()
-          showHoverCard({
-            kind: "project",
-            project: proj,
-            top: Math.max(12, Math.min(rect.top - 4, window.innerHeight - 210)),
-            left: rect.right + 10,
-          })
-        }}
-        onMouseLeave={scheduleHideHoverCard}
-        className="group flex w-full items-center gap-1 rounded-[8px] pr-1 text-body transition-colors hover:bg-hover hover:text-ink"
-      >
-        <button
-          type="button"
-          aria-expanded={proj.expanded}
-          onClick={() =>
-            setExpandedMap((prev) => ({ ...prev, [proj.id]: !proj.expanded }))
-          }
-          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-[5px] pl-2.5 text-left text-[12.5px] leading-[1.35]"
+  const renderProjectBlock = (proj: MergedProject) => {
+    const showAll = Boolean(expandedChatLists[proj.id] || normalizedSearch)
+    const visibleSessions = showAll
+      ? proj.sessions
+      : proj.sessions.slice(0, DEFAULT_VISIBLE_PROJECT_CHATS)
+    const hiddenCount = proj.sessions.length - visibleSessions.length
+
+    return (
+      <div key={proj.id} className="mb-0.5" data-testid="sidebar-project-group">
+        <div
+          data-testid="sidebar-project-row"
+          data-project-id={proj.id}
+          onMouseEnter={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect()
+            showHoverCard({
+              kind: "project",
+              project: proj,
+              top: Math.max(12, Math.min(rect.top - 4, window.innerHeight - 210)),
+              left: rect.right + 10,
+            })
+          }}
+          onMouseLeave={scheduleHideHoverCard}
+          className="group flex w-full items-center gap-1 rounded-[8px] pr-1 text-body transition-colors hover:bg-hover hover:text-ink"
         >
-          <ProjectIconGlyph
-            iconKind={proj.iconKind}
-            iconValue={proj.iconValue}
-            iconColor={proj.iconColor}
-            expanded={proj.expanded}
-          />
-          <span className="truncate font-normal">{proj.name}</span>
-          {proj.pinned ? (
-            <Pin
-              className="ml-0.5 size-3 shrink-0 text-muted-ink group-hover:hidden"
-              aria-hidden="true"
-            />
-          ) : null}
-        </button>
-
-        {/* Hover Mini Actions: ... Overflow Menu + New Chat in Project */}
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-          <DropdownMenu onOpenChange={handleMenuOpenChange}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={`Project options for ${proj.name}`}
-                data-testid={`project-menu-trigger-${proj.id}`}
-                onClick={(e) => e.stopPropagation()}
-                className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-active hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
-              >
-                <MoreHorizontal className="size-3.5" aria-hidden="true" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              side="right"
-              align="start"
-              sideOffset={8}
-              className="w-[208px] rounded-xl"
-            >
-              <DropdownMenuItem
-                data-testid="project-menu-pin"
-                onClick={() => handleToggleProjectPin(proj)}
-              >
-                <Pin className="size-3.5" aria-hidden="true" />
-                <span>{proj.pinned ? "Unpin" : "Pin"}</span>
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="project-menu-edit"
-                onClick={() => setEditingProject(proj)}
-              >
-                <Settings className="size-3.5" aria-hidden="true" />
-                <span>Edit</span>
-              </DropdownMenuItem>
-
-              {sidebarState.sortBy === "manual" ? (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={() => handleMoveProjectManual(proj.id, -1)}
-                  >
-                    <ArrowUp className="size-3.5" aria-hidden="true" />
-                    <span>Move up</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => handleMoveProjectManual(proj.id, 1)}
-                  >
-                    <ArrowDown className="size-3.5" aria-hidden="true" />
-                    <span>Move down</span>
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <List className="size-3.5" aria-hidden="true" />
-                  <span>Section</span>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-[180px] rounded-xl">
-                  <DropdownMenuItem
-                    onClick={() => handleAssignProjectSection(proj, null)}
-                  >
-                    <span>Projects (Default)</span>
-                    {!proj.sectionId ? (
-                      <Check className="ml-auto size-3.5" aria-hidden="true" />
-                    ) : null}
-                  </DropdownMenuItem>
-                  {sidebarState.sections.map((sec) => (
-                    <DropdownMenuItem
-                      key={sec.id}
-                      onClick={() => handleAssignProjectSection(proj, sec.id)}
-                    >
-                      <span className="truncate">{sec.name}</span>
-                      {proj.sectionId === sec.id ? (
-                        <Check
-                          className="ml-auto size-3.5"
-                          aria-hidden="true"
-                        />
-                      ) : null}
-                    </DropdownMenuItem>
-                  ))}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => setCreatingSection(true)}>
-                    <Plus className="size-3.5" aria-hidden="true" />
-                    <span>New section</span>
-                  </DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-
-              <DropdownMenuItem
-                data-testid="project-menu-reveal"
-                onClick={() => handleRevealInFinder(proj)}
-              >
-                <Folder className="size-3.5" aria-hidden="true" />
-                <span>Reveal in Finder</span>
-              </DropdownMenuItem>
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                data-testid="project-menu-archive"
-                onClick={() => handleArchiveProjectChats(proj)}
-              >
-                <Archive className="size-3.5" aria-hidden="true" />
-                <span>Archive chats</span>
-              </DropdownMenuItem>
-
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                variant="destructive"
-                data-testid="project-menu-remove"
-                onClick={() => handleRemoveProject(proj.id)}
-              >
-                <X className="size-3.5" aria-hidden="true" />
-                <span>Remove project</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-
           <button
             type="button"
-            aria-label={`New chat in ${proj.name}`}
-            data-testid={`project-new-chat-${proj.id}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              handleStartNewChatInProject(proj)
-            }}
-            className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-active hover:text-ink"
+            aria-expanded={proj.expanded}
+            onClick={() => handleToggleProjectExpanded(proj)}
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-[6px] pl-2.5 text-left text-[13.5px] leading-[1.38]"
           >
-            <SquarePen className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+            <ProjectIconGlyph
+              iconKind={proj.iconKind}
+              iconValue={proj.iconValue}
+              iconColor={proj.iconColor}
+              expanded={proj.expanded}
+            />
+            <span className="truncate font-normal">{proj.name}</span>
+            {proj.pinned ? (
+              <Pin
+                className="ml-0.5 size-3 shrink-0 text-muted-ink group-hover:hidden"
+                aria-hidden="true"
+              />
+            ) : null}
           </button>
+
+          {/* Hover Mini Actions: ... Overflow Menu + New Chat in Project */}
+          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+            <DropdownMenu onOpenChange={handleMenuOpenChange}>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`Project options for ${proj.name}`}
+                  data-testid={`project-menu-trigger-${proj.id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-active hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
+                >
+                  <MoreHorizontal className="size-3.5" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="right"
+                align="start"
+                sideOffset={8}
+                className="w-[208px] rounded-xl"
+              >
+                <DropdownMenuItem
+                  data-testid="project-menu-pin"
+                  onClick={() => handleToggleProjectPin(proj)}
+                >
+                  <Pin className="size-3.5" aria-hidden="true" />
+                  <span>{proj.pinned ? "Unpin" : "Pin"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  data-testid="project-menu-edit"
+                  onClick={() => setEditingProject(proj)}
+                >
+                  <Settings className="size-3.5" aria-hidden="true" />
+                  <span>Edit</span>
+                </DropdownMenuItem>
+
+                {sidebarState.sortBy === "manual" ? (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => handleMoveProjectManual(proj.id, -1)}
+                    >
+                      <ArrowUp className="size-3.5" aria-hidden="true" />
+                      <span>Move up</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => handleMoveProjectManual(proj.id, 1)}
+                    >
+                      <ArrowDown className="size-3.5" aria-hidden="true" />
+                      <span>Move down</span>
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <List className="size-3.5" aria-hidden="true" />
+                    <span>Section</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-[180px] rounded-xl">
+                    <DropdownMenuItem
+                      onClick={() => handleAssignProjectSection(proj, null)}
+                    >
+                      <span>Projects (Default)</span>
+                      {!proj.sectionId ? (
+                        <Check className="ml-auto size-3.5" aria-hidden="true" />
+                      ) : null}
+                    </DropdownMenuItem>
+                    {sidebarState.sections.map((sec) => (
+                      <DropdownMenuItem
+                        key={sec.id}
+                        onClick={() => handleAssignProjectSection(proj, sec.id)}
+                      >
+                        <span className="truncate">{sec.name}</span>
+                        {proj.sectionId === sec.id ? (
+                          <Check
+                            className="ml-auto size-3.5"
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => setCreatingSection(true)}>
+                      <Plus className="size-3.5" aria-hidden="true" />
+                      <span>New section</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+
+                <DropdownMenuItem
+                  data-testid="project-menu-reveal"
+                  onClick={() => handleRevealInFinder(proj)}
+                >
+                  <Folder className="size-3.5" aria-hidden="true" />
+                  <span>Reveal in Finder</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem
+                  data-testid="project-menu-archive"
+                  onClick={() => handleArchiveProjectChats(proj)}
+                >
+                  <Archive className="size-3.5" aria-hidden="true" />
+                  <span>Archive chats</span>
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem
+                  variant="destructive"
+                  data-testid="project-menu-remove"
+                  onClick={() => handleRemoveProject(proj.id)}
+                >
+                  <X className="size-3.5" aria-hidden="true" />
+                  <span>Remove project</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <button
+              type="button"
+              aria-label={`New chat in ${proj.name}`}
+              data-testid={`project-new-chat-${proj.id}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                void handleStartNewChatInProject(proj)
+              }}
+              className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-active hover:text-ink"
+            >
+              <SquarePen className="size-3.5" strokeWidth={1.65} aria-hidden="true" />
+            </button>
+          </div>
         </div>
+
+        {proj.expanded ? (
+          proj.sessions.length > 0 ? (
+            <div className="mt-0.5 flex flex-col gap-px pl-[18px]">
+              {visibleSessions.map((chat) => renderChatRow(chat, true))}
+              {hiddenCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedChatLists((prev) => ({
+                      ...prev,
+                      [proj.id]: true,
+                    }))
+                  }
+                  className="cursor-pointer rounded-[8px] py-1 pl-2.5 text-left text-[12.5px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                >
+                  Show {hiddenCount} more
+                </button>
+              ) : expandedChatLists[proj.id] &&
+                proj.sessions.length > DEFAULT_VISIBLE_PROJECT_CHATS &&
+                !normalizedSearch ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedChatLists((prev) => ({
+                      ...prev,
+                      [proj.id]: false,
+                    }))
+                  }
+                  className="cursor-pointer rounded-[8px] py-1 pl-2.5 text-left text-[12.5px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                >
+                  Show less
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div className="py-1 pl-[30px] text-[13px] text-faint">No chats</div>
+          )
+        ) : null}
       </div>
+    )
+  }
 
-      {proj.expanded && proj.sessions.length > 0 ? (
-        <div className="mt-0.5 flex flex-col gap-px pl-[18px]">
-          {proj.sessions.map((chat) => renderChatRow(chat, true))}
-        </div>
-      ) : null}
-    </div>
-  )
-
-  const unsectionedProjects = mergedProjects.filter(
+  const unsectionedProjects = filteredProjects.filter(
     (p) =>
       !p.sectionId || !sidebarState.sections.some((s) => s.id === p.sectionId)
   )
 
   const allFlatChats = React.useMemo<ChatListItem[]>(() => {
     const map = new Map<string, ChatListItem>()
-    for (const p of mergedProjects) {
+    for (const p of filteredProjects) {
       for (const s of p.sessions) map.set(s.id, s)
     }
-    for (const r of recentChats) {
+    for (const r of filteredRecentChats) {
       if (!map.has(r.id)) map.set(r.id, r)
     }
-    return Array.from(map.values())
-  }, [mergedProjects, recentChats])
+    const all = Array.from(map.values())
+    all.sort((a, b) => {
+      const aPin = pinnedChatSet.has(a.id) ? 1 : 0
+      const bPin = pinnedChatSet.has(b.id) ? 1 : 0
+      if (aPin !== bPin) return bPin - aPin
+      return b.updatedAtMs - a.updatedAtMs
+    })
+    return all
+  }, [filteredProjects, filteredRecentChats, pinnedChatSet])
 
   const organizeMenu = (
-      <DropdownMenu onOpenChange={handleMenuOpenChange}>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label="Organize sidebar"
-            data-testid="sidebar-organize-trigger"
-            className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
-          >
-            <SlidersHorizontal
-              className="size-3.5"
-              strokeWidth={1.65}
-              aria-hidden="true"
-            />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="right"
-          align="start"
-          sideOffset={8}
-          data-testid="sidebar-organize-menu"
-          className="w-[216px] rounded-xl"
+    <DropdownMenu onOpenChange={handleMenuOpenChange}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Organize sidebar"
+          data-testid="sidebar-organize-trigger"
+          className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-ink transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-active data-[state=open]:text-ink"
         >
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger data-testid="organize-submenu-trigger">
-              <PanelLeft className="size-3.5" aria-hidden="true" />
-              <span>Organize sidebar</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-[186px] rounded-xl">
-              <DropdownMenuItem
-                data-testid="organize-by-project"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    organizeBy: "project",
-                  }))
-                }
-              >
-                <Folder className="size-3.5" aria-hidden="true" />
-                <span>By project</span>
-                {sidebarState.organizeBy === "project" ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="organize-by-connection"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    organizeBy: "connection",
-                  }))
-                }
-              >
-                <Monitor className="size-3.5" aria-hidden="true" />
-                <span>By connection</span>
-                {sidebarState.organizeBy === "connection" ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="organize-in-one-list"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    organizeBy: "flat",
-                  }))
-                }
-              >
-                <List className="size-3.5" aria-hidden="true" />
-                <span>In one list</span>
-                {sidebarState.organizeBy === "flat" ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+          <SlidersHorizontal
+            className="size-3.5"
+            strokeWidth={1.65}
+            aria-hidden="true"
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="right"
+        align="start"
+        sideOffset={8}
+        data-testid="sidebar-organize-menu"
+        className="w-[216px] rounded-xl"
+      >
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger data-testid="organize-submenu-trigger">
+            <PanelLeft className="size-3.5" aria-hidden="true" />
+            <span>Organize sidebar</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-[186px] rounded-xl">
+            <DropdownMenuItem
+              data-testid="organize-by-project"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  organizeBy: "project",
+                }))
+              }
+            >
+              <Folder className="size-3.5" aria-hidden="true" />
+              <span>By project</span>
+              {sidebarState.organizeBy === "project" ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="organize-by-connection"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  organizeBy: "connection",
+                }))
+              }
+            >
+              <Monitor className="size-3.5" aria-hidden="true" />
+              <span>By connection</span>
+              {sidebarState.organizeBy === "connection" ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="organize-in-one-list"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  organizeBy: "flat",
+                }))
+              }
+            >
+              <List className="size-3.5" aria-hidden="true" />
+              <span>In one list</span>
+              {sidebarState.organizeBy === "flat" ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
 
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger data-testid="sort-submenu-trigger">
-              <ArrowUpDown className="size-3.5" aria-hidden="true" />
-              <span>Sort chats by</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-[180px] rounded-xl">
-              <DropdownMenuItem
-                data-testid="sort-by-updated"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    sortBy: "updated",
-                  }))
-                }
-              >
-                <Calendar className="size-3.5" aria-hidden="true" />
-                <span>Last updated</span>
-                {sidebarState.sortBy === "updated" ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                data-testid="sort-by-manual"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    sortBy: "manual",
-                  }))
-                }
-              >
-                <GripVertical className="size-3.5" aria-hidden="true" />
-                <span>Manual order</span>
-                {sidebarState.sortBy === "manual" ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger data-testid="sort-submenu-trigger">
+            <ArrowUpDown className="size-3.5" aria-hidden="true" />
+            <span>Sort chats by</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-[180px] rounded-xl">
+            <DropdownMenuItem
+              data-testid="sort-by-updated"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  sortBy: "updated",
+                }))
+              }
+            >
+              <Calendar className="size-3.5" aria-hidden="true" />
+              <span>Last updated</span>
+              {sidebarState.sortBy === "updated" ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="sort-by-manual"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  sortBy: "manual",
+                }))
+              }
+            >
+              <GripVertical className="size-3.5" aria-hidden="true" />
+              <span>Manual order</span>
+              {sidebarState.sortBy === "manual" ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
 
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger data-testid="show-submenu-trigger">
-              <Eye className="size-3.5" aria-hidden="true" />
-              <span>Show</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-[180px] rounded-xl">
-              <DropdownMenuItem
-                data-testid="show-project-chats-toggle"
-                onClick={() =>
-                  persistSidebarState((prev) => ({
-                    ...prev,
-                    showProjectChatsInRecents:
-                      !prev.showProjectChatsInRecents,
-                  }))
-                }
-              >
-                <span>Project chats</span>
-                {sidebarState.showProjectChatsInRecents ? (
-                  <Check className="ml-auto size-3.5" aria-hidden="true" />
-                ) : null}
-              </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger data-testid="show-submenu-trigger">
+            <Eye className="size-3.5" aria-hidden="true" />
+            <span>Show</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-[180px] rounded-xl">
+            <DropdownMenuItem
+              data-testid="show-project-chats-toggle"
+              onClick={() =>
+                persistSidebarState((prev) => ({
+                  ...prev,
+                  showProjectChatsInRecents: !prev.showProjectChatsInRecents,
+                }))
+              }
+            >
+              <span>Project chats</span>
+              {sidebarState.showProjectChatsInRecents ? (
+                <Check className="ml-auto size-3.5" aria-hidden="true" />
+              ) : null}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
 
-          <DropdownMenuSeparator />
+        <DropdownMenuSeparator />
 
-          <DropdownMenuItem
-            data-testid="sidebar-new-section-btn"
-            onClick={() => setCreatingSection(true)}
-          >
-            <Plus className="size-3.5" aria-hidden="true" />
-            <span>New section</span>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+        <DropdownMenuItem
+          data-testid="sidebar-new-section-btn"
+          onClick={() => setCreatingSection(true)}
+        >
+          <Plus className="size-3.5" aria-hidden="true" />
+          <span>New section</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 
   return (
@@ -1041,7 +1464,7 @@ export function SidebarProjectsPane({
         {/* Projects Section (shown in "By project" mode) */}
         {sidebarState.organizeBy === "project" ? (
           <>
-            <div className="flex items-center justify-between px-2.5 pt-3 pb-1 text-[11.5px] font-medium text-muted-ink">
+            <div className="flex items-center justify-between px-2.5 pt-3 pb-1 text-[12.5px] font-medium text-muted-ink">
               <button
                 type="button"
                 onClick={() => setProjectsCollapsed((c) => !c)}
@@ -1074,7 +1497,7 @@ export function SidebarProjectsPane({
 
                 {/* Custom user sections */}
                 {sidebarState.sections.map((section) => {
-                  const sectionProjects = mergedProjects.filter(
+                  const sectionProjects = filteredProjects.filter(
                     (p) => p.sectionId === section.id
                   )
                   return (
@@ -1086,7 +1509,7 @@ export function SidebarProjectsPane({
                       <button
                         type="button"
                         onClick={() => handleToggleSectionCollapsed(section.id)}
-                        className="flex w-full cursor-pointer items-center gap-1 px-2.5 py-1 text-xs font-medium text-muted-ink transition-colors hover:text-ink"
+                        className="flex w-full cursor-pointer items-center gap-1 px-2.5 py-1 text-[12.5px] font-medium text-muted-ink transition-colors hover:text-ink"
                       >
                         {section.collapsed ? (
                           <ChevronRight className="size-3" aria-hidden="true" />
@@ -1099,7 +1522,7 @@ export function SidebarProjectsPane({
                         sectionProjects.length > 0 ? (
                           sectionProjects.map(renderProjectBlock)
                         ) : (
-                          <div className="px-3 py-1 text-[11.5px] text-faint">
+                          <div className="px-3 py-1 text-[12.5px] text-faint">
                             Use project ··· → Section to move here
                           </div>
                         )
@@ -1127,11 +1550,11 @@ export function SidebarProjectsPane({
               value={newSectionName}
               onChange={(e) => setNewSectionName(e.target.value)}
               placeholder="Section name..."
-              className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none placeholder:text-muted-ink"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none placeholder:text-muted-ink"
             />
             <button
               type="submit"
-              className="cursor-pointer rounded px-1.5 py-0.5 text-[11px] font-medium text-brand-text hover:bg-hover"
+              className="cursor-pointer rounded px-1.5 py-0.5 text-xs font-medium text-brand-text hover:bg-hover"
             >
               Add
             </button>
@@ -1150,7 +1573,7 @@ export function SidebarProjectsPane({
         ) : null}
 
         {/* Recents Header + Organize/Sort/Show/+ New Section Popover + New Chat */}
-        <div className="flex items-center justify-between px-2.5 pt-3 pb-1 text-[11.5px] font-medium text-muted-ink">
+        <div className="flex items-center justify-between px-2.5 pt-3 pb-1 text-[12.5px] font-medium text-muted-ink">
           <span>
             {sidebarState.organizeBy === "connection"
               ? "By connection"
@@ -1182,10 +1605,13 @@ export function SidebarProjectsPane({
 
         {/* Chats list according to active organizeBy mode */}
         {sidebarState.organizeBy === "connection" ? (
-          <div className="flex flex-col gap-2" data-testid="connection-grouped-list">
+          <div
+            className="flex flex-col gap-2"
+            data-testid="connection-grouped-list"
+          >
             <div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-medium text-muted-ink">
-                <Laptop className="size-3" aria-hidden="true" />
+              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[12.5px] font-medium text-muted-ink">
+                <Laptop className="size-3.5" aria-hidden="true" />
                 <span>Local daemon</span>
               </div>
               {allFlatChats
@@ -1193,8 +1619,8 @@ export function SidebarProjectsPane({
                 .map((c) => renderChatRow(c, false))}
             </div>
             <div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-medium text-muted-ink">
-                <Cloud className="size-3" aria-hidden="true" />
+              <div className="flex items-center gap-1.5 px-2.5 py-1 text-[12.5px] font-medium text-muted-ink">
+                <Cloud className="size-3.5" aria-hidden="true" />
                 <span>Rayu Cloud</span>
               </div>
               {allFlatChats
@@ -1205,20 +1631,20 @@ export function SidebarProjectsPane({
         ) : sidebarState.organizeBy === "flat" ? (
           <div className="flex flex-col gap-0.5" data-testid="flat-chat-list">
             {allFlatChats.length === 0 ? (
-              <div className="px-2.5 py-1.5 text-xs text-faint">
+              <div className="px-2.5 py-1.5 text-[13px] text-faint">
                 No conversations yet
               </div>
             ) : (
               allFlatChats.map((c) => renderChatRow(c, false))
             )}
           </div>
-        ) : recentChats.length === 0 ? (
-          <div className="px-2.5 py-1.5 text-xs text-faint">
+        ) : filteredRecentChats.length === 0 ? (
+          <div className="px-2.5 py-1.5 text-[13px] text-faint">
             No conversations yet
           </div>
         ) : (
           <div className="flex flex-col gap-px">
-            {recentChats.map((c) => renderChatRow(c, false))}
+            {filteredRecentChats.map((c) => renderChatRow(c, false))}
           </div>
         )}
       </div>
@@ -1239,7 +1665,7 @@ export function SidebarProjectsPane({
           {hoverCard.kind === "project" ? (
             <div className="flex flex-col">
               <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-                <div className="flex min-w-0 items-center gap-2 text-[13.5px] font-medium text-ink">
+                <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-ink">
                   <ProjectIconGlyph
                     iconKind={hoverCard.project.iconKind}
                     iconValue={hoverCard.project.iconValue}
@@ -1281,7 +1707,7 @@ export function SidebarProjectsPane({
                       className="size-3.5 shrink-0 text-muted-ink"
                       aria-hidden="true"
                     />
-                    <span className="truncate font-mono text-[11.5px]">
+                    <span className="truncate font-mono text-[12px]">
                       {hoverCard.project.gitRemote}
                     </span>
                   </div>
@@ -1291,7 +1717,7 @@ export function SidebarProjectsPane({
                     className="size-3.5 shrink-0 text-muted-ink"
                     aria-hidden="true"
                   />
-                  <span className="truncate font-mono text-[11.5px]">
+                  <span className="truncate font-mono text-[12px]">
                     {shortenDisplayPath(
                       hoverCard.project.folders[0] ?? "~/workspace"
                     )}
@@ -1308,7 +1734,7 @@ export function SidebarProjectsPane({
                   setEditingProject(hoverCard.project)
                   setHoverCard(null)
                 }}
-                className="mt-1 flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-body transition-colors hover:bg-hover hover:text-ink"
+                className="mt-1 flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13.5px] text-body transition-colors hover:bg-hover hover:text-ink"
               >
                 <Settings
                   className="size-3.5 shrink-0 text-muted-ink"
@@ -1320,21 +1746,26 @@ export function SidebarProjectsPane({
           ) : (
             <div className="flex flex-col gap-1.5 px-2.5 py-2">
               <div className="flex items-start justify-between gap-2">
-                <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium text-ink">
+                <div className="flex min-w-0 items-center gap-1.5 text-[13.5px] font-medium text-ink">
                   <span className="line-clamp-2">{hoverCard.chat.title}</span>
-                  {hoverCard.chat.connection === "local" ? (
-                    <Laptop
-                      className="size-3.5 shrink-0 text-muted-ink"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <Cloud
-                      className="size-3.5 shrink-0 text-muted-ink"
-                      aria-hidden="true"
-                    />
-                  )}
+                  <span
+                    data-connection={hoverCard.chat.connection}
+                    className="inline-flex shrink-0 items-center"
+                  >
+                    {hoverCard.chat.connection === "local" ? (
+                      <Laptop
+                        className="size-3.5 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Cloud
+                        className="size-3.5 text-muted-ink"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </span>
                 </div>
-                <span className="shrink-0 font-mono text-[11px] text-muted-ink">
+                <span className="shrink-0 font-mono text-[11.5px] text-muted-ink">
                   {hoverCard.chat.relativeTime}
                 </span>
               </div>
