@@ -1731,8 +1731,19 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { facts: mockState.memory.facts.map((f) => ({ ...f })) } as RpcResult<M>;
     case "plugins.workspace.status":
       return { ...mockState.workspaceIntegrations } as RpcResult<M>;
-    case "plugins.workspace.trigger":
+    case "plugins.workspace.trigger": {
+      if (params.integration === "browser" && params.action === "handoff") {
+        mockState.workspaceIntegrations.browser.handoffActive =
+          !mockState.workspaceIntegrations.browser.handoffActive;
+      } else if (
+        params.integration === "companion" &&
+        params.action === "toggleKeepAwake"
+      ) {
+        mockState.workspaceIntegrations.companion.keepAwake =
+          !mockState.workspaceIntegrations.companion.keepAwake;
+      }
       return { ok: true, message: "Triggered workspace integration action" } as RpcResult<M>;
+    }
 
     // --- Changes ---
     case "changes.status":

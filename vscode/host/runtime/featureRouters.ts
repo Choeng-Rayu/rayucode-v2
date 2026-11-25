@@ -2960,21 +2960,176 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const listed = await handlers["plugins.mcp.list"](undefined);
       return { ok: true, servers: listed.servers };
     },
-    "plugins.mcp.add": async () => ({
-      ok: false,
-      message:
-        "Adding MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
-    "plugins.mcp.edit": async () => ({
-      ok: false,
-      message:
-        "Editing MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
-    "plugins.mcp.remove": async () => ({
-      ok: false,
-      message:
-        "Removing MCP servers via runtime_command is not supported yet; edit ~/.rayu/mcp.json or .mcp.json and reload.",
-    }),
+    "plugins.mcp.add": async (params) => {
+      const id = params.id.trim();
+      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
+        return {
+          ok: false,
+          message:
+            "MCP server ID must contain only letters, numbers, dots, hyphens, or underscores.",
+        };
+      }
+      if (params.transport === "stdio" && !params.command?.trim()) {
+        return {
+          ok: false,
+          message: "Provide an executable command for stdio MCP servers.",
+        };
+      }
+      if (params.transport !== "stdio" && !params.url?.trim()) {
+        return {
+          ok: false,
+          message: "Provide a remote URL for HTTP/SSE MCP servers.",
+        };
+      }
+
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const targetPath =
+        params.scope === "workspace"
+          ? path.join(workspaceRoot, ".mcp.json")
+          : path.join(rayuHome, "mcp.json");
+
+      let existing: Record<string, unknown> = {};
+      try {
+        if (fs.existsSync(targetPath)) {
+          const parsed = JSON.parse(fs.readFileSync(targetPath, "utf8"));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            existing = parsed as Record<string, unknown>;
+          }
+        }
+      } catch {
+        existing = {};
+      }
+
+      const existingMap =
+        existing.mcpServers &&
+        typeof existing.mcpServers === "object" &&
+        !Array.isArray(existing.mcpServers)
+          ? { ...(existing.mcpServers as Record<string, unknown>) }
+          : {};
+
+      const entry: Record<string, unknown> = {};
+      if (params.transport === "stdio") {
+        entry.command = params.command!.trim();
+        if (params.args && params.args.length > 0) {
+          entry.args = params.args.filter((a) => a.length > 0);
+        }
+      } else {
+        entry.type = params.transport === "sse" ? "sse" : "http";
+        entry.url = params.url!.trim();
+      }
+      if (params.env && Object.keys(params.env).length > 0) {
+        const cleanEnv: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params.env)) {
+          const key = k.trim();
+          if (key && v.trim()) cleanEnv[key] = v.trim();
+        }
+        if (Object.keys(cleanEnv).length > 0) entry.env = cleanEnv;
+      }
+      if (typeof params.shared === "boolean") {
+        entry.shared = params.shared;
+      }
+      if (typeof params.timeoutSecs === "number" && params.timeoutSecs > 0) {
+        entry.timeout_secs = Math.round(params.timeoutSecs);
+      }
+
+      existingMap[id] = entry;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(
+        targetPath,
+        `${JSON.stringify({ ...existing, mcpServers: existingMap }, null, 2)}\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
+
+      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
+      const listed = await handlers["plugins.mcp.list"](undefined);
+      const server: McpServerView = listed.servers.find((s) => s.id === id) ?? {
+        id,
+        name: id,
+        status: "cached",
+        enabled: true,
+        transport: params.transport,
+        configLayer: params.scope,
+        configPath: targetPath,
+        shared: params.shared ?? true,
+        command: params.command,
+        args: params.args,
+        url: params.url,
+        timeoutSecs: params.timeoutSecs,
+      };
+      return {
+        ok: true,
+        server,
+        message: `Saved MCP server '${id}' to ${targetPath}.`,
+      };
+    },
+    "plugins.mcp.edit": async (params) =>
+      handlers["plugins.mcp.add"]({
+        ...params,
+        scope: params.scope ?? "global",
+        transport:
+          params.transport ?? (params.url ? "streamable-http" : "stdio"),
+      }),
+    "plugins.mcp.remove": async (params) => {
+      const id = params.id.trim();
+      if (!id) {
+        return { ok: false, message: "MCP server ID is required." };
+      }
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const targets =
+        params.scope === "workspace"
+          ? [path.join(workspaceRoot, ".mcp.json")]
+          : params.scope === "global"
+            ? [path.join(rayuHome, "mcp.json")]
+            : [
+                path.join(workspaceRoot, ".mcp.json"),
+                path.join(rayuHome, "mcp.json"),
+              ];
+
+      let removed = false;
+      for (const filePath of targets) {
+        if (!fs.existsSync(filePath)) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<
+            string,
+            unknown
+          >;
+          if (
+            parsed.mcpServers &&
+            typeof parsed.mcpServers === "object" &&
+            !Array.isArray(parsed.mcpServers) &&
+            id in (parsed.mcpServers as Record<string, unknown>)
+          ) {
+            const nextServers = {
+              ...(parsed.mcpServers as Record<string, unknown>),
+            };
+            delete nextServers[id];
+            fs.writeFileSync(
+              filePath,
+              `${JSON.stringify({ ...parsed, mcpServers: nextServers }, null, 2)}\n`,
+              { encoding: "utf8", mode: 0o600 },
+            );
+            removed = true;
+          }
+        } catch {
+          // ignore malformed file
+        }
+      }
+
+      if (!removed) {
+        return {
+          ok: false,
+          message: `MCP server '${id}' was not found in ~/.rayu/mcp.json or .mcp.json.`,
+        };
+      }
+      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
+      return { ok: true, message: `Removed MCP server '${id}'.` };
+    },
     "plugins.mcp.login": async () => ({
       ok: false,
       message:
@@ -3028,11 +3183,45 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         endorsed: asArray(data.endorsed).map((s) => mapSkill(s, "endorsed")),
       };
     },
-    "plugins.skills.create": async () => {
-      throw new HarnessError(
-        "invalid_request",
-        "Creating skills via runtime_command is not supported yet; add SKILL.md under .agents/skills or ~/.rayu/skills.",
-      );
+    "plugins.skills.create": async (params) => {
+      const slug = params.name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-_]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      if (!slug) {
+        throw new HarnessError(
+          "invalid_request",
+          "Skill name must contain letters or numbers.",
+        );
+      }
+      const scope = params.scope === "global" ? "global" : "project";
+      const rayuHome =
+        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
+      const folders = await deps.getWorkspaceFolders().catch(() => []);
+      const workspaceRoot = folders[0]?.path || process.cwd();
+      const baseDir =
+        scope === "global"
+          ? path.join(rayuHome, "skills")
+          : path.join(workspaceRoot, ".agents", "skills");
+      const skillDir = path.join(baseDir, slug);
+      const skillFile = path.join(skillDir, "SKILL.md");
+      const body =
+        params.content?.trim() ||
+        `# ${params.name.trim()}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
+      const markdown = `---\nname: ${slug}\ndescription: ${params.description.trim()}\n---\n\n${body}\n`;
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(skillFile, markdown, "utf8");
+      return {
+        ok: true,
+        skill: {
+          name: slug,
+          description: params.description.trim(),
+          path: skillFile,
+          scope,
+          installed: true,
+        },
+      };
     },
     "plugins.skills.install": async () => ({
       ok: false,

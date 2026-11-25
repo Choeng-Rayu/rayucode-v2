@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { HarnessError, type RuntimeCommand } from "@rayu-dev/rayucode-sdk";
 import {
@@ -1735,4 +1738,77 @@ test("HistoryMessageViewSchema and mapRawHistoryMessage forward tool, responseSt
   assert.equal(parsed.responseStats?.durationSecs, 4.2);
   assert.equal(parsed.responseStats?.cacheReadTokens, 90);
   assert.equal(parsed.responseStats?.rayuCredits, 0.15);
+});
+
+test("plugins.mcp.add/edit/remove and plugins.skills.create write real files on disk and reload MCP", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-vsc-plugins-"));
+  const rayuHome = path.join(tmpDir, "rayu-home");
+  const prevRayuHome = process.env.RAYU_HOME;
+  process.env.RAYU_HOME = rayuHome;
+  try {
+    const { router, runtimeCommandsCalled } = createTestFeatureRouter({
+      runtimeHandler: (command, args) => {
+        if (command === "mcp" && args[0] === "list") {
+          return { data: { servers: [] }, message: "ok" };
+        }
+        return { data: { reloaded: true }, message: "ok" };
+      },
+    });
+
+    const addRes = await router.call("plugins.mcp.add", {
+      id: "context7",
+      scope: "global",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      shared: true,
+      timeoutSecs: 30,
+    });
+    assert.equal(addRes.ok, true);
+    const mcpJsonPath = path.join(rayuHome, "mcp.json");
+    assert.equal(fs.existsSync(mcpJsonPath), true);
+    const saved = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")) as {
+      mcpServers: Record<string, { command?: string; args?: string[] }>;
+    };
+    assert.equal(saved.mcpServers.context7?.command, "npx");
+    assert.deepEqual(saved.mcpServers.context7?.args, [
+      "-y",
+      "@upstash/context7-mcp",
+    ]);
+    assert.equal(
+      runtimeCommandsCalled.some(
+        (c) => c.command === "mcp" && c.args[0] === "reload",
+      ),
+      true,
+    );
+
+    const removeRes = await router.call("plugins.mcp.remove", {
+      id: "context7",
+      scope: "global",
+    });
+    assert.equal(removeRes.ok, true);
+    const afterRemove = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    assert.equal("context7" in afterRemove.mcpServers, false);
+
+    const skillRes = await router.call("plugins.skills.create", {
+      name: "Release Gate",
+      description: "Verify release checklist before shipping",
+      scope: "global",
+    });
+    assert.equal(skillRes.ok, true);
+    assert.equal(skillRes.skill.name, "release-gate");
+    assert.equal(fs.existsSync(skillRes.skill.path), true);
+    const skillText = fs.readFileSync(skillRes.skill.path, "utf8");
+    assert.match(skillText, /name: release-gate/);
+    assert.match(skillText, /Verify release checklist before shipping/);
+  } finally {
+    if (prevRayuHome === undefined) {
+      delete process.env.RAYU_HOME;
+    } else {
+      process.env.RAYU_HOME = prevRayuHome;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
