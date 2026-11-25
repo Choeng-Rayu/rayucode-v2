@@ -175,6 +175,8 @@ fn fallible_controls_wait_for_terminal_reply_without_settling_concurrent_turn() 
                 } else {
                     json!({"type":"error","id":id,"message":error})
                 };
+                let expected_code =
+                    crate::capabilities::classify_daemon_error(error, ErrorCode::Internal);
                 assert_eq!(
                     state.legacy_event_to_api(&event),
                     vec![ServerFrame::reply(
@@ -183,7 +185,7 @@ fn fallible_controls_wait_for_terminal_reply_without_settling_concurrent_turn() 
                             ApiEvent::Ok
                         } else {
                             ApiEvent::Error {
-                                code: ErrorCode::Internal,
+                                code: expected_code,
                                 message: error.into(),
                             }
                         }
@@ -3481,13 +3483,15 @@ fn attachment_recovery_preserves_directive_in_both_history_state_orders() {
             let frames = state.legacy_event_to_api(&history);
             assert_eq!(frames.len(), 3);
             assert!(matches!(frames[2].event, ApiEvent::AppletState { .. }));
+            assert_eq!(frames[0].reply_to, None);
+            assert!(frames[0].seq.is_some());
             assert_eq!(
-                frames[0],
-                ServerFrame::event(ApiEvent::SessionRecovery {
+                frames[0].event,
+                ApiEvent::SessionRecovery {
                     session_id: "recover".into(),
                     continuation_message: "Continue the exact task".into(),
                     reconnect_notice: Some("Recovered build".into()),
-                })
+                }
             );
             if history_first {
                 assert!(
@@ -3729,12 +3733,14 @@ fn assert_panel(frames: &[ServerFrame], session: &str, snapshot: Value) {
         .filter(|f| matches!(f.event, ApiEvent::SidePanelState { .. }))
         .collect();
     assert_eq!(panels.len(), 1);
+    assert_eq!(panels[0].reply_to, None);
+    assert!(panels[0].seq.is_some());
     assert_eq!(
-        panels[0],
-        &ServerFrame::event(ApiEvent::SidePanelState {
+        panels[0].event,
+        ApiEvent::SidePanelState {
             session_id: session.into(),
             snapshot: serde_json::from_value(snapshot).unwrap(),
-        })
+        }
     );
 }
 
@@ -4301,15 +4307,16 @@ fn set_permission_mode_translates_and_acks() {
         assert_eq!(legacy["type"], "set_permission_mode");
         assert_eq!(legacy["mode"], expected_legacy);
         let reply = state.legacy_event_to_api(&json!({"type": "ack", "id": legacy["id"]}));
+        assert_eq!(reply.len(), 2);
+        assert_eq!(reply[0], ServerFrame::reply(77, ApiEvent::Ok));
+        assert_eq!(reply[1].reply_to, None);
+        assert!(reply[1].seq.is_some());
         assert_eq!(
-            reply,
-            vec![
-                ServerFrame::reply(77, ApiEvent::Ok),
-                ServerFrame::event(ApiEvent::PermissionModeChanged {
-                    session_id: "s1".into(),
-                    mode: expected_enum,
-                }),
-            ]
+            reply[1].event,
+            ApiEvent::PermissionModeChanged {
+                session_id: "s1".into(),
+                mode: expected_enum,
+            }
         );
     }
 }
@@ -4331,15 +4338,18 @@ fn permission_request_and_response_roundtrip() {
         "description": "Run `cargo test`",
         "input": { "command": "cargo test" },
     }));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].reply_to, None);
+    assert!(frames[0].seq.is_some());
     assert_eq!(
-        frames,
-        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+        frames[0].event,
+        ApiEvent::PermissionRequest {
             session_id: "s1".into(),
             request_id: "perm_42".into(),
             tool_name: "bash".into(),
             description: "Run `cargo test`".into(),
             risk_tier: Some("safe".into()),
-        })]
+        }
     );
 
     // Explicit daemon risk_tier is preserved verbatim.
@@ -4352,15 +4362,18 @@ fn permission_request_and_response_roundtrip() {
         "input": { "command": "rm -rf /tmp/foo" },
         "risk_tier": "confirm",
     }));
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].reply_to, None);
+    assert!(explicit[0].seq.is_some());
     assert_eq!(
-        explicit,
-        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+        explicit[0].event,
+        ApiEvent::PermissionRequest {
             session_id: "s1".into(),
             request_id: "perm_43".into(),
             tool_name: "bash".into(),
             description: "Run `rm -rf /tmp/foo`".into(),
             risk_tier: Some("confirm".into()),
-        })]
+        }
     );
 
     // Destructive bash without explicit risk_tier infers "confirm", edit infers "bounded".
@@ -4395,12 +4408,15 @@ fn permission_request_and_response_roundtrip() {
         "session_id": "s1",
         "mode": "orchestrator",
     }));
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].reply_to, None);
+    assert!(pushed[0].seq.is_some());
     assert_eq!(
-        pushed,
-        vec![ServerFrame::event(ApiEvent::PermissionModeChanged {
+        pushed[0].event,
+        ApiEvent::PermissionModeChanged {
             session_id: "s1".into(),
             mode: rayucode_harness_api::PermissionMode::Orchestrator,
-        })]
+        }
     );
 
     // Other session's permission_mode_changed is filtered out.

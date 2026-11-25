@@ -73,12 +73,11 @@ impl BridgeState {
         let (_, api_id, _) = self.pending_simple.remove(index);
         self.pending_control_done_ids.remove(&id);
         self.pending_activity_snapshots.remove(&id);
+        let message = event["message"].as_str().unwrap_or("").to_string();
+        let code = crate::capabilities::classify_daemon_error(&message, ErrorCode::Internal);
         Some(ServerFrame::reply(
             api_id,
-            ApiEvent::Error {
-                code: ErrorCode::Internal,
-                message: event["message"].as_str().unwrap_or("").to_string(),
-            },
+            ApiEvent::Error { code, message },
         ))
     }
 }

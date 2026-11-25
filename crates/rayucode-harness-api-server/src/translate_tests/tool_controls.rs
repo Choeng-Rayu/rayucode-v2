@@ -99,7 +99,7 @@ fn custom_tool_call_is_distinct_from_streaming_lifecycle() {
     );
     assert_eq!(
         serde_json::to_value(&frames[0]).unwrap(),
-        json!({"v":1,"ev":"tool_call","session_id":"s1","call_id":"c1","name":"lookup","input":{"x":1}})
+        json!({"v":1,"seq":1,"ev":"tool_call","session_id":"s1","call_id":"c1","name":"lookup","input":{"x":1}})
     );
     assert!(
         state
