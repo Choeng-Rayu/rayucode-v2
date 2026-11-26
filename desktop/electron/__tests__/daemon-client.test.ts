@@ -3,7 +3,12 @@ import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { RayucodeClient, type SdkTool, type Transport } from "@rayu-dev/rayucode-sdk"
+import {
+  HarnessError,
+  RayucodeClient,
+  type SdkTool,
+  type Transport,
+} from "@rayu-dev/rayucode-sdk"
 
 import {
   RayuDaemonClient,
@@ -28,6 +33,7 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
   })
 
   it("coalesces concurrent checkConnection/getOrProbeStatus calls to a single launch without sticking reconnecting=true", async () => {
+    process.env.RAYU_BINARY = process.execPath
     fs.writeFileSync(
       path.join(tmpHome, "rayu-auth.json"),
       JSON.stringify({ accessToken: "tok", refreshToken: "ref" })
@@ -247,11 +253,11 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       .fn()
       // 1st call: plan succeeds immediately
       .mockResolvedValueOnce({ v: 1, ev: "ok" })
-      // 2nd call: acceptEdits returns busy
+      // 2nd call: acceptEdits returns structured busy
       .mockResolvedValueOnce({
         v: 1,
         ev: "error",
-        code: "invalid_request",
+        code: "busy",
         message: "Session is busy",
       })
       // 3rd call (retry on turn_done): succeeds
@@ -301,7 +307,7 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
 
     // Busy response queues retry until turn_done
     const res2 = await daemon.setPermissionMode("sess_perm_1", "acceptEdits")
-    expect(res2).toEqual({ ok: true })
+    expect(res2).toEqual({ ok: true, code: "busy" })
     expect(request).toHaveBeenNthCalledWith(2, {
       req: "set_permission_mode",
       session_id: "sess_perm_1",
@@ -328,9 +334,13 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       mode: "accept_edits",
     })
 
-    // Hard rejection surfaces { ok: false, error }
+    // Hard rejection surfaces { ok: false, code, error }
     const resErr = await daemon.setPermissionMode("sess_perm_2", "orchestrator")
-    expect(resErr).toEqual({ ok: false, error: "Unsupported permission mode" })
+    expect(resErr).toEqual({
+      ok: false,
+      code: "invalid_request",
+      error: "Unsupported permission mode",
+    })
   })
 
   it("injects supports_permissions: true into outgoing hello frames via transport wrapper", () => {
@@ -713,5 +723,112 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
         session_id: "sess_stream_1",
       })
     )
+  })
+
+  it("synthesizes turn_stopped failure frame when a streaming session socket closes mid-turn", async () => {
+    const client = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "permission_modes"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_drop_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(client)
+
+    const daemon = new RayuDaemonClient("/tmp/drop-test-rayu.sock")
+    const receivedFrames: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      receivedFrames.push(frame)
+    })
+
+    await daemon.createSession("/repo", "Drop test")
+    await daemon.sendMessage("sess_drop_1", "Run long task")
+
+    // Socket closes mid-turn without turn_done -> SessionSocketPool synthesizes turn_stopped
+    client.emit("close")
+
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "turn_stopped",
+        reason: "failure",
+        session_id: "sess_drop_1",
+      })
+    )
+  })
+
+  it("bridges v1.16 getCapabilities, getConfig, patchConfig, and returns structured ErrorCode::Busy / Unsupported without regex scraping", async () => {
+    const mockCaps = {
+      commands: [
+        {
+          name: "compact",
+          description: "Compact session history",
+          category: "session",
+          dispatch: { kind: "api_request", req: "compact" },
+        },
+      ],
+      permission_modes: [
+        { id: "default", label: "Ask", description: "Prompt before edits", is_default: true },
+      ],
+      features: [{ key: "memory", enabled: true, description: "Memory" }],
+    }
+    const mockConfig = {
+      path: "/tmp/.rayu/config.toml",
+      sections: ["provider", "compaction"],
+      values: { "provider.default_model": "claude-sonnet-4-6" },
+      schema: [],
+    }
+    const client = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["capabilities_v1", "config_v1"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_v16",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      getCapabilities: vi.fn().mockResolvedValue(mockCaps),
+      getConfig: vi.fn().mockResolvedValue(mockConfig),
+      patchConfig: vi.fn().mockResolvedValue(mockConfig),
+      setReasoningEffort: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("busy", "Session is busy")),
+      setModel: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("busy", "Turn in progress")),
+      getFileChanges: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("unsupported", "Not supported")),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(client)
+
+    const daemon = new RayuDaemonClient("/tmp/v16-test-rayu.sock")
+    expect(await daemon.getCapabilities("sess_v16")).toEqual(mockCaps)
+    expect(await daemon.getConfig(["provider"])).toEqual(mockConfig)
+    expect(await daemon.patchConfig({ "provider.default_model": "gpt-5" })).toEqual({
+      ok: true,
+      state: mockConfig,
+    })
+
+    const effortRes = await daemon.setReasoningEffort("sess_v16", "xhigh")
+    expect(effortRes).toMatchObject({ ok: false, code: "busy" })
+
+    const modelRes = await daemon.setModel("sess_v16", "gpt-5")
+    expect(modelRes).toMatchObject({ ok: false, code: "busy" })
+
+    const fc = await daemon.getFileChanges("sess_v16")
+    expect(fc.files).toEqual([])
   })
 })

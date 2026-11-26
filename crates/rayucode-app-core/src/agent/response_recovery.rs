@@ -82,12 +82,13 @@ impl Agent {
             attempts,
             Self::FABLE_GUARDRAIL_RECONSIDERATION_PROMPTS.len(),
         ));
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
                 text: prompt.to_string(),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(true)
@@ -197,7 +198,7 @@ impl Agent {
             attempts,
             Self::MAX_EMPTY_POST_TOOL_CONTINUATION_ATTEMPTS
         ));
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
                 // Keep this as a user-role message for provider compatibility,
@@ -211,6 +212,7 @@ impl Agent {
                 ),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(true)
@@ -267,12 +269,13 @@ impl Agent {
             Self::MAX_INCOMPLETE_CONTINUATION_ATTEMPTS
         ));
 
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
                 text: Self::continuation_prompt_for_stop_reason(stop_reason),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(true)
@@ -315,13 +318,14 @@ impl Agent {
             attempts,
             Self::MAX_INCOMPLETE_CONTINUATION_ATTEMPTS
         ));
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
                 text: "[System reminder: your previous response ended with stop_reason \"tool_use\" but no tool call arrived. Nothing was executed. Re-issue the tool call you intended, do not repeat completed work, and continue the task.]"
                     .to_string(),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(true)
@@ -449,7 +453,7 @@ impl Agent {
             consecutive_rounds,
             Self::MAX_MALFORMED_TOOL_CALL_ROUNDS
         ));
-        self.add_message(
+        self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
                 // User-role system reminder so transcript renderers hide the
@@ -458,6 +462,7 @@ impl Agent {
                 text: Self::malformed_tool_call_correction(invalid, tools),
                 cache_control: None,
             }],
+            Some(StoredDisplayRole::System),
         );
         self.session.save()?;
         Ok(())

@@ -22,7 +22,15 @@ const rayuApi = {
     },
   },
   harness: {
-    listSessions: () => ipcRenderer.invoke("rayu:harness:list-sessions"),
+    listSessions: (options) =>
+      ipcRenderer.invoke("rayu:harness:list-sessions", options),
+    listExternalProjects: (source) =>
+      ipcRenderer.invoke(
+        "rayu:harness:list-external-projects",
+        source ? { source } : undefined
+      ),
+    importExternalSessions: (payload) =>
+      ipcRenderer.invoke("rayu:harness:import-external-sessions", payload),
     createSession: (workingDir, title) =>
       ipcRenderer.invoke("rayu:harness:create-session", { workingDir, title }),
     renameSession: (sessionId, title) =>
@@ -62,6 +70,20 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:harness:set-model", { sessionId, model }),
     setReasoningEffort: (sessionId, effort) =>
       ipcRenderer.invoke("rayu:harness:set-effort", { sessionId, effort }),
+    compact: (sessionId) =>
+      ipcRenderer.invoke("rayu:harness:compact", { sessionId }),
+    getCapabilities: (sessionId) =>
+      ipcRenderer.invoke(
+        "rayu:harness:get-capabilities",
+        sessionId ? { sessionId } : undefined
+      ),
+    getConfig: (sections) =>
+      ipcRenderer.invoke(
+        "rayu:harness:get-config",
+        sections ? { sections } : undefined
+      ),
+    patchConfig: (patch) =>
+      ipcRenderer.invoke("rayu:harness:patch-config", { patch }),
     runtimeCommand: (sessionId, command, args) =>
       ipcRenderer.invoke("rayu:harness:runtime-command", {
         sessionId,
@@ -98,6 +120,17 @@ const rayuApi = {
     getInfo: () => ipcRenderer.invoke("rayu:workspace:info"),
     setPath: (targetPath) =>
       ipcRenderer.invoke("rayu:workspace:set", { path: targetPath }),
+    ensure: (targetPath, name) =>
+      ipcRenderer.invoke("rayu:workspace:ensure", {
+        path: targetPath,
+        ...(name ? { name } : {}),
+      }),
+    importProjectGroup: (targetPath, sessionIds, name) =>
+      ipcRenderer.invoke("rayu:workspace:import-project-group", {
+        path: targetPath,
+        sessionIds,
+        ...(name ? { name } : {}),
+      }),
     pickFolder: () => ipcRenderer.invoke("rayu:workspace:pick-folder"),
     pickFiles: () => ipcRenderer.invoke("rayu:workspace:pick-files"),
     captureAppshot: () => ipcRenderer.invoke("rayu:workspace:capture-appshot"),
@@ -122,6 +155,15 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:storage:get-sidebar-state"),
     saveSidebarState: (state) =>
       ipcRenderer.invoke("rayu:storage:save-sidebar-state", state),
+    onSidebarStateChange: (callback) => {
+      const listener = (_event, state) => {
+        callback(state)
+      }
+      ipcRenderer.on("rayu:storage:sidebar-changed", listener)
+      return () => {
+        ipcRenderer.removeListener("rayu:storage:sidebar-changed", listener)
+      }
+    },
   },
   extensions: {
     list: () => ipcRenderer.invoke("rayu:extensions:list"),

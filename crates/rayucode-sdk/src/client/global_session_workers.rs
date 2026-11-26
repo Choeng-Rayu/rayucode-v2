@@ -13,6 +13,8 @@ pub(super) fn discover_global_sessions(
             .request_ok(ApiRequest::ListSessions {
                 include_archived: true,
                 limit: None,
+                include_external: false,
+                sources: None,
             })
             .and_then(|frame| match frame.event {
                 ApiEvent::Sessions { sessions } => Ok(sessions),

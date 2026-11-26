@@ -8,7 +8,95 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 14;
+export const API_VERSION_MINOR = 16;
+
+export const CAPABILITIES_CAPABILITY = "capabilities_v1";
+export const CONFIG_CAPABILITY = "config_v1";
+export const FRAME_FIDELITY_CAPABILITY = "frame_fidelity_v1";
+
+export type CommandCategory =
+  | "session"
+  | "model"
+  | "quality"
+  | "tools"
+  | "runtime";
+
+export type CommandDispatch =
+  | { kind: "api_request"; req: string }
+  | { kind: "runtime_command"; command: string }
+  | { kind: "skill"; name: string };
+
+export interface CommandDescriptor {
+  name: string;
+  description: string;
+  category: CommandCategory;
+  arg_hint?: string;
+  requires_session?: boolean;
+  dispatch: CommandDispatch;
+}
+
+export interface PermissionModeDescriptor {
+  id: string;
+  label: string;
+  description: string;
+  is_default?: boolean;
+}
+
+export interface FeatureFlagDescriptor {
+  key: string;
+  enabled: boolean;
+  description: string;
+  requires_restart?: boolean;
+}
+
+export type ConfigFieldKind =
+  | "boolean"
+  | "string"
+  | "integer"
+  | "number"
+  | "enum"
+  | "string_array";
+
+export type ConfigApplyMode =
+  | "immediate"
+  | "next_turn"
+  | "restart_required";
+
+export interface ConfigEnumOption {
+  value: string;
+  label: string;
+}
+
+export interface ConfigFieldSchema {
+  key: string;
+  section: string;
+  label: string;
+  description: string;
+  kind: ConfigFieldKind;
+  options?: ConfigEnumOption[];
+  default_value: unknown;
+  apply_mode: ConfigApplyMode;
+}
+
+export interface CapabilitiesPayload {
+  commands: CommandDescriptor[];
+  permission_modes: PermissionModeDescriptor[];
+  features: FeatureFlagDescriptor[];
+}
+
+export interface ConfigStatePayload {
+  path: string;
+  sections: string[];
+  values: Record<string, unknown>;
+  schema: ConfigFieldSchema[];
+}
+
+export type MessageOrigin =
+  | "user_typed"
+  | "engine_internal"
+  | "legacy_unknown";
+
+export type MessageVisibility = "visible" | "hidden";
 
 export const KNOWN_RUNTIME_COMMANDS = [
   "skills",
@@ -120,6 +208,8 @@ export type ErrorCode =
   | "unknown_request"
   | "unknown_session"
   | "invalid_request"
+  | "busy"
+  | "unsupported"
   | "internal";
 
 /** Cumulative built-in file-tool changes, not net worktree diff. */
@@ -155,6 +245,61 @@ export interface SessionInfo {
   last_active_at_ms?: number;
   archived?: boolean;
   archived_at_ms?: number;
+  /** Origin coding agent (e.g. "rayu", "claude_code", "claude_desktop", "codex", "codex_desktop", "cursor", "opencode", "pi"). */
+  source?:
+    | "rayu"
+    | "claude_code"
+    | "claude_desktop"
+    | "codex"
+    | "codex_desktop"
+    | "cursor"
+    | "opencode"
+    | "pi"
+    | string;
+  /** Session identifier in the source external coding agent. */
+  external_session_id?: string;
+  /** Filesystem path to the external agent's transcript or metadata record. */
+  external_path?: string;
+  /** Project/workspace name reported by the external agent (e.g. Claude Desktop or Codex Desktop). */
+  external_project_name?: string;
+  /** Whether this external session has been materialized into Rayu's local store. */
+  imported?: boolean;
+  /** Whether the external transcript was modified after the imported Rayu snapshot. */
+  sync_stale?: boolean;
+}
+
+/** A project discovered in an external coding agent (e.g. Claude Desktop or Codex Desktop). */
+export interface ExternalProjectInfo {
+  id: string;
+  source: string;
+  name: string;
+  working_dir?: string | null;
+  session_count: number;
+  updated_at_ms?: number;
+  sessions: SessionInfo[];
+}
+
+/** One external session selected for import or re-sync. */
+export interface ImportExternalSessionItem {
+  source: string;
+  external_session_id: string;
+  external_path?: string;
+  working_dir?: string;
+}
+
+/** One external session that could not be imported or resynced cleanly. */
+export interface ImportSkipInfo {
+  external_session_id: string;
+  source: string;
+  reason: "conflict" | "not_found" | "error" | string;
+  message: string;
+  existing_session_id?: string | null;
+}
+
+/** Structured result of `import_external_sessions`. */
+export interface ImportExternalSessionsResult {
+  sessions: SessionInfo[];
+  skipped: ImportSkipInfo[];
 }
 
 /** Tracked turns with a persisted response, separate from historical picker selections. */
@@ -182,6 +327,12 @@ export interface ModelRouteInfo {
   available: boolean;
   detail: string;
   usage?: ModelUsage;
+  /** Reasoning effort stops supported by this route (excluding TUI-only `swarm*` sentinels). */
+  supported_efforts?: string[];
+  /** Default reasoning effort for this route, when supported. */
+  default_effort?: string;
+  /** Effective context window in tokens, when known. */
+  context_window?: number;
 }
 
 export interface TextMatch {
@@ -235,6 +386,10 @@ export interface HistoryMessage {
   content: string;
   /** On "tool" rows: the call this result answers. Absent from older servers. */
   tool?: HistoryTool;
+  /** Provenance of the message (user-typed vs synthetic engine-internal prompt). */
+  origin?: MessageOrigin;
+  /** Whether thin clients should display or hide this row. */
+  visibility?: MessageVisibility;
 }
 
 export type RenderedImageSource =
@@ -369,7 +524,20 @@ export type ApiRequest =
       supports_user_response?: boolean;
       supports_permissions?: boolean;
     }
-  | { req: "list_sessions"; include_archived?: boolean; limit?: number }
+  | {
+      req: "list_sessions";
+      include_archived?: boolean;
+      limit?: number;
+      include_external?: boolean;
+      sources?: string[];
+    }
+  | { req: "list_external_projects"; source?: string }
+  | {
+      req: "import_external_sessions";
+      items: ImportExternalSessionItem[];
+      force_resync?: boolean;
+      fork_on_conflict?: boolean;
+    }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
   | { req: "set_retention_policy"; archive_after_days?: number }
@@ -457,6 +625,12 @@ export type ApiRequest =
   | { req: "cancel_soft_interrupts"; session_id: string; client_ids?: string[] }
   /** Replies `background_tool_result` when the `background_tool_result` capability is advertised, else `ok`. */
   | { req: "background_tool"; session_id: string }
+  /** Discover curated engine slash commands, permission modes, and feature flags. */
+  | { req: "get_capabilities"; session_id?: string }
+  /** Read the curated non-secret view of `~/.rayu/config.toml` plus field schema. */
+  | { req: "get_config"; sections?: string[] }
+  /** Validate and atomically patch curated fields in `~/.rayu/config.toml`. */
+  | { req: "patch_config"; patch: Record<string, unknown> }
   | { req: "ping" };
 
 /** Markdown/PDF panel state, shared with the native runtime. */
@@ -514,12 +688,37 @@ export type ApiEvent =
   | { ev: "runtime_command_result"; session_id: string; command: RuntimeCommand; data: unknown; message: string }
   | { ev: "error"; code: ErrorCode; message: string }
   | { ev: "sessions"; sessions: SessionInfo[] }
+  | { ev: "external_projects"; projects: ExternalProjectInfo[] }
+  | {
+      ev: "external_sessions_imported";
+      sessions: SessionInfo[];
+      skipped: ImportSkipInfo[];
+    }
   | { ev: "attached"; session: SessionInfo }
   | { ev: "session_forked"; session: SessionInfo }
   | { ev: "history"; session_id: string; messages: HistoryMessage[]; images?: RenderedImage[] }
+  | {
+      ev: "capabilities";
+      commands: CommandDescriptor[];
+      permission_modes: PermissionModeDescriptor[];
+      features: FeatureFlagDescriptor[];
+    }
+  | {
+      ev: "config_state";
+      path: string;
+      sections: string[];
+      values: Record<string, unknown>;
+      schema: ConfigFieldSchema[];
+    }
+  | {
+      ev: "config_changed";
+      changed_keys: string[];
+      requires_restart?: boolean;
+      values: Record<string, unknown>;
+    }
   | { ev: "pong" }
   | { ev: "text_delta"; session_id: string; text: string; message_id?: string }
-  | { ev: "text_done"; session_id: string; message_id?: string }
+  | { ev: "text_done"; session_id: string; message_id?: string; stop_reason?: string }
   | { ev: "text_replace"; session_id: string; message_id?: string; text: string }
   | { ev: "reasoning_delta"; session_id: string; text: string }
   | { ev: "reasoning_done"; session_id: string; duration_secs?: number }
@@ -535,6 +734,7 @@ export type ApiEvent =
       name: string;
       output: string;
       error?: string;
+      duration_ms?: number;
     }
   | { ev: "side_panel_state"; session_id: string; snapshot: SidePanelSnapshot }
   | { ev: "applet_state"; session_id: string; snapshot: AgentApplets }
@@ -705,7 +905,12 @@ export interface ClientFrame {
   [key: string]: unknown;
 }
 
-export type ServerFrame = { v: number; reply_to?: number } & UnknownApiEvent;
+export type ServerFrame = {
+  v: number;
+  reply_to?: number;
+  seq?: number;
+  turn_id?: string;
+} & UnknownApiEvent;
 
 /** Every event tag the SDK knows about, for drift checks and routing. */
 export const KNOWN_EVENT_KINDS = [
@@ -714,9 +919,14 @@ export const KNOWN_EVENT_KINDS = [
   "ok",
   "error",
   "sessions",
+  "external_projects",
+  "external_sessions_imported",
   "attached",
   "session_forked",
   "history",
+  "capabilities",
+  "config_state",
+  "config_changed",
   "side_pane_images",
   "side_panel_state",
   "applet_state",
@@ -770,6 +980,8 @@ export const KNOWN_REQUEST_KINDS = [
   "runtime_command",
   "hello",
   "list_sessions",
+  "list_external_projects",
+  "import_external_sessions",
   "archive_session",
   "restore_session",
   "set_retention_policy",
@@ -817,6 +1029,9 @@ export const KNOWN_REQUEST_KINDS = [
   "rewind_undo",
   "cancel_soft_interrupts",
   "background_tool",
+  "get_capabilities",
+  "get_config",
+  "patch_config",
   "ping",
 ] as const;
 

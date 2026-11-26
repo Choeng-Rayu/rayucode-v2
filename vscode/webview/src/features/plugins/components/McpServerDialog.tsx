@@ -109,21 +109,27 @@ export function McpServerDialog({
     const args = draft.argsText.trim().split(/\s+/).filter(Boolean);
     const env = parseEnvLines(draft.envText);
 
-    await onSave({
-      mode: draft.mode,
-      id: cleanId,
-      name: draft.displayName || cleanId,
-      brandId: draft.brandId ?? cleanId,
-      scope: draft.scope,
-      transport: draft.transport,
-      ...(draft.transport === "stdio"
-        ? { command: draft.command.trim(), args }
-        : { url: draft.url.trim() }),
-      ...(Object.keys(env).length > 0 ? { env } : {}),
-      shared: draft.shared,
-      timeoutSecs: draft.timeoutSecs,
-    });
-    onOpenChange(false);
+    try {
+      await onSave({
+        mode: draft.mode,
+        id: cleanId,
+        name: draft.displayName || cleanId,
+        brandId: draft.brandId ?? cleanId,
+        scope: draft.scope,
+        transport: draft.transport,
+        ...(draft.transport === "stdio"
+          ? { command: draft.command.trim(), args }
+          : { url: draft.url.trim() }),
+        ...(Object.keys(env).length > 0 ? { env } : {}),
+        shared: draft.shared,
+        timeoutSecs: draft.timeoutSecs,
+      });
+      onOpenChange(false);
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : "Failed to save MCP server.",
+      );
+    }
   };
 
   return (
@@ -368,9 +374,15 @@ export function McpServerDialog({
                 disabled={isSaving}
                 data-testid="mcp-dialog-remove-btn"
                 onClick={() => {
-                  void onRemove(draft.id, draft.scope).then(() =>
-                    onOpenChange(false),
-                  );
+                  void onRemove(draft.id, draft.scope)
+                    .then(() => onOpenChange(false))
+                    .catch((err) =>
+                      setErrorMessage(
+                        err instanceof Error
+                          ? err.message
+                          : "Failed to remove MCP server.",
+                      ),
+                    );
                 }}
               >
                 <Trash2 className="size-3.5" aria-hidden="true" />

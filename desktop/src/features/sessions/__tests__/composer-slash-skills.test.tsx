@@ -8,10 +8,19 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react"
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { ipcClient } from "@/lib/ipc-client"
+import { useAppStore } from "@/lib/app-store"
+import { ipcClient, type CommandDescriptor } from "@/lib/ipc-client"
 import { createQueryClient } from "@/lib/query-client"
 
 import { SessionComposer } from "../index"
@@ -28,6 +37,31 @@ beforeAll(() => {
   }
 })
 
+const LIVE_COMMANDS: readonly CommandDescriptor[] = [
+  {
+    name: "compact",
+    description: "Summarize conversation history to free context",
+    category: "session",
+    requires_session: true,
+    dispatch: { kind: "api_request", req: "compact" },
+  },
+  {
+    name: "effort",
+    description: "Set reasoning effort for the active session",
+    category: "model",
+    arg_hint: "<low|medium|high|xhigh|max>",
+    requires_session: true,
+    dispatch: { kind: "api_request", req: "set_reasoning_effort" },
+  },
+  {
+    name: "review",
+    description: "Run an engineering review pass",
+    category: "quality",
+    requires_session: true,
+    dispatch: { kind: "runtime_command", command: "review" },
+  },
+]
+
 function renderComposer(
   props?: Partial<React.ComponentProps<typeof SessionComposer>>
 ) {
@@ -35,15 +69,20 @@ function renderComposer(
   return render(
     <QueryClientProvider client={client}>
       <TooltipProvider delayDuration={0}>
-        <SessionComposer mode="home" {...props} />
+        <SessionComposer
+          mode="workspace"
+          commands={LIVE_COMMANDS}
+          {...props}
+        />
       </TooltipProvider>
     </QueryClientProvider>
   )
 }
 
-describe("SessionComposer mid-sentence slash skills", () => {
+describe("SessionComposer v1.16 live slash commands & skills", () => {
   beforeEach(() => {
     window.localStorage.clear()
+    useAppStore.setState({ activeSessionId: "sess_live_42" })
   })
 
   afterEach(() => {
@@ -51,13 +90,10 @@ describe("SessionComposer mid-sentence slash skills", () => {
     cleanup()
   })
 
-  it("does not open slash menu when '/' is attached to a word or inside a URL/path", () => {
+  it("does not open slash menu inside URLs or file paths", () => {
     renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
+    const input = screen.getByRole("textbox", { name: "Reply to RayuCode" })
     input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the/" } })
-    expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
 
     fireEvent.change(input, { target: { value: "https://example.com" } })
     expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
@@ -66,177 +102,82 @@ describe("SessionComposer mid-sentence slash skills", () => {
     expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
   })
 
-  it("opens slash menu after 1 space before '/' and shows built-in commands and local skills", async () => {
+  it("renders two-group slash popover (Engine Commands + Skills) with arg_hint", async () => {
     renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /" } })
-
-    const menu = await screen.findByTestId("composer-slash-menu")
-    expect(menu).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /plan/i })).toBeInTheDocument()
-    expect(
-      await screen.findByRole("button", { name: /systematic-debugging/i })
-    ).toBeInTheDocument()
-  })
-
-  it("filters mid-sentence queries using only text after the active '/' and shows empty state when unmatched", async () => {
-    renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /sys" } })
-
-    const menu = await screen.findByTestId("composer-slash-menu")
-    expect(menu).toBeInTheDocument()
-    expect(
-      await screen.findByRole("button", { name: /systematic-debugging/i })
-    ).toBeInTheDocument()
-    expect(
-      screen.queryByRole("button", { name: /^plan\b/i })
-    ).not.toBeInTheDocument()
-
-    fireEvent.change(input, { target: { value: "This is the /dsd" } })
-    expect(screen.getByTestId("composer-slash-menu")).toBeInTheDocument()
-    expect(
-      screen.getByText("No matching skills or commands")
-    ).toBeInTheDocument()
-  })
-
-  it("closes slash menu when a second '/' is typed for a file path", async () => {
-    renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "Check /Users" } })
-    expect(await screen.findByTestId("composer-slash-menu")).toBeInTheDocument()
-
-    fireEvent.change(input, { target: { value: "Check /Users/alice" } })
-    expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
-  })
-
-  it("preserves sentence text when clicking a built-in command mid-sentence and submits combined prompt", async () => {
-    const onSubmit = vi.fn()
-    renderComposer({ onSubmit })
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /pl" } })
-    const planBtn = await screen.findByRole("button", { name: /plan/i })
-    fireEvent.click(planBtn)
-
-    expect(screen.getByTestId("composer-skill-token-plan")).toBeInTheDocument()
-    expect(input).toHaveValue("This is the ")
-    expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByTestId("composer-send-btn"))
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "/plan This is the",
-        })
-      )
-    })
-  })
-
-  it("preserves sentence text when clicking a local skill mid-sentence and submits combined prompt", async () => {
-    const onSubmit = vi.fn()
-    renderComposer({ onSubmit })
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /sys" } })
-    const skillBtn = await screen.findByRole("button", {
-      name: /systematic-debugging/i,
-    })
-    fireEvent.click(skillBtn)
-
-    expect(
-      screen.getByTestId("composer-skill-token-sk_debug")
-    ).toHaveTextContent("systematic-debugging")
-    expect(input).toHaveValue("This is the ")
-
-    fireEvent.click(screen.getByTestId("composer-send-btn"))
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: "/systematic-debugging This is the",
-        })
-      )
-    })
-  })
-
-  it("auto-converts a typed slash command on trailing space both mid-sentence and at start", () => {
-    renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /swarm " } })
-    expect(screen.getByTestId("composer-skill-token-swarm")).toBeInTheDocument()
-    expect(input).toHaveValue("This is the ")
-
-    fireEvent.change(input, { target: { value: "/goal " } })
-    expect(screen.getByTestId("composer-skill-token-goal")).toBeInTheDocument()
-    expect(input).toHaveValue("")
-  })
-
-  it("supports ArrowDown, ArrowUp, Enter, Tab, and Escape keyboard navigation without submitting the prompt", async () => {
-    const onSubmit = vi.fn()
-    vi.spyOn(ipcClient.plugins, "getState").mockResolvedValue({
-      featuredId: "sk_debug",
-      plugins: [],
-      skills: [],
-      memories: [],
-    })
-
-    renderComposer({ onSubmit })
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
-    input.focus()
-
-    fireEvent.change(input, { target: { value: "This is the /" } })
-    await screen.findByTestId("composer-slash-menu")
-
-    const goalBtn = screen.getByRole("button", { name: /\bgoal\b/i })
-    const planBtn = screen.getByRole("button", { name: /\bplan\b/i })
-    expect(goalBtn).toHaveAttribute("data-active", "true")
-    expect(planBtn).toHaveAttribute("data-active", "false")
-
-    fireEvent.keyDown(input, { key: "ArrowDown" })
-    expect(goalBtn).toHaveAttribute("data-active", "false")
-    expect(planBtn).toHaveAttribute("data-active", "true")
-
-    fireEvent.keyDown(input, { key: "Enter" })
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(screen.getByTestId("composer-skill-token-plan")).toBeInTheDocument()
-    expect(input).toHaveValue("This is the ")
-    expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
-
-    // Re-open and test Tab selection + Escape
-    fireEvent.change(input, { target: { value: "This is the /sw" } })
-    await screen.findByTestId("composer-slash-menu")
-    fireEvent.keyDown(input, { key: "Tab" })
-    expect(screen.getByTestId("composer-skill-token-swarm")).toBeInTheDocument()
-    expect(input).toHaveValue("This is the ")
-
-    fireEvent.change(input, { target: { value: "This is the /re" } })
-    await screen.findByTestId("composer-slash-menu")
-    fireEvent.keyDown(input, { key: "Escape" })
-    expect(screen.queryByTestId("composer-slash-menu")).not.toBeInTheDocument()
-  })
-
-  it("preserves leading '/' behavior by clearing textarea after selection", async () => {
-    renderComposer()
-    const input = screen.getByRole("textbox", { name: "Message RayuCode" })
+    const input = screen.getByRole("textbox", { name: "Reply to RayuCode" })
     input.focus()
 
     fireEvent.change(input, { target: { value: "/" } })
-    const swarmCmd = await screen.findByRole("button", { name: /swarm/i })
-    fireEvent.click(swarmCmd)
 
-    expect(screen.getByTestId("composer-skill-token-swarm")).toHaveTextContent(
-      "swarm"
+    const menu = await screen.findByTestId("composer-slash-menu")
+    expect(menu).toBeInTheDocument()
+    expect(screen.getByTestId("slash-group-engine")).toHaveTextContent(
+      "Engine Commands"
     )
-    expect(input).toHaveValue("")
+    expect(screen.getByText("/compact")).toBeInTheDocument()
+    expect(screen.getByText("/effort")).toBeInTheDocument()
+    expect(screen.getByText("<low|medium|high|xhigh|max>")).toBeInTheDocument()
+    expect(await screen.findByTestId("slash-group-skills")).toHaveTextContent(
+      "Skills"
+    )
+  })
+
+  it("dispatches /compact via real compact RPC rather than sending prompt text", async () => {
+    const onSubmit = vi.fn()
+    const compactSpy = vi
+      .spyOn(ipcClient.harness, "compact")
+      .mockResolvedValue({ ok: true, message: "Context compacted" })
+
+    renderComposer({ onSubmit })
+    const input = screen.getByRole("textbox", { name: "Reply to RayuCode" })
+    input.focus()
+
+    fireEvent.change(input, { target: { value: "/compact" } })
+    fireEvent.keyDown(input, { key: "Escape" })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(compactSpy).toHaveBeenCalledWith("sess_live_42")
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(
+      await screen.findByTestId("composer-command-feedback")
+    ).toHaveTextContent("Context compacted")
+  })
+
+  it("dispatches /effort high via real setReasoningEffort RPC and preserves input on error", async () => {
+    const onSubmit = vi.fn()
+    const setEffortSpy = vi
+      .spyOn(ipcClient.harness, "setReasoningEffort")
+      .mockResolvedValue({ ok: true })
+
+    renderComposer({ onSubmit })
+    const input = screen.getByRole("textbox", { name: "Reply to RayuCode" })
+    input.focus()
+
+    fireEvent.change(input, { target: { value: "/effort high" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(setEffortSpy).toHaveBeenCalledWith("sess_live_42", "high")
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(
+      await screen.findByTestId("composer-command-feedback")
+    ).toHaveTextContent("Reasoning effort set to High")
+
+    // Error preserves user input so they can fix typos immediately
+    setEffortSpy.mockResolvedValueOnce({
+      ok: false,
+      code: "invalid_request",
+      error: "Unsupported effort level: turbo",
+    })
+    fireEvent.change(input, { target: { value: "/effort turbo" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+
+    const feedback = await screen.findByTestId("composer-command-feedback")
+    expect(feedback).toHaveAttribute("data-feedback-status", "error")
+    expect(feedback).toHaveTextContent("Unsupported effort level: turbo")
+    expect(input).toHaveValue("/effort turbo")
   })
 })

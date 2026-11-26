@@ -1,4 +1,5 @@
 import * as React from "react";
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import { FileText, RefreshCw, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ export function StatusBarPill({
   const [busy, setBusy] = React.useState(false);
 
   const { tone, label } = mapDaemonStateToTone(daemonStatus.state);
+  const formattedVersion = formatDaemonVersionLabel(daemonStatus.version);
 
   const handleReconnect = async () => {
     setBusy(true);
@@ -96,9 +98,7 @@ export function StatusBarPill({
               {!compact && (
                 <span className="max-w-[110px] truncate font-medium">
                   {daemonStatus.state === "connected"
-                    ? daemonStatus.version
-                      ? `v${daemonStatus.version.replace(/^v/, "")}`
-                      : "Online"
+                    ? formattedVersion || "Online"
                     : label}
                 </span>
               )}

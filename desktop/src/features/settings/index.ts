@@ -9,6 +9,7 @@ export {
 
 export {
   useDaemonStatus,
+  useEngineConfig,
   usePingDaemon,
   useSettingsState,
   useToggleUseAllCredits,
@@ -17,7 +18,9 @@ export {
 
 export {
   daemonStatusQueryOptions,
+  engineConfigQueryOptions,
   fetchDaemonStatus,
+  fetchEngineConfig,
   fetchSettingsState,
   pingDaemon,
   setUseAllCreditsPreference,

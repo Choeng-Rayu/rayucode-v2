@@ -97,6 +97,9 @@ fn ga_runtime_and_file_methods_map_requests_and_typed_replies() {
             api_method: "messages".to_string(),
             available: true,
             detail: "ready".to_string(),
+            supported_efforts: Vec::new(),
+            default_effort: None,
+            context_window: None,
         },
         ModelRouteInfo {
             usage: None,
@@ -105,6 +108,9 @@ fn ga_runtime_and_file_methods_map_requests_and_typed_replies() {
             api_method: "generate_content".to_string(),
             available: true,
             detail: "ready".to_string(),
+            supported_efforts: Vec::new(),
+            default_effort: None,
+            context_window: None,
         },
     ];
     let reply_routes = routes.clone();

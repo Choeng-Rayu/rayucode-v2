@@ -15,7 +15,90 @@ import {
   type HarnessSessionInfoLike,
 } from "./harness-adapter"
 
-export type ReasoningEffort = "Auto" | "Low" | "Medium" | "High" | "Max"
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | (string & {})
+
+export type CommandCategory =
+  | "session"
+  | "model"
+  | "quality"
+  | "tools"
+  | "runtime"
+  | (string & {})
+
+export type CommandDispatch =
+  | { kind: "api_request"; req: string }
+  | { kind: "runtime_command"; command: string }
+  | { kind: "skill"; name: string }
+
+export interface CommandDescriptor {
+  name: string
+  description: string
+  category: CommandCategory
+  arg_hint?: string
+  requires_session?: boolean
+  dispatch: CommandDispatch
+}
+
+export interface PermissionModeDescriptor {
+  id: string
+  label: string
+  description: string
+  is_default?: boolean
+}
+
+export interface FeatureFlagDescriptor {
+  key: string
+  enabled: boolean
+  description: string
+  requires_restart?: boolean
+}
+
+export interface CapabilitiesPayload {
+  commands: CommandDescriptor[]
+  permission_modes: PermissionModeDescriptor[]
+  features: FeatureFlagDescriptor[]
+}
+
+export type ConfigFieldKind =
+  | "boolean"
+  | "string"
+  | "integer"
+  | "number"
+  | "enum"
+  | "string_array"
+
+export type ConfigApplyMode = "immediate" | "next_turn" | "restart_required"
+
+export interface ConfigEnumOption {
+  value: string
+  label: string
+}
+
+export interface ConfigFieldSchema {
+  key: string
+  section: string
+  label: string
+  description: string
+  kind: ConfigFieldKind
+  options?: ConfigEnumOption[]
+  default_value: unknown
+  apply_mode: ConfigApplyMode
+}
+
+export interface ConfigStatePayload {
+  path: string
+  sections: string[]
+  values: Record<string, unknown>
+  schema: ConfigFieldSchema[]
+}
 export type PermissionModeId =
   | "default"
   | "acceptEdits"
@@ -32,9 +115,16 @@ export interface SessionSummary {
   branch: string
   updatedAt: string
   updatedAtMs?: number
+  status?: string
   connection?: "local" | "cloud"
   saved?: boolean
   archived?: boolean
+  source?: string
+  externalSessionId?: string
+  externalPath?: string
+  externalProjectName?: string
+  imported?: boolean
+  syncStale?: boolean
   modelId: string
   modelLabel: string
   effort: ReasoningEffort
@@ -127,6 +217,11 @@ export interface ModelOption {
   provider: string
   apiMethod?: string
   recommended?: boolean
+  available?: boolean
+  unavailableReason?: string
+  supportedEfforts?: string[]
+  defaultEffort?: string
+  contextWindow?: number
 }
 
 export interface PermissionModeOption {
@@ -147,6 +242,7 @@ export interface ShellCommandStep {
   statusLabel: string
   isFailed?: boolean
   isMono?: boolean
+  durationMs?: number
 }
 
 export interface FileReadStep {
@@ -179,6 +275,7 @@ export interface TraceGroup {
 }
 
 export type TraceTimelineItem =
+  | { type: "reasoning"; id: string; text: string }
   | { type: "note"; id: string; text: string }
   | { type: "group"; group: TraceGroup }
 
@@ -2816,7 +2913,36 @@ export interface RayuBridgeApi {
     ) => () => void
   }
   harness?: {
-    listSessions?: () => Promise<HarnessSessionInfoLike[]>
+    listSessions?: (options?: {
+      includeArchived?: boolean
+      includeExternal?: boolean
+      sources?: string[]
+    }) => Promise<HarnessSessionInfoLike[]>
+    listExternalProjects?: (source?: string) => Promise<
+      Array<{
+        id: string
+        source: string
+        name: string
+        working_dir?: string | null
+        session_count: number
+        updated_at_ms?: number
+        sessions: HarnessSessionInfoLike[]
+      }>
+    >
+    importExternalSessions?: (payload: {
+      items: ImportExternalSessionInput[]
+      forceResync?: boolean
+      forkOnConflict?: boolean
+    }) => Promise<{
+      sessions: HarnessSessionInfoLike[]
+      skipped: Array<{
+        external_session_id: string
+        source: string
+        reason: string
+        message: string
+        existing_session_id?: string | null
+      }>
+    }>
     createSession?: (
       workingDir?: string,
       title?: string
@@ -2853,11 +2979,22 @@ export interface RayuBridgeApi {
     setModel?: (
       sessionId: string,
       model: string
-    ) => Promise<{ ok: boolean; error?: string }>
+    ) => Promise<{ ok: boolean; error?: string; code?: string }>
     setReasoningEffort?: (
       sessionId: string,
       effort: string
-    ) => Promise<{ ok: boolean }>
+    ) => Promise<{ ok: boolean; error?: string; code?: string }>
+    compact?: (
+      sessionId: string
+    ) => Promise<{ ok: boolean; message?: string; error?: string; code?: string }>
+    getCapabilities?: (sessionId?: string) => Promise<CapabilitiesPayload | null>
+    getConfig?: (sections?: string[]) => Promise<ConfigStatePayload | null>
+    patchConfig?: (patch: Record<string, unknown>) => Promise<{
+      ok: boolean
+      state?: ConfigStatePayload
+      error?: string
+      code?: string
+    }>
     runtimeCommand?: (
       sessionId: string,
       command: string,
@@ -2880,6 +3017,27 @@ export interface RayuBridgeApi {
   workspace?: {
     getInfo?: () => Promise<WorkspaceInfo>
     setPath?: (targetPath: string) => Promise<WorkspaceInfo>
+    ensure?: (
+      targetPath: string,
+      name?: string
+    ) => Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }>
+    importProjectGroup?: (
+      targetPath: string,
+      sessionIds: string[],
+      name?: string
+    ) => Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }>
     pickFolder?: () => Promise<WorkspaceInfo | null>
     pickFiles?: () => Promise<
       Array<{
@@ -2934,6 +3092,7 @@ export interface RayuBridgeApi {
     deleteTemplate?: (id: string) => Promise<PersistedComposerTemplate[]>
     getSidebarState?: () => Promise<SidebarState>
     saveSidebarState?: (state: SidebarState) => Promise<SidebarState>
+    onSidebarStateChange?: (cb: (state: SidebarState) => void) => () => void
   }
   extensions?: {
     list?: () => Promise<{
@@ -3428,6 +3587,31 @@ async function isHarnessLive(): Promise<boolean> {
   }
 }
 
+export interface ExternalProjectSummary {
+  id: string
+  source: string
+  name: string
+  workingDir?: string | null
+  sessionCount: number
+  updatedAtMs?: number
+  sessions: SessionSummary[]
+}
+
+export interface ImportExternalSessionInput {
+  source: string
+  external_session_id: string
+  external_path?: string
+  working_dir?: string
+}
+
+export interface ImportExternalSkipSummary {
+  externalSessionId: string
+  source: string
+  reason: string
+  message: string
+  existingSessionId?: string | null
+}
+
 let inFlightSessionsList: Promise<SessionSummary[]> | null = null
 
 export const ipcClient = {
@@ -3441,7 +3625,9 @@ export const ipcClient = {
         const bridge = getBridge()
         if (bridge?.harness?.listSessions && !IS_TEST_ENV && (await isHarnessLive())) {
           try {
-            const liveSessions = await bridge.harness.listSessions()
+            const liveSessions = await bridge.harness.listSessions({
+              includeExternal: true,
+            })
             lastKnownDaemonLive = true
             const mappedLive = liveSessions.map((info) => {
               const summary = mapSessionInfoToSummary(info)
@@ -3474,13 +3660,8 @@ export const ipcClient = {
                 permissionMode: cached.permissionMode ?? summary.permissionMode,
               }
             })
-            const liveIds = new Set(mappedLive.map((s) => s.id))
-            const localOnly = runtimeSessions.filter(
-              (s) => !liveIds.has(s.id) && !s.archived
-            )
-            const combined = [...mappedLive, ...localOnly]
-            combined.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
-            return combined
+            mappedLive.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+            return mappedLive
           } catch {
             // Fall through if daemon could not be reached
           }
@@ -3496,6 +3677,63 @@ export const ipcClient = {
         inFlightSessionsList = null
       })
       return inFlightSessionsList
+    },
+    async listExternalProjects(
+      source?: string
+    ): Promise<ExternalProjectSummary[]> {
+      const bridge = getBridge()
+      if (
+        !bridge?.harness?.listExternalProjects ||
+        IS_TEST_ENV ||
+        !(await isHarnessLive())
+      ) {
+        return []
+      }
+      try {
+        const raw = await bridge.harness.listExternalProjects(source)
+        return raw.map((proj) => ({
+          id: proj.id,
+          source: proj.source,
+          name: proj.name,
+          workingDir: proj.working_dir ?? null,
+          sessionCount: proj.session_count,
+          updatedAtMs: proj.updated_at_ms,
+          sessions: proj.sessions.map((s) => mapSessionInfoToSummary(s)),
+        }))
+      } catch {
+        return []
+      }
+    },
+    async importExternal(
+      items: ImportExternalSessionInput[],
+      options?: { forceResync?: boolean; forkOnConflict?: boolean }
+    ): Promise<{
+      sessions: SessionSummary[]
+      skipped: ImportExternalSkipSummary[]
+    }> {
+      const bridge = getBridge()
+      if (
+        !bridge?.harness?.importExternalSessions ||
+        IS_TEST_ENV ||
+        !(await isHarnessLive())
+      ) {
+        return { sessions: [], skipped: [] }
+      }
+      const res = await bridge.harness.importExternalSessions({
+        items,
+        forceResync: options?.forceResync,
+        forkOnConflict: options?.forkOnConflict,
+      })
+      return {
+        sessions: res.sessions.map((s) => mapSessionInfoToSummary(s)),
+        skipped: res.skipped.map((skip) => ({
+          externalSessionId: skip.external_session_id,
+          source: skip.source,
+          reason: skip.reason,
+          message: skip.message,
+          existingSessionId: skip.existing_session_id ?? null,
+        })),
+      }
     },
     async listProjects(): Promise<ProjectGroup[]> {
       const bridge = getBridge()
@@ -3541,7 +3779,7 @@ export const ipcClient = {
       for (const s of liveSessions) {
         if (s.archived) continue
         if (!s.workingDir || isTempDirectoryPath(s.workingDir)) continue
-        const group = groupsByNormPath.get(normalizeWorkspacePath(s.workingDir))
+        const group = addOrGetGroup(s.workingDir, s.project)
         if (group) {
           group.sessions.push({
             id: s.id,
@@ -3645,10 +3883,6 @@ export const ipcClient = {
           lastKnownDaemonLive = true
           lastActiveHarnessSessionId = live.session_id
           newlyCreatedEmptySessions.add(live.session_id)
-          const hasExplicitStoredEffort =
-            typeof window !== "undefined" &&
-            (window.localStorage.getItem("rayu-effort-idx") !== null ||
-              Boolean(window.localStorage.getItem("rayu-effort")))
           if (
             input.modelId &&
             input.modelId !== "default" &&
@@ -3664,14 +3898,14 @@ export const ipcClient = {
               }
             }
           }
+          const normalizedEffort = input.effort?.trim().toLowerCase()
           if (
-            input.effort &&
-            hasExplicitStoredEffort &&
-            input.effort !== "Auto" &&
+            normalizedEffort &&
+            normalizedEffort !== "auto" &&
             bridge.harness.setReasoningEffort
           ) {
             await bridge.harness
-              .setReasoningEffort(live.session_id, input.effort.toLowerCase())
+              .setReasoningEffort(live.session_id, normalizedEffort)
               .catch(() => {})
           }
           const mapped = mapSessionInfoToSummary(live)
@@ -4363,6 +4597,59 @@ export const ipcClient = {
       const bridge = getBridge()
       if (!bridge?.workspace?.setPath) return null
       return bridge.workspace.setPath(targetPath)
+    },
+    async ensure(
+      targetPath: string,
+      name?: string
+    ): Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }> {
+      const bridge = getBridge()
+      if (bridge?.workspace?.ensure && !IS_TEST_ENV) {
+        return bridge.workspace.ensure(targetPath, name)
+      }
+      const cleanPath = targetPath.trim().replace(/[\\/]+$/, "") || targetPath
+      const base =
+        cleanPath.split(/[\\/]/).filter(Boolean).pop() ?? "workspace"
+      const slug =
+        base
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 24) || "workspace"
+      const normKey = normalizeWorkspacePath(cleanPath)
+      let hash = 0
+      for (let i = 0; i < normKey.length; i += 1) {
+        hash = (hash * 31 + normKey.charCodeAt(i)) >>> 0
+      }
+      return {
+        id: `ws_${slug}_${hash.toString(16).padStart(8, "0")}`,
+        name: name?.trim() || base,
+        path: cleanPath,
+        canonicalPath: cleanPath,
+        created: true,
+      }
+    },
+    async importProjectGroup(
+      targetPath: string,
+      sessionIds: string[],
+      name?: string
+    ): Promise<{
+      id: string
+      name: string
+      path: string
+      canonicalPath: string
+      created: boolean
+    }> {
+      const bridge = getBridge()
+      if (bridge?.workspace?.importProjectGroup && !IS_TEST_ENV) {
+        return bridge.workspace.importProjectGroup(targetPath, sessionIds, name)
+      }
+      return ipcClient.workspace.ensure(targetPath, name)
     },
     async listFiles(): Promise<
       Array<{ path: string; name: string; sizeBytes: number; language: string }>
@@ -5421,7 +5708,7 @@ export const ipcClient = {
     async setModel(
       sessionId: string,
       model: string
-    ): Promise<{ ok: boolean; error?: string }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setModel && (await isHarnessLive())) {
         const res = await bridge.harness.setModel(sessionId, model)
@@ -5435,17 +5722,69 @@ export const ipcClient = {
     async setReasoningEffort(
       sessionId: string,
       effort: string
-    ): Promise<{ ok: boolean }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
         return bridge.harness.setReasoningEffort(sessionId, effort)
       }
       return { ok: true }
     },
+    async compact(
+      sessionId: string
+    ): Promise<{ ok: boolean; message?: string; error?: string; code?: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.compact && (await isHarnessLive())) {
+        return bridge.harness.compact(sessionId)
+      }
+      return { ok: true, message: "Context compacted." }
+    },
+    async runtimeCommand(
+      sessionId: string,
+      command: string,
+      args: string[] = []
+    ): Promise<{ command: string; data: unknown; message: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.runtimeCommand && (await isHarnessLive())) {
+        return bridge.harness.runtimeCommand(sessionId, command, args)
+      }
+      return { command, data: null, message: `Ran /${command}` }
+    },
+    async getCapabilities(
+      sessionId?: string
+    ): Promise<CapabilitiesPayload | null> {
+      const bridge = getBridge()
+      if (bridge?.harness?.getCapabilities && (await isHarnessLive())) {
+        return bridge.harness.getCapabilities(sessionId)
+      }
+      return null
+    },
+    async getConfig(sections?: string[]): Promise<ConfigStatePayload | null> {
+      const bridge = getBridge()
+      if (bridge?.harness?.getConfig && (await isHarnessLive())) {
+        return bridge.harness.getConfig(sections)
+      }
+      return null
+    },
+    async patchConfig(patch: Record<string, unknown>): Promise<{
+      ok: boolean
+      state?: ConfigStatePayload
+      error?: string
+      code?: string
+    }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.patchConfig && (await isHarnessLive())) {
+        return bridge.harness.patchConfig(patch)
+      }
+      return {
+        ok: false,
+        code: "unsupported",
+        error: "Connected daemon does not support config_v1.",
+      }
+    },
     async setPermissionMode(
       sessionId: string,
       mode: PermissionModeId
-    ): Promise<{ ok: boolean; error?: string }> {
+    ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setPermissionMode) {
         try {
@@ -5904,7 +6243,7 @@ export const ipcClient = {
         archivedChatIds: [],
         organizeBy: "project",
         sortBy: "updated",
-        showProjectChatsInRecents: true,
+        showProjectChatsInRecents: false,
         manualProjectOrder: [],
       }
       const bridge = getBridge()
@@ -5953,6 +6292,13 @@ export const ipcClient = {
         }
       }
       return state
+    },
+    onStateChange(cb: (state: SidebarState) => void): () => void {
+      const bridge = getBridge()
+      if (bridge?.storage?.onSidebarStateChange && !IS_TEST_ENV) {
+        return bridge.storage.onSidebarStateChange(cb)
+      }
+      return () => {}
     },
   },
 

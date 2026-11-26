@@ -49,6 +49,47 @@ export const WorkspaceSetPayloadSchema = z.object({
   path: z.string().min(1),
 })
 
+export const WorkspaceEnsurePayloadSchema = z.object({
+  path: z.string().trim().min(1).max(2048),
+  name: z.string().trim().min(1).max(120).optional(),
+})
+
+export const WorkspaceImportProjectGroupPayloadSchema = z.object({
+  path: z.string().trim().min(1).max(2048),
+  name: z.string().trim().min(1).max(120).optional(),
+  sessionIds: z.array(z.string().min(1)).max(500),
+})
+
+export const HarnessListSessionsPayloadSchema = z
+  .object({
+    includeArchived: z.boolean().optional(),
+    includeExternal: z.boolean().optional(),
+    sources: z.array(z.string().min(1)).max(20).optional(),
+  })
+  .optional()
+
+export const HarnessListExternalProjectsPayloadSchema = z
+  .object({
+    source: z.string().min(1).max(64).optional(),
+  })
+  .optional()
+
+export const HarnessImportExternalSessionsPayloadSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        source: z.string().min(1).max(64),
+        external_session_id: z.string().min(1).max(256),
+        external_path: z.string().max(4096).optional(),
+        working_dir: z.string().max(4096).optional(),
+      })
+    )
+    .min(1)
+    .max(500),
+  forceResync: z.boolean().optional(),
+  forkOnConflict: z.boolean().optional(),
+})
+
 export const WorkspaceReadFilePayloadSchema = z.object({
   filePath: z.string().min(1),
 })
@@ -172,6 +213,22 @@ export const HarnessRuntimeCommandSchema = z.object({
   sessionId: z.string().min(1),
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
+})
+
+export const HarnessGetCapabilitiesSchema = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+  })
+  .optional()
+
+export const HarnessGetConfigSchema = z
+  .object({
+    sections: z.array(z.string().min(1)).optional(),
+  })
+  .optional()
+
+export const HarnessPatchConfigSchema = z.object({
+  patch: z.record(z.string().min(1), z.unknown()),
 })
 
 export const FileChangeActionKindSchema = z.enum([

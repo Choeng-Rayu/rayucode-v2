@@ -1,3 +1,4 @@
+import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import * as React from "react";
 import {
   queryOptions,
@@ -12,6 +13,9 @@ import type {
   AgentRoleOverrideView,
   AnalyticsSummaryView,
   CacheTtl,
+  ConfigFieldSchemaView,
+  ConfigGetResultView,
+  ConfigPatchResultView,
   DaemonStatusView,
   DoctorCheckView,
   EffortChoice,
@@ -28,7 +32,7 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc } from "@/lib/rpc-client";
+import { callRpc, onHostMessage } from "@/lib/rpc-client";
 
 export type SettingsSectionId =
   | "account"
@@ -632,6 +636,120 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   );
   const [selfDevOutput, setSelfDevOutput] = React.useState<string | null>(null);
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
+  const [configRequiresRestart, setConfigRequiresRestart] =
+    React.useState(false);
+  const [configFieldErrors, setConfigFieldErrors] = React.useState<
+    Record<string, string>
+  >({});
+  const [configSectionError, setConfigSectionError] = React.useState<
+    string | null
+  >(null);
+
+  const configQuery = useQuery(
+    queryOptions({
+      queryKey: ["settings", "config"] as const,
+      queryFn: () => callRpc("config.get"),
+    }),
+  );
+
+  // Live sync when CLI/Desktop or another surface updates ~/.rayu/config.toml
+  React.useEffect(() => {
+    return onHostMessage((msg) => {
+      if (msg.type !== "rayucode.config.changed") return;
+      queryClient.setQueryData<ConfigGetResultView>(
+        ["settings", "config"],
+        (prev) => {
+          if (!prev || !prev.config) return prev;
+          return {
+            ...prev,
+            config: {
+              ...prev.config,
+              values: {
+                ...prev.config.values,
+                ...msg.values,
+              },
+            },
+          };
+        },
+      );
+      if (msg.requiresRestart) {
+        setConfigRequiresRestart(true);
+      }
+      setStatusMessage("Synced update from ~/.rayu/config.toml");
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "features"] });
+    });
+  }, [queryClient]);
+
+  const configSupported = configQuery.data?.supported !== false;
+  const configPath = configQuery.data?.config?.path ?? "~/.rayu/config.toml";
+  const configValues = configQuery.data?.config?.values ?? {};
+  const configSchema: ConfigFieldSchemaView[] =
+    configQuery.data?.config?.schema ?? [];
+
+  const clearConfigFieldError = React.useCallback((key: string) => {
+    setConfigFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const patchConfig = React.useCallback(
+    async (
+      patch: Record<string, unknown>,
+    ): Promise<ConfigPatchResultView> => {
+      const keys = Object.keys(patch);
+      setConfigSectionError(null);
+      try {
+        const res = await callRpc("config.patch", { patch });
+        if (!res.ok) {
+          const message =
+            res.message || "Failed to update ~/.rayu/config.toml.";
+          if (keys.length === 1 && keys[0]) {
+            setConfigFieldErrors((prev) => ({
+              ...prev,
+              [keys[0]!]: message,
+            }));
+          } else {
+            setConfigSectionError(message);
+          }
+          return res;
+        }
+        setConfigFieldErrors((prev) => {
+          const next = { ...prev };
+          for (const k of keys) delete next[k];
+          return next;
+        });
+        if (res.config) {
+          queryClient.setQueryData<ConfigGetResultView>(["settings", "config"], {
+            supported: true,
+            config: res.config,
+          });
+        }
+        if (res.requiresRestart) {
+          setConfigRequiresRestart(true);
+        }
+        return res;
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : "Failed to update ~/.rayu/config.toml.";
+        if (keys.length === 1 && keys[0]) {
+          setConfigFieldErrors((prev) => ({
+            ...prev,
+            [keys[0]!]: message,
+          }));
+        } else {
+          setConfigSectionError(message);
+        }
+        return { ok: false, message };
+      }
+    },
+    [queryClient],
+  );
 
   const syncAccountEverywhere = React.useCallback(
     (next: AccountStatusView) => {
@@ -1135,11 +1253,29 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   });
 
   const setFeatureFlagMutation = useMutation({
-    mutationFn: (input: { key: keyof FeatureFlagsView; value: boolean | string }) =>
-      callRpc("settings.features.set", {
+    mutationFn: async (input: {
+      key: keyof FeatureFlagsView;
+      value: boolean | string;
+    }) => {
+      const configKey =
+        input.key === "codemode"
+          ? "tools.codemode"
+          : input.key === "integration_tools"
+            ? "sponsors.enabled"
+            : `features.${String(input.key)}`;
+      if (configSupported) {
+        const patchRes = await patchConfig({ [configKey]: input.value });
+        if (!patchRes.ok) {
+          throw new Error(
+            patchRes.message || `Failed to update ${configKey}.`,
+          );
+        }
+      }
+      return callRpc("settings.features.set", {
         key: String(input.key),
         value: input.value,
-      }),
+      });
+    },
     onSuccess: (res, input) => {
       queryClient.setQueryData(
         ["settings", "features"],
@@ -1163,7 +1299,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               }
             : prev,
       );
-      setStatusMessage(`Updated [features] ${String(input.key)} = ${String(input.value)}.`);
+      setStatusMessage(
+        `Updated [features] ${String(input.key)} = ${String(input.value)}.`,
+      );
     },
   });
 
@@ -1226,8 +1364,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               }
             : prev,
       );
+      const formatted = formatDaemonVersionLabel(res.version ?? "2.4.0") || "v2.4.0";
       setStatusMessage(
-        `Daemon healthy (${res.latencyMs} ms RTT · v${res.version ?? "2.4.0"}).`,
+        `Daemon healthy (${res.latencyMs} ms RTT · ${formatted}).`,
       );
     },
   });
@@ -1240,6 +1379,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     onSuccess: (nextStatus) => {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
+      setConfigRequiresRestart(false);
       setStatusMessage("Reloaded Rayu Daemon & Bridge connection.");
     },
   });
@@ -1386,7 +1526,11 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   });
 
   const setDefaultModel = React.useCallback(
-    (model: string) => {
+    async (model: string) => {
+      if (configSupported) {
+        const res = await patchConfig({ "provider.default_model": model });
+        if (!res.ok) return;
+      }
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
         (prev: Record<string, unknown> | undefined) =>
@@ -1394,19 +1538,23 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       );
       setStatusMessage(`Default model route set to ${model}.`);
     },
-    [activeSessionId, queryClient],
+    [activeSessionId, configSupported, patchConfig, queryClient],
   );
 
   const setDefaultEffort = React.useCallback(
-    (effort: EffortChoice) => {
+    async (effort: EffortChoice) => {
+      if (configSupported && effort) {
+        const res = await patchConfig({ "provider.default_effort": effort });
+        if (!res.ok) return;
+      }
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, defaultEffort: effort } : prev,
       );
-      setStatusMessage(`Default reasoning effort set to ${effort ?? "auto"}.`);
+      setStatusMessage(`Default reasoning effort set to ${effort ?? "default"}.`);
     },
-    [activeSessionId, queryClient],
+    [activeSessionId, configSupported, patchConfig, queryClient],
   );
 
   const filteredSections = React.useMemo(() => {
@@ -1451,6 +1599,16 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     defaultPermissionMode,
     doctorResults,
     selfDevOutput,
+    configSupported,
+    configPath,
+    configValues,
+    configSchema,
+    configRequiresRestart,
+    configFieldErrors,
+    clearConfigFieldError,
+    configSectionError,
+    clearConfigSectionError: () => setConfigSectionError(null),
+    patchConfig,
 
     isLoading:
       accountQuery.isPending ||

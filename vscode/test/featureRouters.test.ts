@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { HarnessError, type RuntimeCommand } from "@rayu-dev/rayucode-sdk";
 import {
+  HistoryMessageViewSchema,
   RPC_METHODS,
   RpcContractSchemas,
   type DaemonStatusView,
@@ -13,6 +17,7 @@ import {
   mapRawFileChangeActionResponse,
   mapRawFileChangeDiff,
   mapRawFileChangesSnapshot,
+  mapRawHistoryMessage,
   normalizeCredentialProviderId,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
@@ -1686,4 +1691,476 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
     sessionId: "sess_fc",
   });
   assert.equal(fallbackRedo.ok, false);
+});
+
+test("HistoryMessageViewSchema and mapRawHistoryMessage forward tool, responseStats, and provenance fields", () => {
+  const legacyParsed = HistoryMessageViewSchema.parse({
+    id: "hist_1",
+    role: "user",
+    content: "hello",
+  });
+  assert.equal(legacyParsed.role, "user");
+  assert.equal(legacyParsed.responseStats, undefined);
+
+  const mapped = mapRawHistoryMessage(
+    {
+      role: "assistant",
+      content: "Done",
+      origin: "engine_internal",
+      visibility: "hidden",
+      attempt_id: "att_2",
+      attempt_reason: "reassess_refusal",
+      attempt_status: "answered",
+      stop_reason: "end_turn",
+      tool: { id: "call_1", name: "bash", input: { command: "pwd" } },
+      response_stats: {
+        duration_secs: 4.2,
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_read_tokens: 90,
+        cache_creation_tokens: 10,
+        rayu_credits: 0.15,
+      },
+    },
+    { id: "hist_2", model: "claude-opus-4-6" },
+  );
+
+  const parsed = HistoryMessageViewSchema.parse(mapped);
+  assert.equal(parsed.toolId, "call_1");
+  assert.equal(parsed.toolName, "bash");
+  assert.deepEqual(parsed.toolInput, { command: "pwd" });
+  assert.equal(parsed.origin, "engine_internal");
+  assert.equal(parsed.visibility, "hidden");
+  assert.equal(parsed.attemptId, "att_2");
+  assert.equal(parsed.attemptReason, "reassess_refusal");
+  assert.equal(parsed.attemptStatus, "answered");
+  assert.equal(parsed.stopReason, "end_turn");
+  assert.equal(parsed.responseStats?.durationSecs, 4.2);
+  assert.equal(parsed.responseStats?.cacheReadTokens, 90);
+  assert.equal(parsed.responseStats?.rayuCredits, 0.15);
+});
+
+test("plugins.mcp.add/edit/remove and plugins.skills.create write real files on disk and reload MCP", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-vsc-plugins-"));
+  const rayuHome = path.join(tmpDir, "rayu-home");
+  const prevRayuHome = process.env.RAYU_HOME;
+  process.env.RAYU_HOME = rayuHome;
+  try {
+    const { router, runtimeCommandsCalled } = createTestFeatureRouter({
+      runtimeHandler: (command, args) => {
+        if (command === "mcp" && args[0] === "list") {
+          return { data: { servers: [] }, message: "ok" };
+        }
+        return { data: { reloaded: true }, message: "ok" };
+      },
+    });
+
+    const addRes = await router.call("plugins.mcp.add", {
+      id: "context7",
+      scope: "global",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@upstash/context7-mcp"],
+      shared: true,
+      timeoutSecs: 30,
+    });
+    assert.equal(addRes.ok, true);
+    const mcpJsonPath = path.join(rayuHome, "mcp.json");
+    assert.equal(fs.existsSync(mcpJsonPath), true);
+    const saved = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")) as {
+      mcpServers: Record<string, { command?: string; args?: string[] }>;
+    };
+    assert.equal(saved.mcpServers.context7?.command, "npx");
+    assert.deepEqual(saved.mcpServers.context7?.args, [
+      "-y",
+      "@upstash/context7-mcp",
+    ]);
+    assert.equal(
+      runtimeCommandsCalled.some(
+        (c) => c.command === "mcp" && c.args[0] === "reload",
+      ),
+      true,
+    );
+
+    const removeRes = await router.call("plugins.mcp.remove", {
+      id: "context7",
+      scope: "global",
+    });
+    assert.equal(removeRes.ok, true);
+    const afterRemove = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    assert.equal("context7" in afterRemove.mcpServers, false);
+
+    const skillRes = await router.call("plugins.skills.create", {
+      name: "Release Gate",
+      description: "Verify release checklist before shipping",
+      scope: "global",
+    });
+    assert.equal(skillRes.ok, true);
+    assert.equal(skillRes.skill.name, "release-gate");
+    assert.equal(fs.existsSync(skillRes.skill.path), true);
+    const skillText = fs.readFileSync(skillRes.skill.path, "utf8");
+    assert.match(skillText, /name: release-gate/);
+    assert.match(skillText, /Verify release checklist before shipping/);
+  } finally {
+    if (prevRayuHome === undefined) {
+      delete process.env.RAYU_HOME;
+    } else {
+      process.env.RAYU_HOME = prevRayuHome;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("featureRouters exposes v1.16 capabilities.get, config.get, config.patch and degrades cleanly on v1.15 daemons", async () => {
+  let configValues: Record<string, unknown> = {
+    "provider.default_model": "claude-opus-5-5",
+    "features.swarm": true,
+    "compaction.auto_compact": true,
+  };
+  const configSchema = [
+    {
+      key: "provider.default_model",
+      section: "provider",
+      label: "Default model",
+      description: "Primary model route",
+      kind: "string" as const,
+      default_value: "claude-opus-5-5",
+      apply_mode: "next_turn" as const,
+    },
+    {
+      key: "features.swarm",
+      section: "features",
+      label: "Swarm orchestration",
+      description: "Enable multi-agent swarm",
+      kind: "boolean" as const,
+      default_value: true,
+      apply_mode: "restart_required" as const,
+    },
+  ];
+
+  // 1) v1.16 daemon client
+  let v116ClientMode: "v116" | "v115" | "busy" = "v116";
+  const base = createTestFeatureRouter({
+    runtimeInfoRoutes: [
+      {
+        model: "claude-opus-5-5",
+        provider: "rayu",
+        api_method: "messages",
+        available: true,
+        detail: "Rayu Cloud",
+      },
+    ],
+  });
+  void base;
+
+  const customDeps = (() => {
+    const globalStore = new Map<string, unknown>();
+    const daemonStatus: DaemonStatusView = {
+      state: "connected",
+      version: "rayu-harness-v1.16",
+      protocolVersion: "1.16",
+      socketPath: "/tmp/rayu-v116.sock",
+      latencyMs: 2,
+      capabilities: ["permissions", "capabilities_v1", "config_v1", "frame_fidelity_v1"],
+      isRayuRepo: true,
+    };
+    const deps: FeatureRouterDeps = {
+      bridgeManager: {
+        getStatus: () => daemonStatus,
+        ping: async () => ({ ok: true, latencyMs: 2, version: "1.16" }),
+        reconnect: async () => daemonStatus,
+        restart: async () => daemonStatus,
+        reloadDaemon: async () => ({ ok: true, message: "Reloaded" }),
+        openOutputLog: () => {},
+      },
+      sessionHub: {
+        getActiveSessionId: () => "sess_1",
+        getActiveModel: () => "claude-opus-5-5",
+        getActiveProvider: () => "rayu",
+        getActivePermissionMode: () => "default",
+        getClient: async () =>
+          ({
+            getRuntimeInfo: async () => ({
+              provider: "rayu",
+              model: "claude-opus-5-5",
+              routes: [
+                {
+                  model: "claude-opus-5-5",
+                  provider: "rayu",
+                  api_method: "messages",
+                  available: true,
+                  detail: "Rayu Cloud",
+                  supported_efforts: ["low", "medium", "high", "xhigh", "max"],
+                  default_effort: "medium",
+                  context_window: 200_000,
+                },
+                {
+                  model: "gpt-4o-mini",
+                  provider: "openai",
+                  api_method: "responses",
+                  available: true,
+                  detail: "Fixed reasoning",
+                  supported_efforts: [],
+                  default_effort: null,
+                },
+              ],
+            }),
+            getCapabilities: async () => {
+              if (v116ClientMode === "v115") return null;
+              return {
+                commands: [
+                  {
+                    name: "compact",
+                    description: "Compact session context",
+                    category: "session",
+                    requires_session: true,
+                    dispatch: { kind: "api_request", req: "compact" },
+                  },
+                  {
+                    name: "effort",
+                    description: "Set reasoning effort",
+                    category: "model",
+                    arg_hint: "<low|medium|high|xhigh|max>",
+                    requires_session: true,
+                    dispatch: { kind: "api_request", req: "set_reasoning_effort" },
+                  },
+                ],
+                permission_modes: [
+                  {
+                    id: "default",
+                    label: "Ask",
+                    description: "Prompt before mutations",
+                    is_default: true,
+                  },
+                ],
+                features: [
+                  {
+                    key: "features.swarm",
+                    enabled: true,
+                    description: "Swarm orchestration",
+                    requires_restart: true,
+                  },
+                ],
+              };
+            },
+            getConfig: async () => {
+              if (v116ClientMode === "v115") return null;
+              return {
+                path: "~/.rayu/config.toml",
+                sections: ["provider", "features"],
+                values: { ...configValues },
+                schema: configSchema,
+              };
+            },
+            patchConfig: async (patch: Record<string, unknown>) => {
+              if (v116ClientMode === "v115") {
+                throw new HarnessError("unsupported", "config_v1 not supported");
+              }
+              if ("provider.bad_key" in patch) {
+                throw new HarnessError("invalid_request", "Unknown config key: provider.bad_key");
+              }
+              configValues = { ...configValues, ...patch };
+              return {
+                path: "~/.rayu/config.toml",
+                sections: ["provider", "features"],
+                values: { ...configValues },
+                schema: configSchema,
+              };
+            },
+            setModel: async () => {
+              if (v116ClientMode === "busy") {
+                throw new HarnessError("busy", "Turn in progress; applies on next turn");
+              }
+            },
+            setReasoningEffort: async () => {
+              if (v116ClientMode === "busy") {
+                throw new HarnessError("busy", "Turn in progress; applies on next turn");
+              }
+            },
+          }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+        listSessions: async () => ({ sessions: [], activeSessionId: "sess_1" }),
+        createSession: async () => ({
+          sessionId: "sess_1",
+          title: "Main",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        attachSession: async (sessionId) => ({
+          sessionId,
+          title: "Main",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+        setSessionPinned: async () => {},
+        setSessionArchived: async () => {},
+        setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+        respondPermission: async () => {},
+        runtimeCommand: async (command, _args = [], sessionId) => {
+          if (v116ClientMode === "busy") {
+            throw new HarnessError("busy", "Session is busy");
+          }
+          return {
+            session_id: sessionId ?? "sess_1",
+            command,
+            data: { ok: true },
+            message: `Ran ${command}`,
+          };
+        },
+        getBackgroundTasks: () => [],
+        refreshBackgroundProcesses: async () => [],
+        removeCompletedBackgroundTasks: () => 0,
+        getSidePanelState: () => ({ pages: [] }),
+        closeSidePanelPage: () => {},
+        getApplets: () => [],
+        getCachedTodos: () => [],
+        mapSessionInfoToSummary: (info) => ({
+          sessionId: info.session_id,
+          title: info.title ?? "Untitled",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+      },
+      gitBridge: {
+        getStatus: async () => ({
+          branch: "main",
+          baseBranch: "main",
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+          stagedCount: 0,
+          hasGhCli: true,
+        }),
+        getDiff: async ({ path: p }) => ({
+          path: p,
+          originalContent: "",
+          modifiedContent: "",
+          unifiedDiff: "",
+          additions: 0,
+          deletions: 0,
+          languageId: "typescript",
+        }),
+        stage: async () => ({ ok: true }),
+        unstage: async () => ({ ok: true }),
+        keep: () => ({ ok: true }),
+        undo: async () => ({ ok: true }),
+        commit: async () => ({ ok: true }),
+        createPr: async () => ({ ok: true }),
+        listBranches: async () => ({ current: "main", branches: ["main"] }),
+        checkoutBranch: async (_ws, branch) => ({ ok: true, branch }),
+      },
+      editorBridge: {
+        openFile: async () => {},
+        openWorktreeWindow: async () => {},
+        openExternal: async () => {},
+        pickFiles: async () => [],
+        findWorkspaceFiles: async () => [],
+      },
+      getWorkspaceFolders: async () => [],
+      setProjectIcon: async () => {},
+      getGlobalState: <T>(key: string, defaultValue: T): T =>
+        globalStore.has(key) ? (globalStore.get(key) as T) : defaultValue,
+      updateGlobalState: async (key, value) => {
+        globalStore.set(key, value);
+      },
+      getRuntimeSettings: () => ({
+        socketPath: "/tmp/rayu-v116.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+      }),
+      updateRuntimeSettings: async () => {},
+      openKeybindings: async () => {},
+    };
+    return deps;
+  })();
+
+  const router = createFeatureRouter(customDeps);
+
+  // Capabilities returns live engine commands, permission modes, and features
+  const caps = await router.call("capabilities.get", { sessionId: "sess_1" });
+  assert.equal(caps.supported, true);
+  assert.equal(caps.commands.length, 2);
+  assert.equal(caps.commands[0]?.name, "compact");
+  assert.equal(caps.commands[1]?.arg_hint, "<low|medium|high|xhigh|max>");
+  assert.equal(caps.permission_modes.length, 1);
+  assert.equal(caps.features[0]?.requires_restart, true);
+
+  // settings.models.get forwards v1.16 supported_efforts + default_effort + context_window
+  const modelsRes = await router.call("settings.models.get", { sessionId: "sess_1" });
+  assert.deepEqual(modelsRes.routes?.[0]?.supportedEfforts, [
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ]);
+  assert.equal(modelsRes.routes?.[0]?.defaultEffort, "medium");
+  assert.equal(modelsRes.routes?.[0]?.contextWindow, 200_000);
+  assert.deepEqual(modelsRes.routes?.[1]?.supportedEfforts, []);
+  assert.equal(modelsRes.routes?.[1]?.defaultEffort, null);
+
+  // config.get returns curated config snapshot
+  const cfg = await router.call("config.get", {});
+  assert.equal(cfg.supported, true);
+  assert.equal(cfg.config?.path, "~/.rayu/config.toml");
+  assert.equal(cfg.config?.values["features.swarm"], true);
+
+  // config.patch updates value and computes requiresRestart for restart_required keys
+  const patchOk = await router.call("config.patch", {
+    patch: { "features.swarm": false },
+  });
+  assert.equal(patchOk.ok, true);
+  assert.equal(patchOk.requiresRestart, true);
+  assert.equal(patchOk.config?.values["features.swarm"], false);
+
+  // config.patch returns honest validation error without faking ok: true
+  const patchInvalid = await router.call("config.patch", {
+    patch: { "provider.bad_key": "oops" },
+  });
+  assert.equal(patchInvalid.ok, false);
+  assert.equal(patchInvalid.code, "invalid_request");
+  assert.match(patchInvalid.message ?? "", /Unknown config key/);
+
+  // Busy mid-turn propagation on setModel / setEffort / runtimeCommand
+  v116ClientMode = "busy";
+  const busyModel = await router.call("sessions.setModel", {
+    sessionId: "sess_1",
+    model: "gpt-4o-mini",
+  });
+  assert.equal(busyModel.ok, false);
+  assert.equal(busyModel.deferred, true);
+  assert.equal(busyModel.code, "busy");
+
+  const busyEffort = await router.call("sessions.setEffort", {
+    sessionId: "sess_1",
+    effort: "high",
+  });
+  assert.equal(busyEffort.ok, false);
+  assert.equal(busyEffort.deferred, true);
+  assert.equal(busyEffort.code, "busy");
+
+  const busyCmd = await router.call("sessions.runtimeCommand", {
+    sessionId: "sess_1",
+    command: "context",
+  });
+  assert.equal(busyCmd.ok, false);
+  assert.equal(busyCmd.code, "busy");
+
+  // Graceful v1.15 daemon degradation (returns supported: false instead of crashing)
+  v116ClientMode = "v115";
+  const legacyCaps = await router.call("capabilities.get", {});
+  assert.equal(legacyCaps.supported, false);
+  assert.deepEqual(legacyCaps.commands, []);
+
+  const legacyCfg = await router.call("config.get", {});
+  assert.equal(legacyCfg.supported, false);
+  assert.equal(legacyCfg.config, null);
+
+  const legacyPatch = await router.call("config.patch", {
+    patch: { "features.swarm": true },
+  });
+  assert.equal(legacyPatch.ok, false);
+  assert.equal(legacyPatch.code, "unsupported");
 });

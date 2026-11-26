@@ -39,16 +39,23 @@ test("handshake records server identity and capabilities", async () => {
 
 test("a timed-out handshake closes the editor's connection", async () => {
   let closed = false;
-  await assert.rejects(RayucodeClient.connect({
-    requestTimeoutMs: 20,
-    transport: {
-      write() {},
-      onData() {},
-      onClose() {},
-      close() { closed = true; },
-    },
-  }), (error) => error instanceof HarnessError && error.code === "timeout");
-  assert.equal(closed, true);
+  // The request timeout timer is unref'd in RayucodeClient; keep the event
+  // loop alive while waiting for it on a handle-less custom transport.
+  const keepAlive = setTimeout(() => {}, 1_000);
+  try {
+    await assert.rejects(RayucodeClient.connect({
+      requestTimeoutMs: 20,
+      transport: {
+        write() {},
+        onData() {},
+        onClose() {},
+        close() { closed = true; },
+      },
+    }), (error) => error instanceof HarnessError && error.code === "timeout");
+    assert.equal(closed, true);
+  } finally {
+    clearTimeout(keepAlive);
+  }
 });
 
 test("required prompt acceptance reports the server error, a missing acknowledgement, and a disconnect", async (t) => {

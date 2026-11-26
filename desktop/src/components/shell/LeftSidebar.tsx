@@ -170,16 +170,33 @@ function formatResetCountdown(
   return `Resets in ${Math.max(1, mins)}m`
 }
 
+function computeWindowPctLeft(
+  cap?: number | null,
+  used?: number,
+  limitMode?: "gated" | "unlimited" | null
+): number | null {
+  if (limitMode === "unlimited") return 100
+  if (!cap || cap <= 0) return null
+  const left = Math.max(0, cap - (used ?? 0))
+  return Math.max(0, Math.min(100, Math.round((left / cap) * 1000) / 10))
+}
+
 function formatWindowPctLeft(
   cap?: number | null,
   used?: number,
   limitMode?: "gated" | "unlimited" | null
 ): string {
   if (limitMode === "unlimited") return "Unlimited"
-  if (!cap || cap <= 0) return "—"
-  const left = Math.max(0, cap - (used ?? 0))
-  const pct = Math.max(0, Math.min(100, Math.round((left / cap) * 1000) / 10))
+  const pct = computeWindowPctLeft(cap, used, limitMode)
+  if (pct == null) return "—"
   return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}% left`
+}
+
+function usageBarFillClass(pct: number | null): string {
+  if (pct == null) return "bg-hairline-strong"
+  if (pct <= 10) return "bg-danger"
+  if (pct <= 20) return "bg-warn"
+  return "rayu-effort-bar"
 }
 
 export function IconRail() {
@@ -207,6 +224,13 @@ export function IconRail() {
   }, [isSignedIn, usageOpen])
 
   const credits = authState?.credits ?? null
+  const fiveHourPct = isSignedIn
+    ? computeWindowPctLeft(
+        credits?.creditsPer5h,
+        credits?.windowUsedCredits,
+        credits?.limitMode
+      )
+    : null
   const fiveHourLabel = isSignedIn
     ? formatWindowPctLeft(
         credits?.creditsPer5h,
@@ -222,6 +246,13 @@ export function IconRail() {
           usageNowMs
         )
       : null
+  const weeklyPct = isSignedIn
+    ? computeWindowPctLeft(
+        credits?.creditsPerWeek,
+        credits?.weekUsedCredits,
+        credits?.limitMode
+      )
+    : null
   const weeklyLabel = isSignedIn
     ? formatWindowPctLeft(
         credits?.creditsPerWeek,
@@ -237,6 +268,56 @@ export function IconRail() {
           usageNowMs
         )
       : null
+  const monthlyPct = isSignedIn
+    ? computeWindowPctLeft(
+        credits?.creditsPerPeriod,
+        credits?.usedCredits,
+        credits?.limitMode
+      )
+    : null
+  const monthlyLabel = isSignedIn
+    ? formatWindowPctLeft(
+        credits?.creditsPerPeriod,
+        credits?.usedCredits,
+        credits?.limitMode
+      )
+    : "—"
+  const monthlyResetLabel =
+    isSignedIn && credits?.limitMode !== "unlimited"
+      ? formatResetCountdown(
+          credits?.resetSeconds,
+          credits?.fetchedAt,
+          usageNowMs
+        )
+      : null
+
+  const usageWindows = [
+    {
+      id: "5h",
+      label: "5h session window",
+      pct: fiveHourPct,
+      valueLabel: fiveHourLabel,
+      resetLabel: fiveHourResetLabel,
+    },
+    {
+      id: "weekly",
+      label: "Weekly limit",
+      pct: weeklyPct,
+      valueLabel: weeklyLabel,
+      resetLabel: weeklyResetLabel,
+    },
+    ...(credits?.creditsPerPeriod && credits.creditsPerPeriod > 0
+      ? [
+          {
+            id: "monthly",
+            label: "Monthly allowance",
+            pct: monthlyPct,
+            valueLabel: monthlyLabel,
+            resetLabel: monthlyResetLabel,
+          },
+        ]
+      : []),
+  ]
   const avatarUrl =
     isSignedIn &&
     authState?.user?.avatarUrl &&
@@ -424,10 +505,10 @@ export function IconRail() {
               <button
                 type="button"
                 aria-label="Plan & usage limits"
-                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-muted-ink transition-all hover:border-hairline hover:bg-hover hover:text-ink data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-ink data-[state=open]:shadow-bevel-surface"
+                className="grid size-9 cursor-pointer place-items-center rounded-[10px] border border-transparent text-brand transition-all hover:border-hairline hover:bg-hover hover:text-brand-bright data-[state=open]:border-premium data-[state=open]:bg-active data-[state=open]:text-brand-bright data-[state=open]:shadow-bevel-surface"
               >
                 <svg
-                  className="size-5"
+                  className="size-6"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -437,11 +518,11 @@ export function IconRail() {
                 >
                   <path
                     d="M7.18 6.25A7.5 7.5 0 0 1 16.82 6.25"
-                    strokeWidth="1.9"
+                    strokeWidth="2"
                   />
                   <path
                     d="M19.24 10.06A7.5 7.5 0 1 1 4.76 10.06"
-                    strokeWidth="1.9"
+                    strokeWidth="2"
                   />
                   <rect
                     x="9.6"
@@ -451,7 +532,7 @@ export function IconRail() {
                     rx="0.6"
                     transform="rotate(45 12 12)"
                     fill="currentColor"
-                    opacity="0.48"
+                    opacity="0.72"
                     stroke="none"
                   />
                 </svg>
@@ -464,44 +545,74 @@ export function IconRail() {
           side="right"
           align="end"
           sideOffset={10}
-          className="w-[292px] rounded-2xl border-premium-hi bg-popover p-0 text-ink shadow-bevel-card shadow-rayu-2"
+          className="w-[308px] rounded-2xl border-premium-hi bg-popover p-0 text-ink shadow-bevel-card shadow-rayu-2"
         >
-          <div className="px-[18px] pt-[15px] pb-[13px] text-[13px] font-medium text-muted-ink">
-            {isSignedIn
-              ? `Usage source: ${authState?.credits?.planName ?? "Rayu Cloud"}`
-              : "Not signed in to Rayu Cloud"}
+          <div className="flex items-center justify-between gap-2 px-[18px] pt-[15px] pb-[13px]">
+            <span className="text-[13px] font-medium text-muted-ink">
+              {isSignedIn
+                ? `Usage source: ${authState?.credits?.planName ?? "Rayu Cloud"}`
+                : "Not signed in to Rayu Cloud"}
+            </span>
+            {isSignedIn && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-brand/25 bg-brand-soft px-2 py-0.5 text-[10.5px] font-medium text-brand-text">
+                <span className="size-1.5 rounded-full bg-brand" aria-hidden="true" />
+                Active
+              </span>
+            )}
           </div>
           <div className="mx-[18px] h-px bg-hairline" />
-          <div className="flex flex-col gap-[13px] px-[18px] py-[15px] text-sm">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-medium text-ink">5-hour limit</div>
-                {fiveHourResetLabel && (
-                  <div className="mt-0.5 text-[11px] text-muted-ink">
-                    {fiveHourResetLabel}
+          <div className="flex flex-col gap-3.5 px-[18px] py-[15px] text-sm">
+            {usageWindows.map((win) => (
+              <div key={win.id} className="flex flex-col gap-1.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-ink">{win.label}</div>
+                    {win.resetLabel && (
+                      <div className="mt-0.5 text-[11px] text-muted-ink">
+                        {win.resetLabel}
+                      </div>
+                    )}
                   </div>
-                )}
+                  <span className="font-mono text-xs font-medium text-ink tabular-nums">
+                    {win.valueLabel}
+                  </span>
+                </div>
+                <div
+                  role="progressbar"
+                  aria-label={win.label}
+                  aria-valuenow={win.pct != null ? Math.round(win.pct) : 0}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className="h-1.5 w-full overflow-hidden rounded-full bg-active"
+                >
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all duration-300",
+                      usageBarFillClass(win.pct)
+                    )}
+                    style={{ width: `${win.pct ?? 0}%` }}
+                  />
+                </div>
               </div>
-              <span className="font-mono text-ink tabular-nums">
-                {fiveHourLabel}
-              </span>
-            </div>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-medium text-ink">Weekly limit</div>
-                {weeklyResetLabel && (
-                  <div className="mt-0.5 text-[11px] text-muted-ink">
-                    {weeklyResetLabel}
-                  </div>
-                )}
-              </div>
-              <span className="font-mono text-ink tabular-nums">
-                {weeklyLabel}
-              </span>
-            </div>
-            <div className="flex items-baseline justify-between gap-3">
+            ))}
+
+            <div className="flex items-center justify-between gap-3 border-t border-hairline-soft pt-2.5">
               <span className="font-medium text-ink">Credits</span>
-              <span className="font-mono text-ink tabular-nums">
+              <span
+                data-testid="usage-credits-badge"
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full font-mono text-xs font-semibold tabular-nums",
+                  isSignedIn
+                    ? "border border-brand/25 bg-brand-soft px-2.5 py-0.5 text-brand-text"
+                    : "text-muted-ink"
+                )}
+              >
+                {isSignedIn && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-brand"
+                    aria-hidden="true"
+                  />
+                )}
                 {isSignedIn && credits?.remainingCredits != null
                   ? `${credits.remainingCredits.toLocaleString()} credits`
                   : isSignedIn
@@ -764,6 +875,8 @@ export function SessionPane() {
   const navHistoryIndex = useAppStore((s) => s.navHistoryIndex)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const setActiveSession = useAppStore((s) => s.setActiveSession)
+  const openNewChatDraft = useAppStore((s) => s.openNewChatDraft)
+  const activeWorkspacePath = useAppStore((s) => s.activeWorkspacePath)
   const goBack = useAppStore((s) => s.goBack)
   const goForward = useAppStore((s) => s.goForward)
   const openDocPreview = useAppStore((s) => s.openDocPreview)
@@ -1119,8 +1232,7 @@ export function SessionPane() {
       <button
         type="button"
         onClick={() => {
-          setActiveSession(null)
-          setActiveRoute("home")
+          openNewChatDraft({ workingDir: activeWorkspacePath })
         }}
         className={cn(
           "flex w-full shrink-0 cursor-pointer items-center gap-2 rounded-[8px] px-2.5 py-[7px] text-[13.5px] leading-[1.38] transition-colors",

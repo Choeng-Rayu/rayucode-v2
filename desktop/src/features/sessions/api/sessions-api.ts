@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query"
 import { z } from "zod"
 
 import { err, ok, type ActionResult } from "@/lib/action-result"
-import { ipcClient } from "@/lib/ipc-client"
+import { ipcClient, type CapabilitiesPayload } from "@/lib/ipc-client"
 
 import {
   FALLBACK_MODELS,
@@ -26,6 +26,8 @@ export const sessionsQueryKeys = {
   list: () => [...sessionsQueryKeys.all, "list"] as const,
   models: () => ["models", "catalog"] as const,
   permissionModes: () => [...sessionsQueryKeys.all, "permission-modes"] as const,
+  capabilities: (sessionId?: string) =>
+    [...sessionsQueryKeys.all, "capabilities", sessionId ?? "global"] as const,
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
@@ -96,6 +98,24 @@ export function modelsQueryOptions() {
     queryFn: fetchModels,
     staleTime: 60_000,
     placeholderData: [...FALLBACK_MODELS],
+  })
+}
+
+export async function fetchCapabilities(
+  sessionId?: string
+): Promise<CapabilitiesPayload | null> {
+  try {
+    return await ipcClient.harness.getCapabilities(sessionId)
+  } catch {
+    return null
+  }
+}
+
+export function capabilitiesQueryOptions(sessionId?: string) {
+  return queryOptions({
+    queryKey: sessionsQueryKeys.capabilities(sessionId),
+    queryFn: () => fetchCapabilities(sessionId),
+    staleTime: 60_000,
   })
 }
 

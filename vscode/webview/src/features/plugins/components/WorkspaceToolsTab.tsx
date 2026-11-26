@@ -26,17 +26,31 @@ export function WorkspaceToolsTab() {
   const { data: integrations } = useWorkspaceIntegrations();
   const triggerMutation = useTriggerWorkspaceIntegration();
 
-  const [lastActionBanner, setLastActionBanner] = React.useState<string | null>(
-    null,
-  );
+  const [lastActionBanner, setLastActionBanner] = React.useState<{
+    tone: "ok" | "error";
+    text: string;
+  } | null>(null);
 
   const handleTrigger = async (
     integration: "gmail" | "calendar" | "browser" | "companion",
     action: string,
     label: string,
   ) => {
-    const res = await triggerMutation.mutateAsync({ integration, action });
-    setLastActionBanner(res.message ? `${label}: ${res.message}` : label);
+    try {
+      const res = await triggerMutation.mutateAsync({ integration, action });
+      setLastActionBanner({
+        tone: "ok",
+        text: res.message ? `${label}: ${res.message}` : label,
+      });
+    } catch (err) {
+      setLastActionBanner({
+        tone: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : `Failed to run ${integration}:${action}`,
+      });
+    }
   };
 
   const gmail = integrations?.gmail;
@@ -58,10 +72,15 @@ export function WorkspaceToolsTab() {
 
       {lastActionBanner && (
         <div
+          role={lastActionBanner.tone === "error" ? "alert" : undefined}
           data-testid="workspace-action-banner"
-          className="rounded-xl border border-brand/40 bg-brand-soft px-4 py-2.5 text-xs text-brand-text"
+          className={
+            lastActionBanner.tone === "error"
+              ? "rounded-xl border border-danger/40 bg-danger-soft px-4 py-2.5 text-xs text-danger"
+              : "rounded-xl border border-brand/40 bg-brand-soft px-4 py-2.5 text-xs text-brand-text"
+          }
         >
-          {lastActionBanner}
+          {lastActionBanner.text}
         </div>
       )}
 
@@ -252,22 +271,20 @@ export function WorkspaceToolsTab() {
 
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <span className="text-[11px] text-muted-ink">Detected:</span>
-              {(
-                browser?.detectedBrowsers ?? [
-                  "Chrome",
-                  "Chromium",
-                  "Firefox",
-                  "Edge",
-                  "Brave",
-                ]
-              ).map((b) => (
-                <span
-                  key={b}
-                  className="rounded border border-hairline bg-inset px-2 py-0.5 font-mono text-[10.5px] text-body"
-                >
-                  {b}
+              {browser?.detectedBrowsers && browser.detectedBrowsers.length > 0 ? (
+                browser.detectedBrowsers.map((b) => (
+                  <span
+                    key={b}
+                    className="rounded border border-hairline bg-inset px-2 py-0.5 font-mono text-[10.5px] text-body"
+                  >
+                    {b}
+                  </span>
+                ))
+              ) : (
+                <span className="font-mono text-[10.5px] text-muted-ink">
+                  None reported by daemon
                 </span>
-              ))}
+              )}
             </div>
           </div>
 

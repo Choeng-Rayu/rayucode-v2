@@ -177,7 +177,7 @@ impl SessionPicker {
         query.trim().to_lowercase()
     }
 
-    fn all_session_refs(&self) -> Vec<SessionRef> {
+    pub(super) fn all_session_refs(&self) -> Vec<SessionRef> {
         let mut refs = Vec::new();
         if !self.all_server_groups.is_empty() {
             for (group_idx, group) in self.all_server_groups.iter().enumerate() {
@@ -302,6 +302,7 @@ impl SessionPicker {
                 self.session_by_ref(*session_ref).is_some_and(|session| {
                     (show_test || !session.is_debug)
                         && self.session_matches_filter_mode(session, filter_mode)
+                        && self.source_filter.matches(session.source)
                 })
             })
             .collect::<Vec<_>>();

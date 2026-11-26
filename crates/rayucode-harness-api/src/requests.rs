@@ -26,6 +26,17 @@ pub struct ToolConfiguration {
     pub custom: Vec<SessionToolDefinition>,
 }
 
+/// One external coding-agent session to import or re-sync into Rayu's local store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportExternalSessionItem {
+    pub source: String,
+    pub external_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+}
+
 /// Curated request surface. Internally-tagged on `"req"`.
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "req", rename_all = "snake_case")]
@@ -55,6 +66,27 @@ pub enum ApiRequest {
         /// Return at most this many most-recently modified persisted sessions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u32>,
+        /// Include external coding-agent sessions discovered on disk.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_external: bool,
+        /// Optional source filter (e.g. `["rayu", "claude", "codex"]`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sources: Option<Vec<String>>,
+    },
+
+    /// List discovered external coding-agent projects grouped by workspace/project.
+    ListExternalProjects {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+
+    /// Import or re-sync one or more external coding-agent sessions into Rayu's store.
+    ImportExternalSessions {
+        items: Vec<ImportExternalSessionItem>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force_resync: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fork_on_conflict: bool,
     },
 
     /// Reversibly hide a session from the default list. Its transcript remains
@@ -384,6 +416,23 @@ pub enum ApiRequest {
     /// `BackgroundToolResult` when the bridge advertises
     /// `background_tool_result`, otherwise `Ok` whether or not a tool ran.
     BackgroundTool { session_id: String },
+
+    /// Discover curated engine slash commands, permission modes, and feature flags.
+    GetCapabilities {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+
+    /// Read the curated non-secret view of `~/.rayu/config.toml` plus field schema.
+    GetConfig {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sections: Option<Vec<String>>,
+    },
+
+    /// Validate and atomically patch curated fields in `~/.rayu/config.toml`.
+    PatchConfig {
+        patch: serde_json::Map<String, serde_json::Value>,
+    },
 
     /// Liveness check.
     Ping,

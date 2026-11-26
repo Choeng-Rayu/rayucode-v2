@@ -361,7 +361,6 @@ export function ToolStepCard({
   className,
 }: ToolStepCardProps) {
   const [expanded, setExpanded] = React.useState(defaultExpanded);
-  const [showPayload, setShowPayload] = React.useState(false);
   const meta = React.useMemo(
     () => classifyRustTool(step.toolName),
     [step.toolName],
@@ -525,15 +524,6 @@ export function ToolStepCard({
             </div>
 
             <div className="flex items-center gap-2">
-              {step.payloadJson && (
-                <button
-                  type="button"
-                  onClick={() => setShowPayload((p) => !p)}
-                  className="cursor-pointer text-[11px] text-muted-ink hover:text-ink hover:underline"
-                >
-                  {showPayload ? "Hide payload" : "Payload ›"}
-                </button>
-              )}
               {(step.filePath || step.url || meta.actionLabel) && (
                 <Button
                   type="button"
@@ -547,12 +537,6 @@ export function ToolStepCard({
               )}
             </div>
           </div>
-
-          {showPayload && step.payloadJson && (
-            <pre className="mb-2 max-h-36 overflow-auto rounded-lg border border-hairline-soft bg-pane p-2 font-mono text-[11px] text-muted-ink">
-              {step.payloadJson}
-            </pre>
-          )}
 
           {step.subSteps && step.subSteps.length > 0 && (
             <div className="mb-2 flex flex-col gap-1 border-l border-hairline pl-3">

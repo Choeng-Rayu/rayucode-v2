@@ -173,9 +173,9 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(onSelectEffort).toHaveBeenLastCalledWith("high");
     expect(screen.getByTestId("effort-level-value").textContent).toBe("High");
 
-    fireEvent.click(screen.getByLabelText("xHigh"));
+    fireEvent.click(screen.getByLabelText("Extra High"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("xhigh");
-    expect(screen.getByTestId("effort-level-value").textContent).toBe("xHigh");
+    expect(screen.getByTestId("effort-level-value").textContent).toBe("Extra High");
 
     fireEvent.click(screen.getByLabelText("Max"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("max");
@@ -426,6 +426,18 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
 
     try {
       renderWithQuery(<SessionComposer mode="workspace" sessionId="ses_live_1" />);
+
+      // Composer syncs visible model label from live settings.models.get instead of staying on fallback
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("model-effort-trigger").textContent,
+        ).toContain("Claude Future 99 Sonnet");
+      });
+
+      // Desktop-aligned [+] trigger exists and opens the Add menu
+      fireEvent.click(screen.getByTestId("composer-plus-trigger"));
+      expect(screen.getByTestId("composer-add-file-mention")).toBeTruthy();
+      expect(screen.getByTestId("composer-add-slash")).toBeTruthy();
 
       fireEvent.click(screen.getByTestId("model-effort-trigger"));
       fireEvent.click(screen.getByTestId("open-model-list-btn"));

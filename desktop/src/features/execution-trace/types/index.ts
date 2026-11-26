@@ -63,6 +63,7 @@ export interface AnswerBullet {
 export type DiffDecision = "pending" | "accepted" | "rejected"
 
 export type LiveTraceEvent =
+  | { type: "reasoning-delta"; delta: string }
   | { type: "note"; text: string }
   | { type: "promote-note" }
   | { type: "tool-status"; label: string | null }

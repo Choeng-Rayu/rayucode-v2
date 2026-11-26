@@ -1,3 +1,9 @@
+import {
+  filterVisibleHistory,
+  formatDaemonVersionLabel,
+  settleHarnessErrorFrame,
+} from "@rayu-dev/rayucode-session-core/client"
+
 import type {
   ExecutionTurn,
   FileChangeEntrySummary,
@@ -21,6 +27,8 @@ import type {
   TurnOutputArtifact,
 } from "./ipc-client"
 
+export { formatDaemonVersionLabel }
+
 export interface HarnessSessionInfoLike {
   session_id: string
   working_dir?: string
@@ -33,6 +41,12 @@ export interface HarnessSessionInfoLike {
   saved?: boolean
   archived?: boolean
   archived_at_ms?: number
+  source?: string
+  external_session_id?: string
+  external_path?: string
+  external_project_name?: string
+  imported?: boolean
+  sync_stale?: boolean
 }
 
 export function isTempDirectoryPath(raw?: string | null): boolean {
@@ -86,6 +100,9 @@ export interface HarnessModelRouteLike {
   api_method?: string
   available?: boolean
   detail?: string
+  supported_efforts?: string[]
+  default_effort?: string
+  context_window?: number
 }
 
 export interface HarnessHistoryMessageLike {
@@ -120,6 +137,7 @@ export interface PendingPermissionRequest {
 }
 
 export type MappedLiveTraceEvent =
+  | { type: "reasoning-delta"; delta: string }
   | { type: "note"; text: string }
   | { type: "promote-note" }
   | { type: "tool-status"; label: string | null }
@@ -134,6 +152,25 @@ export type MappedLiveTraceEvent =
     }
   | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
+  | { type: "text-done"; stopReason?: string }
+  | {
+      type: "model-info"
+      sessionId: string
+      model?: string
+      provider?: string
+      reasoningEffort?: string
+    }
+  | {
+      type: "permission-mode-changed"
+      sessionId: string
+      mode: string
+    }
+  | {
+      type: "config-changed"
+      changedKeys: string[]
+      requiresRestart: boolean
+      values: Record<string, unknown>
+    }
   | { type: "duration"; workedDuration: string }
   | {
       type: "complete"
@@ -340,9 +377,16 @@ export function mapSessionInfoToSummary(
         ? "Live"
         : formatRelativeTimestamp(updatedAtMs, fallbackLabel),
     updatedAtMs,
+    status: info.status,
     connection: "local",
     saved: Boolean(info.saved),
     archived: Boolean(info.archived),
+    source: info.source ?? "rayu",
+    externalSessionId: info.external_session_id,
+    externalPath: info.external_path,
+    externalProjectName: info.external_project_name,
+    imported: info.imported,
+    syncStale: info.sync_stale,
     modelId: "claude-opus-5-5",
     modelLabel: "Claude Opus 5.5",
     effort: "Medium",
@@ -384,6 +428,19 @@ export function mapModelRoutesToOptions(
       provider: route.provider || "Rayu",
       apiMethod: route.api_method,
       recommended: route.available === true && out.length < 2,
+      ...(route.available === false ? { available: false } : {}),
+      ...(route.available === false && route.detail
+        ? { unavailableReason: route.detail }
+        : {}),
+      ...(Array.isArray(route.supported_efforts)
+        ? { supportedEfforts: route.supported_efforts }
+        : {}),
+      ...(typeof route.default_effort === "string"
+        ? { defaultEffort: route.default_effort }
+        : {}),
+      ...(typeof route.context_window === "number"
+        ? { contextWindow: route.context_window }
+        : {}),
     })
   }
   return out
@@ -541,37 +598,172 @@ function isEngineInternalRecoveryPrompt(content: string): boolean {
   )
 }
 
+function isSyntheticReasoningPlaceholder(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return true
+  return /^reasoning via rayu cloud\b/i.test(trimmed)
+}
+
+function isJsonLikeText(text: string): boolean {
+  const trimmed = text.trim()
+  return (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  )
+}
+
+function humanizeToolName(name: string): string {
+  const cleaned = name
+    .trim()
+    .replace(/^(?:mcp_|tool_|rayu_)/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim()
+  if (!cleaned) return "Ran tool"
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+}
+
+function extractReadableFileFromShell(rawCommand: string): string | null {
+  const tokens = rawCommand.split(/\s+/).filter(Boolean)
+  for (let i = tokens.length - 1; i >= 1; i -= 1) {
+    const token = tokens[i]!.replace(/^['"]|['"]$/g, "")
+    if (
+      token.startsWith("-") ||
+      token.includes("|") ||
+      token.includes(">") ||
+      token.includes("<") ||
+      token === "." ||
+      token === "./" ||
+      token === ".." ||
+      token.startsWith("/dev/")
+    ) {
+      continue
+    }
+    if (/[./]/.test(token) && /\.[a-z0-9]{1,8}$/i.test(token)) {
+      return basenameOf(token)
+    }
+  }
+  return null
+}
+
+function summarizeShellCommandLabel(rawCommand: string): string {
+  const trimmed = rawCommand.trim()
+  if (!trimmed) return "Ran command"
+  const firstSegment = trimmed.split(/[|;&\n]/)[0]?.trim() ?? trimmed
+  const lower = firstSegment.toLowerCase()
+
+  if (/^git\s+status\b/.test(lower)) return "Checked git status"
+  if (/^git\s+diff\b/.test(lower)) return "Inspected git diff"
+  if (/^git\s+log\b/.test(lower)) return "Checked git history"
+  if (/^git\s+branch\b/.test(lower)) return "Checked git branches"
+  if (/^git\s+/.test(lower)) return "Ran git command"
+
+  if (
+    /\b(?:cargo\s+test|npm\s+test|pnpm\s+test|yarn\s+test|vitest|jest|pytest|go\s+test)\b/.test(
+      lower
+    ) ||
+    /\b(?:npm|pnpm|yarn)\s+run\s+test\b/.test(lower)
+  ) {
+    return "Ran tests"
+  }
+  if (
+    /\b(?:cargo\s+(?:build|check)|tsc\b|(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|typecheck|verify))\b/.test(
+      lower
+    )
+  ) {
+    return "Built and verified project"
+  }
+  if (
+    /\b(?:eslint|clippy|(?:npm|pnpm|yarn)\s+(?:run\s+)?lint)\b/.test(lower)
+  ) {
+    return "Ran linter"
+  }
+  if (/^(?:grep|rg|ag|ack)\b/.test(lower)) return "Searched codebase"
+  if (/^(?:sed|cat|head|tail|awk|nl|bat)\b/.test(lower)) {
+    const file = extractReadableFileFromShell(firstSegment)
+    return file ? `Inspected ${file}` : "Inspected file"
+  }
+  if (/^(?:ls|find|tree|fd)\b/.test(lower)) return "Listed directory"
+  if (/^(?:mkdir|rm|mv|cp|touch)\b/.test(lower)) return "Updated workspace files"
+
+  return "Ran shell command"
+}
+
+function summarizeToolAction(
+  name: string,
+  args: Record<string, unknown> | null,
+  explicitIntent?: string
+): string {
+  const argIntent =
+    args && typeof args.intent === "string" && args.intent.trim()
+      ? args.intent.trim()
+      : ""
+  const effectiveIntent =
+    (explicitIntent && explicitIntent.trim()) || argIntent
+  if (effectiveIntent && !isJsonLikeText(effectiveIntent)) {
+    return effectiveIntent.length > 90
+      ? `${effectiveIntent.slice(0, 87)}...`
+      : effectiveIntent
+  }
+
+  const lower = name.trim().toLowerCase()
+  if (lower === "run_command" || lower === "bash" || lower === "shell") {
+    const rawCmd =
+      args && typeof args.command === "string" ? args.command.trim() : ""
+    return rawCmd ? summarizeShellCommandLabel(rawCmd) : "Ran shell command"
+  }
+  if (lower === "read_file" || lower === "read") {
+    const target =
+      args && typeof args.path === "string"
+        ? args.path
+        : args && typeof args.file_path === "string"
+          ? args.file_path
+          : ""
+    return target ? `Read ${basenameOf(target)}` : "Read file"
+  }
+  if (
+    lower === "edit" ||
+    lower === "edit_file" ||
+    lower === "write" ||
+    lower === "write_file" ||
+    lower === "apply_patch"
+  ) {
+    const target =
+      args && typeof args.file_path === "string"
+        ? args.file_path
+        : args && typeof args.path === "string"
+          ? args.path
+          : ""
+    const verb = lower === "write" || lower === "write_file" ? "Wrote" : "Edited"
+    return target ? `${verb} ${basenameOf(target)}` : `${verb} file`
+  }
+  if (
+    lower === "search_files" ||
+    lower === "grep" ||
+    lower === "rg" ||
+    lower === "agentgrep" ||
+    lower === "glob" ||
+    lower === "find_files"
+  ) {
+    return "Searched workspace"
+  }
+  if (lower === "list_files" || lower === "ls" || lower === "listdir") {
+    return "Listed files"
+  }
+  return humanizeToolName(name)
+}
+
 function summarizeHistoryToolCall(
   tool: HarnessHistoryMessageLike["tool"]
 ): { command: string; displayCommand: string } {
   if (!tool?.name) {
-    return { command: "tool output", displayCommand: "tool execution" }
+    return { command: "Tool step", displayCommand: "Tool step" }
   }
   const input =
     tool.input && typeof tool.input === "object" && !Array.isArray(tool.input)
       ? (tool.input as Record<string, unknown>)
       : null
-  if (input) {
-    const directCommand =
-      typeof input.command === "string"
-        ? input.command
-        : typeof input.file_path === "string"
-          ? input.file_path
-          : typeof input.path === "string"
-            ? input.path
-            : typeof input.pattern === "string"
-              ? input.pattern
-              : typeof input.query === "string"
-                ? input.query
-                : null
-    if (directCommand && directCommand.trim()) {
-      return {
-        command: directCommand.trim(),
-        displayCommand: `${tool.name} ${directCommand.trim()}`,
-      }
-    }
-  }
-  return { command: tool.name, displayCommand: tool.name }
+  const label = summarizeToolAction(tool.name, input)
+  return { command: label, displayCommand: label }
 }
 
 function resolveAttemptStatus(
@@ -682,16 +874,20 @@ export function mapHistoryMessagesToTurns(
     hiddenInternalMessages = []
   }
 
+  const visibleMessages = new Set(filterVisibleHistory(messages))
+
   for (const msg of messages) {
-    if (msg.role === "user") {
-      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
+    if (!visibleMessages.has(msg)) {
+      if (msg.role === "user") {
         hiddenInternalMessages.push({
           origin: msg.origin ?? "engine_internal",
           visibility: msg.visibility ?? "hidden",
           content: msg.content,
         })
-        continue
       }
+      continue
+    }
+    if (msg.role === "user") {
       if (isEngineInternalRecoveryPrompt(msg.content)) {
         hiddenInternalMessages.push({
           origin: "engine_internal",
@@ -752,7 +948,7 @@ export function mapHistoryMessagesToTurns(
         output: msg.content.slice(0, 1200),
         exitCode: 0,
         statusLabel: "Success",
-        isMono: true,
+        isMono: false,
       }
       toolSteps.push(step)
     } else if (msg.role === "assistant") {
@@ -1104,39 +1300,24 @@ function mapSingleWorkStep(
     return todoStep
   }
 
-  // Shell commands & fallback tool calls
-  const isShell =
-    lower === "run_command" || lower === "bash" || lower === "shell"
+  // Shell commands & fallback tool calls — always show concise human-readable action label,
+  // never raw shell flag pipelines or raw JSON tool parameters.
   tracker.phaseHasCommands = true
   tracker.phaseCommandCount += 1
 
-  let command = name
-  let displayCommand: string
-  if (typeof args.command === "string" && args.command.trim()) {
-    command = args.command.trim()
-    displayCommand = error ? `Command failed (${command})` : command
-  } else if (intent) {
-    command = intent
-    displayCommand = intent
-  } else if (typeof args.path === "string" || typeof args.file_path === "string") {
-    const target =
-      typeof args.path === "string" ? args.path : String(args.file_path)
-    command = `${name} ${target}`
-    displayCommand = command
-  } else {
-    displayCommand = error ? `${name} (retrying)` : name
-  }
+  const actionLabel = summarizeToolAction(name, args, intent)
+  const displayCommand = error ? `${actionLabel} (failed)` : actionLabel
 
   const shellStep: ShellCommandStep = {
     id: callId,
     kind: "command",
-    command,
+    command: actionLabel,
     displayCommand,
     output: (error ?? output).slice(0, 2400) || "(no output)",
     exitCode: error ? 1 : 0,
     statusLabel: error ? "Failed" : "Success",
     isFailed: Boolean(error),
-    isMono: isShell && !error,
+    isMono: false,
   }
   return shellStep
 }
@@ -1265,6 +1446,7 @@ export function mapHarnessFrameToLiveEvents(
     !tracker.turnActive &&
     (ev === "text_delta" ||
       ev === "reasoning_delta" ||
+      ev === "thinking_delta" ||
       ev === "tool_start" ||
       ev === "tool_call")
   ) {
@@ -1283,14 +1465,74 @@ export function mapHarnessFrameToLiveEvents(
       }
       return []
     }
+    case "text_done": {
+      const stopReason =
+        typeof frame.stop_reason === "string" ? frame.stop_reason : undefined
+      return stopReason ? [{ type: "text-done", stopReason }] : []
+    }
+    case "model_info": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      return [
+        {
+          type: "model-info",
+          sessionId,
+          ...(typeof frame.model === "string" ? { model: frame.model } : {}),
+          ...(typeof frame.provider === "string"
+            ? { provider: frame.provider }
+            : {}),
+          ...(typeof frame.reasoning_effort === "string"
+            ? { reasoningEffort: frame.reasoning_effort }
+            : {}),
+        },
+      ]
+    }
+    case "permission_mode_changed": {
+      const sessionId =
+        typeof frame.session_id === "string" ? frame.session_id : ""
+      const mode = typeof frame.mode === "string" ? frame.mode : ""
+      return mode
+        ? [{ type: "permission-mode-changed", sessionId, mode }]
+        : []
+    }
+    case "config_changed": {
+      const changedKeys = Array.isArray(frame.changed_keys)
+        ? frame.changed_keys.filter((k): k is string => typeof k === "string")
+        : []
+      const requiresRestart = frame.requires_restart === true
+      const values =
+        frame.values &&
+        typeof frame.values === "object" &&
+        !Array.isArray(frame.values)
+          ? (frame.values as Record<string, unknown>)
+          : {}
+      return [
+        {
+          type: "config-changed",
+          changedKeys,
+          requiresRestart,
+          values,
+        },
+      ]
+    }
     case "promote_answer_to_note": {
       tracker.hasStreamedTextInPhase = false
       tracker.batchEpoch += 1
       resetTrackerPhase(tracker)
       return [{ type: "promote-note" }]
     }
-    case "reasoning_delta": {
-      // Avoid noisy "Reasoning via Rayu Cloud..." placeholder text; keep pulse indicator active.
+    case "reasoning_delta":
+    case "thinking_delta": {
+      tracker.turnCompleted = false
+      const text =
+        typeof frame.text === "string"
+          ? frame.text
+          : typeof frame.delta === "string"
+            ? frame.delta
+            : ""
+      if (text && !isSyntheticReasoningPlaceholder(text)) {
+        return [{ type: "reasoning-delta", delta: text }]
+      }
       return []
     }
     case "reasoning_done": {
@@ -1614,6 +1856,14 @@ export function mapHarnessFrameToLiveEvents(
       // Standard workspace tools (read, ls, grep, glob, bash, edit, write, todo, etc.)
       // all coalesce into one clean Codex-style group per work phase.
       const step = mapSingleWorkStep(callId, name, args, output, error, tracker)
+      const durationMs =
+        typeof frame.duration_ms === "number" &&
+        Number.isFinite(frame.duration_ms)
+          ? frame.duration_ms
+          : undefined
+      if (durationMs !== undefined && step.kind === "command") {
+        step.durationMs = durationMs
+      }
       return [
         { type: "tool-status", label: null },
         {
@@ -1679,6 +1929,39 @@ export function mapHarnessFrameToLiveEvents(
           ? frame.message.trim()
           : "The model declined this request."
       return [{ type: "answer-delta", delta: `\n\n${message}` }]
+    }
+    case "error": {
+      const adapter = {
+        startedAtMs: tracker.startedAtMs,
+        turnActive: tracker.turnActive,
+        turnCompleted: Boolean(tracker.turnCompleted),
+        batchEpoch: tracker.batchEpoch,
+        hasStreamedTextInPhase: tracker.hasStreamedTextInPhase,
+        lastCredits: tracker.lastCredits ?? "",
+        lastKvCachePct: tracker.lastKvCachePct ?? 0,
+      }
+      const settled = settleHarnessErrorFrame(frame, adapter, () =>
+        resetTrackerPhase(tracker)
+      )
+      if (!settled) return []
+      tracker.turnCompleted = adapter.turnCompleted
+      tracker.turnActive = adapter.turnActive
+      tracker.batchEpoch = adapter.batchEpoch
+      tracker.hasStreamedTextInPhase = adapter.hasStreamedTextInPhase
+      return [
+        { type: "tool-status", label: null },
+        {
+          type: "answer-delta",
+          delta: `\n\n**Error:** ${settled.message}`,
+        },
+        {
+          type: "complete",
+          workedDuration: settled.workedDuration,
+          ...(settled.credits ? { credits: settled.credits } : {}),
+          ...(settled.kvCachePct > 0 ? { kvCachePct: settled.kvCachePct } : {}),
+          timestamp: "Just now",
+        },
+      ]
     }
     case "turn_done":
     case "turn_stopped": {

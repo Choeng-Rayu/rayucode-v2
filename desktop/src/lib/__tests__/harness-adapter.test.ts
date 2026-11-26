@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createHarnessStreamTracker,
+  formatDaemonVersionLabel,
   formatDurationSeconds,
   formatHarnessModelSpec,
   isTempDirectoryPath,
@@ -106,13 +107,24 @@ describe("harness-adapter", () => {
   it("streams live harness frames into Codex-style LiveTraceEvent sequence", () => {
     const tracker = createHarnessStreamTracker()
 
-    // Reasoning delta stays quiet (no noisy "Reasoning via Rayu Cloud..." placeholder)
+    // Synthetic cloud placeholder is suppressed, while real reasoning streams into the trace
     expect(
       mapHarnessFrameToLiveEvents(
-        { ev: "reasoning_delta", text: "checking files" },
+        { ev: "reasoning_delta", text: "Reasoning via Rayu Cloud..." },
         tracker
       )
     ).toEqual([])
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "reasoning_delta", text: "Checking repository layout before editing." },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "reasoning-delta",
+        delta: "Checking repository layout before editing.",
+      },
+    ])
 
     // read_file maps cleanly into "Read files" with clickable FileReadStep
     expect(
@@ -163,7 +175,14 @@ describe("harness-adapter", () => {
     expect(doneEvents[1]).toMatchObject({
       type: "step",
       groupTitle: "Read files, ran commands",
-      step: { kind: "command", command: "cargo test", output: "ok", exitCode: 0 },
+      step: {
+        kind: "command",
+        command: "Ran tests",
+        displayCommand: "Ran tests",
+        isMono: false,
+        output: "ok",
+        exitCode: 0,
+      },
     })
 
     expect(
@@ -262,7 +281,9 @@ describe("harness-adapter", () => {
       groupTitle: "Read files, ran commands",
       step: {
         kind: "command",
-        command: "git status --short",
+        command: "Check git",
+        displayCommand: "Check git",
+        isMono: false,
         output: "M desktop/src/App.tsx",
       },
     })
@@ -299,7 +320,7 @@ describe("harness-adapter", () => {
     expect(turns[0].answerIntro).toBe("Reconsidered and completed safely")
   })
 
-  it("preserves HistoryMessage.tool name and input when mapping restored tool rows", () => {
+  it("maps HistoryMessage.tool metadata into concise human-readable tool rows without raw parameters", () => {
     const turns = mapHistoryMessagesToTurns("s_tool_meta", [
       { role: "user", content: "Run tests" },
       {
@@ -313,7 +334,9 @@ describe("harness-adapter", () => {
     expect(turns).toHaveLength(1)
     expect(turns[0].groups[0].steps[0]).toMatchObject({
       kind: "command",
-      command: "pnpm test",
+      command: "Ran tests",
+      displayCommand: "Ran tests",
+      isMono: false,
       output: "all tests passed",
     })
   })
@@ -484,5 +507,125 @@ describe("harness-adapter", () => {
           "You have 1 incomplete todo. Continue working, or update the todo tool.",
       }),
     ])
+  })
+
+  it("settles ev: 'error' frames cleanly via settleHarnessErrorFrame and ignores duplicate terminal frames", () => {
+    const tracker = createHarnessStreamTracker()
+    tracker.turnActive = true
+    tracker.turnCompleted = false
+    tracker.lastCredits = "0.02 cr"
+    tracker.lastKvCachePct = 88
+
+    const events = mapHarnessFrameToLiveEvents(
+      { ev: "error", message: "Upstream provider rate limited (429)" },
+      tracker
+    )
+
+    expect(events).toEqual([
+      { type: "tool-status", label: null },
+      {
+        type: "answer-delta",
+        delta: "\n\n**Error:** Upstream provider rate limited (429)",
+      },
+      expect.objectContaining({
+        type: "complete",
+        credits: "0.02 cr",
+        kvCachePct: 88,
+        timestamp: "Just now",
+      }),
+    ])
+    expect(tracker.turnActive).toBe(false)
+    expect(tracker.turnCompleted).toBe(true)
+
+    // Subsequent duplicate error or turn_done must not emit duplicate complete events
+    expect(
+      mapHarnessFrameToLiveEvents({ ev: "error", message: "duplicate" }, tracker)
+    ).toEqual([])
+    expect(mapHarnessFrameToLiveEvents({ ev: "turn_done" }, tracker)).toEqual([])
+  })
+
+  it("formats daemon version labels cleanly without double-prefixing or vrayu-* glitches", () => {
+    expect(formatDaemonVersionLabel("2.0.0")).toBe("v2.0.0")
+    expect(formatDaemonVersionLabel("v1.4.2")).toBe("v1.4.2")
+    expect(formatDaemonVersionLabel("rayu-harness-api-bridge/0.1.0")).toBe(
+      "v0.1.0"
+    )
+    expect(formatDaemonVersionLabel("")).toBe("")
+  })
+
+  it("handles v1.16 model_info, permission_mode_changed, config_changed, ToolDone.duration_ms, and TextDone.stop_reason", () => {
+    const tracker = createHarnessStreamTracker()
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "model_info",
+          session_id: "s1",
+          model: "claude-opus-4-6",
+          provider: "anthropic",
+          reasoning_effort: "xhigh",
+        },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "model-info",
+        sessionId: "s1",
+        model: "claude-opus-4-6",
+        provider: "anthropic",
+        reasoningEffort: "xhigh",
+      },
+    ])
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "permission_mode_changed",
+          session_id: "s1",
+          mode: "plan",
+        },
+        tracker
+      )
+    ).toEqual([{ type: "permission-mode-changed", sessionId: "s1", mode: "plan" }])
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "config_changed",
+          changed_keys: ["compaction.mode"],
+          requires_restart: true,
+          values: { "compaction.mode": "proactive" },
+        },
+        tracker
+      )
+    ).toEqual([
+      {
+        type: "config-changed",
+        changedKeys: ["compaction.mode"],
+        requiresRestart: true,
+        values: { "compaction.mode": "proactive" },
+      },
+    ])
+
+    const toolEvents = mapHarnessFrameToLiveEvents(
+      {
+        ev: "tool_done",
+        call_id: "c1",
+        name: "bash",
+        tool_input: { command: "echo hi" },
+        tool_output: "hi",
+        duration_ms: 142,
+      },
+      tracker
+    )
+    const stepEvent = toolEvents.find((e) => e.type === "step")
+    expect(stepEvent && stepEvent.type === "step" && stepEvent.step.kind === "command" ? stepEvent.step.durationMs : undefined).toBe(142)
+
+    expect(
+      mapHarnessFrameToLiveEvents(
+        { ev: "text_done", session_id: "s1", stop_reason: "end_turn" },
+        tracker
+      )
+    ).toEqual([{ type: "text-done", stopReason: "end_turn" }])
   })
 })

@@ -18,13 +18,18 @@
 
 pub mod allocator;
 pub mod background_progress;
+pub mod capabilities;
 pub mod timing;
 pub mod translate;
 
 #[cfg(all(test, unix))]
+mod external_sessions_tests;
+#[cfg(all(test, unix))]
 mod session_presence_tests;
 #[cfg(all(test, unix))]
 mod stdio_tests;
+#[cfg(all(test, unix))]
+mod v1_16_contract_tests;
 
 use anyhow::{Context, Result};
 use rayucode_harness_api::{API_VERSION_MAJOR, ApiEvent, ErrorCode, ServerFrame};
@@ -274,11 +279,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
         api_socket.display(),
         legacy_socket.display()
     );
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
     loop {
         let (stream, _) = listener.accept().await?;
         let legacy = legacy_socket.clone();
+        let config_bus = config_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_api_client(stream, legacy).await {
+            if let Err(error) = handle_api_client(stream, legacy, config_bus).await {
                 eprintln!("harness API bridge: client ended: {error:#}");
             }
             // A closed client drops its translation state and buffers.
@@ -287,9 +294,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
     }
 }
 
-async fn handle_api_client(stream: Stream, legacy_socket: PathBuf) -> Result<()> {
+async fn handle_api_client(
+    stream: Stream,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()> {
     let (read_half, write_half) = stream.into_split();
-    run_bridge_stream(read_half, write_half, legacy_socket).await
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
 }
 
 /// Serve the process's stdin/stdout as one API connection.
@@ -315,13 +326,29 @@ pub async fn run_bridge_stdio(legacy_socket: PathBuf) -> Result<()> {
 /// stdio. No API listener or filesystem socket is created for this connection.
 pub async fn run_bridge_stream<R, W>(
     read_half: R,
-    mut write_half: W,
+    write_half: W,
     legacy_socket: PathBuf,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
+}
+
+/// Serve one stable API connection sharing a `ConfigChanged` broadcast bus with peer clients.
+pub async fn run_bridge_stream_with_config_bus<R, W>(
+    read_half: R,
+    mut write_half: W,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut config_rx = config_tx.subscribe();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
     let mut pending = timing::Pending::default();
@@ -406,6 +433,10 @@ where
                 "todo_state",
                 "permissions",
                 "permission_modes",
+                "external_sessions",
+                rayucode_harness_api::CAPABILITIES_CAPABILITY,
+                rayucode_harness_api::CONFIG_CAPABILITY,
+                rayucode_harness_api::FRAME_FIDELITY_CAPABILITY,
             ]
             .into_iter()
             .map(str::to_string)
@@ -520,10 +551,64 @@ where
                         }
                     }
                 }
+                if matches!(
+                    request["req"].as_str(),
+                    Some("list_external_projects" | "import_external_sessions")
+                ) {
+                    let api_id = request["id"].as_u64().unwrap_or(0);
+                    let req_name = request["req"].as_str().unwrap_or("?").to_string();
+                    let req_clone = request.clone();
+                    let translate_started = std::time::Instant::now();
+                    let reply_frame = tokio::task::spawn_blocking(move || {
+                        if req_clone["req"] == "list_external_projects" {
+                            translate::list_external_projects_reply(api_id, &req_clone)
+                        } else {
+                            translate::import_external_sessions_reply(api_id, &req_clone)
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|err| {
+                        ServerFrame::reply(
+                            api_id,
+                            ApiEvent::Error {
+                                code: ErrorCode::Internal,
+                                message: format!("external session task failed: {err}"),
+                            },
+                        )
+                    });
+                    if let Some(id) = request["id"].as_u64() {
+                        pending.begin(id, &req_name, received, translate_started.elapsed());
+                    }
+                    drop(request);
+                    write_frame_timed(&mut write_half, &reply_frame, &mut pending, "bridge")
+                        .await?;
+                    allocator::trim();
+                    continue;
+                }
                 if request["req"] == "list_sessions" {
                     state.user_connected_sessions = if user_connections_supported {
                         daemon_user_connections(&legacy_socket).await
                     } else { Default::default() };
+                    if request["include_external"].as_bool().unwrap_or(false) {
+                        let scan_limit = request["limit"]
+                            .as_u64()
+                            .map(|limit| limit as usize)
+                            .unwrap_or(rayucode_base::import::discovery::DEFAULT_EXTERNAL_SCAN_LIMIT);
+                        let sources: Option<Vec<String>> = request
+                            .get("sources")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
+                        let scanned = tokio::task::spawn_blocking(move || {
+                            rayucode_base::import::discovery::list_external_sessions(
+                                scan_limit,
+                                sources.as_deref(),
+                            )
+                        })
+                        .await
+                        .unwrap_or_default();
+                        state.prefetched_external_sessions = Some(scanned);
+                    } else {
+                        state.prefetched_external_sessions = None;
+                    }
                 }
                 // Translation may inspect persisted session/archive files. Tell
                 // Tokio before entering that synchronous region so it can keep
@@ -550,10 +635,18 @@ where
                         translate::Outbound::Reply(frame) => {
                             write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                         }
+                        translate::Outbound::Broadcast(frame) => {
+                            let _ = config_tx.send(frame);
+                        }
                     }
                 }
                 if heavy {
                     allocator::trim();
+                }
+            }
+            broadcast = config_rx.recv() => {
+                if let Ok(frame) = broadcast {
+                    write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                 }
             }
             n = read_frame_bytes(&mut legacy_reader, &mut legacy_frame) => {

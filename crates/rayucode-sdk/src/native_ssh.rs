@@ -650,6 +650,8 @@ mod tests {
             let frame = ServerFrame {
                 v: API_VERSION_MAJOR,
                 reply_to: hello["id"].as_u64(),
+                seq: None,
+                turn_id: None,
                 event: ApiEvent::HelloOk {
                     version: API_VERSION_MAJOR,
                     server: "fake".into(),

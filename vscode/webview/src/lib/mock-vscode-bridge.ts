@@ -44,6 +44,7 @@ import type {
   WebviewToHostMessage,
   WorkspaceFolderView,
   WorkspaceIntegrationsView,
+  WorkspaceLedgerView,
 } from "@shared/vscodeProtocol";
 
 type HostMessageDispatch = (msg: HostToWebviewMessage) => void;
@@ -53,6 +54,7 @@ const NOW = Date.now();
 interface MockBridgeState {
   daemon: DaemonStatusView;
   workspaces: WorkspaceFolderView[];
+  collapsedWorkspaceIds: string[];
   sessions: SessionSummaryView[];
   sessionHistories: Record<string, HistoryMessageView[]>;
   activeSessionId: string | undefined;
@@ -93,6 +95,228 @@ interface MockBridgeState {
     density: DensityPreference;
     reduceMotion: boolean;
   };
+}
+
+interface MockV116State {
+  capabilitiesSupported: boolean;
+  configSupported: boolean;
+  busyMode: boolean;
+  rejectPatchKeys: Record<string, string>;
+  commands: Array<{
+    name: string;
+    description: string;
+    category: string;
+    arg_hint?: string;
+    requires_session?: boolean;
+    dispatch:
+      | { kind: "api_request"; req: string }
+      | { kind: "runtime_command"; command: string }
+      | { kind: "skill"; name: string };
+  }>;
+  permissionModes: Array<{
+    id: string;
+    label: string;
+    description: string;
+    is_default?: boolean;
+  }>;
+  featureDescriptors: Array<{
+    key: string;
+    enabled: boolean;
+    description: string;
+    requires_restart?: boolean;
+  }>;
+  configPath: string;
+  configSections: string[];
+  configValues: Record<string, unknown>;
+  configSchema: Array<{
+    key: string;
+    section: string;
+    label: string;
+    description: string;
+    kind: "boolean" | "string" | "integer" | "number" | "enum" | "string_array";
+    options?: Array<{ value: string; label: string }>;
+    default_value: unknown;
+    apply_mode: "immediate" | "next_turn" | "restart_required";
+  }>;
+}
+
+function createDefaultMockV116State(): MockV116State {
+  return {
+    capabilitiesSupported: true,
+    configSupported: true,
+    busyMode: false,
+    rejectPatchKeys: {},
+    commands: [
+      {
+        name: "compact",
+        description: "Summarize conversation history to free context",
+        category: "session",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "compact" },
+      },
+      {
+        name: "effort",
+        description: "Set reasoning effort for the active model",
+        category: "model",
+        arg_hint: "<low|medium|high|xhigh|max>",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "set_reasoning_effort" },
+      },
+      {
+        name: "model",
+        description: "Switch provider route for the active session",
+        category: "model",
+        arg_hint: "<id>",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "set_model" },
+      },
+      {
+        name: "review",
+        description: "Run an independent engineering and diff review pass",
+        category: "quality",
+        requires_session: true,
+        dispatch: { kind: "runtime_command", command: "review" },
+      },
+      {
+        name: "context",
+        description: "Inspect context token usage breakdown",
+        category: "session",
+        requires_session: true,
+        dispatch: { kind: "runtime_command", command: "context" },
+      },
+      {
+        name: "clear",
+        description: "Reset to a fresh session on Home",
+        category: "session",
+        dispatch: { kind: "runtime_command", command: "clear" },
+      },
+    ],
+    permissionModes: [
+      {
+        id: "default",
+        label: "Ask",
+        description: "Ask before running tools that change anything.",
+        is_default: true,
+      },
+      {
+        id: "accept_edits",
+        label: "Auto-edit",
+        description: "Apply file edits without asking.",
+      },
+      {
+        id: "plan",
+        label: "Plan",
+        description: "Investigate and write a plan without editing.",
+      },
+    ],
+    featureDescriptors: [
+      {
+        key: "features.swarm",
+        enabled: true,
+        description: "Enable parallel coordinator/worker swarm mission control",
+        requires_restart: true,
+      },
+      {
+        key: "features.memory",
+        enabled: true,
+        description: "Persist and recall architectural facts across sessions",
+        requires_restart: false,
+      },
+    ],
+    configPath: "~/.rayu/config.toml",
+    configSections: ["provider", "compaction", "features", "safety", "agents"],
+    configValues: {
+      "provider.default_model": "claude-sonnet-4-5",
+      "provider.default_effort": "medium",
+      "provider.service_tier": "auto",
+      "provider.cache_ttl": "5m",
+      "features.memory": true,
+      "features.swarm": true,
+      "features.mermaid": true,
+      "features.auto_poke": false,
+      "features.todo_gate_digest": true,
+      "features.todo_gate_diagnostics": true,
+      "features.message_timestamps": true,
+      "features.persist_memory_injections": true,
+      "features.kv_cache_miss_notices": false,
+      "features.check_updates": true,
+      "features.update_channel": "stable",
+      "safety.default_permission_mode": "default",
+    },
+    configSchema: [
+      {
+        key: "provider.default_model",
+        section: "provider",
+        label: "Default model route",
+        description: "Primary model route used for new sessions",
+        kind: "string",
+        default_value: "claude-sonnet-4-5",
+        apply_mode: "next_turn",
+      },
+      {
+        key: "provider.default_effort",
+        section: "provider",
+        label: "Default reasoning effort",
+        description: "Default thinking budget for reasoning models",
+        kind: "enum",
+        default_value: "medium",
+        apply_mode: "next_turn",
+      },
+      {
+        key: "features.swarm",
+        section: "features",
+        label: "Swarm Multi-Agent Orchestration",
+        description: "Enable parallel coordinator/worker swarm mission control",
+        kind: "boolean",
+        default_value: true,
+        apply_mode: "restart_required",
+      },
+      {
+        key: "features.memory",
+        section: "features",
+        label: "Semantic & Jev Memory Graph",
+        description: "Persist and recall architectural facts across sessions",
+        kind: "boolean",
+        default_value: true,
+        apply_mode: "immediate",
+      },
+      {
+        key: "features.update_channel",
+        section: "features",
+        label: "Update Channel",
+        description: "Release channel for managed RayuCode binaries",
+        kind: "enum",
+        options: [
+          { value: "stable", label: "stable" },
+          { value: "preview", label: "preview" },
+          { value: "main", label: "main" },
+        ],
+        default_value: "stable",
+        apply_mode: "restart_required",
+      },
+    ],
+  };
+}
+
+let mockV116State: MockV116State = createDefaultMockV116State();
+
+export function __setMockV116StateForTest(
+  patch: Partial<MockV116State>,
+): void {
+  mockV116State = {
+    ...mockV116State,
+    ...patch,
+    configValues: patch.configValues
+      ? { ...patch.configValues }
+      : { ...mockV116State.configValues },
+    rejectPatchKeys: patch.rejectPatchKeys
+      ? { ...patch.rejectPatchKeys }
+      : { ...mockV116State.rejectPatchKeys },
+  };
+}
+
+export function __resetMockV116StateForTest(): void {
+  mockV116State = createDefaultMockV116State();
 }
 
 const mockState: MockBridgeState = {
@@ -138,6 +362,8 @@ const mockState: MockBridgeState = {
       icon: { kind: "icon", value: "database", color: "info" },
     },
   ],
+
+  collapsedWorkspaceIds: [],
 
   sessions: [
     {
@@ -835,6 +1061,8 @@ const mockState: MockBridgeState = {
         available: true,
         detail: "Balanced speed & reasoning",
         supportsEffort: true,
+        supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "medium",
         supportsFast: true,
         contextWindow: 200_000,
       },
@@ -847,6 +1075,8 @@ const mockState: MockBridgeState = {
         available: true,
         detail: "Deep architecture & complex refactors",
         supportsEffort: true,
+        supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "high",
         supportsFast: true,
         contextWindow: 200_000,
       },
@@ -859,8 +1089,24 @@ const mockState: MockBridgeState = {
         available: true,
         detail: "Fast multi-file edits & verification",
         supportsEffort: true,
+        supportedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
+        defaultEffort: "medium",
         supportsFast: true,
         contextWindow: 256_000,
+      },
+      {
+        id: "gpt-4o-mini",
+        model: "gpt-4o-mini",
+        provider: "openai",
+        label: "GPT-4o Mini",
+        apiMethod: "responses",
+        available: true,
+        detail: "Fast non-reasoning model",
+        supportsEffort: false,
+        supportedEfforts: [],
+        defaultEffort: null,
+        supportsFast: true,
+        contextWindow: 128_000,
       },
       {
         id: "gemini-2.5-pro",
@@ -1130,6 +1376,38 @@ function cloneAccount(account: AccountStatusView): AccountStatusView {
   };
 }
 
+function buildMockWorkspaceLedger(): WorkspaceLedgerView {
+  const now = Date.now();
+  return {
+    version: 1,
+    updatedAt: now,
+    workspaces: mockState.workspaces.map((w, idx) => ({
+      id: w.id ?? `ws_${w.name}_${idx}`,
+      name: w.name,
+      path: w.path,
+      canonicalPath: w.canonicalPath ?? w.path,
+      sessionIds: mockState.sessions
+        .filter((s) => s.workingDir === w.path)
+        .map((s) => s.sessionId),
+      createdAt: NOW - 86_400_000,
+      updatedAt: now,
+      lastOpenedAt: now,
+      branch: w.branch,
+      icon: w.icon,
+      isPrimary: w.isPrimary,
+    })),
+    pinnedSessionIds: mockState.sessions
+      .filter((s) => s.pinned)
+      .map((s) => s.sessionId),
+    archivedSessionIds: mockState.sessions
+      .filter((s) => s.archived)
+      .map((s) => s.sessionId),
+    collapsedWorkspaceIds: [...mockState.collapsedWorkspaceIds],
+    manualWorkspaceOrder: [],
+    openFolderPaths: mockState.workspaces.map((w) => w.path),
+  };
+}
+
 export async function handleMockRpcCall<M extends RpcMethod>(
   method: M,
   rawParams?: RpcParams<M>,
@@ -1155,6 +1433,81 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     // --- Workspace ---
     case "workspace.listFolders":
       return { folders: mockState.workspaces.map((w) => ({ ...w })) } as RpcResult<M>;
+    case "workspace.ledger.get":
+      return buildMockWorkspaceLedger() as RpcResult<M>;
+    case "workspace.ledger.ensure": {
+      const targetPath = String(params.path ?? "").trim();
+      if (
+        targetPath &&
+        !mockState.workspaces.some((w) => w.path === targetPath)
+      ) {
+        const name =
+          typeof params.name === "string" && params.name.trim()
+            ? params.name.trim()
+            : targetPath.split(/[\\/]/).filter(Boolean).pop() ?? targetPath;
+        mockState.workspaces = [
+          ...mockState.workspaces,
+          { name, path: targetPath },
+        ];
+      }
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.remove": {
+      const idOrPath = String(params.idOrPath ?? "");
+      mockState.workspaces = mockState.workspaces.filter(
+        (w, idx) =>
+          w.path !== idOrPath && (w.id ?? `ws_${w.name}_${idx}`) !== idOrPath,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setPinned": {
+      const id = String(params.sessionId ?? "");
+      const pinned = Boolean(params.pinned);
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === id ? { ...s, pinned, ...(pinned ? { archived: false } : {}) } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setArchived": {
+      const id = String(params.sessionId ?? "");
+      const archived = Boolean(params.archived);
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === id ? { ...s, archived, ...(archived ? { pinned: false } : {}) } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.setCollapsed": {
+      const wsId = String(params.workspaceId ?? "");
+      const collapsed = Boolean(params.collapsed);
+      if (collapsed && !mockState.collapsedWorkspaceIds.includes(wsId)) {
+        mockState.collapsedWorkspaceIds = [...mockState.collapsedWorkspaceIds, wsId];
+      } else if (!collapsed) {
+        mockState.collapsedWorkspaceIds = mockState.collapsedWorkspaceIds.filter(
+          (id) => id !== wsId,
+        );
+      }
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
+    case "workspace.ledger.attachSession": {
+      const wsPath = String(params.workspaceIdOrPath ?? "");
+      const sid = String(params.sessionId ?? "");
+      mockState.sessions = mockState.sessions.map((s) =>
+        s.sessionId === sid ? { ...s, workingDir: wsPath } : s,
+      );
+      const ledger = buildMockWorkspaceLedger();
+      dispatch?.({ type: "rayucode.workspaces.ledgerChanged", ledger });
+      return ledger as RpcResult<M>;
+    }
     case "workspace.findFiles": {
       const q = String(params.query ?? "").toLowerCase();
       const sample = [
@@ -1207,6 +1560,27 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true, branch: String(params.branch ?? "main") } as RpcResult<M>;
 
     // --- Sessions ---
+    case "workspace.ledger.importProjectGroup": {
+      const targetPath = String(params.path ?? "").trim();
+      if (
+        targetPath &&
+        !mockState.workspaces.some((w) => w.path === targetPath)
+      ) {
+        const name =
+          typeof params.name === "string" && params.name.trim()
+            ? params.name.trim()
+            : targetPath.split(/[\\/]/).filter(Boolean).pop() ?? targetPath;
+        mockState.workspaces = [
+          ...mockState.workspaces,
+          { name, path: targetPath },
+        ];
+      }
+      return buildMockWorkspaceLedger() as RpcResult<M>;
+    }
+    case "sessions.listExternalProjects":
+      return { projects: [] } as RpcResult<M>;
+    case "sessions.importExternal":
+      return { sessions: [], skipped: [] } as RpcResult<M>;
     case "sessions.list": {
       const includeArchived = Boolean(params.includeArchived);
       const list = includeArchived
@@ -1599,8 +1973,19 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { facts: mockState.memory.facts.map((f) => ({ ...f })) } as RpcResult<M>;
     case "plugins.workspace.status":
       return { ...mockState.workspaceIntegrations } as RpcResult<M>;
-    case "plugins.workspace.trigger":
+    case "plugins.workspace.trigger": {
+      if (params.integration === "browser" && params.action === "handoff") {
+        mockState.workspaceIntegrations.browser.handoffActive =
+          !mockState.workspaceIntegrations.browser.handoffActive;
+      } else if (
+        params.integration === "companion" &&
+        params.action === "toggleKeepAwake"
+      ) {
+        mockState.workspaceIntegrations.companion.keepAwake =
+          !mockState.workspaceIntegrations.companion.keepAwake;
+      }
       return { ok: true, message: "Triggered workspace integration action" } as RpcResult<M>;
+    }
 
     // --- Changes ---
     case "changes.status":
@@ -2045,6 +2430,120 @@ export async function handleMockRpcCall<M extends RpcMethod>(
         autoStart: true,
         transport: mockState.modelSettings.transport,
       } as RpcResult<M>;
+
+    // --- v1.16 Capabilities, Config & Session Controls ---
+    case "capabilities.get":
+      return {
+        supported: mockV116State.capabilitiesSupported,
+        commands: mockV116State.capabilitiesSupported
+          ? mockV116State.commands.map((c) => ({ ...c }))
+          : [],
+        permission_modes: mockV116State.capabilitiesSupported
+          ? mockV116State.permissionModes.map((m) => ({ ...m }))
+          : [],
+        features: mockV116State.capabilitiesSupported
+          ? mockV116State.featureDescriptors.map((f) => ({ ...f }))
+          : [],
+      } as RpcResult<M>;
+    case "config.get":
+      if (!mockV116State.configSupported) {
+        return { supported: false, config: null } as RpcResult<M>;
+      }
+      return {
+        supported: true,
+        config: {
+          path: mockV116State.configPath,
+          sections: [...mockV116State.configSections],
+          values: { ...mockV116State.configValues },
+          schema: mockV116State.configSchema.map((f) => ({ ...f })),
+        },
+      } as RpcResult<M>;
+    case "config.patch": {
+      if (!mockV116State.configSupported) {
+        return {
+          ok: false,
+          code: "unsupported",
+          message: "This Rayu daemon does not support config_v1.",
+        } as RpcResult<M>;
+      }
+      const patch = (params as { patch?: Record<string, unknown> })?.patch ?? {};
+      for (const [k, v] of Object.entries(patch)) {
+        const rejection = mockV116State.rejectPatchKeys[k];
+        if (rejection) {
+          return {
+            ok: false,
+            code: "invalid_request",
+            message: rejection,
+          } as RpcResult<M>;
+        }
+        mockV116State.configValues[k] = v;
+        if (k === "provider.default_model" && typeof v === "string") {
+          mockState.modelSettings.defaultModel = v;
+        }
+        if (k.startsWith("features.")) {
+          const fk = k.slice("features.".length);
+          if (fk in mockState.features) {
+            (mockState.features as Record<string, unknown>)[fk] = v;
+          }
+        }
+      }
+      const patchedKeys = new Set(Object.keys(patch));
+      const requiresRestart = mockV116State.configSchema.some(
+        (field) =>
+          patchedKeys.has(field.key) && field.apply_mode === "restart_required",
+      );
+      return {
+        ok: true,
+        requiresRestart,
+        config: {
+          path: mockV116State.configPath,
+          sections: [...mockV116State.configSections],
+          values: { ...mockV116State.configValues },
+          schema: mockV116State.configSchema.map((f) => ({ ...f })),
+        },
+      } as RpcResult<M>;
+    }
+    case "sessions.setModel": {
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          deferred: true,
+          code: "busy",
+          message: "Applies on next turn",
+        } as RpcResult<M>;
+      }
+      const p = params as { model?: string };
+      if (p?.model) mockState.modelSettings.defaultModel = p.model;
+      return { ok: true } as RpcResult<M>;
+    }
+    case "sessions.setEffort": {
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          deferred: true,
+          code: "busy",
+          message: "Applies on next turn",
+        } as RpcResult<M>;
+      }
+      return { ok: true } as RpcResult<M>;
+    }
+    case "sessions.runtimeCommand": {
+      const p = params as { command?: string; args?: string[] };
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          command: p?.command ?? "",
+          code: "busy",
+          message: "Turn in progress; queued until active turn finishes.",
+        } as RpcResult<M>;
+      }
+      return {
+        ok: true,
+        command: p?.command ?? "",
+        message: `Ran /${p?.command ?? ""}`,
+        data: {},
+      } as RpcResult<M>;
+    }
 
     // --- Inspector ---
     case "inspector.sidePanel.get":

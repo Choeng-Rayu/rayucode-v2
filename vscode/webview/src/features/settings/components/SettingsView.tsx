@@ -95,6 +95,15 @@ export function SettingsView({
     defaultPermissionMode,
     doctorResults,
     selfDevOutput,
+    configSupported,
+    configPath,
+    configValues,
+    configSchema,
+    configRequiresRestart,
+    configFieldErrors,
+    clearConfigFieldError,
+    configSectionError,
+    clearConfigSectionError,
     isLoading,
     isError,
     refetchAll,
@@ -439,14 +448,29 @@ export function SettingsView({
 
                 {activeSection === "models" && (
                   <ModelsAgentsSection
-                    defaultModel={models.defaultModel ?? "claude-sonnet-4-5"}
+                    defaultModel={
+                      typeof configValues["provider.default_model"] === "string"
+                        ? configValues["provider.default_model"]
+                        : (models.defaultModel ?? "claude-sonnet-4-5")
+                    }
                     defaultEffort={models.defaultEffort}
                     serviceTier={models.serviceTier}
                     cacheTtl={models.cacheTtl}
+                    routes={models.routes}
                     roleOverrides={models.roleOverrides}
                     swarmAllowlist={models.swarmAllowlist}
-                    onSelectDefaultModel={setDefaultModel}
-                    onSelectDefaultEffort={setDefaultEffort}
+                    configSupported={configSupported}
+                    configPath={configPath}
+                    configSchema={configSchema}
+                    configRequiresRestart={configRequiresRestart}
+                    configFieldErrors={configFieldErrors}
+                    configSectionError={configSectionError}
+                    onClearFieldError={clearConfigFieldError}
+                    onClearSectionError={clearConfigSectionError}
+                    onReloadDaemon={reloadDaemonAndBridge}
+                    isReloadingDaemon={isReloadingDaemon}
+                    onSelectDefaultModel={(m) => void setDefaultModel(m)}
+                    onSelectDefaultEffort={(e) => void setDefaultEffort(e)}
                     onSelectServiceTier={setFastTier}
                     onSelectCacheTtl={setCacheTtl}
                     onSetRoleOverride={setRoleOverride}
@@ -459,6 +483,17 @@ export function SettingsView({
                   <FeaturesVoiceSection
                     features={features}
                     voice={voice}
+                    configSupported={configSupported}
+                    configPath={configPath}
+                    configValues={configValues}
+                    configSchema={configSchema}
+                    configRequiresRestart={configRequiresRestart}
+                    configFieldErrors={configFieldErrors}
+                    configSectionError={configSectionError}
+                    onClearFieldError={clearConfigFieldError}
+                    onClearSectionError={clearConfigSectionError}
+                    onReloadDaemon={reloadDaemonAndBridge}
+                    isReloadingDaemon={isReloadingDaemon}
                     onSetFeatureFlag={setFeatureFlag}
                     onUpdateVoice={updateVoice}
                   />
@@ -469,7 +504,13 @@ export function SettingsView({
                     defaultPermissionMode={defaultPermissionMode}
                     onSelectPermissionMode={setPermissionMode}
                     hooks={hooksData?.hooks ?? []}
-                    configPath={hooksData?.configPath}
+                    configPath={hooksData?.configPath ?? configPath}
+                    configSupported={configSupported}
+                    configRequiresRestart={configRequiresRestart}
+                    configFieldErrors={configFieldErrors}
+                    onClearFieldError={clearConfigFieldError}
+                    onReloadDaemon={reloadDaemonAndBridge}
+                    isReloadingDaemon={isReloadingDaemon}
                     onOpenHooksConfig={openHooksConfig}
                   />
                 )}

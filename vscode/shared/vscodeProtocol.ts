@@ -151,13 +151,46 @@ export const DaemonStatusViewSchema = z.object({
 export type DaemonStatusView = z.infer<typeof DaemonStatusViewSchema>;
 
 export const WorkspaceFolderViewSchema = z.object({
+  id: z.string().optional(),
   name: z.string(),
   path: z.string(),
+  canonicalPath: z.string().optional(),
+  branch: z.string().optional(),
+  icon: ProjectIconViewSchema.optional(),
+  isPrimary: z.boolean().optional(),
+  missingOnDisk: z.boolean().optional(),
+  hidden: z.boolean().optional(),
+});
+export type WorkspaceFolderView = z.infer<typeof WorkspaceFolderViewSchema>;
+
+export const WorkspaceRecordViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  path: z.string(),
+  canonicalPath: z.string(),
+  sessionIds: z.array(z.string()),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  lastOpenedAt: z.number(),
+  missingOnDisk: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   branch: z.string().optional(),
   icon: ProjectIconViewSchema.optional(),
   isPrimary: z.boolean().optional(),
 });
-export type WorkspaceFolderView = z.infer<typeof WorkspaceFolderViewSchema>;
+export type WorkspaceRecordView = z.infer<typeof WorkspaceRecordViewSchema>;
+
+export const WorkspaceLedgerViewSchema = z.object({
+  version: z.literal(1),
+  updatedAt: z.number(),
+  workspaces: z.array(WorkspaceRecordViewSchema),
+  pinnedSessionIds: z.array(z.string()),
+  archivedSessionIds: z.array(z.string()),
+  collapsedWorkspaceIds: z.array(z.string()),
+  manualWorkspaceOrder: z.array(z.string()),
+  openFolderPaths: z.array(z.string()),
+});
+export type WorkspaceLedgerView = z.infer<typeof WorkspaceLedgerViewSchema>;
 
 export const EditorSelectionViewSchema = z.object({
   filePath: z.string(),
@@ -192,6 +225,18 @@ export const SessionSourceToolSchema = z.enum([
 ]);
 export type SessionSourceTool = z.infer<typeof SessionSourceToolSchema>;
 
+export const SessionSourceIdSchema = z.enum([
+  "rayu",
+  "claude_code",
+  "claude_desktop",
+  "codex",
+  "codex_desktop",
+  "cursor",
+  "pi",
+  "opencode",
+]);
+export type SessionSourceId = z.infer<typeof SessionSourceIdSchema>;
+
 export const SessionSummaryViewSchema = z.object({
   sessionId: z.string(),
   title: z.string(),
@@ -209,8 +254,44 @@ export const SessionSummaryViewSchema = z.object({
   diffDeletions: z.number().int().nonnegative().optional(),
   previewText: z.string().optional(),
   sourceTool: SessionSourceToolSchema.optional(),
+  source: SessionSourceIdSchema.optional(),
+  externalSessionId: z.string().optional(),
+  externalPath: z.string().optional(),
+  externalProjectName: z.string().optional(),
+  imported: z.boolean().optional(),
+  syncStale: z.boolean().optional(),
 });
 export type SessionSummaryView = z.infer<typeof SessionSummaryViewSchema>;
+
+export const ExternalProjectViewSchema = z.object({
+  id: z.string(),
+  source: SessionSourceIdSchema,
+  name: z.string(),
+  workingDir: z.string().nullable().optional(),
+  sessionCount: z.number().int().nonnegative(),
+  updatedAtMs: z.number().optional(),
+  sessions: z.array(SessionSummaryViewSchema),
+});
+export type ExternalProjectView = z.infer<typeof ExternalProjectViewSchema>;
+
+export const ImportExternalSessionItemSchema = z.object({
+  source: z.string().min(1),
+  externalSessionId: z.string().min(1),
+  externalPath: z.string().optional(),
+  workingDir: z.string().optional(),
+});
+export type ImportExternalSessionItemView = z.infer<
+  typeof ImportExternalSessionItemSchema
+>;
+
+export const ImportSkipViewSchema = z.object({
+  externalSessionId: z.string(),
+  source: z.string(),
+  reason: z.string(),
+  message: z.string(),
+  existingSessionId: z.string().nullable().optional(),
+});
+export type ImportSkipView = z.infer<typeof ImportSkipViewSchema>;
 
 export const SessionSearchHitViewSchema = z.object({
   sessionId: z.string(),
@@ -229,14 +310,32 @@ export const HistoryImageViewSchema = z.object({
 });
 export type HistoryImageView = z.infer<typeof HistoryImageViewSchema>;
 
+export const HistoryResponseStatsViewSchema = z.object({
+  durationSecs: z.number().optional(),
+  inputTokens: z.number().optional(),
+  outputTokens: z.number().optional(),
+  cacheReadTokens: z.number().optional(),
+  cacheCreationTokens: z.number().optional(),
+  rayuCredits: z.number().optional(),
+});
+export type HistoryResponseStatsView = z.infer<typeof HistoryResponseStatsViewSchema>;
+
 export const HistoryMessageViewSchema = z.object({
   id: z.string(),
   role: z.string(),
   content: z.string(),
   createdAtMs: z.number().optional(),
   model: z.string().optional(),
+  toolId: z.string().optional(),
   toolName: z.string().optional(),
   toolInput: z.unknown().optional(),
+  origin: z.string().optional(),
+  visibility: z.string().optional(),
+  attemptId: z.string().nullable().optional(),
+  attemptReason: z.string().optional(),
+  attemptStatus: z.string().optional(),
+  stopReason: z.string().nullable().optional(),
+  responseStats: HistoryResponseStatsViewSchema.optional(),
   images: z.array(HistoryImageViewSchema).optional(),
 });
 export type HistoryMessageView = z.infer<typeof HistoryMessageViewSchema>;
@@ -970,11 +1069,114 @@ export const ModelRouteOptionViewSchema = z.object({
   available: z.boolean().optional(),
   detail: z.string().optional(),
   supportsEffort: z.boolean().optional(),
+  supportedEfforts: z.array(z.string()).optional(),
+  defaultEffort: z.string().nullable().optional(),
   supportsFast: z.boolean().optional(),
   contextWindow: z.number().int().positive().optional(),
   pricingLabel: z.string().optional(),
 });
 export type ModelRouteOptionView = z.infer<typeof ModelRouteOptionViewSchema>;
+
+// --- v1.16 Engine Capabilities & Canonical config.toml Schemas ---
+
+export const CommandDispatchViewSchema = z.union([
+  z.object({ kind: z.literal("api_request"), req: z.string() }),
+  z.object({ kind: z.literal("runtime_command"), command: z.string() }),
+  z.object({ kind: z.literal("skill"), name: z.string() }),
+]);
+export type CommandDispatchView = z.infer<typeof CommandDispatchViewSchema>;
+
+export const CommandDescriptorViewSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  category: z.string(),
+  arg_hint: z.string().optional(),
+  requires_session: z.boolean().optional(),
+  dispatch: CommandDispatchViewSchema,
+});
+export type CommandDescriptorView = z.infer<typeof CommandDescriptorViewSchema>;
+
+export const PermissionModeDescriptorViewSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  is_default: z.boolean().optional(),
+});
+export type PermissionModeDescriptorView = z.infer<typeof PermissionModeDescriptorViewSchema>;
+
+export const FeatureFlagDescriptorViewSchema = z.object({
+  key: z.string(),
+  enabled: z.boolean(),
+  description: z.string(),
+  requires_restart: z.boolean().optional(),
+});
+export type FeatureFlagDescriptorView = z.infer<typeof FeatureFlagDescriptorViewSchema>;
+
+export const CapabilitiesResultViewSchema = z.object({
+  supported: z.boolean(),
+  commands: z.array(CommandDescriptorViewSchema),
+  permission_modes: z.array(PermissionModeDescriptorViewSchema),
+  features: z.array(FeatureFlagDescriptorViewSchema),
+});
+export type CapabilitiesResultView = z.infer<typeof CapabilitiesResultViewSchema>;
+
+export const ConfigFieldKindViewSchema = z.enum([
+  "boolean",
+  "string",
+  "integer",
+  "number",
+  "enum",
+  "string_array",
+]);
+export type ConfigFieldKindView = z.infer<typeof ConfigFieldKindViewSchema>;
+
+export const ConfigApplyModeViewSchema = z.enum([
+  "immediate",
+  "next_turn",
+  "restart_required",
+]);
+export type ConfigApplyModeView = z.infer<typeof ConfigApplyModeViewSchema>;
+
+export const ConfigEnumOptionViewSchema = z.object({
+  value: z.string(),
+  label: z.string(),
+});
+export type ConfigEnumOptionView = z.infer<typeof ConfigEnumOptionViewSchema>;
+
+export const ConfigFieldSchemaViewSchema = z.object({
+  key: z.string(),
+  section: z.string(),
+  label: z.string(),
+  description: z.string(),
+  kind: ConfigFieldKindViewSchema,
+  options: z.array(ConfigEnumOptionViewSchema).optional(),
+  default_value: z.unknown(),
+  apply_mode: ConfigApplyModeViewSchema,
+});
+export type ConfigFieldSchemaView = z.infer<typeof ConfigFieldSchemaViewSchema>;
+
+export const ConfigStateViewSchema = z.object({
+  path: z.string(),
+  sections: z.array(z.string()),
+  values: z.record(z.string(), z.unknown()),
+  schema: z.array(ConfigFieldSchemaViewSchema),
+});
+export type ConfigStateView = z.infer<typeof ConfigStateViewSchema>;
+
+export const ConfigGetResultViewSchema = z.object({
+  supported: z.boolean(),
+  config: ConfigStateViewSchema.nullable(),
+});
+export type ConfigGetResultView = z.infer<typeof ConfigGetResultViewSchema>;
+
+export const ConfigPatchResultViewSchema = z.object({
+  ok: z.boolean(),
+  config: ConfigStateViewSchema.nullable().optional(),
+  requiresRestart: z.boolean().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+});
+export type ConfigPatchResultView = z.infer<typeof ConfigPatchResultViewSchema>;
 
 export const FeatureFlagsViewSchema = z.object({
   memory: z.boolean(),
@@ -1144,6 +1346,60 @@ export const RpcContractSchemas = {
     params: EmptyParamsSchema,
     result: z.object({ folders: z.array(WorkspaceFolderViewSchema) }),
   },
+  "workspace.ledger.get": {
+    params: EmptyParamsSchema,
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.ensure": {
+    params: z.object({
+      path: z.string().min(1),
+      name: z.string().optional(),
+      unhide: z.boolean().optional(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.remove": {
+    params: z.object({
+      idOrPath: z.string().min(1),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setPinned": {
+    params: z.object({
+      sessionId: z.string().min(1),
+      pinned: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setArchived": {
+    params: z.object({
+      sessionId: z.string().min(1),
+      archived: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.setCollapsed": {
+    params: z.object({
+      workspaceId: z.string().min(1),
+      collapsed: z.boolean(),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.attachSession": {
+    params: z.object({
+      workspaceIdOrPath: z.string().min(1),
+      sessionId: z.string().min(1),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
+  "workspace.ledger.importProjectGroup": {
+    params: z.object({
+      path: z.string().min(1),
+      name: z.string().optional(),
+      sessionIds: z.array(z.string().min(1)),
+    }),
+    result: WorkspaceLedgerViewSchema,
+  },
   "workspace.findFiles": {
     params: z.object({
       sessionId: z.string().optional(),
@@ -1192,10 +1448,33 @@ export const RpcContractSchemas = {
 
   // --- Sessions ---
   "sessions.list": {
-    params: z.object({ includeArchived: z.boolean().optional() }).optional(),
+    params: z
+      .object({
+        includeArchived: z.boolean().optional(),
+        includeExternal: z.boolean().optional(),
+        sources: z.array(z.string()).optional(),
+      })
+      .optional(),
     result: z.object({
       sessions: z.array(SessionSummaryViewSchema),
       activeSessionId: z.string().optional(),
+    }),
+  },
+  "sessions.listExternalProjects": {
+    params: z.object({ source: z.string().optional() }).optional(),
+    result: z.object({
+      projects: z.array(ExternalProjectViewSchema),
+    }),
+  },
+  "sessions.importExternal": {
+    params: z.object({
+      items: z.array(ImportExternalSessionItemSchema).min(1),
+      forceResync: z.boolean().optional(),
+      forkOnConflict: z.boolean().optional(),
+    }),
+    result: z.object({
+      sessions: z.array(SessionSummaryViewSchema),
+      skipped: z.array(ImportSkipViewSchema),
     }),
   },
   "sessions.search": {
@@ -2094,6 +2373,58 @@ export const RpcContractSchemas = {
     result: OkResultSchema,
   },
 
+  // --- v1.16 Engine Capabilities & Canonical config.toml ---
+  "capabilities.get": {
+    params: z.object({ sessionId: z.string().optional() }).optional(),
+    result: CapabilitiesResultViewSchema,
+  },
+  "config.get": {
+    params: z.object({ sections: z.array(z.string()).optional() }).optional(),
+    result: ConfigGetResultViewSchema,
+  },
+  "config.patch": {
+    params: z.object({ patch: z.record(z.string(), z.unknown()) }),
+    result: ConfigPatchResultViewSchema,
+  },
+  "sessions.setModel": {
+    params: z.object({
+      sessionId: z.string(),
+      model: z.string().min(1),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      deferred: z.boolean().optional(),
+      code: z.string().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "sessions.setEffort": {
+    params: z.object({
+      sessionId: z.string(),
+      effort: z.string().min(1),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      deferred: z.boolean().optional(),
+      code: z.string().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "sessions.runtimeCommand": {
+    params: z.object({
+      sessionId: z.string().optional(),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      command: z.string(),
+      message: z.string().optional(),
+      data: z.unknown().optional(),
+      code: z.string().optional(),
+    }),
+  },
+
   // --- Inspector (SidePanel, Applet, Todos) ---
   "inspector.sidePanel.get": {
     params: z.object({ sessionId: z.string() }),
@@ -2266,6 +2597,7 @@ export const HostToWebviewMessageSchema = z.union([
     capabilities: z.array(z.string()),
     daemonStatus: DaemonStatusViewSchema,
     workspaces: z.array(WorkspaceFolderViewSchema),
+    workspaceLedger: WorkspaceLedgerViewSchema.optional(),
     editorSelection: EditorSelectionViewSchema.nullable().optional(),
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
     accountStatus: AccountStatusViewSchema.optional(),
@@ -2281,6 +2613,12 @@ export const HostToWebviewMessageSchema = z.union([
     type: z.literal("rayucode.fileChanges.updated"),
     sessionId: z.string(),
     snapshot: FileChangesSnapshotViewSchema,
+  }),
+  z.object({
+    type: z.literal("rayucode.config.changed"),
+    changedKeys: z.array(z.string()),
+    requiresRestart: z.boolean().optional(),
+    values: z.record(z.string(), z.unknown()),
   }),
   z.object({
     type: z.literal("rayucode.harness.frame"),
@@ -2301,6 +2639,11 @@ export const HostToWebviewMessageSchema = z.union([
   z.object({
     type: z.literal("rayucode.workspaces.changed"),
     workspaces: z.array(WorkspaceFolderViewSchema),
+    workspaceLedger: WorkspaceLedgerViewSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.workspaces.ledgerChanged"),
+    ledger: WorkspaceLedgerViewSchema,
   }),
   z.object({
     type: z.literal("rayucode.ui.navigate"),
