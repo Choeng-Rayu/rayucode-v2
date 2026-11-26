@@ -43,6 +43,7 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       editorSelection: null,
       pendingComposerInjection: null,
       composerDrafts: {},
+      sessionPrefsBySession: {},
       midTurnSendMode: "steer",
       midTurnMessagesBySession: {},
       pausedQueueSessions: {},
@@ -1159,5 +1160,237 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       "sessions.softInterrupt",
       expect.anything(),
     );
+  });
+
+  it("tags model and reasoning effort changes with apply_next_turn while streaming and shows next-message indicator", () => {
+    const posted: unknown[] = [];
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg: unknown) => posted.push(msg),
+      getState: () => undefined,
+      setState: () => {},
+    });
+
+    try {
+      const onSelectEffort = vi.fn();
+      const onSelectModel = vi.fn();
+      renderWithQuery(
+        <ModelEffortPopover
+          defaultOpen
+          isStreaming
+          sessionId="ses_streaming_opts"
+          modelId="rayu:claude-sonnet-4-5"
+          modelLabel="Claude Sonnet 4.5"
+          effort="medium"
+          onSelectModel={onSelectModel}
+          onSelectEffort={onSelectEffort}
+        />,
+      );
+
+      expect(screen.getByTestId("model-effort-next-turn-hint")).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: "High" }));
+      expect(onSelectEffort).toHaveBeenCalledWith("high");
+
+      const effortFrames = posted
+        .filter(
+          (m): m is { type: string; frame: Record<string, unknown> } =>
+            Boolean(
+              m &&
+                typeof m === "object" &&
+                (m as { type?: string }).type === "rayucode.harness.request",
+            ),
+        )
+        .map((m) => m.frame)
+        .filter((f) => f.req === "set_reasoning_effort");
+
+      expect(effortFrames).toContainEqual(
+        expect.objectContaining({
+          req: "set_reasoning_effort",
+          session_id: "ses_streaming_opts",
+          effort: "high",
+          apply_next_turn: true,
+        }),
+      );
+    } finally {
+      delete window.acquireVsCodeApi;
+    }
+  });
+
+  it("remembers configured effort and permission mode from HomePage Message #1 through Workspace Message #2", async () => {
+    const createRpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const createdSessions: string[] = [];
+
+    const homeRender = renderWithQuery(<HomePage userName="Rayu" />);
+
+    // Configure Effort = High and Permission Mode = Auto-accept on HomePage before Message #1
+    fireEvent.click(screen.getByTestId("model-effort-trigger"));
+    fireEvent.click(screen.getByRole("button", { name: "High" }));
+
+    fireEvent.click(screen.getByTestId("permission-mode-trigger"));
+    const acceptEditsOption = document.querySelector(
+      '[data-perm-id="acceptEdits"]',
+    ) as HTMLButtonElement | null;
+    expect(acceptEditsOption).toBeTruthy();
+    fireEvent.click(acceptEditsOption!);
+
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("acceptEdits");
+    expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+      "High",
+    );
+
+    // Send Message #1 from HomePage
+    const homeTextarea = screen.getByTestId("composer-textarea");
+    fireEvent.change(homeTextarea, {
+      target: { value: "First message with high effort and auto-accept" },
+    });
+    fireEvent.click(screen.getByTestId("composer-submit-btn"));
+
+    await waitFor(() => {
+      const sid = useAppStore.getState().activeSessionId;
+      expect(sid).toBeTruthy();
+      if (sid) createdSessions.push(sid);
+    });
+
+    const createdSessionId = createdSessions[0]!;
+    expect(createRpcSpy).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.objectContaining({
+        effort: "high",
+        permissionMode: "acceptEdits",
+      }),
+    );
+
+    // Simulate Message #1 finishing and HomePage -> Workspace route transition
+    homeRender.unmount();
+    useAppStore.getState().setIsStreamActive(false);
+
+    const onSecondSubmit = vi.fn();
+    renderWithQuery(
+      <SessionComposer
+        mode="workspace"
+        sessionId={createdSessionId}
+        onSubmit={onSecondSubmit}
+      />,
+    );
+
+    // Must retain High effort and Auto-accept permission mode for Message #2 (never reset to defaults!)
+    expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+      "High",
+    );
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("acceptEdits");
+
+    const wsTextarea = screen.getByTestId("composer-textarea");
+    fireEvent.change(wsTextarea, {
+      target: { value: "Second message in the same session" },
+    });
+    fireEvent.click(screen.getByTestId("composer-submit-btn"));
+
+    expect(onSecondSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "Second message in the same session",
+        effort: "high",
+        permissionMode: "acceptEdits",
+      }),
+    );
+  });
+
+  it("remembers effort and permission mode independently per session across session switches and remounts", () => {
+    const onSubmit = vi.fn();
+    const view = renderWithQuery(
+      <SessionComposer
+        mode="workspace"
+        sessionId="ses_alpha"
+        onSubmit={onSubmit}
+      />,
+    );
+
+    // Configure Session Alpha: xHigh + Plan mode
+    fireEvent.click(screen.getByTestId("model-effort-trigger"));
+    fireEvent.click(screen.getByRole("button", { name: "xHigh" }));
+    fireEvent.click(screen.getByTestId("permission-mode-trigger"));
+    fireEvent.click(
+      document.querySelector('[data-perm-id="plan"]') as HTMLButtonElement,
+    );
+
+    expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+      "xHigh",
+    );
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("plan");
+
+    // Switch to Session Beta -> starts at defaults, then configure Low + Full access
+    view.rerender(
+      <QueryClientProvider client={createQueryClient()}>
+        <SessionComposer
+          mode="workspace"
+          sessionId="ses_beta"
+          onSubmit={onSubmit}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("default");
+
+    fireEvent.click(screen.getByTestId("model-effort-trigger"));
+    fireEvent.click(screen.getByRole("button", { name: "Low" }));
+    fireEvent.click(screen.getByTestId("permission-mode-trigger"));
+    fireEvent.click(
+      document.querySelector(
+        '[data-perm-id="fullManage"]',
+      ) as HTMLButtonElement,
+    );
+
+    // Switch back to Session Alpha -> restores xHigh + Plan mode!
+    view.rerender(
+      <QueryClientProvider client={createQueryClient()}>
+        <SessionComposer
+          mode="workspace"
+          sessionId="ses_alpha"
+          onSubmit={onSubmit}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+      "xHigh",
+    );
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("plan");
+
+    // Full unmount & remount (e.g. navigating to Settings and back) -> Session Beta still remembers Low + Full access
+    view.unmount();
+    renderWithQuery(
+      <SessionComposer
+        mode="workspace"
+        sessionId="ses_beta"
+        onSubmit={onSubmit}
+      />,
+    );
+    expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+      "Low",
+    );
+    expect(
+      screen.getByTestId("permission-mode-trigger").getAttribute(
+        "data-permission-mode",
+      ),
+    ).toBe("fullManage");
   });
 });

@@ -27,7 +27,9 @@ import {
   type AccountStatusView,
   type AppletStateView,
   type BackgroundProcessView,
+  type CacheTtl,
   type DaemonStatusView,
+  type EffortLevel,
   type ExternalProjectView,
   type FileChangeActionKind,
   type FileChangeActionResultView,
@@ -40,6 +42,7 @@ import {
   type ImportSkipView,
   type PermissionModeId,
   type ProjectIconView,
+  type ServiceTier,
   type SessionHistoryView,
   type SessionSummaryView,
   type SidePanelPageView,
@@ -63,7 +66,31 @@ import {
 export const PINNED_SESSIONS_KEY = "rayucode.sessions.pinned";
 export const ARCHIVED_SESSIONS_KEY = "rayucode.sessions.archived";
 export const PERMISSION_MODES_KEY = "rayucode.sessions.permissionModes";
+export const SESSION_PREFS_KEY = "rayucode.sessions.composerPrefs";
 export const ACTIVE_SESSION_KEY = "rayucode.sessions.activeSessionId";
+
+export interface StoredSessionComposerPrefs {
+  model?: string;
+  provider?: string;
+  effort?: EffortLevel;
+  permissionMode?: PermissionModeId;
+  serviceTier?: ServiceTier;
+  cacheTtl?: CacheTtl;
+}
+
+const VALID_EFFORT_LEVELS = new Set<EffortLevel>([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]);
+
+function normalizeStoredEffort(raw: unknown): EffortLevel | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim().toLowerCase() as EffortLevel;
+  return VALID_EFFORT_LEVELS.has(trimmed) ? trimmed : undefined;
+}
 
 export interface SessionHubWorkspaceFolder {
   name: string;
@@ -137,6 +164,17 @@ export class SessionHubCore extends EventEmitter {
   private activePermissionMode: PermissionModeId;
   private isTurnStreaming = false;
   private backgroundPollTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly pendingModelBySession = new Map<
+    string,
+    { modelSpec: string; provider?: string }
+  >();
+  private readonly pendingEffortBySession = new Map<string, string>();
+  private readonly pendingPermissionModeBySession = new Map<
+    string,
+    PermissionModeId
+  >();
+  private readonly appliedModelBySession = new Map<string, string>();
+  private readonly appliedEffortBySession = new Map<string, string>();
 
   constructor(
     protected readonly host: SessionHubHostAdapter,
@@ -396,12 +434,95 @@ export class SessionHubCore extends EventEmitter {
     isFocusedSession: boolean,
     next: boolean,
   ): void {
+    const wasStreaming = sessionId
+      ? Boolean(this.streamingBySession.get(sessionId))
+      : false;
     if (sessionId) {
       this.streamingBySession.set(sessionId, next);
     }
     if (isFocusedSession) {
       this.setTurnStreaming(next);
     }
+    if (sessionId && wasStreaming && !next) {
+      this.flushPendingNextTurnSettings(sessionId);
+    }
+  }
+
+  private isSessionTurnActive(sessionId: string): boolean {
+    if (!sessionId) return false;
+    return (
+      Boolean(this.streamingBySession.get(sessionId)) ||
+      this.socketPool.getActiveTurnSessionIds().includes(sessionId)
+    );
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    if (error instanceof HarnessError && error.code === "timeout") {
+      return true;
+    }
+    const msg = error instanceof Error ? error.message : String(error ?? "");
+    return /\btimeout\b|timed out/i.test(msg);
+  }
+
+  private flushPendingNextTurnSettings(sessionId: string): void {
+    const hasPendingModel = this.pendingModelBySession.has(sessionId);
+    const hasPendingEffort = this.pendingEffortBySession.has(sessionId);
+    const hasPendingPerm = this.pendingPermissionModeBySession.has(sessionId);
+    if (!hasPendingModel && !hasPendingEffort && !hasPendingPerm) return;
+
+    void (async () => {
+      if (this.isSessionTurnActive(sessionId)) return;
+      const client = this.socketPool.get(sessionId);
+      if (!client) return;
+
+      const pendingPerm = this.pendingPermissionModeBySession.get(sessionId);
+      if (pendingPerm && !this.isSessionTurnActive(sessionId)) {
+        try {
+          await client.setPermissionMode(
+            sessionId,
+            toHarnessPermissionMode(pendingPerm),
+          );
+          if (this.pendingPermissionModeBySession.get(sessionId) === pendingPerm) {
+            this.pendingPermissionModeBySession.delete(sessionId);
+          }
+        } catch {
+          // Keep queued so the next send_message applies it.
+        }
+      }
+
+      const pendingModel = this.pendingModelBySession.get(sessionId);
+      if (pendingModel && !this.isSessionTurnActive(sessionId)) {
+        try {
+          if (this.appliedModelBySession.get(sessionId) !== pendingModel.modelSpec) {
+            await client.setModel(sessionId, pendingModel.modelSpec);
+          }
+          if (
+            this.pendingModelBySession.get(sessionId)?.modelSpec ===
+            pendingModel.modelSpec
+          ) {
+            this.pendingModelBySession.delete(sessionId);
+          }
+          this.appliedModelBySession.set(sessionId, pendingModel.modelSpec);
+        } catch {
+          // Keep queued in pendingModelBySession so the next send_message applies it.
+        }
+      }
+
+      const pendingEffort = this.pendingEffortBySession.get(sessionId);
+      if (pendingEffort && !this.isSessionTurnActive(sessionId)) {
+        try {
+          if (this.appliedEffortBySession.get(sessionId) !== pendingEffort) {
+            await client.setReasoningEffort(sessionId, pendingEffort);
+          }
+          if (this.pendingEffortBySession.get(sessionId) === pendingEffort) {
+            this.pendingEffortBySession.delete(sessionId);
+          }
+          this.appliedEffortBySession.set(sessionId, pendingEffort);
+        } catch {
+          // Keep queued in pendingEffortBySession so the next send_message applies it.
+        }
+      }
+    })();
   }
 
   getTotalSessionCredits(): number | undefined {
@@ -707,7 +828,9 @@ export class SessionHubCore extends EventEmitter {
             this.activePermissionMode = uiMode;
           }
           if (resolvedSessionId) {
-            void this.saveSessionPermissionMode(resolvedSessionId, uiMode);
+            void this.saveSessionPrefs(resolvedSessionId, {
+              permissionMode: uiMode,
+            });
           }
           this.emit("stateChanged");
         }
@@ -715,6 +838,26 @@ export class SessionHubCore extends EventEmitter {
       }
       case "model_info":
       case "runtime_info": {
+        if (resolvedSessionId) {
+          if (typeof frame.model === "string" && frame.model.trim()) {
+            const formatted = formatHarnessModelSpec(
+              frame.model,
+              typeof frame.provider === "string" ? frame.provider : undefined,
+            );
+            if (formatted) {
+              this.appliedModelBySession.set(resolvedSessionId, formatted);
+            }
+          }
+          const rawEffort =
+            typeof frame.reasoning_effort === "string"
+              ? frame.reasoning_effort.trim()
+              : typeof frame.effort === "string"
+                ? frame.effort.trim()
+                : "";
+          if (rawEffort) {
+            this.appliedEffortBySession.set(resolvedSessionId, rawEffort);
+          }
+        }
         if (isFocusedSession) {
           if (typeof frame.model === "string") {
             this.activeModel = frame.model;
@@ -892,6 +1035,53 @@ export class SessionHubCore extends EventEmitter {
     );
   }
 
+  private getSessionPrefsMap(): Record<string, StoredSessionComposerPrefs> {
+    return this.host.workspaceState.get<Record<string, StoredSessionComposerPrefs>>(
+      SESSION_PREFS_KEY,
+      {},
+    );
+  }
+
+  getSessionPrefs(sessionId: string): StoredSessionComposerPrefs | undefined {
+    if (!sessionId) return undefined;
+    const stored = this.getSessionPrefsMap()[sessionId];
+    const legacyMode = this.getPermissionModesMap()[sessionId];
+    if (!stored && !legacyMode) return undefined;
+    return {
+      ...stored,
+      ...(stored?.permissionMode
+        ? { permissionMode: stored.permissionMode }
+        : legacyMode
+          ? { permissionMode: legacyMode }
+          : {}),
+    };
+  }
+
+  async saveSessionPrefs(
+    sessionId: string,
+    patch: Partial<StoredSessionComposerPrefs>,
+  ): Promise<void> {
+    if (!sessionId) return;
+    const existingMap = this.getSessionPrefsMap();
+    const prev = existingMap[sessionId] ?? {};
+    const next: StoredSessionComposerPrefs = { ...prev };
+    if (patch.model !== undefined) next.model = patch.model;
+    if (patch.provider !== undefined) next.provider = patch.provider;
+    if (patch.effort !== undefined) next.effort = patch.effort;
+    if (patch.permissionMode !== undefined) {
+      next.permissionMode = patch.permissionMode;
+    }
+    if (patch.serviceTier !== undefined) next.serviceTier = patch.serviceTier;
+    if (patch.cacheTtl !== undefined) next.cacheTtl = patch.cacheTtl;
+    await this.host.workspaceState.update(SESSION_PREFS_KEY, {
+      ...existingMap,
+      [sessionId]: next,
+    });
+    if (patch.permissionMode !== undefined) {
+      await this.saveSessionPermissionMode(sessionId, patch.permissionMode);
+    }
+  }
+
   async setSessionPinned(sessionId: string, pinned: boolean): Promise<void> {
     await this.setSessionPinnedLedger(sessionId, pinned);
   }
@@ -944,7 +1134,6 @@ export class SessionHubCore extends EventEmitter {
     const ledger = this.workspaceRegistry.getSnapshot();
     const pinnedSet = new Set(ledger.pinnedSessionIds);
     const archivedSet = new Set(ledger.archivedSessionIds);
-    const permMap = this.getPermissionModesMap();
     const rawStatus = (info.status ?? "idle").toLowerCase();
     const status =
       rawStatus === "running" || rawStatus === "busy"
@@ -962,15 +1151,30 @@ export class SessionHubCore extends EventEmitter {
     const normalizedSource = normalizeSessionSource(info.source);
     const sourceTool = sessionSourceToFilterGroup(normalizedSource);
 
+    const savedPrefs = this.getSessionPrefs(info.session_id);
+    const resolvedPermissionMode =
+      savedPrefs?.permissionMode ??
+      (info.session_id === this.activeSessionId
+        ? this.activePermissionMode
+        : this.getDefaultPermissionMode());
+
     return {
       sessionId: info.session_id,
       title: info.save_label || info.title || info.agent_label || "Untitled session",
       workingDir: info.working_dir,
       status,
-      model: info.session_id === this.activeSessionId ? this.activeModel : undefined,
+      model:
+        savedPrefs?.model ??
+        (info.session_id === this.activeSessionId ? this.activeModel : undefined),
       provider:
-        info.session_id === this.activeSessionId ? this.activeProvider : undefined,
-      permissionMode: permMap[info.session_id] ?? this.activePermissionMode,
+        savedPrefs?.provider ??
+        (info.session_id === this.activeSessionId
+          ? this.activeProvider
+          : undefined),
+      ...(savedPrefs?.effort ? { effort: savedPrefs.effort } : {}),
+      ...(savedPrefs?.serviceTier ? { serviceTier: savedPrefs.serviceTier } : {}),
+      ...(savedPrefs?.cacheTtl ? { cacheTtl: savedPrefs.cacheTtl } : {}),
+      permissionMode: resolvedPermissionMode,
       updatedAtMs: info.updated_at_ms ?? info.last_active_at_ms ?? Date.now(),
       pinned: isPinned,
       archived: isArchived,
@@ -1112,6 +1316,9 @@ export class SessionHubCore extends EventEmitter {
       model?: string;
       provider?: string;
       apiMethod?: string;
+      effort?: EffortLevel;
+      serviceTier?: ServiceTier;
+      cacheTtl?: CacheTtl;
     } = {},
   ): Promise<SessionSummaryView> {
     return this.socketPool.runSerialized(async () => {
@@ -1137,13 +1344,9 @@ export class SessionHubCore extends EventEmitter {
 
       const desiredMode = options.permissionMode ?? this.getDefaultPermissionMode();
       this.activePermissionMode = desiredMode;
-      await this.saveSessionPermissionMode(info.session_id, desiredMode);
 
-      if (client.supports("permissions")) {
-        await client
-          .setPermissionMode(info.session_id, toHarnessPermissionMode(desiredMode))
-          .catch(() => {});
-      }
+      let resolvedModelSpec: string | undefined;
+      let resolvedProvider: string | undefined = options.provider;
       if (options.model) {
         const modelSpec = formatHarnessModelSpec(
           options.model,
@@ -1151,22 +1354,52 @@ export class SessionHubCore extends EventEmitter {
           options.apiMethod,
         );
         if (modelSpec) {
-          await client.setModel(info.session_id, modelSpec).catch(() => {});
-          this.activeModel = modelSpec;
-          if (options.provider) {
-            this.activeProvider = options.provider;
-          } else if (modelSpec.startsWith("rayu:")) {
-            this.activeProvider = "rayu";
+          resolvedModelSpec = modelSpec;
+          if (!resolvedProvider && modelSpec.startsWith("rayu:")) {
+            resolvedProvider = "rayu";
           }
         }
+      }
+      const normalizedEffort = normalizeStoredEffort(options.effort);
+
+      await this.saveSessionPrefs(info.session_id, {
+        permissionMode: desiredMode,
+        ...(resolvedModelSpec ? { model: resolvedModelSpec } : {}),
+        ...(resolvedProvider ? { provider: resolvedProvider } : {}),
+        ...(normalizedEffort ? { effort: normalizedEffort } : {}),
+        ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+        ...(options.cacheTtl ? { cacheTtl: options.cacheTtl } : {}),
+      });
+
+      if (client.supports("permissions")) {
+        await client
+          .setPermissionMode(info.session_id, toHarnessPermissionMode(desiredMode))
+          .catch(() => {});
+      }
+      if (resolvedModelSpec) {
+        await client.setModel(info.session_id, resolvedModelSpec).catch(() => {});
+        this.appliedModelBySession.set(info.session_id, resolvedModelSpec);
+        this.activeModel = resolvedModelSpec;
+        if (resolvedProvider) {
+          this.activeProvider = resolvedProvider;
+        }
+      }
+      if (normalizedEffort) {
+        await client
+          .setReasoningEffort(info.session_id, normalizedEffort)
+          .then(() => {
+            this.appliedEffortBySession.set(info.session_id, normalizedEffort);
+          })
+          .catch(() => {});
       }
 
       const runtimeInfo = await client
         .getRuntimeInfo(info.session_id)
         .catch(() => null);
       if (runtimeInfo) {
-        this.activeModel = runtimeInfo.model ?? this.activeModel;
-        this.activeProvider = runtimeInfo.provider ?? this.activeProvider;
+        this.activeModel = resolvedModelSpec ?? runtimeInfo.model ?? this.activeModel;
+        this.activeProvider =
+          resolvedProvider ?? runtimeInfo.provider ?? this.activeProvider;
       }
 
       this.fileChangesBySession.set(
@@ -1214,13 +1447,26 @@ export class SessionHubCore extends EventEmitter {
       void this.refreshBackgroundProcesses(info.session_id).catch(() => {});
       await this.host.workspaceState.update(ACTIVE_SESSION_KEY, info.session_id);
 
-      const savedMode = this.getPermissionModesMap()[info.session_id];
-      if (savedMode) {
-        this.activePermissionMode = savedMode;
-        if (!reused && client.supports("permissions")) {
-          await client
-            .setPermissionMode(info.session_id, toHarnessPermissionMode(savedMode))
-            .catch(() => {});
+      const savedPrefs = this.getSessionPrefs(info.session_id);
+      const savedMode = savedPrefs?.permissionMode;
+      this.activePermissionMode = savedMode ?? this.getDefaultPermissionMode();
+      if (savedMode && !reused && client.supports("permissions")) {
+        await client
+          .setPermissionMode(info.session_id, toHarnessPermissionMode(savedMode))
+          .catch(() => {});
+      }
+      if (savedPrefs?.effort && !reused) {
+        await client
+          .setReasoningEffort(info.session_id, savedPrefs.effort)
+          .then(() => {
+            this.appliedEffortBySession.set(info.session_id, savedPrefs.effort!);
+          })
+          .catch(() => {});
+      }
+      if (savedPrefs?.model) {
+        this.activeModel = savedPrefs.model;
+        if (savedPrefs.provider) {
+          this.activeProvider = savedPrefs.provider;
         }
       }
 
@@ -1229,8 +1475,9 @@ export class SessionHubCore extends EventEmitter {
           .getRuntimeInfo(info.session_id)
           .catch(() => null);
         if (runtimeInfo) {
-          this.activeModel = runtimeInfo.model ?? this.activeModel;
-          this.activeProvider = runtimeInfo.provider ?? this.activeProvider;
+          this.activeModel = savedPrefs?.model ?? runtimeInfo.model ?? this.activeModel;
+          this.activeProvider =
+            savedPrefs?.provider ?? runtimeInfo.provider ?? this.activeProvider;
         }
       }
 
@@ -1253,13 +1500,30 @@ export class SessionHubCore extends EventEmitter {
     sessionId: string,
     mode: PermissionModeId,
   ): Promise<{ ok: boolean; mode: PermissionModeId }> {
-    const client = await this.getClient(sessionId);
-    const wireMode = toHarnessPermissionMode(mode);
-    await client.setPermissionMode(sessionId, wireMode);
     if (!this.activeSessionId || this.activeSessionId === sessionId) {
       this.activePermissionMode = mode;
     }
-    await this.saveSessionPermissionMode(sessionId, mode);
+    await this.saveSessionPrefs(sessionId, { permissionMode: mode });
+
+    if (this.isSessionTurnActive(sessionId)) {
+      this.pendingPermissionModeBySession.set(sessionId, mode);
+      this.emit("stateChanged");
+      return { ok: true, mode };
+    }
+
+    const client = await this.getClient(sessionId);
+    const wireMode = toHarnessPermissionMode(mode);
+    try {
+      await client.setPermissionMode(sessionId, wireMode);
+      this.pendingPermissionModeBySession.delete(sessionId);
+    } catch (permErr) {
+      if (this.isTimeoutError(permErr)) {
+        this.pendingPermissionModeBySession.set(sessionId, mode);
+        this.emit("stateChanged");
+        return { ok: true, mode };
+      }
+      throw permErr;
+    }
     this.emit("stateChanged");
     return { ok: true, mode };
   }
@@ -1526,26 +1790,73 @@ export class SessionHubCore extends EventEmitter {
             .catch(() => {});
         }
 
-        const activeModelSpec = this.activeModel
-          ? formatHarnessModelSpec(this.activeModel, this.activeProvider)
-          : "";
+        const pendingModel = this.pendingModelBySession.get(sessionId);
+        const pendingEffort = this.pendingEffortBySession.get(sessionId);
+        const pendingPerm = this.pendingPermissionModeBySession.get(sessionId);
+        this.pendingModelBySession.delete(sessionId);
+        this.pendingEffortBySession.delete(sessionId);
+        this.pendingPermissionModeBySession.delete(sessionId);
 
-        if (requestedModelSpec && requestedModelSpec !== activeModelSpec) {
-          await client.setModel(sessionId, requestedModelSpec);
+        if (pendingPerm) {
+          try {
+            await client.setPermissionMode(
+              sessionId,
+              toHarnessPermissionMode(pendingPerm),
+            );
+          } catch {
+            // Non-fatal: keep proceeding with send_message
+          }
+        }
+
+        const effectiveModelSpec = pendingModel?.modelSpec || requestedModelSpec;
+        const effectiveProvider = pendingModel?.provider || requestedProvider;
+        const effectiveEffort = pendingEffort || requestedEffort;
+        const normalizedEffectiveEffort = normalizeStoredEffort(effectiveEffort);
+
+        if (effectiveModelSpec || normalizedEffectiveEffort) {
+          void this.saveSessionPrefs(sessionId, {
+            ...(effectiveModelSpec ? { model: effectiveModelSpec } : {}),
+            ...(effectiveProvider ? { provider: effectiveProvider } : {}),
+            ...(normalizedEffectiveEffort
+              ? { effort: normalizedEffectiveEffort }
+              : {}),
+          });
+        }
+
+        const appliedModelSpec =
+          this.appliedModelBySession.get(sessionId) ??
+          (this.activeModel
+            ? formatHarnessModelSpec(this.activeModel, this.activeProvider)
+            : "");
+
+        if (effectiveModelSpec && effectiveModelSpec !== appliedModelSpec) {
+          try {
+            await client.setModel(sessionId, effectiveModelSpec);
+            this.appliedModelBySession.set(sessionId, effectiveModelSpec);
+          } catch (modelErr) {
+            if (!this.isTimeoutError(modelErr)) {
+              throw modelErr;
+            }
+          }
           if (!this.activeSessionId || this.activeSessionId === sessionId) {
-            this.activeModel = requestedModelSpec;
-            if (requestedProvider) {
-              this.activeProvider = requestedProvider;
-            } else if (requestedModelSpec.startsWith("rayu:")) {
+            this.activeModel = effectiveModelSpec;
+            if (effectiveProvider) {
+              this.activeProvider = effectiveProvider;
+            } else if (effectiveModelSpec.startsWith("rayu:")) {
               this.activeProvider = "rayu";
             }
           }
           this.emit("stateChanged");
         }
-        if (requestedEffort) {
-          await client
-            .setReasoningEffort(sessionId, requestedEffort)
-            .catch(() => {});
+
+        const appliedEffort = this.appliedEffortBySession.get(sessionId);
+        if (effectiveEffort && effectiveEffort !== appliedEffort) {
+          try {
+            await client.setReasoningEffort(sessionId, effectiveEffort);
+            this.appliedEffortBySession.set(sessionId, effectiveEffort);
+          } catch {
+            // Non-fatal: model may not support effort or daemon is mid-handoff.
+          }
         }
 
         this.socketPool.markTurnActive(sessionId);
@@ -1556,12 +1867,13 @@ export class SessionHubCore extends EventEmitter {
               content,
               images,
               reminder,
-              { requireAccept: true },
+              { requireAccept: true, acceptTimeoutMs: 30_000 },
             );
           } else {
             await client.sendMessage(sessionId, content, {
               images,
               requireAccept: true,
+              acceptTimeoutMs: 30_000,
             });
           }
         } catch (err) {
@@ -1608,6 +1920,7 @@ export class SessionHubCore extends EventEmitter {
         typeof apiReq.session_id === "string" &&
         typeof apiReq.model === "string"
       ) {
+        const targetSessionId = apiReq.session_id;
         const requestedProvider =
           typeof apiReq.provider === "string" && apiReq.provider.trim()
             ? apiReq.provider.trim()
@@ -1624,8 +1937,62 @@ export class SessionHubCore extends EventEmitter {
           requestedApiMethod,
         );
         if (modelSpec) {
-          await client.setModel(apiReq.session_id, modelSpec);
-          if (!this.activeSessionId || this.activeSessionId === apiReq.session_id) {
+          void this.saveSessionPrefs(targetSessionId, {
+            model: modelSpec,
+            ...(requestedProvider
+              ? { provider: requestedProvider }
+              : modelSpec.startsWith("rayu:")
+                ? { provider: "rayu" }
+                : {}),
+          });
+          const deferForNextTurn =
+            apiReq.apply_next_turn === true ||
+            this.isSessionTurnActive(targetSessionId);
+          if (deferForNextTurn) {
+            this.pendingModelBySession.set(targetSessionId, {
+              modelSpec,
+              provider: requestedProvider,
+            });
+            if (!this.activeSessionId || this.activeSessionId === targetSessionId) {
+              this.activeModel = modelSpec;
+              if (requestedProvider) {
+                this.activeProvider = requestedProvider;
+              } else if (modelSpec.startsWith("rayu:")) {
+                this.activeProvider = "rayu";
+              }
+            }
+            this.emit("stateChanged");
+            replyCallback({ ...replyMeta, ev: "ok", deferred: true });
+            return;
+          }
+
+          try {
+            await client.setModel(targetSessionId, modelSpec);
+            this.pendingModelBySession.delete(targetSessionId);
+            this.appliedModelBySession.set(targetSessionId, modelSpec);
+          } catch (modelErr) {
+            if (this.isTimeoutError(modelErr)) {
+              // Daemon is busy with a running turn (e.g. external client) — defer cleanly for next message.
+              this.pendingModelBySession.set(targetSessionId, {
+                modelSpec,
+                provider: requestedProvider,
+              });
+              if (!this.activeSessionId || this.activeSessionId === targetSessionId) {
+                this.activeModel = modelSpec;
+                if (requestedProvider) {
+                  this.activeProvider = requestedProvider;
+                } else if (modelSpec.startsWith("rayu:")) {
+                  this.activeProvider = "rayu";
+                }
+              }
+              this.emit("stateChanged");
+              replyCallback({ ...replyMeta, ev: "ok", deferred: true });
+              return;
+            }
+            throw modelErr;
+          }
+
+          if (!this.activeSessionId || this.activeSessionId === targetSessionId) {
             this.activeModel = modelSpec;
             if (requestedProvider) {
               this.activeProvider = requestedProvider;
@@ -1634,6 +2001,53 @@ export class SessionHubCore extends EventEmitter {
             }
           }
           this.emit("stateChanged");
+        }
+        replyCallback({ ...replyMeta, ev: "ok" });
+        return;
+      }
+
+      if (
+        req === "set_reasoning_effort" &&
+        typeof apiReq.session_id === "string" &&
+        typeof apiReq.effort === "string"
+      ) {
+        const targetSessionId = apiReq.session_id;
+        const effort = apiReq.effort.trim();
+        if (effort) {
+          const normalizedEffort = normalizeStoredEffort(effort);
+          if (normalizedEffort) {
+            void this.saveSessionPrefs(targetSessionId, {
+              effort: normalizedEffort,
+            });
+          }
+          const deferForNextTurn =
+            apiReq.apply_next_turn === true ||
+            this.isSessionTurnActive(targetSessionId);
+          if (deferForNextTurn) {
+            this.pendingEffortBySession.set(targetSessionId, effort);
+            replyCallback({ ...replyMeta, ev: "ok", deferred: true });
+            return;
+          }
+
+          if (this.appliedEffortBySession.get(targetSessionId) === effort) {
+            this.pendingEffortBySession.delete(targetSessionId);
+            replyCallback({ ...replyMeta, ev: "ok" });
+            return;
+          }
+
+          try {
+            await client.setReasoningEffort(targetSessionId, effort);
+            this.pendingEffortBySession.delete(targetSessionId);
+            this.appliedEffortBySession.set(targetSessionId, effort);
+          } catch (effortErr) {
+            if (this.isTimeoutError(effortErr)) {
+              // Daemon is busy — defer effort change cleanly for the next message without erroring.
+              this.pendingEffortBySession.set(targetSessionId, effort);
+              replyCallback({ ...replyMeta, ev: "ok", deferred: true });
+              return;
+            }
+            throw effortErr;
+          }
         }
         replyCallback({ ...replyMeta, ev: "ok" });
         return;
@@ -1708,10 +2122,15 @@ export class SessionHubCore extends EventEmitter {
           : "Rayu could not complete the request.";
       const sessionId =
         typeof rawFrame.session_id === "string" ? rawFrame.session_id : undefined;
+      const reqName = typeof rawFrame.req === "string" ? rawFrame.req : undefined;
+      const isTurnMutation =
+        reqName === "send_message" || reqName === "user_input";
       replyCallback({
         ...replyMeta,
         ev: "error",
         ...(sessionId ? { session_id: sessionId } : {}),
+        ...(reqName ? { req: reqName } : {}),
+        ...(!isTurnMutation ? { non_turn: true } : {}),
         code,
         message,
       });
@@ -1836,6 +2255,11 @@ export class SessionHubCore extends EventEmitter {
       this.backgroundPollTimer = null;
     }
     this.streamingBySession.clear();
+    this.pendingModelBySession.clear();
+    this.pendingEffortBySession.clear();
+    this.pendingPermissionModeBySession.clear();
+    this.appliedModelBySession.clear();
+    this.appliedEffortBySession.clear();
     this.isTurnStreaming = false;
     this.workspaceUnsub?.();
     this.workspaceUnsub = null;

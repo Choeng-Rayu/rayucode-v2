@@ -57,6 +57,7 @@ export interface ModelEffortPopoverProps {
   onSelectCacheTtl?: (ttl: CacheTtl) => void;
   onRefreshModels?: () => void | Promise<unknown>;
   isRefreshing?: boolean;
+  isStreaming?: boolean;
   defaultOpen?: boolean;
   initialStage?: "effort" | "list";
   disabled?: boolean;
@@ -85,6 +86,7 @@ export function ModelEffortPopover({
   onSelectCacheTtl,
   onRefreshModels,
   isRefreshing = false,
+  isStreaming = false,
   defaultOpen = false,
   initialStage = "effort",
   disabled = false,
@@ -171,10 +173,11 @@ export function ModelEffortPopover({
           req: "set_reasoning_effort",
           session_id: sessionId ?? undefined,
           effort: nextEffort,
+          ...(isStreaming ? { apply_next_turn: true } : {}),
         });
       }
     },
-    [effort, onSelectEffort, sessionId],
+    [effort, isStreaming, onSelectEffort, sessionId],
   );
 
   const updateFromClientX = React.useCallback(
@@ -290,8 +293,28 @@ export function ModelEffortPopover({
         provider: "rayu",
         apiMethod: "rayu",
       };
+    const defaultSpec =
+      defaultModel.modelSpec ||
+      formatHarnessModelSpec(
+        defaultModel.id,
+        defaultModel.provider,
+        defaultModel.apiMethod,
+      ) ||
+      defaultModel.id;
     onSelectModel(defaultModel);
     onSelectEffort(DEFAULT_EFFORT);
+    sendHarnessRequest({
+      req: "set_model",
+      session_id: sessionId ?? undefined,
+      model: defaultSpec,
+      ...(isStreaming ? { apply_next_turn: true } : {}),
+    });
+    sendHarnessRequest({
+      req: "set_reasoning_effort",
+      session_id: sessionId ?? undefined,
+      effort: DEFAULT_EFFORT,
+      ...(isStreaming ? { apply_next_turn: true } : {}),
+    });
     handleServiceTierSelect(DEFAULT_SERVICE_TIER);
   };
 
@@ -305,6 +328,7 @@ export function ModelEffortPopover({
       req: "set_model",
       session_id: sessionId ?? undefined,
       model: spec,
+      ...(isStreaming ? { apply_next_turn: true } : {}),
     });
     setStage("effort");
     setOpen(false);
@@ -442,6 +466,14 @@ export function ModelEffortPopover({
                   {authTag ? (
                     <span className="text-[10.5px] text-muted-ink">
                       {authTag}
+                    </span>
+                  ) : null}
+                  {isStreaming ? (
+                    <span
+                      data-testid="model-effort-next-turn-hint"
+                      className="mt-0.5 rounded-full border border-brand/25 bg-brand-soft px-2 py-0.5 text-[10px] font-medium text-brand-text"
+                    >
+                      Changes apply to next message
                     </span>
                   ) : null}
                 </div>

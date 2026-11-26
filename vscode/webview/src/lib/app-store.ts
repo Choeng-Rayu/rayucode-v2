@@ -8,6 +8,7 @@ import type {
   AccountStatusView,
   AppRoute,
   BackgroundProcessView,
+  CacheTtl,
   ComposerInjectionPayload,
   DaemonStatusView,
   DensityPreference,
@@ -17,6 +18,9 @@ import type {
   HostToWebviewMessage,
   ImageAttachmentView,
   OpenLocation,
+  PermissionModeId,
+  ServiceTier,
+  SessionSummaryView,
   SurfaceKind,
   ThemePreference,
   WorkbenchPreferences,
@@ -26,7 +30,7 @@ import type {
 
 import type { PendingPermissionRequest } from "./harness-adapter";
 import { setMediaBaseUri } from "./media-url";
-import { postToHost, setWebviewState } from "./rpc-client";
+import { getWebviewState, postToHost, setWebviewState } from "./rpc-client";
 
 export type {
   AccentPreference,
@@ -85,6 +89,16 @@ export interface OptimisticUserTurn {
 
 export type MidTurnSendMode = "steer" | "queue";
 
+export interface SessionComposerPrefs {
+  modelId?: string;
+  modelLabel?: string;
+  apiMethod?: string;
+  effort?: EffortLevel;
+  permissionMode?: PermissionModeId;
+  serviceTier?: ServiceTier;
+  cacheTtl?: CacheTtl;
+}
+
 export interface MidTurnMessageItem {
   id: string;
   sessionId: string;
@@ -96,6 +110,9 @@ export interface MidTurnMessageItem {
   modelSpec?: string;
   apiMethod?: string;
   effort?: EffortLevel;
+  permissionMode?: PermissionModeId;
+  serviceTier?: ServiceTier;
+  cacheTtl?: CacheTtl;
 }
 
 export interface AppStoreState {
@@ -157,6 +174,7 @@ export interface AppStoreState {
   activeDiagram: ActiveDiagramState;
   pendingUserTurn: OptimisticUserTurn | null;
   composerDrafts: Record<string, string>;
+  sessionPrefsBySession: Record<string, SessionComposerPrefs>;
   midTurnSendMode: MidTurnSendMode;
   midTurnMessagesBySession: Record<string, MidTurnMessageItem[]>;
   pausedQueueSessions: Record<string, boolean>;
@@ -205,6 +223,25 @@ export interface AppStoreState {
   queueComposerInjection: (injection: ComposerInjectionPayload) => void;
   consumeComposerInjection: (id: string) => void;
   setComposerDraft: (key: string, value: string) => void;
+  setSessionPrefs: (
+    sessionId: string,
+    patch: Partial<SessionComposerPrefs>,
+  ) => void;
+  clearSessionPrefField: (
+    sessionId: string,
+    field: keyof SessionComposerPrefs,
+  ) => void;
+  seedSessionPrefsFromSummary: (
+    summary: Pick<
+      SessionSummaryView,
+      | "sessionId"
+      | "model"
+      | "effort"
+      | "permissionMode"
+      | "serviceTier"
+      | "cacheTtl"
+    >,
+  ) => void;
   goBack: () => void;
   goForward: () => void;
 
@@ -409,6 +446,55 @@ function detectInitialSurface(): SurfaceKind {
   return "editorPanel";
 }
 
+function readInitialSessionPrefs(): Record<string, SessionComposerPrefs> {
+  try {
+    const raw = getWebviewState<{
+      sessionPrefsBySession?: Record<string, SessionComposerPrefs>;
+    }>();
+    if (
+      raw &&
+      typeof raw === "object" &&
+      raw.sessionPrefsBySession &&
+      typeof raw.sessionPrefsBySession === "object"
+    ) {
+      return { ...raw.sessionPrefsBySession };
+    }
+  } catch {
+    // ignore storage read errors in test/non-webview environments
+  }
+  return {};
+}
+
+function persistWebviewStateSnapshot(state: {
+  surface: SurfaceKind;
+  activeRoute: AppRoute;
+  activeSessionId: string | null;
+  sessionPrefsBySession: Record<string, SessionComposerPrefs>;
+}): void {
+  try {
+    const prev = getWebviewState<Record<string, unknown>>();
+    const base = prev && typeof prev === "object" ? prev : {};
+    const hasPrefs = Object.keys(state.sessionPrefsBySession).length > 0;
+    const nextState: Record<string, unknown> = {
+      ...base,
+      ...(state.surface === "editorPanel"
+        ? {
+            route: state.activeRoute,
+            sessionId: state.activeSessionId ?? undefined,
+          }
+        : {}),
+    };
+    if (hasPrefs) {
+      nextState.sessionPrefsBySession = state.sessionPrefsBySession;
+    } else {
+      delete nextState.sessionPrefsBySession;
+    }
+    setWebviewState(nextState);
+  } catch {
+    // ignore
+  }
+}
+
 export const useAppStore = create<AppStoreState>((set, get) => ({
   surface: detectInitialSurface(),
   route: "home",
@@ -463,6 +549,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   activeDiagram: DEFAULT_DIAGRAM_STATE,
   pendingUserTurn: null,
   composerDrafts: {},
+  sessionPrefsBySession: readInitialSessionPrefs(),
   midTurnSendMode: "steer",
   midTurnMessagesBySession: {},
   pausedQueueSessions: {},
@@ -566,10 +653,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     });
     const next = get();
     if (next.surface === "editorPanel") {
-      setWebviewState({
-        route: next.activeRoute,
-        sessionId: next.activeSessionId ?? undefined,
-      });
+      persistWebviewStateSnapshot(next);
     }
   },
 
@@ -619,10 +703,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     });
     const next = get();
     if (next.surface === "editorPanel") {
-      setWebviewState({
-        route: next.activeRoute,
-        sessionId: next.activeSessionId ?? undefined,
-      });
+      persistWebviewStateSnapshot(next);
     }
   },
 
@@ -675,11 +756,28 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           nextEntry,
         ].slice(-50);
 
+    const nextDraftPrefs: SessionComposerPrefs = {
+      ...(draft.model ? { modelId: draft.model } : {}),
+      ...(draft.reasoningEffort
+        ? { effort: draft.reasoningEffort as EffortLevel }
+        : {}),
+      ...(draft.permissionMode
+        ? { permissionMode: draft.permissionMode as PermissionModeId }
+        : {}),
+    };
+    const nextSessionPrefs = { ...state.sessionPrefsBySession };
+    if (Object.keys(nextDraftPrefs).length > 0) {
+      nextSessionPrefs.__draft__ = nextDraftPrefs;
+    } else {
+      delete nextSessionPrefs.__draft__;
+    }
+
     set({
       activeDraft: draft,
       activeSessionId: null,
       activeSessionTitle: null,
       activeProjectPath: draft.workingDir ?? state.activeProjectPath,
+      sessionPrefsBySession: nextSessionPrefs,
       route: "home",
       activeRoute: "home",
       navHistory: nextHistory,
@@ -733,6 +831,107 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       }
       return { composerDrafts: next };
     }),
+
+  setSessionPrefs: (sessionId, patch) => {
+    if (!sessionId) return;
+    let didChange = false;
+    set((state) => {
+      const prev = state.sessionPrefsBySession[sessionId] ?? {};
+      const next: SessionComposerPrefs = { ...prev };
+      if (patch.modelId !== undefined && patch.modelId !== prev.modelId) {
+        next.modelId = patch.modelId;
+        didChange = true;
+      }
+      if (
+        patch.modelLabel !== undefined &&
+        patch.modelLabel !== prev.modelLabel
+      ) {
+        next.modelLabel = patch.modelLabel;
+        didChange = true;
+      }
+      if (patch.apiMethod !== undefined && patch.apiMethod !== prev.apiMethod) {
+        next.apiMethod = patch.apiMethod;
+        didChange = true;
+      }
+      if (patch.effort !== undefined && patch.effort !== prev.effort) {
+        next.effort = patch.effort;
+        didChange = true;
+      }
+      if (
+        patch.permissionMode !== undefined &&
+        patch.permissionMode !== prev.permissionMode
+      ) {
+        next.permissionMode = patch.permissionMode;
+        didChange = true;
+      }
+      if (
+        patch.serviceTier !== undefined &&
+        patch.serviceTier !== prev.serviceTier
+      ) {
+        next.serviceTier = patch.serviceTier;
+        didChange = true;
+      }
+      if (patch.cacheTtl !== undefined && patch.cacheTtl !== prev.cacheTtl) {
+        next.cacheTtl = patch.cacheTtl;
+        didChange = true;
+      }
+      if (!didChange) return state;
+      return {
+        sessionPrefsBySession: {
+          ...state.sessionPrefsBySession,
+          [sessionId]: next,
+        },
+      };
+    });
+    if (didChange) {
+      persistWebviewStateSnapshot(get());
+    }
+  },
+
+  clearSessionPrefField: (sessionId, field) => {
+    if (!sessionId) return;
+    let didChange = false;
+    set((state) => {
+      const prev = state.sessionPrefsBySession[sessionId];
+      if (!prev || !(field in prev)) return state;
+      const next: SessionComposerPrefs = { ...prev };
+      delete next[field];
+      didChange = true;
+      return {
+        sessionPrefsBySession: {
+          ...state.sessionPrefsBySession,
+          [sessionId]: next,
+        },
+      };
+    });
+    if (didChange) {
+      persistWebviewStateSnapshot(get());
+    }
+  },
+
+  seedSessionPrefsFromSummary: (summary) => {
+    if (!summary.sessionId) return;
+    const prev = get().sessionPrefsBySession[summary.sessionId] ?? {};
+    const patch: Partial<SessionComposerPrefs> = {};
+    if (summary.model && prev.modelId === undefined) {
+      patch.modelId = summary.model;
+    }
+    if (summary.effort && prev.effort === undefined) {
+      patch.effort = summary.effort;
+    }
+    if (summary.permissionMode && prev.permissionMode === undefined) {
+      patch.permissionMode = summary.permissionMode;
+    }
+    if (summary.serviceTier && prev.serviceTier === undefined) {
+      patch.serviceTier = summary.serviceTier;
+    }
+    if (summary.cacheTtl && prev.cacheTtl === undefined) {
+      patch.cacheTtl = summary.cacheTtl;
+    }
+    if (Object.keys(patch).length > 0) {
+      get().setSessionPrefs(summary.sessionId, patch);
+    }
+  },
 
   goBack: () => {
     set((state) => {
@@ -1240,10 +1439,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         });
         const next = get();
         if (next.surface === "editorPanel") {
-          setWebviewState({
-            route: next.activeRoute,
-            sessionId: next.activeSessionId ?? undefined,
-          });
+          persistWebviewStateSnapshot(next);
         }
         return;
       }

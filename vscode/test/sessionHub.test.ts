@@ -64,7 +64,10 @@ class FakeRayucodeClient extends EventEmitter {
   readonly cancelAllCalls: string[] = [];
   readonly createdSessions: SessionInfo[] = [];
   readonly setModelCalls: Array<{ sessionId: string; model: string }> = [];
+  readonly setEffortCalls: Array<{ sessionId: string; effort: string }> = [];
+  readonly setPermissionModeCalls: Array<{ sessionId: string; mode: string }> = [];
   readonly authNotifyCalls: string[] = [];
+  throwTimeoutOnControl = false;
 
   private readonly sessionsById: Map<string, SessionInfo>;
   private createSeq = 0;
@@ -130,13 +133,26 @@ class FakeRayucodeClient extends EventEmitter {
     };
   }
 
-  async setPermissionMode(): Promise<void> {}
+  async setPermissionMode(sessionId: string, mode: string): Promise<void> {
+    if (this.throwTimeoutOnControl) {
+      throw new Error("timeout: no reply to set_permission_mode within 15000ms");
+    }
+    this.setPermissionModeCalls.push({ sessionId, mode });
+  }
 
   async setModel(sessionId: string, model: string): Promise<void> {
+    if (this.throwTimeoutOnControl) {
+      throw new Error("timeout: no reply to set_model within 15000ms");
+    }
     this.setModelCalls.push({ sessionId, model });
   }
 
-  async setReasoningEffort(): Promise<void> {}
+  async setReasoningEffort(sessionId: string, effort: string): Promise<void> {
+    if (this.throwTimeoutOnControl) {
+      throw new Error("timeout: no reply to set_reasoning_effort within 15000ms");
+    }
+    this.setEffortCalls.push({ sessionId, effort });
+  }
   async setSessionSaved(): Promise<void> {}
   async archiveSession(): Promise<void> {}
   async restoreSession(): Promise<void> {}
@@ -996,4 +1012,250 @@ test("SessionHub handleHarnessRequest routes soft_interrupt and cancel_soft_inte
   assert.deepEqual(legacyReplies[0], { v: 1, reply_to: 31, ev: "ok" });
   assert.deepEqual(legacyClient.cancelByIdCalls, []);
   assert.deepEqual(legacyClient.cancelAllCalls, ["sess_legacy"]);
+});
+
+test("SessionHub defers mid-turn set_model and set_reasoning_effort without timeout errors and applies them for the next message", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-midturn-settings-");
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const client = new FakeRayucodeClient({
+    capabilities: ["permissions", "soft_interrupt_ids"],
+  });
+  const hub = new SessionHubCore(
+    createHostAdapter({ folders: [] }).adapter,
+    new FakeBridgeManager({ sharedClient: client }),
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  await hub.attachSession("sess_busy_opts");
+
+  // Simulate an active streaming turn on sess_busy_opts
+  client.emitFrame({
+    v: 1,
+    ev: "turn_start",
+    session_id: "sess_busy_opts",
+  });
+  assert.equal(hub.getIsTurnStreaming(), true);
+
+  // Changing model & reasoning effort mid-turn MUST NOT hit the busy daemon or error
+  const replies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 41,
+      req: "set_model",
+      session_id: "sess_busy_opts",
+      model: "rayu:claude-opus-4-6",
+    },
+    (reply) => replies.push(reply),
+  );
+  await hub.handleHarnessRequest(
+    {
+      id: 42,
+      req: "set_reasoning_effort",
+      session_id: "sess_busy_opts",
+      effort: "high",
+    },
+    (reply) => replies.push(reply),
+  );
+
+  assert.deepEqual(replies[0], {
+    v: 1,
+    reply_to: 41,
+    ev: "ok",
+    deferred: true,
+  });
+  assert.deepEqual(replies[1], {
+    v: 1,
+    reply_to: 42,
+    ev: "ok",
+    deferred: true,
+  });
+  assert.equal(client.setModelCalls.length, 0);
+  assert.equal(client.setEffortCalls.length, 0);
+
+  // When the active turn finishes, deferred settings flush cleanly
+  client.emitFrame({
+    v: 1,
+    ev: "turn_done",
+    session_id: "sess_busy_opts",
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(client.setModelCalls, [
+    { sessionId: "sess_busy_opts", model: "rayu:claude-opus-4-6" },
+  ]);
+  assert.deepEqual(client.setEffortCalls, [
+    { sessionId: "sess_busy_opts", effort: "high" },
+  ]);
+
+  // Sending next message with the same effort/model does NOT fire redundant setReasoningEffort/setModel calls
+  client.setModelCalls.length = 0;
+  client.setEffortCalls.length = 0;
+  await hub.handleHarnessRequest(
+    {
+      id: 43,
+      req: "send_message",
+      session_id: "sess_busy_opts",
+      content: "Next turn prompt",
+      model: "rayu:claude-opus-4-6",
+      effort: "high",
+    },
+    (reply) => replies.push(reply),
+  );
+  assert.equal(client.setModelCalls.length, 0);
+  assert.equal(client.setEffortCalls.length, 0);
+  assert.equal(client.sentMessages.length, 1);
+
+  // Even if the daemon times out on an idle set_reasoning_effort (externally busy), defer without error
+  client.emitFrame({
+    v: 1,
+    ev: "turn_done",
+    session_id: "sess_busy_opts",
+  });
+  client.throwTimeoutOnControl = true;
+  const timeoutReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 44,
+      req: "set_reasoning_effort",
+      session_id: "sess_busy_opts",
+      effort: "xhigh",
+    },
+    (reply) => timeoutReplies.push(reply),
+  );
+  assert.deepEqual(timeoutReplies[0], {
+    v: 1,
+    reply_to: 44,
+    ev: "ok",
+    deferred: true,
+  });
+
+  // Once daemon becomes free, next send_message applies the deferred effort ("xhigh")
+  client.throwTimeoutOnControl = false;
+  await hub.handleHarnessRequest(
+    {
+      id: 45,
+      req: "send_message",
+      session_id: "sess_busy_opts",
+      content: "Follow-up prompt",
+      effort: "medium",
+    },
+    (reply) => timeoutReplies.push(reply),
+  );
+  assert.deepEqual(client.setEffortCalls, [
+    { sessionId: "sess_busy_opts", effort: "xhigh" },
+  ]);
+});
+
+test("SessionHubCore remembers effort, permissionMode, and model independently per session and defers mid-turn permission changes", async () => {
+  const sessionsById = new Map<string, SessionInfo>();
+  const clients: FakeRayucodeClient[] = [];
+  const stateStore = new Map<string, unknown>();
+  const workspaceState = {
+    get<T>(key: string, defaultValue?: T): T {
+      return stateStore.has(key) ? (stateStore.get(key) as T) : (defaultValue as T);
+    },
+    async update(key: string, value: unknown): Promise<void> {
+      stateStore.set(key, value);
+    },
+  };
+  const bridge = Object.assign(new EventEmitter(), {
+    getStatus: () => ({ state: "connected" as const, capabilities: ["permissions"] }),
+    getActiveClient: () => (clients[0] as unknown as RayucodeClient) ?? null,
+    ensureConnected: async () => {
+      if (clients.length === 0) {
+        clients.push(new FakeRayucodeClient({ sessionsById }));
+      }
+      return clients[0] as unknown as RayucodeClient;
+    },
+    dialClient: async () => {
+      const c = new FakeRayucodeClient({ sessionsById });
+      clients.push(c);
+      return c as unknown as RayucodeClient;
+    },
+  }) as SessionHubBridgeLike;
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-session-prefs-"));
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+  });
+  const host: SessionHubHostAdapter = {
+    workspaceState,
+    getWorkspaceFolders: () => [{ name: "workspace", fsPath: "/workspace" }],
+    getDefaultPermissionModeRaw: () => "default",
+  };
+  const hub = new SessionHubCore(host, bridge, { workspaceRegistry: registry });
+
+  try {
+    const sessA = await hub.createSession({
+      workingDir: "/workspace",
+      permissionMode: "acceptEdits",
+      model: "rayu:claude-opus-4-6",
+      effort: "high",
+    });
+    const sessB = await hub.createSession({
+      workingDir: "/workspace",
+      permissionMode: "plan",
+      model: "rayu:claude-sonnet-4-5",
+      effort: "low",
+    });
+
+    assert.equal(sessA.permissionMode, "acceptEdits");
+    assert.equal(sessA.effort, "high");
+    assert.equal(sessA.model, "rayu:claude-opus-4-6");
+
+    assert.equal(sessB.permissionMode, "plan");
+    assert.equal(sessB.effort, "low");
+    assert.equal(sessB.model, "rayu:claude-sonnet-4-5");
+
+    // Listing sessions preserves each session's own prefs without cross-session bleed
+    const listed = await hub.listSessions();
+    const listedA = listed.sessions.find((s) => s.sessionId === sessA.sessionId);
+    const listedB = listed.sessions.find((s) => s.sessionId === sessB.sessionId);
+    assert.equal(listedA?.permissionMode, "acceptEdits");
+    assert.equal(listedA?.effort, "high");
+    assert.equal(listedB?.permissionMode, "plan");
+    assert.equal(listedB?.effort, "low");
+
+    // Switching back to Session A restores Session A's permission mode and effort
+    const reattachedA = await hub.attachSession(sessA.sessionId);
+    assert.equal(reattachedA.permissionMode, "acceptEdits");
+    assert.equal(reattachedA.effort, "high");
+    assert.equal(hub.getActivePermissionMode(), "acceptEdits");
+
+    // While Session A is actively streaming, changing permission mode defers without hitting busy client
+    const clientA = clients[0]!;
+    clientA.setPermissionModeCalls.length = 0;
+    clientA.emitFrame({
+      v: 1,
+      ev: "turn_start",
+      session_id: sessA.sessionId,
+    });
+    const permRes = await hub.setPermissionMode(sessA.sessionId, "fullManage");
+    assert.deepEqual(permRes, { ok: true, mode: "fullManage" });
+    assert.equal(clientA.setPermissionModeCalls.length, 0);
+    assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "fullManage");
+
+    // Once turn finishes, deferred permission mode flushes cleanly to daemon
+    clientA.emitFrame({
+      v: 1,
+      ev: "turn_done",
+      session_id: sessA.sessionId,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(clientA.setPermissionModeCalls, [
+      { sessionId: sessA.sessionId, mode: "full_manage" },
+    ]);
+  } finally {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

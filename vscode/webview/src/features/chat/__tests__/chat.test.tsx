@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ALL_45_RUST_TOOLS,
   ApprovalCard,
+  ChatStream,
   ChatWorkspaceView,
   CiteLink,
   ClarifyingQuestionCard,
@@ -17,6 +18,7 @@ import {
   ShellCard,
   ToolStepCard,
   WorkTrace,
+  type ChatTurnView,
   type ExtendedWorkStepGroup,
 } from "@/features/chat";
 import * as rpcClient from "@/lib/rpc-client";
@@ -1018,10 +1020,321 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       </div>,
     );
 
-    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+    // Reasoning is collapsed by default and can be expanded/collapsed on click
+    const reasoningToggle = screen.getByTestId("work-reasoning-toggle");
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
+    fireEvent.click(reasoningToggle);
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("work-reasoning-body").textContent).toContain(
       "I should check the composer model sync before editing.",
     );
+
+    fireEvent.click(reasoningToggle);
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
     expect(screen.queryByText(/Payload/i)).toBeNull();
     expect(screen.queryByText(/should_never_render/)).toBeNull();
+  });
+
+  it("renders live working progress and status in the message footer after streamed content instead of duplicating it at the top", () => {
+    const qc = createQueryClient();
+    const baseTurn: ChatTurnView = {
+      id: "turn_footer_live",
+      sessionId: "ses_footer",
+      userPrompt: "Read proposal and write mockup",
+      workedDuration: "7s",
+      notes: [],
+      groups: [],
+      timeline: [
+        {
+          type: "reasoning",
+          id: "r_footer_1",
+          text: "Analyzing project structure before creating the mockup.",
+        },
+      ],
+      activeToolStatus: "Reading Project_Proposal.pdf...",
+      answerIntro: "Here is the initial mockup draft.",
+      answerBullets: [],
+      diffCard: {
+        id: "d_footer",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: true,
+    };
+
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <ChatStream sessionId="ses_footer" turns={[baseTurn]} isStreaming />
+      </QueryClientProvider>,
+    );
+
+    // Thinking block starts collapsed by default inside the live turn
+    expect(
+      screen.getByTestId("work-reasoning-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
+    // No top work-trace-toggle while live; working indicator lives in the message footer!
+    expect(screen.queryByTestId("work-trace-toggle")).toBeNull();
+    const footer = screen.getByTestId("turn-live-footer-turn_footer_live");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Working · 7s",
+    );
+    expect(screen.getByTestId("turn-live-status").textContent).toBe(
+      "Reading Project_Proposal.pdf...",
+    );
+
+    // Verify footer appears AFTER the streamed answer block in DOM order
+    const answerEl = document.querySelector('[data-slot="agent-answer"]');
+    expect(answerEl).toBeTruthy();
+    expect(
+      Boolean(
+        answerEl!.compareDocumentPosition(footer) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+
+    // When activeToolStatus clears while streaming answer, footer shows Writing response...
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_footer"
+          turns={[
+            {
+              ...baseTurn,
+              workedDuration: "11s",
+              activeToolStatus: null,
+            },
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Working · 11s",
+    );
+    expect(screen.getByTestId("turn-live-status").textContent).toBe(
+      "Writing response...",
+    );
+
+    // When turn finishes, live footer swaps cleanly to TurnActions and top shows collapsed Worked for 11s
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_footer"
+          turns={[
+            {
+              ...baseTurn,
+              workedDuration: "11s",
+              activeToolStatus: null,
+              isLive: false,
+            },
+          ]}
+          isStreaming={false}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("turn-live-footer-turn_footer_live")).toBeNull();
+    expect(screen.getByTestId("turn-actions-turn_footer_live")).toBeTruthy();
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Worked for 11s",
+    );
+  });
+
+  it("ignores non-turn control errors (e.g. set_reasoning_effort) without aborting or polluting the active live stream", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_non_turn_err",
+      pendingUserTurn: {
+        id: "opt_non_turn_1",
+        sessionId: "ses_non_turn_1",
+        prompt: "Read project proposal",
+        createdAtMs: Date.now(),
+      },
+    });
+    // Align optimistic sessionId with rendered session
+    useAppStore.setState({
+      pendingUserTurn: {
+        id: "opt_non_turn_1",
+        sessionId: "ses_non_turn_err",
+        prompt: "Read project proposal",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_non_turn_err" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_non_turn_err" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_non_turn_err",
+          text: "Reading proposal...",
+        },
+      });
+      // Non-turn control error must NOT inject **Error:** or terminate the stream
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "error",
+          session_id: "ses_non_turn_err",
+          req: "set_reasoning_effort",
+          non_turn: true,
+          code: "timeout",
+          message: "timeout: no reply to set_reasoning_effort within 15000ms",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_non_turn_err",
+          text: " Still streaming cleanly!",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Reading proposal\.\.\. Still streaming cleanly!/),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/no reply to set_reasoning_effort/i)).toBeNull();
+    expect(useAppStore.getState().isStreamActive).toBe(true);
+  });
+
+  it("scroll-to-bottom button scrolls to latest message and re-engages sticky live auto-follow forever until user scrolls up", () => {
+    const makeTurn = (text: string): ChatTurnView => ({
+      id: "turn_live_scroll",
+      sessionId: "ses_scroll",
+      userPrompt: "Stream long report",
+      workedDuration: "3s",
+      notes: [],
+      groups: [],
+      answerIntro: text,
+      answerBullets: [],
+      diffCard: {
+        id: "d0",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: true,
+    });
+
+    const qc = createQueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[makeTurn("Initial chunk")]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+
+    const viewport = document.querySelector(
+      '[data-slot="scroll-area-viewport"]',
+    ) as HTMLDivElement;
+    expect(viewport).toBeTruthy();
+
+    let scrollHeight = 1200;
+    const clientHeight = 400;
+    let scrollTop = 800;
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    // User scrolls UP away from bottom -> button appears & auto-follow pauses
+    scrollTop = 200;
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    fireEvent.scroll(viewport);
+
+    const scrollDownBtn = screen.getByTestId("chat-scroll-to-bottom-btn");
+    expect(scrollDownBtn).toBeTruthy();
+
+    // New streamed chunk arrives while user scrolled up -> stays at 200 (doesn't yank user)
+    scrollHeight = 1600;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[makeTurn("Initial chunk\nMore streamed output")]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(200);
+
+    // User clicks scroll-down button -> snaps to bottom, hides button, AND stays live-following forever
+    fireEvent.click(scrollDownBtn);
+    expect(scrollTop).toBe(1600);
+    expect(screen.queryByTestId("chat-scroll-to-bottom-btn")).toBeNull();
+
+    // Subsequent streamed chunks grow scrollHeight -> auto-follow keeps snapping to latest bottom!
+    scrollHeight = 2400;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[
+            makeTurn(
+              "Initial chunk\nMore streamed output\nEven newer live tokens",
+            ),
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(2400);
+
+    scrollHeight = 3200;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[
+            makeTurn(
+              "Initial chunk\nMore streamed output\nEven newer live tokens\nFinal live tokens",
+            ),
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(3200);
   });
 });

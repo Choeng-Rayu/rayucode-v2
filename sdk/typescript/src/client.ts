@@ -737,7 +737,22 @@ export class RayucodeClient extends EventEmitter {
         else resolve();
       };
       const onEvent = (frame: ServerFrame) => {
-        if (frame.ev === "message_accepted" && frame.session_id === request.session_id) {
+        const sameSession =
+          frame.session_id === request.session_id || frame.session_id === undefined;
+        if (
+          sameSession &&
+          (frame.ev === "message_accepted" ||
+            frame.ev === "turn_start" ||
+            frame.ev === "text_delta" ||
+            frame.ev === "reasoning_delta" ||
+            frame.ev === "thinking_delta" ||
+            frame.ev === "tool_start" ||
+            frame.ev === "tool_call" ||
+            (frame.ev === "session_status" &&
+              (frame.status === "running" ||
+                frame.status === "generating" ||
+                frame.status === "tool_running")))
+        ) {
           finish();
         } else if (strict && frame.ev === "error" && (frame.reply_to === undefined || frame.reply_to === id)) {
           finish(new HarnessError(String(frame.code ?? "internal"), String(frame.message ?? "Prompt failed")));
@@ -748,7 +763,7 @@ export class RayucodeClient extends EventEmitter {
         : undefined);
       const timer = setTimeout(() => finish(strict
         ? new HarnessError("timeout", "Rayu did not confirm the prompt. Check session history before retrying.")
-        : undefined), options.acceptTimeoutMs ?? 10_000);
+        : undefined), options.acceptTimeoutMs ?? 30_000);
       timer.unref?.();
       this.on("event", onEvent);
       this.once("close", onClose);

@@ -29,6 +29,7 @@ import {
   type DaemonStatusView,
   type DoctorCheckView,
   type EffortChoice,
+  type EffortLevel,
   type FeatureFlagsView,
   type FileChangeActionKind,
   type FileChangeActionResultView,
@@ -937,7 +938,29 @@ export interface FeatureRouterHub {
     model?: string;
     provider?: string;
     apiMethod?: string;
+    effort?: EffortLevel;
+    serviceTier?: ServiceTier;
+    cacheTtl?: CacheTtl;
   }): Promise<SessionSummaryView>;
+  getSessionPrefs?(sessionId: string): {
+    model?: string;
+    provider?: string;
+    effort?: EffortLevel;
+    permissionMode?: PermissionModeId;
+    serviceTier?: ServiceTier;
+    cacheTtl?: CacheTtl;
+  } | undefined;
+  saveSessionPrefs?(
+    sessionId: string,
+    patch: {
+      model?: string;
+      provider?: string;
+      effort?: EffortLevel;
+      permissionMode?: PermissionModeId;
+      serviceTier?: ServiceTier;
+      cacheTtl?: CacheTtl;
+    },
+  ): Promise<void>;
   attachSession(sessionId: string): Promise<SessionSummaryView>;
   getHistory(sessionId: string): Promise<SessionHistoryView>;
   setSessionPinned(sessionId: string, pinned: boolean): Promise<void>;
@@ -4955,13 +4978,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
               ...sessionProfiles,
             ];
 
+      const sessionScopedPrefs = params?.sessionId
+        ? deps.sessionHub.getSessionPrefs?.(params.sessionId)
+        : undefined;
+
       const { routes, defaultModel } = reconcileAuthConsistentRoutes({
         rawRoutes: runtimeInfo?.routes,
         hostAccount,
         rayuHostedModels,
-        runtimeModel: runtimeInfo?.model,
-        runtimeProvider: runtimeInfo?.provider,
-        fallbackActiveModel: deps.sessionHub.getActiveModel(),
+        runtimeModel: sessionScopedPrefs?.model ?? runtimeInfo?.model,
+        runtimeProvider: sessionScopedPrefs?.provider ?? runtimeInfo?.provider,
+        fallbackActiveModel:
+          sessionScopedPrefs?.model ?? deps.sessionHub.getActiveModel(),
       });
 
       const subagentModel =
@@ -4980,15 +5008,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
 
       return {
         defaultModel,
-        defaultEffort: deps.getGlobalState<EffortChoice>(
-          "rayucode.settings.defaultEffort",
-          "medium",
-        ),
-        serviceTier: deps.getGlobalState<ServiceTier>(
-          "rayucode.settings.serviceTier",
-          "auto",
-        ),
-        cacheTtl: deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
+        defaultEffort:
+          sessionScopedPrefs?.effort ??
+          deps.getGlobalState<EffortChoice>(
+            "rayucode.settings.defaultEffort",
+            "medium",
+          ),
+        serviceTier:
+          sessionScopedPrefs?.serviceTier ??
+          deps.getGlobalState<ServiceTier>(
+            "rayucode.settings.serviceTier",
+            "auto",
+          ),
+        cacheTtl:
+          sessionScopedPrefs?.cacheTtl ??
+          deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
         transport: deps.getGlobalState<ProviderTransport>(
           "rayucode.settings.transport",
           "auto",
@@ -5054,11 +5088,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "settings.models.setFast": async (params) => {
+      if (params.sessionId) {
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
+          serviceTier: params.tier,
+        });
+      }
       await requireRuntimeCmd("fast", [params.tier], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.serviceTier", params.tier);
       return { ok: true, tier: params.tier };
     },
     "settings.models.setCacheTtl": async (params) => {
+      if (params.sessionId) {
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
+          cacheTtl: params.ttl,
+        });
+      }
       await requireRuntimeCmd("cache", [params.ttl], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.cacheTtl", params.ttl);
       return { ok: true, ttl: params.ttl };

@@ -477,6 +477,9 @@ export function useCreateSessionMutation() {
       workingDir?: string;
       permissionMode?: PermissionModeId;
       model?: string;
+      effort?: EffortLevel;
+      serviceTier?: ServiceTier;
+      cacheTtl?: CacheTtl;
     }) => callRpc("sessions.create", params),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });

@@ -1433,6 +1433,15 @@ export async function handleMockRpcCall<M extends RpcMethod>(
             ? params.model
             : mockState.modelSettings.defaultModel,
         provider: "rayu-cloud",
+        ...(typeof params.effort === "string"
+          ? { effort: params.effort as SessionSummaryView["effort"] }
+          : {}),
+        ...(typeof params.serviceTier === "string"
+          ? { serviceTier: params.serviceTier as SessionSummaryView["serviceTier"] }
+          : {}),
+        ...(typeof params.cacheTtl === "string"
+          ? { cacheTtl: params.cacheTtl as SessionSummaryView["cacheTtl"] }
+          : {}),
         permissionMode:
           (params.permissionMode as SessionSummaryView["permissionMode"]) ?? "default",
         updatedAtMs: Date.now(),
@@ -1522,8 +1531,17 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       );
       return { ok: true } as RpcResult<M>;
     }
-    case "sessions.setPermissionMode":
-      return { ok: true, mode: (params.mode as SessionSummaryView["permissionMode"]) ?? "default" } as RpcResult<M>;
+    case "sessions.setPermissionMode": {
+      const sid = typeof params.sessionId === "string" ? params.sessionId : "";
+      const mode =
+        (params.mode as SessionSummaryView["permissionMode"]) ?? "default";
+      if (sid) {
+        mockState.sessions = mockState.sessions.map((s) =>
+          s.sessionId === sid ? { ...s, permissionMode: mode } : s,
+        );
+      }
+      return { ok: true, mode } as RpcResult<M>;
+    }
     case "sessions.rewind":
     case "sessions.rewindUndo":
     case "sessions.respondPermission":

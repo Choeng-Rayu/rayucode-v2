@@ -23,7 +23,7 @@ import {
   useAppStore,
 } from "@/lib";
 
-import { HOME_QUICK_ACTIONS } from "../constants";
+import { HOME_QUICK_ACTIONS, normalizeEffortLevel } from "../constants";
 import {
   recentSessionsQueryOptions,
   useCreateSessionMutation,
@@ -142,11 +142,15 @@ export function HomePage({
   };
 
   const handleSelectRecentSession = async (session: SessionSummaryView) => {
+    useAppStore.getState().seedSessionPrefsFromSummary(session);
     setActiveSession(session.sessionId, session.title);
     onSelectSession?.(session.sessionId);
-    await callRpc("sessions.attach", { sessionId: session.sessionId }).catch(
-      () => {},
-    );
+    const attached = await callRpc("sessions.attach", {
+      sessionId: session.sessionId,
+    }).catch(() => null);
+    if (attached?.session) {
+      useAppStore.getState().seedSessionPrefsFromSummary(attached.session);
+    }
   };
 
   const handleSubmit = React.useCallback(
@@ -160,25 +164,42 @@ export function HomePage({
       setPendingElapsedSec(0);
       setComposerValue("");
 
-      const draft = useAppStore.getState().activeDraft;
+      const storeSnapshot = useAppStore.getState();
+      const draft = storeSnapshot.activeDraft;
+      const draftPrefs = storeSnapshot.sessionPrefsBySession.__draft__;
       const effectiveWorkingDir =
         payload.workingDir ??
         draft?.workingDir ??
-        useAppStore.getState().activeProjectPath ??
+        storeSnapshot.activeProjectPath ??
         undefined;
       const effectiveModel =
-        payload.modelSpec || payload.modelId || draft?.model || undefined;
-      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+        payload.modelSpec ||
+        payload.modelId ||
+        draft?.model ||
+        draftPrefs?.modelId ||
+        undefined;
+      const effectiveEffort = normalizeEffortLevel(
+        payload.effort ?? draft?.reasoningEffort ?? draftPrefs?.effort,
+      );
       const effectivePermissionMode =
         payload.permissionMode ??
-        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined) ??
+        (draft?.permissionMode as
+          | ComposerSubmitPayload["permissionMode"]
+          | undefined) ??
+        draftPrefs?.permissionMode ??
         "default";
+      const effectiveServiceTier =
+        payload.serviceTier ?? draftPrefs?.serviceTier;
+      const effectiveCacheTtl = payload.cacheTtl ?? draftPrefs?.cacheTtl;
 
       try {
         const created = await createSessionMutation.mutateAsync({
           workingDir: effectiveWorkingDir,
           permissionMode: effectivePermissionMode,
           model: effectiveModel,
+          effort: effectiveEffort,
+          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
         });
 
         if (submitAttemptRef.current !== attemptId) {
@@ -188,6 +209,18 @@ export function HomePage({
         const session = created.session;
         setPendingSubmit(null);
         setPendingElapsedSec(0);
+
+        // Persist the user's chosen composer configuration on this session BEFORE
+        // transitioning from HomePage -> Workspace so the 2nd+ messages never reset.
+        useAppStore.getState().setSessionPrefs(session.sessionId, {
+          ...(effectiveModel ? { modelId: effectiveModel } : {}),
+          ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
+          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
+          effort: effectiveEffort,
+          permissionMode: effectivePermissionMode,
+          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
+        });
 
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({

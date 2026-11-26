@@ -1,5 +1,6 @@
 import * as React from "react";
 import { shouldClearStaleLiveTurn } from "@rayu-dev/rayucode-session-core/client";
+import { fromHarnessPermissionMode } from "@shared/vscodeProtocol";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 
@@ -609,6 +610,15 @@ export function processHarnessFrame(
   const targetSessionId = frameSession || fallbackSessionId || "";
   if (!targetSessionId) return;
 
+  if (frame.ev === "permission_mode_changed") {
+    if (typeof frame.mode === "string") {
+      useAppStore.getState().setSessionPrefs(targetSessionId, {
+        permissionMode: fromHarnessPermissionMode(frame.mode),
+      });
+    }
+    return;
+  }
+
   if (frame.ev === "soft_interrupt_injected") {
     const clientIds = Array.isArray(frame.client_ids)
       ? frame.client_ids.filter(
@@ -772,6 +782,18 @@ export function processHarnessFrame(
         clearSessionLiveTurn(targetSessionId);
       }
     }
+    return;
+  }
+
+  if (
+    frame.ev === "error" &&
+    (frame.non_turn === true ||
+      frame.req === "set_model" ||
+      frame.req === "set_reasoning_effort" ||
+      frame.req === "set_permission_mode")
+  ) {
+    // Non-turn control requests (e.g. changing model/effort) must never
+    // abort or inject an error into an active AI response stream.
     return;
   }
 

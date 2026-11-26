@@ -21,6 +21,7 @@ import {
 import {
   HomePage,
   SessionComposer,
+  normalizeEffortLevel,
   type ComposerSubmitPayload,
 } from "@/features/composer";
 import {
@@ -256,17 +257,32 @@ export function App() {
       const draft = storeState.activeDraft;
       let targetSessionId = storeState.activeSessionId;
       let isNewSession = false;
+      const existingPrefs = targetSessionId
+        ? storeState.sessionPrefsBySession[targetSessionId]
+        : storeState.sessionPrefsBySession.__draft__;
       const effectiveWorkingDir =
         payload.workingDir ??
         draft?.workingDir ??
         storeState.activeProjectPath ??
         undefined;
       const effectiveModel =
-        payload.modelSpec || payload.modelId || draft?.model || undefined;
-      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+        payload.modelSpec ||
+        payload.modelId ||
+        draft?.model ||
+        existingPrefs?.modelId ||
+        undefined;
+      const effectiveEffort = normalizeEffortLevel(
+        payload.effort ?? draft?.reasoningEffort ?? existingPrefs?.effort,
+      );
       const effectivePermissionMode =
         payload.permissionMode ??
-        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined);
+        (draft?.permissionMode as
+          | ComposerSubmitPayload["permissionMode"]
+          | undefined) ??
+        existingPrefs?.permissionMode;
+      const effectiveServiceTier =
+        payload.serviceTier ?? existingPrefs?.serviceTier;
+      const effectiveCacheTtl = payload.cacheTtl ?? existingPrefs?.cacheTtl;
 
       if (!targetSessionId) {
         try {
@@ -274,9 +290,23 @@ export function App() {
             workingDir: effectiveWorkingDir,
             permissionMode: effectivePermissionMode,
             model: effectiveModel,
+            effort: effectiveEffort,
+            ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+            ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
           });
           targetSessionId = created.session.sessionId;
           isNewSession = true;
+          useAppStore.getState().setSessionPrefs(targetSessionId, {
+            ...(effectiveModel ? { modelId: effectiveModel } : {}),
+            ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
+            ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
+            effort: effectiveEffort,
+            ...(effectivePermissionMode
+              ? { permissionMode: effectivePermissionMode }
+              : {}),
+            ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+            ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
+          });
           setActiveSession(created.session.sessionId, created.session.title);
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });
           void queryClient.invalidateQueries({
@@ -285,6 +315,18 @@ export function App() {
         } catch {
           return;
         }
+      } else {
+        useAppStore.getState().setSessionPrefs(targetSessionId, {
+          ...(effectiveModel ? { modelId: effectiveModel } : {}),
+          ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
+          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
+          effort: effectiveEffort,
+          ...(effectivePermissionMode
+            ? { permissionMode: effectivePermissionMode }
+            : {}),
+          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
+        });
       }
 
       const cachedHistory = isNewSession
@@ -335,20 +377,27 @@ export function App() {
       const activeWs =
         state.workspaces.find((w) => w.path === state.activeProjectPath) ??
         state.workspaces[0];
+      const sessionPrefs =
+        state.sessionPrefsBySession[item.sessionId] ??
+        (state.activeSessionId
+          ? state.sessionPrefsBySession[state.activeSessionId]
+          : undefined);
+      const resolvedModelSpec = sessionPrefs?.modelId ?? item.modelSpec;
       await handleWorkspaceSubmit({
         prompt: item.text,
         images: item.images,
         project: activeWs?.name ?? "workspace",
         workingDir: state.activeProjectPath ?? activeWs?.path ?? undefined,
         checkout: activeWs?.branch ?? "main",
-        modelId: item.modelSpec ?? "",
-        modelSpec: item.modelSpec,
-        modelLabel: item.modelSpec ?? "",
-        apiMethod: item.apiMethod,
-        effort: item.effort ?? "medium",
-        serviceTier: "auto",
-        cacheTtl: "5m",
-        permissionMode: "default",
+        modelId: resolvedModelSpec ?? "",
+        modelSpec: resolvedModelSpec,
+        modelLabel: sessionPrefs?.modelLabel ?? resolvedModelSpec ?? "",
+        apiMethod: sessionPrefs?.apiMethod ?? item.apiMethod,
+        effort: sessionPrefs?.effort ?? item.effort ?? "medium",
+        serviceTier: sessionPrefs?.serviceTier ?? item.serviceTier ?? "auto",
+        cacheTtl: sessionPrefs?.cacheTtl ?? item.cacheTtl ?? "5m",
+        permissionMode:
+          sessionPrefs?.permissionMode ?? item.permissionMode ?? "default",
         editorSelection: item.editorSelection ?? null,
         selectionIncluded: Boolean(item.editorSelection),
       });

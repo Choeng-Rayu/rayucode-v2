@@ -23,6 +23,7 @@ import type {
   ImageAttachmentView,
   PermissionModeId,
   ServiceTier,
+  SessionSummaryView,
 } from "@shared/vscodeProtocol";
 
 import {
@@ -255,7 +256,6 @@ export function SessionComposer({
   const queryClient = useQueryClient();
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
-  const accountStatus = useAppStore((s) => s.accountStatus);
   const storeProjectPath = useAppStore((s) => s.activeProjectPath);
   const activeDraft = useAppStore((s) => s.activeDraft);
   const updateActiveDraft = useAppStore((s) => s.updateActiveDraft);
@@ -287,6 +287,14 @@ export function SessionComposer({
   const storedDraft = useAppStore((s) => s.composerDrafts[draftKey] ?? "");
   const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const sessionOverrideKey = effectiveSessionId ?? "__draft__";
+  const sessionPrefs = useAppStore(
+    (s) => s.sessionPrefsBySession[sessionOverrideKey],
+  );
+  const setSessionPrefs = useAppStore((s) => s.setSessionPrefs);
+  const clearSessionPrefField = useAppStore((s) => s.clearSessionPrefField);
+  const seedSessionPrefsFromSummary = useAppStore(
+    (s) => s.seedSessionPrefsFromSummary,
+  );
   const isSubmitting =
     controlledIsSubmitting !== undefined
       ? controlledIsSubmitting
@@ -319,25 +327,6 @@ export function SessionComposer({
   const [internalCheckout, setInternalCheckout] = React.useState(
     activeWorkspace?.branch ?? DEFAULT_CHECKOUT,
   );
-  const [modelOverride, setModelOverride] = React.useState<{
-    sessionKey: string;
-    id: string;
-    label: string;
-  } | null>(null);
-  const [effortOverride, setEffortOverride] = React.useState<{
-    sessionKey: string;
-    effort: EffortLevel;
-  } | null>(null);
-  const [serviceTierOverride, setServiceTierOverride] = React.useState<{
-    sessionKey: string;
-    tier: ServiceTier;
-  } | null>(null);
-  const [cacheTtlOverride, setCacheTtlOverride] = React.useState<{
-    sessionKey: string;
-    ttl: CacheTtl;
-  } | null>(null);
-  const [internalPermissionMode, setInternalPermissionMode] =
-    React.useState<PermissionModeId>(DEFAULT_PERMISSION_MODE_ID);
 
   const [images, setImages] = React.useState<ImageAttachmentView[]>([]);
   const [selectionIncluded, setSelectionIncluded] = React.useState(true);
@@ -360,21 +349,29 @@ export function SessionComposer({
   const lastFocusNonceRef = React.useRef(composerFocusNonce);
   const pendingCursorToEndRef = React.useRef(false);
   const lastConsumedInjectionIdRef = React.useRef<string | null>(null);
-  const userSelectedModelRef = React.useRef(false);
 
-  const isSignedIn = Boolean(accountStatus?.signedIn);
+  // Hydrate remembered per-session prefs from cached sessions list when switching sessions
   React.useEffect(() => {
-    userSelectedModelRef.current = false;
-    setModelOverride(null);
-  }, [effectiveSessionId, isSignedIn]);
+    if (!effectiveSessionId) return;
+    const listData = queryClient.getQueryData<{
+      sessions?: SessionSummaryView[];
+    }>(["sessions", "list", { includeArchived: false }]);
+    const summary = listData?.sessions?.find(
+      (s) => s.sessionId === effectiveSessionId,
+    );
+    if (summary) {
+      seedSessionPrefsFromSummary(summary);
+    }
+  }, [effectiveSessionId, queryClient, seedSessionPrefsFromSummary]);
 
+  // If a saved model for this session became unavailable (e.g. signed out of its provider),
+  // fall back cleanly to the live catalog default without wiping valid selections.
   React.useEffect(() => {
     if (catalog.models.length === 0) return;
-    const currentOverride =
-      modelOverride?.sessionKey === sessionOverrideKey ? modelOverride : null;
-    if (!currentOverride) return;
+    const savedModelId = sessionPrefs?.modelId;
+    if (!savedModelId) return;
     const matches = catalog.models.filter(
-      (m) => m.modelSpec === currentOverride.id || m.id === currentOverride.id,
+      (m) => m.modelSpec === savedModelId || m.id === savedModelId,
     );
     const currentMatch =
       matches.find((m) => m.available !== false) ?? matches[0];
@@ -382,13 +379,20 @@ export function SessionComposer({
       (m) => m.available !== false,
     );
     if (
-      !userSelectedModelRef.current ||
-      !currentMatch ||
-      (currentMatch.available === false && hasAvailableModel)
+      currentMatch &&
+      currentMatch.available === false &&
+      hasAvailableModel
     ) {
-      setModelOverride(null);
+      clearSessionPrefField(sessionOverrideKey, "modelId");
+      clearSessionPrefField(sessionOverrideKey, "modelLabel");
+      clearSessionPrefField(sessionOverrideKey, "apiMethod");
     }
-  }, [catalog.models, modelOverride, sessionOverrideKey]);
+  }, [
+    catalog.models,
+    clearSessionPrefField,
+    sessionOverrideKey,
+    sessionPrefs?.modelId,
+  ]);
 
   React.useEffect(() => {
     if (composerFocusNonce > lastFocusNonceRef.current) {
@@ -426,58 +430,46 @@ export function SessionComposer({
       : branchesQuery.data?.current ??
         activeWorkspace?.branch ??
         internalCheckout;
-  const activeModelOverride =
-    modelOverride?.sessionKey === sessionOverrideKey ? modelOverride : null;
-  const activeEffortOverride =
-    effortOverride?.sessionKey === sessionOverrideKey ? effortOverride : null;
-  const activeServiceTierOverride =
-    serviceTierOverride?.sessionKey === sessionOverrideKey
-      ? serviceTierOverride
-      : null;
-  const activeCacheTtlOverride =
-    cacheTtlOverride?.sessionKey === sessionOverrideKey
-      ? cacheTtlOverride
-      : null;
-
   const activeModelId =
     controlledModelId !== undefined
       ? controlledModelId
-      : (activeModelOverride?.id ?? catalog.defaultModelId);
-  const matchedControlledModel =
-    controlledModelId !== undefined
-      ? (catalog.models.find(
-          (m) =>
-            (m.modelSpec === controlledModelId || m.id === controlledModelId) &&
-            m.available !== false,
-        ) ??
-        catalog.models.find(
-          (m) =>
-            m.modelSpec === controlledModelId || m.id === controlledModelId,
-        ))
-      : undefined;
+      : (sessionPrefs?.modelId ?? catalog.defaultModelId);
+  const matchedActiveModel = React.useMemo(() => {
+    if (!activeModelId) return undefined;
+    return (
+      catalog.models.find(
+        (m) =>
+          (m.modelSpec === activeModelId || m.id === activeModelId) &&
+          m.available !== false,
+      ) ??
+      catalog.models.find(
+        (m) => m.modelSpec === activeModelId || m.id === activeModelId,
+      )
+    );
+  }, [activeModelId, catalog.models]);
   const activeModelLabel =
     controlledModelLabel !== undefined
       ? controlledModelLabel
-      : (matchedControlledModel?.label ??
-        activeModelOverride?.label ??
+      : (matchedActiveModel?.label ??
+        sessionPrefs?.modelLabel ??
         catalog.defaultModelLabel);
   const activeEffort = normalizeEffortLevel(
     controlledEffort !== undefined
       ? controlledEffort
-      : (activeEffortOverride?.effort ?? catalog.defaultEffort),
+      : (sessionPrefs?.effort ?? catalog.defaultEffort),
   );
   const activeServiceTier =
     controlledServiceTier !== undefined
       ? controlledServiceTier
-      : (activeServiceTierOverride?.tier ?? catalog.serviceTier);
+      : (sessionPrefs?.serviceTier ?? catalog.serviceTier);
   const activeCacheTtl =
     controlledCacheTtl !== undefined
       ? controlledCacheTtl
-      : (activeCacheTtlOverride?.ttl ?? catalog.cacheTtl);
+      : (sessionPrefs?.cacheTtl ?? catalog.cacheTtl);
   const activePermissionMode =
     controlledPermissionMode !== undefined
       ? controlledPermissionMode
-      : internalPermissionMode;
+      : (sessionPrefs?.permissionMode ?? DEFAULT_PERMISSION_MODE_ID);
   const activeSelection =
     controlledEditorSelection !== undefined
       ? controlledEditorSelection
@@ -622,7 +614,15 @@ export function SessionComposer({
         return;
       }
       if (item.command === "/plan") {
-        setInternalPermissionMode("plan");
+        setSessionPrefs(sessionOverrideKey, { permissionMode: "plan" });
+        if (!effectiveSessionId) {
+          updateActiveDraft({ permissionMode: "plan" });
+        } else {
+          void callRpc("sessions.setPermissionMode", {
+            sessionId: effectiveSessionId,
+            mode: "plan",
+          }).catch(() => {});
+        }
         onPermissionModeChange?.("plan");
         clearOrStripToken();
         return;
@@ -669,80 +669,91 @@ export function SessionComposer({
     [
       effectiveSessionId,
       onPermissionModeChange,
+      sessionOverrideKey,
       setActiveRoute,
       setActiveSession,
       setBackgroundDrawerOpen,
+      setSessionPrefs,
       setTextValue,
       slashTrigger,
       textValue,
+      updateActiveDraft,
     ],
   );
 
   const handleModelSelect = React.useCallback(
     (model: ModelOption) => {
-      userSelectedModelRef.current = true;
       const spec =
         model.modelSpec ||
         formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
         model.id;
-      setModelOverride({
-        sessionKey: sessionOverrideKey,
-        id: spec,
-        label: model.label,
+      setSessionPrefs(sessionOverrideKey, {
+        modelId: spec,
+        modelLabel: model.label,
+        apiMethod: model.apiMethod,
       });
       if (!effectiveSessionId) {
         updateActiveDraft({ model: spec });
       }
       onModelChange?.(model);
     },
-    [effectiveSessionId, onModelChange, sessionOverrideKey, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onModelChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
-      setEffortOverride({
-        sessionKey: sessionOverrideKey,
-        effort: nextEffort,
-      });
+      setSessionPrefs(sessionOverrideKey, { effort: nextEffort });
       if (!effectiveSessionId) {
         updateActiveDraft({ reasoningEffort: nextEffort });
       }
       onEffortChange?.(nextEffort);
     },
-    [effectiveSessionId, onEffortChange, sessionOverrideKey, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onEffortChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
 
   const handleServiceTierSelect = React.useCallback(
     (nextTier: ServiceTier) => {
-      setServiceTierOverride({
-        sessionKey: sessionOverrideKey,
-        tier: nextTier,
-      });
+      setSessionPrefs(sessionOverrideKey, { serviceTier: nextTier });
       onServiceTierChange?.(nextTier);
     },
-    [onServiceTierChange, sessionOverrideKey],
+    [onServiceTierChange, sessionOverrideKey, setSessionPrefs],
   );
 
   const handleCacheTtlSelect = React.useCallback(
     (nextTtl: CacheTtl) => {
-      setCacheTtlOverride({
-        sessionKey: sessionOverrideKey,
-        ttl: nextTtl,
-      });
+      setSessionPrefs(sessionOverrideKey, { cacheTtl: nextTtl });
       onCacheTtlChange?.(nextTtl);
     },
-    [onCacheTtlChange, sessionOverrideKey],
+    [onCacheTtlChange, sessionOverrideKey, setSessionPrefs],
   );
 
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
-      setInternalPermissionMode(nextMode);
+      setSessionPrefs(sessionOverrideKey, { permissionMode: nextMode });
       if (!effectiveSessionId) {
         updateActiveDraft({ permissionMode: nextMode });
       }
       onPermissionModeChange?.(nextMode);
     },
-    [effectiveSessionId, onPermissionModeChange, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onPermissionModeChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
 
   const handleWorkspaceSelect = (name: string, path: string) => {
@@ -875,6 +886,9 @@ export function SessionComposer({
           modelSpec: resolvedModelSpec,
           apiMethod: activeModelOption?.apiMethod,
           effort: activeEffort,
+          permissionMode: activePermissionMode,
+          serviceTier: activeServiceTier,
+          cacheTtl: activeCacheTtl,
         });
         setQueuePausedForSession(effectiveSessionId, false);
         setTextValue("");
@@ -1517,6 +1531,12 @@ export function SessionComposer({
                       const nextMode: PermissionModeId =
                         activePermissionMode === "plan" ? "default" : "plan";
                       handlePermissionSelect(nextMode);
+                      if (effectiveSessionId) {
+                        void callRpc("sessions.setPermissionMode", {
+                          sessionId: effectiveSessionId,
+                          mode: nextMode,
+                        }).catch(() => {});
+                      }
                       setPlusMenuOpen(false);
                       textareaRef.current?.focus();
                     }}
@@ -1569,6 +1589,7 @@ export function SessionComposer({
                 onSelectCacheTtl={handleCacheTtlSelect}
                 onRefreshModels={catalog.refreshModels}
                 isRefreshing={catalog.isRefreshing}
+                isStreaming={isSubmitting}
                 disabled={disabled}
               />
 

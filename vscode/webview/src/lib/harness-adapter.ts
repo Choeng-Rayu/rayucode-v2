@@ -777,6 +777,7 @@ export function mapHistoryMessagesToTurns(
   let currentUserImages: Array<{ name: string; dataUrl: string }> | undefined;
   let assistantChunks: string[] = [];
   let workNotes: string[] = [];
+  let timelineEntries: TraceTimelineItem[] = [];
   let toolSteps: TraceStepItem[] = [];
   let lastDurationSecs: number | undefined;
   let lastInputTokens: number | undefined;
@@ -829,6 +830,16 @@ export function mapHistoryMessagesToTurns(
           ]
         : [];
 
+    const timeline: TraceTimelineItem[] | undefined =
+      timelineEntries.some((entry) => entry.type === "reasoning")
+        ? [
+            ...timelineEntries,
+            ...groups.map(
+              (group): TraceTimelineItem => ({ type: "group", group }),
+            ),
+          ]
+        : undefined;
+
     turns.push({
       id: `hist_${sessionId}_${turns.length + 1}`,
       sessionId,
@@ -837,6 +848,7 @@ export function mapHistoryMessagesToTurns(
       workedDuration: formatDurationSeconds(lastDurationSecs),
       notes: workNotes,
       groups,
+      ...(timeline ? { timeline } : {}),
       answerIntro,
       answerBullets: [],
       diffCard: EMPTY_DIFF,
@@ -855,6 +867,7 @@ export function mapHistoryMessagesToTurns(
     currentUserImages = undefined;
     assistantChunks = [];
     workNotes = [];
+    timelineEntries = [];
     toolSteps = [];
     lastDurationSecs = undefined;
     lastInputTokens = undefined;
@@ -922,7 +935,14 @@ export function mapHistoryMessagesToTurns(
       if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
         for (const chunk of assistantChunks) {
           const clean = chunk.trim();
-          if (clean) workNotes.push(clean);
+          if (clean) {
+            workNotes.push(clean);
+            timelineEntries.push({
+              type: "note",
+              id: `hist_note_${turns.length + 1}_${timelineEntries.length + 1}`,
+              text: clean,
+            });
+          }
         }
         assistantChunks = [];
         attempts = [];
@@ -947,6 +967,11 @@ export function mapHistoryMessagesToTurns(
       );
       for (const note of reasoningNotes) {
         workNotes.push(note);
+        timelineEntries.push({
+          type: "reasoning",
+          id: `hist_reason_${turns.length + 1}_${timelineEntries.length + 1}`,
+          text: note,
+        });
       }
       const trimmed = answerText.trim();
       if (trimmed) {

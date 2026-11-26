@@ -5,6 +5,7 @@ import {
   ExternalLink,
   FileSpreadsheet,
   FileText,
+  Layers,
   List,
   Pencil,
   Presentation,
@@ -17,10 +18,17 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  RayuProcessingMark,
   ScrollArea,
   TechFileBadge,
 } from "@/components/ui";
-import { cn, postToHost, useAppStore, type MidTurnMessageItem } from "@/lib";
+import {
+  callRpc,
+  cn,
+  postToHost,
+  useAppStore,
+  type MidTurnMessageItem,
+} from "@/lib";
 import type {
   FileChangesSnapshotView,
   SessionSummaryView,
@@ -96,6 +104,48 @@ function TurnView({
     Boolean(fileChangesSnapshot && fileChangesSnapshot.files.length > 0);
   const hasPrimaryDiff =
     !hasFileSummary && Boolean(turn.diffCard && turn.diffCard.lines.length > 0);
+  const hasTraceContent =
+    turn.notes.length > 0 ||
+    turn.groups.length > 0 ||
+    Boolean(turn.timeline && turn.timeline.length > 0);
+
+  const liveSummaryLabel = turn.connectionPhaseLabel
+    ? `Working · ${turn.workedDuration} · ${turn.connectionPhaseLabel}`
+    : `Working · ${turn.workedDuration}`;
+
+  const lastTimelineEntry =
+    turn.timeline && turn.timeline.length > 0
+      ? turn.timeline[turn.timeline.length - 1]
+      : null;
+
+  const liveProgressStatus = React.useMemo(() => {
+    if (turn.activeToolStatus) return turn.activeToolStatus;
+    if (turn.connectionPhaseLabel) return null;
+    if (hasAnswer) return "Writing response...";
+    if (lastTimelineEntry?.type === "reasoning") return "Thinking...";
+    if (turn.groups.length > 0 || turn.notes.length > 0) return "Working...";
+    return "Thinking...";
+  }, [
+    hasAnswer,
+    lastTimelineEntry?.type,
+    turn.activeToolStatus,
+    turn.connectionPhaseLabel,
+    turn.groups.length,
+    turn.notes.length,
+  ]);
+
+  const handleFooterBackgroundClick = async () => {
+    onBackgroundTool?.();
+    const sid =
+      turn.sessionId ||
+      useAppStore.getState().activeSessionId ||
+      "ses_vscode_shell";
+    try {
+      await callRpc("background.backgroundTool", { sessionId: sid });
+    } catch {
+      // ignore offline error
+    }
+  };
 
   return (
     <article
@@ -188,13 +238,11 @@ function TurnView({
 
       {/* Assistant Execution Trace & Response */}
       <div data-slot="msg-agent" className="flex min-w-0 flex-col gap-3">
-        {(turn.isLive ||
-          turn.notes.length > 0 ||
-          turn.groups.length > 0 ||
-          (turn.timeline && turn.timeline.length > 0)) && (
+        {hasTraceContent && (
           <WorkTrace
             workedDuration={turn.workedDuration}
             isLive={turn.isLive}
+            liveStatusPlacement="footer"
             connectionPhaseLabel={turn.connectionPhaseLabel}
             notes={turn.notes}
             groups={turn.groups}
@@ -203,13 +251,7 @@ function TurnView({
             showLiveBackgroundPill={turn.showLiveBackgroundPill}
             sessionId={turn.sessionId}
             defaultExpanded={
-              !turn.isLive &&
-              !hasAnswer &&
-              (turn.notes.length > 0 ||
-                turn.groups.length > 0 ||
-                Boolean(turn.timeline?.length))
-                ? true
-                : undefined
+              !turn.isLive && !hasAnswer && hasTraceContent ? true : undefined
             }
             onBackgroundTool={onBackgroundTool}
           />
@@ -367,6 +409,57 @@ function TurnView({
             />
           )}
 
+        {turn.isLive && (
+          <div
+            data-slot="turn-live-footer"
+            data-testid={`turn-live-footer-${turn.id}`}
+            role="status"
+            aria-live="polite"
+            className="flex flex-wrap items-center gap-2 pt-1 text-[13px] text-muted-ink"
+          >
+            <span
+              data-testid={!hasTraceContent ? "work-trace" : undefined}
+              data-live={!hasTraceContent ? "true" : undefined}
+              className="inline-flex items-center gap-1.5 font-medium text-ink"
+            >
+              <RayuProcessingMark animated className="size-4 shrink-0" />
+              <span data-testid="work-trace-summary" className="tabular-nums">
+                {liveSummaryLabel}
+              </span>
+            </span>
+
+            {liveProgressStatus && (
+              <>
+                <span className="text-faint" aria-hidden="true">
+                  ·
+                </span>
+                <span
+                  data-testid="turn-live-status"
+                  className="min-w-0 truncate text-[12.5px] text-muted-ink animate-pulse"
+                >
+                  {liveProgressStatus}
+                </span>
+              </>
+            )}
+
+            {turn.showLiveBackgroundPill && (
+              <button
+                type="button"
+                data-testid="work-trace-live-bg-btn"
+                onClick={() => void handleFooterBackgroundClick()}
+                title="Move foreground command to Background Process Viewer (Alt+B)"
+                className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-hairline bg-pane px-2.5 py-0.5 text-[11px] font-medium text-muted-ink transition-colors hover:border-premium hover:bg-hover hover:text-ink"
+              >
+                <Layers className="size-3 shrink-0" aria-hidden="true" />
+                <span>Background</span>
+                <kbd className="ml-0.5 font-mono text-[10px] text-faint">
+                  Alt+B
+                </kbd>
+              </button>
+            )}
+          </div>
+        )}
+
         {!turn.isLive && (
           <TurnActions
             sessionId={turn.sessionId}
@@ -452,13 +545,154 @@ export function ChatStream({
   className,
   ref,
 }: ChatStreamProps) {
+  const viewportRef = React.useRef<HTMLDivElement | null>(null);
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
   const bottomAnchorRef = React.useRef<HTMLDivElement | null>(null);
+  const autoFollowRef = React.useRef(true);
+  const lastScrollTopRef = React.useRef(0);
+  const programmaticScrollUntilRef = React.useRef(0);
+  const prevTurnCountRef = React.useRef(turns.length);
+  const [showScrollToBottom, setShowScrollToBottom] = React.useState(false);
 
+  const SCROLL_BOTTOM_THRESHOLD_PX = 48;
+
+  const isViewportNearBottom = React.useCallback((el: HTMLDivElement): boolean => {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance <= SCROLL_BOTTOM_THRESHOLD_PX;
+  }, []);
+
+  const scrollToBottom = React.useCallback(
+    (behavior: "auto" | "smooth" = "auto") => {
+      autoFollowRef.current = true;
+      setShowScrollToBottom(false);
+      const viewport = viewportRef.current;
+      if (viewport) {
+        programmaticScrollUntilRef.current =
+          Date.now() + (behavior === "smooth" ? 450 : 80);
+        const targetTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+        if (behavior === "smooth" && typeof viewport.scrollTo === "function") {
+          viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+        } else {
+          viewport.scrollTop = viewport.scrollHeight;
+        }
+        lastScrollTopRef.current = targetTop;
+        if (
+          viewport.scrollHeight === 0 &&
+          typeof bottomAnchorRef.current?.scrollIntoView === "function"
+        ) {
+          bottomAnchorRef.current.scrollIntoView({ behavior, block: "end" });
+        }
+        return;
+      }
+      if (typeof bottomAnchorRef.current?.scrollIntoView === "function") {
+        bottomAnchorRef.current.scrollIntoView({ behavior, block: "end" });
+      }
+    },
+    [],
+  );
+
+  // Re-engage live auto-follow on session switch
   React.useEffect(() => {
-    if (typeof bottomAnchorRef.current?.scrollIntoView === "function") {
-      bottomAnchorRef.current.scrollIntoView({ block: "end" });
+    autoFollowRef.current = true;
+    setShowScrollToBottom(false);
+    scrollToBottom("auto");
+  }, [sessionId, scrollToBottom]);
+
+  // Re-engage live auto-follow when a new turn is added
+  React.useEffect(() => {
+    if (turns.length > prevTurnCountRef.current) {
+      scrollToBottom("auto");
     }
-  }, [turns.length]);
+    prevTurnCountRef.current = turns.length;
+  }, [turns.length, scrollToBottom]);
+
+  // Track user scroll position & scroll-up intent on the Radix viewport
+  React.useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) {
+        const canScroll = viewport.scrollHeight > viewport.clientHeight + 4;
+        if (canScroll) {
+          autoFollowRef.current = false;
+          programmaticScrollUntilRef.current = 0;
+          if (!isViewportNearBottom(viewport)) {
+            setShowScrollToBottom(true);
+          }
+        }
+      }
+    };
+
+    const handleScroll = () => {
+      const currentTop = viewport.scrollTop;
+      const nearBottom = isViewportNearBottom(viewport);
+
+      if (nearBottom) {
+        autoFollowRef.current = true;
+        setShowScrollToBottom(false);
+        lastScrollTopRef.current = currentTop;
+        return;
+      }
+
+      const withinProgrammaticGuard =
+        Date.now() < programmaticScrollUntilRef.current;
+
+      if (!withinProgrammaticGuard) {
+        if (currentTop < lastScrollTopRef.current - 2) {
+          autoFollowRef.current = false;
+        }
+        if (!autoFollowRef.current) {
+          setShowScrollToBottom(true);
+        }
+      }
+
+      lastScrollTopRef.current = currentTop;
+    };
+
+    viewport.addEventListener("wheel", handleWheel, { passive: true });
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      viewport.removeEventListener("wheel", handleWheel);
+      viewport.removeEventListener("scroll", handleScroll);
+    };
+  }, [isViewportNearBottom]);
+
+  // Keep locked to the live bottom stream whenever content grows while auto-follow is on
+  React.useEffect(() => {
+    const contentEl = contentRef.current;
+    const viewport = viewportRef.current;
+    if (!contentEl || !viewport || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      if (autoFollowRef.current) {
+        scrollToBottom("auto");
+      } else {
+        setShowScrollToBottom(!isViewportNearBottom(viewport));
+      }
+    });
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [isViewportNearBottom, scrollToBottom]);
+
+  // Follow every live update (streaming deltas, tool steps, approvals, questions) when auto-follow is active
+  React.useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (autoFollowRef.current) {
+      scrollToBottom("auto");
+    } else if (viewport) {
+      setShowScrollToBottom(!isViewportNearBottom(viewport));
+    }
+  }, [
+    turns,
+    isStreaming,
+    pendingPermission,
+    pendingQuestion,
+    isViewportNearBottom,
+    scrollToBottom,
+  ]);
 
   const hasFileChanges = Boolean(
     fileChangesSnapshot && fileChangesSnapshot.files.length > 0,
@@ -511,8 +745,9 @@ export function ChatStream({
         </div>
       )}
 
-      <ScrollArea className="min-h-0 min-w-0 flex-1">
+      <ScrollArea viewportRef={viewportRef} className="min-h-0 min-w-0 flex-1">
         <div
+          ref={contentRef}
           data-slot="stream-container"
           className="mx-auto flex w-full max-w-[732px] min-w-0 flex-col gap-6 px-4 pt-5 pb-10 @min-[640px]/app:px-6"
         >
@@ -562,24 +797,31 @@ export function ChatStream({
         </div>
       </ScrollArea>
 
-      {isStreaming && (
+      {showScrollToBottom && (
         <div className="pointer-events-none relative -mt-8 mb-2 flex justify-center">
           <button
             type="button"
+            data-testid="chat-scroll-to-bottom-btn"
             aria-label="Scroll to latest output"
+            title={
+              isStreaming
+                ? "Jump to bottom & follow live stream"
+                : "Scroll to bottom"
+            }
             onClick={() => {
-              if (
-                typeof bottomAnchorRef.current?.scrollIntoView === "function"
-              ) {
-                bottomAnchorRef.current.scrollIntoView({
-                  behavior: "smooth",
-                  block: "end",
-                });
-              }
+              // Immediately snap & re-engage sticky live auto-follow so streaming
+              // output keeps scrolling forever until the user manually scrolls up.
+              scrollToBottom(isStreaming ? "auto" : "smooth");
             }}
-            className="pointer-events-auto grid size-8 cursor-pointer place-items-center rounded-full border border-hairline-strong bg-popover-solid/95 text-body shadow-rayu-2 transition-colors hover:bg-hover hover:text-ink"
+            className="pointer-events-auto relative grid size-8 cursor-pointer place-items-center rounded-full border border-hairline-strong bg-popover-solid/95 text-body shadow-rayu-2 transition-colors hover:bg-hover hover:text-ink"
           >
             <ArrowDown className="size-4" aria-hidden="true" />
+            {isStreaming && (
+              <span
+                aria-hidden="true"
+                className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-brand"
+              />
+            )}
           </button>
         </div>
       )}

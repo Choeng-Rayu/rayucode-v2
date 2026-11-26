@@ -498,11 +498,13 @@ export function SidebarProjectsPane({
       }
     }
 
+    useAppStore.getState().seedSessionPrefsFromSummary(session);
     setActiveSession(session.sessionId, session.title);
     if (session.workingDir) setActiveProjectPath(session.workingDir);
     onSessionSelected?.();
     void callRpc("sessions.attach", { sessionId: session.sessionId })
       .then((res) => {
+        useAppStore.getState().seedSessionPrefsFromSummary(res.session);
         reconcileStaleLiveTurnForSession(
           res.session.sessionId,
           res.session.status,
