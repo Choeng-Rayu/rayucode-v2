@@ -189,7 +189,14 @@ pub(crate) enum Command {
     },
 
     /// Run as an Agent Client Protocol (ACP) adapter backed by the Rayu daemon
-    Acp,
+    Acp {
+        /// Override ACP compatibility profile: standard, extended, or full
+        #[arg(long)]
+        profile: Option<String>,
+        /// Client product attribution for shared Rayu products (cli, rayucode, studio, api)
+        #[arg(long)]
+        product: Option<String>,
+    },
 
     /// Manage the background server daemon (e.g. `rayu server stop`).
     Server {

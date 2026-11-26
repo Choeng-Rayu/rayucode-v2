@@ -26,6 +26,7 @@ Reference documentation for the rayucode codebase.
 - Providers: `PROVIDER_DOCTOR.md`, `AWS_BEDROCK_PROVIDER.md`
 - MCP servers: `MCP_REMOTE.md`
 - Platform: `WINDOWS.md`, `TERMINAL_CAPABILITIES.md`
+- Release runbooks: [`../RELEASING.md`](../RELEASING.md) (CLI + binaries), [`../how-to-release-vscode.md`](../how-to-release-vscode.md) (Marketplace extension)
 
 ## Conventions
 

@@ -709,6 +709,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run package:vscode
       - run: npm test --workspace @rayu-dev/rayucode-vscode
+      - name: Release script tests
+        run: node --test scripts/test_publish_vscode.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: rayucode-vscode

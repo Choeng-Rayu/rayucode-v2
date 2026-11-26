@@ -18,7 +18,9 @@
     "test:ui": "npm --workspace @rayu-dev/rayucode-ui run check",
     "check:ts": "npm run test:sdk && npm run test:session-core && npm run test:ui",
     "build:vscode": "npm run build:ts && npm run build --workspace @rayu-dev/rayucode-vscode",
-    "package:vscode": "npm run build:vscode && npm run package:vsix --workspace @rayu-dev/rayucode-vscode"
+    "package:vscode": "npm run build:vscode && npm run package:vsix --workspace @rayu-dev/rayucode-vscode",
+    "test:release-scripts": "node --test scripts/test_publish_vscode.mjs scripts/test_version_sdk_release.mjs",
+    "release:vscode": "node scripts/publish_vscode.mjs"
   },
   "engines": {
     "node": ">=20"

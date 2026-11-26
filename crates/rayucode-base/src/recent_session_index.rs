@@ -226,6 +226,17 @@ pub fn upsert(entry: &RecentSessionMetadata) -> Result<()> {
     with_connection(|connection| upsert_with(connection, entry))
 }
 
+/// Remove a deleted session's metadata row from the index.
+pub fn remove(session_id: &str) -> Result<()> {
+    with_connection(|connection| {
+        connection.execute(
+            "DELETE FROM recent_sessions WHERE session_id = ?1",
+            [session_id],
+        )?;
+        Ok(())
+    })
+}
+
 fn upsert_with(connection: &Connection, entry: &RecentSessionMetadata) -> Result<()> {
     upsert_with_resume(connection, entry, None, None, None)
 }

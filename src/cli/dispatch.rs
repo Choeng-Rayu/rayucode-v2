@@ -203,12 +203,14 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             ));
             server.run().await?;
         }
-        Some(Command::Acp) => {
+        Some(Command::Acp { profile, product }) => {
             acp::run_acp_command(
                 args.provider,
                 args.model.clone(),
                 args.provider_profile.clone(),
                 args.tool_profile.is_some(),
+                profile,
+                product,
             )
             .await?;
         }
