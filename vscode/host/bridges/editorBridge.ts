@@ -528,10 +528,19 @@ export class EditorBridge implements vscode.Disposable {
     const vscodeApi = getVscode();
     const trimmed = url.trim();
     if (!trimmed) return;
+    let parsed: URL;
     try {
-      await vscodeApi.commands.executeCommand("simpleBrowser.show", trimmed);
+      parsed = new URL(trimmed);
     } catch {
-      await this.openExternal(trimmed);
+      return;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return;
+    }
+    try {
+      await vscodeApi.commands.executeCommand("simpleBrowser.show", parsed.toString());
+    } catch {
+      await this.openExternal(parsed.toString());
     }
   }
 
@@ -539,7 +548,20 @@ export class EditorBridge implements vscode.Disposable {
     const vscodeApi = getVscode();
     const trimmed = url.trim();
     if (!trimmed) return;
-    await vscodeApi.env.openExternal(vscodeApi.Uri.parse(trimmed));
+    let parsed: URL;
+    try {
+      parsed = new URL(trimmed);
+    } catch {
+      return;
+    }
+    if (
+      parsed.protocol !== "https:" &&
+      parsed.protocol !== "http:" &&
+      parsed.protocol !== "mailto:"
+    ) {
+      return;
+    }
+    await vscodeApi.env.openExternal(vscodeApi.Uri.parse(parsed.toString()));
   }
 
   async copyToClipboard(text: string): Promise<void> {

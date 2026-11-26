@@ -2,21 +2,31 @@
   "name": "rayucode",
   "displayName": "RayuCode",
   "description": "RayuCode Rust AI coding engine and multi-agent mission control for VS Code.",
-  "version": "3.0.0-preview.3",
+  "version": "3.0.0",
   "publisher": "RayuCode",
   "icon": "media/rayu-fox.png",
+  "homepage": "https://rayucode.com",
   "repository": {
     "type": "git",
     "url": "https://github.com/Choeng-Rayu/rayucode-v2"
   },
+  "bugs": {
+    "url": "https://github.com/Choeng-Rayu/rayucode-v2/issues"
+  },
+  "qna": "marketplace",
   "license": "MIT",
+  "galleryBanner": {
+    "color": "#11110E",
+    "theme": "dark"
+  },
+  "keywords": ["ai", "coding-agent", "chat", "mcp", "multi-agent"],
   "engines": {
     "vscode": "^1.106.0"
   },
   "categories": ["AI", "Chat", "Programming Languages"],
   "type": "commonjs",
   "main": "./extension.js",
-  "files": ["extension.js", "media", "LICENSE", "README.md"],
+  "files": ["extension.js", "media", "LICENSE", "README.md", "CHANGELOG.md"],
   "extensionKind": ["workspace"],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -182,6 +192,12 @@
         "title": "Open Swarm Mission Control",
         "category": "RayuCode",
         "icon": "$(organization)"
+      },
+      {
+        "command": "rayucode.openAgents",
+        "title": "Open Agents & Personas",
+        "category": "RayuCode",
+        "icon": "$(hubot)"
       },
       {
         "command": "rayucode.openAutomations",

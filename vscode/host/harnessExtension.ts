@@ -506,6 +506,9 @@ export function activate(context: vscode.ExtensionContext): void {
         viewColumn: vscode.ViewColumn.Beside,
       });
     }),
+    vscode.commands.registerCommand("rayucode.openAgents", async () => {
+      await panelManager.openPreferredSurface({ route: "agents" });
+    }),
     vscode.commands.registerCommand("rayucode.openAutomations", async () => {
       await panelManager.openPreferredSurface({ route: "automations" });
     }),
@@ -844,6 +847,10 @@ export function activate(context: vscode.ExtensionContext): void {
           action: () => vscode.commands.executeCommand("rayucode.openSwarm"),
         },
         {
+          label: "$(hubot) Open Agents & Personas",
+          action: () => vscode.commands.executeCommand("rayucode.openAgents"),
+        },
+        {
           label: "$(clock) Open Automations",
           action: () =>
             vscode.commands.executeCommand("rayucode.openAutomations"),
@@ -898,4 +905,8 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("Signed out of RayuCode.");
     }),
   );
+}
+
+export function deactivate(): void {
+  // All resources are disposed automatically via context.subscriptions.
 }

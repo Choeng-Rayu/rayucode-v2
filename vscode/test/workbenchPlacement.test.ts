@@ -513,4 +513,42 @@ test("extension.manifest.json enforces Tier 1 + Tier 2 workbench placement and c
       `Keybinding references undeclared command "${kb.command}"`,
     );
   }
+
+  // Marketplace publishing invariants: valid non-prerelease SemVer, changelog, metadata, and 1:1 command registration
+  const fullManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8")) as {
+    version?: string;
+    publisher?: string;
+    files?: string[];
+    keywords?: string[];
+    galleryBanner?: { color?: string; theme?: string };
+  };
+  assert.match(
+    fullManifest.version ?? "",
+    /^\d+\.\d+\.\d+$/,
+    `Marketplace version must be MAJOR.MINOR.PATCH without prerelease tag (got ${fullManifest.version})`,
+  );
+  assert.ok(fullManifest.publisher && /^[a-z0-9][a-z0-9-]*$/i.test(fullManifest.publisher));
+  assert.ok(Array.isArray(fullManifest.files) && fullManifest.files.includes("CHANGELOG.md"));
+  assert.ok(Array.isArray(fullManifest.keywords) && fullManifest.keywords.length > 0 && fullManifest.keywords.length <= 5);
+  assert.ok(fullManifest.galleryBanner?.color && fullManifest.galleryBanner?.theme);
+
+  const hostEntry = fs.readFileSync(
+    path.resolve(__dirname, "../host/harnessExtension.ts"),
+    "utf8",
+  );
+  const registeredCommands = new Set(
+    [...hostEntry.matchAll(/registerCommand\(\s*["']([^"']+)["']/g)].map((m) => m[1]),
+  );
+  for (const cmd of declaredCommands) {
+    assert.ok(
+      registeredCommands.has(cmd),
+      `Manifest command "${cmd}" is not registered in host/harnessExtension.ts`,
+    );
+  }
+  for (const cmd of registeredCommands) {
+    assert.ok(
+      declaredCommands.has(cmd),
+      `Registered command "${cmd}" in host/harnessExtension.ts is missing from extension.manifest.json`,
+    );
+  }
 });

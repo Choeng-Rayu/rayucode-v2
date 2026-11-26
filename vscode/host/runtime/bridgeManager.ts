@@ -226,6 +226,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
       try {
         return await this.connectAndAttach(socketPath);
       } catch (initialError) {
+        let missingBinaryError: Error | null = null;
         if (this.isAutoStartEnabled()) {
           const binary = resolveRayuBinary({
             configuredPath: this.getConfiguredBinaryPath(),
@@ -236,15 +237,22 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
             await this.spawnBridgeIdempotent(binary, socketPath);
             return await this.connectAndAttach(socketPath);
           }
+          const helpMessage =
+            "RayuCode CLI (`rayu`) was not found on this machine. Install the RayuCode CLI (https://rayucode.com) or set `rayucode.binaryPath` in VS Code Settings.";
+          this.log(helpMessage);
+          missingBinaryError = new Error(helpMessage);
         }
+        const effectiveError = missingBinaryError ?? initialError;
         const message =
-          initialError instanceof Error ? initialError.message : String(initialError);
+          effectiveError instanceof Error
+            ? effectiveError.message
+            : String(effectiveError);
         this.updateStatus({
           state: "disconnected",
           socketPath,
           error: message,
         });
-        throw initialError;
+        throw effectiveError;
       } finally {
         this.connectingPromise = null;
       }

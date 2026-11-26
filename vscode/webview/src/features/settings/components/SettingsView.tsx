@@ -303,7 +303,9 @@ export function SettingsView({
                     </span>
                   </span>
                   <span className="font-mono text-[10.5px] text-brand-text tabular-nums">
-                    {daemonStatus.latencyMs ?? 4} ms
+                    {daemonStatus.latencyMs !== undefined
+                      ? `${daemonStatus.latencyMs} ms`
+                      : "—"}
                   </span>
                 </button>
               </div>
@@ -367,7 +369,11 @@ export function SettingsView({
                     className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-hairline bg-pane px-2 py-0.5 font-mono text-[10.5px] text-ink"
                   >
                     <Activity className="size-3 text-brand-text" />
-                    <span>{daemonStatus.latencyMs ?? 4} ms</span>
+                    <span>
+                      {daemonStatus.latencyMs !== undefined
+                        ? `${daemonStatus.latencyMs} ms`
+                        : "—"}
+                    </span>
                   </button>
                 </div>
 
@@ -485,10 +491,8 @@ export function SettingsView({
                     daemonStatus={daemonStatus}
                     runtime={
                       runtime ?? {
-                        socketPath:
-                          daemonStatus.socketPath ??
-                          "/run/user/1000/rayu-daemon.sock",
-                        binaryPath: "~/.local/bin/rayu",
+                        socketPath: daemonStatus.socketPath ?? "",
+                        binaryPath: "",
                         autoStart: true,
                         transport: models.transport,
                       }

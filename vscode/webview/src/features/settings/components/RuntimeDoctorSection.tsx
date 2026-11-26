@@ -228,7 +228,11 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Daemon version</div>
             <div className="mt-0.5 font-mono text-ink">
-              {formatDaemonVersionLabel(daemonStatus.version ?? "2.4.0-dev") || "v2.4.0-dev"}
+              {daemonStatus.version
+                ? formatDaemonVersionLabel(daemonStatus.version)
+                : isConnected
+                  ? "Connected"
+                  : "Not connected"}
             </div>
           </div>
           <div>
@@ -240,13 +244,19 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Round-trip latency</div>
             <div className="mt-0.5 font-mono text-ink tabular-nums">
-              {daemonStatus.latencyMs ?? 4} ms
+              {daemonStatus.latencyMs !== undefined
+                ? `${daemonStatus.latencyMs} ms`
+                : "—"}
             </div>
           </div>
           <div>
             <div className="text-[11px] text-muted-ink">Daemon PID</div>
             <div className="mt-0.5 font-mono text-ink tabular-nums">
-              {daemonStatus.pid ?? 41092}
+              {daemonStatus.pid !== undefined
+                ? daemonStatus.pid
+                : isConnected
+                  ? "Shared"
+                  : "—"}
             </div>
           </div>
         </div>

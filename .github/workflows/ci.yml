@@ -711,8 +711,8 @@ jobs:
       - run: npm test --workspace @rayu-dev/rayucode-vscode
       - uses: actions/upload-artifact@v4
         with:
-          name: rayucode-vscode-preview
-          path: vscode/dist/rayucode-vscode-preview.vsix
+          name: rayucode-vscode
+          path: vscode/dist/rayucode-*.vsix
           if-no-files-found: error
 
   setup-friction:

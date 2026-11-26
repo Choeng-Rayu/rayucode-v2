@@ -52,6 +52,7 @@ await Promise.all([
     format: "cjs",
     target: "node22",
     bundle: true,
+    minify: true,
     external: ["vscode"],
     // The Node SDK resolves its optional runtime packages relative to import.meta.url.
     define: { "import.meta.url": "rayucodeModuleUrl" },
@@ -69,12 +70,12 @@ await Promise.all([
     new URL("./assets/rayu-fox.png", import.meta.url),
     new URL("rayu-fox.png", media),
   ),
-  cp(
-    new URL("./assets/app-icon.png", import.meta.url),
-    new URL("app-icon.png", media),
-  ),
   cp(new URL("../LICENSE", import.meta.url), new URL("LICENSE", stage)),
   cp(new URL("./README.md", import.meta.url), new URL("README.md", stage)),
+  cp(
+    new URL("./CHANGELOG.md", import.meta.url),
+    new URL("CHANGELOG.md", stage),
+  ),
   writeFile(
     new URL("package.json", stage),
     JSON.stringify(manifest, null, 2) + "\n",
