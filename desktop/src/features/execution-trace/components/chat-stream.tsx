@@ -15,8 +15,10 @@ import {
   FileText,
   Laptop,
   List,
+  Pencil,
   Presentation,
   Terminal,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -29,16 +31,20 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
 import { sessionsQueryOptions } from "@/features/sessions"
-import { useAppStore } from "@/lib/app-store"
+import { useAppStore, type MidTurnMessageItem } from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import { traceKeys, traceTurnsQueryOptions } from "../api/trace-api"
 import {
+  cancelMidTurnMessage,
   clearSessionLiveTurn,
   dispatchPendingStreamPrompt,
+  editMidTurnMessage,
   isLiveTraceControllerMounted,
   processHarnessFrame,
+  promoteQueuedMessageToSteer,
+  sendQueuedMessageNow,
   toReconcilableTurn,
   useLiveTraceStore,
 } from "../hooks/live-trace-store"
@@ -54,6 +60,7 @@ import { TurnFileSummaryCard } from "./turn-file-summary-card"
 import { WorkTrace } from "./work-trace"
 
 const EMPTY_SESSION_TODOS: SessionTodoItem[] = []
+const EMPTY_MID_TURN_MESSAGES: MidTurnMessageItem[] = []
 
 function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
   const parts: string[] = []
@@ -102,6 +109,30 @@ function TurnView({
     !turn.isLive &&
     Boolean(fileChangesSnapshot && fileChangesSnapshot.files.length > 0)
   const hasDiffLines = !hasFileSummary && turn.diffCard.lines.length > 0
+  const hasUserContent = Boolean(
+    turn.compactedNotice ||
+      turn.userRefFiles ||
+      (turn.userImages && turn.userImages.length > 0) ||
+      turn.userPrompt.trim().length > 0 ||
+      turn.userMeta
+  )
+  const hasWorkTrace =
+    turn.isLive ||
+    turn.notes.length > 0 ||
+    turn.groups.length > 0 ||
+    Boolean(turn.timeline && turn.timeline.length > 0)
+
+  if (
+    !turn.isLive &&
+    !hasUserContent &&
+    !hasAnswer &&
+    !hasWorkTrace &&
+    !hasFileSummary &&
+    !hasDiffLines &&
+    !turn.outputArtifact
+  ) {
+    return null
+  }
 
   return (
     <article
@@ -416,6 +447,11 @@ export function ChatStream({
   const lastEventAtMs = useLiveTraceStore((s) =>
     effectiveSessionId ? s.lastEventAtMsBySession[effectiveSessionId] : undefined
   )
+  const daemonSessionStatus = useLiveTraceStore((s) =>
+    effectiveSessionId
+      ? s.daemonSessionStatusBySession[effectiveSessionId]
+      : undefined
+  )
   const sessionsQuery = useQuery({
     ...sessionsQueryOptions(),
     enabled: effectiveSessionId.length > 0,
@@ -428,8 +464,20 @@ export function ChatStream({
   )
   const isStreaming = Boolean(liveTurn?.isLive)
 
-  const pendingPermission = useAppStore((s) => s.pendingPermission)
-  const setPendingPermission = useAppStore((s) => s.setPendingPermission)
+  const pendingPermission = useAppStore((s) =>
+    effectiveSessionId
+      ? (s.pendingPermissionsBySession[effectiveSessionId]?.[0] ?? null)
+      : s.pendingPermission
+  )
+  const clearPendingPermission = useAppStore((s) => s.clearPendingPermission)
+  const midTurnMessages = useAppStore((s) =>
+    effectiveSessionId
+      ? (s.midTurnMessagesBySession[effectiveSessionId] ?? EMPTY_MID_TURN_MESSAGES)
+      : EMPTY_MID_TURN_MESSAGES
+  )
+  const isQueuePaused = useAppStore((s) =>
+    effectiveSessionId ? Boolean(s.pausedQueueSessions[effectiveSessionId]) : false
+  )
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
   const setPendingStreamPrompt = useAppStore((s) => s.setPendingStreamPrompt)
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive)
@@ -540,7 +588,7 @@ export function ChatStream({
     async (decision: "allow" | "allow_always" | "deny") => {
       if (!pendingPermission) return
       const req = pendingPermission
-      setPendingPermission(null)
+      clearPendingPermission(req.sessionId, req.requestId)
 
       try {
         await ipcClient.trace.respondToPermission(
@@ -565,17 +613,28 @@ export function ChatStream({
         toast.error("Failed to send permission decision to daemon")
       }
     },
-    [pendingPermission, setPendingPermission]
+    [clearPendingPermission, pendingPermission]
   )
 
   React.useEffect(() => {
     if (!effectiveSessionId || !liveTurn?.isLive) return
-    if (activeSessionStatus?.trim().toLowerCase() !== "idle") return
+    if (daemonSessionStatus?.status === "running") return
+    const lastEv = lastEventAtMs ?? 0
+    const hasFreshDaemonIdle =
+      daemonSessionStatus?.status === "idle" &&
+      daemonSessionStatus.updatedAtMs >= lastEv
+    const hasFreshQueryIdle =
+      !daemonSessionStatus &&
+      activeSessionStatus?.trim().toLowerCase() === "idle" &&
+      sessionsQuery.dataUpdatedAt > lastEv
+    if (!hasFreshDaemonIdle && !hasFreshQueryIdle) return
+
+    const observedStatus = daemonSessionStatus?.status ?? activeSessionStatus
     const checkAndClear = () => {
       if (
         shouldClearStaleLiveTurn({
           liveTurn: toReconcilableTurn(liveTurn),
-          sessionStatus: activeSessionStatus,
+          sessionStatus: observedStatus,
           lastEventAtMs,
         })
       ) {
@@ -586,7 +645,7 @@ export function ChatStream({
       }
     }
     const graceMs = 2_500
-    const elapsed = Date.now() - (lastEventAtMs ?? 0)
+    const elapsed = Date.now() - lastEv
     if (elapsed >= graceMs) {
       checkAndClear()
       return
@@ -598,10 +657,12 @@ export function ChatStream({
     return () => window.clearTimeout(timer)
   }, [
     activeSessionStatus,
+    daemonSessionStatus,
     effectiveSessionId,
     lastEventAtMs,
     liveTurn,
     queryClient,
+    sessionsQuery.dataUpdatedAt,
   ])
 
   const allTurns = React.useMemo(() => {
@@ -868,6 +929,133 @@ export function ChatStream({
             sessionId={effectiveSessionId}
             todos={sessionTodos}
           />
+        </div>
+      )}
+
+      {midTurnMessages.length > 0 && (
+        <div
+          data-testid="soft-interrupt-queue-strip"
+          className="mx-auto mb-1.5 flex w-full max-w-[732px] min-w-0 shrink-0 flex-col gap-1 px-3 @min-[480px]/chat:px-6"
+        >
+          {isQueuePaused &&
+            !isStreaming &&
+            midTurnMessages.some((item) => item.mode === "queue") && (
+              <div className="truncate px-1 text-[11px] text-muted-ink">
+                Queue paused after stop — send or edit queued items below
+              </div>
+            )}
+          {(() => {
+            let queueIndex = 0
+            return midTurnMessages.map((item) => {
+              const isSteer = item.mode === "steer"
+              if (!isSteer) {
+                queueIndex += 1
+              }
+              const currentQueueRank = queueIndex
+              return (
+                <div
+                  key={item.id}
+                  data-testid={`midturn-item-${item.id}`}
+                  data-midturn-mode={item.mode}
+                  className="flex min-w-0 items-center gap-1.5 overflow-hidden rounded-lg border border-hairline bg-pane px-2.5 py-1.5 text-xs text-body"
+                >
+                  {isSteer ? (
+                    <>
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 shrink-0 animate-pulse rounded-full bg-brand"
+                      />
+                      <span className="shrink-0 rounded bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-semibold text-brand-text">
+                        Steer
+                      </span>
+                      <span className="hidden shrink-0 text-[11px] text-muted-ink @min-[420px]/chat:inline">
+                        Auto-sending
+                      </span>
+                    </>
+                  ) : (
+                    <span className="shrink-0 rounded border border-hairline bg-inset px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-ink tabular-nums">
+                      Queued #{currentQueueRank}
+                    </span>
+                  )}
+
+                  <span className="min-w-0 flex-1 truncate text-ink">
+                    {item.text}
+                  </span>
+
+                  <div className="flex shrink-0 items-center gap-1">
+                    {!isSteer && isStreaming && (
+                      <button
+                        type="button"
+                        data-testid={`promote-to-steer-${item.id}`}
+                        title="Send as steer now without interrupting"
+                        onClick={() => {
+                          void promoteQueuedMessageToSteer(
+                            effectiveSessionId,
+                            item.id
+                          )
+                        }}
+                        className="cursor-pointer rounded-md border border-brand/30 bg-brand-soft px-1.5 py-0.5 text-[11px] font-medium text-brand-text transition-colors hover:border-brand/50"
+                      >
+                        Steer
+                      </button>
+                    )}
+
+                    {!isSteer && !isStreaming && (
+                      <button
+                        type="button"
+                        data-testid={`send-queued-now-${item.id}`}
+                        title="Send queued message now"
+                        onClick={() =>
+                          sendQueuedMessageNow(
+                            effectiveSessionId,
+                            item.id,
+                            queryClient
+                          )
+                        }
+                        className="cursor-pointer rounded-md border border-premium bg-active px-1.5 py-0.5 text-[11px] font-medium text-ink transition-colors hover:border-brand hover:text-brand-text"
+                      >
+                        Send
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      data-testid={`edit-midturn-${item.id}`}
+                      aria-label={
+                        isSteer ? "Edit steer message" : "Edit queued message"
+                      }
+                      title="Edit in composer"
+                      onClick={() =>
+                        editMidTurnMessage(effectiveSessionId, item.id)
+                      }
+                      className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded px-1 text-[11px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                    >
+                      <Pencil className="size-3" aria-hidden="true" />
+                      <span className="hidden @min-[460px]/chat:inline">
+                        Edit
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid={`cancel-midturn-${item.id}`}
+                      aria-label={
+                        isSteer
+                          ? "Cancel queued soft interrupt"
+                          : "Remove queued message"
+                      }
+                      onClick={() => {
+                        void cancelMidTurnMessage(effectiveSessionId, item.id)
+                      }}
+                      className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-muted-ink hover:bg-hover hover:text-ink"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              )
+            })
+          })()}
         </div>
       )}
 

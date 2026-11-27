@@ -13,6 +13,7 @@ import {
   Circle,
   CircleDot,
   Clock,
+  CornerDownLeft,
   Database,
   Eye,
   FileSearch,
@@ -26,6 +27,7 @@ import {
   Laptop,
   LayoutGrid,
   Lightbulb,
+  ListPlus,
   ListTodo,
   Loader2,
   Minimize2,
@@ -42,6 +44,7 @@ import {
   Send,
   SlidersHorizontal,
   Sparkles,
+  Square,
   Target,
   Terminal,
   Timer,
@@ -542,6 +545,10 @@ export function SessionComposer({
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const openRightTab = useAppStore((s) => s.openRightTab)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const midTurnSendMode = useAppStore((s) => s.midTurnSendMode)
+  const setMidTurnSendMode = useAppStore((s) => s.setMidTurnSendMode)
+  const composerFocusNonce = useAppStore((s) => s.composerFocusNonce)
+  const isWorkspaceMidTurn = mode === "workspace" && isSubmitting
   const { models, refreshModels, isRefreshing } = useModelCatalog()
   const { modes } = usePermissionModes()
   const capabilitiesQuery = useCapabilities(activeSessionId)
@@ -721,6 +728,15 @@ export function SessionComposer({
     () => localTextareaRef.current as HTMLTextAreaElement
   )
 
+  React.useEffect(() => {
+    if (composerFocusNonce === 0 || mode !== "workspace") return
+    const el = localTextareaRef.current
+    if (!el) return
+    el.focus()
+    const len = el.value.length
+    el.setSelectionRange(len, len)
+  }, [composerFocusNonce, mode])
+
   const textValue = controlledValue ?? internalValue
   const activeProject = controlledProject ?? internalProject
   const hasSelectedProject = activeProject.trim().length > 0
@@ -731,14 +747,30 @@ export function SessionComposer({
   const activePermissionMode =
     controlledPermissionMode ?? persisted.permissionMode
 
+  const hasPromptContent =
+    textValue.trim().length > 0 ||
+    attachments.length > 0 ||
+    skillTokens.length > 0
+
   const effectivePlaceholder = React.useMemo(() => {
     if (skillTokens.length > 0) return ""
+    if (isWorkspaceMidTurn) {
+      return midTurnSendMode === "steer"
+        ? "Steer without interrupting... (Enter to steer, Alt+Enter to queue)"
+        : "Queue follow-up for after response... (Enter to queue, Alt+Enter to steer)"
+    }
     if (placeholder) return placeholder
     if (activePermissionMode === "plan") {
       return "Describe your task to generate a plan..."
     }
     return "Ask anything, @ to mention, / for actions"
-  }, [activePermissionMode, placeholder, skillTokens.length])
+  }, [
+    activePermissionMode,
+    isWorkspaceMidTurn,
+    midTurnSendMode,
+    placeholder,
+    skillTokens.length,
+  ])
 
   const effectiveCursor =
     cursorPos === null ? textValue.length : clampCursorIndex(textValue, cursorPos)
@@ -1489,17 +1521,25 @@ export function SessionComposer({
     }
   }
 
-  const submitComposedPayload = async (overridePrompt?: string) => {
-    if (disabled || isSubmitting) return
+  const submitComposedPayload = async (
+    overridePrompt?: string,
+    midTurnOverride?: "steer" | "queue"
+  ) => {
+    if (disabled || (mode === "home" && isSubmitting)) return
     const rawCandidate = overridePrompt ?? textValue
     const trimmed = rawCandidate.trim()
     if (!trimmed && attachments.length === 0 && skillTokens.length === 0) {
       localTextareaRef.current?.focus()
-      toast("Type a prompt or /command first")
+      toast(
+        isWorkspaceMidTurn
+          ? "Type a steer or follow-up message first"
+          : "Type a prompt or /command first"
+      )
       return
     }
 
     if (
+      !isWorkspaceMidTurn &&
       attachments.length === 0 &&
       skillTokens.length === 0 &&
       (await executeSlashInput(rawCandidate))
@@ -1542,6 +1582,10 @@ export function SessionComposer({
         ? `${skillTokens.map((t) => t.command).join(" ")} `
         : ""
 
+    const effectiveMidTurnMode = isWorkspaceMidTurn
+      ? (midTurnOverride ?? midTurnSendMode)
+      : undefined
+
     setSlashOpen(false)
     setActiveTemplateKind(null)
     setActiveClarifyingTemplate(null)
@@ -1554,6 +1598,7 @@ export function SessionComposer({
       modelLabel: activeModelLabel,
       effort: activeEffort,
       permissionMode: activePermissionMode,
+      ...(effectiveMidTurnMode ? { midTurnMode: effectiveMidTurnMode } : {}),
     }
 
     setTextValue("")
@@ -1562,8 +1607,8 @@ export function SessionComposer({
     await onSubmit?.(payload)
   }
 
-  const handleSend = async () => {
-    await submitComposedPayload()
+  const handleSend = async (midTurnOverride?: "steer" | "queue") => {
+    await submitComposedPayload(undefined, midTurnOverride)
   }
 
   const handleSelectTemplate = (template: ComposerTemplateItem) => {
@@ -1796,7 +1841,16 @@ export function SessionComposer({
     }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault()
-      void handleSend()
+      if (isWorkspaceMidTurn) {
+        const targetMode: "steer" | "queue" = event.altKey
+          ? midTurnSendMode === "steer"
+            ? "queue"
+            : "steer"
+          : midTurnSendMode
+        void handleSend(targetMode)
+      } else {
+        void handleSend()
+      }
     }
   }
 
@@ -2141,6 +2195,55 @@ export function SessionComposer({
               </div>
             ) : null}
 
+            {/* Mid-Turn Steer / Queue Mode Bar (shown in workspace while AI responds) */}
+            {isWorkspaceMidTurn ? (
+              <div
+                data-testid="composer-midturn-bar"
+                className="flex min-w-0 items-center justify-between gap-2 border-b border-hairline-soft px-3.5 py-1.5"
+              >
+                <span className="min-w-0 truncate text-[11px] text-muted-ink @max-[360px]/composer:hidden">
+                  {midTurnSendMode === "steer"
+                    ? "Auto-sends at next safe step"
+                    : "Waits until response finishes"}
+                </span>
+                <div
+                  role="group"
+                  aria-label="Mid-turn send mode"
+                  data-testid="midturn-mode-toggle"
+                  className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-hairline bg-inset p-0.5"
+                >
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-steer"
+                    aria-pressed={midTurnSendMode === "steer"}
+                    onClick={() => setMidTurnSendMode("steer")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "steer"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink"
+                    )}
+                  >
+                    Steer
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-queue"
+                    aria-pressed={midTurnSendMode === "queue"}
+                    onClick={() => setMidTurnSendMode("queue")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "queue"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink"
+                    )}
+                  >
+                    Queue
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {attachments.length > 0 ? (
               <div className="flex flex-wrap items-center gap-2 px-3.5 pt-3">
                 {attachments.map((att) =>
@@ -2244,7 +2347,7 @@ export function SessionComposer({
                 ref={localTextareaRef}
                 rows={1}
                 value={textValue}
-                disabled={disabled || isSubmitting}
+                disabled={disabled || (mode === "home" && isSubmitting)}
                 onChange={handleInputChange}
                 onKeyDown={handleInputKeyDown}
                 onKeyUp={(e) => syncTextareaCursor(e.currentTarget)}
@@ -3135,8 +3238,87 @@ export function SessionComposer({
                 disabled={disabled}
               />
 
-              {/* Primary Send Orb Button OR Stop Generation Button (Screenshot 2) */}
-              {isSubmitting ? (
+              {/* Primary Send Orb OR Mid-Turn Stop + Steer/Queue Controls */}
+              {isWorkspaceMidTurn ? (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Abort active turn"
+                        data-testid="composer-stop-btn"
+                        onClick={() => {
+                          onStop?.()
+                          toast("Stopped active generation")
+                        }}
+                        className="ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-premium bg-active text-ink shadow-bevel-surface transition-colors hover:border-danger hover:bg-danger-soft hover:text-danger focus:outline-none"
+                      >
+                        <Square
+                          className="size-3.5 fill-current"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Stop / Abort</TooltipContent>
+                  </Tooltip>
+
+                  {midTurnSendMode === "steer" ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="composer-steer-btn"
+                          aria-label="Steer active turn without interrupting"
+                          disabled={disabled || !hasPromptContent}
+                          onClick={() => void handleSend("steer")}
+                          className={cn(
+                            "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                            hasPromptContent && !disabled
+                              ? "rayu-primary-bevel cursor-pointer bg-brand text-brand-ink hover:scale-[1.04] hover:bg-brand-bright active:scale-[0.98]"
+                              : "cursor-not-allowed border border-hairline bg-inset text-faint opacity-60"
+                          )}
+                        >
+                          <CornerDownLeft
+                            className="size-[15px]"
+                            strokeWidth={2.2}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        Steer without interrupting (Enter · Alt+Enter to queue)
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="composer-queue-btn"
+                          aria-label="Queue message for after response"
+                          disabled={disabled || !hasPromptContent}
+                          onClick={() => void handleSend("queue")}
+                          className={cn(
+                            "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                            hasPromptContent && !disabled
+                              ? "cursor-pointer border border-premium bg-active text-ink shadow-bevel-surface hover:border-brand hover:bg-brand-soft hover:text-brand-text active:scale-95"
+                              : "cursor-not-allowed border border-hairline bg-inset text-faint opacity-60"
+                          )}
+                        >
+                          <ListPlus
+                            className="size-4"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        Queue for after response (Enter · Alt+Enter to steer)
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </>
+              ) : isSubmitting ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button

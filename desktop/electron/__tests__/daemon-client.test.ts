@@ -936,4 +936,134 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
     const fc = await daemon.getFileChanges("sess_v16")
     expect(fc.files).toEqual([])
   })
+
+  it("routes softInterrupt and cancelSoftInterrupts to owning session socket without disrupting other sessions", async () => {
+    const client1 = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools", "soft_interrupt_ids"],
+      supports: (cap: string) => cap === "session_tools" || cap === "soft_interrupt_ids",
+      ping: vi.fn().mockResolvedValue(undefined),
+      createSession: vi.fn().mockResolvedValue({
+        session_id: "sess_steer_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      sendMessage: vi.fn().mockResolvedValue(undefined),
+      softInterruptWithId: vi.fn().mockResolvedValue(undefined),
+      cancelSoftInterrupt: vi.fn().mockResolvedValue(true),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const client2 = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["session_tools"],
+      supports: () => false,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_other_2",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      request: vi.fn().mockResolvedValue({ v: 1, ev: "ok" }),
+      getHistoryWithImages: vi
+        .fn()
+        .mockResolvedValue({ messages: [{ role: "user", content: "hi" }], images: [] }),
+      softInterruptWithId: vi.fn(),
+      cancelSoftInterrupt: vi.fn(),
+      cancelSoftInterrupts: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect")
+      .mockResolvedValueOnce(client1)
+      .mockResolvedValueOnce(client2)
+
+    const daemon = new RayuDaemonClient("/tmp/steer-route-rayu.sock")
+    await daemon.createSession("/repo", "Chat 1")
+    await daemon.sendMessage("sess_steer_1", "Long task")
+    await daemon.getHistory("sess_other_2")
+
+    const steerRes = await daemon.softInterrupt("sess_steer_1", "also check tests", {
+      clientId: "mid_1",
+      urgent: false,
+    })
+    expect(steerRes).toEqual({ ok: true })
+    expect(client1.softInterruptWithId).toHaveBeenCalledWith(
+      "sess_steer_1",
+      "also check tests",
+      { urgent: false, clientId: "mid_1" }
+    )
+    expect(client2.softInterruptWithId).not.toHaveBeenCalled()
+
+    const cancelRes = await daemon.cancelSoftInterrupts("sess_steer_1", "mid_1")
+    expect(cancelRes).toEqual({ ok: true, cancelled: true })
+    expect(client1.cancelSoftInterrupt).toHaveBeenCalledWith("sess_steer_1", "mid_1")
+    expect(client1.close).not.toHaveBeenCalled()
+  })
+
+  it("emits running session_status when attaching a background-active session and preserves concurrent getHistory responses", async () => {
+    const clientA = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: [],
+      supports: () => false,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_bg_running",
+        working_dir: "/repo",
+        status: "running",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      getHistoryWithImages: vi.fn().mockResolvedValue({
+        messages: [{ role: "user", content: "Session A prompt" }],
+        images: [],
+      }),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    const clientB = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: [],
+      supports: () => false,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_fg_idle",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      configureTools: vi.fn().mockResolvedValue(undefined),
+      getHistoryWithImages: vi.fn().mockResolvedValue({
+        messages: [{ role: "user", content: "Session B prompt" }],
+        images: [],
+      }),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect")
+      .mockResolvedValueOnce(clientA)
+      .mockResolvedValueOnce(clientB)
+
+    const daemon = new RayuDaemonClient("/tmp/bg-running-rayu.sock")
+    const receivedFrames: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      receivedFrames.push(frame)
+    })
+
+    const histA = await daemon.getHistory("sess_bg_running")
+    const histB = await daemon.getHistory("sess_fg_idle")
+
+    expect(histA.messages).toHaveLength(1)
+    expect(histB.messages).toHaveLength(1)
+    expect(clientA.close).not.toHaveBeenCalled()
+    expect(receivedFrames).toContainEqual(
+      expect.objectContaining({
+        ev: "session_status",
+        session_id: "sess_bg_running",
+        status: "running",
+      })
+    )
+  })
 })

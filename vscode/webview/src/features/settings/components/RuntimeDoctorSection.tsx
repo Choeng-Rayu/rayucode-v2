@@ -3,6 +3,7 @@ import * as React from "react";
 import {
   Activity,
   CheckCircle2,
+  Download,
   FileText,
   RefreshCw,
   Stethoscope,
@@ -45,6 +46,8 @@ export interface RuntimeDoctorSectionProps {
   isPingingDaemon: boolean;
   onReloadDaemonAndBridge: () => Promise<unknown>;
   isReloadingDaemon: boolean;
+  onUpdateEngine?: () => Promise<unknown>;
+  isUpdatingEngine?: boolean;
   onReconnectDaemon: () => Promise<unknown>;
   onOpenOutputLog: () => Promise<unknown>;
   onUpdateRuntime: (patch: {
@@ -116,6 +119,8 @@ export function RuntimeDoctorSection({
   isPingingDaemon,
   onReloadDaemonAndBridge,
   isReloadingDaemon,
+  onUpdateEngine,
+  isUpdatingEngine,
   onReconnectDaemon,
   onOpenOutputLog,
   onUpdateRuntime,
@@ -136,6 +141,10 @@ export function RuntimeDoctorSection({
   }, [runtime.binaryPath, runtime.socketPath]);
 
   const isConnected = daemonStatus.state === "connected";
+  const isTransferring =
+    daemonStatus.state === "downloading" ||
+    (daemonStatus.downloadPhase !== undefined &&
+      daemonStatus.downloadPhase !== "starting");
 
   return (
     <section
@@ -196,6 +205,26 @@ export function RuntimeDoctorSection({
               <span>Reconnect</span>
             </Button>
 
+            {onUpdateEngine && (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={isUpdatingEngine || isTransferring}
+                onClick={() => void onUpdateEngine()}
+                data-testid="runtime-update-engine-btn"
+              >
+                <Download className="size-3" aria-hidden="true" />
+                <span>
+                  {isTransferring
+                    ? `${daemonStatus.state === "connected" ? "Updating" : "Installing"}${daemonStatus.downloadProgress !== undefined ? ` ${daemonStatus.downloadProgress}%` : "..."}`
+                    : isUpdatingEngine
+                      ? "Checking..."
+                      : "Install / Update Engine"}
+                </span>
+              </Button>
+            )}
+
             <Button
               type="button"
               variant="primary"
@@ -224,6 +253,42 @@ export function RuntimeDoctorSection({
           </div>
         </div>
 
+        {isTransferring && (
+          <div
+            data-testid="runtime-daemon-progress-bar"
+            className="mt-3 flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-soft p-2.5 text-xs"
+          >
+            <div className="flex items-center justify-between gap-2 text-warn">
+              <span className="truncate font-medium">
+                {daemonStatus.statusMessage ??
+                  `Downloading Rayu engine${daemonStatus.downloadVersion ? ` ${daemonStatus.downloadVersion}` : ""} — please wait...`}
+              </span>
+              {daemonStatus.downloadProgress !== undefined && (
+                <span className="shrink-0 font-mono text-[11px] font-semibold tabular-nums">
+                  {daemonStatus.downloadProgress}%
+                </span>
+              )}
+            </div>
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-full bg-inset"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={daemonStatus.downloadProgress ?? 0}
+            >
+              <div
+                className={cn(
+                  "h-full rounded-full bg-brand transition-[width] duration-200",
+                  daemonStatus.downloadProgress === undefined && "animate-pulse",
+                )}
+                style={{
+                  width: `${Math.max(6, Math.min(100, daemonStatus.downloadProgress ?? 20))}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mt-3.5 grid grid-cols-2 gap-3 border-t border-hairline-soft pt-3 text-xs sm:grid-cols-4">
           <div>
             <div className="text-[11px] text-muted-ink">Daemon version</div>
@@ -234,6 +299,16 @@ export function RuntimeDoctorSection({
                   ? "Connected"
                   : "Not connected"}
             </div>
+            {(daemonStatus.managedVersion || daemonStatus.binarySource) && (
+              <div className="mt-0.5 truncate font-mono text-[10px] text-muted-ink">
+                {[
+                  daemonStatus.binarySource,
+                  daemonStatus.managedVersion,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-[11px] text-muted-ink">Harness protocol</div>

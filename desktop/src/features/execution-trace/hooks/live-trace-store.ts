@@ -5,18 +5,26 @@ import { toast } from "sonner"
 import { create } from "zustand"
 
 import { changesQueryKeys } from "@/features/changes"
-import { useAppStore, type PendingStreamPrompt } from "@/lib/app-store"
+import {
+  useAppStore,
+  type MidTurnSendMode,
+  type PendingStreamPrompt,
+} from "@/lib/app-store"
 import {
   createHarnessStreamTracker,
   formatDurationSeconds,
   mapHarnessFrameToLiveEvents,
   type HarnessStreamTracker,
 } from "@/lib/harness-adapter"
-import { ipcClient, type CloudChatMessage } from "@/lib/ipc-client"
+import {
+  ipcClient,
+  type CloudChatMessage,
+  type PromptImageAttachment,
+} from "@/lib/ipc-client"
 import { createStreamBatcher, type StreamBatcher } from "@/lib/stream-batcher"
 
 import { traceKeys } from "../api/trace-api"
-import type { ExecutionTurn, LiveTraceEvent } from "../types"
+import type { ExecutionTurn, LiveTraceEvent, SessionSummary } from "../types"
 import {
   applyTraceEvents,
   EMPTY_DIFF_CARD,
@@ -24,6 +32,11 @@ import {
 } from "./use-live-trace"
 
 const FRAME_BATCH_WINDOW_MS = 16
+
+export type DaemonSessionRuntimeStatus = {
+  status: "running" | "idle"
+  updatedAtMs: number
+}
 
 export type ReconcilableExecutionTurn = ExecutionTurn & {
   answerMarkdown: string
@@ -42,11 +55,69 @@ export function toReconcilableTurn(
   }
 }
 
+function hasRenderableTurnContent(turn: ExecutionTurn): boolean {
+  return (
+    turn.userPrompt.trim().length > 0 ||
+    Boolean(turn.userImages && turn.userImages.length > 0) ||
+    Boolean(turn.userRefFiles) ||
+    Boolean(turn.compactedNotice) ||
+    turn.answerIntro.trim().length > 0 ||
+    turn.answerBullets.length > 0 ||
+    turn.groups.length > 0 ||
+    turn.notes.length > 0 ||
+    (turn.timeline?.length ?? 0) > 0 ||
+    turn.diffCard.lines.length > 0 ||
+    Boolean(turn.outputArtifact)
+  )
+}
+
+function hasAssistantOrWorkContent(turn: ExecutionTurn): boolean {
+  return (
+    turn.answerIntro.trim().length > 0 ||
+    turn.answerBullets.length > 0 ||
+    turn.groups.length > 0 ||
+    turn.notes.length > 0 ||
+    (turn.timeline?.length ?? 0) > 0 ||
+    turn.diffCard.lines.length > 0 ||
+    Boolean(turn.outputArtifact)
+  )
+}
+
+function patchCachedSessionStatus(
+  queryClient: QueryClient | null,
+  sessionId: string,
+  status: "running" | "idle"
+): void {
+  if (!queryClient || !sessionId) return
+  queryClient.setQueriesData<SessionSummary[]>(
+    { queryKey: ["sessions"] },
+    (prev) => {
+      if (!Array.isArray(prev)) return prev
+      let changed = false
+      const next = prev.map((item) => {
+        if (item.id !== sessionId) return item
+        const desiredUpdatedAt = status === "running" ? "Live" : item.updatedAt
+        if (item.status === status && item.updatedAt === desiredUpdatedAt) {
+          return item
+        }
+        changed = true
+        return {
+          ...item,
+          status,
+          updatedAt: desiredUpdatedAt,
+        }
+      })
+      return changed ? next : prev
+    }
+  )
+}
+
 interface LiveTraceStoreState {
   liveTurnsBySession: Record<string, ExecutionTurn>
   completedLiveTurnsBySession: Record<string, ExecutionTurn[]>
   baseHistoryTurnCountBySession: Record<string, number>
   lastEventAtMsBySession: Record<string, number>
+  daemonSessionStatusBySession: Record<string, DaemonSessionRuntimeStatus>
 }
 
 export const useLiveTraceStore = create<LiveTraceStoreState>(() => ({
@@ -54,15 +125,18 @@ export const useLiveTraceStore = create<LiveTraceStoreState>(() => ({
   completedLiveTurnsBySession: {},
   baseHistoryTurnCountBySession: {},
   lastEventAtMsBySession: {},
+  daemonSessionStatusBySession: {},
 }))
 
 const trackersBySession = new Map<string, HarnessStreamTracker>()
 const batchersBySession = new Map<string, StreamBatcher<LiveTraceEvent>>()
 const startedAtBySession = new Map<string, number>()
+const abnormalStopBySession = new Map<string, boolean>()
 const completedTurnIds = new Set<string>()
 let turnSequence = 1
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
 let controllerMountCount = 0
+let activeControllerQueryClient: QueryClient | null = null
 
 export function isLiveTraceControllerMounted(): boolean {
   return controllerMountCount > 0
@@ -142,6 +216,7 @@ export function startSessionLiveTurn(input: StartLiveTurnInput): ExecutionTurn {
       ? input.startedAtMs
       : Date.now()
   startedAtBySession.set(input.sessionId, startedAt)
+  abnormalStopBySession.delete(input.sessionId)
   const elapsedSec = Math.max(1, Math.floor((Date.now() - startedAt) / 1000))
   const turn: ExecutionTurn = {
     id: `live_turn_${Date.now()}_${turnSequence++}`,
@@ -156,7 +231,7 @@ export function startSessionLiveTurn(input: StartLiveTurnInput): ExecutionTurn {
     timeline: input.initialNote
       ? [{ type: "note", id: "note_0", text: input.initialNote }]
       : [],
-    activeToolStatus: null,
+    activeToolStatus: input.activeToolStatus ?? null,
     answerIntro: "",
     answerBullets: [],
     diffCard: EMPTY_DIFF_CARD,
@@ -182,7 +257,16 @@ export function startSessionLiveTurn(input: StartLiveTurnInput): ExecutionTurn {
       ...state.lastEventAtMsBySession,
       [input.sessionId]: startedAt,
     },
+    daemonSessionStatusBySession: {
+      ...state.daemonSessionStatusBySession,
+      [input.sessionId]: { status: "running", updatedAtMs: startedAt },
+    },
   }))
+  patchCachedSessionStatus(
+    activeControllerQueryClient,
+    input.sessionId,
+    "running"
+  )
   ensureElapsedTimer()
   return turn
 }
@@ -195,7 +279,12 @@ export function clearSessionLiveTurn(sessionId: string): void {
     batchersBySession.delete(sessionId)
   }
   startedAtBySession.delete(sessionId)
-  trackersBySession.delete(sessionId)
+  abnormalStopBySession.delete(sessionId)
+  const tracker = trackersBySession.get(sessionId)
+  if (tracker) {
+    tracker.turnActive = false
+    tracker.toolInputs.clear()
+  }
   useLiveTraceStore.setState((state) => {
     const hasLive = sessionId in state.liveTurnsBySession
     const hasBase = sessionId in state.baseHistoryTurnCountBySession
@@ -223,6 +312,7 @@ export function resetAllLiveTraces(): void {
   batchersBySession.clear()
   trackersBySession.clear()
   startedAtBySession.clear()
+  abnormalStopBySession.clear()
   completedTurnIds.clear()
   if (elapsedTimer) {
     clearInterval(elapsedTimer)
@@ -233,7 +323,231 @@ export function resetAllLiveTraces(): void {
     completedLiveTurnsBySession: {},
     baseHistoryTurnCountBySession: {},
     lastEventAtMsBySession: {},
+    daemonSessionStatusBySession: {},
   })
+}
+
+export function settleSessionTurnQueue(
+  sessionId: string,
+  wasAbnormalStop: boolean,
+  queryClient?: QueryClient | null
+): void {
+  if (!sessionId) return
+  const store = useAppStore.getState()
+  if (wasAbnormalStop || store.pausedQueueSessions[sessionId]) {
+    store.demotePendingSteersToQueue(sessionId)
+    const remaining = useAppStore.getState().midTurnMessagesBySession[sessionId]
+    if (remaining && remaining.some((item) => item.mode === "queue")) {
+      store.setQueuePausedForSession(sessionId, true)
+    }
+    return
+  }
+
+  store.markSteersDelivered(sessionId)
+  const next = store.shiftNextQueuedMessage(sessionId)
+  if (!next) return
+
+  const qc = queryClient ?? activeControllerQueryClient
+  const nextPrompt: PendingStreamPrompt = {
+    sessionId,
+    prompt: next.text,
+    ...(next.images && next.images.length > 0 ? { images: next.images } : {}),
+    ...(next.modelId ? { modelId: next.modelId } : {}),
+    modelLabel: next.modelLabel ?? "Default",
+    ...(next.effort ? { effort: next.effort } : {}),
+    startedAtMs: Date.now(),
+  }
+  if (qc) {
+    dispatchPendingStreamPrompt(nextPrompt, qc)
+  } else {
+    store.setPendingStreamPrompt(nextPrompt)
+  }
+}
+
+export async function sendMidTurnMessage(
+  input: {
+    sessionId: string
+    mode: MidTurnSendMode
+    prompt: string
+    images?: PromptImageAttachment[]
+    modelId?: string
+    modelLabel?: string
+    effort?: string
+    permissionMode?: string
+  },
+  queryClient?: QueryClient
+): Promise<void> {
+  const { sessionId, mode, prompt, images, modelId, modelLabel, effort, permissionMode } =
+    input
+  if (!sessionId) return
+  const store = useAppStore.getState()
+  const itemId = `mid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+  const item = {
+    id: itemId,
+    sessionId,
+    mode,
+    text: prompt,
+    createdAtMs: Date.now(),
+    ...(images && images.length > 0 ? { images } : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(modelLabel ? { modelLabel } : {}),
+    ...(effort ? { effort } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+  }
+
+  store.setQueuePausedForSession(sessionId, false)
+
+  if (mode === "queue") {
+    store.addMidTurnMessage(sessionId, item)
+    return
+  }
+
+  store.addMidTurnMessage(sessionId, item)
+  try {
+    const res = await ipcClient.trace.softInterrupt({
+      sessionId,
+      prompt,
+      clientId: itemId,
+      urgent: false,
+      images,
+    })
+    if (res.ok) {
+      return
+    }
+    // Live steer not supported (e.g., cloud-only stream or offline daemon) or failed -> keep message in Queue
+    useAppStore.getState().updateMidTurnMessage(sessionId, itemId, {
+      mode: "queue",
+    })
+    if (res.code === "unsupported") {
+      toast("Queued for next turn (live steer requires local daemon)")
+    } else {
+      toast.error(res.error ?? "Failed to steer turn; moved to queue")
+    }
+  } catch (err) {
+    useAppStore.getState().updateMidTurnMessage(sessionId, itemId, {
+      mode: "queue",
+    })
+    toast.error(
+      err instanceof Error
+        ? `${err.message}; moved to queue`
+        : "Failed to steer turn; moved to queue"
+    )
+  }
+  void queryClient
+}
+
+export async function promoteQueuedMessageToSteer(
+  sessionId: string,
+  itemId: string
+): Promise<void> {
+  if (!sessionId || !itemId) return
+  const store = useAppStore.getState()
+  const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+    (entry) => entry.id === itemId
+  )
+  if (!item || item.mode === "steer") return
+
+  store.updateMidTurnMessage(sessionId, itemId, { mode: "steer" })
+  try {
+    const res = await ipcClient.trace.softInterrupt({
+      sessionId,
+      prompt: item.text,
+      clientId: itemId,
+      urgent: false,
+      images: item.images,
+    })
+    if (!res.ok) {
+      useAppStore.getState().updateMidTurnMessage(sessionId, itemId, {
+        mode: "queue",
+      })
+      toast.error(res.error ?? "Failed to steer message")
+    }
+  } catch (err) {
+    useAppStore.getState().updateMidTurnMessage(sessionId, itemId, {
+      mode: "queue",
+    })
+    toast.error(err instanceof Error ? err.message : "Failed to steer message")
+  }
+}
+
+export function sendQueuedMessageNow(
+  sessionId: string,
+  itemId: string,
+  queryClient: QueryClient
+): void {
+  if (!sessionId || !itemId) return
+  const store = useAppStore.getState()
+  const item = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+    (entry) => entry.id === itemId
+  )
+  if (!item) return
+  store.removeMidTurnMessage(sessionId, itemId)
+  store.setQueuePausedForSession(sessionId, false)
+  dispatchPendingStreamPrompt(
+    {
+      sessionId,
+      prompt: item.text,
+      ...(item.images && item.images.length > 0 ? { images: item.images } : {}),
+      ...(item.modelId ? { modelId: item.modelId } : {}),
+      modelLabel: item.modelLabel ?? "Default",
+      ...(item.effort ? { effort: item.effort } : {}),
+      startedAtMs: Date.now(),
+    },
+    queryClient
+  )
+}
+
+export async function cancelMidTurnMessage(
+  sessionId: string,
+  itemId: string
+): Promise<void> {
+  if (!sessionId || !itemId) return
+  const store = useAppStore.getState()
+  const existing = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+    (entry) => entry.id === itemId
+  )
+  store.removeMidTurnMessage(sessionId, itemId)
+  if (existing?.mode === "steer") {
+    await ipcClient.trace.cancelSoftInterrupts(sessionId, itemId).catch(() => {})
+  }
+}
+
+export function editMidTurnMessage(sessionId: string, itemId: string): void {
+  if (!sessionId || !itemId) return
+  const store = useAppStore.getState()
+  const existing = (store.midTurnMessagesBySession[sessionId] ?? []).find(
+    (entry) => entry.id === itemId
+  )
+  if (!existing) return
+  store.removeMidTurnMessage(sessionId, itemId)
+  if (existing.mode === "steer") {
+    void ipcClient.trace.cancelSoftInterrupts(sessionId, itemId).catch(() => {})
+  }
+  store.setComposerDraft(sessionId, existing.text)
+  store.requestComposerFocus()
+}
+
+export function stopActiveSessionTurn(sessionId: string): void {
+  if (!sessionId) return
+  const store = useAppStore.getState()
+  if (store.pendingStreamPrompt?.sessionId === sessionId) {
+    store.setPendingStreamPrompt(null)
+  }
+  store.demotePendingSteersToQueue(sessionId)
+  const remaining = useAppStore.getState().midTurnMessagesBySession[sessionId]
+  if (remaining && remaining.some((item) => item.mode === "queue")) {
+    store.setQueuePausedForSession(sessionId, true)
+  }
+  useLiveTraceStore.setState((state) => ({
+    daemonSessionStatusBySession: {
+      ...state.daemonSessionStatusBySession,
+      [sessionId]: { status: "idle", updatedAtMs: Date.now() },
+    },
+  }))
+  patchCachedSessionStatus(activeControllerQueryClient, sessionId, "idle")
+  clearSessionLiveTurn(sessionId)
+  void ipcClient.trace.cancelSoftInterrupts(sessionId).catch(() => {})
+  void ipcClient.trace.cancel(sessionId)
 }
 
 function getOrCreateBatcher(
@@ -251,45 +565,61 @@ function getOrCreateBatcher(
 
     const hasComplete = events.some((ev) => ev.type === "complete")
     if (hasComplete) {
-      const baseHistoryCount =
-        storeState.baseHistoryTurnCountBySession[sessionId]
-      if (!completedTurnIds.has(updated.id)) {
-        completedTurnIds.add(updated.id)
-        ipcClient.trace.recordTurn(updated)
-        useLiveTraceStore.setState((state) => {
-          const prevCompleted = state.completedLiveTurnsBySession[sessionId] ?? []
-          const nextCompleted = [
-            ...prevCompleted.filter((t) => t.id !== updated.id),
-            updated,
-          ].slice(-5)
-          return {
-            completedLiveTurnsBySession: {
-              ...state.completedLiveTurnsBySession,
-              [sessionId]: nextCompleted,
-            },
-          }
-        })
-        queryClient.setQueryData<ExecutionTurn[]>(
-          traceKeys.turns(sessionId),
-          (prev) => {
-            const history = prev ?? []
-            return reconcileChatTurns({
-              historyTurns: history.map(toReconcilableTurn),
-              liveTurn: toReconcilableTurn(updated),
-              baseHistoryTurnCount: baseHistoryCount,
-            })
-          }
-        )
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] })
-        void queryClient.invalidateQueries({
-          queryKey: traceKeys.turns(sessionId),
-        })
+      const wasAbnormalStop = Boolean(abnormalStopBySession.get(sessionId))
+      const nowMs = Date.now()
+      useLiveTraceStore.setState((state) => ({
+        daemonSessionStatusBySession: {
+          ...state.daemonSessionStatusBySession,
+          [sessionId]: { status: "idle", updatedAtMs: nowMs },
+        },
+      }))
+      patchCachedSessionStatus(queryClient, sessionId, "idle")
+
+      const shouldPersistAndDisplay =
+        hasRenderableTurnContent(updated) &&
+        (updated.userPrompt.trim().length > 0 ||
+          hasAssistantOrWorkContent(updated))
+
+      if (shouldPersistAndDisplay) {
+        const baseHistoryCount =
+          storeState.baseHistoryTurnCountBySession[sessionId]
+        if (!completedTurnIds.has(updated.id)) {
+          completedTurnIds.add(updated.id)
+          ipcClient.trace.recordTurn(updated)
+          useLiveTraceStore.setState((state) => {
+            const prevCompleted =
+              state.completedLiveTurnsBySession[sessionId] ?? []
+            const nextCompleted = [
+              ...prevCompleted.filter((t) => t.id !== updated.id),
+              updated,
+            ].slice(-5)
+            return {
+              completedLiveTurnsBySession: {
+                ...state.completedLiveTurnsBySession,
+                [sessionId]: nextCompleted,
+              },
+            }
+          })
+          queryClient.setQueryData<ExecutionTurn[]>(
+            traceKeys.turns(sessionId),
+            (prev) => {
+              const history = prev ?? []
+              return reconcileChatTurns({
+                historyTurns: history.map(toReconcilableTurn),
+                liveTurn: toReconcilableTurn(updated),
+                baseHistoryTurnCount: baseHistoryCount,
+              })
+            }
+          )
+        }
       }
-      const perm = useAppStore.getState().pendingPermission
-      if (perm && (!perm.sessionId || perm.sessionId === sessionId)) {
-        useAppStore.getState().setPendingPermission(null)
-      }
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+      void queryClient.invalidateQueries({
+        queryKey: traceKeys.turns(sessionId),
+      })
+      useAppStore.getState().clearPendingPermission(sessionId)
       clearSessionLiveTurn(sessionId)
+      settleSessionTurnQueue(sessionId, wasAbnormalStop, queryClient)
       return
     }
 
@@ -311,26 +641,217 @@ export function processHarnessFrame(
   fallbackSessionId?: string
 ): void {
   const frameSession =
-    typeof frame.session_id === "string" ? frame.session_id : ""
+    typeof frame.session_id === "string" ? frame.session_id.trim() : ""
+  const evName = typeof frame.ev === "string" ? frame.ev : ""
+  if (
+    !frameSession &&
+    (evName === "error" ||
+      evName === "turn_stopped" ||
+      evName === "turn_aborted")
+  ) {
+    return
+  }
   const targetSessionId = frameSession || fallbackSessionId || ""
   if (!targetSessionId) return
 
   const nowMs = Date.now()
+  if (evName === "permission_resolved") {
+    const reqId =
+      typeof frame.request_id === "string" ? frame.request_id.trim() : ""
+    useAppStore
+      .getState()
+      .clearPendingPermission(targetSessionId, reqId || undefined)
+    return
+  }
+
+  if (evName === "soft_interrupt_injected") {
+    const clientIds = Array.isArray(frame.client_ids)
+      ? frame.client_ids.filter(
+          (id): id is string => typeof id === "string" && id.length > 0
+        )
+      : []
+    const store = useAppStore.getState()
+    const currentItems = store.midTurnMessagesBySession[targetSessionId] ?? []
+    const matchedSteers = currentItems.filter(
+      (item) =>
+        item.mode === "steer" &&
+        (clientIds.length === 0 || clientIds.includes(item.id))
+    )
+    store.markSteersDelivered(targetSessionId, clientIds)
+    if (matchedSteers.length > 0) {
+      const texts = matchedSteers
+        .map((item) => item.text.trim())
+        .filter(Boolean)
+      if (texts.length > 0) {
+        if (!useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]) {
+          startSessionLiveTurn({
+            sessionId: targetSessionId,
+            userPrompt: "",
+          })
+        }
+        const batcher = getOrCreateBatcher(targetSessionId, queryClient)
+        batcher.push({ type: "note", text: `Steered: ${texts.join(" · ")}` })
+        batcher.flushNow()
+      }
+    }
+    return
+  }
+
+  if (evName === "soft_interrupts_cancelled") {
+    if (Array.isArray(frame.cancelled)) {
+      const store = useAppStore.getState()
+      for (const id of frame.cancelled) {
+        if (typeof id === "string" && id.length > 0) {
+          store.removeMidTurnMessage(targetSessionId, id)
+        }
+      }
+    }
+    return
+  }
+
+  if (evName === "session_status") {
+    const status =
+      typeof frame.status === "string" ? frame.status.trim().toLowerCase() : ""
+    if (
+      status === "running" ||
+      status === "processing" ||
+      status === "busy" ||
+      status === "generating" ||
+      status === "tool_running"
+    ) {
+      const existing =
+        useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]
+      useLiveTraceStore.setState((state) => ({
+        lastEventAtMsBySession: {
+          ...state.lastEventAtMsBySession,
+          [targetSessionId]: nowMs,
+        },
+        daemonSessionStatusBySession: {
+          ...state.daemonSessionStatusBySession,
+          [targetSessionId]: { status: "running", updatedAtMs: nowMs },
+        },
+      }))
+      patchCachedSessionStatus(queryClient, targetSessionId, "running")
+      if (!existing) {
+        const existingTurns =
+          queryClient.getQueryData<ExecutionTurn[]>(
+            traceKeys.turns(targetSessionId)
+          ) ?? []
+        startSessionLiveTurn({
+          sessionId: targetSessionId,
+          userPrompt: "",
+          activeToolStatus:
+            status === "tool_running" ? "Running tool..." : "Thinking...",
+          baseHistoryTurnCount: existingTurns.filter((t) => !t.isLive).length,
+        })
+      } else if (!existing.isLive) {
+        useLiveTraceStore.setState((state) => ({
+          liveTurnsBySession: {
+            ...state.liveTurnsBySession,
+            [targetSessionId]: { ...existing, isLive: true },
+          },
+        }))
+      }
+    } else if (status === "idle") {
+      useLiveTraceStore.setState((state) => ({
+        daemonSessionStatusBySession: {
+          ...state.daemonSessionStatusBySession,
+          [targetSessionId]: { status: "idle", updatedAtMs: nowMs },
+        },
+      }))
+      patchCachedSessionStatus(queryClient, targetSessionId, "idle")
+      const existing =
+        useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]
+      if (
+        existing &&
+        !existing.userPrompt.trim() &&
+        !existing.answerIntro.trim() &&
+        existing.answerBullets.length === 0 &&
+        existing.groups.length === 0 &&
+        existing.notes.length === 0 &&
+        (existing.timeline?.length ?? 0) === 0
+      ) {
+        clearSessionLiveTurn(targetSessionId)
+        void queryClient.invalidateQueries({
+          queryKey: traceKeys.turns(targetSessionId),
+        })
+      }
+    }
+    return
+  }
+
+  if (
+    evName === "error" &&
+    (frame.non_turn === true ||
+      frame.req === "set_model" ||
+      frame.req === "set_reasoning_effort" ||
+      frame.req === "set_permission_mode")
+  ) {
+    return
+  }
+
+  const isTerminalFrame =
+    evName === "turn_done" || evName === "turn_stopped" || evName === "error"
+  if (evName === "turn_stopped" || evName === "error") {
+    abnormalStopBySession.set(targetSessionId, true)
+  } else if (evName === "turn_start" || evName === "message_accepted") {
+    abnormalStopBySession.delete(targetSessionId)
+  }
+
   useLiveTraceStore.setState((state) => ({
     lastEventAtMsBySession: {
       ...state.lastEventAtMsBySession,
       [targetSessionId]: nowMs,
     },
+    ...(evName === "turn_start" || evName === "message_accepted"
+      ? {
+          daemonSessionStatusBySession: {
+            ...state.daemonSessionStatusBySession,
+            [targetSessionId]: { status: "running", updatedAtMs: nowMs },
+          },
+        }
+      : {}),
   }))
 
-  const evName = typeof frame.ev === "string" ? frame.ev : ""
-  const isTerminalFrame =
-    evName === "turn_done" || evName === "turn_stopped" || evName === "error"
-
   const tracker = getOrCreateTracker(targetSessionId)
+  if (isTerminalFrame && !useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]) {
+    tracker.turnActive = false
+    tracker.turnCompleted = true
+    useLiveTraceStore.setState((state) => ({
+      daemonSessionStatusBySession: {
+        ...state.daemonSessionStatusBySession,
+        [targetSessionId]: { status: "idle", updatedAtMs: nowMs },
+      },
+    }))
+    patchCachedSessionStatus(queryClient, targetSessionId, "idle")
+    useAppStore.getState().clearPendingPermission(targetSessionId)
+    settleSessionTurnQueue(
+      targetSessionId,
+      evName === "turn_stopped" || evName === "error",
+      queryClient
+    )
+    void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    void queryClient.invalidateQueries({
+      queryKey: traceKeys.turns(targetSessionId),
+    })
+    return
+  }
+
   const mapped = mapHarnessFrameToLiveEvents(frame, tracker)
   if (mapped.length === 0) {
     if (isTerminalFrame) {
+      useLiveTraceStore.setState((state) => ({
+        daemonSessionStatusBySession: {
+          ...state.daemonSessionStatusBySession,
+          [targetSessionId]: { status: "idle", updatedAtMs: nowMs },
+        },
+      }))
+      patchCachedSessionStatus(queryClient, targetSessionId, "idle")
+      settleSessionTurnQueue(
+        targetSessionId,
+        evName === "turn_stopped" || evName === "error",
+        queryClient
+      )
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
       void queryClient.invalidateQueries({
         queryKey: traceKeys.turns(targetSessionId),
@@ -389,7 +910,7 @@ export function processHarnessFrame(
       ) ?? []
     startSessionLiveTurn({
       sessionId: targetSessionId,
-      userPrompt: "Live daemon turn",
+      userPrompt: "",
       baseHistoryTurnCount: existingTurns.filter((t) => !t.isLive).length,
     })
   }
@@ -503,6 +1024,7 @@ export function LiveTraceController() {
 
   React.useEffect(() => {
     controllerMountCount += 1
+    activeControllerQueryClient = queryClient
     const unsubscribe = ipcClient.harness.onEvent((frame) => {
       processHarnessFrame(
         frame,
@@ -514,6 +1036,7 @@ export function LiveTraceController() {
       unsubscribe()
       controllerMountCount = Math.max(0, controllerMountCount - 1)
       if (controllerMountCount === 0) {
+        activeControllerQueryClient = null
         resetAllLiveTraces()
       }
     }

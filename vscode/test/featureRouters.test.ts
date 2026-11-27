@@ -77,6 +77,11 @@ function createTestFeatureRouter(options: TestRouterOptions = {}) {
       ping: async () => ({ ok: true, latencyMs: 2, version: "1.14" }),
       reconnect: async () => daemonStatus,
       restart: async () => daemonStatus,
+      updateEngine: async () => ({
+        ...daemonStatus,
+        binarySource: "managed",
+        managedVersion: "3.1.0",
+      }),
       reloadDaemon: async () => ({ ok: true, message: "Reloaded" }),
       openOutputLog: () => {},
     },
@@ -396,6 +401,15 @@ test("featureRouters validates and dispatches RPC calls across all 11 domains", 
       RpcContractSchemas["daemon.status"].result.parse(statusRes.data).state,
       "connected",
     );
+  }
+  const updateEngineRes = await router.dispatch(1, "daemon.updateEngine", undefined);
+  assert.equal(updateEngineRes.ok, true);
+  if (updateEngineRes.ok) {
+    const parsedEngine = RpcContractSchemas["daemon.updateEngine"].result.parse(
+      updateEngineRes.data,
+    );
+    assert.equal(parsedEngine.binarySource, "managed");
+    assert.equal(parsedEngine.managedVersion, "3.1.0");
   }
 
   // 2. Workspace domain

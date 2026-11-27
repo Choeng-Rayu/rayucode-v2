@@ -595,10 +595,16 @@ test("extension.manifest.json enforces Tier 1 + Tier 2 workbench placement and c
   const fullManifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8")) as {
     version?: string;
     publisher?: string;
+    activationEvents?: string[];
     files?: string[];
     keywords?: string[];
     galleryBanner?: { color?: string; theme?: string };
   };
+  assert.ok(
+    Array.isArray(fullManifest.activationEvents) &&
+      fullManifest.activationEvents.includes("onStartupFinished"),
+    "extension.manifest.json must activate onStartupFinished so engine auto-download/update runs automatically",
+  );
   assert.match(
     fullManifest.version ?? "",
     /^\d+\.\d+\.\d+$/,

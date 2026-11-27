@@ -1496,7 +1496,15 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     case "daemon.status":
     case "daemon.reconnect":
     case "daemon.restart":
-      mockState.daemon = { ...mockState.daemon, state: "connected", error: undefined };
+    case "daemon.updateEngine":
+      mockState.daemon = {
+        ...mockState.daemon,
+        state: "connected",
+        error: undefined,
+        downloadProgress: undefined,
+        downloadVersion: undefined,
+        statusMessage: undefined,
+      };
       return { ...mockState.daemon } as RpcResult<M>;
     case "daemon.ping":
       return { ok: true, latencyMs: 4, version: mockState.daemon.version } as RpcResult<M>;

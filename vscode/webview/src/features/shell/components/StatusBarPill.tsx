@@ -1,6 +1,6 @@
 import * as React from "react";
 import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
-import { FileText, RefreshCw, RotateCcw } from "lucide-react";
+import { Download, FileText, RefreshCw, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -28,6 +28,8 @@ function mapDaemonStateToTone(state: string): {
   switch (state) {
     case "connected":
       return { tone: "success", label: "Bridge online" };
+    case "downloading":
+      return { tone: "warn", label: "Installing engine..." };
     case "connecting":
     case "starting":
     case "reconnecting":
@@ -55,6 +57,15 @@ export function StatusBarPill({
 
   const { tone, label } = mapDaemonStateToTone(daemonStatus.state);
   const formattedVersion = formatDaemonVersionLabel(daemonStatus.version);
+  const isTransferring =
+    daemonStatus.state === "downloading" ||
+    (daemonStatus.downloadPhase !== undefined &&
+      daemonStatus.downloadPhase !== "starting");
+  const pillLabel = isTransferring
+    ? `${daemonStatus.state === "connected" ? "Updating" : "Installing"}${daemonStatus.downloadProgress !== undefined ? ` ${daemonStatus.downloadProgress}%` : "..."}`
+    : daemonStatus.state === "connected"
+      ? formattedVersion || "Online"
+      : label;
 
   const handleReconnect = async () => {
     setBusy(true);
@@ -76,6 +87,16 @@ export function StatusBarPill({
     }
   };
 
+  const handleUpdateEngine = async () => {
+    setBusy(true);
+    try {
+      const next = await callRpc("daemon.updateEngine");
+      setDaemonStatus(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <DropdownMenu>
       <Tooltip>
@@ -85,7 +106,7 @@ export function StatusBarPill({
               type="button"
               data-testid="status-bar-pill"
               data-daemon-state={daemonStatus.state}
-              aria-label={`Rayu daemon status: ${label}`}
+              aria-label={`Rayu daemon status: ${pillLabel}`}
               className={cn(
                 "inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-transparent px-2 py-1 text-[11px] text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink",
                 daemonStatus.state !== "connected" &&
@@ -96,17 +117,15 @@ export function StatusBarPill({
             >
               <RunStatusPulse status={tone} />
               {!compact && (
-                <span className="max-w-[110px] truncate font-medium">
-                  {daemonStatus.state === "connected"
-                    ? formattedVersion || "Online"
-                    : label}
+                <span className="max-w-[125px] truncate font-medium">
+                  {pillLabel}
                 </span>
               )}
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          <span>{label}</span>
+          <span>{daemonStatus.statusMessage ?? label}</span>
           {daemonStatus.latencyMs !== undefined && (
             <span className="font-mono text-[10.5px] text-muted-ink tabular-nums">
               {daemonStatus.latencyMs}ms
@@ -115,7 +134,7 @@ export function StatusBarPill({
         </TooltipContent>
       </Tooltip>
 
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent align="end" className="w-60">
         <DropdownMenuLabel>
           Rayu Engine ({daemonStatus.state})
         </DropdownMenuLabel>
@@ -125,13 +144,27 @@ export function StatusBarPill({
           </div>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={busy} onClick={() => void handleReconnect()}>
+        <DropdownMenuItem
+          disabled={busy || isTransferring}
+          onClick={() => void handleReconnect()}
+        >
           <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
           <span>Reconnect bridge</span>
         </DropdownMenuItem>
-        <DropdownMenuItem disabled={busy} onClick={() => void handleRestart()}>
+        <DropdownMenuItem
+          disabled={busy || isTransferring}
+          onClick={() => void handleRestart()}
+        >
           <RotateCcw className="size-3.5" />
           <span>Restart bridge</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={busy || isTransferring}
+          onClick={() => void handleUpdateEngine()}
+          data-testid="status-pill-update-engine"
+        >
+          <Download className="size-3.5" />
+          <span>Install / Update Engine</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => void callRpc("daemon.openOutputLog")}
@@ -149,22 +182,29 @@ export function StatusBarPill({
 }
 
 /**
- * Slim 28px banner shown ONLY when the daemon/bridge is reconnecting, starting, or offline.
- * Completely hidden (`null`) when healthy (`state === "connected"`).
+ * Slim 28px banner shown when the daemon/bridge is downloading, reconnecting, starting, or offline.
+ * Completely hidden (`null`) when healthy (`state === "connected"` and not updating).
  */
 export function DaemonBanner() {
   const daemonStatus = useAppStore((s) => s.daemonStatus);
   const setDaemonStatus = useAppStore((s) => s.setDaemonStatus);
   const [busy, setBusy] = React.useState(false);
 
-  if (daemonStatus.state === "connected") {
+  const isDownloading =
+    daemonStatus.state === "downloading" ||
+    (daemonStatus.downloadPhase !== undefined &&
+      daemonStatus.downloadPhase !== "starting");
+
+  if (daemonStatus.state === "connected" && !isDownloading) {
     return null;
   }
 
   const isStarting =
-    daemonStatus.state === "connecting" ||
-    daemonStatus.state === "starting" ||
-    daemonStatus.state === "reconnecting";
+    !isDownloading &&
+    (daemonStatus.state === "connecting" ||
+      daemonStatus.state === "starting" ||
+      daemonStatus.state === "reconnecting");
+  const isWarm = isDownloading || isStarting;
 
   const handleAction = async () => {
     setBusy(true);
@@ -180,6 +220,27 @@ export function DaemonBanner() {
     }
   };
 
+  const handleInstallEngine = async () => {
+    setBusy(true);
+    try {
+      const next = await callRpc("daemon.updateEngine");
+      setDaemonStatus(next);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const bannerText = isDownloading
+    ? daemonStatus.statusMessage ??
+      (daemonStatus.downloadProgress !== undefined
+        ? `Downloading Rayu engine${daemonStatus.downloadVersion ? ` ${daemonStatus.downloadVersion}` : ""} (${daemonStatus.downloadProgress}%) — please wait...`
+        : "Installing Rayu engine — please wait...")
+    : daemonStatus.error
+      ? daemonStatus.error
+      : isStarting
+        ? "Connecting to Rayu daemon..."
+        : "Rayu daemon bridge is offline";
+
   return (
     <div
       role="status"
@@ -187,33 +248,69 @@ export function DaemonBanner() {
       data-testid="daemon-banner"
       className={cn(
         "flex h-7 shrink-0 items-center justify-between gap-2 border-b px-3 text-[11.5px]",
-        isStarting
+        isWarm
           ? "border-warn/30 bg-warn-soft text-warn"
           : "border-danger/30 bg-danger-soft text-danger",
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <RunStatusPulse status={isStarting ? "warn" : "danger"} />
-        <span className="truncate font-medium">
-          {daemonStatus.error
-            ? daemonStatus.error
-            : isStarting
-              ? "Connecting to Rayu daemon..."
-              : "Rayu daemon bridge is offline"}
-        </span>
+        <RunStatusPulse status={isWarm ? "warn" : "danger"} />
+        <span className="truncate font-medium">{bannerText}</span>
+        {isDownloading && (
+          <div
+            data-testid="daemon-banner-progress"
+            className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-inset"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={daemonStatus.downloadProgress ?? 0}
+          >
+            <div
+              className={cn(
+                "h-full rounded-full bg-brand transition-[width] duration-200",
+                daemonStatus.downloadProgress === undefined && "animate-pulse",
+              )}
+              style={{
+                width: `${Math.max(6, Math.min(100, daemonStatus.downloadProgress ?? 20))}%`,
+              }}
+            />
+          </div>
+        )}
+        {isDownloading && daemonStatus.downloadProgress !== undefined && (
+          <span className="shrink-0 font-mono text-[10.5px] tabular-nums">
+            {daemonStatus.downloadProgress}%
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          disabled={busy}
-          onClick={() => void handleAction()}
-          className="h-5 px-2 text-[11px]"
-        >
-          <RefreshCw className={cn("size-3", busy && "animate-spin")} />
-          <span>{isStarting ? "Reconnect" : "Start Bridge"}</span>
-        </Button>
+        {!isDownloading && !isStarting && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            disabled={busy}
+            onClick={() => void handleInstallEngine()}
+            data-testid="daemon-banner-install-engine"
+            className="h-5 px-2 text-[11px]"
+          >
+            <Download className="size-3" />
+            <span>Install / Update Engine</span>
+          </Button>
+        )}
+        {!isDownloading && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            disabled={busy}
+            onClick={() => void handleAction()}
+            data-testid="daemon-banner-action"
+            className="h-5 px-2 text-[11px]"
+          >
+            <RefreshCw className={cn("size-3", busy && "animate-spin")} />
+            <span>{isStarting ? "Reconnect" : "Start Bridge"}</span>
+          </Button>
+        )}
       </div>
     </div>
   );

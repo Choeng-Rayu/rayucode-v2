@@ -187,6 +187,7 @@ export const DaemonConnectionStateSchema = z.enum([
   "connected",
   "connecting",
   "starting",
+  "downloading",
   "reconnecting",
   "disconnected",
   "error",
@@ -204,6 +205,23 @@ export const DaemonStatusViewSchema = z.object({
   capabilities: z.array(z.string()),
   error: z.string().optional(),
   isRayuRepo: z.boolean().optional(),
+  downloadProgress: z.number().min(0).max(100).optional(),
+  downloadPhase: z
+    .enum([
+      "checking",
+      "downloading",
+      "verifying",
+      "extracting",
+      "installing",
+      "starting",
+    ])
+    .optional(),
+  downloadVersion: z.string().optional(),
+  downloadedBytes: z.number().nonnegative().optional(),
+  totalBytes: z.number().nonnegative().optional(),
+  statusMessage: z.string().optional(),
+  binarySource: z.string().optional(),
+  managedVersion: z.string().optional(),
 });
 export type DaemonStatusView = z.infer<typeof DaemonStatusViewSchema>;
 
@@ -1404,6 +1422,10 @@ export const RpcContractSchemas = {
     result: DaemonStatusViewSchema,
   },
   "daemon.restart": {
+    params: EmptyParamsSchema,
+    result: DaemonStatusViewSchema,
+  },
+  "daemon.updateEngine": {
     params: EmptyParamsSchema,
     result: DaemonStatusViewSchema,
   },

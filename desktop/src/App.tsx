@@ -19,9 +19,11 @@ import {
 import { SectionErrorBoundary } from "@/components/ui/section-error-boundary"
 import {
   ChatStream,
-  clearSessionLiveTurn,
   LiveTraceController,
+  sendMidTurnMessage,
+  stopActiveSessionTurn,
   traceTurnsQueryOptions,
+  useLiveTraceStore,
 } from "@/features/execution-trace"
 import {
   HomeView,
@@ -61,7 +63,18 @@ function ActiveWorkspaceStage() {
   const queryClient = useQueryClient()
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const pendingStreamPrompt = useAppStore((s) => s.pendingStreamPrompt)
-  const isStreamActive = useAppStore((s) => s.isStreamActive)
+  const isCurrentSessionStreaming = useLiveTraceStore((s) =>
+    Boolean(activeSessionId && s.liveTurnsBySession[activeSessionId]?.isLive)
+  )
+  const isSubmitting = Boolean(
+    activeSessionId &&
+      (pendingStreamPrompt?.sessionId === activeSessionId ||
+        isCurrentSessionStreaming)
+  )
+  const composerValue = useAppStore((s) =>
+    activeSessionId ? (s.composerDraftBySession[activeSessionId] ?? "") : ""
+  )
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft)
   const turnsQuery = useQuery({
     ...traceTurnsQueryOptions(activeSessionId),
     enabled: Boolean(activeSessionId),
@@ -74,6 +87,24 @@ function ActiveWorkspaceStage() {
 
   const handleWorkspaceSubmit = React.useCallback(
     async (payload: ComposerSubmitPayload) => {
+      if (activeSessionId && isSubmitting && payload.midTurnMode) {
+        setComposerDraft(activeSessionId, "")
+        await sendMidTurnMessage(
+          {
+            sessionId: activeSessionId,
+            mode: payload.midTurnMode,
+            prompt: payload.prompt,
+            images: payload.images,
+            modelId: payload.modelId,
+            modelLabel: payload.modelLabel,
+            effort: payload.effort,
+            permissionMode: payload.permissionMode,
+          },
+          queryClient
+        )
+        return
+      }
+
       let targetSessionId = activeSessionId
       if (!targetSessionId) {
         const sessionTitlePrompt =
@@ -94,6 +125,7 @@ function ActiveWorkspaceStage() {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] })
         void queryClient.invalidateQueries({ queryKey: ["models"] })
       }
+      setComposerDraft(targetSessionId, "")
       ipcClient.harness.stagePromptEffort(targetSessionId, payload.effort)
       useAppStore.getState().setPendingStreamPrompt({
         sessionId: targetSessionId,
@@ -105,7 +137,7 @@ function ActiveWorkspaceStage() {
         startedAtMs: Date.now(),
       })
     },
-    [activeSessionId, queryClient]
+    [activeSessionId, isSubmitting, queryClient, setComposerDraft]
   )
 
   return (
@@ -114,20 +146,20 @@ function ActiveWorkspaceStage() {
       composerSlot={
         <SessionComposer
           mode="workspace"
+          value={composerValue}
+          onValueChange={(next) => {
+            if (activeSessionId) {
+              setComposerDraft(activeSessionId, next)
+            }
+          }}
           onSubmit={handleWorkspaceSubmit}
           onStop={() => {
-            useAppStore.getState().setPendingStreamPrompt(null)
-            useAppStore.getState().setIsStreamActive(false)
             if (activeSessionId) {
-              clearSessionLiveTurn(activeSessionId)
-              void ipcClient.trace.cancel(activeSessionId)
+              stopActiveSessionTurn(activeSessionId)
             }
           }}
           disabled={isHistoryLoading}
-          isSubmitting={
-            (pendingStreamPrompt?.sessionId === activeSessionId) ||
-            isStreamActive
-          }
+          isSubmitting={isSubmitting}
         />
       }
     />
@@ -354,8 +386,22 @@ export function App() {
           }
           ipcClient.harness.recordSyncedEffort(sid, reasoningEffort)
         }
+      } else if (frame.ev === "permission_resolved") {
+        const sid =
+          typeof frame.session_id === "string" ? frame.session_id.trim() : ""
+        const reqId =
+          typeof frame.request_id === "string" ? frame.request_id.trim() : ""
+        if (sid) {
+          useAppStore
+            .getState()
+            .clearPendingPermission(sid, reqId || undefined)
+        }
       } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
-        useAppStore.getState().setPendingPermission(null)
+        const sid =
+          typeof frame.session_id === "string" ? frame.session_id.trim() : ""
+        if (sid) {
+          useAppStore.getState().clearPendingPermission(sid)
+        }
       }
     })
 
