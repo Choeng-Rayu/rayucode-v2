@@ -6,11 +6,9 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type {
-  GatewayDeviceView,
   GatewayStatusView,
   RemoteInfraStatusView,
-  RemoteSessionView,
-  TelegramApprovalView,
+  SessionSummaryView,
   TelegramStatusView,
 } from "@shared/vscodeProtocol";
 
@@ -28,35 +26,43 @@ export interface TelegramCommandSpec {
 export const TELEGRAM_COMMANDS: ReadonlyArray<TelegramCommandSpec> = [
   {
     command: "/sessions",
-    description: "List and switch active RayuCode sessions on this host",
+    description: "List and pick which local RayuCode session to drive",
+  },
+  {
+    command: "/switch",
+    description: "Switch directly to another local RayuCode session",
   },
   {
     command: "/status",
-    description: "Inspect active model, permission mode, and daemon health",
-  },
-  {
-    command: "/cancel",
-    description: "Interrupt or stop the currently running turn or tool",
-  },
-  {
-    command: "/approve",
-    description: "Approve or deny pending tool/plan requests inline",
+    description: "Inspect active session, model route, and turn state",
   },
   {
     command: "/model",
-    description: "Switch provider model route or reasoning effort tier",
+    description: "Choose a configured provider model for the selected session",
   },
   {
-    command: "/new",
-    description: "Start a fresh coding session bound to your Telegram chat",
+    command: "/provider",
+    description: "Browse configured providers on this host",
   },
   {
-    command: "/compact",
-    description: "Compact session context window to reclaim free tokens",
+    command: "/connect",
+    description: "Show local host sign-in instructions for a provider",
   },
   {
-    command: "/diff",
-    description: "Summarize current workspace git changes and file stats",
+    command: "/interrupt",
+    description: "Cancel the currently running Telegram turn",
+  },
+  {
+    command: "/answer",
+    description: "Reply to a pending interactive question from the agent",
+  },
+  {
+    command: "/stop",
+    description: "Disconnect Telegram remote control from this host",
+  },
+  {
+    command: "/uninstall",
+    description: "Remove managed CLI (guarded by Safety toggle + code)",
   },
 ];
 
@@ -89,73 +95,11 @@ export const CLOUD_26_OPERATIONS: ReadonlyArray<string> = [
   "gateway.revoke",
 ];
 
-const DEFAULT_SAMPLE_APPROVALS: TelegramApprovalView[] = [
-  {
-    id: "tg_appr_cargo_bench",
-    toolName: "bash",
-    commandOrSummary: "cargo test --workspace --test provider_discovery",
-    requestedBy: "ses_shard_lookup",
-    createdAtMs: Date.now() - 18_000,
-    status: "pending",
-  },
-  {
-    id: "tg_appr_write_config",
-    toolName: "write_file",
-    commandOrSummary: "Update crates/rayu-harness/src/telegram_bridge.rs",
-    requestedBy: "ses_vscode_shell",
-    createdAtMs: Date.now() - 45_000,
-    status: "pending",
-  },
-];
-
-const DEFAULT_SAMPLE_DEVICES: GatewayDeviceView[] = [
-  {
-    id: "dev_iphone_16_pro",
-    name: "Rayu Mobile · iOS Companion",
-    pairedAtMs: Date.now() - 86_400_000,
-    lastSeenAtMs: Date.now() - 120_000,
-  },
-];
-
-const DEFAULT_SAMPLE_SESSIONS: RemoteSessionView[] = [
-  {
-    id: "cloud_ses_kv_bench",
-    kind: "cloud",
-    label: "Cloud Sandbox · KV-Cache Latency Suite",
-    host: "rayu-cloud-us-east-1",
-    status: "running",
-    workingDir: "/workspace/rayucode-v2",
-    updatedAtMs: Date.now() - 60_000,
-  },
-  {
-    id: "ssh_ses_devbox",
-    kind: "ssh",
-    label: "SSH · Remote Cargo Self-Dev Build",
-    host: "devbox-east",
-    status: "idle",
-    workingDir: "~/rayucode-v2",
-    updatedAtMs: Date.now() - 300_000,
-  },
-];
-
 export function telegramStatusQueryOptions() {
   return queryOptions({
     queryKey: ["remote", "telegram", "status"] as const,
     queryFn: async (): Promise<TelegramStatusView> => {
-      const res = await callRpc("remote.telegram.status");
-      return {
-        ...res,
-        botHandle: res.botHandle ?? "@RayuCodeOfficialBot",
-        chatId: res.chatId ?? "842910443",
-        boundSessionId: res.boundSessionId ?? "ses_vscode_shell",
-        pairingCode: res.pairingCode ?? "RAYU-784-219",
-        pairingUrl:
-          res.pairingUrl ??
-          "https://t.me/RayuCodeOfficialBot?start=pair_RAYU_784_219",
-        pairingExpiresAtMs: res.pairingExpiresAtMs ?? Date.now() + 600_000,
-        approvals:
-          res.approvals.length > 0 ? res.approvals : DEFAULT_SAMPLE_APPROVALS,
-      };
+      return callRpc("remote.telegram.status");
     },
   });
 }
@@ -164,29 +108,23 @@ export function remoteInfraQueryOptions() {
   return queryOptions({
     queryKey: ["remote", "infra", "status"] as const,
     queryFn: async (): Promise<RemoteInfraStatusView> => {
-      const res = await callRpc("remote.infra.status");
-      return {
-        ...res,
-        gateway: {
-          ...res.gateway,
-          bindAddr: res.gateway.bindAddr ?? "127.0.0.1",
-          port: res.gateway.port ?? 7643,
-          dialAddress: res.gateway.dialAddress ?? "ws://127.0.0.1:7643",
-          pairingQr: res.gateway.pairingQr ?? {
-            uri: "rayu://gateway/pair?addr=ws://127.0.0.1:7643&code=492-817",
-            code: "492 817",
-            dialAddress: "ws://127.0.0.1:7643",
-            expiresAtMs: Date.now() + 300_000,
-          },
-          devices:
-            res.gateway.devices.length > 0
-              ? res.gateway.devices
-              : DEFAULT_SAMPLE_DEVICES,
-        },
-        sessions:
-          res.sessions.length > 0 ? res.sessions : DEFAULT_SAMPLE_SESSIONS,
-      };
+      return callRpc("remote.infra.status");
     },
+  });
+}
+
+export function remoteSessionsQueryOptions() {
+  return queryOptions({
+    queryKey: ["remote", "sessions", "list"] as const,
+    queryFn: async (): Promise<SessionSummaryView[]> => {
+      try {
+        const res = await callRpc("sessions.list", { includeArchived: false });
+        return res.sessions ?? [];
+      } catch {
+        return [];
+      }
+    },
+    staleTime: 15_000,
   });
 }
 
@@ -197,14 +135,56 @@ export function useRemote() {
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
 
   const [activeTab, setActiveTab] = React.useState<RemoteTopTabId>("telegram");
-  const [setupMode, setSetupMode] =
-    React.useState<TelegramSetupMode>("connected");
-  const [feedbackBanner, setFeedbackBanner] = React.useState<string | null>(
+  const [setupMode, setSetupMode] = React.useState<TelegramSetupMode | null>(
     null,
   );
+  const [feedbackBanner, setFeedbackBanner] = React.useState<{
+    kind: "info" | "error";
+    text: string;
+  } | null>(null);
 
-  const telegramQuery = useQuery(telegramStatusQueryOptions());
+  const telegramQuery = useQuery({
+    ...telegramStatusQueryOptions(),
+    refetchInterval: (query) => {
+      const state = query.state.data;
+      if (!state || !state.daemonOnline) return false;
+      if (!state.linked && Boolean(state.qrPath || state.pairingUrl)) {
+        return 2_000;
+      }
+      if (state.linked) {
+        return 5_000;
+      }
+      return false;
+    },
+  });
+
   const infraQuery = useQuery(remoteInfraQueryOptions());
+  const sessionsQuery = useQuery(remoteSessionsQueryOptions());
+
+  const prevLinkedRef = React.useRef<boolean | undefined>(undefined);
+  React.useEffect(() => {
+    const prev = prevLinkedRef.current;
+    const next = telegramQuery.data?.linked;
+    if (prev === false && next === true && telegramQuery.data) {
+      setSetupMode("connected");
+      const handle = telegramQuery.data.botHandle
+        ? `@${telegramQuery.data.botHandle.replace(/^@+/, "")}`
+        : "Telegram";
+      setFeedbackBanner({
+        kind: "info",
+        text: `Telegram connected (${handle}${telegramQuery.data.chatId ? ` · Chat ID ${telegramQuery.data.chatId}` : ""}).`,
+      });
+    }
+    prevLinkedRef.current = next;
+  }, [telegramQuery.data]);
+
+  const effectiveSetupMode: TelegramSetupMode =
+    setupMode ??
+    (telegramQuery.data?.linked
+      ? "connected"
+      : telegramQuery.data?.mode === "botfather"
+        ? "botfather"
+        : "hosted");
 
   const updateTelegramCache = React.useCallback(
     (updater: (prev: TelegramStatusView) => TelegramStatusView) => {
@@ -227,67 +207,163 @@ export function useRemote() {
   );
 
   const linkHostedMutation = useMutation({
-    mutationFn: () => callRpc("remote.telegram.linkHosted"),
-    onSuccess: () => {
-      const code = `RAYU-${Math.floor(100 + Math.random() * 899)}-${Math.floor(100 + Math.random() * 899)}`;
-      updateTelegramCache((prev) => ({
-        ...prev,
-        mode: "hosted",
-        pairingCode: code,
-        pairingUrl: `https://t.me/RayuCodeOfficialBot?start=pair_${code.replace(/-/g, "_")}`,
-        pairingExpiresAtMs: Date.now() + 600_000,
-      }));
-      setFeedbackBanner(`Generated hosted Telegram pairing code ${code}.`);
+    mutationFn: (replaceExisting?: boolean) =>
+      callRpc(
+        "remote.telegram.linkHosted",
+        replaceExisting ? { replaceExisting: true } : undefined,
+      ),
+    onSuccess: (res) => {
+      queryClient.setQueryData<TelegramStatusView>(
+        telegramStatusQueryOptions().queryKey,
+        res,
+      );
+      setSetupMode("hosted");
+      setFeedbackBanner({
+        kind: "info",
+        text: res.pairingCode
+          ? `Generated hosted Telegram pairing QR (code ${res.pairingCode}). Scan or open in Telegram and tap Start.`
+          : "Generated hosted Telegram pairing link. Open in Telegram and tap Start.",
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to start hosted Telegram pairing.",
+      });
     },
   });
 
   const linkBotfatherMutation = useMutation({
-    mutationFn: (input: { botToken: string; allowedChatId?: string }) =>
-      callRpc("remote.telegram.linkBotfather", input),
-    onSuccess: (_res, input) => {
-      updateTelegramCache((prev) => ({
-        ...prev,
-        linked: true,
-        mode: "botfather",
-        botHandle: "@CustomRayuBot",
-        chatId: input.allowedChatId?.trim() || prev.chatId || "842910443",
-      }));
-      setSetupMode("connected");
-      setFeedbackBanner(
-        "BotFather token sent directly to Rust daemon and linked.",
+    mutationFn: (input: {
+      botToken: string;
+      allowedChatId?: string;
+      replaceExisting?: boolean;
+    }) => callRpc("remote.telegram.linkBotfather", input),
+    onSuccess: (res) => {
+      queryClient.setQueryData<TelegramStatusView>(
+        telegramStatusQueryOptions().queryKey,
+        res,
       );
+      const handle = res.botHandle
+        ? `@${res.botHandle.replace(/^@+/, "")}`
+        : "BotFather bot";
+      if (res.linked) {
+        setSetupMode("connected");
+        setFeedbackBanner({
+          kind: "info",
+          text: `Verified and linked ${handle}${res.chatId ? ` (Chat ID ${res.chatId})` : ""}.`,
+        });
+      } else {
+        setSetupMode("botfather");
+        setFeedbackBanner({
+          kind: "info",
+          text: `Verified ${handle}. Scan the QR code or open the Start link in Telegram to finish pairing.`,
+        });
+      }
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to verify and link @BotFather token.",
+      });
     },
   });
 
   const disconnectTelegramMutation = useMutation({
-    mutationFn: () => callRpc("remote.telegram.disconnect"),
-    onSuccess: () => {
-      updateTelegramCache((prev) => ({
-        ...prev,
-        linked: false,
-      }));
-      setFeedbackBanner("Disconnected Telegram bridge on this host.");
+    mutationFn: (localOnly?: boolean) =>
+      callRpc(
+        "remote.telegram.disconnect",
+        localOnly ? { localOnly: true } : undefined,
+      ),
+    onSuccess: async (res) => {
+      await queryClient.invalidateQueries({
+        queryKey: telegramStatusQueryOptions().queryKey,
+      });
+      setSetupMode("hosted");
+      setFeedbackBanner({
+        kind: "info",
+        text: res.message || "Disconnected Telegram bridge on this host.",
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to disconnect Telegram bridge.",
+      });
     },
   });
 
   const testPingMutation = useMutation({
     mutationFn: () => callRpc("remote.telegram.testPing"),
-    onSuccess: () => {
-      const bot = telegramQuery.data?.botHandle ?? "@RayuCodeOfficialBot";
-      setFeedbackBanner(`Sent round-trip test ping to ${bot}.`);
+    onSuccess: (res) => {
+      if (!res.ok) {
+        setFeedbackBanner({
+          kind: "error",
+          text: res.message || "Telegram ping failed.",
+        });
+        return;
+      }
+      const target = res.target
+        ? `@${res.target.replace(/^@+/, "")}`
+        : telegramQuery.data?.botHandle
+          ? `@${telegramQuery.data.botHandle.replace(/^@+/, "")}`
+          : "Telegram";
+      setFeedbackBanner({
+        kind: "info",
+        text:
+          res.message ||
+          `Sent live Telegram ping to ${target}${res.chatId ? ` (Chat ID ${res.chatId})` : ""}.`,
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error ? err.message : "Failed to send Telegram ping.",
+      });
     },
   });
 
   const driveSessionMutation = useMutation({
     mutationFn: (sessionId: string) =>
       callRpc("remote.telegram.driveSession", { sessionId }),
-    onSuccess: (_res, sessionId) => {
+    onSuccess: async (res, sessionId) => {
+      if (!res.ok) {
+        setFeedbackBanner({
+          kind: "error",
+          text: res.message || "Could not bind session to Telegram bridge.",
+        });
+        return;
+      }
       updateTelegramCache((prev) => ({
         ...prev,
-        linked: true,
         boundSessionId: sessionId,
       }));
-      setFeedbackBanner(`Bound session ${sessionId} to Telegram bridge.`);
+      await queryClient.invalidateQueries({
+        queryKey: telegramStatusQueryOptions().queryKey,
+      });
+      setFeedbackBanner({
+        kind: "info",
+        text: res.message || `Telegram now drives session ${sessionId}.`,
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to switch Telegram driving session.",
+      });
     },
   });
 
@@ -307,11 +383,22 @@ export function useRemote() {
             : a,
         ),
       }));
-      setFeedbackBanner(
-        decision === "allow"
-          ? "Approved remote tool request via host."
-          : "Denied remote tool request via host.",
-      );
+      setFeedbackBanner({
+        kind: "info",
+        text:
+          decision === "allow"
+            ? "Approved remote tool request via host."
+            : "Denied remote tool request via host.",
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to submit approval decision.",
+      });
     },
   });
 
@@ -324,11 +411,21 @@ export function useRemote() {
         ...prev,
         remoteUninstallEnabled: next,
       }));
-      setFeedbackBanner(
-        next
-          ? "Remote /uninstall-remote guardrail set to Allowed."
-          : "Remote /uninstall-remote guardrail set to Blocked (safe default).",
-      );
+      setFeedbackBanner({
+        kind: "info",
+        text: next
+          ? "Remote /uninstall guardrail set to Allowed."
+          : "Remote /uninstall guardrail set to Blocked (safe default).",
+      });
+    },
+    onError: (err) => {
+      setFeedbackBanner({
+        kind: "error",
+        text:
+          err instanceof Error
+            ? err.message
+            : "Failed to update remote uninstall guardrail.",
+      });
     },
   });
 
@@ -348,34 +445,31 @@ export function useRemote() {
             res.devices.length > 0 ? res.devices : prev.gateway.devices,
         },
       }));
-      setFeedbackBanner(
-        enabled
+      setFeedbackBanner({
+        kind: "info",
+        text: enabled
           ? "Local WebSocket Gateway (:7643) enabled."
           : "Local WebSocket Gateway (:7643) stopped.",
-      );
+      });
     },
   });
 
   const pairGatewayMutation = useMutation({
     mutationFn: () => callRpc("remote.gateway.pair"),
     onSuccess: (res: GatewayStatusView) => {
-      const code = `${Math.floor(100 + Math.random() * 899)} ${Math.floor(100 + Math.random() * 899)}`;
       updateInfraCache((prev) => ({
         ...prev,
         gateway: {
           ...prev.gateway,
           ...res,
-          devices:
-            res.devices.length > 0 ? res.devices : prev.gateway.devices,
-          pairingQr: res.pairingQr ?? {
-            uri: `rayu://gateway/pair?addr=${prev.gateway.dialAddress ?? "ws://127.0.0.1:7643"}&code=${code.replace(/\s+/g, "")}`,
-            code,
-            dialAddress: prev.gateway.dialAddress ?? "ws://127.0.0.1:7643",
-            expiresAtMs: Date.now() + 300_000,
-          },
         },
       }));
-      setFeedbackBanner(`Generated 5-minute WebSocket Gateway invite (${code}).`);
+      setFeedbackBanner({
+        kind: "info",
+        text: res.pairingQr?.code
+          ? `Generated 5-minute WebSocket Gateway invite (${res.pairingQr.code}).`
+          : "Generated WebSocket Gateway pairing invite.",
+      });
     },
   });
 
@@ -390,31 +484,26 @@ export function useRemote() {
           devices: prev.gateway.devices.filter((d) => d.id !== deviceId),
         },
       }));
-      setFeedbackBanner(`Revoked paired device ${deviceId}.`);
+      setFeedbackBanner({
+        kind: "info",
+        text: `Revoked paired device ${deviceId}.`,
+      });
     },
   });
 
   const moveToCloudMutation = useMutation({
     mutationFn: (sessionId: string) =>
       callRpc("remote.cloud.moveToCloud", { sessionId }),
-    onSuccess: (res, sessionId) => {
-      const remoteId = res.remoteSessionId ?? `cloud_${sessionId}`;
-      updateInfraCache((prev) => ({
-        ...prev,
-        sessions: [
-          {
-            id: remoteId,
-            kind: "cloud",
-            label: `Cloud Handoff · ${sessionId}`,
-            host: "rayu-cloud-us-east-1",
-            status: "running",
-            workingDir: "/workspace/rayucode-v2",
-            updatedAtMs: Date.now(),
-          },
-          ...prev.sessions.filter((s) => s.id !== remoteId),
-        ],
-      }));
-      setFeedbackBanner(`Moved session ${sessionId} to Rayu Cloud (${remoteId}).`);
+    onSuccess: async (res, sessionId) => {
+      await queryClient.invalidateQueries({
+        queryKey: remoteInfraQueryOptions().queryKey,
+      });
+      setFeedbackBanner({
+        kind: "info",
+        text:
+          res.message ||
+          `Moved session ${sessionId} to Rayu Cloud${res.remoteSessionId ? ` (${res.remoteSessionId})` : ""}.`,
+      });
     },
   });
 
@@ -429,66 +518,105 @@ export function useRemote() {
       if (res.sessionId) {
         setActiveSession(res.sessionId);
       }
-      setFeedbackBanner(
-        `Returned remote session ${remoteSessionId} to local VS Code host.`,
-      );
+      setFeedbackBanner({
+        kind: "info",
+        text:
+          res.message ||
+          `Returned remote session ${remoteSessionId} to local VS Code host.`,
+      });
     },
   });
 
   const attachRemoteMutation = useMutation({
     mutationFn: (remoteSessionId: string) =>
       callRpc("remote.cloud.attach", { remoteSessionId }),
-    onSuccess: (_res, remoteSessionId) => {
-      setFeedbackBanner(`Attached to remote session ${remoteSessionId}.`);
+    onSuccess: (res, remoteSessionId) => {
+      setFeedbackBanner({
+        kind: "info",
+        text: res.message || `Attached to remote session ${remoteSessionId}.`,
+      });
     },
   });
 
   const syncCloudEnvMutation = useMutation({
     mutationFn: () => callRpc("remote.cloud.syncEnv"),
     onSuccess: () => {
-      setFeedbackBanner(
-        "Synced local workspace environment with Rayu Cloud.",
-      );
+      setFeedbackBanner({
+        kind: "info",
+        text: "Synced local workspace environment with Rayu Cloud.",
+      });
     },
   });
 
   const copyToClipboard = React.useCallback((text: string, label: string) => {
     postToHost({ type: "rayucode.host.copyToClipboard", text });
-    setFeedbackBanner(`Copied ${label} to clipboard.`);
+    setFeedbackBanner({
+      kind: "info",
+      text: `Copied ${label} to clipboard.`,
+    });
+  }, []);
+
+  const openExternalUrl = React.useCallback((url: string) => {
+    if (!url) return;
+    postToHost({ type: "rayucode.editor.openExternal", url });
   }, []);
 
   return {
     activeTab,
     setActiveTab,
-    setupMode,
+    setupMode: effectiveSetupMode,
     setSetupMode,
     feedbackBanner,
     clearFeedbackBanner: () => setFeedbackBanner(null),
     telegram: telegramQuery.data ?? null,
     infra: infraQuery.data ?? null,
+    sessions: sessionsQuery.data ?? [],
     isLoading: telegramQuery.isPending || infraQuery.isPending,
     isError: telegramQuery.isError || infraQuery.isError,
     error: telegramQuery.error ?? infraQuery.error,
     refetchAll: () => {
       void telegramQuery.refetch();
       void infraQuery.refetch();
+      void sessionsQuery.refetch();
     },
-    activeSessionId: activeSessionId ?? "ses_vscode_shell",
+    activeSessionId: activeSessionId ?? "",
     navigateToSettings: () => setActiveRoute("settings"),
     copyToClipboard,
-    linkHosted: () => linkHostedMutation.mutateAsync(),
+    openExternalUrl,
+    linkHosted: (replaceExisting?: boolean) =>
+      linkHostedMutation.mutateAsync(replaceExisting),
     isLinkingHosted: linkHostedMutation.isPending,
-    linkBotfather: (input: { botToken: string; allowedChatId?: string }) =>
-      linkBotfatherMutation.mutateAsync(input),
+    hostedError:
+      linkHostedMutation.error instanceof Error
+        ? linkHostedMutation.error.message
+        : null,
+    linkBotfather: (input: {
+      botToken: string;
+      allowedChatId?: string;
+      replaceExisting?: boolean;
+    }) => linkBotfatherMutation.mutateAsync(input),
     isLinkingBotfather: linkBotfatherMutation.isPending,
-    disconnectTelegram: () => disconnectTelegramMutation.mutateAsync(),
+    botfatherError:
+      linkBotfatherMutation.error instanceof Error
+        ? linkBotfatherMutation.error.message
+        : null,
+    disconnectTelegram: (localOnly?: boolean) =>
+      disconnectTelegramMutation.mutateAsync(localOnly),
     isDisconnectingTelegram: disconnectTelegramMutation.isPending,
     sendTestPing: () => testPingMutation.mutateAsync(),
     isPingingTelegram: testPingMutation.isPending,
-    driveActiveSession: (sessionId?: string) =>
-      driveSessionMutation.mutateAsync(
-        sessionId ?? activeSessionId ?? "ses_vscode_shell",
-      ),
+    driveActiveSession: (sessionId?: string) => {
+      const target = sessionId ?? activeSessionId ?? "";
+      if (!target) {
+        setFeedbackBanner({
+          kind: "error",
+          text: "Open or select a local session first to drive it from Telegram.",
+        });
+        return Promise.resolve();
+      }
+      return driveSessionMutation.mutateAsync(target);
+    },
+    isDrivingSession: driveSessionMutation.isPending,
     decideApproval: (id: string, decision: "allow" | "deny") =>
       decideApprovalMutation.mutateAsync({ id, decision }),
     isDecidingApproval: decideApprovalMutation.isPending,
@@ -504,9 +632,7 @@ export function useRemote() {
       revokeDeviceMutation.mutateAsync(deviceId),
     isRevokingDevice: revokeDeviceMutation.isPending,
     moveToCloud: (sessionId?: string) =>
-      moveToCloudMutation.mutateAsync(
-        sessionId ?? activeSessionId ?? "ses_vscode_shell",
-      ),
+      moveToCloudMutation.mutateAsync(sessionId ?? activeSessionId ?? ""),
     returnLocal: (remoteSessionId: string) =>
       returnLocalMutation.mutateAsync(remoteSessionId),
     attachRemote: (remoteSessionId: string) =>

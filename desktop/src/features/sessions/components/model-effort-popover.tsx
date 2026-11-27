@@ -75,10 +75,15 @@ export function ModelEffortPopover({
   className,
 }: ModelEffortPopoverProps) {
   const catalog = models
-  const activeModel = React.useMemo<ModelOption | undefined>(
-    () => catalog.find((m) => m.id === modelId),
-    [catalog, modelId]
-  )
+  const activeModel = React.useMemo<ModelOption | undefined>(() => {
+    const exact = catalog.find((m) => m.id === modelId)
+    if (exact) return exact
+    const normalized = modelId.trim().replace(/^rayu:/i, "").toLowerCase()
+    if (!normalized) return undefined
+    return catalog.find(
+      (m) => m.id.trim().replace(/^rayu:/i, "").toLowerCase() === normalized
+    )
+  }, [catalog, modelId])
   const ladder = React.useMemo(
     () => resolveEffortLadder(activeModel),
     [activeModel]
@@ -94,6 +99,7 @@ export function ModelEffortPopover({
   const [stage, setStage] = React.useState<"effort" | "list">(
     effectiveInitialStage
   )
+  const displayedStage: "effort" | "list" = supportsEffort ? stage : "list"
   const [isDragging, setIsDragging] = React.useState(false)
   const sliderRef = React.useRef<HTMLDivElement>(null)
 
@@ -316,7 +322,7 @@ export function ModelEffortPopover({
                 {supportsEffort && activeEffortHeaderLabel ? (
                   <span
                     data-testid="model-effort-trigger-effort"
-                    className="shrink-0 font-normal text-muted-ink @max-[460px]/composer:hidden"
+                    className="shrink-0 font-normal text-muted-ink @max-[360px]/composer:hidden"
                   >
                     {activeEffortHeaderLabel}
                   </span>
@@ -340,7 +346,7 @@ export function ModelEffortPopover({
           sideOffset={12}
           className="rayu-card-bevel w-auto rounded-[18px] border border-premium-hi bg-popover-solid p-0 shadow-rayu-2"
         >
-          {stage === "effort" ? (
+          {displayedStage === "effort" ? (
             <div
               role="dialog"
               aria-label="Reasoning effort"
@@ -594,7 +600,7 @@ export function ModelEffortPopover({
                     </div>
                   ) : (
                     catalog.map((model) => {
-                      const isSelected = model.id === modelId
+                      const isSelected = model.id === (activeModel?.id ?? modelId)
                       const ctxLabel = formatContextWindow(model.contextWindow)
                       return (
                         <button

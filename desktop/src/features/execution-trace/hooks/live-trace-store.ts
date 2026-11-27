@@ -454,6 +454,7 @@ export function dispatchPendingStreamPrompt(
         images: promptToSend.images,
         modelId: promptToSend.modelId,
         modelLabel: promptToSend.modelLabel,
+        ...(promptToSend.effort ? { effort: promptToSend.effort } : {}),
         history,
       })
       .catch((error: unknown) => {
@@ -474,6 +475,7 @@ export function dispatchPendingStreamPrompt(
       images: promptToSend.images,
       modelId: promptToSend.modelId,
       modelLabel: promptToSend.modelLabel,
+      ...(promptToSend.effort ? { effort: promptToSend.effort } : {}),
     })
     .then((turn) => {
       queryClient.setQueryData<ExecutionTurn[]>(

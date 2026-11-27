@@ -1,11 +1,12 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ALL_45_RUST_TOOLS,
   ApprovalCard,
+  ChatStream,
   ChatWorkspaceView,
   CiteLink,
   ClarifyingQuestionCard,
@@ -13,12 +14,16 @@ import {
   coalesceTraceGroups,
   EditorialMarkdown,
   InlineDiffCard,
+  resetAllLiveTraces,
   ShellCard,
   ToolStepCard,
   WorkTrace,
+  type ChatTurnView,
   type ExtendedWorkStepGroup,
 } from "@/features/chat";
+import * as rpcClient from "@/lib/rpc-client";
 import {
+  __dispatchHostMessageForTest,
   createHarnessStreamTracker,
   createQueryClient,
   mapHarnessFrameToLiveEvents,
@@ -34,12 +39,21 @@ function renderWithQuery(ui: React.ReactElement) {
 
 describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    resetAllLiveTraces();
     useAppStore.setState({
       activeSessionId: "ses_vscode_shell",
-      inspectorOpen: false,
-      activeCodeFile: null,
-      activeCodeLine: null,
       pendingPermission: null,
+      pendingPermissionBySession: {},
+      pendingPermissionsBySession: {},
+      pendingUserTurn: null,
+      isStreamActive: false,
+      midTurnSendMode: "steer",
+      midTurnMessagesBySession: {},
+      pausedQueueSessions: {},
+      composerDrafts: {},
+      todosBySession: {},
+      turnDurationsBySession: {},
     });
   });
 
@@ -370,7 +384,15 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     );
 
     fireEvent.click(screen.getByTestId("clarifying-option-1"));
-    expect(onQuestionSubmit).toHaveBeenCalledWith({ q_1: "main" }, undefined);
+    expect(onQuestionSubmit).toHaveBeenCalledWith(
+      { "Which target branch should receive the migration?": "main" },
+      undefined,
+      {
+        selected: {
+          "Which target branch should receive the migration?": [0],
+        },
+      },
+    );
   });
 
   it("renders ChatWorkspaceView with optional backgroundDockSlot and composerSlot", () => {
@@ -429,6 +451,426 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     expect(
       screen.getByText(/lowering p99 lookup latency by 38%/i),
     ).toBeTruthy();
+  });
+
+  it("prevents ghost turns when turn_stopped is followed by turn_done", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_stop_once",
+      pendingUserTurn: {
+        id: "opt_stop_1",
+        sessionId: "ses_stop_once",
+        prompt: "Run benchmark suite",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_stop_once" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_start",
+          session_id: "ses_stop_once",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_stop_once",
+          text: "Partial benchmark output before stop.",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_stopped",
+          session_id: "ses_stop_once",
+          reason: "cancelled",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_stop_once",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Partial benchmark output before stop."),
+      ).toBeTruthy();
+    });
+
+    const articles = document.querySelectorAll('[data-slot="execution-turn"]');
+    expect(articles).toHaveLength(1);
+  });
+
+  it("clears matching steer on soft_interrupt_injected by client_id and records a live trace note", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_steer_live",
+      pendingUserTurn: {
+        id: "opt_steer_1",
+        sessionId: "ses_steer_live",
+        prompt: "Refactor auth handler",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_steer_live: [
+          {
+            id: "si_match_1",
+            sessionId: "ses_steer_live",
+            mode: "steer",
+            text: "Keep token refresh idempotent",
+            createdAtMs: Date.now(),
+          },
+          {
+            id: "si_other_2",
+            sessionId: "ses_steer_live",
+            mode: "steer",
+            text: "Preserve backward-compatible error codes",
+            createdAtMs: Date.now() + 1,
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_steer_live" />);
+
+    expect(screen.getByTestId("midturn-item-si_match_1")).toBeTruthy();
+    expect(screen.getByTestId("midturn-item-si_other_2")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "soft_interrupt_injected",
+          session_id: "ses_steer_live",
+          client_ids: ["si_match_1"],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("midturn-item-si_match_1")).toBeNull();
+      expect(screen.getByTestId("midturn-item-si_other_2")).toBeTruthy();
+    });
+
+    // Live WorkTrace auto-expands; expand if collapsed before verifying recorded steer note
+    if (screen.getByTestId("work-trace").getAttribute("data-depth") === "0") {
+      fireEvent.click(screen.getByTestId("work-trace-toggle"));
+    }
+    expect(
+      screen.getByText("Steered: Keep token refresh idempotent"),
+    ).toBeTruthy();
+  });
+
+  it("auto-drains next queued message on natural turn_done, and pauses auto-drain while preserving queued items after Stop/turn_stopped", async () => {
+    const onDrain = vi.fn();
+
+    useAppStore.setState({
+      activeSessionId: "ses_drain_1",
+      pendingUserTurn: {
+        id: "opt_drain_1",
+        sessionId: "ses_drain_1",
+        prompt: "First task",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_drain_1: [
+          {
+            id: "q_next_1",
+            sessionId: "ses_drain_1",
+            mode: "queue",
+            text: "Second queued follow-up",
+            createdAtMs: Date.now(),
+          },
+          {
+            id: "q_next_2",
+            sessionId: "ses_drain_1",
+            mode: "queue",
+            text: "Third queued follow-up",
+            createdAtMs: Date.now() + 1,
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(
+      <ChatWorkspaceView
+        sessionId="ses_drain_1"
+        onDrainQueuedMessage={onDrain}
+      />,
+    );
+
+    // Natural turn_done drains first queued message via microtask
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_drain_1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "text_delta", session_id: "ses_drain_1", text: "Done #1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_done", session_id: "ses_drain_1" },
+      });
+    });
+
+    await waitFor(() => {
+      expect(onDrain).toHaveBeenCalledTimes(1);
+      expect(onDrain).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "q_next_1",
+          mode: "queue",
+          text: "Second queued follow-up",
+        }),
+      );
+    });
+
+    // Now simulate an active turn that gets cancelled/stopped with a pending steer + queued message
+    onDrain.mockClear();
+    act(() => {
+      useAppStore.getState().addMidTurnMessage({
+        id: "si_pending_stop",
+        sessionId: "ses_drain_1",
+        mode: "steer",
+        text: "Uninjected steer note",
+        createdAtMs: Date.now() + 2,
+      });
+      useAppStore.getState().enqueueOptimisticTurn({
+        id: "opt_drain_2",
+        sessionId: "ses_drain_1",
+        prompt: "Second task",
+        createdAtMs: Date.now() + 3,
+      });
+    });
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_drain_1" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_stopped",
+          session_id: "ses_drain_1",
+          reason: "cancelled",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().pausedQueueSessions["ses_drain_1"]).toBe(
+        true,
+      );
+    });
+
+    // Must NOT auto-drain on stop; queued item stays preserved and uninjected steer demoted to queue
+    expect(onDrain).not.toHaveBeenCalled();
+    const remaining =
+      useAppStore.getState().midTurnMessagesBySession["ses_drain_1"] ?? [];
+    expect(remaining.map((m) => ({ id: m.id, mode: m.mode }))).toEqual([
+      { id: "q_next_2", mode: "queue" },
+      { id: "si_pending_stop", mode: "queue" },
+    ]);
+  });
+
+  it("promotes a queued item to live steer via promote-to-steer-<id> without interrupting", async () => {
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+
+    useAppStore.setState({
+      activeSessionId: "ses_promote_1",
+      pendingUserTurn: {
+        id: "opt_promote_1",
+        sessionId: "ses_promote_1",
+        prompt: "Investigate slow query",
+        createdAtMs: Date.now(),
+      },
+      midTurnMessagesBySession: {
+        ses_promote_1: [
+          {
+            id: "q_promote_target",
+            sessionId: "ses_promote_1",
+            mode: "queue",
+            text: "Check composite index selectivity first",
+            createdAtMs: Date.now(),
+          },
+        ],
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_promote_1" />);
+
+    const promoteBtn = screen.getByTestId("promote-to-steer-q_promote_target");
+    fireEvent.click(promoteBtn);
+
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("sessions.softInterrupt", {
+        sessionId: "ses_promote_1",
+        text: "Check composite index selectivity first",
+        urgent: false,
+        clientId: "q_promote_target",
+      });
+    });
+
+    const updated =
+      useAppStore.getState().midTurnMessagesBySession["ses_promote_1"] ?? [];
+    expect(updated[0]?.mode).toBe("steer");
+    expect(
+      screen
+        .getByTestId("midturn-item-q_promote_target")
+        .getAttribute("data-midturn-mode"),
+    ).toBe("steer");
+  });
+
+  it("handles Rust question_request + question_closed, catastrophic permission_request, and text_replace frames", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_rust_frames",
+      pendingUserTurn: {
+        id: "opt_rust_1",
+        sessionId: "ses_rust_frames",
+        prompt: "Apply schema update",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_rust_frames" />);
+
+    // 1. text_delta followed by text_replace replaces the answer text cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_rust_frames" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_rust_frames",
+          text: "Draft answer to be replaced",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_replace",
+          session_id: "ses_rust_frames",
+          text: "Authoritative replacement response",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Authoritative replacement response"),
+      ).toBeTruthy();
+      expect(screen.queryByText("Draft answer to be replaced")).toBeNull();
+    });
+
+    // 2. Rust permission_request with catastrophic (and legacy hard_deny -> catastrophic)
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_request",
+          session_id: "ses_rust_frames",
+          request_id: "perm_cat_1",
+          tool_name: "bash",
+          description: "Drop staging tables?",
+          risk_tier: "catastrophic",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-card")).toBeTruthy();
+      expect(screen.getByTestId("approval-risk-badge").textContent).toBe(
+        "Catastrophic",
+      );
+      expect(
+        screen.getByTestId("approval-card").getAttribute("data-risk-tier"),
+      ).toBe("catastrophic");
+    });
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_request",
+          session_id: "ses_rust_frames",
+          request_id: "perm_legacy_2",
+          tool_name: "bash",
+          description: "Delete backup archive?",
+          risk_tier: "hard_deny",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().pendingPermission?.riskTier).toBe(
+        "catastrophic",
+      );
+    });
+
+    // 3. Rust question_request with questions[0] + question_closed dismissal
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "question_request",
+          session_id: "ses_rust_frames",
+          request_id: "q_rust_1",
+          questions: [
+            {
+              question: "Which deployment target should be updated?",
+              multiSelect: false,
+              options: [
+                {
+                  label: "Canary",
+                  description: "Roll out to 5% traffic first",
+                },
+                {
+                  label: "Production",
+                  description: "Deploy directly to all regions",
+                },
+              ],
+            },
+          ],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("clarifying-question-card")).toBeTruthy();
+      expect(
+        screen.getByText("Which deployment target should be updated?"),
+      ).toBeTruthy();
+      expect(screen.getByText("Canary")).toBeTruthy();
+      expect(screen.getByText("Roll out to 5% traffic first")).toBeTruthy();
+    });
+
+    // question_closed dismisses pendingQuestion cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "question_closed",
+          session_id: "ses_rust_frames",
+          request_id: "q_rust_1",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("clarifying-question-card")).toBeNull();
+    });
   });
 
   it("auto-expands WorkTrace while live, renders chronological timeline, and opens monochrome file links in VS Code", () => {
@@ -587,10 +1029,999 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       </div>,
     );
 
-    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+    // Reasoning is collapsed by default and can be expanded/collapsed on click
+    const reasoningToggle = screen.getByTestId("work-reasoning-toggle");
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
+    fireEvent.click(reasoningToggle);
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("work-reasoning-body").textContent).toContain(
       "I should check the composer model sync before editing.",
     );
+
+    fireEvent.click(reasoningToggle);
+    expect(reasoningToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
     expect(screen.queryByText(/Payload/i)).toBeNull();
     expect(screen.queryByText(/should_never_render/)).toBeNull();
+  });
+
+  it("renders live working progress and status in the message footer after streamed content instead of duplicating it at the top", () => {
+    const qc = createQueryClient();
+    const baseTurn: ChatTurnView = {
+      id: "turn_footer_live",
+      sessionId: "ses_footer",
+      userPrompt: "Read proposal and write mockup",
+      workedDuration: "7s",
+      notes: [],
+      groups: [],
+      timeline: [
+        {
+          type: "reasoning",
+          id: "r_footer_1",
+          text: "Analyzing project structure before creating the mockup.",
+        },
+      ],
+      activeToolStatus: "Reading Project_Proposal.pdf...",
+      answerIntro: "Here is the initial mockup draft.",
+      answerBullets: [],
+      diffCard: {
+        id: "d_footer",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: true,
+    };
+
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <ChatStream sessionId="ses_footer" turns={[baseTurn]} isStreaming />
+      </QueryClientProvider>,
+    );
+
+    // Thinking block starts collapsed by default inside the live turn
+    expect(
+      screen.getByTestId("work-reasoning-toggle").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull();
+
+    // No top work-trace-toggle while live; working indicator lives in the message footer!
+    expect(screen.queryByTestId("work-trace-toggle")).toBeNull();
+    const footer = screen.getByTestId("turn-live-footer-turn_footer_live");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Working · 7s",
+    );
+    expect(screen.getByTestId("turn-live-status").textContent).toBe(
+      "Reading Project_Proposal.pdf...",
+    );
+
+    // Verify footer appears AFTER the streamed answer block in DOM order
+    const answerEl = document.querySelector('[data-slot="agent-answer"]');
+    expect(answerEl).toBeTruthy();
+    expect(
+      Boolean(
+        answerEl!.compareDocumentPosition(footer) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+
+    // When activeToolStatus clears while streaming answer, footer shows Writing response...
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_footer"
+          turns={[
+            {
+              ...baseTurn,
+              workedDuration: "11s",
+              activeToolStatus: null,
+            },
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Working · 11s",
+    );
+    expect(screen.getByTestId("turn-live-status").textContent).toBe(
+      "Writing response...",
+    );
+
+    // When turn finishes, live footer swaps cleanly to TurnActions and top shows collapsed Worked for 11s
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_footer"
+          turns={[
+            {
+              ...baseTurn,
+              workedDuration: "11s",
+              activeToolStatus: null,
+              isLive: false,
+            },
+          ]}
+          isStreaming={false}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.queryByTestId("turn-live-footer-turn_footer_live")).toBeNull();
+    expect(screen.getByTestId("turn-actions-turn_footer_live")).toBeTruthy();
+    expect(
+      screen.getByTestId("turn-duration-turn_footer_live").textContent,
+    ).toContain("Worked for 11s");
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Thinking & steps",
+    );
+  });
+
+  it("ignores non-turn control errors (e.g. set_reasoning_effort) without aborting or polluting the active live stream", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_non_turn_err",
+      pendingUserTurn: {
+        id: "opt_non_turn_1",
+        sessionId: "ses_non_turn_1",
+        prompt: "Read project proposal",
+        createdAtMs: Date.now(),
+      },
+    });
+    // Align optimistic sessionId with rendered session
+    useAppStore.setState({
+      pendingUserTurn: {
+        id: "opt_non_turn_1",
+        sessionId: "ses_non_turn_err",
+        prompt: "Read project proposal",
+        createdAtMs: Date.now(),
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_non_turn_err" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: { ev: "turn_start", session_id: "ses_non_turn_err" },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_non_turn_err",
+          text: "Reading proposal...",
+        },
+      });
+      // Non-turn control error must NOT inject **Error:** or terminate the stream
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "error",
+          session_id: "ses_non_turn_err",
+          req: "set_reasoning_effort",
+          non_turn: true,
+          code: "timeout",
+          message: "timeout: no reply to set_reasoning_effort within 15000ms",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_non_turn_err",
+          text: " Still streaming cleanly!",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Reading proposal\.\.\. Still streaming cleanly!/),
+      ).toBeTruthy();
+    });
+    expect(screen.queryByText(/no reply to set_reasoning_effort/i)).toBeNull();
+    expect(useAppStore.getState().isStreamActive).toBe(true);
+  });
+
+  it("scroll-to-bottom button scrolls to latest message and re-engages sticky live auto-follow forever until user scrolls up", () => {
+    const makeTurn = (text: string): ChatTurnView => ({
+      id: "turn_live_scroll",
+      sessionId: "ses_scroll",
+      userPrompt: "Stream long report",
+      workedDuration: "3s",
+      notes: [],
+      groups: [],
+      answerIntro: text,
+      answerBullets: [],
+      diffCard: {
+        id: "d0",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: true,
+    });
+
+    const qc = createQueryClient();
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[makeTurn("Initial chunk")]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+
+    const viewport = document.querySelector(
+      '[data-slot="scroll-area-viewport"]',
+    ) as HTMLDivElement;
+    expect(viewport).toBeTruthy();
+
+    let scrollHeight = 1200;
+    const clientHeight = 400;
+    let scrollTop = 800;
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      get: () => clientHeight,
+    });
+    Object.defineProperty(viewport, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    // User scrolls UP away from bottom -> button appears & auto-follow pauses
+    scrollTop = 200;
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    fireEvent.scroll(viewport);
+
+    const scrollDownBtn = screen.getByTestId("chat-scroll-to-bottom-btn");
+    expect(scrollDownBtn).toBeTruthy();
+
+    // New streamed chunk arrives while user scrolled up -> stays at 200 (doesn't yank user)
+    scrollHeight = 1600;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[makeTurn("Initial chunk\nMore streamed output")]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(200);
+
+    // User clicks scroll-down button -> snaps to bottom, hides button, AND stays live-following forever
+    fireEvent.click(scrollDownBtn);
+    expect(scrollTop).toBe(1600);
+    expect(screen.queryByTestId("chat-scroll-to-bottom-btn")).toBeNull();
+
+    // Subsequent streamed chunks grow scrollHeight -> auto-follow keeps snapping to latest bottom!
+    scrollHeight = 2400;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[
+            makeTurn(
+              "Initial chunk\nMore streamed output\nEven newer live tokens",
+            ),
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(2400);
+
+    scrollHeight = 3200;
+    rerender(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId="ses_scroll"
+          turns={[
+            makeTurn(
+              "Initial chunk\nMore streamed output\nEven newer live tokens\nFinal live tokens",
+            ),
+          ]}
+          isStreaming
+        />
+      </QueryClientProvider>,
+    );
+    expect(scrollTop).toBe(3200);
+  });
+
+  it("renders Worked for Xs in completed TurnActions footer (including quick replies without WorkTrace) and avoids duplicating duration in WorkTrace", () => {
+    const quickReplyTurn: ChatTurnView = {
+      id: "turn_quick_1",
+      sessionId: "ses_dur",
+      userPrompt: "hi",
+      workedDuration: "4s",
+      notes: [],
+      groups: [],
+      answerIntro: "Hello! How can I help today?",
+      answerBullets: [],
+      diffCard: {
+        id: "d_empty",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: false,
+    };
+
+    const tracedTurn: ChatTurnView = {
+      ...quickReplyTurn,
+      id: "turn_traced_2",
+      userPrompt: "inspect lookup.rs",
+      workedDuration: "9s",
+      groups: [
+        {
+          id: "g_read",
+          title: "Read files",
+          steps: [
+            {
+              id: "r1",
+              kind: "read",
+              label: "Read",
+              files: [
+                {
+                  file: "lookup.rs",
+                  path: "crates/rayu-harness/src/lookup.rs",
+                  line: 10,
+                  rangeLabel: "lookup.rs:10-20",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    renderWithQuery(
+      <ChatStream sessionId="ses_dur" turns={[quickReplyTurn, tracedTurn]} />,
+    );
+
+    expect(screen.getByTestId("turn-duration-turn_quick_1").textContent).toContain(
+      "Worked for 4s",
+    );
+    expect(screen.getByTestId("turn-duration-turn_traced_2").textContent).toContain(
+      "Worked for 9s",
+    );
+    // WorkTrace toggle above the answer summarizes steps instead of duplicating "Worked for 9s"
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Steps · 1 file",
+    );
+  });
+
+  it("preserves completed turn duration across sessions.history refetch when backend duration_secs is absent", async () => {
+    const rpcSpy = vi
+      .spyOn(rpcClient, "callRpc")
+      .mockImplementation((async (method: string) => {
+        if (method === "sessions.history") {
+          return {
+            sessionId: "ses_dur_persist",
+            messages: [
+              { role: "user", content: "hi" },
+              { role: "assistant", content: "Hello back!" },
+            ],
+          };
+        }
+        if (method === "inspector.todos.get") {
+          return { todos: [] };
+        }
+        if (method === "changes.getSessionSummary") {
+          return {
+            sessionId: "ses_dur_persist",
+            totalPendingFiles: 0,
+            totalAdditions: 0,
+            totalDeletions: 0,
+            files: [],
+          };
+        }
+        return { ok: true };
+      }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_dur_persist",
+      pendingUserTurn: {
+        id: "opt_dur_1",
+        sessionId: "ses_dur_persist",
+        prompt: "hi",
+        createdAtMs: Date.now() - 4000,
+        baseHistoryTurnCount: 0,
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_dur_persist" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_dur_persist",
+          delta: "Hello back!",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_dur_persist",
+          duration_secs: 4,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const durationEl = document.querySelector('[data-slot="turn-duration"]');
+      expect(durationEl?.textContent).toContain("Worked for 4s");
+    });
+
+    // Even after history query settles with no duration_secs, Worked for 4s remains visible
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("sessions.history", {
+        sessionId: "ses_dur_persist",
+      });
+    });
+    const durationAfterHistory = document.querySelector(
+      '[data-slot="turn-duration"]',
+    );
+    expect(durationAfterHistory?.textContent).toContain("Worked for 4s");
+  });
+
+  it("opens Terminal from ShellCard, omits ToolStepCard terminal jump, opens InlineDiffCard filename natively, and renders folder inline code as non-interactive badge", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost").mockImplementation(() => {});
+
+    renderWithQuery(
+      <div>
+        <ShellCard
+          standalone
+          step={{
+            id: "sh_noterm",
+            kind: "command",
+            command: "echo hi",
+            displayCommand: "echo hi",
+            output: "hi",
+            exitCode: 0,
+            statusLabel: "Success",
+            isMono: true,
+          }}
+        />
+        <ToolStepCard
+          step={{
+            id: "ts_bash",
+            toolName: "bash",
+            intent: "Run unit tests",
+          }}
+        />
+        <InlineDiffCard
+          diff={{
+            id: "diff_native",
+            file: "src/index.ts",
+            additions: 1,
+            deletions: 0,
+            hint: "Add export",
+            lines: [{ kind: "add", newLine: 7, text: "export const ok = true;" }],
+          }}
+        />
+        <EditorialMarkdown content="Inspect `crates/rayucode-app-core/` before editing." />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByTestId("shell-open-terminal-sh_noterm"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rayucode.editor.openTerminal",
+      }),
+    );
+    expect(screen.queryByTestId("tool-step-jump-ts_bash")).toBeNull();
+
+    fireEvent.click(screen.getByText("src/index.ts"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "src/index.ts",
+      line: 7,
+    });
+
+    const folderBadge = document.querySelector('[data-code-kind="folder"]');
+    expect(folderBadge?.tagName).toBe("CODE");
+  });
+
+  it("opens every chat file mention format cleanly without nested buttons and routes localhost links to VS Code Simple Browser", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost").mockImplementation(() => {});
+
+    const md = [
+      "Check `rayucode-v2/desktop/MIGRATION_PLAN.md`, `how-to-run.md`, `./src/App.tsx#L10-L25`, `.env.local`, and `Makefile`.",
+      "",
+      "Also review [`MIGRATION_PLAN.md`](desktop/MIGRATION_PLAN.md#L42) and @desktop/MIGRATION_PLAN.md:12 (not user@example.com).",
+      "",
+      "Preview at [Local App](http://localhost:5173) or read [Docs](https://rayucode.com).",
+    ].join("\n");
+
+    const { container } = renderWithQuery(<EditorialMarkdown content={md} />);
+
+    // Ensure no nested <button> inside <button> when a markdown link wraps inline code
+    expect(container.querySelector("button button")).toBeNull();
+
+    fireEvent.click(
+      screen.getByTestId("cite-link-rayucode-v2/desktop/MIGRATION_PLAN.md"),
+    );
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "rayucode-v2/desktop/MIGRATION_PLAN.md",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-how-to-run.md"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "how-to-run.md",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-./src/App.tsx:10"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "./src/App.tsx",
+      line: 10,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-.env.local"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: ".env.local",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-Makefile"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "Makefile",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-desktop/MIGRATION_PLAN.md:12"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "desktop/MIGRATION_PLAN.md",
+      line: 12,
+      column: undefined,
+    });
+
+    // Markdown link wrapping inline code opens its href once
+    postSpy.mockClear();
+    const linkedCodeBtn = screen.getByTitle(
+      "Open desktop/MIGRATION_PLAN.md:42 in VS Code Editor",
+    );
+    fireEvent.click(linkedCodeBtn);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "desktop/MIGRATION_PLAN.md",
+      line: 42,
+      column: undefined,
+    });
+
+    // Email address must stay plain text (not a CiteLink)
+    expect(screen.queryByTestId("cite-link-example.com")).toBeNull();
+
+    // Localhost URL opens in VS Code Simple Browser; external URL opens externally
+    fireEvent.click(screen.getByText("Local App"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+      url: "http://localhost:5173",
+    });
+
+    fireEvent.click(screen.getByText("Docs"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openExternal",
+      url: "https://rayucode.com",
+    });
+
+    postSpy.mockRestore();
+  });
+
+  it("renders shared TaskChecklistCard in ChatWorkspaceView and updates live on todo_state frames", async () => {
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "inspector.todos.get") {
+        return { todos: [] };
+      }
+      if (method === "sessions.history") {
+        return { sessionId: "ses_live_todos", messages: [] };
+      }
+      if (method === "changes.getSessionSummary") {
+        return {
+          sessionId: "ses_live_todos",
+          totalPendingFiles: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+        };
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_live_todos",
+      todosBySession: {},
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_live_todos" />);
+
+    expect(screen.queryByTestId("task-checklist-card")).toBeNull();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "todo_state",
+          session_id: "ses_live_todos",
+          state: {
+            todos: [
+              { id: "1", content: "Audit protocol", status: "completed" },
+              {
+                id: "2",
+                content: "Wire checklist card",
+                status: "in_progress",
+                active_form: "Wiring checklist card",
+              },
+              { id: "3", content: "Old unused step", status: "cancelled" },
+            ],
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByTestId("task-checklist-card")).toBeTruthy();
+    expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+      "1/2",
+    );
+    expect(screen.getByText("Wiring checklist card")).toBeTruthy();
+
+    // Completing remaining active tasks auto-collapses into 1-line receipt
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "todo_state",
+          session_id: "ses_live_todos",
+          state: {
+            todos: [
+              { id: "1", content: "Audit protocol", status: "completed" },
+              { id: "2", content: "Wire checklist card", status: "completed" },
+              { id: "3", content: "Old unused step", status: "cancelled" },
+            ],
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+        "2/2",
+      );
+      expect(screen.getByText("Completed 2 tasks")).toBeTruthy();
+      expect(screen.queryByTestId("task-checklist-list")).toBeNull();
+    });
+  });
+
+  it("does not duplicate messages when active editor selection context is persisted in sessions.history", async () => {
+    const historyMessages: Array<{ role: string; content: string }> = [
+      {
+        role: "user",
+        content:
+          "hi\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Hey! RayuCode here. I see you've got MIGRATION_PLAN.md open.",
+      },
+      {
+        role: "user",
+        content:
+          "hll\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Looks like a typo. What do you need?",
+      },
+    ];
+
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "sessions.history") {
+        return {
+          sessionId: "ses_dedup_sel",
+          messages: [...historyMessages],
+        };
+      }
+      if (method === "inspector.todos.get") {
+        return { todos: [] };
+      }
+      if (method === "changes.getSessionSummary") {
+        return {
+          sessionId: "ses_dedup_sel",
+          totalPendingFiles: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+        };
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_dedup_sel",
+      pendingUserTurn: {
+        id: "opt_sel_3",
+        sessionId: "ses_dedup_sel",
+        prompt: "hi",
+        refFiles: "rayucode-v2/how-to-run.md:1-1",
+        createdAtMs: Date.now() - 2000,
+        baseHistoryTurnCount: 2,
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_dedup_sel" />);
+
+    // Daemon persists turn 3 with [Active Editor Selection: ...] and finishes streaming
+    historyMessages.push(
+      {
+        role: "user",
+        content:
+          "hi\n\n[Active Editor Selection: rayucode-v2/how-to-run.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Hi again. Happy to help, just say what you need.",
+      },
+    );
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_dedup_sel",
+          delta: "Hi again. Happy to help, just say what you need.",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_dedup_sel",
+          duration_secs: 2,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = document.querySelectorAll('[data-slot="execution-turn"]');
+      expect(turns.length).toBe(3);
+    });
+
+    // Clean ref pills render on all 3 turns and raw [Active Editor Selection: ...] never leaks into prompt bubbles
+    const refPills = document.querySelectorAll('[data-slot="user-ref-pill"]');
+    expect(refPills.length).toBe(3);
+    expect(document.body.textContent).not.toContain("[Active Editor Selection:");
+    expect(screen.getByText(/Worked for 2s/)).toBeTruthy();
+  });
+
+  it("submits multi-question ClarifyingQuestionCard keyed by exact question text with selected indices and supports declined dismiss", () => {
+    const onSubmit = vi.fn();
+    renderWithQuery(
+      <ClarifyingQuestionCard
+        question={{
+          requestId: "q_multi_1",
+          sessionId: "ses_q",
+          prompt: "Target environment?",
+          options: [
+            { id: "e1", key: "1", title: "Staging" },
+            { id: "e2", key: "2", title: "Production" },
+          ],
+          questions: [
+            {
+              question: "Target environment?",
+              options: [
+                { id: "e1", key: "1", title: "Staging" },
+                { id: "e2", key: "2", title: "Production" },
+              ],
+            },
+            {
+              question: "Run migrations?",
+              options: [
+                { id: "m1", key: "1", title: "Yes" },
+                { id: "m2", key: "2", title: "No" },
+              ],
+            },
+          ],
+        }}
+        onSubmitAnswer={onSubmit}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Production"));
+    fireEvent.click(screen.getByText("Yes"));
+    fireEvent.click(screen.getByTestId("clarifying-submit-btn"));
+    expect(onSubmit).toHaveBeenCalledWith(
+      {
+        "Target environment?": "Production",
+        "Run migrations?": "Yes",
+      },
+      undefined,
+      {
+        selected: {
+          "Target environment?": [1],
+          "Run migrations?": [0],
+        },
+      },
+    );
+
+    onSubmit.mockClear();
+    fireEvent.click(screen.getByTestId("clarifying-skip-btn"));
+    expect(onSubmit).toHaveBeenCalledWith({}, undefined, { declined: true });
+  });
+
+  it("isolates pending permissions per session and clears only the matching session on rayucode.permission.resolved", () => {
+    useAppStore.getState().setPendingPermission({
+      requestId: "perm_a",
+      sessionId: "ses_a",
+      toolName: "bash",
+      description: "Run cargo test",
+    });
+    useAppStore.getState().setPendingPermission({
+      requestId: "perm_b",
+      sessionId: "ses_b",
+      toolName: "edit",
+      description: "Edit main.rs",
+    });
+
+    expect(useAppStore.getState().pendingPermissionBySession["ses_a"]?.requestId).toBe(
+      "perm_a",
+    );
+    expect(useAppStore.getState().pendingPermissionBySession["ses_b"]?.requestId).toBe(
+      "perm_b",
+    );
+
+    useAppStore.getState().clearPendingPermission("ses_a", "perm_a");
+    expect(
+      useAppStore.getState().pendingPermissionBySession["ses_a"],
+    ).toBeUndefined();
+    expect(useAppStore.getState().pendingPermissionBySession["ses_b"]?.requestId).toBe(
+      "perm_b",
+    );
+  });
+
+  it("queues parallel permission_request frames FIFO per session, renders queue badge, advances cleanly, and hydrates from host.init", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_parallel_perm",
+    });
+
+    // 1. Hydrate from rayucode.host.init with two cached pending permissions
+    useAppStore.getState().applyHostMessage({
+      type: "rayucode.host.init",
+      surface: "editorPanel",
+      mediaBaseUri: "vscode-webview-resource://rayu-ext/media",
+      theme: "dark",
+      accent: "green",
+      density: "comfortable",
+      route: "workspace",
+      sessionId: "ses_parallel_perm",
+      defaultPermissionMode: "acceptEdits",
+      activePermissionMode: "plan",
+      capabilities: ["permissions", "permission_modes"],
+      daemonStatus: {
+        state: "connected",
+        capabilities: ["permissions", "permission_modes"],
+      },
+      pendingPermissions: {
+        ses_parallel_perm: [
+          {
+            requestId: "perm_q1",
+            sessionId: "ses_parallel_perm",
+            toolName: "bash",
+            description: "Run `cargo test`",
+            riskTier: "confirm",
+          },
+          {
+            requestId: "perm_q2",
+            sessionId: "ses_parallel_perm",
+            toolName: "bash",
+            description: "Run `rm -rf build/`",
+            riskTier: "catastrophic",
+          },
+        ],
+      },
+      workspaces: [],
+    });
+
+    expect(useAppStore.getState().defaultPermissionMode).toBe("acceptEdits");
+    expect(
+      useAppStore.getState().sessionPrefsBySession["ses_parallel_perm"]
+        ?.permissionMode,
+    ).toBe("plan");
+    expect(
+      useAppStore.getState().pendingPermissionsBySession["ses_parallel_perm"]
+        ?.length,
+    ).toBe(2);
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_parallel_perm" />);
+
+    expect(await screen.findByTestId("approval-card")).toBeTruthy();
+    expect(screen.getByTestId("approval-queue-badge").textContent).toBe(
+      "1 of 2 pending",
+    );
+    expect(screen.getByTestId("approval-command-preview").textContent).toBe(
+      "cargo test",
+    );
+
+    // Resolving perm_q1 via rayucode.permission.resolved advances to perm_q2 without losing it
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.permission.resolved",
+        sessionId: "ses_parallel_perm",
+        requestId: "perm_q1",
+        decision: "allow_once",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-command-preview").textContent).toBe(
+        "rm -rf build/",
+      );
+      expect(screen.getByTestId("approval-risk-badge").textContent).toBe(
+        "Catastrophic",
+      );
+      expect(screen.queryByTestId("approval-queue-badge")).toBeNull();
+    });
+
+    // Clearing perm_q2 via permission_resolved frame dismisses the card
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_resolved",
+          session_id: "ses_parallel_perm",
+          request_id: "perm_q2",
+          decision: "deny",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("approval-card")).toBeNull();
+    });
   });
 });

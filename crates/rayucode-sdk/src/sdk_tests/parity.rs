@@ -220,7 +220,33 @@ const RUST_ONLY: &[&str] = &[
 /// This is intentionally noisy technical debt, not a second capability list.
 /// New TS methods fail the parity test unless they are implemented in Rust or
 /// added here with a reviewable reason. Removing entries is the parity roadmap.
-const TS_ONLY: &[(&str, &str)] = &[("close", "Rust closes through Drop")];
+const TS_ONLY: &[(&str, &str)] = &[
+    ("close", "Rust closes through Drop"),
+    (
+        "hasCapability",
+        "Convenience alias for supports(cap) on the TypeScript client",
+    ),
+    (
+        "getCapabilities",
+        "v1.16 capability discovery helper added for Desktop/VS Code; not yet mirrored in Rust SDK",
+    ),
+    (
+        "getConfig",
+        "v1.16 curated config snapshot helper added for Desktop/VS Code; not yet mirrored in Rust SDK",
+    ),
+    (
+        "patchConfig",
+        "v1.16 curated config patch helper added for Desktop/VS Code; not yet mirrored in Rust SDK",
+    ),
+    (
+        "listExternalProjects",
+        "External session discovery helper added for Desktop/VS Code; not yet mirrored in Rust SDK",
+    ),
+    (
+        "importExternalSessions",
+        "External session import helper added for Desktop/VS Code; not yet mirrored in Rust SDK",
+    ),
+];
 
 fn rust_client_source() -> String {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

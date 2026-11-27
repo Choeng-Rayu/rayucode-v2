@@ -374,4 +374,124 @@ describe("auth-bridge Wave 1 guarantees", () => {
 
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   })
+
+  it("forwards thinking/output_config for adaptive and none reasoningEffort and skips when supportsReasoning is false", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-auth-effort-"))
+    process.env.RAYU_HOME = tmpHome
+    const appDir = getRayuAppConfigDir()
+    fs.mkdirSync(appDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(appDir, "rayu.env"),
+      "RAYU_API_KEY=rayu_sk_live_testkey1234567890\n",
+      { mode: 0o600 }
+    )
+
+    const encoder = new TextEncoder()
+    const makeEmptyStream = () =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n'
+            )
+          )
+          controller.close()
+        },
+      })
+
+    const capturedPayloads: Array<Record<string, unknown>> = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string, init?: { body?: string }) => {
+        if (String(url).includes("/models")) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              hostedModels: [
+                {
+                  code: "claude-opus-4-7",
+                  label: "Claude Opus 4.7",
+                  supports_reasoning: true,
+                  supported_efforts: ["none", "low", "medium", "high", "xhigh", "max"],
+                  default_effort: "medium",
+                },
+                {
+                  code: "claude-haiku-4-5",
+                  label: "Claude Haiku 4.5",
+                  supports_reasoning: false,
+                  supported_efforts: [],
+                },
+              ],
+            }),
+          }
+        }
+        if (String(url).includes("/anthropic/v1/messages")) {
+          capturedPayloads.push(
+            JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+          )
+          return { ok: true, status: 200, body: makeEmptyStream() }
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+        }
+      })
+    )
+
+    const manager = new RayuAuthManager()
+    const authState = await manager.refreshAccountDetails()
+    expect(authState.allowedModels).toEqual([
+      expect.objectContaining({
+        code: "claude-opus-4-7",
+        supportsReasoning: true,
+        supportedEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "medium",
+      }),
+      expect.objectContaining({
+        code: "claude-haiku-4-5",
+        supportsReasoning: false,
+        supportedEfforts: [],
+      }),
+    ])
+
+    // 1. Adaptive model + xhigh effort
+    await manager.streamCloudChat({
+      sessionId: "ses_eff_adaptive",
+      model: "claude-opus-4-7",
+      reasoningEffort: "xhigh",
+      messages: [{ role: "user", content: "Think deeply" }],
+      onEvent: () => {},
+    })
+    expect(capturedPayloads[0]).toMatchObject({
+      model: "claude-opus-4-7",
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "xhigh" },
+    })
+
+    // 2. Explicit "none" effort -> thinking disabled, no output_config
+    await manager.streamCloudChat({
+      sessionId: "ses_eff_none",
+      model: "claude-opus-4-7",
+      reasoningEffort: "none",
+      messages: [{ role: "user", content: "Direct answer" }],
+      onEvent: () => {},
+    })
+    expect(capturedPayloads[1]?.thinking).toEqual({ type: "disabled" })
+    expect(capturedPayloads[1]?.output_config).toBeUndefined()
+
+    // 3. Model with supportsReasoning === false -> neither thinking nor output_config
+    await manager.streamCloudChat({
+      sessionId: "ses_eff_unsupported",
+      model: "claude-haiku-4-5",
+      reasoningEffort: "high",
+      messages: [{ role: "user", content: "Fast reply" }],
+      onEvent: () => {},
+    })
+    expect(capturedPayloads[2]?.thinking).toBeUndefined()
+    expect(capturedPayloads[2]?.output_config).toBeUndefined()
+
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
 })

@@ -707,4 +707,125 @@ describe("TurnFileSummaryCard & file-change sync", () => {
       await within(card).findByTestId("file-diff-preview-assets/huge.dat")
     ).toHaveTextContent(/10 MiB snapshot limit/i)
   })
+
+  it("hides TurnFileSummaryCard while a turn is actively streaming and reveals it once finished", async () => {
+    const snap = createSnapshot()
+    let listener: ((frame: Record<string, unknown>) => void) | null = null
+    vi.spyOn(ipcClient.harness, "onEvent").mockImplementation((cb) => {
+      listener = cb
+      return () => {
+        listener = null
+      }
+    })
+    vi.spyOn(ipcClient.fileChanges, "get").mockResolvedValue(snap)
+
+    const queryClient = createQueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatStream sessionId={SESSION_ID} turns={[createFinishedTurn()]} />
+      </QueryClientProvider>
+    )
+
+    // Visible while idle after finished turn
+    expect(
+      await screen.findByTestId("turn-file-summary-card")
+    ).toBeInTheDocument()
+
+    // While a new turn is actively streaming, card stays hidden even when file_changes_state arrives mid-turn
+    act(() => {
+      listener?.({
+        ev: "text_delta",
+        session_id: SESSION_ID,
+        text: "Editing files...",
+      })
+      listener?.({
+        ev: "file_changes_state",
+        session_id: SESSION_ID,
+        snapshot: snap,
+      })
+    })
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("turn-file-summary-card")
+      ).not.toBeInTheDocument()
+    })
+
+    // Once the turn finishes, the summary card reappears
+    act(() => {
+      listener?.({
+        ev: "turn_done",
+        session_id: SESSION_ID,
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("turn-file-summary-card")).toBeInTheDocument()
+    })
+  })
+
+  it("shows only the 3 most recently changed files by default and expands/collapses all changed files on demand", () => {
+    const fiveFiles = createSnapshot({
+      total_pending_files: 5,
+      files: [
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/oldest.ts",
+          display_path: "src/oldest.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 1_000,
+        },
+        {
+          ...createSnapshot().files[0],
+          path: "/repo/src/recent-2.ts",
+          display_path: "src/recent-2.ts",
+          changed_in_latest_turn: true,
+          updated_at_ms: 4_000,
+        },
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/older.ts",
+          display_path: "src/older.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 2_000,
+        },
+        {
+          ...createSnapshot().files[0],
+          path: "/repo/src/recent-1.ts",
+          display_path: "src/recent-1.ts",
+          changed_in_latest_turn: true,
+          updated_at_ms: 5_000,
+        },
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/recent-3.ts",
+          display_path: "src/recent-3.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 3_000,
+        },
+      ],
+    })
+
+    renderCard(fiveFiles)
+
+    expect(screen.getByTestId("summary-file-count")).toHaveTextContent(
+      "5 files changed"
+    )
+    // Only the 3 most recent files are visible by default
+    expect(screen.getByTestId("file-summary-row-src/recent-1.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/recent-2.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/recent-3.ts")).toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).not.toBeInTheDocument()
+
+    // Expand all reveals the remaining 2 files
+    const expandBtn = screen.getByTestId("file-summary-expand-all-btn")
+    expect(expandBtn).toHaveTextContent("Expand all 5 files (+2 more)")
+    fireEvent.click(expandBtn)
+    expect(screen.getByTestId("file-summary-row-src/older.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/oldest.ts")).toBeInTheDocument()
+
+    // Collapse back to the 3 most recent files
+    fireEvent.click(screen.getByTestId("file-summary-collapse-list-btn"))
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).not.toBeInTheDocument()
+  })
 })

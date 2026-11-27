@@ -52,8 +52,15 @@ pub(super) fn spawn_deferred_agent_mutation<F>(
     F: FnOnce(&mut Agent, &mpsc::UnboundedSender<ServerEvent>) + Send + 'static,
 {
     let queued_at = log_provider_control_deferred(operation, id);
+    let agent = Arc::downgrade(&agent);
     crate::runtime_activity::spawn(async move {
+        let Some(agent) = agent.upgrade() else {
+            return;
+        };
         let mut agent_guard = agent.lock().await;
+        if Arc::strong_count(&agent) == 1 {
+            return;
+        }
         log_provider_control_lock_acquired(operation, id, queued_at);
         apply(&mut agent_guard, &client_event_tx);
         log_provider_control_completed(operation, id, queued_at);
@@ -70,12 +77,20 @@ pub(super) fn spawn_deferred_provider_operation<F>(
     F: FnOnce(Arc<dyn Provider>, &mpsc::UnboundedSender<ServerEvent>) + Send + 'static,
 {
     let queued_at = log_provider_control_deferred(operation, id);
+    let agent = Arc::downgrade(&agent);
     crate::runtime_activity::spawn(async move {
+        let Some(agent) = agent.upgrade() else {
+            return;
+        };
         let provider = {
             let agent_guard = agent.lock().await;
+            if Arc::strong_count(&agent) == 1 {
+                return;
+            }
             log_provider_control_lock_acquired(operation, id, queued_at);
             agent_guard.provider_handle()
         };
+        drop(agent);
         apply(provider, &client_event_tx);
         log_provider_control_completed(operation, id, queued_at);
     });
@@ -117,7 +132,10 @@ pub(super) async fn auth_refresh_targets(
             crate::logging::info(
                 "Deferring busy session provider auth-change refresh until the session is idle",
             );
-            deferred_agents.push(agent);
+            // Store only a Weak handle: another session's auth-refresh task
+            // must never pin a busy session's Agent past disconnect cleanup
+            // and block SessionManager restoration ("still has a runtime owner").
+            deferred_agents.push(Arc::downgrade(&agent));
             continue;
         };
         let provider = agent_guard.provider_handle();
@@ -137,13 +155,20 @@ pub(super) async fn auth_refresh_targets(
     }
 }
 
-pub(super) fn spawn_deferred_auth_refreshes(agents: Vec<Arc<Mutex<Agent>>>) {
-    for agent in agents {
+pub(super) fn spawn_deferred_auth_refreshes(agents: Vec<Weak<Mutex<Agent>>>) {
+    for weak_agent in agents {
         crate::runtime_activity::spawn(async move {
+            let Some(agent) = weak_agent.upgrade() else {
+                return;
+            };
             let provider = {
                 let agent_guard = agent.lock().await;
+                if Arc::strong_count(&agent) == 1 {
+                    return;
+                }
                 agent_guard.provider_handle()
             };
+            drop(agent);
             provider.on_auth_changed_preserve_current_provider();
             crate::bus::Bus::global().publish_models_updated();
         });

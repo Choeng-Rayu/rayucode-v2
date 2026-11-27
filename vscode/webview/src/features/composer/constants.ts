@@ -1,3 +1,4 @@
+import type { ComposerInjectionPayload } from "@shared/vscodeProtocol";
 import type {
   CacheTtl,
   EditorSelectionView,
@@ -90,14 +91,123 @@ export const CACHE_TTL_OPTIONS: ReadonlyArray<{
 ];
 
 /**
+ * Normalizes any provider display name or backend alias into its canonical lookup ID.
+ */
+export function normalizeProviderIdForLookup(raw?: string | null): string {
+  const normalized = (raw ?? "").trim().toLowerCase();
+  switch (normalized) {
+    case "rayu":
+    case "rayucode":
+    case "rayu-cloud":
+    case "rayu cloud":
+    case "rayu cloud gateway":
+    case "subscription":
+      return "rayu";
+    case "anthropic":
+    case "claude":
+    case "claude-api":
+      return "anthropic";
+    case "openai":
+    case "openai-api":
+      return "openai";
+    case "gemini":
+    case "google":
+    case "google-gemini":
+    case "gemini-api":
+      return "gemini";
+    case "copilot":
+    case "github-copilot":
+      return "copilot";
+    case "bedrock":
+    case "aws-bedrock":
+      return "bedrock";
+    case "grok":
+    case "grok-build":
+      return "grok";
+    case "azure":
+    case "azure-openai":
+      return "azure";
+    default:
+      return normalized;
+  }
+}
+
+/**
+ * Formats a harness model spec matching Desktop & Extension Host 1:1:
+ * returns "" for empty / "default", preserves existing "prefix:id", and
+ * prefixes "rayu:" whenever provider or apiMethod normalizes to "rayu".
+ */
+export function formatHarnessModelSpec(
+  modelId: string,
+  provider?: string,
+  apiMethod?: string,
+): string {
+  const trimmed = modelId.trim();
+  if (!trimmed || trimmed === "default") return "";
+  if (trimmed.includes(":")) return trimmed;
+  const normalizedApi = normalizeProviderIdForLookup(apiMethod);
+  const normalizedProvider = normalizeProviderIdForLookup(provider);
+  if (normalizedApi === "rayu" || normalizedProvider === "rayu") {
+    return `rayu:${trimmed}`;
+  }
+  return trimmed;
+}
+
+/**
+ * Formats a canonical or raw provider ID into a crisp UI badge label.
+ */
+export function formatProviderBadgeLabel(provider?: string | null): string {
+  const norm = normalizeProviderIdForLookup(provider);
+  switch (norm) {
+    case "rayu":
+      return "Rayu Cloud";
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    case "gemini":
+      return "Gemini";
+    case "copilot":
+      return "GitHub Copilot";
+    case "bedrock":
+      return "AWS Bedrock";
+    case "grok":
+      return "xAI Grok";
+    case "azure":
+      return "Azure";
+    case "openrouter":
+      return "OpenRouter";
+    case "deepseek":
+      return "DeepSeek";
+    case "groq":
+      return "Groq";
+    case "mistral":
+      return "Mistral";
+    case "ollama":
+      return "Ollama";
+    case "antigravity":
+      return "Antigravity";
+    case "cursor":
+      return "Cursor";
+    default: {
+      const trimmed = (provider ?? "").trim();
+      if (!trimmed) return "Provider";
+      return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+    }
+  }
+}
+
+/**
  * Offline fallback catalog in exact Rayu Gateway route ordering.
  * Live routes discovered from the Rust daemon always preserve their backend order.
  */
 export const FALLBACK_MODELS: readonly ModelOption[] = [
   {
     id: "claude-opus-5-5",
+    modelSpec: "rayu:claude-opus-5-5",
     label: "Claude Opus 5.5",
-    provider: "rayu-cloud",
+    provider: "rayu",
+    apiMethod: "rayu",
     subtitle: "Rayu Cloud · Flagship reasoning",
     authMethod: "oauth",
     accountLabel: "Rayu Cloud",
@@ -106,8 +216,10 @@ export const FALLBACK_MODELS: readonly ModelOption[] = [
   },
   {
     id: "claude-sonnet-4-5",
+    modelSpec: "rayu:claude-sonnet-4-5",
     label: "Claude Sonnet 4.5",
-    provider: "rayu-cloud",
+    provider: "rayu",
+    apiMethod: "rayu",
     subtitle: "Rayu Cloud · Fast daily driver",
     authMethod: "oauth",
     accountLabel: "Rayu Cloud",
@@ -115,6 +227,7 @@ export const FALLBACK_MODELS: readonly ModelOption[] = [
   },
   {
     id: "gpt-5.2",
+    modelSpec: "gpt-5.2",
     label: "GPT-5.2",
     provider: "openai",
     subtitle: "OpenAI · High-precision coding",
@@ -123,6 +236,7 @@ export const FALLBACK_MODELS: readonly ModelOption[] = [
   },
   {
     id: "claude-opus-4-5",
+    modelSpec: "claude-opus-4-5",
     label: "Claude Opus 4.5",
     provider: "anthropic",
     subtitle: "Anthropic · Deep architecture",
@@ -131,14 +245,16 @@ export const FALLBACK_MODELS: readonly ModelOption[] = [
   },
   {
     id: "gemini-3.1-pro-preview",
+    modelSpec: "gemini-3.1-pro-preview",
     label: "Gemini 3.1 Pro",
-    provider: "google",
+    provider: "gemini",
     subtitle: "Google · Long-context analysis",
     authMethod: "api_key",
     available: true,
   },
   {
     id: "deepseek-v4-flash",
+    modelSpec: "deepseek-v4-flash",
     label: "DeepSeek V4 Flash",
     provider: "deepseek",
     subtitle: "DeepSeek · Low-latency synthesis",
@@ -416,4 +532,78 @@ export function formatSelectionRangeLabel(
     return `${fileName}:L${selection.lineStart}`;
   }
   return `${fileName}:L${selection.lineStart}-L${selection.lineEnd}`;
+}
+
+function normalizeMentionToken(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasMentionToken(text: string, token: string): boolean {
+  if (!text) return false;
+  const pattern = new RegExp(`(?:^|\\s)${escapeRegExp(token)}(?=$|\\s)`);
+  return pattern.test(text);
+}
+
+/**
+ * Pure helper merging contextual host injections (Explorer files, Editor
+ * selections, Quick Fixes, Terminal captures, Git diffs) into the composer
+ * textarea without creating prohibited file-chip components.
+ */
+export function mergeComposerInjection(
+  currentText: string,
+  injection: ComposerInjectionPayload,
+): string {
+  const prompt = injection.prompt?.trim() ?? "";
+
+  const normalizedMentions: string[] = [];
+  for (const raw of injection.mentions ?? []) {
+    const token = normalizeMentionToken(raw);
+    if (!token) continue;
+    if (normalizedMentions.includes(token)) continue;
+    normalizedMentions.push(token);
+  }
+
+  if (injection.mode === "replace" && prompt.length > 0) {
+    const replaceMentions = normalizedMentions.filter(
+      (token) => !hasMentionToken(prompt, token),
+    );
+    if (replaceMentions.length > 0) {
+      return `${replaceMentions.join(" ")}\n\n${prompt}`;
+    }
+    return prompt;
+  }
+
+  let next = currentText;
+  const newMentions = normalizedMentions.filter(
+    (token) =>
+      !hasMentionToken(next, token) &&
+      (!prompt || !hasMentionToken(prompt, token)),
+  );
+
+  if (newMentions.length > 0) {
+    const mentionText = newMentions.join(" ");
+    if (next.trim().length === 0) {
+      next = prompt ? mentionText : `${mentionText} `;
+    } else {
+      next = prompt
+        ? `${next.trimEnd()} ${mentionText}`
+        : `${next.trimEnd()} ${mentionText} `;
+    }
+  }
+
+  if (prompt.length > 0) {
+    if (next.trim().length === 0) {
+      next = prompt;
+    } else {
+      next = `${next.trimEnd()}\n\n${prompt}`;
+    }
+  }
+
+  return next;
 }

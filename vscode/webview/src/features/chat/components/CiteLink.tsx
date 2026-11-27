@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 import { TechFileBadge } from "@/components/ui";
-import { basenameOf, cn, postToHost, useAppStore } from "@/lib";
+import { basenameOf, cn, postToHost } from "@/lib";
 
 export type CitationKind =
   | "code"
@@ -36,14 +36,30 @@ export interface ParsedFileLineTarget {
 }
 
 /**
- * Parses `path/to/file.ts:42`, `path/to/file.rs:10-25`, or `path/to/file.ts#L12-L20`
- * into a clean file path and 1-based line numbers.
+ * Parses `path/to/file.ts:42`, `path/to/file.rs:10-25`, `path/to/file.ts#L12-L20`,
+ * `@path/to/file.md`, or `file:///abs/path.ts#L10` into a clean file path and
+ * 1-based line numbers without breaking Windows drive letters (`C:\...`).
  */
 export function parseFileLineTarget(raw: string): ParsedFileLineTarget {
-  const trimmed = raw.trim().replace(/^`+|`+$/g, "");
+  let trimmed = raw.trim().replace(/^[`'"<]+|[`'">]+$/g, "");
+  if (trimmed.startsWith("@") && !trimmed.startsWith("@/")) {
+    trimmed = trimmed.slice(1);
+  }
+  if (/^file:\/\//i.test(trimmed)) {
+    trimmed = trimmed.replace(/^file:\/\//i, "");
+    try {
+      trimmed = decodeURIComponent(trimmed);
+    } catch {
+      // keep raw path if malformed escape sequence
+    }
+    if (/^\/[A-Za-z]:[\\/]/.test(trimmed)) {
+      trimmed = trimmed.slice(1);
+    }
+  }
+
   const hashMatch = trimmed.match(/^(.+?)#L(\d+)(?:-L?(\d+))?$/i);
-  if (hashMatch) {
-    const path = hashMatch[1] ?? trimmed;
+  if (hashMatch && hashMatch[1]) {
+    const path = hashMatch[1];
     const line = Number.parseInt(hashMatch[2] ?? "1", 10);
     const endLine = hashMatch[3]
       ? Number.parseInt(hashMatch[3], 10)
@@ -51,11 +67,9 @@ export function parseFileLineTarget(raw: string): ParsedFileLineTarget {
     return { path, line, endLine };
   }
 
-  const colonMatch = trimmed.match(
-    /^(.+?):(\d+)(?:-(\d+)|:(\d+))?$/,
-  );
-  if (colonMatch) {
-    const path = colonMatch[1] ?? trimmed;
+  const colonMatch = trimmed.match(/^(.+?):(\d+)(?:-(\d+)|:(\d+))?$/);
+  if (colonMatch && colonMatch[1] && !/^[A-Za-z]$/.test(colonMatch[1])) {
+    const path = colonMatch[1];
     const line = Number.parseInt(colonMatch[2] ?? "1", 10);
     const endLine = colonMatch[3]
       ? Number.parseInt(colonMatch[3], 10)
@@ -72,14 +86,12 @@ export function parseFileLineTarget(raw: string): ParsedFileLineTarget {
 export interface CiteLinkProps {
   citation: CitationItem;
   onNavigate?: (citation: CitationItem) => void;
-  openInInspector?: boolean;
   className?: string;
 }
 
 export function CiteLink({
   citation,
   onNavigate,
-  openInInspector = false,
   className,
 }: CiteLinkProps) {
   const parsed = React.useMemo(
@@ -92,39 +104,17 @@ export function CiteLink({
   const kind = citation.kind ?? "code";
 
   const handleClick = () => {
-    const store = useAppStore.getState();
-
-    if (kind === "code") {
+    if (kind === "browser" && /^https?:\/\//i.test(resolvedPath)) {
       postToHost({
-        type: "rayucode.editor.openFile",
-        path: resolvedPath,
-        line: resolvedLine,
-        column: resolvedColumn,
+        type: "rayucode.editor.openExternal",
+        url: resolvedPath,
       });
-      if (openInInspector || store.inspectorOpen) {
-        store.openCodeFile(resolvedPath, resolvedLine ?? null);
-      }
-    } else if (kind === "browser") {
-      if (/^https?:\/\//i.test(resolvedPath)) {
-        postToHost({
-          type: "rayucode.editor.openSimpleBrowser",
-          url: resolvedPath,
-        });
-      } else {
-        store.openRightTab("browser", basenameOf(resolvedPath));
-      }
-    } else if (kind === "markdown") {
-      postToHost({
-        type: "rayucode.editor.openFile",
-        path: resolvedPath,
-        line: resolvedLine,
-      });
-      store.openRightTab("markdown", basenameOf(resolvedPath));
     } else {
       postToHost({
         type: "rayucode.editor.openFile",
         path: resolvedPath,
         line: resolvedLine,
+        column: resolvedColumn,
       });
     }
 

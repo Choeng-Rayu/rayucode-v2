@@ -99,6 +99,47 @@ describe("VS Code webview integration with @rayu-dev/rayucode-session-core", () 
     });
   });
 
+  it("ignores sessionless daemon connection closed errors without aborting an active turn or clearing pending permissions", () => {
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    useAppStore.setState({
+      activeSessionId: "ses_live_active",
+      pendingPermission: {
+        sessionId: "ses_live_active",
+        requestId: "perm_1",
+        toolName: "bash",
+        description: "ls -la",
+      },
+    });
+    startSessionLiveTurn({
+      sessionId: "ses_live_active",
+      userPrompt: "read my codebase",
+      baseHistoryTurnCount: 0,
+    });
+
+    // Unbound/foreign socket disconnect arriving with no session_id
+    processHarnessFrame(
+      {
+        ev: "error",
+        code: "internal",
+        message: "daemon connection closed",
+      },
+      queryClient,
+      "ses_live_active",
+    );
+
+    expect(
+      useLiveTraceStore.getState().liveTurnsBySession["ses_live_active"]?.isLive,
+    ).toBe(true);
+    expect(
+      useLiveTraceStore.getState().completedTurnsBySession["ses_live_active"] ??
+        [],
+    ).toHaveLength(0);
+    expect(useAppStore.getState().pendingPermission?.requestId).toBe("perm_1");
+    expect(invalidateSpy).not.toHaveBeenCalled();
+  });
+
   it("clears stale liveTurn via shouldClearStaleLiveTurn when daemon reports idle past grace window", () => {
     const startedAt = 10_000;
     startSessionLiveTurn({

@@ -1,8 +1,11 @@
 import * as React from "react"
 import {
+  extractTodosFromHarnessFrame,
   reconcileChatTurns,
   shouldClearStaleLiveTurn,
+  type SessionTodoItem,
 } from "@rayu-dev/rayucode-session-core/client"
+import { TaskChecklistCard } from "@rayu-dev/rayucode-ui/tasks"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowDown,
@@ -49,6 +52,8 @@ import { InlineDiffCard } from "./inline-diff-card"
 import { TurnActions } from "./turn-actions"
 import { TurnFileSummaryCard } from "./turn-file-summary-card"
 import { WorkTrace } from "./work-trace"
+
+const EMPTY_SESSION_TODOS: SessionTodoItem[] = []
 
 function formatTurnResponseMarkdown(turn: ExecutionTurn): string {
   const parts: string[] = []
@@ -174,7 +179,9 @@ function TurnView({
             defaultExpanded={
               !turn.isLive &&
               !hasAnswer &&
-              (turn.notes.length > 0 || turn.groups.length > 0)
+              (turn.notes.length > 0 ||
+                turn.groups.length > 0 ||
+                Boolean(turn.timeline && turn.timeline.length > 0))
                 ? true
                 : undefined
             }
@@ -430,6 +437,12 @@ export function ChatStream({
     effectiveSessionId ? s.sessionFileChangesBySession[effectiveSessionId] : undefined
   )
   const setSessionFileChanges = useAppStore((s) => s.setSessionFileChanges)
+  const sessionTodos = useAppStore((s) =>
+    effectiveSessionId
+      ? (s.sessionTodosBySession[effectiveSessionId] ?? EMPTY_SESSION_TODOS)
+      : EMPTY_SESSION_TODOS
+  )
+  const setSessionTodos = useAppStore((s) => s.setSessionTodos)
 
   // Hydrate persisted/session file changes AFTER history finishes loading so
   // getFileChanges never competes ahead of getHistory on daemonClient.attachQueue.
@@ -456,6 +469,33 @@ export function ChatStream({
     }
   }, [effectiveSessionId, isLoading, setSessionFileChanges])
 
+  // Hydrate persisted session todos after history settles, without overwriting fresher live updates
+  React.useEffect(() => {
+    if (!effectiveSessionId || isLoading) return
+    const pending = useAppStore.getState().pendingStreamPrompt
+    if (pending && pending.sessionId === effectiveSessionId) return
+    let cancelled = false
+    const todosBefore =
+      useAppStore.getState().sessionTodosBySession[effectiveSessionId]
+    void ipcClient.todos
+      .get(effectiveSessionId)
+      .then((todos) => {
+        if (cancelled || !Array.isArray(todos)) return
+        const currentTodos =
+          useAppStore.getState().sessionTodosBySession[effectiveSessionId]
+        if (currentTodos !== todosBefore) return
+        if (todos.length > 0 || !currentTodos) {
+          setSessionTodos(effectiveSessionId, todos)
+        }
+      })
+      .catch(() => {
+        // Gracefully ignore when daemon does not support todo_state
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveSessionId, isLoading, setSessionTodos])
+
   React.useEffect(() => {
     if (isLiveTraceControllerMounted()) return
     setIsStreamActive(isStreaming)
@@ -468,6 +508,11 @@ export function ChatStream({
       const frameSession =
         typeof frame.session_id === "string" ? frame.session_id : null
       if (frameSession && frameSession !== effectiveSessionId) return
+      const todoUpdate = extractTodosFromHarnessFrame(frame, effectiveSessionId)
+      if (todoUpdate) {
+        setSessionTodos(todoUpdate.sessionId, todoUpdate.todos)
+        return
+      }
       processHarnessFrame(frame, queryClient, effectiveSessionId)
     })
     return () => {
@@ -476,7 +521,7 @@ export function ChatStream({
         clearSessionLiveTurn(effectiveSessionId)
       }
     }
-  }, [effectiveSessionId, queryClient])
+  }, [effectiveSessionId, queryClient, setSessionTodos])
 
   React.useEffect(() => {
     if (isLiveTraceControllerMounted()) return
@@ -683,7 +728,9 @@ export function ChatStream({
                   key={turn.id}
                   turn={turn}
                   fileChangesSnapshot={
-                    idx === latestFinishedTurnIdx ? sessionFileChanges : null
+                    !isStreaming && idx === latestFinishedTurnIdx
+                      ? sessionFileChanges
+                      : null
                   }
                   onForked={handleForked}
                   onPinToggled={handlePinToggled}
@@ -811,6 +858,18 @@ export function ChatStream({
             </div>
           </div>
         )}
+
+      {sessionTodos.length > 0 && (
+        <div
+          data-slot="chat-stream-tasks-slot"
+          className="mx-auto w-full max-w-[780px] shrink-0 px-6 pb-2"
+        >
+          <TaskChecklistCard
+            sessionId={effectiveSessionId}
+            todos={sessionTodos}
+          />
+        </div>
+      )}
 
       {bottomComposer && (
         <div

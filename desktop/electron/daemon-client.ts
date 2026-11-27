@@ -30,6 +30,11 @@ import {
 } from "@rayu-dev/rayucode-sdk"
 
 import {
+  isTodoToolEvent,
+  normalizeTodoItems,
+  type SessionTodoItem,
+} from "@rayu-dev/rayucode-session-core/client"
+import {
   SessionSocketPool,
   type HarnessFrameLike,
 } from "@rayu-dev/rayucode-session-core/host"
@@ -343,6 +348,8 @@ export class RayuDaemonClient extends EventEmitter {
   private latestHistorySessionId: string | null = null
   private status: DaemonConnectionStatus
 
+  private readonly todoRefreshSeqBySession = new Map<string, number>()
+
   constructor(customSocketPath?: string) {
     super()
     this.socketPath = customSocketPath ?? apiSocketPath()
@@ -365,6 +372,15 @@ export class RayuDaemonClient extends EventEmitter {
       },
       onFrame: (frame: HarnessFrameLike, sessionId: string, client: RayucodeClient) => {
         this.emit("harness-event", frame as ServerFrame)
+        const resolvedSid =
+          (typeof frame.session_id === "string" && frame.session_id.trim()) ||
+          sessionId
+        if (
+          resolvedSid &&
+          isTodoToolEvent(frame as unknown as Record<string, unknown>)
+        ) {
+          void this.refreshAndEmitTodos(resolvedSid, client)
+        }
         if (
           (frame.ev === "turn_done" || frame.ev === "turn_stopped") &&
           sessionId
@@ -1496,6 +1512,84 @@ export class RayuDaemonClient extends EventEmitter {
     })
   }
 
+  private supportsTodoState(client: RayucodeClient): boolean {
+    if (typeof client.todoState !== "function") {
+      return false
+    }
+    if (
+      typeof client.supports === "function" &&
+      Array.isArray(client.capabilities) &&
+      client.capabilities.length > 0 &&
+      !client.supports("todo_state")
+    ) {
+      return false
+    }
+    return true
+  }
+
+  async getTodos(
+    sessionId: string
+  ): Promise<{ sessionId: string; todos: SessionTodoItem[] }> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return { sessionId, todos: [] }
+    }
+    const pooled = this.pool.get(sessionId)
+    const activeClient =
+      pooled ??
+      (this.client && this.attachedSessionId === sessionId ? this.client : null)
+    if (activeClient) {
+      try {
+        if (!this.supportsTodoState(activeClient)) {
+          return { sessionId, todos: [] }
+        }
+        const snapshot = await activeClient.todoState(sessionId)
+        return { sessionId, todos: normalizeTodoItems(snapshot) }
+      } catch {
+        return { sessionId, todos: [] }
+      }
+    }
+    return this.runSerialized(async () => {
+      try {
+        let client = await this.connect()
+        if (!this.supportsTodoState(client)) {
+          return { sessionId, todos: [] }
+        }
+        client = await this.ensureAttached(client, sessionId)
+        const snapshot = await client.todoState(sessionId)
+        return { sessionId, todos: normalizeTodoItems(snapshot) }
+      } catch {
+        return { sessionId, todos: [] }
+      }
+    })
+  }
+
+  private async refreshAndEmitTodos(
+    sessionId: string,
+    client?: RayucodeClient
+  ): Promise<void> {
+    if (!sessionId || sessionId.startsWith("ses_")) return
+    const seq = (this.todoRefreshSeqBySession.get(sessionId) ?? 0) + 1
+    this.todoRefreshSeqBySession.set(sessionId, seq)
+    try {
+      let todos: SessionTodoItem[]
+      if (client && this.supportsTodoState(client)) {
+        const snapshot = await client.todoState(sessionId)
+        todos = normalizeTodoItems(snapshot)
+      } else {
+        const result = await this.getTodos(sessionId)
+        todos = result.todos
+      }
+      if (this.todoRefreshSeqBySession.get(sessionId) !== seq) return
+      this.emit("harness-event", {
+        ev: "todo_state",
+        session_id: sessionId,
+        state: { todos },
+      } as unknown as ServerFrame)
+    } catch {
+      // ignore transient pull failures
+    }
+  }
+
   async notifyAuthChanged(provider = "rayu"): Promise<void> {
     syncRayuCredentialsToInstanceHome(getDesktopInstanceHome())
     if (!this.client) return
@@ -1592,6 +1686,8 @@ export class RayuDaemonClient extends EventEmitter {
             force: typeof p.force === "boolean" ? p.force : undefined,
           }
         )) as T
+      case "todos.get":
+        return (await this.getTodos(String(p.sessionId))) as T
       case "previews.setBrowserBounds":
         return { ok: true } as T
       default:

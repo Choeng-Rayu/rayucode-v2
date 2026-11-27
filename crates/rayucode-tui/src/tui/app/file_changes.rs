@@ -194,10 +194,24 @@ impl App {
         self.file_changes.as_ref().is_some_and(|s| !s.is_empty())
     }
 
+    pub(super) fn file_changes_card_expanded_state(&self) -> bool {
+        let Some(snapshot) = self.file_changes.as_ref().filter(|s| !s.is_empty()) else {
+            return false;
+        };
+        if snapshot.total_pending_files == 0 {
+            return self.file_changes_receipt_expanded;
+        }
+        match self.file_changes_card_override {
+            Some((for_processing, expanded)) if for_processing == self.is_processing => expanded,
+            _ => !self.is_processing,
+        }
+    }
+
     pub(super) fn clear_file_changes_state(&mut self) {
         self.file_changes = None;
         self.expanded_file_change_paths.clear();
         self.file_changes_receipt_expanded = false;
+        self.file_changes_card_override = None;
         self.file_review_overlay = None;
         self.pending_remote_file_change_requests.clear();
         self.pending_remote_file_change_request_ids.clear();
@@ -213,6 +227,7 @@ impl App {
             self.file_changes = None;
             self.expanded_file_change_paths.clear();
             self.file_changes_receipt_expanded = false;
+            self.file_changes_card_override = None;
         } else {
             // Prune expanded paths that no longer exist in the snapshot.
             let valid_paths: HashSet<&str> =
@@ -222,6 +237,10 @@ impl App {
             if had_pending && snapshot.total_pending_files == 0 {
                 // Auto-collapse into the quiet 1-line receipt once all pending files resolve.
                 self.file_changes_receipt_expanded = false;
+                self.file_changes_card_override = None;
+            } else if !had_pending && snapshot.total_pending_files > 0 {
+                // Reset any stale override when pending changes newly appear (or after Redo).
+                self.file_changes_card_override = None;
             }
             self.file_changes = Some(snapshot);
         }
@@ -522,8 +541,17 @@ impl App {
             FileChangeHitTarget::RedoAll => {
                 self.trigger_file_change_action(FileChangeActionKind::RedoAll, None, false);
             }
-            FileChangeHitTarget::ToggleReceipt => {
-                self.file_changes_receipt_expanded = !self.file_changes_receipt_expanded;
+            FileChangeHitTarget::ToggleCollapse => {
+                let is_resolved = self
+                    .file_changes
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty() && s.total_pending_files == 0);
+                if is_resolved {
+                    self.file_changes_receipt_expanded = !self.file_changes_receipt_expanded;
+                } else {
+                    let next = !self.file_changes_card_expanded_state();
+                    self.file_changes_card_override = Some((self.is_processing, next));
+                }
                 self.bump_file_changes_version();
                 self.request_full_repaint();
             }
@@ -1122,5 +1150,60 @@ mod tests {
         app.handle_file_review_overlay_key(KeyCode::Esc, KeyModifiers::NONE)
             .unwrap();
         assert!(app.file_review_overlay.is_none());
+    }
+
+    #[test]
+    fn file_change_card_auto_collapses_while_processing_and_expands_when_finished() {
+        let mut app = create_test_app();
+        let snap = FileChangesSnapshot {
+            session_id: "ses_collapse".into(),
+            latest_turn_id: 1,
+            total_pending_files: 1,
+            total_additions: 5,
+            total_deletions: 2,
+            files: vec![FileChangeEntrySummary {
+                path: "/repo/src/lib.rs".into(),
+                display_path: "src/lib.rs".into(),
+                old_path: None,
+                kind: FileChangeKind::Modified,
+                status: FileChangeStatus::Pending,
+                additions: 5,
+                deletions: 2,
+                changed_in_latest_turn: true,
+                turn_id: 1,
+                edit_count: 1,
+                is_binary: false,
+                undoable: true,
+                can_redo: false,
+                preview_hunks: Vec::new(),
+                preview_truncated: false,
+                updated_at_ms: 100,
+            }],
+        };
+
+        // 1. While AI is still responding, card defaults to collapsed.
+        app.is_processing = true;
+        app.apply_file_changes_snapshot(snap);
+        assert!(!app.file_changes_card_expanded_state());
+
+        // 2. User can manually expand and collapse while AI is still responding.
+        app.handle_file_change_card_click(FileChangeHitTarget::ToggleCollapse);
+        assert!(app.file_changes_card_expanded_state());
+        app.handle_file_change_card_click(FileChangeHitTarget::ToggleCollapse);
+        assert!(!app.file_changes_card_expanded_state());
+
+        // 3. When AI finishes responding, card expands automatically by default.
+        app.is_processing = false;
+        assert!(app.file_changes_card_expanded_state());
+
+        // 4. User can collapse and re-expand the finished card.
+        app.handle_file_change_card_click(FileChangeHitTarget::ToggleCollapse);
+        assert!(!app.file_changes_card_expanded_state());
+        app.handle_file_change_card_click(FileChangeHitTarget::ToggleCollapse);
+        assert!(app.file_changes_card_expanded_state());
+
+        // 5. Starting a subsequent AI response automatically collapses again.
+        app.is_processing = true;
+        assert!(!app.file_changes_card_expanded_state());
     }
 }

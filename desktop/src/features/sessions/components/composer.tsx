@@ -541,8 +541,6 @@ export function SessionComposer({
   const setActiveWorkspacePath = useAppStore((s) => s.setActiveWorkspacePath)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const openRightTab = useAppStore((s) => s.openRightTab)
-  const pendingPermission = useAppStore((s) => s.pendingPermission)
-  const setPendingPermission = useAppStore((s) => s.setPendingPermission)
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const { models, refreshModels, isRefreshing } = useModelCatalog()
   const { modes } = usePermissionModes()
@@ -1371,6 +1369,14 @@ export function SessionComposer({
                   : (res.error ?? `Failed to set reasoning effort to ${effortArg}.`),
             })
             return true
+          }
+          if (targetSid) {
+            const prevInfo =
+              useAppStore.getState().sessionModelInfoBySession[targetSid]
+            useAppStore.getState().setSessionModelInfo(targetSid, {
+              ...prevInfo,
+              reasoningEffort: effortArg,
+            })
           }
           setTextValue("")
           setCommandFeedback({
@@ -3094,29 +3100,7 @@ export function SessionComposer({
                 </PopoverContent>
               </Popover>
 
-              {/* 2-Stage Model & 5-Stop Reasoning Effort Popover */}
-              {mode === "workspace" && (isSubmitting || pendingPermission) ? (
-                <button
-                  type="button"
-                  data-testid="composer-approve-for-me-btn"
-                  onClick={() => {
-                    handlePermissionSelect("acceptEdits")
-                    if (pendingPermission) {
-                      void ipcClient.trace.respondToPermission(
-                        pendingPermission.sessionId,
-                        pendingPermission.requestId,
-                        "allow"
-                      )
-                      setPendingPermission(null)
-                    }
-                    toast("Auto-approving edits for this conversation")
-                  }}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium text-muted-ink transition-colors hover:bg-hover hover:text-ink"
-                >
-                  <span>Approve for me</span>
-                </button>
-              ) : null}
-
+              {/* 2-Stage Model & Reasoning Effort Popover */}
               <ModelEffortPopover
                 modelId={activeModelId}
                 modelLabel={activeModelLabel}

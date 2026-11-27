@@ -125,6 +125,70 @@ describe("ChatStream live engine wiring (no hardcoded demo flows)", () => {
     expect(useAppStore.getState().pendingPermission).toBeNull()
   })
 
+  it("forwards PendingStreamPrompt.effort directly to ipcClient.trace.sendPrompt in both live and non-live modes", async () => {
+    const sendSpy = vi
+      .spyOn(ipcClient.trace, "sendPrompt")
+      .mockResolvedValue(stubTurn("Check reasoning effort"))
+
+    renderStream()
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: SESSION_ID,
+        prompt: "Check reasoning effort",
+        modelId: "claude-opus-4-6",
+        modelLabel: "Claude Opus 4.6",
+        effort: "high",
+      })
+    })
+
+    await waitFor(() => {
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: SESSION_ID,
+          prompt: "Check reasoning effort",
+          effort: "high",
+        })
+      )
+    })
+
+    cleanup()
+    sendSpy.mockClear()
+    const liveSessionId = "live_sess_effort"
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: liveSessionId,
+      daemonMode: "live",
+      pendingStreamPrompt: null,
+    })
+    const queryClient = createQueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatStream sessionId={liveSessionId} turns={[]} />
+      </QueryClientProvider>
+    )
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: liveSessionId,
+        prompt: "Check live reasoning effort",
+        modelId: "claude-opus-4-7",
+        modelLabel: "Claude Opus 4.7",
+        effort: "xhigh",
+      })
+    })
+
+    await waitFor(() => {
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: liveSessionId,
+          prompt: "Check live reasoning effort",
+          effort: "xhigh",
+        })
+      )
+    })
+  })
+
   it("renders a real slide preview thumbnail card when create_powerpoint tool_done arrives", async () => {
     const holder = captureHarnessListener()
     renderStream()
@@ -298,5 +362,75 @@ describe("mapHarnessFrameToLiveEvents tool mappings", () => {
         description: "Allow edit?",
       },
     ])
+  })
+
+  it("renders shared TaskChecklistCard above the composer and updates live on todo_state frames", async () => {
+    const holder = captureHarnessListener()
+    vi.spyOn(ipcClient.trace, "listTurns").mockResolvedValue([
+      stubTurn("Implement shared tasks checklist"),
+    ])
+    vi.spyOn(ipcClient.todos, "get").mockResolvedValue([])
+    useAppStore.setState({
+      activeSessionId: SESSION_ID,
+      sessionTodosBySession: {},
+    })
+
+    const qc = createQueryClient()
+    render(
+      <QueryClientProvider client={qc}>
+        <ChatStream
+          sessionId={SESSION_ID}
+          composerSlot={<div data-testid="desktop-mock-composer">Composer</div>}
+        />
+      </QueryClientProvider>
+    )
+
+    await waitFor(() => {
+      expect(screen.getByTestId("desktop-mock-composer")).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId("task-checklist-card")).not.toBeInTheDocument()
+
+    act(() => {
+      holder.listener?.({
+        ev: "todo_state",
+        session_id: SESSION_ID,
+        state: {
+          todos: [
+            { id: "t1", content: "Create shared component", status: "completed" },
+            {
+              id: "t2",
+              content: "Wire Desktop IPC",
+              status: "in_progress",
+              active_form: "Wiring Desktop IPC",
+            },
+            { id: "t3", content: "Deprecated step", status: "cancelled" },
+          ],
+        },
+      })
+    })
+
+    expect(await screen.findByTestId("task-checklist-card")).toBeInTheDocument()
+    expect(screen.getByTestId("task-checklist-progress")).toHaveTextContent("1/2")
+    expect(screen.getByText("Wiring Desktop IPC")).toBeInTheDocument()
+
+    act(() => {
+      holder.listener?.({
+        ev: "todo_state",
+        session_id: SESSION_ID,
+        state: {
+          todos: [
+            { id: "t1", content: "Create shared component", status: "completed" },
+            { id: "t2", content: "Wire Desktop IPC", status: "completed" },
+            { id: "t3", content: "Deprecated step", status: "cancelled" },
+          ],
+        },
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-checklist-progress")).toHaveTextContent("2/2")
+      expect(screen.getByText("Completed 2 tasks")).toBeInTheDocument()
+      expect(screen.queryByTestId("task-checklist-list")).not.toBeInTheDocument()
+    })
   })
 })

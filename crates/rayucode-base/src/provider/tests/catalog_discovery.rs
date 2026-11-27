@@ -175,3 +175,70 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
         );
     });
 }
+
+#[test]
+fn catalog_refresh_bounds_hung_child_provider_with_timeout() {
+    #[derive(Clone, Default)]
+    struct HungProbe;
+
+    #[async_trait::async_trait]
+    impl Provider for HungProbe {
+        async fn complete(
+            &self,
+            _: &[Message],
+            _: &[ToolDefinition],
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<EventStream> {
+            unreachable!("catalog refresh must not complete a prompt")
+        }
+        fn name(&self) -> &str {
+            "hung-probe"
+        }
+        fn model(&self) -> String {
+            "static-fallback".into()
+        }
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self)
+        }
+        async fn prefetch_models(&self) -> Result<()> {
+            std::future::pending::<Result<()>>().await
+        }
+        async fn refresh_model_catalog(&self) -> Result<ModelCatalogRefreshSummary> {
+            std::future::pending::<Result<ModelCatalogRefreshSummary>>().await
+        }
+    }
+
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _enter = runtime.enter();
+        let provider = test_multi_provider_with_openai();
+        *provider.openrouter.write().unwrap() = Some(Arc::new(HungProbe));
+
+        // Optional hung provider must time out cleanly without failing the active provider.
+        *provider.active.write().unwrap() = ActiveProvider::OpenAI;
+        let optional_res = runtime.block_on(tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            provider.refresh_catalogs_with_timeout(true, std::time::Duration::from_millis(40)),
+        ));
+        assert!(
+            optional_res
+                .expect("refresh must not hang when optional child provider stalls")
+                .is_ok()
+        );
+
+        // Active hung provider must fail with a timeout error rather than hanging forever.
+        *provider.active.write().unwrap() = ActiveProvider::OpenRouter;
+        let active_err = runtime
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                provider.refresh_catalogs_with_timeout(true, std::time::Duration::from_millis(40)),
+            ))
+            .expect("refresh must not hang when active child provider stalls")
+            .expect_err("hung active provider must surface timeout error");
+        assert!(
+            active_err.to_string().contains("timed out"),
+            "unexpected error: {active_err}"
+        );
+    });
+}

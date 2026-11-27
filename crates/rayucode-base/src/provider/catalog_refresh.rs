@@ -1,16 +1,37 @@
 //! Model catalog refresh fanout across runtime slots and compatible profiles.
 use super::*;
+use std::time::Duration;
 
-async fn refresh_child_catalog(provider: &dyn Provider, force: bool) -> Result<()> {
-    if force {
-        provider.refresh_model_catalog().await.map(|_| ())
-    } else {
-        provider.prefetch_models().await
-    }
+const CHILD_CATALOG_REFRESH_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn refresh_child_catalog(
+    provider: &dyn Provider,
+    force: bool,
+    timeout: Duration,
+) -> Result<()> {
+    let work = async {
+        if force {
+            provider.refresh_model_catalog().await.map(|_| ())
+        } else {
+            provider.prefetch_models().await
+        }
+    };
+    tokio::time::timeout(timeout, work)
+        .await
+        .map_err(|_| anyhow!("catalog refresh timed out after {}s", timeout.as_secs()))?
 }
 
 impl MultiProvider {
     pub(super) async fn refresh_catalogs(&self, force: bool) -> Result<()> {
+        self.refresh_catalogs_with_timeout(force, CHILD_CATALOG_REFRESH_TIMEOUT)
+            .await
+    }
+
+    pub(super) async fn refresh_catalogs_with_timeout(
+        &self,
+        force: bool,
+        timeout: Duration,
+    ) -> Result<()> {
         let anthropic = self.anthropic_provider();
         let openai = self.openai_provider();
         let openrouter = self.openrouter_provider();
@@ -46,55 +67,58 @@ impl MultiProvider {
         ) = tokio::join!(
             async {
                 match anthropic {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match openai {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match openrouter {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match copilot {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match antigravity {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match gemini {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match cursor {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             async {
                 match bedrock {
-                    Some(provider) => refresh_child_catalog(provider.as_ref(), force).await,
+                    Some(provider) => refresh_child_catalog(provider.as_ref(), force, timeout).await,
                     None => Ok(()),
                 }
             },
             futures::future::join_all(compatible_profiles.into_iter().map(
                 |(id, provider)| async move {
-                    (id, refresh_child_catalog(provider.as_ref(), force).await)
+                    (
+                        id,
+                        refresh_child_catalog(provider.as_ref(), force, timeout).await,
+                    )
                 }
             )),
         );

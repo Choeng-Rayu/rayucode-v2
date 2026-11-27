@@ -101,6 +101,17 @@ export function resolveApiSocketPath(configuredSocketPath?: string): string {
   return defaultSdkApiSocketPath();
 }
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    return code === "EPERM";
+  }
+}
+
 export function detectIsRayuRepo(workspacePaths: readonly string[]): boolean {
   for (const ws of workspacePaths) {
     if (
@@ -193,7 +204,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
 
   /**
    * Open a fresh `RayucodeClient` connection to the active bridge socket with
-   * `supportsPermissions: true` and `supportsUserResponse: true`.
+   * `supportsPermissions: true`, `supportsUserResponse: true`, and `supportsUserQuestions: true`.
    */
   async dialClient(customSocketPath?: string): Promise<RayucodeClient> {
     const socketPath = customSocketPath ?? this.getConfiguredSocketPath();
@@ -202,6 +213,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
       clientName: "rayucode-vscode/3.0.0",
       supportsUserResponse: true,
       supportsPermissions: true,
+      supportsUserQuestions: true,
       requestTimeoutMs: 15_000,
     });
   }
@@ -226,6 +238,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
       try {
         return await this.connectAndAttach(socketPath);
       } catch (initialError) {
+        let missingBinaryError: Error | null = null;
         if (this.isAutoStartEnabled()) {
           const binary = resolveRayuBinary({
             configuredPath: this.getConfiguredBinaryPath(),
@@ -236,15 +249,22 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
             await this.spawnBridgeIdempotent(binary, socketPath);
             return await this.connectAndAttach(socketPath);
           }
+          const helpMessage =
+            "RayuCode CLI (`rayu`) was not found on this machine. Install the RayuCode CLI (https://rayucode.com) or set `rayucode.binaryPath` in VS Code Settings.";
+          this.log(helpMessage);
+          missingBinaryError = new Error(helpMessage);
         }
+        const effectiveError = missingBinaryError ?? initialError;
         const message =
-          initialError instanceof Error ? initialError.message : String(initialError);
+          effectiveError instanceof Error
+            ? effectiveError.message
+            : String(effectiveError);
         this.updateStatus({
           state: "disconnected",
           socketPath,
           error: message,
         });
-        throw initialError;
+        throw effectiveError;
       } finally {
         this.connectingPromise = null;
       }
@@ -320,10 +340,39 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
       let lockFd: number | undefined;
       try {
         fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-        try {
-          lockFd = fs.openSync(lockPath, "wx", 0o600);
-          fs.writeFileSync(lockFd, String(process.pid));
-        } catch {
+        const acquireLock = (): number | undefined => {
+          try {
+            const fd = fs.openSync(lockPath, "wx", 0o600);
+            fs.writeFileSync(fd, String(process.pid));
+            return fd;
+          } catch (err) {
+            const code = (err as NodeJS.ErrnoException | undefined)?.code;
+            if (code !== "EEXIST") throw err;
+            // Reclaim stale lock if the owning PID is no longer alive (or lock is ancient)
+            try {
+              const rawPid = fs.readFileSync(lockPath, "utf8").trim();
+              const holderPid = Number.parseInt(rawPid, 10);
+              const stat = fs.statSync(lockPath);
+              const ageMs = Date.now() - stat.mtimeMs;
+              const stale =
+                (Number.isInteger(holderPid) && holderPid > 0 && !isProcessAlive(holderPid)) ||
+                (!Number.isInteger(holderPid) && ageMs > 20_000) ||
+                ageMs > 60_000;
+              if (stale) {
+                fs.unlinkSync(lockPath);
+                const fd = fs.openSync(lockPath, "wx", 0o600);
+                fs.writeFileSync(fd, String(process.pid));
+                return fd;
+              }
+            } catch {
+              // Lock disappeared or raced with another window; fall through to waiting
+            }
+            return undefined;
+          }
+        };
+
+        lockFd = acquireLock();
+        if (lockFd === undefined) {
           // Another VS Code window is already spawning the bridge; wait for socket
           this.log(`Waiting for another process holding ${lockPath} to start api-bridge...`);
           await this.waitForSocketConnectable(socketPath, 12_000);
@@ -347,6 +396,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
 
         const cwd = this.getWorkspacePaths()[0] ?? os.homedir();
         this.log(`Spawning bridge: ${binary} --no-update api-bridge --api-socket ${socketPath}`);
+        let childExitedError: Error | null = null;
         const child = spawn(
           binary,
           ["--no-update", "api-bridge", "--api-socket", socketPath],
@@ -357,29 +407,28 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
               RAYU_API_SOCKET: socketPath,
               RAYU_NO_AUTO_UPDATE: "1",
             },
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: false,
+            stdio: "ignore",
+            detached: true,
           },
         );
+        child.unref();
         this.bridgeProcess = child;
 
-        child.stdout?.on("data", (chunk: Buffer) => {
-          this.log(`[bridge:stdout] ${chunk.toString().trimEnd()}`);
-        });
-        child.stderr?.on("data", (chunk: Buffer) => {
-          this.log(`[bridge:stderr] ${chunk.toString().trimEnd()}`);
-        });
         child.once("exit", (code, signal) => {
           this.log(`Bridge process exited (code=${code}, signal=${signal})`);
+          childExitedError = new Error(
+            `Rayu api-bridge exited before socket became ready (code=${code}, signal=${signal})`,
+          );
           if (this.bridgeProcess === child) {
             this.bridgeProcess = null;
           }
         });
         child.once("error", (err) => {
           this.log(`Bridge spawn error: ${err.message}`);
+          childExitedError = err;
         });
 
-        await this.waitForSocketConnectable(socketPath, 15_000);
+        await this.waitForSocketConnectable(socketPath, 15_000, () => childExitedError);
       } finally {
         if (lockFd !== undefined) {
           try {
@@ -400,10 +449,18 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     return this.spawningPromise;
   }
 
-  private async waitForSocketConnectable(socketPath: string, timeoutMs: number): Promise<void> {
+  private async waitForSocketConnectable(
+    socketPath: string,
+    timeoutMs: number,
+    getEarlyError?: () => Error | null,
+  ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     let lastError: unknown;
     while (Date.now() < deadline) {
+      const earlyErr = getEarlyError?.();
+      if (earlyErr) {
+        throw earlyErr;
+      }
       if (process.platform === "win32" || fs.existsSync(socketPath)) {
         try {
           const probe = await this.dialClient(socketPath);
@@ -462,6 +519,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     this.reconnectAttempts = 0;
     const current = this.client;
     this.client = null;
+    this.emit("disconnected", "Reconnecting to Rayu bridge");
     if (current) {
       await current.close().catch(() => {});
     }
@@ -514,6 +572,7 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     this.reconnectAttempts = 0;
     const current = this.client;
     this.client = null;
+    this.emit("disconnected", "Restarting Rayu bridge");
     if (current) {
       await current.close().catch(() => {});
     }
@@ -530,10 +589,13 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     return this.getStatus();
   }
 
-  async reloadDaemon(activeSessionId?: string): Promise<{ ok: boolean; message?: string }> {
+  async reloadDaemon(
+    activeSessionId?: string,
+    attachedClient?: RayucodeClient,
+  ): Promise<{ ok: boolean; message?: string }> {
     try {
-      const client = await this.ensureConnected();
       if (activeSessionId) {
+        const client = attachedClient ?? (await this.ensureConnected());
         const res = await client.runtimeCommand(activeSessionId, "server_reload", []);
         return { ok: true, message: res.message || "Daemon reloaded." };
       }
@@ -553,14 +615,9 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     const current = this.client;
     this.client = null;
     void current?.close();
-    if (this.bridgeProcess) {
-      try {
-        this.bridgeProcess.kill("SIGTERM");
-      } catch {
-        // ignore
-      }
-      this.bridgeProcess = null;
-    }
+    // Do NOT SIGTERM the detached shared api-bridge on window dispose:
+    // other VS Code windows and RayuCode Desktop share the same socket.
+    this.bridgeProcess = null;
     this.outputChannel.dispose();
   }
 }

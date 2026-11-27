@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.0.0
+
+### Added
+
+- **Native Rust Engine Architecture (`rayu api-bridge`, Harness API v1.14):** Rebuilt the VS Code extension host and React 19 + Tailwind CSS v4 webview to connect directly to the `rayucode-v2` Rust daemon with auto-discovery and lockfile-guarded auto-start.
+- **Dual Form-Factor Workbench Placement:** Dedicated Secondary Sidebar container (`rayucode.chat`), live RayuCode Fox button in the Editor Tab Bar, full Mission Control editor panel (`rayucode.workspace`), Explorer/Editor/Terminal/SCM context menus, and Diagnostic Quick Fixes.
+- **Agents & Personas Studio (`rayucode.openAgents`):** Dedicated page to configure the default subagent model (`/subagent-model`), per-role model/persona routing (`swarm`, `review`, `judge`, `memory`, `ambient`) in Global or Session scope, and full `[[agents.profiles]]` CRUD with live `~/.rayu/config.toml` preview.
+- **Real Telegram Remote Control:** Backed end-to-end by the Rust daemon with scannable ISO QR pairing for Rayu Hosted Bot, custom `@BotFather` token verification (direct chat link or 10-minute QR pairing), live session switcher, test ping, real-time pending tool approvals, and remote `/uninstall` guardrail.
+- **Mid-Turn Queue & Steer:** Send messages while the assistant is streaming using live **Steer** (soft-interrupt without cancelling the turn) or **Queue** (auto-dispatch on turn completion).
+- **Session-Scoped Background Processes, Swarm Mission Control, Automations, Plugins/MCP/Skills & Changes Review:** Full visual mission control synced with the local Rust engine and native VS Code diffs/terminals.
+
+### Fixed
+
+- Unified provider authentication and live model catalog discovery so authenticated providers immediately expose their models in the composer picker and settings.
+- Scoped the Background Processes viewer strictly to the active chat session.
+- Hardened external link and Simple Browser URI handling to strictly allow safe HTTP/HTTPS/mailto schemes.
+- Replaced placeholder daemon version/latency/PID fallbacks in Runtime Doctor with truthful live status telemetry.
+
 ## 2.4.1
 
 ### Added

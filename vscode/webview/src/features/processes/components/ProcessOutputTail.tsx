@@ -7,7 +7,6 @@ import {
   RefreshCw,
   Search,
   Square,
-  Terminal,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -118,7 +117,6 @@ export interface ProcessOutputTailProps {
   onRefresh: () => void;
   onCopy: (text: string) => void;
   onOpenFile: (filePath: string) => void;
-  onOpenTerminal: (name?: string) => void;
   onStop: (taskId: string) => void;
 }
 
@@ -133,7 +131,6 @@ export function ProcessOutputTail({
   onRefresh,
   onCopy,
   onOpenFile,
-  onOpenTerminal,
   onStop,
 }: ProcessOutputTailProps) {
   const [searchTerm, setSearchTerm] = React.useState<string>("");
@@ -313,18 +310,6 @@ export function ProcessOutputTail({
           >
             <ExternalLink className="size-3" />
             <span>Open Output File in VS Code</span>
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            data-testid="output-open-terminal-button"
-            onClick={() => onOpenTerminal(task.displayName || task.toolName)}
-            title="Open VS Code Integrated Terminal"
-          >
-            <Terminal className="size-3" />
-            <span>Open Terminal</span>
           </Button>
 
           {active && (

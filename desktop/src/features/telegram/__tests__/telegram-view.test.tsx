@@ -338,9 +338,6 @@ describe("TelegramView", () => {
     expect(screen.getByTestId("tg-byo-token-error")).toHaveTextContent(
       "Enter a valid @BotFather token"
     )
-    expect(screen.getByTestId("tg-byo-chat-id-error")).toHaveTextContent(
-      "Enter an allowed Telegram chat ID"
-    )
     expect(ipcClient.telegram.connectBotToken).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByTestId("tg-byo-token-input"), {
@@ -355,7 +352,7 @@ describe("TelegramView", () => {
       screen.queryByTestId("tg-byo-token-error")
     ).not.toBeInTheDocument()
     expect(screen.getByTestId("tg-byo-chat-id-error")).toHaveTextContent(
-      "Allowed chat ID must be a numeric Telegram ID"
+      "Allowed chat ID must be a positive numeric Telegram ID"
     )
     expect(ipcClient.telegram.connectBotToken).not.toHaveBeenCalled()
 
@@ -368,6 +365,7 @@ describe("TelegramView", () => {
       expect(ipcClient.telegram.connectBotToken).toHaveBeenCalledWith({
         botToken: "123456789:AAF_ValidTelegramBotToken1234567",
         allowedChatId: "718492031",
+        replaceExisting: true,
       })
     })
 
@@ -424,13 +422,15 @@ describe("TelegramView", () => {
     const commandsGrid = screen.getByTestId("tg-commands-grid")
     for (const cmd of [
       "/sessions",
+      "/switch",
       "/status",
-      "/approve",
-      "/deny",
-      "/swarm",
-      "/diff",
-      "/cancel",
-      "/uninstall-remote",
+      "/model",
+      "/provider",
+      "/connect",
+      "/interrupt",
+      "/answer",
+      "/stop",
+      "/uninstall",
     ]) {
       expect(within(commandsGrid).getByText(cmd)).toBeInTheDocument()
     }

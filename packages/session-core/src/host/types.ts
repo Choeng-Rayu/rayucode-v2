@@ -66,6 +66,7 @@ export interface SessionClientLike {
   on(event: "event", listener: (frame: HarnessFrameLike) => void): unknown;
   on(event: "error", listener: (err: unknown) => void): unknown;
   once(event: "close", listener: () => void): unknown;
+  detachSession?(sessionId: string): Promise<unknown>;
   close(): void;
 }
 

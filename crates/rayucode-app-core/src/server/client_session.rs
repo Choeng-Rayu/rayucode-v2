@@ -557,11 +557,17 @@ fn apply_or_defer_subscribe_working_dir(
         return;
     }
 
-    let agent = Arc::clone(agent);
+    let agent = Arc::downgrade(agent);
     let working_dir = working_dir.to_string();
     let session_id = session_id.to_string();
     crate::runtime_activity::spawn(async move {
-        let mut agent_guard = agent.lock().await;
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
+        let mut agent_guard = agent_arc.lock().await;
+        if Arc::strong_count(&agent_arc) == 1 {
+            return;
+        }
         match subscribe_working_dir_replacement(
             agent_guard.working_dir(),
             &working_dir,
@@ -593,10 +599,16 @@ fn apply_or_defer_subscribe_selfdev(agent: &Arc<Mutex<Agent>>, session_id: &str)
         return;
     }
 
-    let agent = Arc::clone(agent);
+    let agent = Arc::downgrade(agent);
     let session_id = session_id.to_string();
     crate::runtime_activity::spawn(async move {
-        let mut agent_guard = agent.lock().await;
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
+        let mut agent_guard = agent_arc.lock().await;
+        if Arc::strong_count(&agent_arc) == 1 {
+            return;
+        }
         if !agent_guard.is_canary() {
             agent_guard.set_canary("self-dev");
         }
@@ -619,11 +631,16 @@ pub(super) async fn apply_or_defer_desktop_response_capability(
             .await;
         return;
     }
-    let agent = Arc::clone(agent);
+    let agent = Arc::downgrade(agent);
     crate::runtime_activity::spawn(async move {
-        agent
-            .lock()
-            .await
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
+        let mut guard = agent_arc.lock().await;
+        if Arc::strong_count(&agent_arc) == 1 {
+            return;
+        }
+        guard
             .set_desktop_response_capability(supports_user_response)
             .await;
     });
@@ -2084,9 +2101,15 @@ pub(super) async fn handle_resume_session_with_switch_hook(
             .await;
             // Persist even if history delivery failed, but do not make inbound
             // controls wait for a recovery turn that already owns the agent.
-            let persist_agent = Arc::clone(agent);
+            let persist_agent = Arc::downgrade(agent);
             crate::runtime_activity::spawn(async move {
-                let mut guard = persist_agent.lock().await;
+                let Some(agent_arc) = persist_agent.upgrade() else {
+                    return;
+                };
+                let mut guard = agent_arc.lock().await;
+                if Arc::strong_count(&agent_arc) == 1 {
+                    return;
+                }
                 super::run_blocking_io(|| guard.persist_restored_session());
             });
             history_result?;

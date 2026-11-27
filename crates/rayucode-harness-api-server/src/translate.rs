@@ -241,6 +241,10 @@ pub struct BridgeState {
 }
 
 impl BridgeState {
+    pub(crate) fn is_attached(&self) -> bool {
+        self.session_id.is_some()
+    }
+
     pub fn with_crash_on_disconnect(crash_on_disconnect: bool) -> Self {
         Self {
             crash_on_disconnect,
@@ -806,7 +810,7 @@ impl BridgeState {
             }
             "clear" => {
                 let id = self.legacy_id();
-                self.pending_simple.push((id, api_id, SimpleKind::OkOnDone));
+                self.pending_simple.push((id, api_id, SimpleKind::Clear));
                 vec![Outbound::Legacy(json!({"type": "clear", "id": id}))]
             }
             "rewind" => {
@@ -877,11 +881,13 @@ impl BridgeState {
                 let limit = request["limit"].as_u64().map(|limit| limit as usize);
                 let mut ids: BTreeSet<String> =
                     Self::stored_session_ids(limit).into_iter().collect();
-                if limit.is_some() {
+                let saved_ids: Vec<String> = if limit.is_some() {
                     // Bookmarks are how users find old work, so a recency
                     // limit must never hide them from pickers.
-                    ids.extend(Self::saved_session_ids());
-                }
+                    Self::saved_session_ids()
+                } else {
+                    Vec::new()
+                };
                 let ids_loaded = list_started.elapsed();
                 ids.extend(self.known_sessions.iter().cloned());
                 if let Some(attached) = self.session_id.clone() {
@@ -894,6 +900,10 @@ impl BridgeState {
                     });
                     recent.truncate(limit);
                     ids = recent.into_iter().collect();
+                    ids.extend(saved_ids);
+                    if let Some(attached) = self.session_id.clone() {
+                        ids.insert(attached);
+                    }
                 }
                 // Connected user clients must remain discoverable even when
                 // their idle session is older than the persisted recency page.
@@ -2203,8 +2213,15 @@ impl BridgeState {
                 }
                 if self.pending_control_done_ids.contains(&id)
                     || self.pending_simple.iter().any(|(pending_id, _, kind)| {
-                        *pending_id == id && *kind == SimpleKind::OkOnDone
+                        *pending_id == id
+                            && matches!(kind, SimpleKind::OkOnDone | SimpleKind::Clear)
                     })
+                    || self
+                        .pending_fork_id
+                        .is_some_and(|(legacy_id, _)| legacy_id == id)
+                    || self
+                        .pending_no_reply_message_id
+                        .is_some_and(|(legacy_id, _)| legacy_id == id)
                     || self.pending_attach_subscribe_id == Some(id)
                     || self
                         .pending_attach_id
@@ -2419,13 +2436,22 @@ impl BridgeState {
 
             "session" => {
                 let session_id = event["session_id"].as_str().unwrap_or("").to_string();
-                // `session` is a broadcast lifecycle notification. The daemon
-                // sends it for other live sessions too, so it cannot identify
-                // which session this connection is attached to. Attachment
-                // identity comes from the correlated `state` reply below.
-                // Treating this broadcast as connection state made a panel for
-                // session A start rejecting its own commands after session B
-                // announced itself.
+                // `session` is a broadcast lifecycle notification for other live
+                // sessions, EXCEPT when this connection has an in-flight `clear`
+                // rotation (`SimpleKind::Clear`), where the daemon allocates a
+                // fresh session id and binds this connection to it before `done`.
+                if !session_id.is_empty()
+                    && self
+                        .pending_simple
+                        .iter()
+                        .any(|(_, _, kind)| *kind == SimpleKind::Clear)
+                {
+                    self.session_id = Some(session_id.clone());
+                    if !self.known_sessions.contains(&session_id) {
+                        self.known_sessions.push(session_id.clone());
+                    }
+                    self.turn_fence.reset_for_session(&session_id);
+                }
                 vec![ServerFrame::event(ApiEvent::SessionStatus {
                     session_id,
                     status: "attached".into(),
@@ -2834,13 +2860,17 @@ impl BridgeState {
             })],
             "done" => {
                 let id = event["id"].as_u64().unwrap_or(0);
-                if let Some(api_id) = self.take_simple(id, SimpleKind::OkOnDone) {
+                if let Some(api_id) = self
+                    .take_simple(id, SimpleKind::OkOnDone)
+                    .or_else(|| self.take_simple(id, SimpleKind::Clear))
+                {
                     self.pending_control_done_ids.remove(&id);
                     return vec![ServerFrame::reply(api_id, ApiEvent::Ok)];
                 }
                 if let Some(api_id) = self.take_simple(id, SimpleKind::Detach) {
                     self.pending_control_done_ids.remove(&id);
                     self.session_id = None;
+                    self.turn_fence.reset_for_session("");
                     self.turn_stop_reported = false;
                     self.observed_turn_active = false;
                     self.text_message_id = None;
@@ -2945,13 +2975,13 @@ impl BridgeState {
             }
             "split_response" => {
                 let id = event["id"].as_u64().unwrap_or(0);
-                let Some((_, api_id)) = self
+                if !self
                     .pending_fork_id
-                    .take()
-                    .filter(|(legacy_id, _)| *legacy_id == id)
-                else {
+                    .is_some_and(|(legacy_id, _)| legacy_id == id)
+                {
                     return vec![];
-                };
+                }
+                let (_, api_id) = self.pending_fork_id.take().unwrap();
                 let session_id = event["new_session_id"]
                     .as_str()
                     .unwrap_or_default()
@@ -3650,13 +3680,29 @@ impl BridgeState {
         }
     }
 
+    fn canonical_provider_identity(provider: &str) -> String {
+        let normalized = provider.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "claude" | "anthropic" => "anthropic".to_string(),
+            "openai" | "codex" => "openai".to_string(),
+            _ => normalized,
+        }
+    }
+
     fn note_provider(&mut self, provider: &str) {
-        if self.current_provider.as_deref() != Some(provider) {
+        let trimmed = provider.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Some(previous) = self.current_provider.as_deref()
+            && Self::canonical_provider_identity(previous)
+                != Self::canonical_provider_identity(trimmed)
+        {
             // Effort is provider-specific. ModelChanged and auth pushes can
             // omit it, so never carry the previous provider's setting across.
             self.current_effort = None;
         }
-        self.current_provider = Some(provider.to_string());
+        self.current_provider = Some(trimmed.to_string());
     }
 
     /// Remember the credential the daemon resolved, when the event says.

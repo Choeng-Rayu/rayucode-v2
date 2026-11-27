@@ -404,8 +404,20 @@ fn live_feature_flags() -> Vec<FeatureFlagDescriptor> {
 /// Populate `supported_efforts` (minus TUI-only `swarm*` sentinels), `default_effort`,
 /// and `context_window` on a `ModelRouteInfo` using the shared Rust provider metadata.
 pub fn enrich_model_route(route: &mut ModelRouteInfo) {
+    let provider_hint = if route.provider.trim().is_empty()
+        || route.provider.trim().eq_ignore_ascii_case("auto")
+    {
+        if route.api_method.trim().is_empty() {
+            route.provider.as_str()
+        } else {
+            route.api_method.as_str()
+        }
+    } else {
+        route.provider.as_str()
+    };
+
     let efforts: Vec<String> = rayucode_provider_core::inferred_reasoning_efforts(
-        Some(route.provider.as_str()),
+        Some(provider_hint),
         Some(route.model.as_str()),
     )
     .into_iter()
@@ -417,18 +429,42 @@ pub fn enrich_model_route(route: &mut ModelRouteInfo) {
         None
     } else {
         let cfg = rayucode_base::config::config();
-        let lower_provider = route.provider.to_ascii_lowercase();
-        let lower_model = route.model.to_ascii_lowercase();
-        let configured = if lower_provider.contains("anthropic")
-            || lower_provider.contains("claude")
-            || lower_model.starts_with("claude-")
-        {
+        let lower_provider = provider_hint.trim().to_ascii_lowercase();
+        let lower_model = route.model.trim().to_ascii_lowercase();
+
+        let is_rayu = lower_provider.contains("rayu");
+        let is_openrouter_or_compat = lower_provider.contains("openrouter")
+            || lower_provider.contains("deepseek")
+            || lower_provider.contains("copilot")
+            || lower_provider.contains("openai-compatible")
+            || lower_provider.contains("z.ai")
+            || lower_provider == "zai";
+        let is_anthropic = !is_rayu
+            && !is_openrouter_or_compat
+            && (lower_provider.contains("anthropic")
+                || lower_provider.contains("claude")
+                || (lower_provider.is_empty() && lower_model.starts_with("claude-")));
+        let is_openai = !is_rayu
+            && !is_openrouter_or_compat
+            && (lower_provider.contains("openai")
+                || lower_provider.contains("codex")
+                || (lower_provider.is_empty()
+                    && (lower_model.starts_with("gpt-")
+                        || lower_model.starts_with("o1")
+                        || lower_model.starts_with("o3")
+                        || lower_model.starts_with("o4")
+                        || lower_model.starts_with("o5"))));
+
+        let configured = if is_anthropic {
             cfg.provider.anthropic_reasoning_effort.as_deref()
-        } else if lower_provider.contains("openai") || lower_provider.contains("codex") {
+        } else if is_openai {
             cfg.provider.openai_reasoning_effort.as_deref()
         } else {
             None
         };
+
+        let prefer_low_default = is_rayu || is_anthropic || is_openai;
+
         configured
             .and_then(|value| {
                 efforts
@@ -437,16 +473,17 @@ pub fn enrich_model_route(route: &mut ModelRouteInfo) {
                     .cloned()
             })
             .or_else(|| {
-                efforts
-                    .iter()
-                    .find(|candidate| candidate.as_str() == "medium")
-                    .cloned()
-            })
-            .or_else(|| {
-                efforts
-                    .iter()
-                    .find(|candidate| candidate.as_str() == "low")
-                    .cloned()
+                let order: &[&str] = if prefer_low_default {
+                    &["low", "medium"]
+                } else {
+                    &["medium", "low"]
+                };
+                order.iter().find_map(|target| {
+                    efforts
+                        .iter()
+                        .find(|candidate| candidate.as_str() == *target)
+                        .cloned()
+                })
             })
             .or_else(|| efforts.first().cloned())
     };
@@ -530,4 +567,140 @@ pub fn classify_daemon_error(message: &str, default: ErrorCode) -> ErrorCode {
         return ErrorCode::Unsupported;
     }
     default
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    struct RayuHomeGuard(Option<OsString>);
+
+    impl Drop for RayuHomeGuard {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => unsafe { std::env::set_var("RAYU_HOME", value) },
+                None => unsafe { std::env::remove_var("RAYU_HOME") },
+            }
+            rayucode_base::config::Config::invalidate_cache();
+        }
+    }
+
+    fn route(provider: &str, model: &str, api_method: &str) -> ModelRouteInfo {
+        ModelRouteInfo {
+            model: model.to_string(),
+            provider: provider.to_string(),
+            api_method: api_method.to_string(),
+            available: true,
+            detail: String::new(),
+            usage: None,
+            supported_efforts: Vec::new(),
+            default_effort: None,
+            context_window: None,
+        }
+    }
+
+    #[test]
+    fn enrich_model_route_resolves_supported_efforts_and_defaults_across_providers() {
+        let _lock = crate::translate::rayu_home_test_lock();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = RayuHomeGuard(std::env::var_os("RAYU_HOME"));
+        unsafe { std::env::set_var("RAYU_HOME", home.path()) };
+        rayucode_base::config::Config::invalidate_cache();
+
+        // Anthropic Opus 4.7: full ladder minus swarm, default "low"
+        let mut opus = route("Anthropic", "claude-opus-4-7", "claude-oauth");
+        enrich_model_route(&mut opus);
+        assert_eq!(
+            opus.supported_efforts,
+            vec!["none", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(opus.default_effort.as_deref(), Some("low"));
+
+        // Anthropic Haiku 4.5: no reasoning effort
+        let mut haiku = route("Anthropic", "claude-haiku-4-5", "claude-oauth");
+        enrich_model_route(&mut haiku);
+        assert!(haiku.supported_efforts.is_empty());
+        assert_eq!(haiku.default_effort, None);
+
+        // OpenAI standard + Pro models
+        let mut gpt54 = route("OpenAI", "gpt-5.4", "openai-oauth");
+        enrich_model_route(&mut gpt54);
+        assert_eq!(
+            gpt54.supported_efforts,
+            vec!["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(gpt54.default_effort.as_deref(), Some("low"));
+
+        let mut gpt5_pro = route("OpenAI", "gpt-5-pro", "openai-api-key");
+        enrich_model_route(&mut gpt5_pro);
+        assert_eq!(gpt5_pro.supported_efforts, vec!["high"]);
+        assert_eq!(gpt5_pro.default_effort.as_deref(), Some("high"));
+
+        let mut gpt54_pro = route("OpenAI", "gpt-5.4-pro", "openai-api-key");
+        enrich_model_route(&mut gpt54_pro);
+        assert_eq!(gpt54_pro.supported_efforts, vec!["medium", "high", "xhigh"]);
+        assert_eq!(gpt54_pro.default_effort.as_deref(), Some("medium"));
+
+        // Rayu hosted routes default to "low" regardless of upstream model family
+        for model in ["claude-opus-4-7", "gpt-5.4"] {
+            let mut rayu = route("Rayu", model, "rayu");
+            enrich_model_route(&mut rayu);
+            assert_eq!(
+                rayu.supported_efforts,
+                vec!["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            );
+            assert_eq!(rayu.default_effort.as_deref(), Some("low"));
+        }
+
+        // OpenRouter, DeepSeek, Copilot resolve medium / low / first
+        let mut openrouter = route("OpenRouter", "anthropic/claude-opus-4-7", "openrouter");
+        enrich_model_route(&mut openrouter);
+        assert_eq!(
+            openrouter.supported_efforts,
+            vec!["none", "minimal", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(openrouter.default_effort.as_deref(), Some("medium"));
+
+        let mut openrouter_auto = route("auto", "anthropic/claude-opus-4-7", "openrouter");
+        enrich_model_route(&mut openrouter_auto);
+        assert_eq!(
+            openrouter_auto.supported_efforts,
+            vec!["none", "minimal", "low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(openrouter_auto.default_effort.as_deref(), Some("medium"));
+
+        let mut deepseek = route("DeepSeek", "deepseek-reasoner", "openai-compatible:deepseek");
+        enrich_model_route(&mut deepseek);
+        assert_eq!(
+            deepseek.supported_efforts,
+            vec!["none", "low", "medium", "high", "max"]
+        );
+        assert_eq!(deepseek.default_effort.as_deref(), Some("medium"));
+
+        let mut copilot_claude = route("Copilot", "claude-opus-4-7", "copilot");
+        enrich_model_route(&mut copilot_claude);
+        assert_eq!(
+            copilot_claude.supported_efforts,
+            vec!["none", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(copilot_claude.default_effort.as_deref(), Some("medium"));
+
+        // Non-effort providers never advertise supported_efforts or default_effort
+        for (provider, model, api_method) in [
+            ("Cursor", "claude-opus-4-7", "cursor"),
+            ("Antigravity", "gpt-5.4", "antigravity"),
+            ("AWS Bedrock", "claude-opus-4-7", "bedrock"),
+            ("Gemini", "gemini-2.5-pro", "code-assist-oauth"),
+            ("Grok Build", "grok-4", "grok-build"),
+        ] {
+            let mut non_effort = route(provider, model, api_method);
+            enrich_model_route(&mut non_effort);
+            assert!(
+                non_effort.supported_efforts.is_empty(),
+                "non-effort provider `{provider}` must not advertise efforts"
+            );
+            assert_eq!(non_effort.default_effort, None);
+        }
+    }
 }

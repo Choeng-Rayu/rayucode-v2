@@ -48,16 +48,12 @@ function enumVariants(file: string, enumName: string): string[] {
 }
 
 test("request tags match the Rust ApiRequest enum", () => {
-  const rust = enumVariants("requests.rs", "ApiRequest")
-    .filter((tag) => tag !== "question_response")
-    .sort();
+  const rust = enumVariants("requests.rs", "ApiRequest").sort();
   assert.deepEqual([...KNOWN_REQUEST_KINDS].sort(), rust);
 });
 
 test("event tags match the Rust ApiEvent enum", () => {
-  const rust = enumVariants("events.rs", "ApiEvent")
-    .filter((tag) => tag !== "question_request" && tag !== "question_closed")
-    .sort();
+  const rust = enumVariants("events.rs", "ApiEvent").sort();
   assert.deepEqual([...KNOWN_EVENT_KINDS].sort(), rust);
 });
 

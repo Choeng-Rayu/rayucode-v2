@@ -1,4 +1,5 @@
 import * as React from "react"
+import { extractTodosFromHarnessFrame } from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { AppProviders } from "@/components/providers/app-providers"
@@ -6,6 +7,7 @@ import { AppShell } from "@/components/shell/AppShell"
 import { AuthSignInDialog } from "@/components/shell/AuthSignInDialog"
 import { AuthWelcomeScreen } from "@/components/shell/AuthWelcomeScreen"
 import {
+  AgentsSkeleton,
   AutomationsSkeleton,
   ChangesSkeleton,
   ChatSkeleton,
@@ -30,6 +32,9 @@ import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
 import { normalizeFileChangesSnapshot } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 
+const AgentsView = React.lazy(() =>
+  import("@/features/agents").then((m) => ({ default: m.AgentsView }))
+)
 const AutomationsView = React.lazy(() =>
   import("@/features/automations").then((m) => ({ default: m.AutomationsView }))
 )
@@ -87,13 +92,16 @@ function ActiveWorkspaceStage() {
         targetSessionId = created.id
         useAppStore.getState().setActiveSession(created.id, created.title)
         void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+        void queryClient.invalidateQueries({ queryKey: ["models"] })
       }
+      ipcClient.harness.stagePromptEffort(targetSessionId, payload.effort)
       useAppStore.getState().setPendingStreamPrompt({
         sessionId: targetSessionId,
         prompt: payload.prompt,
         images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
+        effort: payload.effort,
         startedAtMs: Date.now(),
       })
     },
@@ -154,6 +162,14 @@ function ActiveRouteCanvas() {
           </React.Suspense>
         </SectionErrorBoundary>
       )
+    case "agents":
+      return (
+        <SectionErrorBoundary title="Agents & Personas view failed to render">
+          <React.Suspense fallback={<AgentsSkeleton />}>
+            <AgentsView />
+          </React.Suspense>
+        </SectionErrorBoundary>
+      )
     case "automations":
       return (
         <SectionErrorBoundary title="Automations view failed to render">
@@ -201,6 +217,7 @@ function AuthQuerySync() {
   const queryClient = useQueryClient()
   const authState = useAppStore((s) => s.authState)
   const daemonMode = useAppStore((s) => s.daemonMode)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
   const signedIn = authState?.signedIn ?? false
   const method = authState?.method ?? "none"
   const remainingCredits = authState?.credits?.remainingCredits ?? null
@@ -218,6 +235,11 @@ function AuthQuerySync() {
     allowedModelsCount,
     daemonMode,
   ])
+
+  React.useEffect(() => {
+    if (!activeSessionId || activeSessionId.startsWith("ses_")) return
+    void queryClient.invalidateQueries({ queryKey: ["models"] })
+  }, [queryClient, activeSessionId, daemonMode])
 
   return null
 }
@@ -280,6 +302,16 @@ export function App() {
             .getState()
             .setSessionFileChanges(snapshot.session_id, snapshot)
         }
+      } else if (frame.ev === "todo_state") {
+        const todoUpdate = extractTodosFromHarnessFrame(
+          frame,
+          useAppStore.getState().activeSessionId ?? undefined
+        )
+        if (todoUpdate) {
+          useAppStore
+            .getState()
+            .setSessionTodos(todoUpdate.sessionId, todoUpdate.todos)
+        }
       } else if (frame.ev === "token_usage") {
         const sid = typeof frame.session_id === "string" ? frame.session_id : ""
         if (sid) {
@@ -320,6 +352,7 @@ export function App() {
           if (model) {
             ipcClient.harness.recordSyncedModel(sid, model, provider)
           }
+          ipcClient.harness.recordSyncedEffort(sid, reasoningEffort)
         }
       } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
         useAppStore.getState().setPendingPermission(null)

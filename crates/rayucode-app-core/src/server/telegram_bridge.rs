@@ -146,8 +146,14 @@ impl Bridge {
             tokio::select! {
                 result = &mut polling => return result,
                 _ = clock.tick() => {
-                    if !telegram_remote::load()?.is_some_and(|link| link.generation == generation && !link.expired() && link.active_account()) {
+                    let Some(latest) = telegram_remote::load()?.filter(|link| {
+                        link.generation == generation && !link.expired() && link.active_account()
+                    }) else {
                         return Ok(());
+                    };
+                    if self.link.selected != latest.selected {
+                        self.link.selected = latest.selected;
+                        self.model_choices.clear();
                     }
                     if self.album_at.is_some_and(|at| at.elapsed() >= Duration::from_millis(900)) {
                         self.finish_album().await?;

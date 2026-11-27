@@ -98,4 +98,10 @@ impl TurnFence {
             self.completed = self.completed.max(id);
         }
     }
+    pub(super) fn reset_for_session(&mut self, session_id: &str) {
+        *self = Self::default();
+        if !session_id.is_empty() {
+            self.session_id = Some(session_id.to_string());
+        }
+    }
 }

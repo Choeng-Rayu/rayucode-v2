@@ -218,7 +218,7 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
     });
   });
 
-  it("loads live output tail on selection and dispatches rayucode.editor.openFile and rayucode.editor.openTerminal", async () => {
+  it("loads live output tail on selection and dispatches rayucode.editor.openFile without rendering Open Terminal", async () => {
     const postSpy = vi.spyOn(rpcClient, "postToHost");
     const rpcSpy = vi.spyOn(rpcClient, "callRpc");
 
@@ -249,12 +249,7 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
       preview: false,
     });
 
-    fireEvent.click(screen.getByTestId("output-open-terminal-button"));
-    expect(postSpy).toHaveBeenCalledWith({
-      type: "rayucode.editor.openTerminal",
-      cwd: undefined,
-      name: "cargo test -p rayu-harness",
-    });
+    expect(screen.queryByTestId("output-open-terminal-button")).toBeNull();
   });
 
   it("executes background.cancel and background.cleanup RPC mutations and Alt+B foreground handoff", async () => {
@@ -284,7 +279,9 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
     // Clean finished tasks
     fireEvent.click(screen.getByTestId("drawer-cleanup-button"));
     await waitFor(() => {
-      expect(rpcSpy).toHaveBeenCalledWith("background.cleanup", undefined);
+      expect(rpcSpy).toHaveBeenCalledWith("background.cleanup", {
+        sessionId: "ses_vscode_shell",
+      });
     });
 
     await waitFor(() => {
@@ -299,6 +296,98 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
       expect(rpcSpy).toHaveBeenCalledWith("background.backgroundTool", {
         sessionId: "ses_vscode_shell",
       });
+    });
+  });
+
+  it("strictly scopes BackgroundDockBar and BackgroundProcessDrawer to the active session and prunes on session switch", async () => {
+    const foreignTask: BackgroundProcessView = {
+      taskId: "bg_other_session",
+      sessionId: "ses_other",
+      group: "shells",
+      toolName: "run_command",
+      displayName: "cargo build --release (other session)",
+      status: "running",
+      progressKind: "indeterminate",
+      summary: "Compiling in another session",
+      startedAtMs: NOW - 15_000,
+      updatedAtMs: NOW - 1_000,
+    };
+
+    useAppStore.setState({
+      activeSessionId: "ses_vscode_shell",
+      backgroundTasks: [SAMPLE_TASKS[0], foreignTask],
+      backgroundDrawerOpen: true,
+    });
+
+    render(
+      <div>
+        <BackgroundDockBar />
+        <BackgroundProcessDrawer />
+      </div>,
+    );
+
+    // Scope badge visible, active session task visible, foreign task hidden
+    expect(screen.getByTestId("drawer-session-scope-badge").textContent).toBe(
+      "Current session",
+    );
+    expect(screen.getByTestId("process-row-bg_cargo_test")).toBeTruthy();
+    expect(screen.queryByTestId("process-row-bg_other_session")).toBeNull();
+    expect(screen.getByTestId("dock-active-count").textContent).toBe(
+      "1 running",
+    );
+
+    // Foreign snapshot pushed for another session is ignored
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.processes.snapshot",
+        sessionId: "ses_other",
+        tasks: [foreignTask],
+      });
+    });
+    expect(screen.getByTestId("process-row-bg_cargo_test")).toBeTruthy();
+    expect(screen.queryByTestId("process-row-bg_other_session")).toBeNull();
+
+    // Switching to ses_other immediately prunes ses_vscode_shell tasks and scopes to ses_other
+    act(() => {
+      useAppStore.getState().setActiveSession("ses_other", "Other session");
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("process-row-bg_other_session")).toBeTruthy();
+      expect(screen.queryByTestId("process-row-bg_cargo_test")).toBeNull();
+    });
+
+    // Snapshot for ses_other containing mixed tasks displays ONLY ses_other tasks
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.processes.snapshot",
+        sessionId: "ses_other",
+        tasks: [foreignTask, SAMPLE_TASKS[0]],
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("process-row-bg_other_session")).toBeTruthy();
+      expect(screen.queryByTestId("process-row-bg_cargo_test")).toBeNull();
+    });
+
+    // Switching to a session with zero tasks immediately clears dock and shows empty session state
+    act(() => {
+      useAppStore.getState().setActiveSession("ses_empty", "Fresh session");
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("background-dock-bar")).toBeNull();
+      expect(screen.queryByTestId("process-row-bg_other_session")).toBeNull();
+      expect(screen.getByTestId("process-list-empty").textContent).toBe(
+        "No background processes in this session.",
+      );
+    });
+
+    // Switching to Home (null) keeps dock hidden and store empty
+    act(() => {
+      useAppStore.getState().setActiveSession(null);
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId("background-dock-bar")).toBeNull();
+      expect(useAppStore.getState().backgroundTasks).toEqual([]);
     });
   });
 
@@ -328,7 +417,6 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
         onRefresh={() => {}}
         onCopy={() => {}}
         onOpenFile={() => {}}
-        onOpenTerminal={() => {}}
         onStop={() => {}}
       />,
     );
@@ -338,5 +426,58 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
     expect(screen.getByTestId("output-tail-well").textContent).toContain(
       "warning",
     );
+  });
+
+  it("applies live canonical ev: background_progress frames for the active session and ignores other sessions", async () => {
+    render(<BackgroundDockBar />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.processes.snapshot",
+        sessionId: "ses_vscode_shell",
+        tasks: [SAMPLE_TASKS[0]],
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("background-dock-bar")).toBeTruthy();
+    });
+
+    // Live canonical progress frame updates percent & summary for the active session
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          v: 1,
+          ev: "background_progress",
+          session_id: "ses_vscode_shell",
+          task_id: "bg_cargo_test",
+          percent: 88,
+          summary: "17/19 integration tests passed",
+          done: false,
+        },
+      });
+      // Frame for a different session must be ignored
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          v: 1,
+          ev: "background_progress",
+          session_id: "ses_other",
+          task_id: "bg_cargo_test",
+          percent: 5,
+          summary: "Wrong session update",
+          done: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const task = useAppStore
+        .getState()
+        .backgroundTasks.find((t) => t.taskId === "bg_cargo_test");
+      expect(task?.percent).toBe(88);
+      expect(task?.summary).toBe("17/19 integration tests passed");
+    });
   });
 });

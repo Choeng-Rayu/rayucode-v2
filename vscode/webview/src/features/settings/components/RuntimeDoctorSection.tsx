@@ -228,7 +228,11 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Daemon version</div>
             <div className="mt-0.5 font-mono text-ink">
-              {formatDaemonVersionLabel(daemonStatus.version ?? "2.4.0-dev") || "v2.4.0-dev"}
+              {daemonStatus.version
+                ? formatDaemonVersionLabel(daemonStatus.version)
+                : isConnected
+                  ? "Connected"
+                  : "Not connected"}
             </div>
           </div>
           <div>
@@ -240,13 +244,19 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Round-trip latency</div>
             <div className="mt-0.5 font-mono text-ink tabular-nums">
-              {daemonStatus.latencyMs ?? 4} ms
+              {daemonStatus.latencyMs !== undefined
+                ? `${daemonStatus.latencyMs} ms`
+                : "—"}
             </div>
           </div>
           <div>
             <div className="text-[11px] text-muted-ink">Daemon PID</div>
             <div className="mt-0.5 font-mono text-ink tabular-nums">
-              {daemonStatus.pid ?? 41092}
+              {daemonStatus.pid !== undefined
+                ? daemonStatus.pid
+                : isConnected
+                  ? "Shared"
+                  : "—"}
             </div>
           </div>
         </div>
@@ -274,7 +284,7 @@ export function RuntimeDoctorSection({
       <div className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane text-xs">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <label htmlFor="runtime-socket-path" className="font-medium text-ink">
-            Daemon Unix socket path (rayucode.runtime.socketPath)
+            Daemon Unix socket path (rayucode.apiSocketPath)
           </label>
           <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
             <input
@@ -299,7 +309,7 @@ export function RuntimeDoctorSection({
 
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
           <label htmlFor="runtime-binary-path" className="font-medium text-ink">
-            Rayu binary path (rayucode.runtime.binaryPath)
+            Rayu binary path (rayucode.binaryPath)
           </label>
           <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
             <input
@@ -325,7 +335,7 @@ export function RuntimeDoctorSection({
         <div className="flex items-center justify-between gap-3 px-4 py-3">
           <div>
             <div className="font-medium text-ink">
-              Auto-start shared daemon (rayucode.runtime.autoStart)
+              Auto-start shared daemon (rayucode.autoStartBridge)
             </div>
             <div className="mt-0.5 text-muted-ink">
               Automatically spawn rayu serve if socket is unreachable

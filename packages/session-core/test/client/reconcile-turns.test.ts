@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  extractActiveEditorSelectionFromPrompt,
   reconcileChatTurns,
   shouldClearStaleLiveTurn,
   type ReconcilableTurnLike,
@@ -189,5 +190,139 @@ describe("reconcileChatTurns", () => {
         nowMs: 99_000,
       })
     ).toBe(false);
+  });
+
+  it("strips [Active Editor Selection: ...] suffixes and deduplicates multi-turn VS Code chats with repeated prompts without duplicating turns", () => {
+    expect(
+      extractActiveEditorSelectionFromPrompt(
+        "hi\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]"
+      )
+    ).toEqual({
+      prompt: "hi",
+      refFiles: "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md:1-1",
+    });
+
+    const historyTurns: TestTurn[] = [
+      {
+        id: "hist_1",
+        userPrompt:
+          "hi\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+        answerMarkdown: "Hey! RayuCode here. I see MIGRATION_PLAN.md open.",
+        isLive: false,
+        credits: "0.00 cr",
+      },
+      {
+        id: "hist_2",
+        userPrompt:
+          "hll\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+        answerMarkdown: "Looks like a typo. What do you need?",
+        isLive: false,
+        credits: "0.00 cr",
+      },
+      {
+        id: "hist_3",
+        userPrompt:
+          "hi\n\n[Active Editor Selection: rayucode-v2/how-to-run.md#L1-L1]",
+        answerMarkdown: "Hi again. Happy to help, just say what you need.",
+        isLive: false,
+        credits: "0.00 cr",
+      },
+    ];
+
+    const completedLiveTurns: TestTurn[] = [
+      {
+        id: "live_1",
+        userPrompt: "hi",
+        userRefFiles: "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md:1-1",
+        answerMarkdown: "Hey! RayuCode here. I see MIGRATION_PLAN.md open.",
+        workedDuration: "6s",
+        credits: "3.87 cr",
+        kvCachePct: 77,
+        baseHistoryTurnCount: 0,
+        isLive: false,
+      },
+      {
+        id: "live_2",
+        userPrompt: "hll",
+        userRefFiles: "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md:1-1",
+        answerMarkdown: "Looks like a typo. What do you need?",
+        workedDuration: "2s",
+        credits: "1.16 cr",
+        kvCachePct: 99,
+        baseHistoryTurnCount: 1,
+        isLive: false,
+      },
+      {
+        id: "live_3",
+        userPrompt: "hi",
+        userRefFiles: "rayucode-v2/how-to-run.md:1-1",
+        answerMarkdown: "Hi again. Happy to help, just say what you need.",
+        workedDuration: "2s",
+        credits: "1.27 cr",
+        kvCachePct: 99,
+        baseHistoryTurnCount: 2,
+        isLive: false,
+      },
+    ];
+
+    const result = reconcileChatTurns({
+      historyTurns,
+      liveTurn: null,
+      completedLiveTurns,
+    });
+
+    expect(result).toHaveLength(3);
+    expect(result.map((t) => t.id)).toEqual(["hist_1", "hist_2", "hist_3"]);
+    expect(result.map((t) => t.workedDuration)).toEqual(["6s", "2s", "2s"]);
+    expect(result.map((t) => t.credits)).toEqual(["3.87 cr", "1.16 cr", "1.27 cr"]);
+    expect(result[0]?.userRefFiles).toBe(
+      "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md:1-1"
+    );
+  });
+
+  it("never collides a newly settled turn with an earlier identical prompt+answer turn before history refetches", () => {
+    const staleHistory: TestTurn[] = [
+      {
+        id: "hist_1",
+        userPrompt: "hi",
+        answerMarkdown: "Hello! How can I help?",
+        isLive: false,
+      },
+    ];
+    const newlySettled: TestTurn[] = [
+      {
+        id: "live_2",
+        userPrompt: "hi",
+        answerMarkdown: "Hello! How can I help?",
+        workedDuration: "2s",
+        baseHistoryTurnCount: 1,
+        isLive: false,
+      },
+    ];
+
+    const beforeRefetch = reconcileChatTurns({
+      historyTurns: staleHistory,
+      liveTurn: null,
+      completedLiveTurns: newlySettled,
+    });
+    expect(beforeRefetch).toHaveLength(2);
+    expect(beforeRefetch.map((t) => t.id)).toEqual(["hist_1", "live_2"]);
+
+    const afterRefetch = reconcileChatTurns({
+      historyTurns: [
+        ...staleHistory,
+        {
+          id: "hist_2",
+          userPrompt: "hi\n\n[Active Editor Selection: README.md#L1-L1]",
+          answerMarkdown: "Hello! How can I help?",
+          isLive: false,
+        },
+      ],
+      liveTurn: null,
+      completedLiveTurns: newlySettled,
+    });
+    expect(afterRefetch).toHaveLength(2);
+    expect(afterRefetch.map((t) => t.id)).toEqual(["hist_1", "hist_2"]);
+    expect(afterRefetch[1]?.workedDuration).toBe("2s");
   });
 });

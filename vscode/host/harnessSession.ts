@@ -212,6 +212,25 @@ export class HarnessSession {
         await client.respondToPermission(sessionId, frame.request_id, decision);
         return { ev: "ok" };
       }
+      case "question_response": {
+        const { client, sessionId } = this.attached(frame.session_id);
+        if (typeof frame.request_id !== "string" || !frame.request_id.trim()) {
+          throw new HarnessError("invalid_request", "Missing question request_id.");
+        }
+        const reply = await client.request({
+          req: "question_response",
+          session_id: sessionId,
+          request_id: frame.request_id,
+          response: frame.response ?? { kind: "declined" },
+        } as unknown as Parameters<RayucodeClient["request"]>[0]);
+        if (reply && reply.ev === "error") {
+          throw new HarnessError(
+            String(reply.code ?? "internal"),
+            String(reply.message ?? "Question response rejected by runtime."),
+          );
+        }
+        return { ev: "ok" };
+      }
       case "background_tool": {
         const { client, sessionId } = this.attached(frame.session_id);
         const result = await client.backgroundToolResult(sessionId);
@@ -420,6 +439,7 @@ export class HarnessSession {
       clientName: "rayucode-vscode/3.0.0",
       supportsUserResponse: true,
       supportsPermissions: true,
+      supportsUserQuestions: true,
       requestTimeoutMs: 15_000,
     });
     try {

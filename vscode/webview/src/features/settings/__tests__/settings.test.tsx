@@ -6,12 +6,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ALL_57_DEFAULT_PROVIDERS,
   ALL_7_DEFAULT_HOOKS,
+  ModelsAgentsSection,
   NATIVE_10_PROVIDERS,
   OPENAI_COMPAT_45_PROVIDERS,
+  SETTINGS_SECTIONS,
   SettingsView,
 } from "@/features/settings";
 import * as rpcClient from "@/lib/rpc-client";
 import {
+  __dispatchHostMessageForTest,
   __setMockAccountStateForTest,
   createQueryClient,
   onHostMessage,
@@ -62,10 +65,16 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
       surface: "editorPanel",
       route: "settings",
       activeRoute: "settings",
+      activeSessionId: null,
       theme: "auto",
       accent: "green",
       density: "comfortable",
       reduceMotion: false,
+      workbench: {
+        openLocation: "secondarySidebar",
+        contextActionsAutoSubmit: false,
+        showEditorTitleIcon: true,
+      },
       accountStatus: signedInAccount,
       authLoaded: true,
     });
@@ -265,5 +274,322 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
     expect(
       screen.getByTestId("shortcut-kbd-background-running-tool").textContent,
     ).toBe("Alt+B");
+    expect(
+      screen.getByTestId("shortcut-kbd-open-from-editor-title").textContent,
+    ).toBe("Cmd/Ctrl+Alt+R");
+    expect(
+      screen.getByTestId("shortcut-kbd-open-beside").textContent,
+    ).toBe("Cmd/Ctrl+Alt+Shift+R");
+    expect(screen.getByTestId("shortcut-row-fix-diagnostic")).toBeTruthy();
+    expect(screen.getByTestId("shortcut-row-ask-terminal")).toBeTruthy();
+    expect(screen.getByTestId("shortcut-row-scm-open-changes")).toBeTruthy();
+  });
+
+  it("updates VS Code Workbench Placement controls in AppearanceSection, posts rayucode.ui.setWorkbench, and reflects workbenchSync", async () => {
+    const unsub = onHostMessage((msg) => {
+      useAppStore.getState().applyHostMessage(msg);
+    });
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
+
+    try {
+      renderWithQuery(<SettingsView initialSection="appearance" />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("appearance-workbench-placement"),
+        ).toBeTruthy();
+      });
+
+      const secondaryBtn = screen.getByTestId(
+        "workbench-open-location-secondarySidebar",
+      );
+      const besideBtn = screen.getByTestId("workbench-open-location-beside");
+      const editorTabBtn = screen.getByTestId(
+        "workbench-open-location-editorTab",
+      );
+      const editorIconSwitch = screen.getByTestId(
+        "workbench-editor-title-icon-switch",
+      );
+      const autoSubmitSwitch = screen.getByTestId(
+        "workbench-context-autosubmit-switch",
+      );
+
+      expect(secondaryBtn.getAttribute("aria-pressed")).toBe("true");
+      expect(editorIconSwitch.getAttribute("aria-checked")).toBe("true");
+      expect(autoSubmitSwitch.getAttribute("aria-checked")).toBe("false");
+
+      // Switch openLocation -> beside
+      fireEvent.click(besideBtn);
+      expect(postSpy).toHaveBeenCalledWith({
+        type: "rayucode.ui.setWorkbench",
+        openLocation: "beside",
+      });
+      expect(besideBtn.getAttribute("aria-pressed")).toBe("true");
+      expect(useAppStore.getState().workbench.openLocation).toBe("beside");
+
+      // Toggle Live Editor Tab Bar Icon -> false
+      fireEvent.click(editorIconSwitch);
+      expect(postSpy).toHaveBeenCalledWith({
+        type: "rayucode.ui.setWorkbench",
+        showEditorTitleIcon: false,
+      });
+      expect(useAppStore.getState().workbench.showEditorTitleIcon).toBe(false);
+
+      // Toggle Auto-Submit Context Actions -> true
+      fireEvent.click(autoSubmitSwitch);
+      expect(postSpy).toHaveBeenCalledWith({
+        type: "rayucode.ui.setWorkbench",
+        contextActionsAutoSubmit: true,
+      });
+      expect(useAppStore.getState().workbench.contextActionsAutoSubmit).toBe(
+        true,
+      );
+
+      // Host pushes rayucode.ui.workbenchSync -> UI reflects host state immediately
+      __dispatchHostMessageForTest({
+        type: "rayucode.ui.workbenchSync",
+        workbench: {
+          openLocation: "editorTab",
+          showEditorTitleIcon: true,
+          contextActionsAutoSubmit: false,
+        },
+      });
+
+      await waitFor(() => {
+        expect(editorTabBtn.getAttribute("aria-pressed")).toBe("true");
+        expect(editorIconSwitch.getAttribute("aria-checked")).toBe("true");
+        expect(autoSubmitSwitch.getAttribute("aria-checked")).toBe("false");
+      });
+
+      // Verify appearance search keywords and RuntimeDoctorSection manifest keys
+      const appearanceMeta = SETTINGS_SECTIONS.find(
+        (s) => s.id === "appearance",
+      );
+      expect(appearanceMeta?.keywords).toContain("workbench");
+      expect(appearanceMeta?.keywords).toContain("secondary sidebar");
+      expect(appearanceMeta?.keywords).toContain("auto-submit");
+
+      fireEvent.click(screen.getByTestId("settings-nav-runtime"));
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-runtime")).toBeTruthy();
+      });
+      expect(screen.getByText(/rayucode\.apiSocketPath/)).toBeTruthy();
+      expect(screen.getByText(/rayucode\.binaryPath/)).toBeTruthy();
+      expect(screen.getByText(/rayucode\.autoStartBridge/)).toBeTruthy();
+    } finally {
+      postSpy.mockRestore();
+      unsub();
+    }
+  });
+
+  it("renders live discovered routes in ModelsAgentsSection including arbitrary future Rayu models absent from fallback arrays", async () => {
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
+    Element.prototype.scrollIntoView = vi.fn();
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+
+    try {
+      const onSelectDefaultModel = vi.fn();
+      renderWithQuery(
+        <ModelsAgentsSection
+          defaultModel="rayu:rayu-nova-99-ultra"
+          defaultEffort="medium"
+          serviceTier="auto"
+          cacheTtl="5m"
+          roleOverrides={[
+            {
+              role: "swarm",
+              label: "Swarm Workers",
+              model: "rayu:rayu-nova-99-ultra",
+              scope: "global",
+            },
+          ]}
+          routes={[
+            {
+              id: "gpt-future-8",
+              model: "gpt-future-8",
+              modelSpec: "gpt-future-8",
+              provider: "openai",
+              label: "GPT Future 8",
+              available: false,
+            },
+            {
+              id: "rayu-nova-99-ultra",
+              model: "rayu-nova-99-ultra",
+              modelSpec: "rayu:rayu-nova-99-ultra",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Rayu Nova 99 Ultra",
+              available: true,
+            },
+            {
+              id: "claude-sonnet-99",
+              model: "claude-sonnet-99",
+              modelSpec: "rayu:claude-sonnet-99",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Claude Sonnet 99",
+              available: true,
+            },
+          ]}
+          onSelectDefaultModel={onSelectDefaultModel}
+          onSelectDefaultEffort={vi.fn()}
+          onSelectServiceTier={vi.fn(async () => {})}
+          onSelectCacheTtl={vi.fn(async () => {})}
+          onSetRoleOverride={vi.fn(async () => {})}
+          onRefreshModels={vi.fn(async () => {})}
+          isRefreshingModels={false}
+        />,
+      );
+
+      const trigger = screen.getByTestId("default-model-select");
+      expect(trigger.textContent).toContain("Rayu Nova 99 Ultra (Rayu Cloud)");
+
+      // Open Select and verify available Rayu future routes appear before unavailable routes
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      await waitFor(() => {
+        const options = screen.getAllByRole("option");
+        expect(options.map((o) => o.textContent)).toEqual([
+          "Rayu Nova 99 Ultra (Rayu Cloud)",
+          "Claude Sonnet 99 (Rayu Cloud)",
+          "GPT Future 8 (OpenAI)",
+        ]);
+      });
+
+      fireEvent.click(
+        screen.getByRole("option", { name: "Claude Sonnet 99 (Rayu Cloud)" }),
+      );
+      expect(onSelectDefaultModel).toHaveBeenCalledWith("rayu:claude-sonnet-99");
+    } finally {
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+      HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
+    }
+  });
+
+  it("wires SettingsView default model selection to set_model harness request and invalidates composer model-settings", async () => {
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
+    Element.prototype.scrollIntoView = vi.fn();
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+
+    const client = createQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const harnessSpy = vi.spyOn(rpcClient, "sendHarnessRequest");
+
+    try {
+      render(
+        <QueryClientProvider client={client}>
+          <SettingsView initialSection="models" />
+        </QueryClientProvider>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-models")).toBeTruthy();
+      });
+
+      const trigger = screen.getByTestId("default-model-select");
+      expect(trigger.textContent).toContain("Claude Sonnet 4.5 (Rayu Cloud)");
+
+      invalidateSpy.mockClear();
+      harnessSpy.mockClear();
+
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", { name: "Claude Opus 4.5 (Rayu Cloud)" }),
+        ).toBeTruthy();
+      });
+
+      fireEvent.click(
+        screen.getByRole("option", { name: "Claude Opus 4.5 (Rayu Cloud)" }),
+      );
+
+      await waitFor(() => {
+        expect(harnessSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            req: "set_model",
+            model: "rayu:claude-opus-4-5",
+          }),
+        );
+        expect(invalidateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ queryKey: ["composer", "model-settings"] }),
+        );
+      });
+    } finally {
+      harnessSpy.mockRestore();
+      invalidateSpy.mockRestore();
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+      HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
+    }
+  });
+
+  it("renders relocated Workspace sections (Agents, Swarm, Automations, Remote) full-bleed inside Settings and returns to active workspace on Back", async () => {
+    useAppStore.setState({
+      route: "settings",
+      activeRoute: "settings",
+      activeSettingsSection: "account",
+      activeSessionId: "ses_active_chat",
+    });
+
+    renderWithQuery(<SettingsView />);
+
+    expect(await screen.findByTestId("settings-nav-agents")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-swarm")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-automations")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-remote")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-swarm"));
+    expect(await screen.findByTestId("swarm-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-agents"));
+    expect(await screen.findByTestId("agents-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-automations"));
+    expect(await screen.findByTestId("automations-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-remote"));
+    expect(await screen.findByTestId("remote-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-back-btn"));
+    expect(useAppStore.getState().activeRoute).toBe("workspace");
+  });
+
+  it("persists default permission mode via settings.permission.setDefault, keeps cards enabled when config.toml is unsupported, and displays catastrophic risk tier", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "config.get") {
+        return { supported: false, config: null };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    renderWithQuery(<SettingsView initialSection="safety" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-section-safety")).toBeTruthy();
+    });
+
+    // Canonical Rust 4th risk tier is "catastrophic"
+    expect(screen.getByTestId("risk-tier-catastrophic")).toBeTruthy();
+
+    // All 5 permission mode cards remain clickable even when config.toml configSupported is false
+    const acceptEditsCard = screen.getByTestId(
+      "permission-mode-card-acceptEdits",
+    ) as HTMLButtonElement;
+    expect(acceptEditsCard.disabled).toBe(false);
+    fireEvent.click(acceptEditsCard);
+
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("settings.permission.setDefault", {
+        mode: "acceptEdits",
+        applyToActiveSession: false,
+      });
+    });
+
+    rpcSpy.mockRestore();
   });
 });

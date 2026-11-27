@@ -489,6 +489,111 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
     expect(unsupportedAction.message).toMatch(/does not support file_changes/i)
   })
 
+  it("refreshes and emits todo_state on todo/batch tool_done events and degrades cleanly without todo_state capability", async () => {
+    const todoState = vi.fn().mockResolvedValue({
+      todos: [
+        { id: "1", content: "Inspect schema", status: "done" },
+        {
+          id: "2",
+          name: "Render checklist",
+          status: "running",
+          active_form: "Rendering checklist",
+        },
+        { id: "3", title: "Skipped item", status: "canceled" },
+      ],
+    })
+    const liveClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["todo_state"],
+      supports: (cap: string) => cap === "todo_state",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_todo_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      todoState,
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(liveClient)
+    const daemon = new RayuDaemonClient("/tmp/todo-live-rayu.sock")
+    const emitted: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      emitted.push(frame)
+    })
+
+    await daemon.attachSession("sess_todo_1")
+
+    const initial = await daemon.getTodos("sess_todo_1")
+    expect(initial.todos).toEqual([
+      { id: "1", content: "Inspect schema", status: "completed" },
+      {
+        id: "2",
+        content: "Render checklist",
+        status: "in_progress",
+        activeForm: "Rendering checklist",
+      },
+      { id: "3", content: "Skipped item", status: "cancelled" },
+    ])
+
+    ;(liveClient as unknown as EventEmitter).emit("event", {
+      ev: "tool_done",
+      session_id: "sess_todo_1",
+      call_id: "c_todo_1",
+      name: "todo",
+      output: "ok",
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    let todoEvents = emitted.filter((f) => f.ev === "todo_state")
+    expect(todoEvents.length).toBe(1)
+    expect(todoEvents[0]).toMatchObject({
+      ev: "todo_state",
+      session_id: "sess_todo_1",
+      state: {
+        todos: initial.todos,
+      },
+    })
+
+    // Batch tool_done containing a todo sub-call also triggers todoState pull
+    ;(liveClient as unknown as EventEmitter).emit("event", {
+      ev: "tool_done",
+      session_id: "sess_todo_1",
+      call_id: "c_batch_1",
+      name: "batch",
+      tool_input: { tool_calls: [{ name: "todo", input: { action: "update" } }] },
+      output: "ok",
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    todoEvents = emitted.filter((f) => f.ev === "todo_state")
+    expect(todoEvents.length).toBe(2)
+
+    // Older daemon lacking todo_state capability returns empty safely
+    const legacyClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-legacy",
+      capabilities: ["session_tools"],
+      supports: (cap: string) => cap === "session_tools",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_todo_legacy",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      todoState: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(legacyClient)
+    const legacyDaemon = new RayuDaemonClient("/tmp/todo-legacy-rayu.sock")
+    await legacyDaemon.attachSession("sess_todo_legacy")
+    expect(await legacyDaemon.getTodos("sess_todo_legacy")).toEqual({
+      sessionId: "sess_todo_legacy",
+      todos: [],
+    })
+  })
+
   it("supersedes stale queued getHistory calls during rapid switches without dialing extra sockets or blocking on post-attach sync", async () => {
     let releaseFirstAttach!: () => void
     const firstClient = Object.assign(new EventEmitter(), {

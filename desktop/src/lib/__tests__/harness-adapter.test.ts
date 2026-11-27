@@ -43,15 +43,74 @@ describe("harness-adapter", () => {
     expect(running.updatedAt).toBe("Live")
   })
 
-  it("maps ModelRouteInfo list into deduplicated ModelOption entries", () => {
+  it("maps ModelRouteInfo list into deduplicated ModelOption entries preferring available and effort-capable routes", () => {
     const options = mapModelRoutesToOptions([
-      { model: "claude-opus-5-5", provider: "Anthropic", available: true, detail: "OAuth" },
+      {
+        model: "claude-opus-5-5",
+        provider: "Anthropic",
+        available: true,
+        detail: "OAuth",
+        supported_efforts: ["low", "medium", "high", "max"],
+        default_effort: "medium",
+        context_window: 200_000,
+      },
       { model: "claude-opus-5-5", provider: "Anthropic", available: true },
-      { model: "gpt-6.1-sol", provider: "OpenAI", available: true, detail: "API key" },
+      {
+        model: "gpt-6.1-sol",
+        provider: "OpenAI",
+        available: false,
+        detail: "Configure key",
+      },
+      {
+        model: "gpt-6.1-sol",
+        provider: "Rayu",
+        api_method: "rayu",
+        available: true,
+        detail: "Rayu Cloud",
+        supported_efforts: ["none", "low", "medium", "high", "xhigh"],
+        default_effort: "low",
+      },
+      {
+        model: "claude-sonnet-4-6",
+        provider: "Cursor",
+        available: true,
+        detail: "Cursor",
+        supported_efforts: [],
+      },
+      {
+        model: "claude-sonnet-4-6",
+        provider: "Anthropic",
+        available: true,
+        detail: "OAuth",
+        supported_efforts: ["low", "medium", "high", "max"],
+        default_effort: "medium",
+      },
     ])
-    expect(options).toHaveLength(2)
-    expect(options[0]).toMatchObject({ id: "claude-opus-5-5", provider: "Anthropic", recommended: true })
-    expect(options[1]).toMatchObject({ id: "gpt-6.1-sol", provider: "OpenAI" })
+    expect(options).toHaveLength(3)
+    expect(options[0]).toMatchObject({
+      id: "claude-opus-5-5",
+      provider: "Anthropic",
+      recommended: true,
+      supportedEfforts: ["low", "medium", "high", "max"],
+      defaultEffort: "medium",
+      contextWindow: 200_000,
+    })
+    expect(options[1]).toMatchObject({
+      id: "gpt-6.1-sol",
+      provider: "Rayu",
+      apiMethod: "rayu",
+      subtitle: "Rayu Cloud",
+      recommended: true,
+      supportedEfforts: ["none", "low", "medium", "high", "xhigh"],
+      defaultEffort: "low",
+    })
+    expect(options[1].available).toBeUndefined()
+    expect(options[2]).toMatchObject({
+      id: "claude-sonnet-4-6",
+      provider: "Anthropic",
+      supportedEfforts: ["low", "medium", "high", "max"],
+      defaultEffort: "medium",
+    })
   })
 
   it("maps history messages into ExecutionTurn objects with stats", () => {
@@ -431,7 +490,7 @@ describe("harness-adapter", () => {
     expect(isTempDirectoryPath(undefined)).toBe(false)
   })
 
-  it("strips Rust sentinel-wrapped reasoning lines into WorkTrace notes instead of italic answer text", () => {
+  it("preserves Rust sentinel-wrapped reasoning lines as reasoning timeline items in chronological order", () => {
     const turns = mapHistoryMessagesToTurns("s_reasoning", [
       { role: "user", content: "Fix the TTS pipeline" },
       {
@@ -458,15 +517,65 @@ describe("harness-adapter", () => {
     )
     expect(turns[0].answerIntro).not.toContain("\u{2063}")
     expect(turns[0].answerIntro).not.toContain("I will inspect the logs first.")
-    expect(turns[0].notes).toEqual(
-      expect.arrayContaining([
-        "Let me write a *smaller* debug script using `kok_test.py`.",
-        "I will inspect the logs first.",
-        "Actually, earlier run with `2>&1` printed nothing.",
-        "Let me run the real pipeline.",
-      ])
-    )
+    expect(turns[0].notes).toEqual([
+      "I will inspect the logs first.",
+      "Let me run the real pipeline.",
+    ])
     expect(turns[0].groups[0].steps).toHaveLength(2)
+    expect(turns[0].timeline).toEqual([
+      expect.objectContaining({
+        type: "reasoning",
+        text: "Let me write a *smaller* debug script using `kok_test.py`.",
+      }),
+      expect.objectContaining({
+        type: "note",
+        text: "I will inspect the logs first.",
+      }),
+      expect.objectContaining({
+        type: "group",
+        group: expect.objectContaining({
+          steps: [expect.objectContaining({ output: "ok" })],
+        }),
+      }),
+      expect.objectContaining({
+        type: "reasoning",
+        text: "Actually, earlier run with `2>&1` printed nothing.",
+      }),
+      expect.objectContaining({
+        type: "note",
+        text: "Let me run the real pipeline.",
+      }),
+      expect.objectContaining({
+        type: "group",
+        group: expect.objectContaining({
+          steps: [expect.objectContaining({ output: "done" })],
+        }),
+      }),
+    ])
+  })
+
+  it("preserves historical reasoning-only and reasoning-plus-answer turns in timeline without dumping into notes", () => {
+    const turns = mapHistoryMessagesToTurns("s_reasoning_only", [
+      { role: "user", content: "Explain the cache invariant" },
+      {
+        role: "assistant",
+        content:
+          "*\u{2063}First, check LRU eviction.\u{2063}*  \n\n*\u{2063}Second, verify shard routing.\u{2063}*  \n\nThe cache invariant holds across all shards.",
+      },
+    ])
+
+    expect(turns).toHaveLength(1)
+    expect(turns[0].notes).toEqual([])
+    expect(turns[0].groups).toEqual([])
+    expect(turns[0].answerIntro).toBe(
+      "The cache invariant holds across all shards."
+    )
+    expect(turns[0].timeline).toEqual([
+      expect.objectContaining({
+        type: "reasoning",
+        text: "First, check LRU eviction.\n\nSecond, verify shard routing.",
+      }),
+    ])
   })
 
   it("folds Background task stalled/progress/completed notifications, Swarm wakes, and auto-poke messages out of user bubbles", () => {

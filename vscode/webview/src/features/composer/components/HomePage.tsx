@@ -14,16 +14,18 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { RayuProcessingMark } from "@/components/ui";
+import { startSessionLiveTurn } from "@/features/chat";
 import {
   callRpc,
   cn,
   formatRelativeTime,
   mediaUrl,
+  resolveSessionForOpen,
   sendHarnessRequest,
   useAppStore,
 } from "@/lib";
 
-import { HOME_QUICK_ACTIONS } from "../constants";
+import { HOME_QUICK_ACTIONS, normalizeEffortLevel } from "../constants";
 import {
   recentSessionsQueryOptions,
   useCreateSessionMutation,
@@ -81,7 +83,6 @@ export function HomePage({
   const activeDraft = useAppStore((s) => s.activeDraft);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
-  const enqueueOptimisticTurn = useAppStore((s) => s.enqueueOptimisticTurn);
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
 
   const displayName = resolveDisplayName(
@@ -91,13 +92,21 @@ export function HomePage({
   );
   const showCloudSignIn = accountStatus !== null && !accountStatus.signedIn && !userName;
 
-  const [composerValue, setComposerValue] = React.useState("");
+  const composerValue = useAppStore((s) => s.composerDrafts["__home__"] ?? "");
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
+  const setComposerValue = React.useCallback(
+    (next: string) => setComposerDraft("__home__", next),
+    [setComposerDraft],
+  );
   const [pendingSubmit, setPendingSubmit] = React.useState<{
     prompt: string;
     images?: ImageAttachmentView[];
     startedAtMs: number;
   } | null>(null);
   const [pendingElapsedSec, setPendingElapsedSec] = React.useState(0);
+  const [recentSessionError, setRecentSessionError] = React.useState<string | null>(
+    null,
+  );
   const submitAttemptRef = React.useRef(0);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
@@ -137,11 +146,39 @@ export function HomePage({
   };
 
   const handleSelectRecentSession = async (session: SessionSummaryView) => {
-    setActiveSession(session.sessionId, session.title);
-    onSelectSession?.(session.sessionId);
-    await callRpc("sessions.attach", { sessionId: session.sessionId }).catch(
-      () => {},
-    );
+    setRecentSessionError(null);
+    const resolved = await resolveSessionForOpen(session);
+    if (resolved.kind === "error") {
+      setRecentSessionError(resolved.message);
+      return;
+    }
+    const targetSession =
+      resolved.kind === "open" && resolved.importedSession
+        ? resolved.importedSession
+        : {
+            ...session,
+            sessionId: resolved.sessionId,
+            title: resolved.title,
+            workingDir: resolved.workingDir,
+          };
+    useAppStore.getState().seedSessionPrefsFromSummary(targetSession);
+    setActiveSession(resolved.sessionId, resolved.title);
+    if (resolved.workingDir) {
+      useAppStore.getState().setActiveProjectPath(resolved.workingDir);
+    }
+    if (resolved.kind === "open" && resolved.wasImported) {
+      void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["chat", "history", resolved.sessionId],
+      });
+    }
+    onSelectSession?.(resolved.sessionId);
+    const attached = await callRpc("sessions.attach", {
+      sessionId: resolved.sessionId,
+    }).catch(() => null);
+    if (attached?.session) {
+      useAppStore.getState().seedSessionPrefsFromSummary(attached.session);
+    }
   };
 
   const handleSubmit = React.useCallback(
@@ -155,24 +192,44 @@ export function HomePage({
       setPendingElapsedSec(0);
       setComposerValue("");
 
-      const draft = useAppStore.getState().activeDraft;
+      const storeSnapshot = useAppStore.getState();
+      const draft = storeSnapshot.activeDraft;
+      const draftPrefs = storeSnapshot.sessionPrefsBySession.__draft__;
       const effectiveWorkingDir =
         payload.workingDir ??
         draft?.workingDir ??
-        useAppStore.getState().activeProjectPath ??
+        storeSnapshot.activeProjectPath ??
         undefined;
-      const effectiveModel = payload.modelId ?? draft?.model;
-      const effectiveEffort = payload.effort ?? draft?.reasoningEffort;
+      const effectiveModel =
+        payload.modelSpec ||
+        payload.modelId ||
+        draft?.model ||
+        draftPrefs?.modelId ||
+        undefined;
+      const effectiveEffort = normalizeEffortLevel(
+        payload.effort ?? draft?.reasoningEffort ?? draftPrefs?.effort,
+      );
       const effectivePermissionMode =
         payload.permissionMode ??
-        (draft?.permissionMode as ComposerSubmitPayload["permissionMode"] | undefined) ??
+        (draft?.permissionMode as
+          | ComposerSubmitPayload["permissionMode"]
+          | undefined) ??
+        draftPrefs?.permissionMode ??
+        storeSnapshot.defaultPermissionMode ??
         "default";
+      const effectiveServiceTier =
+        payload.serviceTier ?? draftPrefs?.serviceTier;
+      const effectiveCacheTtl = payload.cacheTtl ?? draftPrefs?.cacheTtl;
 
       try {
         const created = await createSessionMutation.mutateAsync({
           workingDir: effectiveWorkingDir,
           permissionMode: effectivePermissionMode,
           model: effectiveModel,
+          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
+          effort: effectiveEffort,
+          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
         });
 
         if (submitAttemptRef.current !== attemptId) {
@@ -183,16 +240,22 @@ export function HomePage({
         setPendingSubmit(null);
         setPendingElapsedSec(0);
 
+        // Persist the user's chosen composer configuration on this session BEFORE
+        // transitioning from HomePage -> Workspace so the 2nd+ messages never reset.
+        useAppStore.getState().setSessionPrefs(session.sessionId, {
+          ...(effectiveModel ? { modelId: effectiveModel } : {}),
+          ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
+          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
+          effort: effectiveEffort,
+          permissionMode: effectivePermissionMode,
+          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
+          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
+        });
+
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({
           queryKey: ["workspace", "ledger"],
         });
-
-        // Sync permission mode via typed RPC (no duplicate sendHarnessRequest)
-        void callRpc("sessions.setPermissionMode", {
-          sessionId: session.sessionId,
-          mode: effectivePermissionMode,
-        }).catch(() => {});
 
         const formattedSelectionContext = payload.editorSelection
           ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
@@ -202,16 +265,15 @@ export function HomePage({
           ? `${payload.editorSelection.relativePath}:${payload.editorSelection.lineStart}-${payload.editorSelection.lineEnd}`
           : undefined;
 
-        enqueueOptimisticTurn({
-          id: `opt_${session.sessionId}_${Date.now()}`,
+        startSessionLiveTurn({
           sessionId: session.sessionId,
-          prompt: payload.prompt,
-          refFiles,
-          images: payload.images?.map((img) => ({
+          userPrompt: payload.prompt,
+          userRefFiles: refFiles,
+          userImages: payload.images?.map((img) => ({
             name: img.name ?? "Attachment",
             dataUrl: img.data,
           })),
-          createdAtMs: Date.now(),
+          startedAtMs: Date.now(),
           baseHistoryTurnCount: 0,
         });
 
@@ -223,7 +285,8 @@ export function HomePage({
           req: "send_message",
           session_id: session.sessionId,
           content: `${payload.prompt}${formattedSelectionContext}`,
-          model: effectiveModel,
+          ...(effectiveModel ? { model: effectiveModel } : {}),
+          ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
           effort: effectiveEffort,
           images: payload.images,
           ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
@@ -237,10 +300,10 @@ export function HomePage({
     },
     [
       createSessionMutation,
-      enqueueOptimisticTurn,
       onSessionCreated,
       queryClient,
       setActiveSession,
+      setComposerValue,
       setIsStreamActive,
     ],
   );
@@ -372,6 +435,15 @@ export function HomePage({
                   {recentSessions.length} active
                 </span>
               </div>
+              {recentSessionError && (
+                <div
+                  role="alert"
+                  data-testid="home-recent-session-error"
+                  className="mb-1.5 rounded-md border border-danger/35 bg-danger-soft px-2 py-1 text-[11px] text-danger"
+                >
+                  {recentSessionError}
+                </div>
+              )}
               <div className="flex flex-col gap-0.5">
                 {recentSessions.map((session) => (
                   <button

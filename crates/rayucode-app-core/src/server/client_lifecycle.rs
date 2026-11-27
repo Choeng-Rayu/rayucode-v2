@@ -180,7 +180,10 @@ fn compaction_server_event(event: crate::compaction::CompactionEvent) -> ServerE
     }
 }
 
-async fn poll_agent_compaction_completion(agent: Arc<Mutex<Agent>>) -> Option<ServerEvent> {
+async fn poll_agent_compaction_completion(
+    agent: std::sync::Weak<Mutex<Agent>>,
+) -> Option<ServerEvent> {
+    let agent = agent.upgrade()?;
     let mut agent_guard = agent.lock().await;
     agent_guard
         .poll_compaction_completion_event()
@@ -1155,6 +1158,7 @@ pub(super) async fn handle_client(
     // otherwise monopolize the select loop before the initial subscribe/read.
     let mut client_subscribed = false;
     let mut provisional_session = true;
+    let mut skip_idle_reconnect_grace = false;
     let mut pending_request = Some(initial_request);
 
     let connection_result: Result<()> = async {
@@ -1271,7 +1275,7 @@ pub(super) async fn handle_client(
                         }
                     }
                     Ok(BusEvent::CompactionFinished) => {
-                        let agent = Arc::clone(&agent);
+                        let agent = Arc::downgrade(&agent);
                         let tx = client_event_tx.clone();
                         tokio::spawn(async move {
                             if let Some(event) = poll_agent_compaction_completion(agent).await {
@@ -2456,6 +2460,11 @@ pub(super) async fn handle_client(
                                 "Target-aware subscribe failed to bind {} from temporary {}; closing temporary client connection {}",
                                 target_session_id, pre_resume_session_id, client_connection_id
                             ));
+                            // Tear down the rejected temporary placeholder
+                            // immediately instead of holding the socket open
+                            // for IDLE_RECONNECT_GRACE (30s) and emitting a
+                            // delayed disconnect error later.
+                            skip_idle_reconnect_grace = true;
                             break;
                         }
                     } else {
@@ -3091,11 +3100,17 @@ pub(super) async fn handle_client(
 
             Request::PersistSession { id } => {
                 let persist = {
-                    let agent = Arc::clone(&agent);
+                    let agent_weak = Arc::downgrade(&agent);
                     let response_tx = client_event_tx.clone();
                     let session_id = client_session_id.clone();
                     async move {
+                        let Some(agent) = agent_weak.upgrade() else {
+                            return;
+                        };
                         let mut guard = agent.lock().await;
+                        if Arc::strong_count(&agent) == 1 {
+                            return;
+                        }
                         let result = if guard.session_id() == session_id {
                             guard.persist_session_now()
                         } else {
@@ -3349,7 +3364,12 @@ pub(super) async fn handle_client(
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::RefreshModelList {
                         if !args.is_empty() { anyhow::bail!("This command accepts no arguments"); }
-                        provider.refresh_model_catalog().await?;
+                        tokio::time::timeout(
+                            Duration::from_secs(25),
+                            provider.refresh_model_catalog(),
+                        )
+                        .await
+                        .map_err(|_| anyhow::anyhow!("Timed out refreshing provider model catalog after 25s"))??;
                         crate::bus::Bus::global().publish_models_updated();
                         let guard = agent.try_lock().map_err(|_| anyhow::anyhow!("Catalog refreshed, but session is busy. Open the model picker after the turn."))?;
                         let data = serde_json::json!({"refreshed": true, "models": guard.available_models_for_switching(), "routes": guard.model_routes()});
@@ -4385,6 +4405,13 @@ pub(super) async fn handle_client(
     )
     .await;
 
+    // Release this lifecycle's local strong Arc<Mutex<Agent>> BEFORE
+    // cleanup_client_connection acquires and later drops `client_connections`.
+    // Otherwise a fast reconnect waking when cleanup releases `connections`
+    // observes `Weak::upgrade().is_some()` in `SessionManager::ensure_vacant()`
+    // and fails with "Session <id> still has a runtime owner".
+    drop(agent);
+
     // Cleanup serializes the successor decision against live attachment claims.
     // A successor must inherit the active owner, including its completion receiver,
     // rather than just an Agent whose processing task was already aborted.
@@ -4415,7 +4442,11 @@ pub(super) async fn handle_client(
                 &event_counter,
                 &swarm_event_tx,
                 &client_event_tx,
-                super::client_disconnect_cleanup::IDLE_RECONNECT_GRACE,
+                if skip_idle_reconnect_grace {
+                    Duration::ZERO
+                } else {
+                    super::client_disconnect_cleanup::IDLE_RECONNECT_GRACE
+                },
             ),
         )
         .await?;

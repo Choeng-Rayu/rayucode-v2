@@ -25,6 +25,7 @@ export function RemoteView({ className }: RemoteViewProps) {
     feedbackBanner,
     telegram,
     infra,
+    sessions,
     isLoading,
     isError,
     error,
@@ -32,15 +33,19 @@ export function RemoteView({ className }: RemoteViewProps) {
     activeSessionId,
     navigateToSettings,
     copyToClipboard,
+    openExternalUrl,
     linkHosted,
     isLinkingHosted,
+    hostedError,
     linkBotfather,
     isLinkingBotfather,
+    botfatherError,
     disconnectTelegram,
     isDisconnectingTelegram,
     sendTestPing,
     isPingingTelegram,
     driveActiveSession,
+    isDrivingSession,
     decideApproval,
     isDecidingApproval,
     setRemoteUninstall,
@@ -79,7 +84,9 @@ export function RemoteView({ className }: RemoteViewProps) {
   }
 
   const isAnyRemoteActive =
-    telegram.linked || infra.gateway.enabled || infra.sessions.length > 0;
+    (telegram.linked && telegram.daemonOnline) ||
+    infra.gateway.enabled ||
+    infra.sessions.length > 0;
 
   return (
     <SectionErrorBoundary title="Remote Access Error">
@@ -91,119 +98,130 @@ export function RemoteView({ className }: RemoteViewProps) {
           className,
         )}
       >
-          <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-5 pt-6 pb-16 md:px-10">
-            {/* Page Header */}
-            <header className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2.5">
-                  <NavGlyph icon="remote" className="text-brand-text" />
-                  <h1 className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink">
-                    Remote Access
-                  </h1>
-                  <span className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-pane px-2.5 py-0.5 text-[11px] font-medium text-body">
-                    <RunStatusPulse
-                      status={isAnyRemoteActive ? "running" : "idle"}
-                    />
-                    <span>
-                      {isAnyRemoteActive ? "Bridge Ready" : "Standby"}
-                    </span>
+        <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-5 pt-6 pb-16 md:px-10">
+          {/* Page Header */}
+          <header className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2.5">
+                <NavGlyph icon="remote" className="text-brand-text" />
+                <h1 className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink">
+                  Remote Access
+                </h1>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-pane px-2.5 py-0.5 text-[11px] font-medium text-body">
+                  <RunStatusPulse
+                    status={isAnyRemoteActive ? "running" : "idle"}
+                  />
+                  <span>
+                    {isAnyRemoteActive ? "Bridge Ready" : "Standby"}
                   </span>
-                </div>
-                <p className="mt-1 max-w-[66ch] text-xs text-muted-ink">
-                  Drive RayuCode sessions from Telegram, pair mobile devices over
-                  the local :7643 WebSocket Gateway, or hand off active sessions
-                  to Rayu Cloud and SSH remote targets.
-                </p>
+                </span>
               </div>
+              <p className="mt-1 max-w-[66ch] text-xs text-muted-ink">
+                Drive RayuCode sessions from Telegram, pair mobile devices over
+                the local :7643 WebSocket Gateway, or hand off active sessions
+                to Rayu Cloud and SSH remote targets.
+              </p>
+            </div>
 
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={refetchAll}
-                data-testid="remote-refresh-btn"
-              >
-                <RefreshCw className="size-3.5" aria-hidden="true" />
-                <span>Refresh</span>
-              </Button>
-            </header>
-
-            {feedbackBanner && (
-              <div
-                data-testid="remote-feedback-banner"
-                className="rounded-xl border border-brand/30 bg-brand-soft px-4 py-2.5 text-xs text-ink"
-              >
-                {feedbackBanner}
-              </div>
-            )}
-
-            {/* Top-Level 2 Tabs: Telegram Bot | Cloud, SSH & Gateway */}
-            <Tabs
-              value={activeTab}
-              onValueChange={(v) => setActiveTab(v as RemoteTopTabId)}
-              className="gap-5"
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={refetchAll}
+              data-testid="remote-refresh-btn"
             >
-              <TabsList aria-label="Remote access destination">
-                <TabsTrigger
-                  value="telegram"
-                  onClick={() => setActiveTab("telegram")}
-                  data-testid="remote-tab-telegram"
-                >
-                  Telegram Bot
-                </TabsTrigger>
-                <TabsTrigger
-                  value="cloud-gateway"
-                  onClick={() => setActiveTab("cloud-gateway")}
-                  data-testid="remote-tab-cloud-gateway"
-                >
-                  Cloud, SSH &amp; Mobile Gateway
-                </TabsTrigger>
-              </TabsList>
+              <RefreshCw className="size-3.5" aria-hidden="true" />
+              <span>Refresh</span>
+            </Button>
+          </header>
 
-              <TabsContent value="telegram">
-                <TelegramTab
-                  telegram={telegram}
-                  activeSessionId={activeSessionId}
-                  setupMode={setupMode}
-                  onSetupModeChange={setSetupMode}
-                  onLinkHosted={linkHosted}
-                  isLinkingHosted={isLinkingHosted}
-                  onLinkBotfather={linkBotfather}
-                  isLinkingBotfather={isLinkingBotfather}
-                  onDisconnect={disconnectTelegram}
-                  isDisconnecting={isDisconnectingTelegram}
-                  onSendTestPing={sendTestPing}
-                  isPinging={isPingingTelegram}
-                  onDriveActiveSession={() => driveActiveSession()}
-                  onDecideApproval={decideApproval}
-                  isDecidingApproval={isDecidingApproval}
-                  onSetRemoteUninstall={setRemoteUninstall}
-                  isTogglingUninstall={isTogglingUninstall}
-                  onCopy={copyToClipboard}
-                />
-              </TabsContent>
+          {feedbackBanner && (
+            <div
+              data-testid="remote-feedback-banner"
+              role={feedbackBanner.kind === "error" ? "alert" : "status"}
+              className={cn(
+                "rounded-xl border px-4 py-2.5 text-xs",
+                feedbackBanner.kind === "error"
+                  ? "border-danger/30 bg-danger-soft text-danger"
+                  : "border-brand/30 bg-brand-soft text-ink",
+              )}
+            >
+              {feedbackBanner.text}
+            </div>
+          )}
 
-              <TabsContent value="cloud-gateway">
-                <CloudGatewayTab
-                  infra={infra}
-                  activeSessionId={activeSessionId}
-                  onToggleGateway={toggleGateway}
-                  isTogglingGateway={isTogglingGateway}
-                  onPairGateway={pairGateway}
-                  isPairingGateway={isPairingGateway}
-                  onRevokeDevice={revokeDevice}
-                  isRevokingDevice={isRevokingDevice}
-                  onMoveToCloud={moveToCloud}
-                  onReturnLocal={returnLocal}
-                  onAttachRemote={attachRemote}
-                  onSyncCloudEnv={syncCloudEnv}
-                  isSyncingCloud={isSyncingCloud}
-                  onCopy={copyToClipboard}
-                  onOpenSettings={navigateToSettings}
-                />
-              </TabsContent>
-            </Tabs>
-          </div>
+          {/* Top-Level 2 Tabs: Telegram Bot | Cloud, SSH & Gateway */}
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as RemoteTopTabId)}
+            className="gap-5"
+          >
+            <TabsList aria-label="Remote access destination">
+              <TabsTrigger
+                value="telegram"
+                onClick={() => setActiveTab("telegram")}
+                data-testid="remote-tab-telegram"
+              >
+                Telegram Bot
+              </TabsTrigger>
+              <TabsTrigger
+                value="cloud-gateway"
+                onClick={() => setActiveTab("cloud-gateway")}
+                data-testid="remote-tab-cloud-gateway"
+              >
+                Cloud, SSH &amp; Mobile Gateway
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="telegram">
+              <TelegramTab
+                telegram={telegram}
+                sessions={sessions}
+                activeSessionId={activeSessionId}
+                setupMode={setupMode}
+                onSetupModeChange={setSetupMode}
+                onLinkHosted={linkHosted}
+                isLinkingHosted={isLinkingHosted}
+                hostedError={hostedError}
+                onLinkBotfather={linkBotfather}
+                isLinkingBotfather={isLinkingBotfather}
+                botfatherError={botfatherError}
+                onDisconnect={disconnectTelegram}
+                isDisconnecting={isDisconnectingTelegram}
+                onSendTestPing={sendTestPing}
+                isPinging={isPingingTelegram}
+                onDriveActiveSession={driveActiveSession}
+                isDrivingSession={isDrivingSession}
+                onDecideApproval={decideApproval}
+                isDecidingApproval={isDecidingApproval}
+                onSetRemoteUninstall={setRemoteUninstall}
+                isTogglingUninstall={isTogglingUninstall}
+                onCopy={copyToClipboard}
+                onOpenExternal={openExternalUrl}
+              />
+            </TabsContent>
+
+            <TabsContent value="cloud-gateway">
+              <CloudGatewayTab
+                infra={infra}
+                activeSessionId={activeSessionId}
+                onToggleGateway={toggleGateway}
+                isTogglingGateway={isTogglingGateway}
+                onPairGateway={pairGateway}
+                isPairingGateway={isPairingGateway}
+                onRevokeDevice={revokeDevice}
+                isRevokingDevice={isRevokingDevice}
+                onMoveToCloud={moveToCloud}
+                onReturnLocal={returnLocal}
+                onAttachRemote={attachRemote}
+                onSyncCloudEnv={syncCloudEnv}
+                isSyncingCloud={isSyncingCloud}
+                onCopy={copyToClipboard}
+                onOpenSettings={navigateToSettings}
+              />
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
     </SectionErrorBoundary>
   );

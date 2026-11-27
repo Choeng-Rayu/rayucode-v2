@@ -8,6 +8,7 @@ import type { GitChangesBridge } from "../bridges/gitChangesBridge.js";
 import type { BridgeManager } from "./bridgeManager.js";
 import {
   buildQuestionResponseWire,
+  formatHarnessModelSpec,
   mapRawBackgroundTask,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
@@ -20,6 +21,7 @@ import {
 
 export {
   buildQuestionResponseWire as buildQuestionResponsePayload,
+  formatHarnessModelSpec,
   mapRawBackgroundTask,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
@@ -41,6 +43,10 @@ function createVsCodeHostAdapter(
       vscode.workspace
         .getConfiguration("rayucode")
         .get<string>("defaultPermissionMode", "default"),
+    setDefaultPermissionMode: (mode) =>
+      vscode.workspace
+        .getConfiguration("rayucode")
+        .update("defaultPermissionMode", mode, vscode.ConfigurationTarget.Global),
     onDidChangeWorkspaceFolders: (listener) =>
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         listener();

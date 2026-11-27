@@ -21,6 +21,7 @@ import type {
   SessionSummary,
   ShellCommandStep,
   TraceStepItem,
+  TraceTimelineItem,
   TurnAttempt,
   TurnAttemptReason,
   TurnOutcome,
@@ -412,38 +413,65 @@ export function formatHarnessModelSpec(
   return trimmed
 }
 
+function scoreModelRouteForDedup(route: HarnessModelRouteLike): number {
+  let score = 0
+  if (route.available === true) score += 4
+  else if (route.available === undefined) score += 2
+  if (
+    Array.isArray(route.supported_efforts) &&
+    route.supported_efforts.length > 0
+  ) {
+    score += 2
+  }
+  if (
+    typeof route.default_effort === "string" &&
+    route.default_effort.trim().length > 0
+  ) {
+    score += 1
+  }
+  return score
+}
+
 export function mapModelRoutesToOptions(
   routes: HarnessModelRouteLike[]
 ): ModelOption[] {
-  const seen = new Set<string>()
-  const out: ModelOption[] = []
+  const indexByModel = new Map<string, number>()
+  const deduped: HarnessModelRouteLike[] = []
   for (const route of routes) {
-    if (!route.model || seen.has(route.model)) continue
-    seen.add(route.model)
-    out.push({
-      id: route.model,
-      label: route.model.replace(/^rayu:/i, "") || route.model,
-      subtitle:
-        route.detail || (route.available ? "Available" : "Configure key"),
-      provider: route.provider || "Rayu",
-      apiMethod: route.api_method,
-      recommended: route.available === true && out.length < 2,
-      ...(route.available === false ? { available: false } : {}),
-      ...(route.available === false && route.detail
-        ? { unavailableReason: route.detail }
-        : {}),
-      ...(Array.isArray(route.supported_efforts)
-        ? { supportedEfforts: route.supported_efforts }
-        : {}),
-      ...(typeof route.default_effort === "string"
-        ? { defaultEffort: route.default_effort }
-        : {}),
-      ...(typeof route.context_window === "number"
-        ? { contextWindow: route.context_window }
-        : {}),
-    })
+    if (!route.model) continue
+    const existingIdx = indexByModel.get(route.model)
+    if (existingIdx === undefined) {
+      indexByModel.set(route.model, deduped.length)
+      deduped.push(route)
+    } else if (
+      scoreModelRouteForDedup(route) >
+      scoreModelRouteForDedup(deduped[existingIdx]!)
+    ) {
+      deduped[existingIdx] = route
+    }
   }
-  return out
+  return deduped.map((route, idx) => ({
+    id: route.model,
+    label: route.model.replace(/^rayu:/i, "") || route.model,
+    subtitle:
+      route.detail || (route.available ? "Available" : "Configure key"),
+    provider: route.provider || "Rayu",
+    apiMethod: route.api_method,
+    recommended: route.available === true && idx < 2,
+    ...(route.available === false ? { available: false } : {}),
+    ...(route.available === false && route.detail
+      ? { unavailableReason: route.detail }
+      : {}),
+    ...(Array.isArray(route.supported_efforts)
+      ? { supportedEfforts: route.supported_efforts }
+      : {}),
+    ...(typeof route.default_effort === "string"
+      ? { defaultEffort: route.default_effort }
+      : {}),
+    ...(typeof route.context_window === "number"
+      ? { contextWindow: route.context_window }
+      : {}),
+  }))
 }
 
 const REASONING_SENTINEL = "\u{2063}"
@@ -795,11 +823,66 @@ export function mapHistoryMessagesToTurns(
   let assistantChunks: string[] = []
   let workNotes: string[] = []
   let toolSteps: TraceStepItem[] = []
+  let timeline: TraceTimelineItem[] = []
   let lastStats: HarnessHistoryMessageLike["response_stats"]
   let attempts: TurnAttempt[] = []
   let attemptIndexById = new Map<string, number>()
   let hasExplicitAttemptMeta = false
   let hiddenInternalMessages: HiddenInternalMessage[] = []
+
+  const appendTimelineReasoning = (text: string) => {
+    const clean = text.trim()
+    if (!clean) return
+    const last = timeline[timeline.length - 1]
+    if (last && last.type === "reasoning") {
+      timeline[timeline.length - 1] = {
+        ...last,
+        text: `${last.text}\n\n${clean}`,
+      }
+      return
+    }
+    timeline.push({
+      type: "reasoning",
+      id: `hist_reasoning_${turns.length + 1}_${timeline.length + 1}`,
+      text: clean,
+    })
+  }
+
+  const appendTimelineNote = (text: string) => {
+    const clean = text.trim()
+    if (!clean) return
+    workNotes.push(clean)
+    timeline.push({
+      type: "note",
+      id: `hist_note_${turns.length + 1}_${timeline.length + 1}`,
+      text: clean,
+    })
+  }
+
+  const appendTimelineToolStep = (step: TraceStepItem, groupTitle?: string) => {
+    toolSteps.push(step)
+    const last = timeline[timeline.length - 1]
+    if (last && last.type === "group") {
+      const nextSteps = [...last.group.steps, step]
+      timeline[timeline.length - 1] = {
+        type: "group",
+        group: {
+          ...last.group,
+          title: `Ran ${nextSteps.length} tool${nextSteps.length === 1 ? "" : "s"}`,
+          steps: nextSteps,
+        },
+      }
+      return
+    }
+    timeline.push({
+      type: "group",
+      group: {
+        id: `hist_wg_${turns.length + 1}_${timeline.length + 1}`,
+        title: groupTitle ?? "Ran 1 tool",
+        steps: [step],
+      },
+    })
+  }
 
   const flushTurn = () => {
     if (currentUserPrompt === null) return
@@ -850,6 +933,7 @@ export function mapHistoryMessagesToTurns(
               },
             ]
           : [],
+      ...(timeline.length > 0 ? { timeline } : {}),
       answerIntro,
       answerBullets: [],
       diffCard: EMPTY_DIFF,
@@ -867,6 +951,7 @@ export function mapHistoryMessagesToTurns(
     assistantChunks = []
     workNotes = []
     toolSteps = []
+    timeline = []
     lastStats = undefined
     attempts = []
     attemptIndexById = new Map()
@@ -909,7 +994,7 @@ export function mapHistoryMessagesToTurns(
           isMono: false,
         }
         if (currentUserPrompt !== null) {
-          toolSteps.push(step)
+          appendTimelineToolStep(step, synthetic.groupTitle)
         } else if (turns.length > 0) {
           const prevTurn = turns[turns.length - 1]
           if (prevTurn.groups.length > 0) {
@@ -921,9 +1006,32 @@ export function mapHistoryMessagesToTurns(
               steps: [step],
             })
           }
+          if (prevTurn.timeline && prevTurn.timeline.length > 0) {
+            const lastEntry = prevTurn.timeline[prevTurn.timeline.length - 1]
+            if (lastEntry && lastEntry.type === "group") {
+              const nextSteps = [...lastEntry.group.steps, step]
+              prevTurn.timeline[prevTurn.timeline.length - 1] = {
+                type: "group",
+                group: {
+                  ...lastEntry.group,
+                  title: `Ran ${nextSteps.length} tool${nextSteps.length === 1 ? "" : "s"}`,
+                  steps: nextSteps,
+                },
+              }
+            } else {
+              prevTurn.timeline.push({
+                type: "group",
+                group: {
+                  id: `hist_wg_${turns.length}_${prevTurn.timeline.length + 1}`,
+                  title: synthetic.groupTitle,
+                  steps: [step],
+                },
+              })
+            }
+          }
         } else {
           currentUserPrompt = synthetic.groupTitle
-          toolSteps.push(step)
+          appendTimelineToolStep(step, synthetic.groupTitle)
         }
         continue
       }
@@ -933,7 +1041,7 @@ export function mapHistoryMessagesToTurns(
       if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
         for (const chunk of assistantChunks) {
           const clean = chunk.trim()
-          if (clean) workNotes.push(clean)
+          if (clean) appendTimelineNote(clean)
         }
         assistantChunks = []
         attempts = []
@@ -950,13 +1058,13 @@ export function mapHistoryMessagesToTurns(
         statusLabel: "Success",
         isMono: false,
       }
-      toolSteps.push(step)
+      appendTimelineToolStep(step)
     } else if (msg.role === "assistant") {
       const { reasoningNotes, answerText } = splitReasoningFromAssistantContent(
         msg.content
       )
       for (const note of reasoningNotes) {
-        workNotes.push(note)
+        appendTimelineReasoning(note)
       }
       const trimmed = answerText.trim()
       if (trimmed) {

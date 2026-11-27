@@ -39,14 +39,42 @@ pub fn canonical_reasoning_effort(value: &str) -> Option<&'static str> {
     }
 }
 
+fn is_non_effort_provider(provider: &str) -> bool {
+    provider.contains("cursor")
+        || provider.contains("antigravity")
+        || provider.contains("gemini")
+        || provider.contains("grok")
+        || provider.contains("bedrock")
+}
+
+fn openai_inferred_efforts(model: &str) -> Vec<&'static str> {
+    let canonical = crate::model_id::canonical(model);
+    // Platform-API-only GPT Pro models match OpenAIProvider::available_efforts:
+    // gpt-5-pro accepts only `high`; newer pro generations accept medium/high/xhigh.
+    if crate::is_openai_api_only_pro_model(&canonical) {
+        return if canonical.starts_with("gpt-5-pro") {
+            vec!["high", "swarm"]
+        } else {
+            vec!["medium", "high", "xhigh", "swarm"]
+        };
+    }
+    OPENAI_SELECTABLE_EFFORTS.to_vec()
+}
+
 /// Infer the selectable effort ladder when only provider/model identity is
 /// available, such as in a remote TUI session.
 pub fn inferred_reasoning_efforts(
     provider_name: Option<&str>,
     model_name: Option<&str>,
 ) -> Vec<&'static str> {
-    let provider = provider_name.unwrap_or_default().to_ascii_lowercase();
-    let model = model_name.unwrap_or_default().to_ascii_lowercase();
+    let provider = provider_name.unwrap_or_default().trim().to_ascii_lowercase();
+    let model = model_name.unwrap_or_default().trim().to_ascii_lowercase();
+
+    // Providers that do not dispatch `set_reasoning_effort` in `MultiProvider`
+    // must never fall through to model-name heuristics (`claude-*`, `gpt-*`, etc.).
+    if is_non_effort_provider(&provider) {
+        return Vec::new();
+    }
 
     if provider.contains("rayu") {
         return RAYU_SELECTABLE_EFFORTS.to_vec();
@@ -71,7 +99,7 @@ pub fn inferred_reasoning_efforts(
         || model.starts_with("o5");
     if provider.contains("openai-compatible") {
         return if is_openai_model {
-            OPENAI_SELECTABLE_EFFORTS.to_vec()
+            openai_inferred_efforts(&model)
         } else {
             Vec::new()
         };
@@ -98,7 +126,7 @@ pub fn inferred_reasoning_efforts(
 
     let is_openai = provider.contains("openai") || provider.contains("codex") || is_openai_model;
     if is_openai {
-        return OPENAI_SELECTABLE_EFFORTS.to_vec();
+        return openai_inferred_efforts(&model);
     }
 
     Vec::new()
@@ -147,6 +175,93 @@ mod tests {
         assert_eq!(
             inferred_reasoning_efforts(Some("anthropic"), Some("claude-opus-4-7")),
             vec!["none", "low", "medium", "high", "xhigh", "max", "swarm"]
+        );
+        assert!(
+            inferred_reasoning_efforts(Some("anthropic"), Some("claude-haiku-4-5")).is_empty(),
+            "Haiku 4.5 does not support reasoning effort"
+        );
+    }
+
+    #[test]
+    fn non_effort_providers_never_fall_through_to_model_heuristics() {
+        for provider in [
+            "cursor",
+            "Cursor",
+            "antigravity",
+            "Antigravity",
+            "bedrock",
+            "AWS Bedrock",
+            "gemini",
+            "Gemini",
+            "grok",
+            "Grok Build",
+        ] {
+            for model in [
+                "claude-opus-4-7",
+                "gpt-5.4",
+                "gpt-5-pro",
+                "deepseek-r1",
+                "glm-5.3",
+                "gemini-2.5-pro",
+            ] {
+                assert!(
+                    inferred_reasoning_efforts(Some(provider), Some(model)).is_empty(),
+                    "provider `{provider}` with model `{model}` must not advertise reasoning efforts"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn openai_pro_models_match_runtime_validation_ladders() {
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai"), Some("gpt-5-pro")),
+            vec!["high", "swarm"]
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("OpenAI"), Some("gpt-5-pro-2025-10-06")),
+            vec!["high", "swarm"]
+        );
+        for pro_model in [
+            "gpt-5.2-pro",
+            "gpt-5.4-pro",
+            "gpt-5.5-pro",
+            "gpt-5.5-pro-2026-04-23",
+            "gpt-5.6-pro",
+        ] {
+            assert_eq!(
+                inferred_reasoning_efforts(Some("openai"), Some(pro_model)),
+                vec!["medium", "high", "xhigh", "swarm"],
+                "newer pro model `{pro_model}` should match OpenAIProvider::available_efforts"
+            );
+        }
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:custom"), Some("gpt-5-pro")),
+            vec!["high", "swarm"]
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai"), Some("gpt-6.1-sol")),
+            OPENAI_SELECTABLE_EFFORTS
+        );
+    }
+
+    #[test]
+    fn rayu_and_openrouter_hosted_routes_keep_expected_ladders() {
+        assert_eq!(
+            inferred_reasoning_efforts(Some("Rayu"), Some("claude-opus-4-7")),
+            RAYU_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("rayu"), Some("gpt-5.4")),
+            RAYU_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("OpenRouter"), Some("x-ai/grok-4")),
+            OPENROUTER_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openrouter"), Some("google/gemini-2.5-pro")),
+            OPENROUTER_SELECTABLE_EFFORTS
         );
     }
 }

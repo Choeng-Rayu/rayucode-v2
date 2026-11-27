@@ -15,6 +15,11 @@ import {
   Wrench,
 } from "lucide-react"
 
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { RayuProcessingMark } from "@/components/ui/rayu-processing-mark"
 import { useAppStore } from "@/lib/app-store"
 import { cn } from "@/lib/utils"
@@ -359,6 +364,56 @@ function TraceGroupSection({
   )
 }
 
+interface ThinkingDisclosureProps {
+  text: string
+  isActive?: boolean
+  defaultOpen?: boolean
+}
+
+function ThinkingDisclosure({
+  text,
+  isActive = false,
+  defaultOpen = false,
+}: ThinkingDisclosureProps) {
+  const [open, setOpen] = React.useState(defaultOpen)
+
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      data-slot="work-reasoning"
+      data-testid="work-reasoning"
+      className="flex flex-col gap-1.5"
+    >
+      <CollapsibleTrigger
+        type="button"
+        data-slot="work-reasoning-toggle"
+        data-testid="work-reasoning-toggle"
+        aria-expanded={open}
+        className="group/work-reasoning inline-flex cursor-pointer items-center gap-1.5 self-start rounded-lg py-0.5 pr-2 pl-0.5 text-[13px] font-normal text-muted-ink transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 text-muted-ink transition-transform duration-150 group-hover/work-reasoning:text-ink",
+            open && "rotate-90"
+          )}
+          aria-hidden="true"
+        />
+        <span className={cn(isActive && "animate-pulse")}>Thinking</span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div
+          data-slot="work-reasoning-body"
+          data-testid="work-reasoning-body"
+          className="ml-2 max-w-[70ch] border-l border-hairline py-0.5 pl-3.5 text-[13px] leading-[1.6] whitespace-pre-wrap text-muted-ink"
+        >
+          {text}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 export function WorkTrace({
   workedDuration,
   isLive = false,
@@ -450,22 +505,17 @@ export function WorkTrace({
           className="flex flex-col gap-2.5 pb-1.5"
         >
           {hasTimeline && timeline ? (
-            timeline.map((entry) => {
+            timeline.map((entry, idx) => {
               if (entry.type === "reasoning") {
+                const isActiveReasoning = Boolean(
+                  isLive && !activeToolStatus && idx === timeline.length - 1
+                )
                 return (
-                  <div
+                  <ThinkingDisclosure
                     key={entry.id}
-                    data-slot="work-reasoning"
-                    data-testid="work-reasoning"
-                    className="max-w-[70ch] border-l-2 border-hairline-strong pl-3"
-                  >
-                    <div className="mb-1 text-[11px] font-medium tracking-[0.02em] text-faint">
-                      Reasoning
-                    </div>
-                    <div className="text-[13px] leading-[1.6] whitespace-pre-wrap text-muted-ink">
-                      {entry.text}
-                    </div>
-                  </div>
+                    text={entry.text}
+                    isActive={isActiveReasoning}
+                  />
                 )
               }
               if (entry.type === "note") {

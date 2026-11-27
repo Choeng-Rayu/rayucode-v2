@@ -90,32 +90,40 @@ export const TELEGRAM_CHAT_COMMANDS: readonly TelegramCommandItem[] = [
     description: "Pick which local RayuCode session to drive",
   },
   {
+    command: "/switch",
+    description: "Switch directly to another local RayuCode session",
+  },
+  {
     command: "/status",
-    description: "Inspect active session, model route, and bridge latency",
+    description: "Inspect active session, model route, and turn state",
   },
   {
     command: "/model",
-    description: "Switch model route in Rayu-first gateway order",
+    description: "Choose a configured model for the selected session",
   },
   {
     command: "/provider",
-    description: "Switch configured provider on the host",
+    description: "Browse configured providers on this host",
   },
   {
     command: "/connect",
-    description: "Prompt host login when auth is missing",
+    description: "Show local host sign-in instructions for a provider",
   },
   {
     command: "/interrupt",
-    description: "Soft-cancel the active Telegram turn",
+    description: "Cancel the currently running Telegram turn",
+  },
+  {
+    command: "/answer",
+    description: "Reply to a pending interactive question from the agent",
   },
   {
     command: "/stop",
-    description: "Disconnect the Telegram remote link",
+    description: "Disconnect Telegram remote control from this host",
   },
   {
     command: "/uninstall",
-    description: "Teardown managed CLI (guarded by Safety toggle)",
+    description: "Remove managed CLI (guarded by Safety toggle + code)",
   },
 ]
 

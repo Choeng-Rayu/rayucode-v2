@@ -1,6 +1,7 @@
 import {
   createOrReuseDraft,
   type ProvisionalDraftSession,
+  type SessionTodoItem,
 } from "@rayu-dev/rayucode-session-core/client"
 import { create } from "zustand"
 
@@ -17,6 +18,7 @@ export type AppRoute =
   | "home"
   | "workspace"
   | "swarm"
+  | "agents"
   | "automations"
   | "plugins"
   | "changes"
@@ -97,6 +99,7 @@ export interface PendingStreamPrompt {
   images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
+  effort?: string
   startedAtMs?: number
 }
 
@@ -152,6 +155,7 @@ export interface AppStoreState {
   liveExcelWorkbookVersion: number
   activeDiagram: ActiveDiagramState
   sessionFileChangesBySession: Record<string, FileChangesSnapshot>
+  sessionTodosBySession: Record<string, SessionTodoItem[]>
   sessionTokenUsageBySession: Record<string, SessionTokenUsageSnapshot>
   sessionModelInfoBySession: Record<string, SessionModelInfoSnapshot>
   selectedDiffFilePath: string | null
@@ -192,6 +196,7 @@ export interface AppStoreState {
     sessionId: string,
     snapshot: FileChangesSnapshot
   ) => void
+  setSessionTodos: (sessionId: string, todos: SessionTodoItem[]) => void
   setSessionTokenUsage: (
     sessionId: string,
     usage: SessionTokenUsageSnapshot
@@ -437,6 +442,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   liveExcelWorkbookVersion: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
   sessionFileChangesBySession: {},
+  sessionTodosBySession: {},
   sessionTokenUsageBySession: {},
   sessionModelInfoBySession: {},
   selectedDiffFilePath: null,
@@ -715,6 +721,16 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }))
   },
 
+  setSessionTodos: (sessionId, todos) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionTodosBySession: {
+        ...state.sessionTodosBySession,
+        [sessionId]: todos,
+      },
+    }))
+  },
+
   setSessionTokenUsage: (sessionId, usage) => {
     if (!sessionId) return
     set((state) => ({
@@ -950,6 +966,7 @@ const VALID_ROUTES = new Set<AppRoute>([
   "home",
   "workspace",
   "swarm",
+  "agents",
   "automations",
   "plugins",
   "changes",
