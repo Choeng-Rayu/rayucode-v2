@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   Check,
@@ -81,7 +82,7 @@ function formatMcpStatusLabel(status: McpServerStatus): string {
 }
 
 export function McpConnectorsTab() {
-  const { data } = useMcpConnectors();
+  const { data, isError, refetch } = useMcpConnectors();
   const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const {
     toggleMutation,
@@ -323,6 +324,12 @@ export function McpConnectorsTab() {
 
   return (
     <div data-testid="mcp-connectors-tab" className="flex flex-col gap-6">
+      {isError && (
+        <div role="alert" className="flex items-center gap-2 p-3 text-xs text-muted-ink">
+          {data ? "Showing last known MCP connectors." : "Could not load MCP connectors from the engine."}
+          <Button type="button" variant="ghost" size="xs" onClick={() => void refetch()}>Retry</Button>
+        </div>
+      )}
       {/* Header & Controls */}
       <header className="flex flex-col gap-3.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -590,6 +597,8 @@ export function McpConnectorsTab() {
                           }
                           size="xs"
                           data-testid={`mcp-oauth-btn-${srv.id}`}
+                          disabled={!operationAvailable("plugins.mcp.login")}
+                          title="Use Rayu MCP login or logout in the terminal"
                           onClick={() =>
                             oauthMutation.mutate({
                               id: srv.id,

@@ -267,6 +267,8 @@ export class RayucodeClient extends EventEmitter {
 
   /** Server identity from the handshake, e.g. "rayu-harness-api-bridge/0.1.0". */
   server = "";
+  protocolMajor?: number;
+  protocolMinor?: number;
   /** Capability strings advertised by the server. */
   capabilities: string[] = [];
 
@@ -374,6 +376,8 @@ export class RayucodeClient extends EventEmitter {
         throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
       }
       client.server = String(frame.server ?? "");
+      if (typeof frame.version === "number") client.protocolMajor = frame.version;
+      if (typeof frame.minor_version === "number") client.protocolMinor = frame.minor_version;
       client.capabilities = (frame.capabilities as string[] | undefined) ?? [];
       return client;
     } catch (error) {

@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import * as React from "react";
 import {
@@ -569,7 +570,8 @@ export function RuntimeDoctorSection({
               type="button"
               variant="default"
               size="xs"
-              disabled={isRunningSelfDev}
+              disabled
+              title="Use Rayu self-dev in the terminal"
               onClick={() => void onRunSelfDev("build")}
               data-testid="selfdev-build-btn"
             >
@@ -579,7 +581,8 @@ export function RuntimeDoctorSection({
               type="button"
               variant="primary"
               size="xs"
-              disabled={isRunningSelfDev}
+              disabled
+              title="Use Rayu self-dev in the terminal"
               onClick={() => void onRunSelfDev("reload")}
               data-testid="selfdev-reload-btn"
             >
@@ -676,6 +679,7 @@ export function RuntimeDoctorSection({
             value={feedbackSummary}
             onChange={(e) => setFeedbackSummary(e.target.value)}
             placeholder="Describe a bug, suggestion, or usability note..."
+            disabled={!operationAvailable("settings.feedback.submit")}
             data-testid="maintainer-feedback-input"
             className="h-8 min-w-0 flex-1 rounded-md border border-control-border bg-inset px-2.5 text-xs text-ink"
           />
@@ -688,9 +692,10 @@ export function RuntimeDoctorSection({
               void onSubmitFeedback({
                 kind: "suggestion",
                 summary: feedbackSummary.trim(),
-              });
-              setFeedbackSummary("");
+              }).then(() => setFeedbackSummary("")).catch(() => {});
             }}
+            disabled={!operationAvailable("settings.feedback.submit")}
+            title="Feedback submission is unavailable in this runtime"
             data-testid="maintainer-feedback-submit"
           >
             Send Feedback

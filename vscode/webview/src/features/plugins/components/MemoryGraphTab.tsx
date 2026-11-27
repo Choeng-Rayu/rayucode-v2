@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   Brain,
@@ -163,6 +164,7 @@ export function MemoryGraphTab() {
             variant="primary"
             size="sm"
             data-testid="toggle-remember-fact-btn"
+            disabled={!operationAvailable("plugins.memory.remember")}
             onClick={() => setRememberOpen((prev) => !prev)}
           >
             <Plus className="size-3.5" aria-hidden="true" />
@@ -230,7 +232,8 @@ export function MemoryGraphTab() {
                 type="button"
                 variant="ghost"
                 size="xs"
-                onClick={() => setRememberOpen(false)}
+                disabled={!operationAvailable("plugins.memory.remember")}
+            onClick={() => setRememberOpen(false)}
               >
                 Cancel
               </Button>
@@ -413,6 +416,7 @@ export function MemoryGraphTab() {
                       variant="ghost"
                       size="xs"
                       data-testid={`memory-add-tag-${fact.id}`}
+                      disabled={!operationAvailable("plugins.memory.tag")}
                       onClick={() =>
                         tagFactMutation.mutate({
                           id: fact.id,
@@ -432,6 +436,7 @@ export function MemoryGraphTab() {
                         variant="ghost"
                         size="xs"
                         data-testid={`memory-link-btn-${fact.id}`}
+                        disabled={!operationAvailable("plugins.memory.link")}
                         onClick={() =>
                           linkFactsMutation.mutate({
                             sourceId: fact.id,
@@ -450,6 +455,7 @@ export function MemoryGraphTab() {
                       variant="ghost"
                       size="xs"
                       data-testid={`memory-forget-btn-${fact.id}`}
+                      disabled={!operationAvailable("plugins.memory.forget")}
                       onClick={() => forgetFactMutation.mutate(fact.id)}
                       className="text-muted-ink hover:text-danger"
                     >

@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   ChevronDown,
@@ -208,7 +209,8 @@ export function OvernightRunRow({
             type="button"
             variant="outline"
             size="sm"
-            disabled={isTerminal}
+            disabled={isTerminal || !operationAvailable("automations.overnight.pause")}
+            title="Pause and resume require runtime support"
             data-testid={`toggle-pause-${run.runId}`}
             onClick={onTogglePause}
           >
@@ -231,7 +233,7 @@ export function OvernightRunRow({
                 type="button"
                 variant="ghost"
                 size="sm"
-                disabled={isTerminal}
+                disabled={isTerminal || !operationAvailable("automations.overnight.runNow")}
                 data-testid={`run-now-${run.runId}`}
                 onClick={onRunNow}
               >

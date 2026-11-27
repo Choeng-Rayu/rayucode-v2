@@ -445,6 +445,7 @@ export function AccountProvidersSection({
                         key={r}
                         type="button"
                         data-testid={`analytics-range-${r}`}
+                        disabled={analytics?.available === false}
                         aria-pressed={analyticsRange === r}
                         onClick={() => onAnalyticsRangeChange(r)}
                         className={cn(
@@ -467,6 +468,7 @@ export function AccountProvidersSection({
                   >
                     <SelectTrigger
                       aria-label="Group analytics by"
+                      disabled={analytics?.available === false}
                       className="w-[170px]"
                     >
                       <SelectValue />
@@ -487,9 +489,9 @@ export function AccountProvidersSection({
                       Credit Breakdown ({analyticsRange})
                     </span>
                     <span className="font-mono text-brand-text tabular-nums">
-                      {analytics?.totalCredits != null
-                        ? `${analytics.totalCredits.toLocaleString()} cr total`
-                        : "0 cr total"}
+                      {analytics?.available === false || analytics?.totalCredits == null
+                        ? "Usage unavailable"
+                        : `${analytics.totalCredits.toLocaleString()} cr total`}
                     </span>
                   </div>
 

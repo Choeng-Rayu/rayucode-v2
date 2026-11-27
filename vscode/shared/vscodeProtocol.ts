@@ -801,6 +801,7 @@ export const MemoryStatusViewSchema = z.object({
 export type MemoryStatusView = z.infer<typeof MemoryStatusViewSchema>;
 
 export const WorkspaceIntegrationsViewSchema = z.object({
+  available: z.boolean().optional(),
   gmail: z.object({
     connected: z.boolean(),
     account: z.string().optional(),
@@ -1108,6 +1109,7 @@ export const AccountStatusViewSchema = z.object({
 export type AccountStatusView = z.infer<typeof AccountStatusViewSchema>;
 
 export const AnalyticsSummaryViewSchema = z.object({
+  available: z.boolean().optional(),
   range: z.enum(["7d", "30d"]),
   groupBy: z.enum(["feature", "model"]),
   totalCredits: z.number(),
@@ -2420,6 +2422,11 @@ export const RpcContractSchemas = {
     params: z.object({ sessionId: z.string().optional() }).optional(),
     result: z.object({
       ok: z.boolean(),
+      message: z.string().optional(),
+      sources: z.object({
+        engine: z.enum(["fresh", "failed", "unavailable"]),
+        hosted: z.enum(["fresh", "cached", "stale", "failed", "unavailable"]),
+      }).optional(),
       routeCount: z.number().int().nonnegative().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
     }),
@@ -2843,6 +2850,11 @@ export const HostToWebviewMessageSchema = z.union([
     type: z.literal("rayucode.todos.updated"),
     sessionId: z.string(),
     todos: z.array(TodoItemViewSchema),
+  }),
+  z.object({
+    type: z.literal("rayucode.models.changed"),
+    sessionIds: z.array(z.string()),
+    credentialsChanged: z.boolean(),
   }),
   z.object({
     type: z.literal("rayucode.config.changed"),

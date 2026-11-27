@@ -1,5 +1,7 @@
 # Spec 07 — Changes, Native VS Code Diffs & PR Guardrail
 
+> **Current behavior.** The packaged extension sends both Changes commands to native VS Code Source Control. Review agent edits in Chat, with file mutations available on engines that provide Rust file-change snapshots. The dedicated Changes screen described below is design history.
+
 > **Desktop Reference:** `desktop/src/features/changes/components/changes-view.tsx`, `desktop/src/features/changes/components/diff-panel.tsx`.
 > **VS Code Native Helpers Reused:** `vscode/host/review/reversePatch.ts`, `vscode/host/review/reviewUri.ts`, `vscode.diff` (`ViewColumn.Beside`).
 > **Owned Files (Wave 3F — Part 1):** `vscode/webview/src/features/changes/**`.

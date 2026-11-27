@@ -690,7 +690,7 @@ export interface SidePanelSnapshot {
 }
 
 export type ApiEvent =
-  | { ev: "hello_ok"; version: number; server: string; capabilities?: string[] }
+  | { ev: "hello_ok"; version: number; minor_version?: number; server: string; capabilities?: string[] }
   | { ev: "ok" }
   | { ev: "runtime_command_result"; session_id: string; command: RuntimeCommand; data: unknown; message: string }
   | { ev: "error"; code: ErrorCode; message: string }

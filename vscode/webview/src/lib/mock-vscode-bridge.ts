@@ -723,7 +723,26 @@ const mockState: MockBridgeState = {
     currentCycleStatus: "idle",
     nextWakeupAt: "Paused",
     recentCycles: [],
-    approvals: [],
+    approvals: [
+  {
+    id: "amb_appr_01",
+    action: "cargo test --workspace --all-targets",
+    urgency: "normal",
+    reason:
+      "Ambient drift detector noticed 3 modified Rust crates since last validation cycle.",
+    createdAtMs: Date.now() - 240_000,
+    status: "pending",
+  },
+  {
+    id: "amb_appr_02",
+    action: "git worktree prune && cargo clippy -p rayu-harness",
+    urgency: "high",
+    reason:
+      "Stale worktree lock detected after interrupted background task; requires cleanup confirmation.",
+    createdAtMs: Date.now() - 95_000,
+    status: "pending",
+  },
+],
   },
 
   quality: {
@@ -1964,7 +1983,13 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     case "automations.schedules.toggle":
     case "automations.schedules.runNow":
     case "automations.schedules.cancel":
+      return { ok: true } as RpcResult<M>;
     case "automations.ambient.decide":
+      mockState.ambient.approvals = mockState.ambient.approvals.map((approval) =>
+        approval.id === params.id
+          ? { ...approval, status: params.decision === "allow" ? "approved" : "denied" }
+          : approval,
+      );
       return { ok: true } as RpcResult<M>;
     case "automations.overnight.log":
       return {

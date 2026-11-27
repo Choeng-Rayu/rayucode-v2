@@ -6,8 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import * as vscode from "vscode";
 import {
-  API_VERSION_MAJOR,
-  API_VERSION_MINOR,
   RayucodeClient,
   apiSocketPath as defaultSdkApiSocketPath,
   bundledRayuBinary,
@@ -298,7 +296,6 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     this.managedVersion = managed?.version;
     this.status = {
       state: "disconnected",
-      protocolVersion: `${API_VERSION_MAJOR}.${API_VERSION_MINOR}`,
       socketPath,
       capabilities: [],
       isRayuRepo: detectIsRayuRepo(this.getWorkspacePaths()),
@@ -758,9 +755,11 @@ export class BridgeManager extends EventEmitter implements vscode.Disposable {
     );
     this.updateStatus({
       state: "connected",
-      version: client.server || "rayu-harness-v1.14",
-      bridgeVersion: client.server || "rayu-harness-v1.14",
-      protocolVersion: `${API_VERSION_MAJOR}.${API_VERSION_MINOR}`,
+      version: client.server || undefined,
+      bridgeVersion: client.server || undefined,
+      protocolVersion: client.protocolMajor === undefined
+        ? undefined
+        : [client.protocolMajor, client.protocolMinor].filter((value) => value !== undefined).join("."),
       socketPath,
       latencyMs,
       pid: this.bridgeProcess?.pid,

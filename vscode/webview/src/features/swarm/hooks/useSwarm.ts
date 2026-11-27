@@ -1,3 +1,4 @@
+import { requireOperation } from "@/lib/operation-result";
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -372,103 +373,18 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
     mutationFn: async (input: SpawnWorkerInput) => {
       const cleanLabel = input.label.trim();
       const cleanPrompt = input.prompt.trim();
-      const res = await rpcClient.callRpc("swarm.spawn", {
+      const res = await requireOperation(rpcClient.callRpc("swarm.spawn", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
         label: cleanLabel,
         model: input.model && input.model !== "inherit" ? input.model : undefined,
         useWorktree: input.useWorktree,
         prompt: cleanPrompt,
-      });
-      return { res, input: { ...input, label: cleanLabel, prompt: cleanPrompt } };
+      }));
+      if (!res.agent?.sessionId) throw new Error("The engine did not return a worker session.");
+      return res;
     },
-    onSuccess: ({ res, input }) => {
-      const spawnedAgent: SwarmAgentView = res.agent ?? {
-        agentId: input.label,
-        sessionId: `ses_${input.label}`,
-        label: input.label,
-        role: "worker",
-        depth: 1,
-        status: "running",
-        model: input.model && input.model !== "inherit" ? input.model : "claude-sonnet-4-5",
-        provider: "rayu-cloud",
-        currentIntent: input.prompt,
-        branch: input.useWorktree ? `swarm/${input.label}` : "main",
-        worktreePath: input.useWorktree
-          ? `/workspace/rayucode-v2/.worktrees/${input.label}`
-          : "/workspace/rayucode-v2",
-        todoCompleted: 0,
-        todoTotal: 3,
-        updatedAtMs: Date.now(),
-      };
-
-      updateSwarmCache((current) => {
-        const hasCoordinator = current.agents.some((a) => a.role === "coordinator");
-        const baseAgents: SwarmAgentView[] = hasCoordinator
-          ? current.agents
-          : [
-              {
-                agentId: "coordinator",
-                sessionId: "ses_coordinator",
-                label: "coordinator",
-                role: "coordinator",
-                depth: 0,
-                status: "running",
-                model: "claude-opus-4-5",
-                provider: "rayu-cloud",
-                currentIntent: "Coordinating parallel worker lanes",
-                branch: "main",
-                todoCompleted: 1,
-                todoTotal: 4,
-                updatedAtMs: Date.now(),
-              },
-              ...current.agents,
-            ];
-
-        const nextAgents = baseAgents.some((a) => a.agentId === spawnedAgent.agentId)
-          ? baseAgents.map((a) =>
-              a.agentId === spawnedAgent.agentId ? spawnedAgent : a,
-            )
-          : [...baseAgents, spawnedAgent];
-
-        const nextWorktrees: SwarmWorktreeView[] =
-          input.useWorktree &&
-          !current.worktrees.some((w) => w.branch === `swarm/${input.label}`)
-            ? [
-                ...current.worktrees,
-                {
-                  id: `wt_${input.label}`,
-                  branch: `swarm/${input.label}`,
-                  path: `/workspace/rayucode-v2/.worktrees/${input.label}`,
-                  manager: "git-worktree",
-                  agents: [input.label],
-                  dirtyFiles: 0,
-                },
-              ]
-            : current.worktrees;
-
-        const nextSeq =
-          current.board.reduce((max, m) => Math.max(max, m.seq), 0) + 1;
-
-        return {
-          ...current,
-          agents: nextAgents,
-          worktrees: nextWorktrees,
-          board: [
-            ...current.board,
-            {
-              seq: nextSeq,
-              kind: "lifecycle",
-              from: "coordinator",
-              to: input.label,
-              text: `@${input.label} spawned (${input.role ?? "Worker"}): ${input.prompt}`,
-              timestampMs: Date.now(),
-            },
-          ],
-        };
-      });
-
-      setSelectedAgentId(spawnedAgent.agentId);
-      setShowLaunchpad(false);
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["swarm"] });
     },
   });
 
@@ -488,8 +404,8 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
         };
       }
       try {
-        const { res } = await spawnMutation.mutateAsync(input);
-        return { ok: true, agent: res.agent };
+        const result = await spawnMutation.mutateAsync(input);
+        return { ok: true, agent: result.agent };
       } catch (err) {
         return {
           ok: false,
@@ -544,11 +460,11 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       agentId: string;
       pauseOnly?: boolean;
     }) => {
-      await rpcClient.callRpc("swarm.kill", {
+      await requireOperation(rpcClient.callRpc("swarm.kill", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
         agentId,
         pauseOnly,
-      });
+      }));
       return { agentId, pauseOnly };
     },
     onSuccess: ({ agentId, pauseOnly }) => {
@@ -570,10 +486,10 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
 
   const salvageMutation = useMutation({
     mutationFn: async (agentId: string) => {
-      await rpcClient.callRpc("swarm.salvage", {
+      await requireOperation(rpcClient.callRpc("swarm.salvage", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
         agentId,
-      });
+      }));
       return agentId;
     },
     onSuccess: (agentId) => {
@@ -595,9 +511,9 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
 
   const pauseAllMutation = useMutation({
     mutationFn: async () => {
-      await rpcClient.callRpc("swarm.pauseAll", {
+      await requireOperation(rpcClient.callRpc("swarm.pauseAll", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
-      });
+      }));
     },
     onSuccess: () => {
       updateSwarmCache((current) => {
@@ -625,11 +541,11 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       agentId: string;
       message: string;
     }) => {
-      const res = await rpcClient.callRpc("swarm.dm", {
+      const res = await requireOperation(rpcClient.callRpc("swarm.dm", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
         agentId,
         message,
-      });
+      }));
       return { agentId, message, seq: res.seq };
     },
     onSuccess: ({ agentId, message, seq }) => {
@@ -664,12 +580,12 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       decision: "approve" | "reject";
       reason?: string;
     }) => {
-      await rpcClient.callRpc("swarm.planDecide", {
+      await requireOperation(rpcClient.callRpc("swarm.planDecide", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
         proposalId,
         decision,
         reason,
-      });
+      }));
       return { proposalId, decision };
     },
     onSuccess: ({ proposalId, decision }) => {
@@ -743,27 +659,19 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
 
   const switchAgentModel = React.useCallback(
     async (agentId: string, model: string) => {
-      const target = swarm?.agents.find((a) => a.agentId === agentId);
-      updateSwarmCache((current) => ({
-        ...current,
-        agents: current.agents.map((a) =>
-          a.agentId === agentId ? { ...a, model, updatedAtMs: Date.now() } : a,
-        ),
-      }));
-      if (target) {
-        try {
-          await rpcClient.callRpc("swarm.dm", {
-            swarmId: swarm?.swarmId ?? activeSwarmId,
-            agentId,
-            message: `[model] switch model to ${model}`,
-          });
-        } catch {
-          // optimistic model switch remains applied
-        }
+      try {
+        await requireOperation(rpcClient.callRpc("swarm.dm", {
+          swarmId: swarm?.swarmId ?? activeSwarmId,
+          agentId,
+          message: `[model] switch model to ${model}`,
+        }));
+        void queryClient.invalidateQueries({ queryKey: ["swarm"] });
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : "Could not switch the worker model." };
       }
-      return { ok: true };
     },
-    [swarm, activeSwarmId, updateSwarmCache],
+    [swarm, activeSwarmId, queryClient],
   );
 
   const pauseAll = React.useCallback(async () => {
@@ -780,9 +688,9 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
 
   const stopSwarm = React.useCallback(async () => {
     try {
-      await rpcClient.callRpc("swarm.pauseAll", {
+      await requireOperation(rpcClient.callRpc("swarm.pauseAll", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
-      });
+      }));
       updateSwarmCache((current) => ({
         ...current,
         agents: current.agents.map((a) => ({
@@ -846,10 +754,10 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
         return { ok: false, error: "Swarm label cannot be empty." };
       }
       try {
-        await rpcClient.callRpc("swarm.setLabel", {
+        await requireOperation(rpcClient.callRpc("swarm.setLabel", {
           swarmId: swarm.swarmId,
           label: trimmed,
-        });
+        }));
         updateSwarmCache((current) => ({ ...current, label: trimmed }));
         return { ok: true };
       } catch (err) {

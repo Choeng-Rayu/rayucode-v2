@@ -1,5 +1,7 @@
 # Spec 02 — Active Chat, Quiet-Signal Execution Trace & Dual-Mode Right Inspector
 
+> **Current behavior.** The packaged extension keeps execution trace, file review, and todos in Chat. The proposed right inspector below is design history. Side-panel and applet RPCs have no mounted Inspector UI in the current extension. Whole-session Fork is available from the session menu.
+
 > **Desktop Reference:** `desktop/src/features/execution-trace/components/chat-stream.tsx`, `desktop/src/features/execution-trace/components/work-trace.tsx`, `desktop/src/features/execution-trace/components/shell-card.tsx`, `desktop/src/features/execution-trace/components/cite-link.tsx`, `desktop/src/features/execution-trace/components/inline-diff-card.tsx`, `desktop/src/features/execution-trace/components/turn-actions.tsx`, `desktop/src/features/sessions/components/clarifying-question-card.tsx`, `desktop/src/features/inspector/components/context-panel.tsx`, `desktop/src/features/inspector/components/inspector-sidebar.tsx`.
 > **Owned Files (Wave 3B):** `vscode/webview/src/features/chat/**` (excl. `HomePage.tsx`), `vscode/webview/src/features/inspector/**`.
 

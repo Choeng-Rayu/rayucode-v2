@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import type {
   ConfigFieldSchemaView,
@@ -395,7 +396,7 @@ export function FeaturesVoiceSection({
                 Enable voice dictation ({voice.hotkeyHint ?? "Alt+V"})
               </div>
               <div className="mt-0.5 text-muted-ink">
-                {voice.supported
+                {voice.supported && operationAvailable("settings.voice.update")
                   ? "Native audio capture pipeline ready"
                   : "Audio capture unavailable in current host environment"}
               </div>
@@ -407,6 +408,7 @@ export function FeaturesVoiceSection({
               }
               aria-label="Enable voice dictation"
               data-testid="voice-enabled-switch"
+              disabled={!operationAvailable("settings.voice.update")}
             />
           </div>
 
@@ -424,6 +426,7 @@ export function FeaturesVoiceSection({
               <SelectTrigger
                 aria-label="Input microphone"
                 data-testid="voice-device-select"
+                disabled={!operationAvailable("settings.voice.update")}
                 className="w-full sm:w-[230px]"
               >
                 <SelectValue />
@@ -452,6 +455,7 @@ export function FeaturesVoiceSection({
               }
               aria-label="Noise suppression"
               data-testid="voice-noise-suppression-switch"
+                disabled={!operationAvailable("settings.voice.update")}
             />
           </div>
 
@@ -470,6 +474,7 @@ export function FeaturesVoiceSection({
               }
               aria-label="Auto-send on silence"
               data-testid="voice-autosend-switch"
+                disabled={!operationAvailable("settings.voice.update")}
             />
           </div>
         </div>

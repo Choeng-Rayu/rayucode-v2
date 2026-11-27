@@ -747,7 +747,7 @@ export function SidebarProjectsPane({
                   {session.archived ? (
                     <>
                       <ArchiveRestore className="size-3.5" />
-                      <span>Restore from archive</span>
+                      <span>Show in workspace sidebar</span>
                     </>
                   ) : (
                     <>
@@ -941,6 +941,13 @@ export function SidebarProjectsPane({
           </Button>
         )}
       </div>
+
+      {sessionsQuery.isError && (
+        <div role="alert" className="mx-2 mb-2 flex items-center gap-2 text-xs text-muted-ink">
+          <span>{sessionsQuery.data ? "Showing last known sessions." : "Could not load sessions."}</span>
+          <Button type="button" variant="ghost" size="xs" onClick={() => void sessionsQuery.refetch()}>Retry</Button>
+        </div>
+      )}
 
       {/* Expandable Search Filter + Cross-Tool Search Toggle */}
       {searchOpen && (
@@ -1233,7 +1240,7 @@ export function SidebarProjectsPane({
             >
               <span className="inline-flex items-center gap-1.5">
                 <Archive className="size-3" />
-                <span>Archived ({sidebarTree.archived.length})</span>
+                <span>Sidebar archive ({sidebarTree.archived.length})</span>
               </span>
               {archivedExpanded ? (
                 <ChevronDown className="size-3" />

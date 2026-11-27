@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   ChevronDown,
@@ -184,13 +185,15 @@ export function SwarmView({
           </div>
         )}
 
-        <SwarmLaunchpad
+        {!operationAvailable("swarm.spawn") ? (
+          <p className="p-4 text-sm text-muted-ink">Start a swarm from a Rayu session. This view displays the engine’s workers and coordination state.</p>
+        ) : <SwarmLaunchpad
           existingAgentNames={existingAgentNames}
           availableModels={availableModels}
           isSubmitting={isSpawning}
           onSpawnWorker={spawnWorker}
           onLaunchPreset={launchPreset}
-        />
+        />}
       </div>
     );
   }
@@ -292,6 +295,7 @@ export function SwarmView({
               type="button"
               variant="primary"
               size="sm"
+              disabled={!operationAvailable("swarm.spawn")}
               aria-expanded={spawnBarOpen}
               onClick={() => setSpawnBarOpen((prev) => !prev)}
               data-slot="toggle-spawn-worker-btn"
@@ -305,7 +309,7 @@ export function SwarmView({
               type="button"
               variant="ghost"
               size="sm"
-              disabled={isPausingAll}
+              disabled={isPausingAll || !operationAvailable("swarm.pauseAll")}
               onClick={() => void pauseAll()}
               data-slot="toggle-pause-all-btn"
               data-testid="swarm-pause-all-btn"
@@ -327,7 +331,7 @@ export function SwarmView({
               type="button"
               variant="ghost"
               size="sm"
-              disabled={isPausingAll}
+              disabled={isPausingAll || !operationAvailable("swarm.pauseAll")}
               onClick={() => void stopSwarm()}
               data-testid="swarm-stop-btn"
             >
@@ -417,8 +421,8 @@ export function SwarmView({
                 selectedAgentId={selectedAgentId}
                 availableModels={availableModels}
                 onSelectAgent={handleSelectAgent}
-                onKillAgent={(id) => void killAgent(id)}
-                onSwitchModel={(id, m) => void switchAgentModel(id, m)}
+                onKillAgent={operationAvailable("swarm.kill") ? (id) => void killAgent(id) : undefined}
+                onSwitchModel={operationAvailable("swarm.dm") ? (id, m) => void switchAgentModel(id, m) : undefined}
               />
             )}
 
@@ -433,10 +437,10 @@ export function SwarmView({
                 showBackButton
                 onBackToRoster={() => setCompactPanel("roster")}
                 onOpenChat={openAgentSessionInChat}
-                onKillAgent={killAgent}
-                onSalvageAgent={salvageAgent}
-                onSwitchModel={switchAgentModel}
-                onSendDm={handleSendDm}
+                onKillAgent={operationAvailable("swarm.kill") ? killAgent : undefined}
+                onSalvageAgent={operationAvailable("swarm.salvage") ? salvageAgent : undefined}
+                onSwitchModel={operationAvailable("swarm.dm") ? switchAgentModel : undefined}
+                onSendDm={operationAvailable("swarm.dm") ? handleSendDm : undefined}
                 onOpenFile={openFileInEditor}
                 onOpenWorktreeWindow={(path) => void openWorktreeWindow(path)}
               />
@@ -461,7 +465,7 @@ export function SwarmView({
                 onBoardFilterChange={setBoardFilter}
                 workerFilter={workerFilter}
                 onWorkerFilterChange={setWorkerFilter}
-                onDecidePlan={decidePlan}
+                onDecidePlan={operationAvailable("swarm.planDecide") ? decidePlan : undefined}
                 isDecidingPlan={isDecidingPlan}
                 onOpenWorktreeWindow={(path) => void openWorktreeWindow(path)}
                 onViewWorktreeDiff={openDiffInEditor}
@@ -477,8 +481,8 @@ export function SwarmView({
                 selectedAgentId={selectedAgentId}
                 availableModels={availableModels}
                 onSelectAgent={handleSelectAgent}
-                onKillAgent={(id) => void killAgent(id)}
-                onSwitchModel={(id, m) => void switchAgentModel(id, m)}
+                onKillAgent={operationAvailable("swarm.kill") ? (id) => void killAgent(id) : undefined}
+                onSwitchModel={operationAvailable("swarm.dm") ? (id, m) => void switchAgentModel(id, m) : undefined}
               />
 
               <AgentInspector
@@ -489,10 +493,10 @@ export function SwarmView({
                 isMutatingAgent={isMutatingAgent}
                 isSendingDm={isSendingDm}
                 onOpenChat={openAgentSessionInChat}
-                onKillAgent={killAgent}
-                onSalvageAgent={salvageAgent}
-                onSwitchModel={switchAgentModel}
-                onSendDm={handleSendDm}
+                onKillAgent={operationAvailable("swarm.kill") ? killAgent : undefined}
+                onSalvageAgent={operationAvailable("swarm.salvage") ? salvageAgent : undefined}
+                onSwitchModel={operationAvailable("swarm.dm") ? switchAgentModel : undefined}
+                onSendDm={operationAvailable("swarm.dm") ? handleSendDm : undefined}
                 onOpenFile={openFileInEditor}
                 onOpenWorktreeWindow={(path) => void openWorktreeWindow(path)}
               />
@@ -512,7 +516,7 @@ export function SwarmView({
               onBoardFilterChange={setBoardFilter}
               workerFilter={workerFilter}
               onWorkerFilterChange={setWorkerFilter}
-              onDecidePlan={decidePlan}
+              onDecidePlan={operationAvailable("swarm.planDecide") ? decidePlan : undefined}
               isDecidingPlan={isDecidingPlan}
               onOpenWorktreeWindow={(path) => void openWorktreeWindow(path)}
               onViewWorktreeDiff={openDiffInEditor}
