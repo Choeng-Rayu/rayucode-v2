@@ -9,3 +9,5 @@ export * from "./components/ModelEffortPopover";
 export * from "./components/PermissionPopover";
 export * from "./components/SessionComposer";
 export * from "./components/HomePage";
+
+export * from "./hooks/useSubmitComposer";

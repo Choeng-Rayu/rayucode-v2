@@ -176,6 +176,31 @@ export function sendHarnessRequest(frame: Record<string, unknown>): void {
   });
 }
 
+export async function submitHarnessMessage(frame: Record<string, unknown>): Promise<void> {
+  if (!isVsCodeWebview()) {
+    sendHarnessRequest(frame);
+    return;
+  }
+  const id = nextRequestId++;
+  return new Promise((resolve, reject) => {
+    const stop = onHarnessFrame((reply) => {
+      if (reply.reply_to !== id || (reply.ev !== "ok" && reply.ev !== "error")) return;
+      clearTimeout(timer);
+      stop();
+      if (reply.ev === "error") {
+        reject(new Error(typeof reply.message === "string" ? reply.message : "Rayu could not submit the prompt."));
+      } else {
+        resolve();
+      }
+    });
+    const timer = setTimeout(() => {
+      stop();
+      reject(new Error("Rayu could not confirm this prompt. Review session history before retrying."));
+    }, 90_000);
+    sendHarnessRequest({ ...frame, id });
+  });
+}
+
 export function onHostMessage(
   listener: (msg: HostToWebviewMessage) => void,
 ): () => void {

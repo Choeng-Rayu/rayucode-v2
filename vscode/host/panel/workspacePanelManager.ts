@@ -1,3 +1,4 @@
+import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type * as vscode from "vscode";
 import {
@@ -927,12 +928,17 @@ export class WorkspacePanelManager
       }
       case "rayucode.editor.openFile": {
         try {
+          const baseDir = message.sessionId ? this.sessionHub.getSessionWorkingDir(message.sessionId) : undefined;
+          if (message.sessionId && !baseDir && !path.isAbsolute(message.path)) {
+            throw new Error("Could not resolve the session worktree.");
+          }
           await this.editorBridge.openFile({
             path: message.path,
             line: message.line,
             column: message.column,
             preview: message.preview,
-            baseDir: this.sessionHub.getSessionWorkingDir(),
+            baseDir,
+            strictBase: Boolean(message.sessionId),
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -943,8 +949,8 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openDiff": {
-        const resolvedSessionId =
-          message.sessionId ?? this.sessionHub.getActiveSessionId();
+        const resolvedSessionId = message.sessionId;
+        const baseDir = resolvedSessionId ? this.sessionHub.getSessionWorkingDir(resolvedSessionId) : undefined;
         const diff = await this.featureRouter.call("changes.diff", {
           path: message.path,
           sessionId: resolvedSessionId,
@@ -952,6 +958,7 @@ export class WorkspacePanelManager
         });
         await this.editorBridge.openDiff({
           path: diff.path || message.path,
+          baseDir,
           originalContent: diff.originalContent,
           modifiedContent: diff.modifiedContent,
           sessionId: resolvedSessionId,

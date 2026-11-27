@@ -1346,7 +1346,19 @@ test("SessionHubCore remembers effort, permissionMode, and model independently p
     const deferredPermRes = await hub.setPermissionMode(sessA.sessionId, "plan");
     assert.deepEqual(deferredPermRes, { ok: true, mode: "plan", deferred: true });
     assert.equal(clientA.setPermissionModeCalls.length, 0);
-    assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "plan");
+    assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "fullManage");
+
+    clientA.emitFrame({ v: 1, ev: "turn_done", session_id: sessA.sessionId });
+    const rejected: Array<Record<string, unknown>> = [];
+    await hub.handleHarnessRequest({
+      id: 301,
+      req: "send_message",
+      session_id: sessA.sessionId,
+      content: "Must not run without the requested permission",
+    }, (frame) => rejected.push(frame));
+    assert.equal(rejected[0]?.ev, "error");
+    assert.equal(clientA.sentMessages.length, 0);
+    assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "fullManage");
 
     clientA.throwTimeoutOnControl = false;
     clientA.emitFrame({
@@ -1890,7 +1902,7 @@ test("SessionHubCore syncs permissions on attach/eviction, caches FIFO pending p
   });
   assert.equal(hub.getPendingPermissionsSnapshot()["sess_perm_1"], undefined);
 
-  // 4. Busy daemon error defers permission mode and broadcasts rayucode.permission.modeSync
+  // 4. Busy daemon error defers permission mode without publishing it as applied
   broadcasts.length = 0;
   redialedClient.throwBusyOnControl = true;
   const busyRes = await hub.setPermissionMode("sess_perm_1", "plan");
@@ -1902,7 +1914,7 @@ test("SessionHubCore syncs permissions on attach/eviction, caches FIFO pending p
         m.sessionId === "sess_perm_1" &&
         m.mode === "plan",
     ),
-    true,
+    false,
   );
 
   // When turn finishes, deferred mode flushes cleanly

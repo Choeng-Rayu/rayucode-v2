@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -1134,6 +1135,7 @@ export function SessionComposer({
           id,
           sessionId: effectiveSessionId,
           mode: "queue",
+          workingDir: storeProjectPath ?? activeWorkspace?.path ?? undefined,
           text: trimmed,
           createdAtMs: Date.now(),
           images: attachedImages,
@@ -1143,7 +1145,7 @@ export function SessionComposer({
               : null,
           modelSpec: resolvedModelSpec,
           apiMethod: activeModelOption?.apiMethod,
-          effort: activeEffort,
+          effort: activeModelOption?.supportedEfforts?.length === 0 ? undefined : activeEffort,
           permissionMode: activePermissionMode,
           serviceTier: activeServiceTier,
           cacheTtl: activeCacheTtl,
@@ -1176,7 +1178,7 @@ export function SessionComposer({
         modelSpec: resolvedModelSpec,
         modelLabel: activeModelLabel,
         apiMethod: activeModelOption?.apiMethod,
-        effort: activeEffort,
+        effort: activeModelOption?.supportedEfforts?.length === 0 ? undefined : activeEffort,
         serviceTier: activeServiceTier,
         cacheTtl: activeCacheTtl,
         permissionMode: activePermissionMode,
@@ -1191,7 +1193,16 @@ export function SessionComposer({
 
       setTextValue("");
       setImages([]);
-      void onSubmit?.(payload);
+      void Promise.resolve(onSubmit?.(payload)).catch((error) => {
+        const state = useAppStore.getState();
+        const draftKey = effectiveSessionId ?? "__home__";
+        if (!state.composerDrafts[draftKey]) {
+          state.setComposerDraft(draftKey, rawText);
+          setTextValue(rawText);
+        }
+        setImages((current) => current.length ? current : payload.images ?? []);
+        toast.error(error instanceof Error ? error.message : "Rayu could not submit the prompt.");
+      });
     },
     [
       activeCacheTtl,

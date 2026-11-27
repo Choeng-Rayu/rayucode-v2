@@ -1594,6 +1594,7 @@ export const RpcContractSchemas = {
   "sessions.create": {
     params: z
       .object({
+        deferSettings: z.boolean().optional(),
         workingDir: z.string().optional(),
         permissionMode: PermissionModeIdSchema.optional(),
         model: z.string().optional(),

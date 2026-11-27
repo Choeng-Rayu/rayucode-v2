@@ -657,12 +657,17 @@ export class EditorBridge implements vscode.Disposable {
     column?: number;
     preview?: boolean;
     baseDir?: string;
+    strictBase?: boolean;
   }): Promise<void> {
     const vscodeApi = getVscode();
     const parsed = sanitizeFileOpenTarget(options.path);
     if (!parsed.path) return;
 
-    const uri = await this.resolveExistingFileUri(parsed.path, options.baseDir);
+    const uri = options.strictBase
+      ? path.isAbsolute(parsed.path)
+        ? vscodeApi.Uri.file(parsed.path)
+        : options.baseDir ? vscodeApi.Uri.file(path.resolve(options.baseDir, parsed.path)) : null
+      : await this.resolveExistingFileUri(parsed.path, options.baseDir);
     if (!uri) {
       void vscodeApi.window.showWarningMessage(
         `File not found in workspace: ${options.path}`,
@@ -713,6 +718,7 @@ export class EditorBridge implements vscode.Disposable {
 
   async openDiff(options: {
     path: string;
+    baseDir?: string;
     originalContent: string;
     modifiedContent?: string;
     title?: string;
@@ -722,7 +728,7 @@ export class EditorBridge implements vscode.Disposable {
     isDeleted?: boolean;
   }): Promise<void> {
     const vscodeApi = getVscode();
-    const fileUri = resolveWorkspaceFileUri(options.path);
+    const fileUri = resolveWorkspaceFileUri(options.path, options.baseDir);
     if (!fileUri) return;
 
     const scopeKey = options.scope ?? "git";

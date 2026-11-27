@@ -749,27 +749,12 @@ function renderMdastNode(
         !href.startsWith("mailto:");
       if (isLocalFile) {
         const parsed = parseFileLineTarget(href);
-        return (
-          <button
-            key={key}
-            type="button"
-            onClick={() => {
-              postToHost({
-                type: "rayucode.editor.openFile",
-                path: parsed.path,
-                line: parsed.line,
-                column: parsed.column,
-              });
-            }}
-            title={`Open ${parsed.path}${parsed.line ? `:${parsed.line}` : ""} in VS Code Editor`}
-            className="cite-link inline-flex cursor-pointer items-center gap-1 font-medium text-brand-text hover:underline"
-          >
-            <TechFileBadge path={parsed.path} className="size-3.5" />
-            <span>
-              {renderMdastChildren(node.children, key, contextDiagramSource, true)}
-            </span>
-          </button>
-        );
+        return <CiteLink key={key} citation={{
+          file: parsed.path,
+          label: node.children?.map((child) => child.value ?? "").join("") || parsed.path,
+          line: parsed.line,
+          column: parsed.column,
+        }} />;
       }
       const opensInSimpleBrowser = isLocalhostBrowserUrl(href);
       return (

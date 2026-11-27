@@ -107,6 +107,7 @@ export interface MidTurnMessageItem {
   mode: MidTurnSendMode;
   text: string;
   createdAtMs: number;
+  workingDir?: string;
   images?: ImageAttachmentView[];
   editorSelection?: EditorSelectionView | null;
   modelSpec?: string;
@@ -277,7 +278,7 @@ export interface AppStoreState {
   enqueueOptimisticTurn: (turn: OptimisticUserTurn) => void;
   consumeOptimisticTurn: (id: string) => void;
   setMidTurnSendMode: (mode: MidTurnSendMode) => void;
-  addMidTurnMessage: (item: MidTurnMessageItem) => void;
+  addMidTurnMessage: (item: MidTurnMessageItem, restoreFirst?: boolean) => void;
   removeMidTurnMessage: (sessionId: string, id: string) => void;
   updateMidTurnMessage: (
     sessionId: string,
@@ -1190,14 +1191,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setMidTurnSendMode: (midTurnSendMode) => set({ midTurnSendMode }),
 
-  addMidTurnMessage: (item) =>
+  addMidTurnMessage: (item, restoreFirst) =>
     set((state) => {
       const existing = state.midTurnMessagesBySession[item.sessionId] ?? [];
       if (existing.some((m) => m.id === item.id)) return state;
       return {
         midTurnMessagesBySession: {
           ...state.midTurnMessagesBySession,
-          [item.sessionId]: [...existing, item],
+          [item.sessionId]: restoreFirst ? [item, ...existing] : [...existing, item],
         },
       };
     }),

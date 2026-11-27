@@ -336,10 +336,11 @@ export class GitChangesBridge {
 
   async getDiff(options: {
     path: string;
+    workingDir?: string;
     sessionId?: string;
     scope?: "session" | "git";
   }): Promise<FileDiffView> {
-    const root = this.resolveRoot();
+    const root = this.resolveRoot(options.workingDir);
     const relPath = path.isAbsolute(options.path)
       ? path.relative(root, options.path).replace(/\\/g, "/")
       : options.path.replace(/\\/g, "/");

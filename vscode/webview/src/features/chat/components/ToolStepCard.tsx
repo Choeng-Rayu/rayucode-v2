@@ -352,11 +352,14 @@ export interface ToolStepCardProps {
   className?: string;
 }
 
+import { ChatSessionContext } from "./ChatSessionContext";
+
 export function ToolStepCard({
   step,
   defaultExpanded = false,
   className,
 }: ToolStepCardProps) {
+  const sessionId = React.useContext(ChatSessionContext);
   const [expanded, setExpanded] = React.useState(defaultExpanded);
   const meta = React.useMemo(
     () => classifyRustTool(step.toolName),
@@ -380,13 +383,14 @@ export function ToolStepCard({
       if (isEditTool) {
         postToHost({
           type: "rayucode.editor.openDiff",
+          sessionId,
           path: step.filePath,
-          sessionId: store.activeSessionId ?? undefined,
           scope: "session",
         });
       } else {
         postToHost({
           type: "rayucode.editor.openFile",
+          sessionId,
           path: step.filePath,
           line: step.line,
         });

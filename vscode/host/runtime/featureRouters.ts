@@ -978,6 +978,7 @@ export interface FeatureRouterBridge {
 }
 
 export interface FeatureRouterHub {
+  getSessionWorkingDir?(sessionId?: string): string | undefined;
   getActiveSessionId(): string | undefined;
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
@@ -1164,6 +1165,7 @@ export interface FeatureRouterGit {
   }): Promise<ChangesStatusView>;
   getDiff(options: {
     path: string;
+    workingDir?: string;
     sessionId?: string;
     scope?: "session" | "git";
   }): Promise<FileDiffView>;
@@ -2300,7 +2302,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { hits };
     },
     "sessions.create": async (params) => {
-      const session = await deps.sessionHub.createSession(params);
+      const folders = await deps.getWorkspaceFolders();
+      const workingDir = params?.deferSettings && (params.workingDir || folders.length > 1)
+        ? await workspaceRootFor(params.workingDir)
+        : params?.workingDir;
+      const session = await deps.sessionHub.createSession({ ...params, workingDir });
       return { session };
     },
     "sessions.attach": async (params) => {
@@ -3940,8 +3946,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         }
       }
       try {
+        const workingDir = sessionId && deps.sessionHub.getSessionWorkingDir?.(sessionId);
+        if (sessionId && deps.sessionHub.getSessionWorkingDir && !workingDir) {
+          throw new HarnessError("invalid_request", "Could not resolve the session worktree for this diff.");
+        }
         const gitDiff = await deps.gitBridge.getDiff({
           path: params.path,
+          workingDir: workingDir || undefined,
           sessionId,
           scope: params.scope,
         });
@@ -5066,21 +5077,14 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "settings.models.setFast": async (params) => {
-      if (params.sessionId) {
-        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
-          serviceTier: params.tier,
-        });
-      }
       await requireRuntimeCmd("fast", [params.tier], params.sessionId);
+      if (params.sessionId) {
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, { serviceTier: params.tier });
+      }
       await deps.updateGlobalState("rayucode.settings.serviceTier", params.tier);
       return { ok: true, tier: params.tier };
     },
     "settings.models.setCacheTtl": async (params) => {
-      if (params.sessionId) {
-        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
-          cacheTtl: params.ttl,
-        });
-      }
       await requireRuntimeCmd("cache", [params.ttl], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.cacheTtl", params.ttl);
       return { ok: true, ttl: params.ttl };

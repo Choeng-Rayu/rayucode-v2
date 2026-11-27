@@ -274,6 +274,7 @@ function TraceGroupIcon({ title }: { title: string }) {
 function renderFileReadStep(
   step: FileReadStep,
   onOpenCodeFile?: (file: string, line?: number | null) => void,
+  sessionId?: string,
 ) {
   const isSkillStep = step.label.toLowerCase().includes("skill");
 
@@ -306,6 +307,7 @@ function renderFileReadStep(
               onClick={() => {
                 postToHost({
                   type: "rayucode.editor.openFile",
+                  sessionId,
                   path: target.path,
                   line: target.line,
                 });
@@ -460,7 +462,7 @@ function TraceGroupSection({
           />
         );
       case "read":
-        return renderFileReadStep(step, onOpenCodeFile);
+        return renderFileReadStep(step, onOpenCodeFile, sessionId);
       case "list":
       case "search":
       case "previews":
