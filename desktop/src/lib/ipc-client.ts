@@ -3148,6 +3148,19 @@ export interface RayuBridgeApi {
       content: string,
       images?: Array<[string, string]>
     ) => Promise<{ ok: boolean }>
+    softInterrupt?: (
+      sessionId: string,
+      content: string,
+      options?: {
+        urgent?: boolean
+        clientId?: string
+        images?: Array<[string, string]>
+      }
+    ) => Promise<{ ok: boolean; error?: string; code?: string }>
+    cancelSoftInterrupts?: (
+      sessionId: string,
+      interruptId?: string
+    ) => Promise<{ ok: boolean; cancelled?: boolean; error?: string; code?: string }>
     cancel?: (sessionId: string) => Promise<{ ok: boolean }>
     respondToPermission?: (
       sessionId: string,
@@ -3941,6 +3954,31 @@ let mockAgents: AgentsState = {
 
 let runtimeAgents: AgentsState = structuredClone(mockAgents)
 
+export function isPhantomLiveDaemonTurn(turn: ExecutionTurn): boolean {
+  if (turn.isLive) return false
+  const hasAssistantOrWork =
+    turn.answerIntro.trim().length > 0 ||
+    turn.answerBullets.length > 0 ||
+    turn.groups.length > 0 ||
+    turn.notes.length > 0 ||
+    (turn.timeline?.length ?? 0) > 0 ||
+    turn.diffCard.lines.length > 0 ||
+    Boolean(turn.outputArtifact)
+  if (hasAssistantOrWork) return false
+
+  const trimmedPrompt = turn.userPrompt.trim()
+  if (trimmedPrompt === "Live daemon turn") return true
+  if (
+    !trimmedPrompt &&
+    !(turn.userImages && turn.userImages.length > 0) &&
+    !turn.userRefFiles &&
+    !turn.compactedNotice
+  ) {
+    return true
+  }
+  return false
+}
+
 function normalizeWorkspacePath(raw?: string | null): string {
   if (!raw) return ""
   return raw
@@ -3970,13 +4008,22 @@ async function ensureRuntimeSessionsHydrated(): Promise<void> {
         ]
         runtimeSessions = merged.slice(0, 50)
       }
+      let removedPhantomTurns = false
       if (Array.isArray(saved.turns) && saved.turns.length > 0) {
+        const sanitizedSaved = saved.turns.filter((t) => {
+          const phantom = isPhantomLiveDaemonTurn(t)
+          if (phantom) removedPhantomTurns = true
+          return !phantom
+        })
         const existingTurnIds = new Set(runtimeTurns.map((t) => t.id))
         const mergedTurns = [
-          ...saved.turns.filter((t) => !existingTurnIds.has(t.id)),
+          ...sanitizedSaved.filter((t) => !existingTurnIds.has(t.id)),
           ...runtimeTurns,
         ]
         runtimeTurns = mergedTurns.slice(-500)
+      }
+      if (removedPhantomTurns) {
+        persistRuntimeSessions()
       }
     } catch {
       // ignore storage read error
@@ -4596,7 +4643,7 @@ export const ipcClient = {
             return turns
           }
           const fallbackCached = runtimeTurns.filter(
-            (t) => t.sessionId === sessionId
+            (t) => t.sessionId === sessionId && !isPhantomLiveDaemonTurn(t)
           )
           if (fallbackCached.length > 0) {
             return fallbackCached
@@ -4607,7 +4654,9 @@ export const ipcClient = {
         }
       }
       if (sessionId) {
-        const cachedTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+        const cachedTurns = runtimeTurns.filter(
+          (t) => t.sessionId === sessionId && !isPhantomLiveDaemonTurn(t)
+        )
         if (cachedTurns.length > 0) {
           return cachedTurns
         }
@@ -4616,7 +4665,9 @@ export const ipcClient = {
       if (!sessionId) {
         return IS_TEST_ENV ? [...mockTurns] : []
       }
-      const localTurns = runtimeTurns.filter((t) => t.sessionId === sessionId)
+      const localTurns = runtimeTurns.filter(
+        (t) => t.sessionId === sessionId && !isPhantomLiveDaemonTurn(t)
+      )
       if (localTurns.length > 0) return localTurns
       if (!IS_TEST_ENV) {
         return []
@@ -4812,6 +4863,9 @@ export const ipcClient = {
       return newTurn
     },
     recordTurn(turn: ExecutionTurn): void {
+      if (isPhantomLiveDaemonTurn(turn)) {
+        return
+      }
       if (turn.sessionId) {
         newlyCreatedEmptySessions.delete(turn.sessionId)
       }
@@ -4897,6 +4951,56 @@ export const ipcClient = {
         return bridge.harness.cancel(sessionId)
       }
       return { ok: true }
+    },
+    async softInterrupt(input: {
+      sessionId: string
+      prompt: string
+      clientId?: string
+      urgent?: boolean
+      images?: PromptImageAttachment[]
+    }): Promise<{ ok: boolean; error?: string; code?: string }> {
+      const bridge = getBridge()
+      if (
+        !input.sessionId ||
+        input.sessionId.startsWith("ses_") ||
+        !bridge?.harness?.softInterrupt ||
+        !(await isHarnessLive())
+      ) {
+        return {
+          ok: false,
+          code: "unsupported",
+          error: "Live steer requires an active daemon session.",
+        }
+      }
+      const imageTuples: Array<[string, string]> = (input.images ?? [])
+        .map((img) => parseImageDataUrl(img.dataUrl))
+        .filter((pair): pair is [string, string] => pair !== null)
+      const effectivePrompt =
+        input.prompt.trim().length > 0
+          ? input.prompt
+          : imageTuples.length > 0
+            ? "Analyze the attached image(s)."
+            : input.prompt
+      return bridge.harness.softInterrupt(input.sessionId, effectivePrompt, {
+        urgent: Boolean(input.urgent),
+        ...(input.clientId ? { clientId: input.clientId } : {}),
+        ...(imageTuples.length > 0 ? { images: imageTuples } : {}),
+      })
+    },
+    async cancelSoftInterrupts(
+      sessionId: string,
+      interruptId?: string
+    ): Promise<{ ok: boolean; cancelled?: boolean; error?: string; code?: string }> {
+      const bridge = getBridge()
+      if (
+        !sessionId ||
+        sessionId.startsWith("ses_") ||
+        !bridge?.harness?.cancelSoftInterrupts ||
+        !(await isHarnessLive())
+      ) {
+        return { ok: true, cancelled: true }
+      }
+      return bridge.harness.cancelSoftInterrupts(sessionId, interruptId)
     },
     async respondToPermission(
       sessionId: string,

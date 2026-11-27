@@ -68,6 +68,8 @@ import {
   HarnessSetEffortSchema,
   HarnessSetModelSchema,
   HarnessSetPermissionModeSchema,
+  HarnessSoftInterruptSchema,
+  HarnessCancelSoftInterruptsSchema,
   KeepAwakePayloadSchema,
   OfficeCreatePptxPayloadSchema,
   OfficeReadExcelPayloadSchema,
@@ -346,6 +348,29 @@ function registerIpcHandlers(): void {
         parsed.images
       )
       return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:soft-interrupt",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessSoftInterruptSchema.parse(rawPayload)
+      return daemonClient.softInterrupt(parsed.sessionId, parsed.content, {
+        urgent: parsed.urgent,
+        clientId: parsed.clientId,
+        images: parsed.images,
+      })
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:cancel-soft-interrupts",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessCancelSoftInterruptsSchema.parse(rawPayload)
+      return daemonClient.cancelSoftInterrupts(
+        parsed.sessionId,
+        parsed.interruptId
+      )
     }
   )
 

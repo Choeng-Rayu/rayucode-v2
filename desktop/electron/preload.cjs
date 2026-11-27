@@ -51,6 +51,23 @@ const rayuApi = {
         content,
         ...(images && images.length > 0 ? { images } : {}),
       }),
+    softInterrupt: (sessionId, content, options) =>
+      ipcRenderer.invoke("rayu:harness:soft-interrupt", {
+        sessionId,
+        content,
+        ...(options && options.urgent !== undefined
+          ? { urgent: options.urgent }
+          : {}),
+        ...(options && options.clientId ? { clientId: options.clientId } : {}),
+        ...(options && options.images && options.images.length > 0
+          ? { images: options.images }
+          : {}),
+      }),
+    cancelSoftInterrupts: (sessionId, interruptId) =>
+      ipcRenderer.invoke("rayu:harness:cancel-soft-interrupts", {
+        sessionId,
+        ...(interruptId ? { interruptId } : {}),
+      }),
     cancel: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:cancel", { sessionId }),
     respondToPermission: (sessionId, requestId, decision) =>

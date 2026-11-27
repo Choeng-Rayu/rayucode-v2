@@ -185,6 +185,7 @@ export interface StartLiveTurnInput {
   userImages?: PromptImageAttachment[]
   userRefFiles?: string
   initialNote?: string
+  activeToolStatus?: string | null
   startedAtMs?: number
   baseHistoryTurnCount?: number
 }

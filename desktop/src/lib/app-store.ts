@@ -93,6 +93,21 @@ export interface PendingPermission {
   description: string
 }
 
+export type MidTurnSendMode = "steer" | "queue"
+
+export interface MidTurnMessageItem {
+  id: string
+  sessionId: string
+  mode: MidTurnSendMode
+  text: string
+  createdAtMs: number
+  images?: PromptImageAttachment[]
+  modelId?: string
+  modelLabel?: string
+  effort?: string
+  permissionMode?: string
+}
+
 export interface PendingStreamPrompt {
   sessionId: string
   prompt: string
@@ -133,8 +148,14 @@ export interface AppStoreState {
   authBypassed: boolean
   authDialogOpen: boolean
   pendingPermission: PendingPermission | null
+  pendingPermissionsBySession: Record<string, PendingPermission[]>
   pendingStreamPrompt: PendingStreamPrompt | null
   isStreamActive: boolean
+  midTurnSendMode: MidTurnSendMode
+  midTurnMessagesBySession: Record<string, MidTurnMessageItem[]>
+  pausedQueueSessions: Record<string, boolean>
+  composerDraftBySession: Record<string, string>
+  composerFocusNonce: number
   leftCollapsed: boolean
   rightCollapsed: boolean
   rightMode: RightPaneMode
@@ -183,8 +204,23 @@ export interface AppStoreState {
   setAuthBypassed: (bypassed: boolean) => void
   setAuthDialogOpen: (open: boolean) => void
   setPendingPermission: (permission: PendingPermission | null) => void
+  clearPendingPermission: (sessionId: string, requestId?: string) => void
   setPendingStreamPrompt: (prompt: PendingStreamPrompt | null) => void
   setIsStreamActive: (active: boolean) => void
+  setMidTurnSendMode: (mode: MidTurnSendMode) => void
+  addMidTurnMessage: (sessionId: string, item: MidTurnMessageItem) => void
+  removeMidTurnMessage: (sessionId: string, id: string) => void
+  updateMidTurnMessage: (
+    sessionId: string,
+    id: string,
+    patch: Partial<MidTurnMessageItem>
+  ) => void
+  markSteersDelivered: (sessionId: string, clientIds?: string[]) => void
+  demotePendingSteersToQueue: (sessionId: string) => void
+  shiftNextQueuedMessage: (sessionId: string) => MidTurnMessageItem | null
+  setQueuePausedForSession: (sessionId: string, paused: boolean) => void
+  setComposerDraft: (sessionId: string, text: string) => void
+  requestComposerFocus: () => void
   toggleLeftSidebar: () => void
   setLeftCollapsed: (collapsed: boolean) => void
   toggleRightSidebar: () => void
@@ -415,8 +451,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   authBypassed: false,
   authDialogOpen: false,
   pendingPermission: null,
+  pendingPermissionsBySession: {},
   pendingStreamPrompt: null,
   isStreamActive: false,
+  midTurnSendMode: "steer",
+  midTurnMessagesBySession: {},
+  pausedQueueSessions: {},
+  composerDraftBySession: {},
+  composerFocusNonce: 0,
   leftCollapsed: false,
   rightCollapsed: true,
   rightMode: "context",
@@ -523,6 +565,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeRoute: resolvedRoute,
         navHistory: nextHistory,
         navHistoryIndex: nextHistory.length - 1,
+        pendingPermission:
+          (activeSessionId
+            ? state.pendingPermissionsBySession[activeSessionId]?.[0]
+            : null) ?? null,
         rightCollapsed: !activeSessionId,
         rightMode: "context",
         activeRightTab: "overview",
@@ -560,6 +606,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeRoute: target.route,
         activeSessionId: target.sessionId,
         activeSessionTitle: target.sessionTitle,
+        pendingPermission:
+          (target.sessionId
+            ? state.pendingPermissionsBySession[target.sessionId]?.[0]
+            : null) ?? null,
         rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
         chatCollapsedByRight: false,
       }
@@ -577,6 +627,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeRoute: target.route,
         activeSessionId: target.sessionId,
         activeSessionTitle: target.sessionTitle,
+        pendingPermission:
+          (target.sessionId
+            ? state.pendingPermissionsBySession[target.sessionId]?.[0]
+            : null) ?? null,
         rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
         chatCollapsedByRight: false,
       }
@@ -608,7 +662,79 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   },
 
   setPendingPermission: (pendingPermission) => {
-    set({ pendingPermission })
+    set((state) => {
+      if (!pendingPermission) {
+        const sid = state.activeSessionId
+        if (!sid) {
+          return { pendingPermission: null }
+        }
+        const existing = state.pendingPermissionsBySession[sid] ?? []
+        const remaining = existing.slice(1)
+        const nextMap = { ...state.pendingPermissionsBySession }
+        if (remaining.length > 0) {
+          nextMap[sid] = remaining
+        } else {
+          delete nextMap[sid]
+        }
+        return {
+          pendingPermissionsBySession: nextMap,
+          pendingPermission: remaining[0] ?? null,
+        }
+      }
+      const targetSid =
+        pendingPermission.sessionId || state.activeSessionId || "__global__"
+      const normalized = {
+        ...pendingPermission,
+        sessionId: targetSid,
+      }
+      const existing = state.pendingPermissionsBySession[targetSid] ?? []
+      const filtered = existing.filter(
+        (item) => item.requestId !== normalized.requestId
+      )
+      const nextList = [...filtered, normalized]
+      const nextMap = {
+        ...state.pendingPermissionsBySession,
+        [targetSid]: nextList,
+      }
+      const activeKey = state.activeSessionId || "__global__"
+      const nextActivePerm =
+        nextMap[activeKey]?.[0] ??
+        (targetSid === "__global__" ? normalized : state.pendingPermission)
+      return {
+        pendingPermissionsBySession: nextMap,
+        pendingPermission: nextActivePerm,
+      }
+    })
+  },
+
+  clearPendingPermission: (sessionId, requestId) => {
+    if (!sessionId) return
+    set((state) => {
+      const existing = state.pendingPermissionsBySession[sessionId]
+      if (!existing || existing.length === 0) {
+        if (state.pendingPermission?.sessionId === sessionId) {
+          return { pendingPermission: null }
+        }
+        return state
+      }
+      const remaining = requestId
+        ? existing.filter((item) => item.requestId !== requestId)
+        : []
+      const nextMap = { ...state.pendingPermissionsBySession }
+      if (remaining.length > 0) {
+        nextMap[sessionId] = remaining
+      } else {
+        delete nextMap[sessionId]
+      }
+      const nextActive =
+        (state.activeSessionId
+          ? nextMap[state.activeSessionId]?.[0]
+          : null) ?? null
+      return {
+        pendingPermissionsBySession: nextMap,
+        pendingPermission: nextActive,
+      }
+    })
   },
 
   setPendingStreamPrompt: (pendingStreamPrompt) => {
@@ -617,6 +743,146 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setIsStreamActive: (isStreamActive) => {
     set({ isStreamActive })
+  },
+
+  setMidTurnSendMode: (midTurnSendMode) => {
+    set({ midTurnSendMode })
+  },
+
+  addMidTurnMessage: (sessionId, item) => {
+    if (!sessionId) return
+    set((state) => {
+      const prev = state.midTurnMessagesBySession[sessionId] ?? []
+      if (prev.some((existing) => existing.id === item.id)) return state
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [sessionId]: [...prev, item],
+        },
+      }
+    })
+  },
+
+  removeMidTurnMessage: (sessionId, id) => {
+    if (!sessionId || !id) return
+    set((state) => {
+      const prev = state.midTurnMessagesBySession[sessionId]
+      if (!prev) return state
+      const next = prev.filter((item) => item.id !== id)
+      const nextMap = { ...state.midTurnMessagesBySession }
+      if (next.length > 0) {
+        nextMap[sessionId] = next
+      } else {
+        delete nextMap[sessionId]
+      }
+      return { midTurnMessagesBySession: nextMap }
+    })
+  },
+
+  updateMidTurnMessage: (sessionId, id, patch) => {
+    if (!sessionId || !id) return
+    set((state) => {
+      const prev = state.midTurnMessagesBySession[sessionId]
+      if (!prev) return state
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [sessionId]: prev.map((item) =>
+            item.id === id ? { ...item, ...patch } : item
+          ),
+        },
+      }
+    })
+  },
+
+  markSteersDelivered: (sessionId, clientIds) => {
+    if (!sessionId) return
+    set((state) => {
+      const prev = state.midTurnMessagesBySession[sessionId]
+      if (!prev || prev.length === 0) return state
+      const idSet =
+        clientIds && clientIds.length > 0 ? new Set(clientIds) : null
+      const next = prev.filter((item) => {
+        if (item.mode !== "steer") return true
+        return idSet ? !idSet.has(item.id) : false
+      })
+      if (next.length === prev.length) return state
+      const nextMap = { ...state.midTurnMessagesBySession }
+      if (next.length > 0) {
+        nextMap[sessionId] = next
+      } else {
+        delete nextMap[sessionId]
+      }
+      return { midTurnMessagesBySession: nextMap }
+    })
+  },
+
+  demotePendingSteersToQueue: (sessionId) => {
+    if (!sessionId) return
+    set((state) => {
+      const prev = state.midTurnMessagesBySession[sessionId]
+      if (!prev || !prev.some((item) => item.mode === "steer")) return state
+      const steers = prev
+        .filter((item) => item.mode === "steer")
+        .map((item) => ({ ...item, mode: "queue" as const }))
+      const queued = prev.filter((item) => item.mode !== "steer")
+      return {
+        midTurnMessagesBySession: {
+          ...state.midTurnMessagesBySession,
+          [sessionId]: [...steers, ...queued],
+        },
+      }
+    })
+  },
+
+  shiftNextQueuedMessage: (sessionId) => {
+    if (!sessionId) return null
+    const prev = get().midTurnMessagesBySession[sessionId] ?? []
+    const nextIdx = prev.findIndex((item) => item.mode === "queue")
+    if (nextIdx === -1) return null
+    const nextItem = prev[nextIdx] ?? null
+    if (!nextItem) return null
+    const remaining = prev.filter((_, idx) => idx !== nextIdx)
+    set((state) => {
+      const nextMap = { ...state.midTurnMessagesBySession }
+      if (remaining.length > 0) {
+        nextMap[sessionId] = remaining
+      } else {
+        delete nextMap[sessionId]
+      }
+      return { midTurnMessagesBySession: nextMap }
+    })
+    return nextItem
+  },
+
+  setQueuePausedForSession: (sessionId, paused) => {
+    if (!sessionId) return
+    set((state) => {
+      const next = { ...state.pausedQueueSessions }
+      if (paused) {
+        next[sessionId] = true
+      } else {
+        delete next[sessionId]
+      }
+      return { pausedQueueSessions: next }
+    })
+  },
+
+  setComposerDraft: (sessionId, text) => {
+    if (!sessionId) return
+    set((state) => {
+      const next = { ...state.composerDraftBySession }
+      if (text.length > 0) {
+        next[sessionId] = text
+      } else {
+        delete next[sessionId]
+      }
+      return { composerDraftBySession: next }
+    })
+  },
+
+  requestComposerFocus: () => {
+    set((state) => ({ composerFocusNonce: state.composerFocusNonce + 1 }))
   },
 
   toggleLeftSidebar: () => {

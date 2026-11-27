@@ -182,6 +182,24 @@ export const HarnessSendMessageSchema = z
     "Message content or at least one image is required"
   )
 
+export const HarnessSoftInterruptSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    content: z.string().max(100_000),
+    urgent: z.boolean().optional(),
+    clientId: z.string().min(1).max(128).optional(),
+    images: z.array(ImageAttachmentTupleSchema).max(10).optional(),
+  })
+  .refine(
+    (v) => v.content.trim().length > 0 || (v.images?.length ?? 0) > 0,
+    "Steer content or at least one image is required"
+  )
+
+export const HarnessCancelSoftInterruptsSchema = z.object({
+  sessionId: z.string().min(1),
+  interruptId: z.string().min(1).max(128).optional(),
+})
+
 export const HarnessPermissionResponseSchema = z.object({
   sessionId: z.string().min(1),
   requestId: z.string().min(1),

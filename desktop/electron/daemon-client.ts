@@ -919,10 +919,31 @@ export class RayuDaemonClient extends EventEmitter {
     if (boundToOther) {
       targetClient = await this.dialSessionSocket()
     }
-    const info = await targetClient.attachSession(sessionId)
+    let info: SessionInfo
+    try {
+      info = await targetClient.attachSession(sessionId)
+    } catch (err) {
+      if (targetClient !== client) {
+        try {
+          targetClient.close()
+        } catch {
+          // ignore close errors on failed attach
+        }
+      }
+      throw err
+    }
     this.client = targetClient
     this.attachedSessionId = info.session_id
     this.registerSessionClient(info.session_id, targetClient)
+    if (info.status === "running" || info.status === "processing") {
+      this.pool.markTurnActive(info.session_id)
+      this.emit("harness-event", {
+        v: 1,
+        ev: "session_status",
+        session_id: info.session_id,
+        status: "running",
+      } as unknown as ServerFrame)
+    }
     const postAttachSync = Promise.allSettled([
       this.syncSessionTools(targetClient, info.session_id),
       this.syncDesiredPermissionMode(targetClient, info.session_id),
@@ -1047,9 +1068,29 @@ export class RayuDaemonClient extends EventEmitter {
           .listSessions({ includeArchived: true, limit: 100 })
           .catch(() => [])
         const matched = list.find((s) => s.session_id === sessionId)
-        if (matched) return matched
+        if (matched) {
+          if (matched.status === "running" || matched.status === "processing") {
+            this.pool.markTurnActive(matched.session_id)
+            this.emit("harness-event", {
+              v: 1,
+              ev: "session_status",
+              session_id: matched.session_id,
+              status: "running",
+            } as unknown as ServerFrame)
+          }
+          return matched
+        }
         const attached = await pooled.attachSession(sessionId)
         this.registerSessionClient(attached.session_id, pooled)
+        if (attached.status === "running" || attached.status === "processing") {
+          this.pool.markTurnActive(attached.session_id)
+          this.emit("harness-event", {
+            v: 1,
+            ev: "session_status",
+            session_id: attached.session_id,
+            status: "running",
+          } as unknown as ServerFrame)
+        }
         return attached
       }
 
@@ -1064,8 +1105,20 @@ export class RayuDaemonClient extends EventEmitter {
           .listSessions({ includeArchived: true, limit: 100 })
           .catch(() => [])
         const matched = list.find((s) => s.session_id === sessionId)
-        if (matched) return matched
+        if (matched) {
+          if (matched.status === "running" || matched.status === "processing") {
+            this.pool.markTurnActive(matched.session_id)
+            this.emit("harness-event", {
+              v: 1,
+              ev: "session_status",
+              session_id: matched.session_id,
+              status: "running",
+            } as unknown as ServerFrame)
+          }
+          return matched
+        }
       }
+      const prevClient = client
       if (
         (this.attachedSessionId !== null &&
           this.attachedSessionId !== sessionId) ||
@@ -1073,10 +1126,31 @@ export class RayuDaemonClient extends EventEmitter {
       ) {
         client = await this.dialSessionSocket()
       }
-      const info = await client.attachSession(sessionId)
+      let info: SessionInfo
+      try {
+        info = await client.attachSession(sessionId)
+      } catch (err) {
+        if (client !== prevClient) {
+          try {
+            client.close()
+          } catch {
+            // ignore close errors on failed attach
+          }
+        }
+        throw err
+      }
       this.client = client
       this.attachedSessionId = info.session_id
       this.registerSessionClient(info.session_id, client)
+      if (info.status === "running" || info.status === "processing") {
+        this.pool.markTurnActive(info.session_id)
+        this.emit("harness-event", {
+          v: 1,
+          ev: "session_status",
+          session_id: info.session_id,
+          status: "running",
+        } as unknown as ServerFrame)
+      }
       await Promise.allSettled([
         this.syncSessionTools(client, info.session_id),
         this.syncDesiredPermissionMode(client, info.session_id),
@@ -1159,6 +1233,106 @@ export class RayuDaemonClient extends EventEmitter {
         throw err
       }
     })
+  }
+
+  async softInterrupt(
+    sessionId: string,
+    content: string,
+    options?: {
+      urgent?: boolean
+      clientId?: string
+      images?: ImageAttachment[]
+    }
+  ): Promise<{ ok: boolean; error?: string; code?: string }> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return {
+        ok: false,
+        code: "unsupported",
+        error: "Live steer requires an active daemon session.",
+      }
+    }
+    const trimmed = content.trim()
+    const images = options?.images
+    if (!trimmed && (!images || images.length === 0)) {
+      return { ok: false, error: "Steer content cannot be empty." }
+    }
+    const finalContent =
+      trimmed.length > 0 ? content : "Analyze the attached image(s)."
+    const urgent = Boolean(options?.urgent)
+    const clientId = options?.clientId
+
+    try {
+      const target =
+        this.pool.get(sessionId) ??
+        (await this.runSerialized(async () => {
+          const base = await this.connect()
+          return this.ensureAttached(base, sessionId, {
+            deferPostAttachSync: true,
+          })
+        }))
+      this.pool.markTurnActive(sessionId)
+      if (typeof target.softInterruptWithId === "function") {
+        await target.softInterruptWithId(sessionId, finalContent, {
+          urgent,
+          ...(clientId ? { clientId } : {}),
+          ...(images && images.length > 0 ? { images } : {}),
+        })
+      } else if (
+        images &&
+        images.length > 0 &&
+        typeof target.softInterruptWithImages === "function"
+      ) {
+        await target.softInterruptWithImages(
+          sessionId,
+          finalContent,
+          images,
+          urgent
+        )
+      } else {
+        await target.softInterrupt(sessionId, finalContent, urgent)
+      }
+      return { ok: true }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        code: extractHarnessErrorCode(err),
+      }
+    }
+  }
+
+  async cancelSoftInterrupts(
+    sessionId: string,
+    interruptId?: string
+  ): Promise<{ ok: boolean; cancelled?: boolean; error?: string; code?: string }> {
+    if (!sessionId || sessionId.startsWith("ses_")) {
+      return { ok: true, cancelled: true }
+    }
+    try {
+      const target = this.pool.get(sessionId) ?? (await this.connect())
+      if (
+        interruptId &&
+        typeof target.cancelSoftInterrupt === "function" &&
+        (typeof target.supports !== "function" ||
+          !Array.isArray(target.capabilities) ||
+          target.capabilities.length === 0 ||
+          target.supports("soft_interrupt_ids"))
+      ) {
+        const cancelled = await target.cancelSoftInterrupt(
+          sessionId,
+          interruptId
+        )
+        return { ok: true, cancelled }
+      }
+      await target.cancelSoftInterrupts(sessionId)
+      return { ok: true, cancelled: true }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        code: extractHarnessErrorCode(err),
+      }
+    }
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -1624,6 +1798,21 @@ export class RayuDaemonClient extends EventEmitter {
       case "sessions.send":
         await this.sendMessage(String(p.sessionId), String(p.content))
         return { ok: true } as T
+      case "sessions.softInterrupt":
+        return (await this.softInterrupt(
+          String(p.sessionId),
+          String(p.content ?? ""),
+          {
+            urgent: Boolean(p.urgent),
+            clientId:
+              typeof p.clientId === "string" ? p.clientId : undefined,
+          }
+        )) as T
+      case "sessions.cancelSoftInterrupts":
+        return (await this.cancelSoftInterrupts(
+          String(p.sessionId),
+          typeof p.interruptId === "string" ? p.interruptId : undefined
+        )) as T
       case "sessions.cancel":
         await this.cancel(String(p.sessionId))
         return { ok: true } as T
