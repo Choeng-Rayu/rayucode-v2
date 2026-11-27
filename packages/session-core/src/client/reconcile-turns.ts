@@ -1,7 +1,12 @@
 export interface ReconcilableTurnLike {
   id: string;
   userPrompt: string;
+  userRefFiles?: string;
   answerMarkdown?: string;
+  workedDuration?: string;
+  credits?: string;
+  kvCachePct?: number;
+  baseHistoryTurnCount?: number;
   isLive?: boolean;
   steps?: readonly unknown[];
   workGroups?: readonly unknown[];
@@ -28,8 +33,38 @@ export interface StaleLiveTurnCheckInput {
   gracePeriodMs?: number;
 }
 
+const ACTIVE_EDITOR_SELECTION_SUFFIX_RE =
+  /\s*\[Active Editor Selection:\s*([^\]]+)\]\s*$/i;
+
+/**
+ * Strips the trailing `[Active Editor Selection: path#Lstart-Lend]` context tag
+ * appended by IDE hosts to `send_message.content` so persisted history turns
+ * render with a clean prompt bubble + clickable `userRefFiles` pill and match
+ * optimistic/live turns cleanly during reconciliation.
+ */
+export function extractActiveEditorSelectionFromPrompt(
+  raw?: string | null
+): { prompt: string; refFiles?: string } {
+  const text = raw ?? "";
+  const match = text.match(ACTIVE_EDITOR_SELECTION_SUFFIX_RE);
+  if (!match || match.index === undefined) {
+    return { prompt: text };
+  }
+  const prompt = text.slice(0, match.index).trimEnd();
+  const rawRef = (match[1] ?? "").trim();
+  const normalizedRef = rawRef.replace(
+    /#L(\d+)(?:-L?(\d+))?$/i,
+    (_m, start: string, end?: string) => (end ? `:${start}-${end}` : `:${start}`)
+  );
+  return {
+    prompt,
+    ...(normalizedRef ? { refFiles: normalizedRef } : {}),
+  };
+}
+
 export function normalizePromptForDedup(prompt?: string | null): string {
-  return (prompt ?? "").trim().replace(/\s+/g, " ");
+  const { prompt: stripped } = extractActiveEditorSelectionFromPrompt(prompt);
+  return stripped.trim().replace(/\s+/g, " ");
 }
 
 function normalizeAnswerForDedup(answer?: string | null): string {
@@ -127,10 +162,32 @@ function findMatchingHistoryIndex<TTurn extends ReconcilableTurnLike>(
     return -1;
   }
 
-  // Settled turn without watermark (e.g. completedLiveTurns):
-  // scan backwards for an unclaimed history turn with matching prompt and either
-  // no persisted assistant output yet OR matching/overlapping assistant output.
-  for (let i = historyTurns.length - 1; i >= 0; i -= 1) {
+  // Settled turn without explicit input watermark (e.g. completedLiveTurns):
+  // 1. If the settled turn recorded its submission slot (`baseHistoryTurnCount`),
+  //    prefer exact 1-to-1 matching at that slot when unclaimed and prompt matches.
+  if (
+    typeof candidate.baseHistoryTurnCount === "number" &&
+    candidate.baseHistoryTurnCount >= 0 &&
+    candidate.baseHistoryTurnCount < historyTurns.length
+  ) {
+    const slot = candidate.baseHistoryTurnCount;
+    if (
+      !claimedIndices?.has(slot) &&
+      normalizePromptForDedup(historyTurns[slot].userPrompt) === candidatePrompt
+    ) {
+      return slot;
+    }
+  }
+
+  // 2. Otherwise scan backwards (not below `baseHistoryTurnCount` when known)
+  //    for an unclaimed history turn with matching prompt and either no persisted
+  //    assistant output yet OR matching/overlapping output.
+  const minIndex =
+    typeof candidate.baseHistoryTurnCount === "number" &&
+    candidate.baseHistoryTurnCount >= 0
+      ? candidate.baseHistoryTurnCount
+      : 0;
+  for (let i = historyTurns.length - 1; i >= minIndex; i -= 1) {
     if (claimedIndices?.has(i)) continue;
     const historyTurn = historyTurns[i];
     if (normalizePromptForDedup(historyTurn.userPrompt) !== candidatePrompt) {
@@ -151,6 +208,33 @@ function findMatchingHistoryIndex<TTurn extends ReconcilableTurnLike>(
     }
   }
   return -1;
+}
+
+function mergeSettledMetadata<TTurn extends ReconcilableTurnLike>(
+  historyEntry: TTurn,
+  settled: TTurn
+): TTurn {
+  const needsDuration =
+    !historyEntry.workedDuration && Boolean(settled.workedDuration);
+  const needsRefFiles =
+    !historyEntry.userRefFiles && Boolean(settled.userRefFiles);
+  const needsCredits =
+    (!historyEntry.credits || historyEntry.credits === "0.00 cr") &&
+    Boolean(settled.credits && settled.credits !== "0.00 cr");
+  const needsKvCache =
+    needsCredits &&
+    typeof settled.kvCachePct === "number" &&
+    settled.kvCachePct > 0;
+  if (!needsDuration && !needsRefFiles && !needsCredits) {
+    return historyEntry;
+  }
+  return {
+    ...historyEntry,
+    ...(needsDuration ? { workedDuration: settled.workedDuration } : {}),
+    ...(needsRefFiles ? { userRefFiles: settled.userRefFiles } : {}),
+    ...(needsCredits ? { credits: settled.credits } : {}),
+    ...(needsKvCache ? { kvCachePct: settled.kvCachePct } : {}),
+  };
 }
 
 /**
@@ -181,6 +265,8 @@ export function reconcileChatTurns<TTurn extends ReconcilableTurnLike>(
       claimedIndices.add(matchIdx);
       if (!hasAssistantContent(merged[matchIdx]) && hasAssistantContent(completed)) {
         merged[matchIdx] = completed;
+      } else if (hasAssistantContent(merged[matchIdx])) {
+        merged[matchIdx] = mergeSettledMetadata(merged[matchIdx], completed);
       }
       // Otherwise durable history already has this completed turn -> retire local copy
     } else {
@@ -207,6 +293,9 @@ export function reconcileChatTurns<TTurn extends ReconcilableTurnLike>(
     } else if (!hasAssistantContent(historyEntry) && hasAssistantContent(live)) {
       // History has not persisted the final answer yet -> keep settled live turn
       merged[matchIdx] = live;
+    } else if (hasAssistantContent(historyEntry)) {
+      // Preserve settled metadata when durable history lacks persisted duration/ref/credits
+      merged[matchIdx] = mergeSettledMetadata(historyEntry, live);
     }
     // Else: liveTurn is settled and durable history already contains the response -> retire liveTurn
     return merged;

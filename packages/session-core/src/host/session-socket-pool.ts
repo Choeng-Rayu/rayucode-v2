@@ -6,6 +6,8 @@ import type {
 
 const ACTIVE_TURN_EVENTS = new Set([
   "turn_start",
+  "message_accepted",
+  "soft_interrupt_injected",
   "text_delta",
   "reasoning_delta",
   "thinking_delta",
@@ -15,7 +17,14 @@ const ACTIVE_TURN_EVENTS = new Set([
   "tool_call",
 ]);
 
-const TERMINAL_TURN_EVENTS = new Set(["turn_done", "turn_stopped", "error"]);
+const TERMINAL_TURN_EVENTS = new Set([
+  "turn_done",
+  "turn_stopped",
+  "turn_aborted",
+  "error",
+]);
+
+const GLOBAL_SESSIONLESS_EVENTS = new Set(["config_changed"]);
 
 /**
  * Per-session daemon socket pool shared by Electron main and VS Code Extension Host.
@@ -153,11 +162,29 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     this.boundClients.add(client);
 
     client.on("event", (rawFrame: HarnessFrameLike) => {
+      const evRaw = typeof rawFrame.ev === "string" ? rawFrame.ev : "";
       const boundSessions = this.getBoundSessionIds(client);
       const rawSid =
         typeof rawFrame.session_id === "string" ? rawFrame.session_id.trim() : "";
+
+      // Never stamp a synthetic session_id onto global bridge-wide broadcasts
+      // (such as `config_changed`), which are already delivered to the primary
+      // control client; forwarding them from every pooled socket causes N+1
+      // duplicate broadcasts.
+      if (!rawSid && GLOBAL_SESSIONLESS_EVENTS.has(evRaw)) {
+        return;
+      }
+
       const resolvedSid =
         rawSid || (boundSessions.length === 1 ? boundSessions[0] : "");
+
+      // Ignore unsolicited sessionless frames (for example a delayed
+      // "daemon connection closed" error) on an unbound socket that never
+      // completed attach/create; forwarding them without a session_id causes
+      // downstream handlers to abort whichever unrelated session is focused.
+      if (!resolvedSid && boundSessions.length === 0) {
+        return;
+      }
 
       const frame: HarnessFrameLike =
         resolvedSid && !rawSid
@@ -165,14 +192,29 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
           : rawFrame;
 
       const ev = typeof frame.ev === "string" ? frame.ev : "";
+      const isReplyFrame = frame.reply_to !== undefined;
+      const statusText =
+        ev === "session_status" && typeof frame.status === "string"
+          ? frame.status.trim().toLowerCase()
+          : "";
+      const isSessionStatusRunning =
+        statusText === "running" ||
+        statusText === "processing" ||
+        statusText === "busy" ||
+        statusText === "generating" ||
+        statusText === "tool_running";
+      const isSessionStatusIdle = statusText === "idle";
+      const isTerminalEvent =
+        (!isReplyFrame && TERMINAL_TURN_EVENTS.has(ev)) || isSessionStatusIdle;
+
       if (resolvedSid) {
-        if (ACTIVE_TURN_EVENTS.has(ev)) {
+        if (ACTIVE_TURN_EVENTS.has(ev) || isSessionStatusRunning) {
           this.activeTurnSessions.add(resolvedSid);
         } else if (ev === "permission_request") {
           this.pendingPermissionSessions.add(resolvedSid);
         } else if (ev === "permission_resolved") {
           this.pendingPermissionSessions.delete(resolvedSid);
-        } else if (TERMINAL_TURN_EVENTS.has(ev)) {
+        } else if (isTerminalEvent) {
           this.activeTurnSessions.delete(resolvedSid);
           this.pendingPermissionSessions.delete(resolvedSid);
         }
@@ -180,7 +222,7 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
 
       this.onFrame?.(frame, resolvedSid, client);
 
-      if (resolvedSid && TERMINAL_TURN_EVENTS.has(ev)) {
+      if (resolvedSid && isTerminalEvent) {
         this.evictOverflowIdleClients();
       }
     });
@@ -246,13 +288,54 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     });
   }
 
+  private closeClientSafely(client: TClient, detachSessionId?: string): void {
+    const closeNow = () => {
+      try {
+        client.close();
+      } catch {
+        // ignore close errors during teardown/eviction
+      }
+    };
+    if (detachSessionId && typeof client.detachSession === "function") {
+      let finished = false;
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true;
+          closeNow();
+        }
+      }, 300);
+      if (typeof timer.unref === "function") {
+        timer.unref();
+      }
+      void client
+        .detachSession(detachSessionId)
+        .catch(() => {})
+        .finally(() => {
+          if (!finished) {
+            finished = true;
+            clearTimeout(timer);
+            closeNow();
+          }
+        });
+      return;
+    }
+    closeNow();
+  }
+
   register(sessionId: string, client: TClient): void {
     if (!sessionId) return;
     this.bindListeners(client);
 
     const prevClient = this.sessionClients.get(sessionId);
     if (prevClient && prevClient !== client) {
-      this.clientToSessions.get(prevClient)?.delete(sessionId);
+      const prevSet = this.clientToSessions.get(prevClient);
+      prevSet?.delete(sessionId);
+      if ((prevSet?.size ?? 0) === 0) {
+        this.clientToSessions.delete(prevClient);
+        if (!this.pinnedClients.has(prevClient)) {
+          this.closeClientSafely(prevClient, sessionId);
+        }
+      }
     }
 
     this.sessionClients.delete(sessionId);
@@ -323,16 +406,13 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
         this.clientToSessions.delete(evictClient);
       }
       this.onClientEvicted?.(evictKey, evictClient);
-      try {
-        evictClient.close();
-      } catch {
-        // ignore close errors on evicted idle client
-      }
+      this.closeClientSafely(evictClient, evictKey);
     }
   }
 
   closeAll(): void {
-    const clients = new Set<TClient>(this.sessionClients.values());
+    const entries = Array.from(this.sessionClients.entries());
+    const closedClients = new Set<TClient>();
     this.sessionClients.clear();
     this.clientToSessions.clear();
     this.activeTurnSessions.clear();
@@ -340,12 +420,10 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     this.pinnedClients.clear();
     this.focusedSessionId = null;
 
-    for (const client of clients) {
-      try {
-        client.close();
-      } catch {
-        // ignore close errors during shutdown
-      }
+    for (const [sid, client] of entries) {
+      if (closedClients.has(client)) continue;
+      closedClients.add(client);
+      this.closeClientSafely(client, sid);
     }
   }
 }

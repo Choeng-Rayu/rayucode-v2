@@ -141,4 +141,30 @@ describe("SessionSocketPool", () => {
     expect(c1.closed).toBe(true);
     expect(pool.size()).toBe(2);
   });
+
+  it("ignores unsolicited sessionless frames emitted by an unbound client", async () => {
+    let counter = 0;
+    const emitted: HarnessFrameLike[] = [];
+    const pool = new SessionSocketPool<MockSessionClient>({
+      dialClient: async () => new MockSessionClient(`sock-${++counter}`),
+      onFrame: (frame) => emitted.push(frame),
+    });
+
+    const active = await pool.acquireForSession("active-sess");
+    pool.register("active-sess", active.client);
+    pool.markTurnActive("active-sess");
+
+    // Dial a second client whose attachSession fails (never registered).
+    const failed = await pool.acquireForSession("broken-sess");
+
+    // Delayed daemon disconnect on the unbound socket arrives with no session_id.
+    failed.client.emitFrame({
+      ev: "error",
+      code: "internal",
+      message: "daemon connection closed",
+    });
+
+    expect(emitted).toEqual([]);
+    expect(pool.getActiveTurnSessionIds()).toEqual(["active-sess"]);
+  });
 });

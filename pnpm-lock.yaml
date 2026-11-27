@@ -16,6 +16,9 @@ importers:
       '@rayu-dev/rayucode-session-core':
         specifier: 0.1.0
         version: link:../packages/session-core
+      '@rayu-dev/rayucode-ui':
+        specifier: 0.1.0
+        version: link:../packages/ui
       '@tanstack/react-query':
         specifier: ^5.108.2
         version: 5.108.2(@types/react@19.3.0)(react@19.3.1)
@@ -144,6 +147,18 @@ importers:
         specifier: ^5.1.1
         version: 5.1.1(@types/node@26.6.6)(jsdom@31.0.1)(vite@8.3.8(@types/node@26.6.6)(jiti@2.7.0))
 
+  packages/acp-client:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.5
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.1.4
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.5)(jiti@2.7.0)(jsdom@31.0.1)(lightningcss@1.33.0)
+
   packages/session-core:
     dependencies:
       '@rayu-dev/rayucode-sdk':
@@ -168,6 +183,9 @@ importers:
       '@rayu-dev/rayucode-sdk':
         specifier: 1.2.0
         version: link:../../sdk/typescript
+      '@rayu-dev/rayucode-session-core':
+        specifier: 0.1.0
+        version: link:../session-core
       diff:
         specifier: ^7.0.0
         version: 7.0.0

@@ -21,10 +21,14 @@ import {
 } from "./structured.js";
 import {
   API_VERSION_MAJOR,
+  CAPABILITIES_CAPABILITY,
+  CONFIG_CAPABILITY,
   type AppletAction,
   type AnyApiEvent,
   type ApiEvent,
   type ApiRequest,
+  type CapabilitiesPayload,
+  type ConfigStatePayload,
   type ExternalProjectInfo,
   type FileChangeActionKind,
   type FileChangeActionResponse,
@@ -57,6 +61,9 @@ export interface RuntimeInfo {
   sessionId: string;
   provider?: string;
   model?: string;
+  reasoningEffort?: string;
+  authMethod?: string;
+  accountLabel?: string;
   providers: string[];
   routes: ModelRouteInfo[];
 }
@@ -166,6 +173,8 @@ export interface ConnectOptions {
   supportsUserResponse?: boolean;
   /** Enable when this client renders interactive permission_request prompts. */
   supportsPermissions?: boolean;
+  /** Enable when this client renders interactive ask_user_question prompts. */
+  supportsUserQuestions?: boolean;
   /** Supply a custom transport instead of dialing a Unix socket. */
   transport?: Transport;
   /** Milliseconds before a request without a reply rejects. 0 disables. */
@@ -273,6 +282,13 @@ export class RayucodeClient extends EventEmitter {
     return this.capabilities.includes(capability);
   }
 
+  /**
+   * Whether the server advertised `cap` in `hello_ok.capabilities`.
+   */
+  hasCapability(cap: string): boolean {
+    return this.supports(cap);
+  }
+
   private constructor(
     transport: Transport,
     requestTimeoutMs: number,
@@ -352,6 +368,7 @@ export class RayucodeClient extends EventEmitter {
         client: clientName,
         supports_user_response: options.supportsUserResponse ?? false,
         ...(options.supportsPermissions ? { supports_permissions: true } : {}),
+        ...(options.supportsUserQuestions ? { supports_user_questions: true } : {}),
       });
       if (frame.ev !== "hello_ok") {
         throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
@@ -914,6 +931,9 @@ export class RayucodeClient extends EventEmitter {
       sessionId: frame.session_id,
       provider: frame.provider,
       model: frame.model,
+      reasoningEffort: frame.reasoning_effort,
+      authMethod: frame.auth_method,
+      accountLabel: frame.account_label,
       providers: [
         ...new Set(
           [frame.provider, ...routes.map((route) => route.provider)].filter(
@@ -1248,6 +1268,99 @@ export class RayucodeClient extends EventEmitter {
     if (typeof frame.tool_call_id === "string") result.toolCallId = frame.tool_call_id;
     if (typeof frame.tool_name === "string") result.toolName = frame.tool_name;
     return result;
+  }
+
+  /**
+   * Discover curated engine slash commands, permission modes, and feature flags.
+   *
+   * Gracefully returns `null` when connected to a `v1.15` or older daemon that
+   * does not advertise `capabilities_v1`.
+   */
+  async getCapabilities(sessionId?: string): Promise<CapabilitiesPayload | null> {
+    if (!this.hasCapability(CAPABILITIES_CAPABILITY)) {
+      return null;
+    }
+    try {
+      const frame = await this.expectReply(
+        sessionId === undefined
+          ? { req: "get_capabilities" }
+          : { req: "get_capabilities", session_id: sessionId },
+        "capabilities",
+      );
+      return {
+        commands: frame.commands ?? [],
+        permission_modes: frame.permission_modes ?? [],
+        features: frame.features ?? [],
+      };
+    } catch (error) {
+      if (
+        error instanceof HarnessError &&
+        (error.code === "unknown_request" || error.code === "unsupported")
+      ) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Read the curated, secret-redacted view of `~/.rayu/config.toml` and its field schema.
+   *
+   * Gracefully returns `null` when connected to a `v1.15` or older daemon that
+   * does not advertise `config_v1`.
+   */
+  async getConfig(sections?: string[]): Promise<ConfigStatePayload | null> {
+    if (!this.hasCapability(CONFIG_CAPABILITY)) {
+      return null;
+    }
+    try {
+      const frame = await this.expectReply(
+        sections === undefined
+          ? { req: "get_config" }
+          : { req: "get_config", sections },
+        "config_state",
+      );
+      return {
+        path: frame.path,
+        sections: frame.sections ?? [],
+        values: frame.values ?? {},
+        schema: frame.schema ?? [],
+      };
+    } catch (error) {
+      if (
+        error instanceof HarnessError &&
+        (error.code === "unknown_request" || error.code === "unsupported")
+      ) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Validate and atomically patch curated fields in `~/.rayu/config.toml`.
+   *
+   * Rejects with `HarnessError("unsupported", ...)` on older `v1.15` daemons
+   * without `config_v1`, or `HarnessError("invalid_request", ...)` when
+   * validation fails.
+   */
+  async patchConfig(patch: Record<string, unknown>): Promise<ConfigStatePayload> {
+    if (!this.hasCapability(CONFIG_CAPABILITY)) {
+      throw new HarnessError(
+        "unsupported",
+        "This harness does not support config_v1. Update the rayu runtime and API bridge.",
+      );
+    }
+    const frame = await this.expectReply(
+      { req: "patch_config", patch },
+      "config_state",
+    );
+    return {
+      path: frame.path,
+      sections: frame.sections ?? [],
+      values: frame.values ?? {},
+      schema: frame.schema ?? [],
+    };
   }
 
   async ping(): Promise<void> {
@@ -1593,7 +1706,12 @@ export class RayucodeClient extends EventEmitter {
         case "text_done": {
           const key = event.message_id ?? "";
           const message = messagesById.get(key);
-          if (message) completed.add(message);
+          if (message) {
+            completed.add(message);
+            if (event.stop_reason !== undefined) {
+              message.stopReason = event.stop_reason;
+            }
+          }
           // Id-less framing still separates sequential messages. Keep keyed
           // messages addressable for authoritative corrections after completion.
           if (event.message_id === undefined) messagesById.delete(key);
@@ -1608,6 +1726,7 @@ export class RayucodeClient extends EventEmitter {
             name: event.name,
             output: event.output,
             error: event.error,
+            ...(event.duration_ms !== undefined ? { durationMs: event.duration_ms } : {}),
           });
           break;
         case "token_usage":
@@ -1702,7 +1821,13 @@ export interface TurnResult {
   /** Completed text messages. Empty when the bridge does not support framing. */
   messages: AssistantTextMessage[];
   reasoning: string;
-  toolCalls: Array<{ callId: string; name: string; output: string; error?: string }>;
+  toolCalls: Array<{
+    callId: string;
+    name: string;
+    output: string;
+    error?: string;
+    durationMs?: number;
+  }>;
   usage?: { input: number; output: number; cacheReadInput?: number; effectiveBudget?: number };
   /** Total Rayu gateway credits charged across all requests in this turn. */
   rayuCredits?: number;
@@ -1712,6 +1837,8 @@ export interface AssistantTextMessage {
   /** Stream-local correlation id, not a persisted history message id. */
   messageId?: string;
   text: string;
+  /** Provider stop reason reported on `text_done`, when available. */
+  stopReason?: string;
 }
 
 export interface StructuredTurnResult<T> extends TurnResult {
