@@ -6268,12 +6268,14 @@ dependencies = [
  "rayucode-background-types",
  "rayucode-base",
  "rayucode-harness-api",
+ "rayucode-provider-core",
  "rayucode-session-types",
  "rayucode-todo-policy",
  "rayucode-transport",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

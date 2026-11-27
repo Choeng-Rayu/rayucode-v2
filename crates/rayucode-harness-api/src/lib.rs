@@ -20,9 +20,11 @@ pub use rayucode_tool_types::questions::{
 
 use serde::{Deserialize, Serialize};
 
+mod capabilities_config;
 mod client;
 mod edit_stats;
 mod events;
+pub use capabilities_config::*;
 pub use edit_stats::{
     SessionEditStats, enrich_sessions_from_edit_stats, enrich_sessions_from_local_edit_stats,
     record_session_edit,
@@ -64,7 +66,7 @@ mod capability_coverage_tests;
 /// Protocol major version. Breaking changes only.
 pub const API_VERSION_MAJOR: u32 = 1;
 /// Protocol minor version. Additive changes.
-pub const API_VERSION_MINOR: u32 = 15;
+pub const API_VERSION_MINOR: u32 = 16;
 
 /// Envelope wrapping every client-to-server frame.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -86,6 +88,12 @@ pub struct ServerFrame {
     /// are not direct replies omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<u64>,
+    /// Monotonic per-session stream sequence number, when supplied by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    /// Active turn correlation identifier, when supplied by the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     #[serde(flatten)]
     pub event: ApiEvent,
 }
@@ -105,6 +113,8 @@ impl ServerFrame {
         Self {
             v: API_VERSION_MAJOR,
             reply_to: None,
+            seq: None,
+            turn_id: None,
             event,
         }
     }
@@ -113,7 +123,15 @@ impl ServerFrame {
         Self {
             v: API_VERSION_MAJOR,
             reply_to: Some(reply_to),
+            seq: None,
+            turn_id: None,
             event,
         }
+    }
+
+    pub fn with_turn_meta(mut self, seq: Option<u64>, turn_id: Option<String>) -> Self {
+        self.seq = seq;
+        self.turn_id = turn_id;
+        self
     }
 }

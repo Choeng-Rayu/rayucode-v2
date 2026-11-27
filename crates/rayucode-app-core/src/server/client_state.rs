@@ -1389,14 +1389,22 @@ mod tests;
 
 pub(super) fn spawn_model_prefetch_update(provider: Arc<dyn Provider>, agent: Arc<Mutex<Agent>>) {
     super::model_refresh::ensure_periodic_refresh(&provider);
+    // Hold only a Weak handle across async network prefetch so a slow or
+    // stalled catalog refresh can never pin a retired Agent and poison
+    // SessionManager::owners on reconnect.
+    let agent = Arc::downgrade(&agent);
     tokio::spawn(async move {
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
         let (provider_name, initial_models) = {
-            let agent_guard = agent.lock().await;
+            let agent_guard = agent_arc.lock().await;
             (
                 agent_guard.provider_name(),
                 agent_guard.available_models_display(),
             )
         };
+        drop(agent_arc);
 
         let needs_capability_refresh = provider.model_capabilities_need_refresh();
         // Nonempty names may be built-in fallbacks, not a discovered catalog.
@@ -1419,12 +1427,14 @@ pub(super) fn spawn_model_prefetch_update(provider: Arc<dyn Provider>, agent: Ar
             // Publish those successful discoveries rather than hiding them.
         }
 
-        let refreshed = {
-            let agent_guard = agent.lock().await;
+        let refreshed = if let Some(agent_arc) = agent.upgrade() {
+            let agent_guard = agent_arc.lock().await;
             (
                 agent_guard.available_models_display(),
                 agent_guard.model_routes(),
             )
+        } else {
+            (provider.available_models_display(), provider.model_routes())
         };
 
         if !needs_capability_refresh && refreshed.0 == initial_models && refreshed.1.is_empty() {

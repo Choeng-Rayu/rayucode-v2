@@ -197,13 +197,15 @@ pub(super) fn handle_input_shell(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let agent = Arc::clone(agent);
+    let agent = Arc::downgrade(agent);
     let tx = client_event_tx.clone();
 
     crate::runtime_activity::spawn(async move {
-        let cwd = {
-            let agent_guard = agent.lock().await;
+        let cwd = if let Some(agent_arc) = agent.upgrade() {
+            let agent_guard = agent_arc.lock().await;
             agent_guard.working_dir().map(|dir| dir.to_string())
+        } else {
+            return;
         };
 
         let started = Instant::now();
@@ -309,10 +311,13 @@ pub(super) fn handle_run_subagent(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let agent = Arc::clone(agent);
+    let agent_weak = Arc::downgrade(agent);
     let tx = client_event_tx.clone();
 
     crate::runtime_activity::spawn(async move {
+        let Some(agent) = agent_weak.upgrade() else {
+            return;
+        };
         let description = derive_subagent_description(&prompt);
         let tool_call_id = crate::id::new_id("call");
         let tool_name = "subagent".to_string();
@@ -327,6 +332,9 @@ pub(super) fn handle_run_subagent(
 
         let message_id = {
             let mut agent_guard = agent.lock().await;
+            if Arc::strong_count(&agent) == 1 {
+                return;
+            }
             match agent_guard.add_manual_tool_use(
                 tool_call_id.clone(),
                 tool_name.clone(),
@@ -365,6 +373,9 @@ pub(super) fn handle_run_subagent(
                 agent_guard.working_dir().map(std::path::PathBuf::from),
             )
         };
+        // Drop the strong reference before executing the potentially long-running
+        // subagent so disconnecting during execution does not pin the retired Agent.
+        drop(agent);
 
         let ctx = crate::tool::ToolContext {
             session_id: session_id.clone(),
@@ -410,8 +421,12 @@ pub(super) fn handle_run_subagent(
                     output: output_text,
                     error: None,
                 });
+                let Some(agent_arc) = agent_weak.upgrade() else {
+                    let _ = tx.send(ServerEvent::Done { id });
+                    return;
+                };
                 let persist = {
-                    let mut agent_guard = agent.lock().await;
+                    let mut agent_guard = agent_arc.lock().await;
                     agent_guard.add_manual_tool_result(tool_call_id, output, duration_ms)
                 };
                 if let Err(error) = persist {
@@ -434,8 +449,12 @@ pub(super) fn handle_run_subagent(
                     output: error_msg.clone(),
                     error: Some(error_msg.clone()),
                 });
+                let Some(agent_arc) = agent_weak.upgrade() else {
+                    let _ = tx.send(ServerEvent::Done { id });
+                    return;
+                };
                 let persist = {
-                    let mut agent_guard = agent.lock().await;
+                    let mut agent_guard = agent_arc.lock().await;
                     agent_guard.add_manual_tool_error(tool_call_id, error_msg, duration_ms)
                 };
                 if let Err(persist_error) = persist {
@@ -1209,13 +1228,20 @@ pub(super) fn handle_compact(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let agent = Arc::clone(agent);
+    let agent_weak = Arc::downgrade(agent);
     let tx = client_event_tx.clone();
     crate::runtime_activity::spawn(async move {
+        let Some(agent) = agent_weak.upgrade() else {
+            return;
+        };
         let mut agent_guard = agent.lock().await;
+        if Arc::strong_count(&agent) == 1 {
+            return;
+        }
         let session_id = agent_guard.session_id().to_string();
         let (message, success) = agent_guard.request_manual_compaction();
         drop(agent_guard);
+        drop(agent);
 
         if success {
             crate::runtime_memory_log::emit_event(

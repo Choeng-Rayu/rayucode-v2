@@ -58,6 +58,29 @@ pub enum ApiEvent {
         images: Vec<RenderedImage>,
     },
 
+    /// Reply to `GetCapabilities`: live engine commands, permission modes, and feature flags.
+    Capabilities {
+        commands: Vec<crate::CommandDescriptor>,
+        permission_modes: Vec<crate::PermissionModeDescriptor>,
+        features: Vec<crate::FeatureFlagDescriptor>,
+    },
+
+    /// Reply to `GetConfig` / `PatchConfig`: canonical `~/.rayu/config.toml` snapshot and schema.
+    ConfigState {
+        path: String,
+        sections: Vec<String>,
+        values: serde_json::Map<String, serde_json::Value>,
+        schema: Vec<crate::ConfigFieldSchema>,
+    },
+
+    /// Broadcast whenever curated keys in `~/.rayu/config.toml` change via `PatchConfig`.
+    ConfigChanged {
+        changed_keys: Vec<String>,
+        #[serde(default)]
+        requires_restart: bool,
+        values: serde_json::Map<String, serde_json::Value>,
+    },
+
     /// Reply to `Ping`.
     Pong,
 
@@ -76,6 +99,8 @@ pub enum ApiEvent {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<String>,
     },
 
     /// Replace previously streamed text for this message, including rollback.
@@ -138,6 +163,8 @@ pub enum ApiEvent {
         output: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
     },
 
     /// Images the model just received from a tool result or image generator.
@@ -541,6 +568,8 @@ pub enum ErrorCode {
     UnknownRequest,
     UnknownSession,
     InvalidRequest,
+    Busy,
+    Unsupported,
     Internal,
 }
 
@@ -659,6 +688,15 @@ pub struct ModelRouteInfo {
     /// Tracked turns and prior picker selections, when supplied by the runtime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<crate::ModelUsage>,
+    /// Reasoning effort stops supported by this route (excluding TUI-only `swarm*` sentinels).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_efforts: Vec<String>,
+    /// Default reasoning effort for this route, when supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+    /// Effective context window in tokens, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -708,6 +746,12 @@ pub struct HistoryMessage {
     /// older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<HistoryTool>,
+    /// Provenance of the message (user-typed vs synthetic engine-internal prompt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<crate::MessageOrigin>,
+    /// Whether thin clients should display or hide this row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<crate::MessageVisibility>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

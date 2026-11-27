@@ -175,6 +175,8 @@ fn fallible_controls_wait_for_terminal_reply_without_settling_concurrent_turn() 
                 } else {
                     json!({"type":"error","id":id,"message":error})
                 };
+                let expected_code =
+                    crate::capabilities::classify_daemon_error(error, ErrorCode::Internal);
                 assert_eq!(
                     state.legacy_event_to_api(&event),
                     vec![ServerFrame::reply(
@@ -183,7 +185,7 @@ fn fallible_controls_wait_for_terminal_reply_without_settling_concurrent_turn() 
                             ApiEvent::Ok
                         } else {
                             ApiEvent::Error {
-                                code: ErrorCode::Internal,
+                                code: expected_code,
                                 message: error.into(),
                             }
                         }
@@ -2974,6 +2976,68 @@ fn switching_provider_does_not_reuse_the_previous_providers_effort() {
 }
 
 #[test]
+fn available_models_updated_preserves_effort_across_same_provider_aliases_and_initial_provider() {
+    for (initial_provider, refreshed_provider) in [
+        ("Anthropic", "anthropic"),
+        ("claude", "Anthropic"),
+        ("OpenAI", "openai"),
+        ("codex", "OpenAI"),
+        ("Rayu", "rayu"),
+    ] {
+        let mut state = state_with_session();
+        state.note_models(&json!({
+            "provider_name": initial_provider,
+            "provider_model": "active-model",
+            "reasoning_effort": "high"
+        }));
+        let frames = state.legacy_event_to_api(&json!({
+            "type": "available_models_updated",
+            "provider_name": refreshed_provider,
+            "provider_model": "active-model",
+            "available_models": ["active-model"]
+        }));
+        assert_eq!(
+            state.current_effort.as_deref(),
+            Some("high"),
+            "provider `{initial_provider}` -> `{refreshed_provider}` must not wipe cached effort"
+        );
+        assert!(
+            matches!(
+                &frames[0].event,
+                ApiEvent::ModelInfo { reasoning_effort, .. } if reasoning_effort.as_deref() == Some("high")
+            ),
+            "ModelInfo should preserve effort for `{initial_provider}` -> `{refreshed_provider}`"
+        );
+        assert!(
+            matches!(
+                &frames[1].event,
+                ApiEvent::RuntimeInfo { reasoning_effort, .. } if reasoning_effort.as_deref() == Some("high")
+            ),
+            "RuntimeInfo should preserve effort for `{initial_provider}` -> `{refreshed_provider}`"
+        );
+    }
+
+    // Discovering the provider for the first time after an effort event must not wipe effort.
+    let mut state = state_with_session();
+    state.legacy_event_to_api(&json!({
+        "type": "reasoning_effort_changed",
+        "id": 999,
+        "effort": "high"
+    }));
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "available_models_updated",
+        "provider_name": "anthropic",
+        "provider_model": "claude-opus-4-7",
+        "available_models": ["claude-opus-4-7"]
+    }));
+    assert_eq!(state.current_effort.as_deref(), Some("high"));
+    assert!(matches!(
+        &frames[1].event,
+        ApiEvent::RuntimeInfo { reasoning_effort, .. } if reasoning_effort.as_deref() == Some("high")
+    ));
+}
+
+#[test]
 fn model_change_without_provider_preserves_known_provider() {
     let mut state = state_with_session();
     state.note_models(&json!({"provider_name": "known", "reasoning_effort": "high"}));
@@ -3481,13 +3545,15 @@ fn attachment_recovery_preserves_directive_in_both_history_state_orders() {
             let frames = state.legacy_event_to_api(&history);
             assert_eq!(frames.len(), 3);
             assert!(matches!(frames[2].event, ApiEvent::AppletState { .. }));
+            assert_eq!(frames[0].reply_to, None);
+            assert!(frames[0].seq.is_some());
             assert_eq!(
-                frames[0],
-                ServerFrame::event(ApiEvent::SessionRecovery {
+                frames[0].event,
+                ApiEvent::SessionRecovery {
                     session_id: "recover".into(),
                     continuation_message: "Continue the exact task".into(),
                     reconnect_notice: Some("Recovered build".into()),
-                })
+                }
             );
             if history_first {
                 assert!(
@@ -3729,12 +3795,14 @@ fn assert_panel(frames: &[ServerFrame], session: &str, snapshot: Value) {
         .filter(|f| matches!(f.event, ApiEvent::SidePanelState { .. }))
         .collect();
     assert_eq!(panels.len(), 1);
+    assert_eq!(panels[0].reply_to, None);
+    assert!(panels[0].seq.is_some());
     assert_eq!(
-        panels[0],
-        &ServerFrame::event(ApiEvent::SidePanelState {
+        panels[0].event,
+        ApiEvent::SidePanelState {
             session_id: session.into(),
             snapshot: serde_json::from_value(snapshot).unwrap(),
-        })
+        }
     );
 }
 
@@ -4301,15 +4369,16 @@ fn set_permission_mode_translates_and_acks() {
         assert_eq!(legacy["type"], "set_permission_mode");
         assert_eq!(legacy["mode"], expected_legacy);
         let reply = state.legacy_event_to_api(&json!({"type": "ack", "id": legacy["id"]}));
+        assert_eq!(reply.len(), 2);
+        assert_eq!(reply[0], ServerFrame::reply(77, ApiEvent::Ok));
+        assert_eq!(reply[1].reply_to, None);
+        assert!(reply[1].seq.is_some());
         assert_eq!(
-            reply,
-            vec![
-                ServerFrame::reply(77, ApiEvent::Ok),
-                ServerFrame::event(ApiEvent::PermissionModeChanged {
-                    session_id: "s1".into(),
-                    mode: expected_enum,
-                }),
-            ]
+            reply[1].event,
+            ApiEvent::PermissionModeChanged {
+                session_id: "s1".into(),
+                mode: expected_enum,
+            }
         );
     }
 }
@@ -4331,15 +4400,18 @@ fn permission_request_and_response_roundtrip() {
         "description": "Run `cargo test`",
         "input": { "command": "cargo test" },
     }));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].reply_to, None);
+    assert!(frames[0].seq.is_some());
     assert_eq!(
-        frames,
-        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+        frames[0].event,
+        ApiEvent::PermissionRequest {
             session_id: "s1".into(),
             request_id: "perm_42".into(),
             tool_name: "bash".into(),
             description: "Run `cargo test`".into(),
             risk_tier: Some("safe".into()),
-        })]
+        }
     );
 
     // Explicit daemon risk_tier is preserved verbatim.
@@ -4352,15 +4424,18 @@ fn permission_request_and_response_roundtrip() {
         "input": { "command": "rm -rf /tmp/foo" },
         "risk_tier": "confirm",
     }));
+    assert_eq!(explicit.len(), 1);
+    assert_eq!(explicit[0].reply_to, None);
+    assert!(explicit[0].seq.is_some());
     assert_eq!(
-        explicit,
-        vec![ServerFrame::event(ApiEvent::PermissionRequest {
+        explicit[0].event,
+        ApiEvent::PermissionRequest {
             session_id: "s1".into(),
             request_id: "perm_43".into(),
             tool_name: "bash".into(),
             description: "Run `rm -rf /tmp/foo`".into(),
             risk_tier: Some("confirm".into()),
-        })]
+        }
     );
 
     // Destructive bash without explicit risk_tier infers "confirm", edit infers "bounded".
@@ -4395,12 +4470,15 @@ fn permission_request_and_response_roundtrip() {
         "session_id": "s1",
         "mode": "orchestrator",
     }));
+    assert_eq!(pushed.len(), 1);
+    assert_eq!(pushed[0].reply_to, None);
+    assert!(pushed[0].seq.is_some());
     assert_eq!(
-        pushed,
-        vec![ServerFrame::event(ApiEvent::PermissionModeChanged {
+        pushed[0].event,
+        ApiEvent::PermissionModeChanged {
             session_id: "s1".into(),
             mode: rayucode_harness_api::PermissionMode::Orchestrator,
-        })]
+        }
     );
 
     // Other session's permission_mode_changed is filtered out.
@@ -4975,5 +5053,145 @@ fn history_hydration_emits_file_changes_state_only_when_present_and_non_null() {
                 if session_id == "s1" && snapshot.total_pending_files == 1
         )),
         "expected FileChangesState on get_history reply: {history_frames:?}"
+    );
+}
+
+#[test]
+fn clear_rotates_bridge_session_id_and_preserves_subsequent_requests_and_permissions() {
+    let mut state = state_with_session();
+    state.supports_permissions = true;
+    let clear_out = state.api_request_to_legacy(&json!({
+        "id": 60,
+        "req": "clear",
+        "session_id": "s1",
+    }));
+    let [Outbound::Legacy(clear_legacy)] = clear_out.as_slice() else {
+        panic!("expected legacy clear request, got {clear_out:?}");
+    };
+    let clear_legacy_id = clear_legacy["id"].as_u64().unwrap();
+
+    // Daemon emits rotated Session + Done for clear.
+    let _ = state.legacy_event_to_api(&json!({
+        "type": "session",
+        "session_id": "s2",
+    }));
+    let done_frames = state.legacy_event_to_api(&json!({
+        "type": "done",
+        "id": clear_legacy_id,
+    }));
+    assert!(
+        done_frames.iter().any(|f| f.reply_to == Some(60) && matches!(f.event, ApiEvent::Ok)),
+        "expected Ok reply to clear, got {done_frames:?}"
+    );
+
+    // Subsequent send_message targeting rotated s2 must be accepted (not unknown_session).
+    let send_out = state.api_request_to_legacy(&json!({
+        "id": 61,
+        "req": "send_message",
+        "session_id": "s2",
+        "content": "hello after clear",
+    }));
+    assert!(
+        matches!(send_out.as_slice(), [Outbound::Legacy(v)] if v["type"] == "message"),
+        "expected message routed to rotated session s2, got {send_out:?}"
+    );
+
+    // Subsequent permission_request on rotated s2 must not be dropped.
+    let perm_frames = state.legacy_event_to_api(&json!({
+        "type": "permission_request",
+        "session_id": "s2",
+        "request_id": "perm_after_clear",
+        "tool_name": "bash",
+        "description": "Run tests",
+    }));
+    assert!(
+        perm_frames.iter().any(|f| matches!(
+            &f.event,
+            ApiEvent::PermissionRequest { session_id, request_id, .. }
+                if session_id == "s2" && request_id == "perm_after_clear"
+        )),
+        "expected permission_request for rotated s2, got {perm_frames:?}"
+    );
+}
+
+#[test]
+fn scoped_fork_error_and_unmatched_split_response_do_not_hang_caller() {
+    let mut state = state_with_session();
+    let fork_out = state.api_request_to_legacy(&json!({
+        "id": 70,
+        "req": "fork_session",
+        "session_id": "s1",
+    }));
+    let [Outbound::Legacy(fork_legacy)] = fork_out.as_slice() else {
+        panic!("expected legacy split request");
+    };
+    let fork_legacy_id = fork_legacy["id"].as_u64().unwrap();
+
+    // Unmatched split_response with a different id must NOT consume pending_fork_id.
+    let stray = state.legacy_event_to_api(&json!({
+        "type": "split_response",
+        "id": fork_legacy_id + 999,
+        "new_session_id": "s_stray",
+    }));
+    assert!(stray.is_empty(), "stray split_response should be ignored");
+
+    // Matching scoped error reply must resolve API request 70 instead of hanging.
+    let err_frames = state.legacy_event_to_api(&json!({
+        "type": "error",
+        "id": fork_legacy_id,
+        "session_id": "s1",
+        "message": "fork failed",
+    }));
+    assert!(
+        err_frames.iter().any(|f| f.reply_to == Some(70) && matches!(f.event, ApiEvent::Error { .. })),
+        "expected correlated error reply for fork_session, got {err_frames:?}"
+    );
+}
+
+#[test]
+fn control_error_reply_for_simple_kind_does_not_clear_active_turn() {
+    let mut state = state_with_session();
+    let _ = state.api_request_to_legacy(&json!({
+        "id": 80,
+        "req": "send_message",
+        "session_id": "s1",
+        "content": "hi",
+    }));
+    let _ = state.legacy_event_to_api(&json!({
+        "type": "text_delta",
+        "session_id": "s1",
+        "text": "working",
+    }));
+
+    // Send a simple control request (`set_context_cap`) whose error previously fell through
+    // and cleared `observed_turn_active`.
+    let cap_out = state.api_request_to_legacy(&json!({
+        "id": 81,
+        "req": "set_context_cap",
+        "session_id": "s1",
+        "max_tokens": 128000,
+    }));
+    let [Outbound::Legacy(cap_legacy)] = cap_out.as_slice() else {
+        panic!("expected legacy set_context_cap");
+    };
+    let cap_err = state.legacy_event_to_api(&json!({
+        "type": "error",
+        "id": cap_legacy["id"],
+        "message": "cap busy",
+    }));
+    assert!(
+        cap_err.iter().any(|f| f.reply_to == Some(81) && matches!(f.event, ApiEvent::Error { .. })),
+        "expected correlated Error reply for set_context_cap, got {cap_err:?}"
+    );
+
+    // Subsequent text_delta for the active turn must still be delivered.
+    let more_delta = state.legacy_event_to_api(&json!({
+        "type": "text_delta",
+        "session_id": "s1",
+        "text": " still alive",
+    }));
+    assert!(
+        more_delta.iter().any(|f| matches!(&f.event, ApiEvent::TextDelta { text, .. } if text == " still alive")),
+        "active turn text_delta must continue after simple control error: {more_delta:?}"
     );
 }

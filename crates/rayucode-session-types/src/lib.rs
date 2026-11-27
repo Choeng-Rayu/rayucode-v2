@@ -106,6 +106,11 @@ pub struct RenderedMessage {
     /// transcript (issue #432).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_index: Option<usize>,
+    /// True when this row originated from a synthetic engine-internal prompt
+    /// (guardrail reconsideration, incomplete-response continuation, auto-poke,
+    /// scheduled task, or `[System reminder: ...]`) rather than a human user.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_engine_internal: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

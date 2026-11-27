@@ -1089,6 +1089,7 @@ mod config_file;
 mod default_file;
 mod display_summary;
 mod env_overrides;
+pub mod rpc_config;
 
 #[cfg(test)]
 #[path = "config_tests.rs"]

@@ -18,6 +18,9 @@ impl TurnFence {
     pub(super) fn active(&self) -> bool {
         self.active.is_some()
     }
+    pub(super) fn active_turn_id(&self) -> Option<String> {
+        self.active.map(|id| id.to_string())
+    }
     pub(super) fn state(&mut self, event: &Value) -> bool {
         let Some(session_id) = event["session_id"].as_str() else {
             return false;
@@ -93,6 +96,12 @@ impl TurnFence {
     pub(super) fn complete(&mut self) {
         if let Some(id) = self.active.take() {
             self.completed = self.completed.max(id);
+        }
+    }
+    pub(super) fn reset_for_session(&mut self, session_id: &str) {
+        *self = Self::default();
+        if !session_id.is_empty() {
+            self.session_id = Some(session_id.to_string());
         }
     }
 }

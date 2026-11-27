@@ -7,7 +7,7 @@ use crate::provider::{ModelCatalogRefreshSummary, ModelRoute, Provider, RouteSel
 use rayucode_provider_core::ModelCatalogSnapshot;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 
@@ -18,7 +18,7 @@ static NEXT_AUTH_REFRESH_GENERATION: AtomicU64 = AtomicU64::new(1);
 struct AuthRefreshTargets {
     providers: Vec<Arc<dyn Provider>>,
     session_providers: Vec<Arc<dyn Provider>>,
-    deferred_agents: Vec<Arc<Mutex<Agent>>>,
+    deferred_agents: Vec<Weak<Mutex<Agent>>>,
 }
 
 fn begin_auth_refresh(session_id: &str) -> u64 {
@@ -535,7 +535,9 @@ pub(super) async fn handle_refresh_models(
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
     let provider_clone = provider.clone();
-    let agent_clone = agent.clone();
+    // Never pin the Agent strongly across an async network catalog refresh;
+    // otherwise disconnecting during a slow refresh blocks session restore.
+    let agent_weak = Arc::downgrade(agent);
     let client_event_tx_clone = client_event_tx.clone();
     crate::runtime_activity::spawn(async move {
         send_catalog_activity(
@@ -556,6 +558,9 @@ pub(super) async fn handle_refresh_models(
             tokio::select! {
                 result = &mut refresh_future => break result,
                 _ = heartbeat.tick() => {
+                    if client_event_tx_clone.is_closed() {
+                        continue;
+                    }
                     let elapsed_secs = refresh_started.elapsed().as_secs();
                     if elapsed_secs > 0 {
                         send_catalog_activity(
@@ -572,8 +577,14 @@ pub(super) async fn handle_refresh_models(
         // Unified refresh can return an error after publishing fresh catalogs
         // for other providers. Send the current snapshot on both paths.
         crate::bus::Bus::global().publish_models_updated();
-        let event = available_models_updated_event(&agent_clone).await;
-        let _ = client_event_tx_clone.send(event);
+        if let Some(agent_arc) = agent_weak.upgrade() {
+            let event = available_models_updated_event(&agent_arc).await;
+            drop(agent_arc);
+            let _ = client_event_tx_clone.send(event);
+        } else if !client_event_tx_clone.is_closed() {
+            let snapshot = available_models_snapshot_from_provider(&provider_clone);
+            let _ = client_event_tx_clone.send(available_models_snapshot_into_event(snapshot));
+        }
         match result {
             Ok(_) => {
                 send_catalog_activity(
@@ -631,10 +642,16 @@ pub(super) async fn handle_set_context_cap(
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
-    let agent = Arc::clone(agent);
+    let agent = Arc::downgrade(agent);
     let client_event_tx = client_event_tx.clone();
     crate::runtime_activity::spawn(async move {
-        let mut agent = agent.lock().await;
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
+        let mut agent = agent_arc.lock().await;
+        if Arc::strong_count(&agent_arc) == 1 && client_event_tx.is_closed() {
+            return;
+        }
         if agent.session_id() != session_id {
             let _ = client_event_tx.send(ServerEvent::Error {
                 id,
@@ -716,8 +733,15 @@ fn spawn_deferred_reasoning_effort_change(
     client_event_tx: mpsc::UnboundedSender<ServerEvent>,
 ) {
     let queued_at = log_provider_control_deferred("set_reasoning_effort", id);
+    let agent = Arc::downgrade(&agent);
     crate::runtime_activity::spawn(async move {
-        let mut agent_guard = agent.lock().await;
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
+        let mut agent_guard = agent_arc.lock().await;
+        if Arc::strong_count(&agent_arc) == 1 && client_event_tx.is_closed() {
+            return;
+        }
         log_provider_control_lock_acquired("set_reasoning_effort", id, queued_at);
         let result = agent_guard.set_reasoning_effort(&effort);
         crate::logging::info(&format!(
@@ -877,12 +901,20 @@ fn spawn_deferred_set_compaction_mode(
     client_event_tx: mpsc::UnboundedSender<ServerEvent>,
 ) {
     let queued_at = log_provider_control_deferred("set_compaction_mode", id);
+    let agent = Arc::downgrade(&agent);
     crate::runtime_activity::spawn(async move {
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
         let registry = {
-            let agent_guard = agent.lock().await;
+            let agent_guard = agent_arc.lock().await;
+            if Arc::strong_count(&agent_arc) == 1 && client_event_tx.is_closed() {
+                return;
+            }
             log_provider_control_lock_acquired("set_compaction_mode", id, queued_at);
             agent_guard.registry()
         };
+        drop(agent_arc);
         apply_set_compaction_mode(id, mode, registry, &client_event_tx).await;
         log_provider_control_completed("set_compaction_mode", id, queued_at);
     });
@@ -935,7 +967,10 @@ pub(super) async fn handle_notify_auth_changed(
     ));
     let targets = auth_refresh_targets(provider_template, provider, agent, sessions).await;
     let client_event_tx_clone = client_event_tx.clone();
-    let agent_clone = agent.clone();
+    // Hold only a Weak handle so auth refresh settlement (up to 10s) or a
+    // busy requesting session can never pin a disconnected session's Agent
+    // and trigger "still has a runtime owner" on reconnect.
+    let agent_weak = Arc::downgrade(agent);
     crate::runtime_activity::spawn(async move {
         if !auth_refresh_is_current(&session_id, auth_refresh_generation) {
             return;
@@ -975,22 +1010,31 @@ pub(super) async fn handle_notify_auth_changed(
         for provider in session_providers {
             provider.on_auth_changed_preserve_current_provider();
         }
+        // Spawn other busy sessions' deferred refreshes BEFORE waiting on the
+        // requesting session's own Agent lock so a busy requesting session
+        // never blocks or delays unrelated sessions.
+        spawn_deferred_auth_refreshes(deferred_agents);
 
         // Auth refresh is global so every live session learns about newly
         // configured credentials, but the automatic post-login model switch is
         // session-local. A user logging Groq/Cerebras into one workspace should
         // not silently move unrelated sessions off their chosen provider/model.
+        let Some(agent_arc) = agent_weak.upgrade() else {
+            crate::bus::Bus::global().publish_models_updated();
+            finish_auth_refresh(&session_id, auth_refresh_generation);
+            return;
+        };
         if auth_refresh_is_current(&session_id, auth_refresh_generation) {
             apply_auth_runtime_model_to_agent(
                 &activation,
                 activation.activated_model.as_deref(),
-                &agent_clone,
+                &agent_arc,
                 None,
             )
             .await;
         }
         let auth_selection_generation = {
-            let agent_guard = agent_clone.lock().await;
+            let agent_guard = agent_arc.lock().await;
             agent_guard.provider_model_selection_generation()
         };
 
@@ -1003,13 +1047,12 @@ pub(super) async fn handle_notify_auth_changed(
             ),
         ));
 
-        spawn_deferred_auth_refreshes(deferred_agents);
-
         // Hot-initializing providers is synchronous, while dynamic catalogs may
         // continue refreshing in the background. Push an immediate snapshot so
         // the model picker/header stop looking stale right after login, then
         // push another snapshot when the background refresh announces itself.
-        let mut latest_snapshot = available_models_snapshot(&agent_clone).await;
+        let mut latest_snapshot = available_models_snapshot(&agent_arc).await;
+        drop(agent_arc);
         let _ = client_event_tx_clone.send(available_models_snapshot_into_event(
             latest_snapshot.clone(),
         ));
@@ -1025,12 +1068,18 @@ pub(super) async fn handle_notify_auth_changed(
             .iter()
             .any(|provider| provider.auth_model_refresh_pending())
             && tokio::time::Instant::now() < max_deadline
+            && agent_weak.strong_count() > 0
         {
             tokio::select! {
                 event = bus_rx.recv() => {
                     if matches!(event, Ok(crate::bus::BusEvent::ModelsUpdated)) {
                         model_update_events = model_update_events.saturating_add(1);
-                        latest_snapshot = available_models_snapshot(&agent_clone).await;
+                        let Some(agent_arc) = agent_weak.upgrade() else {
+                            finish_auth_refresh(&session_id, auth_refresh_generation);
+                            return;
+                        };
+                        latest_snapshot = available_models_snapshot(&agent_arc).await;
+                        drop(agent_arc);
                         let _ = client_event_tx_clone.send(available_models_snapshot_into_event(latest_snapshot.clone()));
                     }
                 }
@@ -1040,13 +1089,18 @@ pub(super) async fn handle_notify_auth_changed(
         let refresh_timed_out = refresh_providers
             .iter()
             .any(|provider| provider.auth_model_refresh_pending());
-        latest_snapshot = available_models_snapshot(&agent_clone).await;
+        let Some(agent_arc) = agent_weak.upgrade() else {
+            finish_auth_refresh(&session_id, auth_refresh_generation);
+            return;
+        };
+        latest_snapshot = available_models_snapshot(&agent_arc).await;
         let _ = client_event_tx_clone.send(available_models_snapshot_into_event(
             latest_snapshot.clone(),
         ));
         let settle_ms = settle_started.elapsed().as_millis();
 
         if !auth_refresh_is_current(&session_id, auth_refresh_generation) {
+            drop(agent_arc);
             crate::logging::event_info(
                 "SERVER_AUTH_MODEL_REFRESH_SUPERSEDED",
                 vec![
@@ -1063,7 +1117,7 @@ pub(super) async fn handle_notify_auth_changed(
         }
 
         let manual_model_selected_during_auth_refresh = {
-            let agent_guard = agent_clone.lock().await;
+            let agent_guard = agent_arc.lock().await;
             agent_guard.user_selected_provider_model_after(auth_selection_generation)
         };
         if manual_model_selected_during_auth_refresh {
@@ -1072,7 +1126,7 @@ pub(super) async fn handle_notify_auth_changed(
                 activation.provider_id.as_deref().unwrap_or("auth"),
                 &[("reason", "user_selected_provider_model_during_refresh")],
             );
-            latest_snapshot = available_models_snapshot(&agent_clone).await;
+            latest_snapshot = available_models_snapshot(&agent_arc).await;
             let _ = client_event_tx_clone.send(available_models_snapshot_into_event(
                 latest_snapshot.clone(),
             ));
@@ -1083,7 +1137,7 @@ pub(super) async fn handle_notify_auth_changed(
                 ) {
                     apply_auth_route_to_agent(
                         &route,
-                        &agent_clone,
+                        &agent_arc,
                         Some(auth_selection_generation),
                     )
                     .await;
@@ -1099,16 +1153,17 @@ pub(super) async fn handle_notify_auth_changed(
                 apply_auth_runtime_model_to_agent(
                     &activation,
                     Some(&model_to_select),
-                    &agent_clone,
+                    &agent_arc,
                     Some(auth_selection_generation),
                 )
                 .await;
             }
-            latest_snapshot = available_models_snapshot(&agent_clone).await;
+            latest_snapshot = available_models_snapshot(&agent_arc).await;
             let _ = client_event_tx_clone.send(available_models_snapshot_into_event(
                 latest_snapshot.clone(),
             ));
         }
+        drop(agent_arc);
 
         let summary = crate::provider::summarize_model_catalog_refresh(
             before_snapshot.available_models,
@@ -1186,7 +1241,7 @@ pub(super) async fn handle_unbound_notify_auth_changed(
         let handle = agent.try_lock().map(|guard| guard.provider_handle());
         match handle {
             Ok(provider) => idle.push(provider),
-            Err(_) => busy.push(agent),
+            Err(_) => busy.push(Arc::downgrade(&agent)),
         }
     }
     let mut seen: Vec<Arc<dyn Provider>> = vec![Arc::clone(provider_template)];
@@ -1416,7 +1471,11 @@ fn spawn_account_switch_refresh(
         }
         _ => {}
     }
+    let agent = Arc::downgrade(&agent);
     crate::runtime_activity::spawn(async move {
+        let Some(agent_arc) = agent.upgrade() else {
+            return;
+        };
         let started = Instant::now();
         crate::logging::event_info(
             "SERVER_PROVIDER_CONTROL_ACCOUNT_SWITCH",
@@ -1426,7 +1485,7 @@ fn spawn_account_switch_refresh(
                 ("request_id", id.to_string()),
             ],
         );
-        if let Ok(mut agent_guard) = agent.try_lock() {
+        if let Ok(mut agent_guard) = agent_arc.try_lock() {
             apply_account_switch(
                 id,
                 provider_kind,
@@ -1436,7 +1495,10 @@ fn spawn_account_switch_refresh(
             );
         } else {
             let queued_at = log_provider_control_deferred("account_switch_refresh", id);
-            let mut agent_guard = agent.lock().await;
+            let mut agent_guard = agent_arc.lock().await;
+            if Arc::strong_count(&agent_arc) == 1 && client_event_tx.is_closed() {
+                return;
+            }
             log_provider_control_lock_acquired("account_switch_refresh", id, queued_at);
             apply_account_switch(
                 id,
@@ -1463,7 +1525,8 @@ fn spawn_account_switch_refresh(
         }
 
         crate::bus::Bus::global().publish_models_updated();
-        let event = available_models_updated_event(&agent).await;
+        let event = available_models_updated_event(&agent_arc).await;
+        drop(agent_arc);
         // Account activation remains valid if its requesting client disconnected.
         if let Err(error) = client_event_tx.send(event) {
             crate::logging::debug(&format!(

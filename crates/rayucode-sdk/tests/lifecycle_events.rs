@@ -246,27 +246,11 @@ fn serve_connection(
 }
 
 fn reply(id: u64, event: ApiEvent, writer: &mut UnixStream) {
-    write_frame(
-        writer,
-        &ServerFrame {
-            v: API_VERSION_MAJOR,
-            reply_to: Some(id),
-            event,
-        },
-    )
-    .expect("reply");
+    write_frame(writer, &ServerFrame::reply(id, event)).expect("reply");
 }
 
 fn push(event: ApiEvent, writer: &mut UnixStream) {
-    write_frame(
-        writer,
-        &ServerFrame {
-            v: API_VERSION_MAJOR,
-            reply_to: None,
-            event,
-        },
-    )
-    .expect("event");
+    write_frame(writer, &ServerFrame::event(event)).expect("event");
 }
 
 #[test]

@@ -9,6 +9,7 @@ description = "Harness API endpoint: bridges versioned API clients onto the inte
 anyhow = "1"
 rayucode-base = { path = "../rayucode-base", default-features = false }
 rayucode-harness-api = { path = "../rayucode-harness-api" }
+rayucode-provider-core = { path = "../rayucode-provider-core" }
 rayucode-todo-policy = { path = "../rayucode-todo-policy" }
 rayucode-session-types = { path = "../rayucode-session-types" }
 rayucode-transport = { path = "../rayucode-transport" }
@@ -26,6 +27,7 @@ libc = "0.2"
 # of its output: a change to the wire prose then fails here instead of silently
 # turning every client's progress bar off.
 rayucode-background-types = { path = "../rayucode-background-types" }
+tempfile = "3"
 
 [[bin]]
 name = "rayucode-harness-api-bridge"

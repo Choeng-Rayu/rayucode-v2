@@ -18,6 +18,7 @@
 
 pub mod allocator;
 pub mod background_progress;
+pub mod capabilities;
 pub mod timing;
 pub mod translate;
 
@@ -27,6 +28,8 @@ mod external_sessions_tests;
 mod session_presence_tests;
 #[cfg(all(test, unix))]
 mod stdio_tests;
+#[cfg(all(test, unix))]
+mod v1_16_contract_tests;
 
 use anyhow::{Context, Result};
 use rayucode_harness_api::{API_VERSION_MAJOR, ApiEvent, ErrorCode, ServerFrame};
@@ -276,11 +279,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
         api_socket.display(),
         legacy_socket.display()
     );
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
     loop {
         let (stream, _) = listener.accept().await?;
         let legacy = legacy_socket.clone();
+        let config_bus = config_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_api_client(stream, legacy).await {
+            if let Err(error) = handle_api_client(stream, legacy, config_bus).await {
                 eprintln!("harness API bridge: client ended: {error:#}");
             }
             // A closed client drops its translation state and buffers.
@@ -289,9 +294,13 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
     }
 }
 
-async fn handle_api_client(stream: Stream, legacy_socket: PathBuf) -> Result<()> {
+async fn handle_api_client(
+    stream: Stream,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()> {
     let (read_half, write_half) = stream.into_split();
-    run_bridge_stream(read_half, write_half, legacy_socket).await
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
 }
 
 /// Serve the process's stdin/stdout as one API connection.
@@ -317,13 +326,29 @@ pub async fn run_bridge_stdio(legacy_socket: PathBuf) -> Result<()> {
 /// stdio. No API listener or filesystem socket is created for this connection.
 pub async fn run_bridge_stream<R, W>(
     read_half: R,
-    mut write_half: W,
+    write_half: W,
     legacy_socket: PathBuf,
 ) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
+    let (config_tx, _) = tokio::sync::broadcast::channel::<ServerFrame>(64);
+    run_bridge_stream_with_config_bus(read_half, write_half, legacy_socket, config_tx).await
+}
+
+/// Serve one stable API connection sharing a `ConfigChanged` broadcast bus with peer clients.
+pub async fn run_bridge_stream_with_config_bus<R, W>(
+    read_half: R,
+    mut write_half: W,
+    legacy_socket: PathBuf,
+    config_tx: tokio::sync::broadcast::Sender<ServerFrame>,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut config_rx = config_tx.subscribe();
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
     let mut pending = timing::Pending::default();
@@ -409,6 +434,9 @@ where
                 "permissions",
                 "permission_modes",
                 "external_sessions",
+                rayucode_harness_api::CAPABILITIES_CAPABILITY,
+                rayucode_harness_api::CONFIG_CAPABILITY,
+                rayucode_harness_api::FRAME_FIDELITY_CAPABILITY,
             ]
             .into_iter()
             .map(str::to_string)
@@ -582,6 +610,18 @@ where
                         state.prefetched_external_sessions = None;
                     }
                 }
+                let unattached_lightweight_control = !state.is_attached()
+                    && matches!(
+                        request["req"].as_str(),
+                        Some(
+                            "notify_auth_changed"
+                                | "invalidate_usage"
+                                | "set_api_key"
+                                | "clear_api_key"
+                                | "applet_action"
+                                | "close_applet"
+                        )
+                    );
                 // Translation may inspect persisted session/archive files. Tell
                 // Tokio before entering that synchronous region so it can keep
                 // the accept loop and fresh-client handshakes scheduled.
@@ -589,7 +629,8 @@ where
                 let outbound = tokio::task::block_in_place(|| {
                     state.api_request_to_legacy(&request)
                 });
-                if let Some(id) = request["id"].as_u64() {
+                let api_req_id = request["id"].as_u64();
+                if let Some(id) = api_req_id {
                     pending.begin(
                         id,
                         request["req"].as_str().unwrap_or("?"),
@@ -601,16 +642,41 @@ where
                 drop(request);
                 for out in outbound {
                     match out {
+                        translate::Outbound::Legacy(value) if unattached_lightweight_control => {
+                            // Unattached legacy sockets execute one-shot lightweight control
+                            // requests and immediately close (EOF). Send them on a disposable
+                            // socket so the persistent control connection never drops with
+                            // "daemon connection closed".
+                            let frames = send_unattached_lightweight_control(
+                                &legacy_socket,
+                                &value,
+                                &mut state,
+                                api_req_id,
+                            )
+                            .await;
+                            for frame in frames {
+                                write_frame_timed(&mut write_half, &frame, &mut pending, "bridge")
+                                    .await?;
+                            }
+                        }
                         translate::Outbound::Legacy(value) => {
                             write_json_line(&mut legacy_write, &value).await?;
                         }
                         translate::Outbound::Reply(frame) => {
                             write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                         }
+                        translate::Outbound::Broadcast(frame) => {
+                            let _ = config_tx.send(frame);
+                        }
                     }
                 }
                 if heavy {
                     allocator::trim();
+                }
+            }
+            broadcast = config_rx.recv() => {
+                if let Ok(frame) = broadcast {
+                    write_frame_timed(&mut write_half, &frame, &mut pending, "bridge").await?;
                 }
             }
             n = read_frame_bytes(&mut legacy_reader, &mut legacy_frame) => {
@@ -665,6 +731,85 @@ where
             }
         }
     }
+}
+
+async fn send_unattached_lightweight_control(
+    legacy_socket: &std::path::Path,
+    legacy_request: &Value,
+    state: &mut translate::BridgeState,
+    api_req_id: Option<u64>,
+) -> Vec<ServerFrame> {
+    let connect_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        Stream::connect(legacy_socket),
+    )
+    .await;
+    let stream = match connect_result {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(err)) => {
+            return vec![ServerFrame::reply(
+                api_req_id.unwrap_or(0),
+                ApiEvent::Error {
+                    code: ErrorCode::Internal,
+                    message: format!("failed to connect legacy socket for control request: {err}"),
+                },
+            )];
+        }
+        Err(_) => {
+            return vec![ServerFrame::reply(
+                api_req_id.unwrap_or(0),
+                ApiEvent::Error {
+                    code: ErrorCode::Internal,
+                    message: "timed out connecting legacy socket for control request".into(),
+                },
+            )];
+        }
+    };
+
+    let (read_half, mut write_half) = stream.into_split();
+    if let Err(err) = write_json_line(&mut write_half, legacy_request).await {
+        return vec![ServerFrame::reply(
+            api_req_id.unwrap_or(0),
+            ApiEvent::Error {
+                code: ErrorCode::Internal,
+                message: format!("failed to write control request: {err}"),
+            },
+        )];
+    }
+
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        line.clear();
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, read_frame(&mut reader, &mut line)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(_)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(event) = serde_json::from_str::<Value>(line.trim()) {
+                    let frames = state.legacy_event_to_api(&event);
+                    if !frames.is_empty() {
+                        return frames;
+                    }
+                }
+            }
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    vec![ServerFrame::reply(
+        api_req_id.unwrap_or(0),
+        ApiEvent::Error {
+            code: ErrorCode::Internal,
+            message: "daemon closed control socket before replying".into(),
+        },
+    )]
 }
 
 /// Write a frame and, if it answers a timed request, log that request.
@@ -1042,5 +1187,141 @@ mod fragmented_reply_tests {
             drop(listener);
             std::fs::remove_file(path).unwrap();
         }).await.expect("fragmented history requests must all receive correlated replies");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unattached_lightweight_control_uses_disposable_socket_and_keeps_bridge_open() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let path = std::env::temp_dir().join(format!(
+                "rayu-unattached-ctrl-{}-{}.sock",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let listener = UnixListener::bind(&path).unwrap();
+            let (client, bridge) = tokio::io::duplex(64 * 1024);
+            let (bridge_read, bridge_write) = tokio::io::split(bridge);
+            let task = tokio::spawn(run_bridge_stream(bridge_read, bridge_write, path.clone()));
+            let (client_read, mut client_write) = tokio::io::split(client);
+            let mut replies = BufReader::new(client_read).lines();
+
+            // 1. Handshake on primary unattached control connection
+            write_json_line(
+                &mut client_write,
+                &json!({"v":1,"id":1,"req":"hello","min_version":1,"max_version":1}),
+            )
+            .await
+            .unwrap();
+            let (primary_daemon, _) = listener.accept().await.unwrap();
+            let (primary_read, mut primary_write) = primary_daemon.into_split();
+            let mut primary_reqs = BufReader::new(primary_read).lines();
+            // Answer the disposable daemon_capabilities probe dialed during hello.
+            let (probe_daemon, _) = listener.accept().await.unwrap();
+            let (probe_read, mut probe_write) = probe_daemon.into_split();
+            let mut probe_reqs = BufReader::new(probe_read).lines();
+            let probe_req: Value =
+                serde_json::from_str(&probe_reqs.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(probe_req["type"], "ping");
+            write_json_line(
+                &mut probe_write,
+                &json!({"type":"pong","id":probe_req["id"],"capabilities":["runtime_commands"]}),
+            )
+            .await
+            .unwrap();
+            drop(probe_write);
+            drop(probe_reqs);
+            assert_eq!(
+                serde_json::from_str::<Value>(&replies.next_line().await.unwrap().unwrap())
+                    .unwrap()["ev"],
+                "hello_ok"
+            );
+
+            // 2. Send notify_auth_changed while UNATTACHED. Bridge must route it
+            // over a disposable one-shot socket that the daemon closes immediately.
+            write_json_line(
+                &mut client_write,
+                &json!({"v":1,"id":2,"req":"notify_auth_changed","provider":"rayu"}),
+            )
+            .await
+            .unwrap();
+            let (oneshot_daemon, _) = listener.accept().await.unwrap();
+            let (oneshot_read, mut oneshot_write) = oneshot_daemon.into_split();
+            let mut oneshot_reqs = BufReader::new(oneshot_read).lines();
+            let ctrl_req: Value =
+                serde_json::from_str(&oneshot_reqs.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(ctrl_req["type"], "notify_auth_changed");
+            write_json_line(
+                &mut oneshot_write,
+                &json!({"type":"ack","id":ctrl_req["id"]}),
+            )
+            .await
+            .unwrap();
+            // Simulate daemon closing the one-shot lightweight control connection immediately
+            drop(oneshot_write);
+            drop(oneshot_reqs);
+
+            let ctrl_reply: Value =
+                serde_json::from_str(&replies.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(ctrl_reply["reply_to"], 2);
+            assert_eq!(ctrl_reply["ev"], "ok");
+
+            // 3. Primary persistent bridge connection must still be alive: local ping works AND
+            // attaching a session still routes over the original persistent primary daemon socket!
+            write_json_line(&mut client_write, &json!({"v":1,"id":3,"req":"ping"}))
+                .await
+                .unwrap();
+            let pong_reply: Value =
+                serde_json::from_str(&replies.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(pong_reply["reply_to"], 3);
+            assert_eq!(pong_reply["ev"], "pong");
+
+            write_json_line(
+                &mut client_write,
+                &json!({"v":1,"id":4,"req":"attach_session","session_id":"s_after_ctrl"}),
+            )
+            .await
+            .unwrap();
+            let mut saw_subscribe = false;
+            for _ in 0..3 {
+                let req: Value =
+                    serde_json::from_str(&primary_reqs.next_line().await.unwrap().unwrap())
+                        .unwrap();
+                if req["type"] == "subscribe" {
+                    saw_subscribe = true;
+                }
+                if req["type"] == "state" {
+                    write_json_line(
+                        &mut primary_write,
+                        &json!({"type":"state","id":req["id"],"session_id":"s_after_ctrl"}),
+                    )
+                    .await
+                    .unwrap();
+                }
+            }
+            assert!(
+                saw_subscribe,
+                "primary persistent daemon socket should still receive attach_session after disposable control closed"
+            );
+            loop {
+                let frame: Value =
+                    serde_json::from_str(&replies.next_line().await.unwrap().unwrap()).unwrap();
+                if frame["ev"] == "attached" {
+                    assert_eq!(frame["reply_to"], 4);
+                    break;
+                }
+            }
+
+            client_write.shutdown().await.unwrap();
+            while let Ok(Some(_)) = replies.next_line().await {}
+            drop(client_write);
+            drop(replies);
+            task.await.unwrap().unwrap();
+            drop(listener);
+            std::fs::remove_file(path).unwrap();
+        })
+        .await
+        .expect("unattached lightweight control must not close persistent bridge");
     }
 }

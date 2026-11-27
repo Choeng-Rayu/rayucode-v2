@@ -44,4 +44,5 @@ desktop/dist/
 desktop/dist-electron/
 desktop/release/
 desktop/resources/bin/
+desktop/.run/
 .swarm-logs/
