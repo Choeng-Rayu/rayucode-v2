@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query"
 import { z } from "zod"
 
 import { err, ok, type ActionResult } from "@/lib/action-result"
-import { ipcClient } from "@/lib/ipc-client"
+import { ipcClient, type CapabilitiesPayload } from "@/lib/ipc-client"
 
 import {
   FALLBACK_MODELS,
@@ -24,8 +24,13 @@ import type {
 export const sessionsQueryKeys = {
   all: ["sessions"] as const,
   list: () => [...sessionsQueryKeys.all, "list"] as const,
-  models: () => ["models", "catalog"] as const,
+  models: (sessionId?: string | null) =>
+    sessionId
+      ? (["models", "catalog", sessionId] as const)
+      : (["models", "catalog"] as const),
   permissionModes: () => [...sessionsQueryKeys.all, "permission-modes"] as const,
+  capabilities: (sessionId?: string) =>
+    [...sessionsQueryKeys.all, "capabilities", sessionId ?? "global"] as const,
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
@@ -33,9 +38,13 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
   return z.array(sessionSummarySchema).parse(raw)
 }
 
-export async function fetchModels(): Promise<ModelOption[]> {
+export async function fetchModels(
+  sessionId?: string | null
+): Promise<ModelOption[]> {
   try {
-    const raw = await ipcClient.models.list()
+    const raw = sessionId
+      ? await ipcClient.models.list(sessionId)
+      : await ipcClient.models.list()
     const parsed = z.array(modelOptionSchema).parse(raw)
     return parsed.length > 0 ? parsed : [...FALLBACK_MODELS]
   } catch {
@@ -43,8 +52,12 @@ export async function fetchModels(): Promise<ModelOption[]> {
   }
 }
 
-export async function refreshModelsCatalog(): Promise<ModelOption[]> {
-  const raw = await ipcClient.models.refresh()
+export async function refreshModelsCatalog(
+  sessionId?: string | null
+): Promise<ModelOption[]> {
+  const raw = sessionId
+    ? await ipcClient.models.refresh(sessionId)
+    : await ipcClient.models.refresh()
   const parsed = z.array(modelOptionSchema).parse(raw)
   if (parsed.length === 0) {
     throw new Error("Empty model catalog response")
@@ -90,12 +103,30 @@ export function sessionsQueryOptions() {
   })
 }
 
-export function modelsQueryOptions() {
+export function modelsQueryOptions(sessionId?: string | null) {
   return queryOptions({
-    queryKey: sessionsQueryKeys.models(),
-    queryFn: fetchModels,
+    queryKey: sessionsQueryKeys.models(sessionId),
+    queryFn: () => fetchModels(sessionId),
     staleTime: 60_000,
-    placeholderData: [...FALLBACK_MODELS],
+    placeholderData: (prev) => prev ?? [...FALLBACK_MODELS],
+  })
+}
+
+export async function fetchCapabilities(
+  sessionId?: string
+): Promise<CapabilitiesPayload | null> {
+  try {
+    return await ipcClient.harness.getCapabilities(sessionId)
+  } catch {
+    return null
+  }
+}
+
+export function capabilitiesQueryOptions(sessionId?: string) {
+  return queryOptions({
+    queryKey: sessionsQueryKeys.capabilities(sessionId),
+    queryFn: () => fetchCapabilities(sessionId),
+    staleTime: 60_000,
   })
 }
 

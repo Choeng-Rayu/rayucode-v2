@@ -180,6 +180,7 @@ function rayuDevAuthPlugin(): Plugin {
             const body = await readJsonBody<{
               sessionId: string
               model: string
+              reasoningEffort?: string
               messages: CloudChatMessage[]
             }>(req)
             res.statusCode = 200
@@ -190,6 +191,7 @@ function rayuDevAuthPlugin(): Plugin {
               await authManager.streamCloudChat({
                 sessionId: body.sessionId,
                 model: body.model,
+                reasoningEffort: body.reasoningEffort,
                 messages: body.messages,
                 workspaceDir: path.resolve(import.meta.dirname, ".."),
                 onEvent: (frame) => {

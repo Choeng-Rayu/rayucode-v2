@@ -1,12 +1,18 @@
 import * as React from "react"
+import {
+  formatEffortLabel,
+  parseSlashInvocation,
+} from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  AlertCircle,
   ArrowUp,
   Brain,
   Check,
   ChevronDown,
   Circle,
   CircleDot,
+  Clock,
   Database,
   Eye,
   FileSearch,
@@ -21,6 +27,7 @@ import {
   LayoutGrid,
   Lightbulb,
   ListTodo,
+  Loader2,
   Minimize2,
   Network,
   Paperclip,
@@ -36,16 +43,19 @@ import {
   SlidersHorizontal,
   Sparkles,
   Target,
+  Terminal,
   Timer,
   X,
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { Separator } from "@/components/ui/separator"
 import {
   Tooltip,
   TooltipContent,
@@ -63,16 +73,20 @@ import {
   type ComposerTemplateItem,
   type ComposerTemplateKind,
 } from "@/lib/composer-templates"
-import { ipcClient, parseImageDataUrl } from "@/lib/ipc-client"
+import {
+  ipcClient,
+  parseImageDataUrl,
+  type CommandDescriptor,
+} from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import {
   DEFAULT_CHECKOUT,
   DEFAULT_PROJECT,
   HOME_PROJECTS,
-  SLASH_COMMANDS,
 } from "../constants/models"
 import {
+  useCapabilities,
   useModelCatalog,
   usePermissionModes,
   usePersistedInferenceSettings,
@@ -192,49 +206,6 @@ interface ActiveSkillToken {
   tone?: "default" | "spreadsheet" | "presentation" | "info" | "brand"
 }
 
-function resolveBuiltinSkillToken(rawCommand: string): ActiveSkillToken {
-  const cleaned = rawCommand.trim().replace(/^\/+/, "")
-  const base = cleaned.split(/\s+/)[0]?.toLowerCase() || "skill"
-  const command = rawCommand.trim().startsWith("/")
-    ? rawCommand.trim()
-    : `/${cleaned}`
-
-  switch (base) {
-    case "goal":
-      return { id: "goal", label: "goal", command: "/goal", icon: "goal" }
-    case "plan":
-      return { id: "plan", label: "plan", command: "/plan", icon: "plan" }
-    case "swarm":
-      return { id: "swarm", label: "swarm", command: "/swarm", icon: "swarm" }
-    case "review":
-      return { id: "review", label: "review", command: "/review", icon: "review" }
-    case "compact":
-      return {
-        id: "compact",
-        label: "compact",
-        command: "/compact",
-        icon: "compact",
-      }
-    case "model":
-      return { id: "model", label: "model", command, icon: "model" }
-    case "preview":
-      return { id: "preview", label: "preview", command, icon: "preview" }
-    case "memory":
-      return { id: "memory", label: "memory", command, icon: "memory" }
-    case "cache":
-      return { id: "cache", label: "cache", command, icon: "cache" }
-    case "telegram-bot":
-      return {
-        id: "telegram-bot",
-        label: "telegram",
-        command,
-        icon: "telegram",
-      }
-    default:
-      return { id: base, label: base, command, icon: "skill" }
-  }
-}
-
 interface ActiveSlashTrigger {
   slashIndex: number
   endIndex: number
@@ -249,20 +220,27 @@ interface CompletedSlashTokenMatch {
 
 type SlashMenuItem =
   | {
-      kind: "builtin"
+      kind: "engine"
       key: string
-      label: string
+      name: string
       description: string
-      icon: SkillTokenIconId
-      insertText: string
+      category: string
+      argHint?: string
+      requiresSession: boolean
+      descriptor: CommandDescriptor
     }
   | {
       kind: "skill"
       key: string
-      label: string
+      name: string
       description: string
       skillId: string
     }
+
+interface CommandFeedbackState {
+  status: "running" | "success" | "busy" | "error"
+  message: string
+}
 
 function clampCursorIndex(value: string, cursor: number): number {
   return Math.max(0, Math.min(cursor, value.length))
@@ -519,6 +497,7 @@ export interface SessionComposerProps {
   modelLabel?: string
   effort?: ReasoningEffort
   permissionMode?: PermissionModeId
+  commands?: readonly CommandDescriptor[]
   onModelChange?: (model: ModelOption) => void
   onEffortChange?: (effort: ReasoningEffort) => void
   onPermissionModeChange?: (mode: PermissionModeId) => void
@@ -543,6 +522,7 @@ export function SessionComposer({
   modelLabel: controlledModelLabel,
   effort: controlledEffort,
   permissionMode: controlledPermissionMode,
+  commands: controlledCommands,
   onModelChange,
   onEffortChange,
   onPermissionModeChange,
@@ -561,11 +541,25 @@ export function SessionComposer({
   const setActiveWorkspacePath = useAppStore((s) => s.setActiveWorkspacePath)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const openRightTab = useAppStore((s) => s.openRightTab)
-  const pendingPermission = useAppStore((s) => s.pendingPermission)
-  const setPendingPermission = useAppStore((s) => s.setPendingPermission)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
   const { models, refreshModels, isRefreshing } = useModelCatalog()
   const { modes } = usePermissionModes()
+  const capabilitiesQuery = useCapabilities(activeSessionId)
   const persisted = usePersistedInferenceSettings(models)
+  const [commandFeedback, setCommandFeedback] =
+    React.useState<CommandFeedbackState | null>(null)
+  const liveCommands = React.useMemo<readonly CommandDescriptor[]>(
+    () => controlledCommands ?? capabilitiesQuery.data?.commands ?? [],
+    [capabilitiesQuery.data?.commands, controlledCommands]
+  )
+
+  React.useEffect(() => {
+    if (commandFeedback?.status !== "success") return
+    const timer = window.setTimeout(() => {
+      setCommandFeedback(null)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [commandFeedback])
 
   const isTestEnv = import.meta.env?.MODE === "test"
   const [internalValue, setInternalValue] = React.useState("")
@@ -756,43 +750,50 @@ export function SessionComposer({
 
   const activeSlashQuery = (activeSlashTrigger?.query ?? "").trim().toLowerCase()
 
-  const slashMenuItems = React.useMemo<SlashMenuItem[]>(() => {
-    const builtins: SlashMenuItem[] = SLASH_COMMANDS.filter((item) => {
-      if (!activeSlashQuery) return true
-      return (
-        item.command.toLowerCase().includes(activeSlashQuery) ||
-        item.description.toLowerCase().includes(activeSlashQuery)
-      )
-    }).map((item) => {
-      const tok = resolveBuiltinSkillToken(item.insertText)
+  const { engineSlashItems, skillSlashItems, slashMenuItems } =
+    React.useMemo(() => {
+      const engineItems: SlashMenuItem[] = liveCommands
+        .filter((cmd) => {
+          if (!activeSlashQuery) return true
+          return (
+            cmd.name.toLowerCase().includes(activeSlashQuery) ||
+            cmd.description.toLowerCase().includes(activeSlashQuery) ||
+            cmd.category.toLowerCase().includes(activeSlashQuery)
+          )
+        })
+        .map((cmd) => ({
+          kind: "engine" as const,
+          key: `cmd:${cmd.name}`,
+          name: cmd.name,
+          description: cmd.description,
+          category: cmd.category,
+          argHint: cmd.arg_hint,
+          requiresSession: Boolean(cmd.requires_session),
+          descriptor: cmd,
+        }))
+
+      const skillItems: SlashMenuItem[] = enabledLocalSkills
+        .filter((skill) => {
+          if (!activeSlashQuery) return true
+          return (
+            skill.name.toLowerCase().includes(activeSlashQuery) ||
+            skill.description.toLowerCase().includes(activeSlashQuery)
+          )
+        })
+        .map((skill) => ({
+          kind: "skill" as const,
+          key: `skill:${skill.id}`,
+          name: skill.name,
+          description: skill.description,
+          skillId: skill.id,
+        }))
+
       return {
-        kind: "builtin",
-        key: item.command,
-        label: tok.label,
-        description: item.description,
-        icon: tok.icon,
-        insertText: item.insertText,
+        engineSlashItems: engineItems,
+        skillSlashItems: skillItems,
+        slashMenuItems: [...engineItems, ...skillItems],
       }
-    })
-
-    const skills: SlashMenuItem[] = enabledLocalSkills
-      .filter((skill) => {
-        if (!activeSlashQuery) return true
-        return (
-          skill.name.toLowerCase().includes(activeSlashQuery) ||
-          skill.description.toLowerCase().includes(activeSlashQuery)
-        )
-      })
-      .map((skill) => ({
-        kind: "skill",
-        key: skill.id,
-        label: skill.name,
-        description: skill.description,
-        skillId: skill.id,
-      }))
-
-    return [...builtins, ...skills]
-  }, [activeSlashQuery, enabledLocalSkills])
+    }, [activeSlashQuery, enabledLocalSkills, liveCommands])
 
   const clampedSlashHighlightIndex =
     slashMenuItems.length > 0
@@ -1292,12 +1293,217 @@ export function SessionComposer({
     adjustTextareaHeight(localTextareaRef.current)
   }, [textValue, adjustTextareaHeight])
 
+  const executeSlashInput = async (rawInput: string): Promise<boolean> => {
+    const invocation = parseSlashInvocation(
+      rawInput,
+      liveCommands,
+      enabledLocalSkills
+    )
+    if (
+      invocation.kind === "plain_prompt" ||
+      invocation.kind === "skill_prompt"
+    ) {
+      return false
+    }
+
+    const descriptor = liveCommands.find(
+      (c) => c.name.toLowerCase() === invocation.slashName.toLowerCase()
+    )
+    const sid = useAppStore.getState().activeSessionId
+    if (descriptor?.requires_session && !sid) {
+      setCommandFeedback({
+        status: "error",
+        message: `/${invocation.slashName} requires an active chat session.`,
+      })
+      return true
+    }
+
+    setSlashOpen(false)
+    setCommandFeedback({
+      status: "running",
+      message: `Running /${invocation.slashName}...`,
+    })
+
+    try {
+      if (invocation.kind === "api_request") {
+        const targetSid = sid ?? ""
+        if (invocation.req === "compact") {
+          const res = await ipcClient.harness.compact(targetSid)
+          if (!res.ok) {
+            setCommandFeedback({
+              status: res.code === "busy" ? "busy" : "error",
+              message:
+                res.code === "busy"
+                  ? "/compact is queued until the active turn finishes."
+                  : (res.error ?? "Failed to compact context."),
+            })
+            return true
+          }
+          setTextValue("")
+          setCommandFeedback({
+            status: "success",
+            message: res.message || "Context compacted",
+          })
+          return true
+        }
+
+        if (invocation.req === "set_reasoning_effort") {
+          const effortArg = String(invocation.params.effort ?? "").trim().toLowerCase()
+          if (!effortArg) {
+            setCommandFeedback({
+              status: "error",
+              message: `Usage: /${invocation.slashName} ${descriptor?.arg_hint ?? "<effort>"}`,
+            })
+            return true
+          }
+          const res = await ipcClient.harness.setReasoningEffort(
+            targetSid,
+            effortArg
+          )
+          if (!res.ok) {
+            setCommandFeedback({
+              status: res.code === "busy" ? "busy" : "error",
+              message:
+                res.code === "busy"
+                  ? "Applies on next turn"
+                  : (res.error ?? `Failed to set reasoning effort to ${effortArg}.`),
+            })
+            return true
+          }
+          if (targetSid) {
+            const prevInfo =
+              useAppStore.getState().sessionModelInfoBySession[targetSid]
+            useAppStore.getState().setSessionModelInfo(targetSid, {
+              ...prevInfo,
+              reasoningEffort: effortArg,
+            })
+          }
+          setTextValue("")
+          setCommandFeedback({
+            status: "success",
+            message: `Reasoning effort set to ${formatEffortLabel(effortArg, "header")}`,
+          })
+          return true
+        }
+
+        if (invocation.req === "set_model") {
+          const modelArg = String(invocation.params.model ?? "").trim()
+          if (!modelArg) {
+            setCommandFeedback({
+              status: "error",
+              message: `Usage: /${invocation.slashName} ${descriptor?.arg_hint ?? "<model>"}`,
+            })
+            return true
+          }
+          const res = await ipcClient.harness.setModel(targetSid, modelArg)
+          if (!res.ok) {
+            setCommandFeedback({
+              status: res.code === "busy" ? "busy" : "error",
+              message:
+                res.code === "busy"
+                  ? "Applies on next turn"
+                  : (res.error ?? `Failed to switch model to ${modelArg}.`),
+            })
+            return true
+          }
+          setTextValue("")
+          setCommandFeedback({
+            status: "success",
+            message: `Model switched to ${modelArg}`,
+          })
+          return true
+        }
+
+        if (invocation.req === "set_permission_mode") {
+          const modeArg = String(invocation.params.mode ?? "").trim()
+          if (!modeArg) {
+            setCommandFeedback({
+              status: "error",
+              message: `Usage: /${invocation.slashName} ${descriptor?.arg_hint ?? "<mode>"}`,
+            })
+            return true
+          }
+          const res = await ipcClient.harness.setPermissionMode(
+            targetSid,
+            modeArg as PermissionModeId
+          )
+          if (!res.ok) {
+            setCommandFeedback({
+              status: res.code === "busy" ? "busy" : "error",
+              message:
+                res.code === "busy"
+                  ? "Applies on next turn"
+                  : (res.error ?? `Failed to set permission mode to ${modeArg}.`),
+            })
+            return true
+          }
+          setTextValue("")
+          setCommandFeedback({
+            status: "success",
+            message: `Permission mode set to ${modeArg}`,
+          })
+          return true
+        }
+
+        const fallbackRes = await ipcClient.harness.runtimeCommand(
+          targetSid,
+          invocation.slashName,
+          invocation.rawArgs ? [invocation.rawArgs] : []
+        )
+        setTextValue("")
+        setCommandFeedback({
+          status: "success",
+          message: fallbackRes.message || `Ran /${invocation.slashName}`,
+        })
+        return true
+      }
+
+      const res = await ipcClient.harness.runtimeCommand(
+        sid ?? "",
+        invocation.command,
+        invocation.args
+      )
+      setTextValue("")
+      setCommandFeedback({
+        status: "success",
+        message: res.message || `Ran /${invocation.slashName}`,
+      })
+      return true
+    } catch (error) {
+      const msg =
+        error instanceof Error
+          ? error.message
+          : `Failed to run /${invocation.slashName}`
+      const errCode =
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        typeof (error as { code?: unknown }).code === "string"
+          ? (error as { code: string }).code
+          : undefined
+      setCommandFeedback({
+        status: errCode === "busy" ? "busy" : "error",
+        message: errCode === "busy" ? "Applies on next turn" : msg,
+      })
+      return true
+    }
+  }
+
   const submitComposedPayload = async (overridePrompt?: string) => {
     if (disabled || isSubmitting) return
-    const trimmed = (overridePrompt ?? textValue).trim()
+    const rawCandidate = overridePrompt ?? textValue
+    const trimmed = rawCandidate.trim()
     if (!trimmed && attachments.length === 0 && skillTokens.length === 0) {
       localTextareaRef.current?.focus()
       toast("Type a prompt or /command first")
+      return
+    }
+
+    if (
+      attachments.length === 0 &&
+      skillTokens.length === 0 &&
+      (await executeSlashInput(rawCandidate))
+    ) {
       return
     }
 
@@ -1415,21 +1621,56 @@ export function SessionComposer({
     setPendingCaret((prev) => ({ pos, seq: (prev?.seq ?? 0) + 1 }))
   }
 
-  const handleSelectSlashItem = (item: SlashMenuItem) => {
-    if (item.kind === "builtin") {
-      const token = resolveBuiltinSkillToken(item.insertText)
-      addSkillToken(token)
-      if (token.id === "plan" && activePermissionMode !== "plan") {
-        handlePermissionSelect("plan")
+  const handleSelectSlashItem = (
+    item: SlashMenuItem,
+    interaction: "click" | "tab" | "enter" = "click"
+  ) => {
+    if (item.kind === "engine") {
+      const trigger = getActiveSlashTrigger(textValue, effectiveCursor)
+      const replacement = `/${item.name} `
+
+      if (item.requiresSession && !activeSessionId) {
+        setSlashOpen(false)
+        setCommandFeedback({
+          status: "error",
+          message: `/${item.name} requires an active chat session.`,
+        })
+        return
       }
-    } else {
-      addSkillToken({
-        id: item.skillId,
-        label: item.label,
-        command: `/${item.label}`,
-        icon: "skill",
-      })
+
+      // Dispatch immediately on Enter/click if the command takes no required args
+      if (
+        interaction !== "tab" &&
+        !item.argHint &&
+        (!trigger ||
+          (textValue.slice(0, trigger.slashIndex).trim() === "" &&
+            textValue.slice(trigger.endIndex).trim() === ""))
+      ) {
+        setSlashOpen(false)
+        void executeSlashInput(`/${item.name}`)
+        return
+      }
+
+      if (trigger) {
+        const before = textValue.slice(0, trigger.slashIndex)
+        const after = textValue.slice(trigger.endIndex)
+        const nextValue = `${before}${replacement}${after}`
+        setTextValue(nextValue)
+        restoreCaret(before.length + replacement.length)
+      } else {
+        setTextValue(replacement)
+        restoreCaret(replacement.length)
+      }
+      setSlashOpen(false)
+      return
     }
+
+    addSkillToken({
+      id: item.skillId,
+      label: item.name,
+      command: `/${item.name}`,
+      icon: "skill",
+    })
 
     const trigger = getActiveSlashTrigger(textValue, effectiveCursor)
     if (trigger) {
@@ -1449,33 +1690,17 @@ export function SessionComposer({
   const handleInputChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const next = event.target.value
     const cursor = resolveTextareaCursor(event.target, next.length)
+    if (commandFeedback && commandFeedback.status === "success") {
+      setCommandFeedback(null)
+    }
 
-    // Auto-convert typed `/goal `, `/plan `, `/swarm `, or local `/skill ` on trailing space into clean inline skill tokens
+    // Auto-convert typed local `/skill ` on trailing space into clean inline skill tokens
     const completedMatch = matchCompletedSlashToken(next, cursor)
     if (completedMatch) {
       const cmdName = completedMatch.commandName.toLowerCase()
-      const knownCmd = SLASH_COMMANDS.find(
-        (c) => c.command.slice(1).toLowerCase() === cmdName
-      )
       const knownSkill = enabledLocalSkills.find(
         (s) => s.name.toLowerCase() === cmdName
       )
-      if (knownCmd) {
-        const token = resolveBuiltinSkillToken(knownCmd.insertText)
-        addSkillToken(token)
-        if (token.id === "plan" && activePermissionMode !== "plan") {
-          handlePermissionSelect("plan")
-        }
-        const { nextValue, nextCursor } = stripSlashRange(
-          next,
-          completedMatch.tokenStart,
-          completedMatch.tokenEnd
-        )
-        setTextValue(nextValue)
-        setSlashOpen(false)
-        restoreCaret(nextCursor)
-        return
-      }
       if (knownSkill) {
         addSkillToken({
           id: knownSkill.id,
@@ -1550,7 +1775,10 @@ export function SessionComposer({
         const selected = slashMenuItems[clampedSlashHighlightIndex]
         if (selected) {
           event.preventDefault()
-          handleSelectSlashItem(selected)
+          handleSelectSlashItem(
+            selected,
+            event.key === "Tab" ? "tab" : "enter"
+          )
           return
         }
       }
@@ -1835,6 +2063,59 @@ export function SessionComposer({
             </div>
           ) : null}
 
+          {/* Inline Command Feedback Banner (Anchored cleanly above composer-inner) */}
+          {commandFeedback ? (
+            <div
+              role={commandFeedback.status === "error" ? "alert" : "status"}
+              data-testid="composer-command-feedback"
+              data-feedback-status={commandFeedback.status}
+              className={cn(
+                "mb-1.5 flex items-center justify-between gap-2 rounded-[10px] border px-3 py-1.5 text-xs",
+                commandFeedback.status === "running" &&
+                  "border-hairline bg-pane text-body",
+                commandFeedback.status === "success" &&
+                  "border-brand/30 bg-brand-soft text-ink",
+                commandFeedback.status === "busy" &&
+                  "border-warn/30 bg-warn-soft text-warn",
+                commandFeedback.status === "error" &&
+                  "border-danger/30 bg-danger-soft text-danger"
+              )}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                {commandFeedback.status === "running" ? (
+                  <Loader2
+                    className="size-3.5 shrink-0 animate-spin text-brand-text"
+                    aria-hidden="true"
+                  />
+                ) : commandFeedback.status === "success" ? (
+                  <Check
+                    className="size-3.5 shrink-0 text-brand-text"
+                    aria-hidden="true"
+                  />
+                ) : commandFeedback.status === "busy" ? (
+                  <Clock className="size-3.5 shrink-0" aria-hidden="true" />
+                ) : (
+                  <AlertCircle
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="truncate">{commandFeedback.message}</span>
+              </span>
+              {commandFeedback.status === "error" ||
+              commandFeedback.status === "busy" ? (
+                <button
+                  type="button"
+                  aria-label="Dismiss command error"
+                  onClick={() => setCommandFeedback(null)}
+                  className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-current opacity-80 transition-opacity hover:opacity-100"
+                >
+                  <X className="size-3" aria-hidden="true" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
           {/* Inner Elevated Composer Surface */}
           <div
             data-testid="composer-inner"
@@ -2063,51 +2344,155 @@ export function SessionComposer({
                 >
                   {plusMenuView === "slash" ? (
                     <>
-                      <div className="px-2.5 pt-1.5 pb-1 text-[10px] font-semibold tracking-[0.06em] text-muted-ink uppercase">
-                        Built-in Skills &amp; Commands
-                      </div>
                       <div
                         data-testid="composer-slash-menu"
-                        className="flex max-h-[280px] flex-col overflow-y-auto"
+                        className="flex max-h-[300px] flex-col overflow-y-auto"
                       >
                         {slashMenuItems.length > 0 ? (
-                          slashMenuItems.map((item, idx) => {
-                            const isHighlighted =
-                              idx === clampedSlashHighlightIndex
-                            return (
-                              <button
-                                key={item.key}
-                                type="button"
-                                data-active={isHighlighted ? "true" : "false"}
-                                aria-current={isHighlighted ? "true" : undefined}
-                                onMouseEnter={() => setSlashHighlightIndex(idx)}
-                                onClick={() => handleSelectSlashItem(item)}
-                                className={cn(
-                                  "flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
-                                  isHighlighted ? "bg-active" : "hover:bg-hover"
-                                )}
-                              >
-                                <SkillTokenIcon
-                                  icon={
-                                    item.kind === "builtin"
-                                      ? item.icon
-                                      : "skill"
-                                  }
-                                />
-                                <span className="max-w-[180px] min-w-[88px] truncate font-medium text-ink">
-                                  {item.label}
-                                </span>
-                                <span className="truncate text-muted-ink">
-                                  {item.description}
-                                </span>
-                              </button>
-                            )
-                          })
+                          <>
+                            {engineSlashItems.length > 0 ? (
+                              <div data-testid="slash-group-engine">
+                                <div className="px-2.5 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-ink uppercase">
+                                  Engine Commands
+                                </div>
+                                {engineSlashItems.map((item, idx) => {
+                                  if (item.kind !== "engine") return null
+                                  const isHighlighted =
+                                    idx === clampedSlashHighlightIndex
+                                  const needsSession =
+                                    item.requiresSession && !activeSessionId
+                                  return (
+                                    <button
+                                      key={item.key}
+                                      type="button"
+                                      data-active={
+                                        isHighlighted ? "true" : "false"
+                                      }
+                                      aria-current={
+                                        isHighlighted ? "true" : undefined
+                                      }
+                                      onMouseEnter={() =>
+                                        setSlashHighlightIndex(idx)
+                                      }
+                                      onClick={() =>
+                                        handleSelectSlashItem(item, "click")
+                                      }
+                                      className={cn(
+                                        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                                        isHighlighted
+                                          ? "bg-active"
+                                          : "hover:bg-hover",
+                                        needsSession && "opacity-50"
+                                      )}
+                                    >
+                                      <Terminal
+                                        className={cn(
+                                          "size-3.5 shrink-0",
+                                          isHighlighted
+                                            ? "text-code-kw"
+                                            : "text-muted-ink"
+                                        )}
+                                        aria-hidden="true"
+                                      />
+                                      <span className="shrink-0 font-mono text-xs font-medium text-ink">
+                                        /{item.name}
+                                      </span>
+                                      {item.argHint ? (
+                                        <span className="shrink-0 font-mono text-[11px] text-faint">
+                                          {item.argHint}
+                                        </span>
+                                      ) : null}
+                                      <span className="min-w-0 flex-1 truncate text-xs text-muted-ink">
+                                        {item.description}
+                                      </span>
+                                      {needsSession ? (
+                                        <span className="shrink-0 text-[10px] text-faint">
+                                          Needs chat
+                                        </span>
+                                      ) : null}
+                                      <Badge
+                                        variant="outline"
+                                        className="shrink-0 px-1.5 py-0 text-[10px]"
+                                      >
+                                        {item.category}
+                                      </Badge>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
+
+                            {engineSlashItems.length > 0 &&
+                            skillSlashItems.length > 0 ? (
+                              <Separator className="my-1 bg-hairline-soft" />
+                            ) : null}
+
+                            {skillSlashItems.length > 0 ? (
+                              <div data-testid="slash-group-skills">
+                                <div className="px-2.5 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-[0.04em] text-muted-ink uppercase">
+                                  Skills
+                                </div>
+                                {skillSlashItems.map((item, skillIdx) => {
+                                  if (item.kind !== "skill") return null
+                                  const flatIdx =
+                                    engineSlashItems.length + skillIdx
+                                  const isHighlighted =
+                                    flatIdx === clampedSlashHighlightIndex
+                                  return (
+                                    <button
+                                      key={item.key}
+                                      type="button"
+                                      data-active={
+                                        isHighlighted ? "true" : "false"
+                                      }
+                                      aria-current={
+                                        isHighlighted ? "true" : undefined
+                                      }
+                                      onMouseEnter={() =>
+                                        setSlashHighlightIndex(flatIdx)
+                                      }
+                                      onClick={() =>
+                                        handleSelectSlashItem(item, "click")
+                                      }
+                                      className={cn(
+                                        "flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors",
+                                        isHighlighted
+                                          ? "bg-active"
+                                          : "hover:bg-hover"
+                                      )}
+                                    >
+                                      <Sparkles
+                                        className="size-3.5 shrink-0 text-code-type"
+                                        aria-hidden="true"
+                                      />
+                                      <span className="shrink-0 font-mono text-xs font-medium text-ink">
+                                        /{item.name}
+                                      </span>
+                                      <span className="min-w-0 flex-1 truncate text-xs text-muted-ink">
+                                        {item.description}
+                                      </span>
+                                      <Badge
+                                        variant="outline"
+                                        className="shrink-0 px-1.5 py-0 text-[10px]"
+                                      >
+                                        skill
+                                      </Badge>
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
+                          </>
                         ) : (
-                          <div className="px-2.5 py-3 text-xs text-muted-ink">
-                            No matching skills or commands
+                          <div className="px-3 py-3 text-center text-xs text-muted-ink">
+                            {activeSlashQuery
+                              ? `No matching commands or skills for "/${activeSlashQuery}"`
+                              : "No matching commands or skills"}
                           </div>
                         )}
+                      </div>
+                      <div className="mt-1 border-t border-hairline-soft px-2.5 pt-1.5 pb-0.5 font-mono text-[10px] text-faint">
+                        ↑↓ navigate · Tab complete · Enter run · Esc
                       </div>
                     </>
                   ) : plusMenuView === "mention" ? (
@@ -2715,29 +3100,7 @@ export function SessionComposer({
                 </PopoverContent>
               </Popover>
 
-              {/* 2-Stage Model & 5-Stop Reasoning Effort Popover */}
-              {mode === "workspace" && (isSubmitting || pendingPermission) ? (
-                <button
-                  type="button"
-                  data-testid="composer-approve-for-me-btn"
-                  onClick={() => {
-                    handlePermissionSelect("acceptEdits")
-                    if (pendingPermission) {
-                      void ipcClient.trace.respondToPermission(
-                        pendingPermission.sessionId,
-                        pendingPermission.requestId,
-                        "allow"
-                      )
-                      setPendingPermission(null)
-                    }
-                    toast("Auto-approving edits for this conversation")
-                  }}
-                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium text-muted-ink transition-colors hover:bg-hover hover:text-ink"
-                >
-                  <span>Approve for me</span>
-                </button>
-              ) : null}
-
+              {/* 2-Stage Model & Reasoning Effort Popover */}
               <ModelEffortPopover
                 modelId={activeModelId}
                 modelLabel={activeModelLabel}
@@ -2747,8 +3110,20 @@ export function SessionComposer({
                 onSelectEffort={handleEffortSelect}
                 onRefreshModels={refreshModels}
                 isRefreshing={isRefreshing}
+                deferredNotice={persisted.deferredNotice}
                 disabled={disabled}
               />
+
+              {persisted.deferredNotice ? (
+                <Badge
+                  variant="warn"
+                  data-testid="composer-deferred-badge"
+                  className="shrink-0"
+                >
+                  <Clock className="size-3" aria-hidden="true" />
+                  <span>{persisted.deferredNotice}</span>
+                </Badge>
+              ) : null}
 
               <span className="flex-1" />
 

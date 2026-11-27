@@ -245,50 +245,31 @@ describe("AppearancePanel & SettingsView", () => {
       )
     })
 
-    // 2. Appearance section
+    // 2. Appearance section (Local to Desktop preferences incl. MiniPet)
     fireEvent.click(screen.getByTestId("settings-nav-appearance"))
     expect(screen.getByTestId("appearance-panel")).toBeInTheDocument()
+    expect(screen.getByTestId("settings-local-badge")).toHaveTextContent(
+      "Local to Desktop"
+    )
     fireEvent.click(screen.getByTestId("theme-card-light"))
     expect(document.documentElement.getAttribute("data-theme")).toBe("light")
     fireEvent.click(screen.getByTestId("accent-card-blue"))
     expect(document.documentElement.getAttribute("data-accent")).toBe("blue")
 
-    // 3. Models & Inference section
+    const miniPetSwitch = screen.getByTestId("mini-pet-switch")
+    fireEvent.click(miniPetSwitch)
+    await waitFor(() => {
+      expect(ipcClient.settings.updatePreferences).toHaveBeenCalledWith({
+        showMiniPet: true,
+      })
+    })
+
+    // 3. Models & Inference section (Synced with ~/.rayu/config.toml)
     fireEvent.click(screen.getByTestId("settings-nav-models"))
     expect(screen.getByTestId("settings-panel-models")).toBeInTheDocument()
-
-    // Toggle Auto-compact context
-    const autoCompactSwitch = screen.getByTestId("auto-compact-switch")
-    expect(autoCompactSwitch).toHaveAttribute("aria-checked", "true")
-    fireEvent.click(autoCompactSwitch)
-    await waitFor(() => {
-      expect(ipcClient.settings.updatePreferences).toHaveBeenCalledWith({
-        autoCompactContext: false,
-      })
-    })
-
-    // Toggle Desktop notifications
-    const notifSwitch = screen.getByTestId("notifications-switch")
-    expect(notifSwitch).toHaveAttribute("aria-checked", "true")
-    fireEvent.click(notifSwitch)
-    await waitFor(() => {
-      expect(ipcClient.settings.updatePreferences).toHaveBeenCalledWith({
-        notificationsEnabled: false,
-      })
-    })
-
-    // Update Default permission mode via Select
-    const permSelect = screen.getByTestId("permission-mode-select")
-    fireEvent.click(permSelect)
-    const autoEditOption = await screen.findByRole("option", {
-      name: "Auto-edit",
-    })
-    fireEvent.click(autoEditOption)
-    await waitFor(() => {
-      expect(ipcClient.settings.updatePreferences).toHaveBeenCalledWith({
-        defaultPermissionMode: "acceptEdits",
-      })
-    })
+    expect(screen.getByTestId("settings-synced-badge")).toHaveTextContent(
+      "Synced with ~/.rayu/config.toml"
+    )
 
     // 4. Voice & Audio section
     fireEvent.click(screen.getByTestId("settings-nav-voice"))

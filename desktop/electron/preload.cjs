@@ -70,6 +70,20 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:harness:set-model", { sessionId, model }),
     setReasoningEffort: (sessionId, effort) =>
       ipcRenderer.invoke("rayu:harness:set-effort", { sessionId, effort }),
+    compact: (sessionId) =>
+      ipcRenderer.invoke("rayu:harness:compact", { sessionId }),
+    getCapabilities: (sessionId) =>
+      ipcRenderer.invoke(
+        "rayu:harness:get-capabilities",
+        sessionId ? { sessionId } : undefined
+      ),
+    getConfig: (sections) =>
+      ipcRenderer.invoke(
+        "rayu:harness:get-config",
+        sections ? { sections } : undefined
+      ),
+    patchConfig: (patch) =>
+      ipcRenderer.invoke("rayu:harness:patch-config", { patch }),
     runtimeCommand: (sessionId, command, args) =>
       ipcRenderer.invoke("rayu:harness:runtime-command", {
         sessionId,
@@ -101,6 +115,9 @@ const rayuApi = {
         ...(opts && opts.path !== undefined ? { path: opts.path } : {}),
         ...(opts && opts.force !== undefined ? { force: opts.force } : {}),
       }),
+  },
+  todos: {
+    get: (sessionId) => ipcRenderer.invoke("rayu:todos:get", { sessionId }),
   },
   workspace: {
     getInfo: () => ipcRenderer.invoke("rayu:workspace:info"),

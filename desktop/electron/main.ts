@@ -45,6 +45,7 @@ import {
   FileChangesActionPayloadSchema,
   FileChangesDiffPayloadSchema,
   FileChangesGetPayloadSchema,
+  TodosGetPayloadSchema,
   GitCheckoutBranchPayloadSchema,
   GitCommitPayloadSchema,
   GitCreatePrPayloadSchema,
@@ -53,9 +54,12 @@ import {
   GitStageAllPayloadSchema,
   GitToggleStagePayloadSchema,
   HarnessCreateSessionSchema,
+  HarnessGetCapabilitiesSchema,
+  HarnessGetConfigSchema,
   HarnessImportExternalSessionsPayloadSchema,
   HarnessListExternalProjectsPayloadSchema,
   HarnessListSessionsPayloadSchema,
+  HarnessPatchConfigSchema,
   HarnessPermissionResponseSchema,
   HarnessRenameSessionSchema,
   HarnessRuntimeCommandSchema,
@@ -119,6 +123,7 @@ import {
   importProjectGroupInRegistry,
   listLocalExtensions,
   listWorkspaceFiles,
+  migrateLegacyEngineSettingsOnce,
   readCustomTemplates,
   readDesktopPreferences,
   readDesktopSessionStore,
@@ -399,11 +404,48 @@ function registerIpcHandlers(): void {
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetEffortSchema.parse(rawPayload)
       try {
-        await daemonClient.setReasoningEffort(parsed.sessionId, parsed.effort)
-      } catch {
-        // Non-fatal when provider does not support reasoning effort
+        return await daemonClient.setReasoningEffort(
+          parsed.sessionId,
+          parsed.effort
+        )
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
       }
-      return { ok: true }
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:compact",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessSessionIdSchema.parse(rawPayload)
+      return daemonClient.compact(parsed.sessionId)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:get-capabilities",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessGetCapabilitiesSchema.parse(rawPayload)
+      return daemonClient.getCapabilities(parsed?.sessionId)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:get-config",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessGetConfigSchema.parse(rawPayload)
+      return daemonClient.getConfig(parsed?.sections)
+    }
+  )
+
+  ipcMain.handle(
+    "rayu:harness:patch-config",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessPatchConfigSchema.parse(rawPayload)
+      return daemonClient.patchConfig(parsed.patch)
     }
   )
 
@@ -446,6 +488,11 @@ function registerIpcHandlers(): void {
       })
     }
   )
+
+  ipcMain.handle("rayu:todos:get", async (_event, rawPayload: unknown) => {
+    const parsed = TodosGetPayloadSchema.parse(rawPayload)
+    return daemonClient.getTodos(parsed.sessionId)
+  })
 
   // Real local Workspace & File Reader
   ipcMain.handle("rayu:workspace:info", async () => {
@@ -814,6 +861,7 @@ function registerIpcHandlers(): void {
         .streamCloudChat({
           sessionId: parsed.sessionId,
           model: parsed.model,
+          reasoningEffort: parsed.reasoningEffort,
           messages: parsed.messages,
           workspaceDir: activeWorkspaceDir,
           browserCdp,
@@ -1089,6 +1137,12 @@ function registerIpcHandlers(): void {
   daemonClient.on("status", (status) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("rayu:daemon:status-changed", status)
+    }
+    if (status?.connected && status.mode === "live") {
+      void migrateLegacyEngineSettingsOnce({
+        getConfig: () => daemonClient.getConfig(),
+        patchConfig: (patch) => daemonClient.patchConfig(patch),
+      }).catch(() => {})
     }
   })
 

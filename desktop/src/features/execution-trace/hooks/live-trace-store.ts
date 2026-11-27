@@ -360,6 +360,13 @@ export function processHarnessFrame(
           queryKey: ["inspector", "changes"],
         })
       }
+    } else if (
+      ev.type === "text-done" ||
+      ev.type === "model-info" ||
+      ev.type === "permission-mode-changed" ||
+      ev.type === "config-changed"
+    ) {
+      // Handled at session/app level rather than live trace step reducer
     } else {
       traceEvents.push(ev)
     }
@@ -447,6 +454,7 @@ export function dispatchPendingStreamPrompt(
         images: promptToSend.images,
         modelId: promptToSend.modelId,
         modelLabel: promptToSend.modelLabel,
+        ...(promptToSend.effort ? { effort: promptToSend.effort } : {}),
         history,
       })
       .catch((error: unknown) => {
@@ -467,6 +475,7 @@ export function dispatchPendingStreamPrompt(
       images: promptToSend.images,
       modelId: promptToSend.modelId,
       modelLabel: promptToSend.modelLabel,
+      ...(promptToSend.effort ? { effort: promptToSend.effort } : {}),
     })
     .then((turn) => {
       queryClient.setQueryData<ExecutionTurn[]>(

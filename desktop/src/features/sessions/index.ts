@@ -13,6 +13,7 @@ export {
 } from "./components/permission-popover"
 
 export {
+  useCapabilities,
   useCreateSession,
   useModelCatalog,
   usePermissionModes,
@@ -21,7 +22,9 @@ export {
 } from "./hooks/use-sessions"
 
 export {
+  capabilitiesQueryOptions,
   createSession,
+  fetchCapabilities,
   fetchModels,
   fetchPermissionModes,
   fetchSessions,
@@ -35,23 +38,17 @@ export {
 export {
   DEFAULT_CHECKOUT,
   DEFAULT_EFFORT,
-  DEFAULT_EFFORT_INDEX,
   DEFAULT_MODEL_ID,
   DEFAULT_MODEL_LABEL,
   DEFAULT_PERMISSION_MODE_ID,
   DEFAULT_PROJECT,
-  EFFORT_LEVELS,
-  EFFORT_STOPS,
   FALLBACK_MODELS,
   FALLBACK_PERMISSION_MODES,
   HOME_CHECKOUTS,
   HOME_PROJECTS,
   QUICK_START_SUGGESTIONS,
-  SLASH_COMMANDS,
-  effortToIndex,
-  getEffortStop,
+  getEffortDescription,
   getPermissionMode,
-  indexToEffort,
   nextPermissionModeId,
 } from "./constants/models"
 

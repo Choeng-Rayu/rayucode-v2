@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@source "../../../packages/ui/src/components/TaskChecklistCard.tsx";
 
 /* Keep Tailwind v4 scanner fast and isolated to desktop/src */
 @source not "../../prototype";

@@ -1,6 +1,7 @@
 import {
   createOrReuseDraft,
   type ProvisionalDraftSession,
+  type SessionTodoItem,
 } from "@rayu-dev/rayucode-session-core/client"
 import { create } from "zustand"
 
@@ -98,6 +99,7 @@ export interface PendingStreamPrompt {
   images?: PromptImageAttachment[]
   modelId?: string
   modelLabel: string
+  effort?: string
   startedAtMs?: number
 }
 
@@ -153,6 +155,7 @@ export interface AppStoreState {
   liveExcelWorkbookVersion: number
   activeDiagram: ActiveDiagramState
   sessionFileChangesBySession: Record<string, FileChangesSnapshot>
+  sessionTodosBySession: Record<string, SessionTodoItem[]>
   sessionTokenUsageBySession: Record<string, SessionTokenUsageSnapshot>
   sessionModelInfoBySession: Record<string, SessionModelInfoSnapshot>
   selectedDiffFilePath: string | null
@@ -193,6 +196,7 @@ export interface AppStoreState {
     sessionId: string,
     snapshot: FileChangesSnapshot
   ) => void
+  setSessionTodos: (sessionId: string, todos: SessionTodoItem[]) => void
   setSessionTokenUsage: (
     sessionId: string,
     usage: SessionTokenUsageSnapshot
@@ -438,6 +442,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   liveExcelWorkbookVersion: 0,
   activeDiagram: DEFAULT_DIAGRAM_STATE,
   sessionFileChangesBySession: {},
+  sessionTodosBySession: {},
   sessionTokenUsageBySession: {},
   sessionModelInfoBySession: {},
   selectedDiffFilePath: null,
@@ -712,6 +717,16 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       sessionFileChangesBySession: {
         ...state.sessionFileChangesBySession,
         [sessionId]: snapshot,
+      },
+    }))
+  },
+
+  setSessionTodos: (sessionId, todos) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessionTodosBySession: {
+        ...state.sessionTodosBySession,
+        [sessionId]: todos,
       },
     }))
   },

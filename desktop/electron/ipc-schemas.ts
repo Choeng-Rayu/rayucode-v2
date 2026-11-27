@@ -215,6 +215,22 @@ export const HarnessRuntimeCommandSchema = z.object({
   args: z.array(z.string()).optional(),
 })
 
+export const HarnessGetCapabilitiesSchema = z
+  .object({
+    sessionId: z.string().min(1).optional(),
+  })
+  .optional()
+
+export const HarnessGetConfigSchema = z
+  .object({
+    sections: z.array(z.string().min(1)).optional(),
+  })
+  .optional()
+
+export const HarnessPatchConfigSchema = z.object({
+  patch: z.record(z.string().min(1), z.unknown()),
+})
+
 export const FileChangeActionKindSchema = z.enum([
   "keep",
   "undo",
@@ -240,6 +256,10 @@ export const FileChangesActionPayloadSchema = z.object({
   force: z.boolean().optional(),
 })
 
+export const TodosGetPayloadSchema = z.object({
+  sessionId: z.string().min(1).max(200),
+})
+
 export const AuthApiKeyPayloadSchema = z.object({
   apiKey: z.string().trim().min(10).max(512),
 })
@@ -251,6 +271,7 @@ export const AuthCallbackUrlPayloadSchema = z.object({
 export const CloudStreamChatPayloadSchema = z.object({
   sessionId: z.string().min(1),
   model: z.string().min(1).max(256),
+  reasoningEffort: z.string().trim().min(1).max(64).optional(),
   messages: z
     .array(
       z.object({

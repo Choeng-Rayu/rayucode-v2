@@ -761,4 +761,71 @@ describe("TurnFileSummaryCard & file-change sync", () => {
       expect(screen.getByTestId("turn-file-summary-card")).toBeInTheDocument()
     })
   })
+
+  it("shows only the 3 most recently changed files by default and expands/collapses all changed files on demand", () => {
+    const fiveFiles = createSnapshot({
+      total_pending_files: 5,
+      files: [
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/oldest.ts",
+          display_path: "src/oldest.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 1_000,
+        },
+        {
+          ...createSnapshot().files[0],
+          path: "/repo/src/recent-2.ts",
+          display_path: "src/recent-2.ts",
+          changed_in_latest_turn: true,
+          updated_at_ms: 4_000,
+        },
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/older.ts",
+          display_path: "src/older.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 2_000,
+        },
+        {
+          ...createSnapshot().files[0],
+          path: "/repo/src/recent-1.ts",
+          display_path: "src/recent-1.ts",
+          changed_in_latest_turn: true,
+          updated_at_ms: 5_000,
+        },
+        {
+          ...createSnapshot().files[2],
+          path: "/repo/src/recent-3.ts",
+          display_path: "src/recent-3.ts",
+          changed_in_latest_turn: false,
+          updated_at_ms: 3_000,
+        },
+      ],
+    })
+
+    renderCard(fiveFiles)
+
+    expect(screen.getByTestId("summary-file-count")).toHaveTextContent(
+      "5 files changed"
+    )
+    // Only the 3 most recent files are visible by default
+    expect(screen.getByTestId("file-summary-row-src/recent-1.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/recent-2.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/recent-3.ts")).toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).not.toBeInTheDocument()
+
+    // Expand all reveals the remaining 2 files
+    const expandBtn = screen.getByTestId("file-summary-expand-all-btn")
+    expect(expandBtn).toHaveTextContent("Expand all 5 files (+2 more)")
+    fireEvent.click(expandBtn)
+    expect(screen.getByTestId("file-summary-row-src/older.ts")).toBeInTheDocument()
+    expect(screen.getByTestId("file-summary-row-src/oldest.ts")).toBeInTheDocument()
+
+    // Collapse back to the 3 most recent files
+    fireEvent.click(screen.getByTestId("file-summary-collapse-list-btn"))
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).not.toBeInTheDocument()
+  })
 })

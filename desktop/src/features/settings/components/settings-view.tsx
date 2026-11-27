@@ -1,10 +1,13 @@
 import * as React from "react"
 import {
   Activity,
+  AlertCircle,
+  AlertTriangle,
   ArrowLeft,
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
+  Info,
   Keyboard,
   LogIn,
   LogOut,
@@ -13,13 +16,16 @@ import {
   PanelLeft,
   Plug,
   RefreshCw,
+  RotateCw,
   Search,
   SlidersHorizontal,
   Sun,
   UserCircle,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ErrorState } from "@/components/ui/error-state"
 import { SettingsSkeleton } from "@/components/ui/page-skeletons"
@@ -37,13 +43,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { useModelCatalog } from "@/features/sessions"
 import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client"
 import { useAppStore } from "@/lib/app-store"
-import { ipcClient } from "@/lib/ipc-client"
+import { ipcClient, type ConfigFieldSchema } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 import {
   useDaemonStatus,
+  useEngineConfig,
   usePingDaemon,
   useSettingsState,
   useToggleUseAllCredits,
@@ -51,11 +59,8 @@ import {
 } from "../hooks/use-settings"
 import {
   CONNECTION_SERVICES,
-  DEFAULT_MODEL_OPTIONS,
   KEYBOARD_SHORTCUT_GROUPS,
-  KV_CACHE_TTL_OPTIONS,
   MICROPHONE_OPTIONS,
-  PERMISSION_MODE_OPTIONS,
   PLAN_LADDER_TIERS,
   SETTINGS_SECTIONS,
   VOICE_MODEL_OPTIONS,
@@ -64,7 +69,6 @@ import type {
   AccountUsageTabId,
   AnalyticsGroupBy,
   AnalyticsRange,
-  PermissionModeId,
   SettingsNavGroup,
   SettingsSectionId,
 } from "../types"
@@ -175,13 +179,7 @@ export function SettingsView({
   const [analyticsGroupBy, setAnalyticsGroupBy] =
     React.useState<AnalyticsGroupBy>("feature")
 
-  // Models & Voice local UI state
-  const [defaultModel, setDefaultModel] = React.useState<string>(
-    DEFAULT_MODEL_OPTIONS[0]
-  )
-  const [kvCacheTtl, setKvCacheTtl] = React.useState<string>(
-    KV_CACHE_TTL_OPTIONS[1]
-  )
+  // Voice local UI state
   const [microphone, setMicrophone] = React.useState<string>(
     MICROPHONE_OPTIONS[0]
   )
@@ -200,9 +198,14 @@ export function SettingsView({
 
   const settingsQuery = useSettingsState()
   const daemonQuery = useDaemonStatus()
+  const engineConfig = useEngineConfig()
+  const { models: liveModels } = useModelCatalog()
   const updatePreferencesMutation = useUpdatePreferences()
   const toggleUseAllCreditsMutation = useToggleUseAllCredits()
   const pingDaemonMutation = usePingDaemon()
+  const [draftConfigValues, setDraftConfigValues] = React.useState<
+    Record<string, string>
+  >({})
 
   const normalizedQuery = searchQuery.trim().toLowerCase()
   const filteredSections = React.useMemo(() => {
@@ -1209,7 +1212,20 @@ export function SettingsView({
             ) : null}
 
             {/* ==================== 2. APPEARANCE ==================== */}
-            {activeSection === "appearance" ? <AppearancePanel /> : null}
+            {activeSection === "appearance" ? (
+              <AppearancePanel
+                showMiniPet={preferences.showMiniPet}
+                miniPetDisabled={updatePreferencesMutation.isPending}
+                onToggleMiniPet={(checked) =>
+                  handleUpdatePreferences(
+                    { showMiniPet: checked },
+                    checked
+                      ? "Mini & Pet companion shown"
+                      : "Mini & Pet companion hidden"
+                  )
+                }
+              />
+            ) : null}
 
             {/* ==================== 3. MODELS & INFERENCE ==================== */}
             {activeSection === "models" ? (
@@ -1217,95 +1233,132 @@ export function SettingsView({
                 data-testid="settings-panel-models"
                 aria-labelledby="sp-h-models"
               >
-                <h1
-                  id="sp-h-models"
-                  className="mb-1.5 text-2xl font-medium tracking-[-0.025em] text-ink"
-                >
-                  Models &amp; Inference
-                </h1>
-                <p className="mb-8 text-[13px] leading-[1.45] text-muted-ink">
-                  Configure default permission mode, model routing, KV prompt
-                  cache TTL, and workspace alerts
+                <div className="mb-1.5 flex flex-wrap items-center gap-2.5">
+                  <h1
+                    id="sp-h-models"
+                    className="text-2xl font-medium tracking-[-0.025em] text-ink"
+                  >
+                    Models &amp; Inference
+                  </h1>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge
+                        variant="brand"
+                        data-testid="settings-synced-badge"
+                      >
+                        <RefreshCw className="size-3" aria-hidden="true" />
+                        <span>Synced with ~/.rayu/config.toml</span>
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Shared live across RayuCode CLI, Desktop, and VS Code
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <p className="mb-6 text-[13px] leading-[1.45] text-muted-ink">
+                  Engine routing, compaction, features, safety, and
+                  notifications synced live with{" "}
+                  <code className="rounded bg-inset px-1 py-0.5 font-mono text-[11px] text-body">
+                    {engineConfig.config?.path ?? "~/.rayu/config.toml"}
+                  </code>
                 </p>
 
-                <h2 className="border-b border-hairline-soft pb-3 text-[13px] font-medium text-ink">
-                  Runtime &amp; permissions
-                </h2>
+                {engineConfig.externalSyncNotice ? (
+                  <div
+                    role="status"
+                    data-testid="settings-external-sync-notice"
+                    className="mb-4 flex items-center gap-2 rounded-xl border border-brand/30 bg-brand-soft px-3.5 py-2 text-xs text-ink"
+                  >
+                    <RefreshCw
+                      className="size-3.5 shrink-0 text-brand-text"
+                      aria-hidden="true"
+                    />
+                    <span>{engineConfig.externalSyncNotice}</span>
+                  </div>
+                ) : null}
 
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Default permission mode
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Tool approval policy for newly created sessions (Ask,
-                      Auto-edit, Plan, Full Manage, Orchestrator)
+                {engineConfig.isUnsupported ? (
+                  <div
+                    role="status"
+                    data-testid="settings-v115-fallback-banner"
+                    className="mb-6 flex items-start gap-3 rounded-xl border border-info/30 bg-info-soft px-4 py-3 text-xs"
+                  >
+                    <Info
+                      className="mt-0.5 size-4 shrink-0 text-info"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <div className="font-medium text-ink">
+                        Connected to an older Rayu daemon (v1.15)
+                      </div>
+                      <p className="mt-0.5 text-body">
+                        Live ~/.rayu/config.toml sync requires daemon v1.16+.
+                        Engine settings are read-only here; edit
+                        ~/.rayu/config.toml directly or upgrade the daemon.
+                        Local UI preferences remain editable.
+                      </p>
                     </div>
                   </div>
-                  <Select
-                    value={preferences.defaultPermissionMode}
-                    onValueChange={(value) => {
-                      const nextMode = value as PermissionModeId
-                      const label =
-                        PERMISSION_MODE_OPTIONS.find((m) => m.value === nextMode)
-                          ?.label ?? nextMode
-                      handleUpdatePreferences(
-                        { defaultPermissionMode: nextMode },
-                        `Default permission mode: ${label}`
-                      )
-                    }}
-                  >
-                    <SelectTrigger
-                      data-testid="permission-mode-select"
-                      aria-label="Default permission mode"
-                      className="w-[170px]"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end">
-                      {PERMISSION_MODE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                ) : null}
 
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Default model
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Used for new chats and CLI sessions without an explicit
-                      override
-                    </div>
+                {engineConfig.requiresRestart ? (
+                  <div
+                    role="status"
+                    data-testid="settings-restart-banner"
+                    className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2.5 text-xs"
+                  >
+                    <span className="flex items-center gap-2 text-warn">
+                      <AlertTriangle
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        Reload the Rayu daemon to apply updated settings.
+                      </span>
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="xs"
+                      data-testid="settings-reload-daemon-btn"
+                      onClick={() => {
+                        pingDaemonMutation.mutate(undefined, {
+                          onSuccess: () => {
+                            engineConfig.clearRequiresRestart()
+                            toast("Reconnected to Rayu daemon")
+                          },
+                        })
+                      }}
+                    >
+                      Reload daemon
+                    </Button>
                   </div>
-                  <Select
-                    value={defaultModel}
-                    onValueChange={(value) => {
-                      setDefaultModel(value)
-                      toast(`Default model: ${value}`)
-                    }}
-                  >
-                    <SelectTrigger
-                      aria-label="Default model"
-                      className="w-[210px]"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end">
-                      {DEFAULT_MODEL_OPTIONS.map((model) => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                ) : null}
 
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
+                {engineConfig.sectionError ? (
+                  <div
+                    role="alert"
+                    data-testid="settings-section-error"
+                    className="mb-6 flex items-center justify-between gap-2 rounded-xl border border-danger/30 bg-danger-soft px-4 py-2.5 text-xs text-danger"
+                  >
+                    <span className="flex items-center gap-2">
+                      <AlertCircle
+                        className="size-4 shrink-0"
+                        aria-hidden="true"
+                      />
+                      <span>{engineConfig.sectionError}</span>
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Dismiss error"
+                      onClick={engineConfig.dismissSectionError}
+                      className="grid size-5 cursor-pointer place-items-center rounded hover:opacity-80"
+                    >
+                      <X className="size-3" aria-hidden="true" />
+                    </button>
+                  </div>
+                ) : null}
+
+                <div className="mb-6 flex items-center justify-between gap-6 border-b border-hairline-soft pb-4">
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-ink">
                       Subagent models &amp; agent personas
@@ -1331,139 +1384,344 @@ export function SettingsView({
                   </Button>
                 </div>
 
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Prompt KV cache TTL
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Shared across Desktop and CLI via{" "}
-                      <code className="rounded bg-inset px-1 py-0.5 font-mono text-[11px] text-body">
-                        /cache
-                      </code>
-                    </div>
-                  </div>
-                  <Select
-                    value={kvCacheTtl}
-                    onValueChange={(value) => {
-                      setKvCacheTtl(value)
-                      toast(`KV cache TTL: ${value}`)
-                    }}
-                  >
-                    <SelectTrigger
-                      aria-label="Prompt KV cache TTL"
-                      className="w-[160px]"
+                {(() => {
+                  const schema = engineConfig.config?.schema ?? []
+                  const values = engineConfig.config?.values ?? {}
+                  const groups: Array<{
+                    id: string
+                    title: string
+                    sections: string[]
+                  }> = [
+                    {
+                      id: "routing",
+                      title: "Models, provider & compaction",
+                      sections: ["provider", "compaction", "agents"],
+                    },
+                    {
+                      id: "features",
+                      title: "Runtime features",
+                      sections: ["features"],
+                    },
+                    {
+                      id: "safety",
+                      title: "Safety & review",
+                      sections: ["safety", "autoreview", "autojudge"],
+                    },
+                    {
+                      id: "display",
+                      title: "CLI & notifications",
+                      sections: ["display", "notifications"],
+                    },
+                  ]
+
+                  const renderFieldControl = (field: ConfigFieldSchema) => {
+                    const rawValue =
+                      field.key in values
+                        ? values[field.key]
+                        : field.default_value
+                    const fieldError = engineConfig.fieldErrors[field.key]
+                    const isDisabled =
+                      engineConfig.isUnsupported || engineConfig.isPatching
+
+                    if (field.kind === "boolean") {
+                      return (
+                        <Switch
+                          data-testid={`config-field-${field.key}`}
+                          aria-label={field.label}
+                          checked={Boolean(rawValue)}
+                          disabled={isDisabled}
+                          onCheckedChange={(checked) => {
+                            void engineConfig.patchField(field.key, checked)
+                          }}
+                        />
+                      )
+                    }
+
+                    if (
+                      field.key === "provider.default_model" &&
+                      liveModels.length > 0
+                    ) {
+                      const currentStr =
+                        typeof rawValue === "string" && rawValue.trim()
+                          ? rawValue
+                          : "__default__"
+                      const options = liveModels.some(
+                        (m) => m.id === currentStr
+                      )
+                        ? liveModels
+                        : currentStr !== "__default__"
+                          ? [
+                              {
+                                id: currentStr,
+                                label: currentStr,
+                                provider: "rayu",
+                              },
+                              ...liveModels,
+                            ]
+                          : liveModels
+                      return (
+                        <Select
+                          value={currentStr}
+                          disabled={isDisabled}
+                          onValueChange={(nextVal) => {
+                            void engineConfig.patchField(
+                              field.key,
+                              nextVal === "__default__" ? null : nextVal
+                            )
+                          }}
+                        >
+                          <SelectTrigger
+                            data-testid={`config-field-${field.key}`}
+                            aria-label={field.label}
+                            className={cn(
+                              "w-[220px]",
+                              fieldError && "border-danger/40"
+                            )}
+                          >
+                            <SelectValue placeholder="Engine default" />
+                          </SelectTrigger>
+                          <SelectContent align="end">
+                            <SelectItem value="__default__">
+                              Engine default
+                            </SelectItem>
+                            {options.map((model) => (
+                              <SelectItem key={model.id} value={model.id}>
+                                {model.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )
+                    }
+
+                    if (field.kind === "enum" && field.options?.length) {
+                      const currentStr = String(
+                        rawValue ?? field.default_value ?? ""
+                      )
+                      return (
+                        <Select
+                          value={currentStr}
+                          disabled={isDisabled}
+                          onValueChange={(nextVal) => {
+                            void engineConfig.patchField(field.key, nextVal)
+                          }}
+                        >
+                          <SelectTrigger
+                            data-testid={`config-field-${field.key}`}
+                            aria-label={field.label}
+                            className={cn(
+                              "w-[180px]",
+                              fieldError && "border-danger/40"
+                            )}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent align="end">
+                            {field.options.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )
+                    }
+
+                    const displayValue =
+                      field.key in draftConfigValues
+                        ? draftConfigValues[field.key]
+                        : rawValue === null || rawValue === undefined
+                          ? ""
+                          : String(rawValue)
+
+                    const commitTextOrNumber = () => {
+                      if (!(field.key in draftConfigValues)) return
+                      const rawDraft = draftConfigValues[field.key].trim()
+                      setDraftConfigValues((prev) => {
+                        const next = { ...prev }
+                        delete next[field.key]
+                        return next
+                      })
+                      if (
+                        field.kind === "integer" ||
+                        field.kind === "number"
+                      ) {
+                        const parsedNum =
+                          field.kind === "integer"
+                            ? Number.parseInt(rawDraft, 10)
+                            : Number.parseFloat(rawDraft)
+                        if (Number.isNaN(parsedNum)) {
+                          void engineConfig.patchField(field.key, rawDraft)
+                          return
+                        }
+                        void engineConfig.patchField(field.key, parsedNum)
+                        return
+                      }
+                      void engineConfig.patchField(
+                        field.key,
+                        rawDraft.length === 0 ? null : rawDraft
+                      )
+                    }
+
+                    return (
+                      <input
+                        type="text"
+                        data-testid={`config-field-${field.key}`}
+                        aria-label={field.label}
+                        disabled={isDisabled}
+                        value={displayValue}
+                        onChange={(e) => {
+                          const nextVal = e.target.value
+                          setDraftConfigValues((prev) => ({
+                            ...prev,
+                            [field.key]: nextVal,
+                          }))
+                          if (fieldError) {
+                            engineConfig.dismissFieldError(field.key)
+                          }
+                        }}
+                        onBlur={commitTextOrNumber}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.currentTarget.blur()
+                          }
+                        }}
+                        className={cn(
+                          "h-8 w-[190px] rounded-md border border-control-border bg-control px-2.5 font-mono text-xs text-ink outline-none focus:border-brand disabled:cursor-not-allowed disabled:opacity-60",
+                          fieldError && "border-danger/40"
+                        )}
+                      />
+                    )
+                  }
+
+                  if (schema.length === 0) {
+                    return (
+                      <div
+                        className={cn(
+                          "rounded-xl border border-hairline bg-pane px-4 py-4 text-xs text-muted-ink",
+                          engineConfig.isUnsupported && "opacity-60"
+                        )}
+                      >
+                        {engineConfig.isLoading
+                          ? "Loading engine configuration from ~/.rayu/config.toml..."
+                          : "Engine configuration schema unavailable while daemon is offline or running v1.15."}
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div
+                      className={cn(
+                        "flex flex-col gap-7",
+                        engineConfig.isUnsupported && "opacity-60"
+                      )}
                     >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end">
-                      {KV_CACHE_TTL_OPTIONS.map((ttl) => (
-                        <SelectItem key={ttl} value={ttl}>
-                          {ttl}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                      {groups.map((group) => {
+                        const fields = schema.filter((f) =>
+                          group.sections.includes(f.section)
+                        )
+                        if (fields.length === 0) return null
+                        return (
+                          <div
+                            key={group.id}
+                            data-testid={`config-group-${group.id}`}
+                          >
+                            <h2 className="border-b border-hairline-soft pb-3 text-[13px] font-medium text-ink">
+                              {group.title}
+                            </h2>
+                            {fields.map((field, idx) => {
+                              const fieldError =
+                                engineConfig.fieldErrors[field.key]
+                              return (
+                                <div
+                                  key={field.key}
+                                  className={cn(
+                                    "flex items-start justify-between gap-6 py-3.5",
+                                    idx < fields.length - 1 &&
+                                      "border-b border-hairline-soft"
+                                  )}
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span className="text-[13px] font-medium text-ink">
+                                        {field.label}
+                                      </span>
+                                      {field.apply_mode ===
+                                      "restart_required" ? (
+                                        <Badge
+                                          variant="warn"
+                                          data-testid={`reload-badge-${field.key}`}
+                                        >
+                                          <RotateCw
+                                            className="size-2.5"
+                                            aria-hidden="true"
+                                          />
+                                          <span>Reload required</span>
+                                        </Badge>
+                                      ) : field.apply_mode === "next_turn" ? (
+                                        <Badge variant="outline">
+                                          Next turn
+                                        </Badge>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-0.5 text-xs text-muted-ink">
+                                      {field.description}
+                                    </div>
+                                    {fieldError ? (
+                                      <div
+                                        role="alert"
+                                        data-testid={`config-error-${field.key}`}
+                                        className="mt-1.5 flex items-center justify-between gap-1.5 rounded-lg border border-danger/30 bg-danger-soft px-2.5 py-1.5 text-[11.5px] text-danger"
+                                      >
+                                        <span className="flex items-center gap-1.5">
+                                          <AlertCircle
+                                            className="size-3.5 shrink-0"
+                                            aria-hidden="true"
+                                          />
+                                          <span>{fieldError}</span>
+                                        </span>
+                                        <button
+                                          type="button"
+                                          aria-label={`Dismiss ${field.label} error`}
+                                          onClick={() =>
+                                            engineConfig.dismissFieldError(
+                                              field.key
+                                            )
+                                          }
+                                          className="grid size-4 shrink-0 cursor-pointer place-items-center rounded hover:opacity-80"
+                                        >
+                                          <X
+                                            className="size-3"
+                                            aria-hidden="true"
+                                          />
+                                        </button>
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <div className="shrink-0">
+                                    {renderFieldControl(field)}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                })()}
 
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Auto-compact context
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Automatically summarize older tool output when context
-                      approaches window limits
-                    </div>
-                  </div>
-                  <Switch
-                    data-testid="auto-compact-switch"
-                    aria-label="Auto-compact context"
-                    checked={preferences.autoCompactContext}
-                    disabled={updatePreferencesMutation.isPending}
-                    onCheckedChange={(checked) =>
-                      handleUpdatePreferences(
-                        { autoCompactContext: checked },
-                        checked
-                          ? "Auto-compact context enabled"
-                          : "Auto-compact context disabled"
-                      )
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-6 border-b border-hairline-soft py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Desktop notifications
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Alert when a long-running task, Swarm worker, or approval
-                      request needs attention
-                    </div>
-                  </div>
-                  <Switch
-                    data-testid="notifications-switch"
-                    aria-label="Desktop notifications"
-                    checked={preferences.notificationsEnabled}
-                    disabled={updatePreferencesMutation.isPending}
-                    onCheckedChange={(checked) =>
-                      handleUpdatePreferences(
-                        { notificationsEnabled: checked },
-                        checked
-                          ? "Desktop notifications enabled"
-                          : "Desktop notifications muted"
-                      )
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-6 py-3.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-ink">
-                      Show Mini &amp; Pet companion
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-ink">
-                      Keep the floating Rayu Fox companion visible above desktop
-                      windows
-                    </div>
-                  </div>
-                  <Switch
-                    data-testid="mini-pet-switch"
-                    aria-label="Show Mini & Pet companion"
-                    checked={preferences.showMiniPet}
-                    disabled={updatePreferencesMutation.isPending}
-                    onCheckedChange={(checked) =>
-                      handleUpdatePreferences(
-                        { showMiniPet: checked },
-                        checked
-                          ? "Mini & Pet companion shown"
-                          : "Mini & Pet companion hidden"
-                      )
-                    }
-                  />
-                </div>
-
-                {/* Live Config Preview */}
-                <div className="mt-4">
-                  <div className="mb-2 flex items-center justify-between text-xs text-muted-ink">
-                    <span>
-                      Synced with{" "}
-                      <code className="rounded bg-inset px-1 py-0.5 font-mono text-[11px] text-body">
-                        ~/.rayu/config.toml
-                      </code>
-                    </span>
-                  </div>
-                  <pre className="overflow-x-auto rounded-[10px] border border-hairline bg-inset px-3.5 py-3 font-mono text-xs leading-[1.6] text-body">
-                    {`[gateway]
-order = ["rayu-primary", "rayu-fallback"]
-default_model = "${defaultModel}"
-permission_mode = "${preferences.defaultPermissionMode}"
-
-[cache]
-kv_ttl = "${kvCacheTtl}"
-auto_compact = ${preferences.autoCompactContext}`}
-                  </pre>
+                {/* Truthful config.toml path footer */}
+                <div className="mt-6 flex items-center justify-between rounded-xl border border-hairline-soft bg-inset px-3.5 py-2.5 text-xs text-muted-ink">
+                  <span>
+                    Canonical config:{" "}
+                    <code className="font-mono text-[11px] text-body">
+                      {engineConfig.config?.path ?? "~/.rayu/config.toml"}
+                    </code>
+                  </span>
+                  <span className="font-mono text-[11px] text-faint">
+                    Secrets redacted
+                  </span>
                 </div>
               </section>
             ) : null}

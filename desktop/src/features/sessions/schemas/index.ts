@@ -1,12 +1,6 @@
 import { z } from "zod"
 
-export const reasoningEffortSchema = z.enum([
-  "Auto",
-  "Low",
-  "Medium",
-  "High",
-  "Max",
-])
+export const reasoningEffortSchema = z.string()
 
 export const permissionModeIdSchema = z.enum([
   "default",
@@ -23,6 +17,11 @@ export const modelOptionSchema = z.object({
   provider: z.string().min(1),
   apiMethod: z.string().optional(),
   recommended: z.boolean().optional(),
+  available: z.boolean().optional(),
+  unavailableReason: z.string().optional(),
+  supportedEfforts: z.array(z.string()).optional(),
+  defaultEffort: z.string().optional(),
+  contextWindow: z.number().optional(),
 })
 
 export const permissionModeOptionSchema = z.object({
@@ -71,9 +70,9 @@ export const createSessionInputSchema = z.object({
   project: z.string().min(1).default("rayucode-v2"),
   workingDir: z.string().min(1).optional(),
   checkout: z.string().min(1).default("Local Checkout"),
-  modelId: z.string().min(1).default("claude-opus-5-5"),
-  modelLabel: z.string().min(1).default("Claude Opus 5.5"),
-  effort: reasoningEffortSchema.default("Medium"),
+  modelId: z.string().min(1).default("default"),
+  modelLabel: z.string().min(1).default("Default"),
+  effort: reasoningEffortSchema.default(""),
   permissionMode: permissionModeIdSchema.default("default"),
 })
 

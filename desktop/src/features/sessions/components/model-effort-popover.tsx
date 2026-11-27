@@ -1,14 +1,20 @@
 import * as React from "react"
 import {
+  formatEffortLabel,
+  resolveEffortLadder,
+} from "@rayu-dev/rayucode-session-core/client"
+import {
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock,
   RefreshCw,
   Zap,
 } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import {
   Popover,
   PopoverContent,
@@ -23,17 +29,7 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
-import {
-  DEFAULT_EFFORT,
-  DEFAULT_MODEL_ID,
-  DEFAULT_MODEL_LABEL,
-  EFFORT_LEVELS,
-  EFFORT_STOPS,
-  FALLBACK_MODELS,
-  effortToIndex,
-  getEffortStop,
-  indexToEffort,
-} from "../constants/models"
+import { FALLBACK_MODELS, getEffortDescription } from "../constants/models"
 import type { ModelOption, ReasoningEffort } from "../types"
 
 export interface ModelEffortPopoverProps {
@@ -45,19 +41,23 @@ export interface ModelEffortPopoverProps {
   onSelectEffort: (effort: ReasoningEffort) => void
   onRefreshModels?: () => void | Promise<unknown>
   isRefreshing?: boolean
+  deferredNotice?: string | null
   defaultOpen?: boolean
   initialStage?: "effort" | "list"
   disabled?: boolean
   className?: string
 }
 
-const STOP_LEFT_POSITIONS = [
-  "17px",
-  "calc(17px + (100% - 34px) * 0.25)",
-  "calc(17px + (100% - 34px) * 0.5)",
-  "calc(17px + (100% - 34px) * 0.75)",
-  "calc(100% - 17px)",
-] as const
+function formatContextWindow(tokens?: number): string | null {
+  if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens <= 0) {
+    return null
+  }
+  if (tokens >= 1_000_000) {
+    const millions = tokens / 1_000_000
+    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M ctx`
+  }
+  return `${Math.round(tokens / 1000)}k ctx`
+}
 
 export function ModelEffortPopover({
   modelId,
@@ -68,26 +68,79 @@ export function ModelEffortPopover({
   onSelectEffort,
   onRefreshModels,
   isRefreshing = false,
+  deferredNotice = null,
   defaultOpen = false,
   initialStage = "effort",
   disabled = false,
   className,
 }: ModelEffortPopoverProps) {
+  const catalog = models
+  const activeModel = React.useMemo<ModelOption | undefined>(() => {
+    const exact = catalog.find((m) => m.id === modelId)
+    if (exact) return exact
+    const normalized = modelId.trim().replace(/^rayu:/i, "").toLowerCase()
+    if (!normalized) return undefined
+    return catalog.find(
+      (m) => m.id.trim().replace(/^rayu:/i, "").toLowerCase() === normalized
+    )
+  }, [catalog, modelId])
+  const ladder = React.useMemo(
+    () => resolveEffortLadder(activeModel),
+    [activeModel]
+  )
+  const stops = ladder.stops
+  const supportsEffort = ladder.supported && stops.length > 0
+  const effectiveInitialStage: "effort" | "list" = supportsEffort
+    ? initialStage
+    : "list"
+
   const [open, setOpen] = React.useState(defaultOpen)
   const [triggerTipOpen, setTriggerTipOpen] = React.useState(false)
-  const [stage, setStage] = React.useState<"effort" | "list">(initialStage)
+  const [stage, setStage] = React.useState<"effort" | "list">(
+    effectiveInitialStage
+  )
+  const displayedStage: "effort" | "list" = supportsEffort ? stage : "list"
   const [isDragging, setIsDragging] = React.useState(false)
   const sliderRef = React.useRef<HTMLDivElement>(null)
 
-  const currentStop = getEffortStop(effort)
-  const effortIndex = effortToIndex(effort)
-  const isFastMode = effort === "Low"
-  const catalog = models.length > 0 ? models : FALLBACK_MODELS
+  const normalizedEffort = effort.trim().toLowerCase()
+  const rawIndex = stops.findIndex(
+    (s) => s.toLowerCase() === normalizedEffort
+  )
+  const defaultIndex = ladder.defaultStop
+    ? Math.max(
+        0,
+        stops.findIndex(
+          (s) => s.toLowerCase() === ladder.defaultStop?.toLowerCase()
+        )
+      )
+    : 0
+  const effortIndex = rawIndex >= 0 ? rawIndex : defaultIndex
+  const activeStop = stops[effortIndex] ?? ladder.defaultStop ?? ""
+  const activeEffortHeaderLabel = activeStop
+    ? formatEffortLabel(activeStop, "header")
+    : ""
+  const progress =
+    stops.length > 1 ? effortIndex / (stops.length - 1) : 0
+
+  const fastStop = React.useMemo(() => {
+    if (stops.length < 2) return null
+    return (
+      stops.find((s) => s.toLowerCase() === "minimal") ??
+      stops.find((s) => s.toLowerCase() === "low") ??
+      stops[0] ??
+      null
+    )
+  }, [stops])
+
+  const isFastMode = Boolean(
+    fastStop && activeStop.toLowerCase() === fastStop.toLowerCase()
+  )
 
   const handleOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen)
     if (nextOpen) {
-      setStage(initialStage)
+      setStage(supportsEffort ? initialStage : "list")
     } else {
       setIsDragging(false)
     }
@@ -95,29 +148,32 @@ export function ModelEffortPopover({
 
   const applyEffortByIndex = React.useCallback(
     (nextIndex: number, announce = false) => {
-      const nextEffort = indexToEffort(nextIndex)
-      if (nextEffort !== effort) {
-        onSelectEffort(nextEffort)
+      if (stops.length === 0) return
+      const clamped = Math.max(0, Math.min(stops.length - 1, Math.round(nextIndex)))
+      const nextStop = stops[clamped]
+      if (!nextStop) return
+      if (nextStop.toLowerCase() !== activeStop.toLowerCase()) {
+        onSelectEffort(nextStop)
       }
       if (announce) {
-        toast(`Reasoning effort: ${nextEffort}`)
+        toast(`Reasoning effort: ${formatEffortLabel(nextStop, "header")}`)
       }
     },
-    [effort, onSelectEffort]
+    [activeStop, onSelectEffort, stops]
   )
 
   const updateFromClientX = React.useCallback(
     (clientX: number) => {
       const slider = sliderRef.current
-      if (!slider) return
+      if (!slider || stops.length < 2) return
       const rect = slider.getBoundingClientRect()
       if (rect.width <= 0) return
       const usable = Math.max(1, rect.width - 34)
       const rel = Math.max(0, Math.min(1, (clientX - rect.left - 17) / usable))
-      const idx = Math.round(rel * (EFFORT_LEVELS.length - 1))
+      const idx = Math.round(rel * (stops.length - 1))
       applyEffortByIndex(idx, false)
     },
-    [applyEffortByIndex]
+    [applyEffortByIndex, stops.length]
   )
 
   const handleSliderPointerDown = (
@@ -156,10 +212,13 @@ export function ModelEffortPopover({
         // ignore
       }
     }
-    toast(`Reasoning effort: ${effort}`)
+    if (activeEffortHeaderLabel) {
+      toast(`Reasoning effort: ${activeEffortHeaderLabel}`)
+    }
   }
 
   const handleSliderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (stops.length === 0) return
     switch (event.key) {
       case "ArrowRight":
       case "ArrowUp":
@@ -177,7 +236,7 @@ export function ModelEffortPopover({
         break
       case "End":
         event.preventDefault()
-        applyEffortByIndex(EFFORT_LEVELS.length - 1, true)
+        applyEffortByIndex(stops.length - 1, true)
         break
       default:
         break
@@ -185,33 +244,57 @@ export function ModelEffortPopover({
   }
 
   const handleFastToggle = () => {
-    const nextEffort: ReasoningEffort = isFastMode ? "Medium" : "Low"
-    onSelectEffort(nextEffort)
+    if (!fastStop) return
+    const targetStop = isFastMode
+      ? (ladder.defaultStop ?? stops[stops.length - 1] ?? fastStop)
+      : fastStop
+    onSelectEffort(targetStop)
+    const label = formatEffortLabel(targetStop, "header")
     toast(
-      nextEffort === "Low"
-        ? "Fast mode enabled (Low effort)"
-        : "Reasoning effort: Medium"
+      !isFastMode
+        ? `Fast mode enabled (${label} effort)`
+        : `Reasoning effort: ${label}`
     )
   }
 
   const handleReset = () => {
     const defaultModel =
-      catalog.find((m) => m.id === DEFAULT_MODEL_ID) ?? {
-        id: DEFAULT_MODEL_ID,
-        label: DEFAULT_MODEL_LABEL,
-        provider: "anthropic",
-      }
+      catalog.find((m) => m.recommended) ?? catalog[0] ?? activeModel
+    if (!defaultModel) return
+    const defaultModelLadder = resolveEffortLadder(defaultModel)
     onSelectModel(defaultModel)
-    onSelectEffort(DEFAULT_EFFORT)
-    toast(`Reset to ${defaultModel.label} · ${DEFAULT_EFFORT}`)
+    if (defaultModelLadder.supported && defaultModelLadder.defaultStop) {
+      onSelectEffort(defaultModelLadder.defaultStop)
+      toast(
+        `Reset to ${defaultModel.label} · ${formatEffortLabel(defaultModelLadder.defaultStop, "header")}`
+      )
+    } else {
+      toast(`Reset to ${defaultModel.label}`)
+    }
   }
 
   const handleSelectModel = (model: ModelOption) => {
+    const nextLadder = resolveEffortLadder(model)
     onSelectModel(model)
-    setStage("effort")
+    setStage(nextLadder.supported ? "effort" : "list")
     setOpen(false)
-    toast(`Model: ${model.label} · ${effort}`)
+    if (nextLadder.supported && nextLadder.defaultStop) {
+      const nextEffortLabel = formatEffortLabel(
+        nextLadder.stops.find(
+          (s) => s.toLowerCase() === activeStop.toLowerCase()
+        ) ?? nextLadder.defaultStop,
+        "header"
+      )
+      toast(`Model: ${model.label} · ${nextEffortLabel}`)
+    } else {
+      toast(`Model: ${model.label}`)
+    }
   }
+
+  const tooltipLabel =
+    supportsEffort && activeEffortHeaderLabel
+      ? `${modelLabel} · ${activeEffortHeaderLabel}`
+      : modelLabel
 
   return (
     <TooltipProvider delayDuration={120}>
@@ -236,9 +319,14 @@ export function ModelEffortPopover({
                 <span className="min-w-0 truncate font-medium text-ink">
                   {modelLabel}
                 </span>
-                <span className="shrink-0 font-normal text-muted-ink @max-[460px]/composer:hidden">
-                  {effort}
-                </span>
+                {supportsEffort && activeEffortHeaderLabel ? (
+                  <span
+                    data-testid="model-effort-trigger-effort"
+                    className="shrink-0 font-normal text-muted-ink @max-[360px]/composer:hidden"
+                  >
+                    {activeEffortHeaderLabel}
+                  </span>
+                ) : null}
                 <ChevronDown
                   className={cn(
                     "size-3 shrink-0 text-muted-ink transition-transform duration-150",
@@ -249,9 +337,7 @@ export function ModelEffortPopover({
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent side="top">
-            {modelLabel} · {effort}
-          </TooltipContent>
+          <TooltipContent side="top">{tooltipLabel}</TooltipContent>
         </Tooltip>
 
         <PopoverContent
@@ -260,7 +346,7 @@ export function ModelEffortPopover({
           sideOffset={12}
           className="rayu-card-bevel w-auto rounded-[18px] border border-premium-hi bg-popover-solid p-0 shadow-rayu-2"
         >
-          {stage === "effort" ? (
+          {displayedStage === "effort" ? (
             <div
               role="dialog"
               aria-label="Reasoning effort"
@@ -268,35 +354,41 @@ export function ModelEffortPopover({
               className="w-[318px] px-[18px] pt-4 pb-[18px]"
             >
               <div className="mb-2.5 grid grid-cols-[32px_1fr_32px] items-start gap-1.5">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={handleFastToggle}
-                      aria-label="Fast mode (Low effort)"
-                      aria-pressed={isFastMode}
-                      data-testid="effort-fast-btn"
-                      className={cn(
-                        "grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink",
-                        isFastMode &&
-                          "border-brand/40 bg-brand-soft text-brand-text"
-                      )}
-                    >
-                      <Zap className="size-4" aria-hidden="true" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    Fast mode (Low effort)
-                  </TooltipContent>
-                </Tooltip>
+                {supportsEffort && stops.length >= 2 && fastStop ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleFastToggle}
+                        aria-label={`Fast mode (${formatEffortLabel(fastStop, "header")} effort)`}
+                        aria-pressed={isFastMode}
+                        data-testid="effort-fast-btn"
+                        className={cn(
+                          "grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink",
+                          isFastMode &&
+                            "border-brand/40 bg-brand-soft text-brand-text"
+                        )}
+                      >
+                        <Zap className="size-4" aria-hidden="true" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Fast mode ({formatEffortLabel(fastStop, "header")} effort)
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span aria-hidden="true" />
+                )}
 
                 <div className="flex flex-col items-center gap-0.5 pt-0.5 text-center">
-                  <div
-                    data-testid="effort-level-value"
-                    className="text-[19px] leading-[1.15] font-semibold tracking-[-0.02em] text-brand-text"
-                  >
-                    {effort}
-                  </div>
+                  {supportsEffort && activeEffortHeaderLabel ? (
+                    <div
+                      data-testid="effort-level-value"
+                      className="text-[19px] leading-[1.15] font-semibold tracking-[-0.02em] text-brand-text"
+                    >
+                      {activeEffortHeaderLabel}
+                    </div>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => setStage("list")}
@@ -311,128 +403,167 @@ export function ModelEffortPopover({
                   </button>
                 </div>
 
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      onClick={handleReset}
-                      aria-label="Reset to Claude Opus 5.5 Medium"
-                      data-testid="effort-reset-btn"
-                      className="grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
-                    >
-                      <RefreshCw className="size-4" aria-hidden="true" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    Reset to Claude Opus 5.5 · Medium
-                  </TooltipContent>
-                </Tooltip>
+                {supportsEffort ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={handleReset}
+                        aria-label="Reset to default model and effort"
+                        data-testid="effort-reset-btn"
+                        className="grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink"
+                      >
+                        <RefreshCw className="size-4" aria-hidden="true" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      Reset to engine default
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span aria-hidden="true" />
+                )}
               </div>
 
-              <p
-                data-testid="effort-description"
-                className="mb-4 min-h-8 text-center text-xs leading-snug text-muted-ink"
-              >
-                {currentStop.description}
-              </p>
-
-              <div
-                ref={sliderRef}
-                role="slider"
-                tabIndex={0}
-                aria-label="Reasoning effort"
-                aria-valuemin={0}
-                aria-valuemax={EFFORT_LEVELS.length - 1}
-                aria-valuenow={effortIndex}
-                aria-valuetext={effort}
-                data-testid="effort-slider"
-                onPointerDown={handleSliderPointerDown}
-                onPointerMove={handleSliderPointerMove}
-                onPointerUp={handleSliderPointerUp}
-                onKeyDown={handleSliderKeyDown}
-                className="relative h-9 cursor-pointer touch-none rounded-full border border-hairline bg-hover select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <div
-                  aria-hidden="true"
-                  className="rayu-effort-bar pointer-events-none absolute inset-y-0 left-0 rounded-full transition-[width] duration-150"
-                  style={{
-                    width: `calc(34px + (100% - 34px) * ${currentStop.progress})`,
-                  }}
-                />
-
-                {EFFORT_STOPS.map((stop) => {
-                  const isFilled = stop.index < effortIndex
-                  const isCurrent = stop.index === effortIndex
-                  return (
-                    <button
-                      key={stop.level}
-                      type="button"
-                      data-effort-stop={stop.index}
-                      aria-label={stop.level}
-                      aria-pressed={isCurrent}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        applyEffortByIndex(stop.index, true)
-                      }}
-                      style={{ left: STOP_LEFT_POSITIONS[stop.index] }}
-                      className="group absolute top-1/2 z-[2] grid size-[34px] -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full focus:outline-none"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "size-[5px] rounded-full transition-transform duration-150 group-hover:scale-125",
-                          isFilled
-                            ? "bg-white/60"
-                            : "bg-muted-ink/45 group-hover:bg-ink/70"
-                        )}
-                      />
-                    </button>
-                  )
-                })}
-
-                <div
-                  aria-hidden="true"
-                  data-testid="effort-slider-thumb"
-                  className={cn(
-                    "pointer-events-none absolute top-0 z-[3] size-[34px] rounded-full border border-hairline/40 bg-white shadow-rayu-1 transition-[left,transform] duration-150",
-                    isDragging && "scale-[1.04]"
-                  )}
-                  style={{
-                    left: `calc((100% - 34px) * ${currentStop.progress})`,
-                  }}
-                />
-              </div>
-
-              <div className="mt-2 flex items-center justify-between px-1.5 text-[10.5px] font-medium text-muted-ink">
-                {EFFORT_STOPS.map((stop) => (
-                  <span
-                    key={stop.level}
-                    className={cn(
-                      "transition-colors",
-                      stop.level === effort && "text-brand-text"
-                    )}
+              {supportsEffort ? (
+                <>
+                  <p
+                    data-testid="effort-description"
+                    className="mb-3 min-h-8 text-center text-xs leading-snug text-muted-ink"
                   >
-                    {stop.level}
-                  </span>
-                ))}
-              </div>
+                    {getEffortDescription(activeStop)}
+                  </p>
+
+                  {deferredNotice ? (
+                    <div className="mb-3 flex justify-center">
+                      <Badge
+                        variant="warn"
+                        data-testid="effort-deferred-badge"
+                      >
+                        <Clock className="size-3" aria-hidden="true" />
+                        <span>{deferredNotice}</span>
+                      </Badge>
+                    </div>
+                  ) : null}
+
+                  <div
+                    ref={sliderRef}
+                    role="slider"
+                    tabIndex={0}
+                    aria-label="Reasoning effort"
+                    aria-valuemin={0}
+                    aria-valuemax={Math.max(0, stops.length - 1)}
+                    aria-valuenow={effortIndex}
+                    aria-valuetext={activeEffortHeaderLabel}
+                    data-testid="effort-slider"
+                    onPointerDown={handleSliderPointerDown}
+                    onPointerMove={handleSliderPointerMove}
+                    onPointerUp={handleSliderPointerUp}
+                    onKeyDown={handleSliderKeyDown}
+                    className="relative h-9 cursor-pointer touch-none rounded-full border border-hairline bg-hover select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div
+                      aria-hidden="true"
+                      className="rayu-effort-bar pointer-events-none absolute inset-y-0 left-0 rounded-full transition-[width] duration-150"
+                      style={{
+                        width: `calc(34px + (100% - 34px) * ${progress})`,
+                      }}
+                    />
+
+                    {stops.map((stop, idx) => {
+                      const stopProgress =
+                        stops.length > 1 ? idx / (stops.length - 1) : 0
+                      const isFilled = idx < effortIndex
+                      const isCurrent = idx === effortIndex
+                      const headerLabel = formatEffortLabel(stop, "header")
+                      return (
+                        <button
+                          key={stop}
+                          type="button"
+                          data-effort-stop={idx}
+                          data-effort-value={stop}
+                          aria-label={headerLabel}
+                          aria-pressed={isCurrent}
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            applyEffortByIndex(idx, true)
+                          }}
+                          style={{
+                            left: `calc(17px + (100% - 34px) * ${stopProgress})`,
+                          }}
+                          className="group absolute top-1/2 z-[2] grid size-[34px] -translate-x-1/2 -translate-y-1/2 cursor-pointer place-items-center rounded-full focus:outline-none"
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={cn(
+                              "size-[5px] rounded-full transition-transform duration-150 group-hover:scale-125",
+                              isFilled
+                                ? "bg-white/60"
+                                : "bg-muted-ink/45 group-hover:bg-ink/70"
+                            )}
+                          />
+                        </button>
+                      )
+                    })}
+
+                    <div
+                      aria-hidden="true"
+                      data-testid="effort-slider-thumb"
+                      className={cn(
+                        "pointer-events-none absolute top-0 z-[3] size-[34px] rounded-full border border-hairline/40 bg-white shadow-rayu-1 transition-[left,transform] duration-150",
+                        isDragging && "scale-[1.04]"
+                      )}
+                      style={{
+                        left: `calc((100% - 34px) * ${progress})`,
+                      }}
+                    />
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between px-1.5 text-[10.5px] font-medium text-muted-ink">
+                    {stops.map((stop, idx) => (
+                      <span
+                        key={stop}
+                        className={cn(
+                          "transition-colors",
+                          idx === effortIndex && "text-brand-text"
+                        )}
+                      >
+                        {formatEffortLabel(stop, "tick")}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div
+                  data-testid="effort-fixed-note"
+                  className="rounded-lg border border-hairline-soft bg-inset px-3 py-2 text-center text-xs text-muted-ink"
+                >
+                  Reasoning effort is fixed for this model.
+                </div>
+              )}
             </div>
           ) : (
-            <div
-              data-testid="model-list-card"
-              className="w-[286px] p-1.5"
-            >
+            <div data-testid="model-list-card" className="w-[300px] p-1.5">
               <div className="flex items-center justify-between px-1.5 pt-1 pb-2">
-                <button
-                  type="button"
-                  onClick={() => setStage("effort")}
-                  data-testid="model-list-back-btn"
-                  aria-label="Back to reasoning effort"
-                  className="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[12.5px] font-medium tracking-[-0.01em] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
-                >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
-                  <span>Select model</span>
-                </button>
+                {supportsEffort ? (
+                  <button
+                    type="button"
+                    onClick={() => setStage("effort")}
+                    data-testid="model-list-back-btn"
+                    aria-label="Back to reasoning effort"
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-[12.5px] font-medium tracking-[-0.01em] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+                  >
+                    <ChevronLeft className="size-3.5" aria-hidden="true" />
+                    <span>Select model</span>
+                  </button>
+                ) : (
+                  <span
+                    data-testid="model-list-heading"
+                    className="px-1.5 py-1 text-[12.5px] font-medium tracking-[-0.01em] text-muted-ink"
+                  >
+                    Select model
+                  </span>
+                )}
                 {onRefreshModels ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -463,41 +594,62 @@ export function ModelEffortPopover({
                   aria-label="Select model"
                   className="flex flex-col gap-0.5 pr-2 pl-0.5"
                 >
-                  {catalog.map((model) => {
-                    const isSelected = model.id === modelId
-                    return (
-                      <button
-                        key={model.id}
-                        type="button"
-                        role="option"
-                        aria-selected={isSelected}
-                        data-model-id={model.id}
-                        onClick={() => handleSelectModel(model)}
-                        className={cn(
-                          "flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left transition-colors hover:bg-hover",
-                          isSelected && "border-hairline bg-active"
-                        )}
-                      >
-                        <span className="flex min-w-0 flex-col gap-0.5">
-                          <span className="truncate text-sm leading-snug font-medium text-ink">
-                            {model.label}
-                          </span>
-                          {model.subtitle ? (
-                            <span className="truncate text-xs leading-tight text-muted-ink">
-                              {model.subtitle}
-                            </span>
-                          ) : null}
-                        </span>
-                        <Check
+                  {catalog.length === 0 ? (
+                    <div className="px-3 py-6 text-center text-xs text-muted-ink">
+                      No discovered models yet. Refresh to query the daemon.
+                    </div>
+                  ) : (
+                    catalog.map((model) => {
+                      const isSelected = model.id === (activeModel?.id ?? modelId)
+                      const ctxLabel = formatContextWindow(model.contextWindow)
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          data-model-id={model.id}
+                          onClick={() => handleSelectModel(model)}
                           className={cn(
-                            "size-[15px] shrink-0 text-ink transition-opacity duration-150",
-                            isSelected ? "opacity-100" : "opacity-0"
+                            "flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[10px] border border-transparent px-3 py-2 text-left transition-colors hover:bg-hover",
+                            isSelected && "border-hairline bg-active"
                           )}
-                          aria-hidden="true"
-                        />
-                      </button>
-                    )
-                  })}
+                        >
+                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate text-sm leading-snug font-medium text-ink">
+                                {model.label}
+                              </span>
+                              <span className="shrink-0 font-mono text-[10.5px] text-muted-ink">
+                                {model.provider}
+                              </span>
+                              {ctxLabel ? (
+                                <span className="shrink-0 font-mono text-[10.5px] text-muted-ink tabular-nums">
+                                  {ctxLabel}
+                                </span>
+                              ) : null}
+                            </span>
+                            {model.unavailableReason ? (
+                              <span className="truncate text-xs leading-tight text-warn">
+                                {model.unavailableReason}
+                              </span>
+                            ) : model.subtitle ? (
+                              <span className="truncate text-xs leading-tight text-muted-ink">
+                                {model.subtitle}
+                              </span>
+                            ) : null}
+                          </span>
+                          <Check
+                            className={cn(
+                              "size-[15px] shrink-0 text-ink transition-opacity duration-150",
+                              isSelected ? "opacity-100" : "opacity-0"
+                            )}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      )
+                    })
+                  )}
                 </div>
               </ScrollArea>
             </div>

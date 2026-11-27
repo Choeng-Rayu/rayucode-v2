@@ -3,7 +3,12 @@ import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { RayucodeClient, type SdkTool, type Transport } from "@rayu-dev/rayucode-sdk"
+import {
+  HarnessError,
+  RayucodeClient,
+  type SdkTool,
+  type Transport,
+} from "@rayu-dev/rayucode-sdk"
 
 import {
   RayuDaemonClient,
@@ -28,6 +33,7 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
   })
 
   it("coalesces concurrent checkConnection/getOrProbeStatus calls to a single launch without sticking reconnecting=true", async () => {
+    process.env.RAYU_BINARY = process.execPath
     fs.writeFileSync(
       path.join(tmpHome, "rayu-auth.json"),
       JSON.stringify({ accessToken: "tok", refreshToken: "ref" })
@@ -247,11 +253,11 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       .fn()
       // 1st call: plan succeeds immediately
       .mockResolvedValueOnce({ v: 1, ev: "ok" })
-      // 2nd call: acceptEdits returns busy
+      // 2nd call: acceptEdits returns structured busy
       .mockResolvedValueOnce({
         v: 1,
         ev: "error",
-        code: "invalid_request",
+        code: "busy",
         message: "Session is busy",
       })
       // 3rd call (retry on turn_done): succeeds
@@ -301,7 +307,7 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
 
     // Busy response queues retry until turn_done
     const res2 = await daemon.setPermissionMode("sess_perm_1", "acceptEdits")
-    expect(res2).toEqual({ ok: true })
+    expect(res2).toEqual({ ok: true, code: "busy" })
     expect(request).toHaveBeenNthCalledWith(2, {
       req: "set_permission_mode",
       session_id: "sess_perm_1",
@@ -328,9 +334,13 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
       mode: "accept_edits",
     })
 
-    // Hard rejection surfaces { ok: false, error }
+    // Hard rejection surfaces { ok: false, code, error }
     const resErr = await daemon.setPermissionMode("sess_perm_2", "orchestrator")
-    expect(resErr).toEqual({ ok: false, error: "Unsupported permission mode" })
+    expect(resErr).toEqual({
+      ok: false,
+      code: "invalid_request",
+      error: "Unsupported permission mode",
+    })
   })
 
   it("injects supports_permissions: true into outgoing hello frames via transport wrapper", () => {
@@ -477,6 +487,111 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
     )
     expect(unsupportedAction.ok).toBe(false)
     expect(unsupportedAction.message).toMatch(/does not support file_changes/i)
+  })
+
+  it("refreshes and emits todo_state on todo/batch tool_done events and degrades cleanly without todo_state capability", async () => {
+    const todoState = vi.fn().mockResolvedValue({
+      todos: [
+        { id: "1", content: "Inspect schema", status: "done" },
+        {
+          id: "2",
+          name: "Render checklist",
+          status: "running",
+          active_form: "Rendering checklist",
+        },
+        { id: "3", title: "Skipped item", status: "canceled" },
+      ],
+    })
+    const liveClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["todo_state"],
+      supports: (cap: string) => cap === "todo_state",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_todo_1",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      todoState,
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(liveClient)
+    const daemon = new RayuDaemonClient("/tmp/todo-live-rayu.sock")
+    const emitted: Array<Record<string, unknown>> = []
+    daemon.on("harness-event", (frame: Record<string, unknown>) => {
+      emitted.push(frame)
+    })
+
+    await daemon.attachSession("sess_todo_1")
+
+    const initial = await daemon.getTodos("sess_todo_1")
+    expect(initial.todos).toEqual([
+      { id: "1", content: "Inspect schema", status: "completed" },
+      {
+        id: "2",
+        content: "Render checklist",
+        status: "in_progress",
+        activeForm: "Rendering checklist",
+      },
+      { id: "3", content: "Skipped item", status: "cancelled" },
+    ])
+
+    ;(liveClient as unknown as EventEmitter).emit("event", {
+      ev: "tool_done",
+      session_id: "sess_todo_1",
+      call_id: "c_todo_1",
+      name: "todo",
+      output: "ok",
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    let todoEvents = emitted.filter((f) => f.ev === "todo_state")
+    expect(todoEvents.length).toBe(1)
+    expect(todoEvents[0]).toMatchObject({
+      ev: "todo_state",
+      session_id: "sess_todo_1",
+      state: {
+        todos: initial.todos,
+      },
+    })
+
+    // Batch tool_done containing a todo sub-call also triggers todoState pull
+    ;(liveClient as unknown as EventEmitter).emit("event", {
+      ev: "tool_done",
+      session_id: "sess_todo_1",
+      call_id: "c_batch_1",
+      name: "batch",
+      tool_input: { tool_calls: [{ name: "todo", input: { action: "update" } }] },
+      output: "ok",
+    })
+    await new Promise((r) => setTimeout(r, 10))
+
+    todoEvents = emitted.filter((f) => f.ev === "todo_state")
+    expect(todoEvents.length).toBe(2)
+
+    // Older daemon lacking todo_state capability returns empty safely
+    const legacyClient = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-legacy",
+      capabilities: ["session_tools"],
+      supports: (cap: string) => cap === "session_tools",
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_todo_legacy",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      todoState: vi.fn(),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(legacyClient)
+    const legacyDaemon = new RayuDaemonClient("/tmp/todo-legacy-rayu.sock")
+    await legacyDaemon.attachSession("sess_todo_legacy")
+    expect(await legacyDaemon.getTodos("sess_todo_legacy")).toEqual({
+      sessionId: "sess_todo_legacy",
+      todos: [],
+    })
   })
 
   it("supersedes stale queued getHistory calls during rapid switches without dialing extra sockets or blocking on post-attach sync", async () => {
@@ -754,5 +869,71 @@ describe("RayuDaemonClient startup coalescing & reconnecting state", () => {
         session_id: "sess_drop_1",
       })
     )
+  })
+
+  it("bridges v1.16 getCapabilities, getConfig, patchConfig, and returns structured ErrorCode::Busy / Unsupported without regex scraping", async () => {
+    const mockCaps = {
+      commands: [
+        {
+          name: "compact",
+          description: "Compact session history",
+          category: "session",
+          dispatch: { kind: "api_request", req: "compact" },
+        },
+      ],
+      permission_modes: [
+        { id: "default", label: "Ask", description: "Prompt before edits", is_default: true },
+      ],
+      features: [{ key: "memory", enabled: true, description: "Memory" }],
+    }
+    const mockConfig = {
+      path: "/tmp/.rayu/config.toml",
+      sections: ["provider", "compaction"],
+      values: { "provider.default_model": "claude-sonnet-4-6" },
+      schema: [],
+    }
+    const client = Object.assign(new EventEmitter(), {
+      server: "rayu-harness-v1",
+      capabilities: ["capabilities_v1", "config_v1"],
+      supports: () => true,
+      ping: vi.fn().mockResolvedValue(undefined),
+      attachSession: vi.fn().mockResolvedValue({
+        session_id: "sess_v16",
+        working_dir: "/repo",
+        status: "idle",
+      }),
+      getCapabilities: vi.fn().mockResolvedValue(mockCaps),
+      getConfig: vi.fn().mockResolvedValue(mockConfig),
+      patchConfig: vi.fn().mockResolvedValue(mockConfig),
+      setReasoningEffort: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("busy", "Session is busy")),
+      setModel: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("busy", "Turn in progress")),
+      getFileChanges: vi
+        .fn()
+        .mockRejectedValue(new HarnessError("unsupported", "Not supported")),
+      close: vi.fn(),
+    }) as unknown as RayucodeClient
+
+    vi.spyOn(RayucodeClient, "connect").mockResolvedValue(client)
+
+    const daemon = new RayuDaemonClient("/tmp/v16-test-rayu.sock")
+    expect(await daemon.getCapabilities("sess_v16")).toEqual(mockCaps)
+    expect(await daemon.getConfig(["provider"])).toEqual(mockConfig)
+    expect(await daemon.patchConfig({ "provider.default_model": "gpt-5" })).toEqual({
+      ok: true,
+      state: mockConfig,
+    })
+
+    const effortRes = await daemon.setReasoningEffort("sess_v16", "xhigh")
+    expect(effortRes).toMatchObject({ ok: false, code: "busy" })
+
+    const modelRes = await daemon.setModel("sess_v16", "gpt-5")
+    expect(modelRes).toMatchObject({ ok: false, code: "busy" })
+
+    const fc = await daemon.getFileChanges("sess_v16")
+    expect(fc.files).toEqual([])
   })
 })
