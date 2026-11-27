@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.2
+
+### Added
+
+- **Zero-Setup Cross-Platform Engine Auto-Download & Auto-Update:** Single universal `.vsix` automatically downloads, SHA-256 verifies, and installs the matching `rayu` Rust binary (`linux` x64/arm64, `darwin` arm64/x64, `win32` x64/arm64) into versioned extension storage on VS Code startup (`onStartupFinished`), even before opening the RayuCode sidebar or editor panel.
+- **Automatic Engine Release Updates:** Checks GitHub Releases on startup, immediately on VS Code Marketplace extension updates, and every 4 hours (`rayucode.autoUpdateEngine`), safely staging new versions alongside the running binary and restarting cleanly when idle.
+- **Live Download & Install Progress UI:** Displays `"please wait"` status messages, MB progress, and percentage progress bars across VS Code Notifications, the Status Bar, `AuthWelcomeScreen`, `DaemonBanner`, and `RuntimeDoctorSection`, alongside a one-click **Install / Update Rayu Engine** command (`rayucode.updateEngine`).
+
+### Fixed
+
+- Enabled `rayu api-bridge` across Windows named pipes (`Cargo.toml`, `src/cli/*`), allowing fresh Windows installs to connect without Unix-only restrictions.
+- Honored `RAYU_DEFERRED_AUTH_BOOTSTRAP=1` inside `Command::ApiBridge` so fresh unsigned-in computers can launch the bridge and complete onboarding in VS Code.
+- Captured `api-bridge` startup stderr logs, added `windowsHide: true`, automatically upgraded legacy CLI binaries lacking `api-bridge`, and added a fatal-error cooldown to eliminate infinite `"Connecting to Rayu daemon..."` UI flicker.
+
+## 3.0.1
+
+### Changed
+
+- Slim webview shell, inspector/changes panel cleanup, and Harness API v1.16 protocol sync.
+
 ## 3.0.0
 
 ### Added

@@ -217,28 +217,38 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Connect) => {
             tui_launch::run_client().await?;
         }
-        #[cfg(unix)]
         Some(Command::ApiBridge { api_socket, stdio }) => {
-            super::startup::require_cli_auth_gate()?;
+            // IDE and headless clients launch api-bridge with RAYU_DEFERRED_AUTH_BOOTSTRAP=1
+            // so users on fresh machines can reach onboarding/login in the UI first.
+            if std::env::var_os("RAYU_DEFERRED_AUTH_BOOTSTRAP").is_none() {
+                super::startup::require_cli_auth_gate()?;
+            }
             if stdio {
-                crate::env::set_var("RAYU_NON_INTERACTIVE", "1");
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    spawn_server(
-                        &args.provider,
-                        args.model.as_deref(),
-                        args.provider_profile.as_deref(),
-                    ),
-                )
-                .await
-                .map_err(|_| {
-                    anyhow::anyhow!("api --stdio: timed out starting the rayu server")
-                })??;
-                rayucode_harness_api_server::run_bridge_stdio(
-                    rayucode_harness_api_server::legacy_socket_path(),
-                )
-                .await?;
-                return Ok(());
+                #[cfg(unix)]
+                {
+                    crate::env::set_var("RAYU_NON_INTERACTIVE", "1");
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        spawn_server(
+                            &args.provider,
+                            args.model.as_deref(),
+                            args.provider_profile.as_deref(),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("api --stdio: timed out starting the rayu server")
+                    })??;
+                    rayucode_harness_api_server::run_bridge_stdio(
+                        rayucode_harness_api_server::legacy_socket_path(),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                #[cfg(not(unix))]
+                {
+                    anyhow::bail!("`rayu api-bridge --stdio` is only supported on Unix platforms");
+                }
             }
             // Start the daemon best-effort so SDK users have a working socket;
             // continue if a usable daemon already holds the runtime dir.

@@ -1,3 +1,4 @@
+import path from "node:path";
 import * as vscode from "vscode";
 import {
   AppRouteSchema,
@@ -109,11 +110,19 @@ function dedupeRelativeMentions(uris: readonly vscode.Uri[]): string[] {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const bridgeManager = new BridgeManager();
+  let sessionHub!: SessionHub;
+  const bridgeManager = new BridgeManager({
+    storageDir: path.join(context.globalStorageUri.fsPath, "engine"),
+    extensionVersion: String(
+      (context.extension.packageJSON as { version?: unknown } | undefined)
+        ?.version ?? "",
+    ),
+    isTurnActive: () => sessionHub?.getIsTurnStreaming() ?? false,
+  });
   const gitBridge = new GitChangesBridge(
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   );
-  const sessionHub = new SessionHub(context, bridgeManager, gitBridge);
+  sessionHub = new SessionHub(context, bridgeManager, gitBridge);
   const statusBar = new StatusBarBridge();
   const terminalBridge = new TerminalBridge();
 
@@ -242,6 +251,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })();
   });
 
+  bridgeManager.on("statusChanged", syncStatusBar);
   sessionHub.on("stateChanged", syncStatusBar);
   sessionHub.on(
     "fileChangesUpdated",
@@ -266,6 +276,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
   syncStatusBar();
+  bridgeManager.bootstrapOnStartup();
 
   const injectIntoPreferredSurface = async (
     injection: ComposerInjectionPayload,
@@ -422,6 +433,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(
+    { dispose: () => { bridgeManager.off("statusChanged", syncStatusBar); } },
     authManager,
     bridgeManager,
     sessionHub,
@@ -754,6 +766,19 @@ export function activate(context: vscode.ExtensionContext): void {
         );
       }
     }),
+    vscode.commands.registerCommand("rayucode.updateEngine", async () => {
+      const next = await bridgeManager.updateEngine();
+      if (next.state === "error" || next.error) {
+        void vscode.window.showWarningMessage(
+          `Rayu engine update failed: ${next.error ?? "Unknown error"}`,
+        );
+      } else {
+        void vscode.window.showInformationMessage(
+          next.statusMessage ??
+            `Rayu engine ready${next.managedVersion ? ` (${next.managedVersion})` : ""}.`,
+        );
+      }
+    }),
     vscode.commands.registerCommand("rayucode.statusBarAction", async () => {
       const bgTasks = sessionHub.getBackgroundTasks();
       const runningBg = bgTasks.filter(
@@ -883,6 +908,10 @@ export function activate(context: vscode.ExtensionContext): void {
               label: "$(account) Sign In to RayuCode",
               action: () => vscode.commands.executeCommand("rayucode.signIn"),
             },
+        {
+          label: "$(cloud-download) Install or Update Rayu Engine",
+          action: () => vscode.commands.executeCommand("rayucode.updateEngine"),
+        },
         {
           label: "$(refresh) Reload Daemon & Bridge",
           action: () => vscode.commands.executeCommand("rayucode.reloadDaemon"),

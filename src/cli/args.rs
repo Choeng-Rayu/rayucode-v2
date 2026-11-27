@@ -638,16 +638,15 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Serve the stable harness API on a Unix socket, for SDK clients.
+    /// Serve the stable harness API on a local IPC socket or named pipe, for SDK/IDE clients.
     ///
-    /// This is the endpoint the TypeScript SDK (`@rayu-dev/rayucode-sdk`) connects to. It
-    /// ships in the released binary on purpose: the API is only "generally
-    /// available" if reaching it does not require a Rust toolchain and a
-    /// source checkout.
-    #[cfg(unix)]
+    /// This is the endpoint the TypeScript SDK (`@rayu-dev/rayucode-sdk`) and VS Code extension
+    /// connect to. It ships in the released binary on purpose: the API is only "generally
+    /// available" if reaching it does not require a Rust toolchain and a source checkout.
     #[command(name = "api-bridge", alias = "api")]
     ApiBridge {
-        /// Path of the API socket to listen on (default: $XDG_RUNTIME_DIR/rayu-api.sock)
+        /// Path of the API socket or Windows named pipe to listen on
+        /// (default: $XDG_RUNTIME_DIR/rayu-api.sock or \\.\pipe\rayu-api)
         ///
         /// Named `--api-socket` rather than `--socket` because the global
         /// `--socket` already selects the *internal daemon* socket, and clap
@@ -656,7 +655,7 @@ pub(crate) enum Command {
         #[arg(long = "api-socket")]
         api_socket: Option<String>,
 
-        /// Serve one API connection on stdin/stdout (for SSH SDK clients).
+        /// Serve one API connection on stdin/stdout (Unix only; for SSH SDK clients).
         /// Starts the shared daemon if needed; does not create an API socket.
         #[arg(long, conflicts_with = "api_socket")]
         stdio: bool,

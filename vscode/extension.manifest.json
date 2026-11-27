@@ -2,7 +2,7 @@
   "name": "rayucode",
   "displayName": "RayuCode",
   "description": "RayuCode Rust AI coding engine and multi-agent mission control for VS Code.",
-  "version": "3.0.1",
+  "version": "3.0.2",
   "publisher": "RayuCode",
   "icon": "media/rayu-fox.png",
   "homepage": "https://rayucode.com",
@@ -84,13 +84,19 @@
           "type": "string",
           "scope": "machine",
           "default": "",
-          "description": "Absolute path to the rayu CLI binary. Leave empty to auto-discover from ~/.local/bin/rayu, ~/.rayu/builds/current/rayu, or PATH."
+          "description": "Absolute path to the rayu CLI binary. Leave empty to auto-discover or automatically download the official Rayu engine binary into extension storage."
         },
         "rayucode.autoStartBridge": {
           "type": "boolean",
           "scope": "machine",
           "default": true,
           "description": "Automatically start `rayu --no-update api-bridge` when no running bridge is listening on the API socket."
+        },
+        "rayucode.autoUpdateEngine": {
+          "type": "boolean",
+          "scope": "machine",
+          "default": true,
+          "description": "Automatically check GitHub Releases for newer Rayu engine binaries on startup, extension updates, and every 4 hours, and install verified updates when idle."
         },
         "rayucode.theme": {
           "type": "string",
@@ -345,6 +351,12 @@
         "title": "Reload Daemon / Restart API Bridge",
         "category": "RayuCode",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "rayucode.updateEngine",
+        "title": "Install or Update Rayu Engine",
+        "category": "RayuCode",
+        "icon": "$(cloud-download)"
       },
       {
         "command": "rayucode.statusBarAction",

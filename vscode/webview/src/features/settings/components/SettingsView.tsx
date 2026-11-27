@@ -165,6 +165,8 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
     isPingingDaemon,
     reloadDaemonAndBridge,
     isReloadingDaemon,
+    updateEngine,
+    isUpdatingEngine,
     reconnectDaemon,
     openOutputLog,
     updateRuntime,
@@ -624,6 +626,8 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
                     isPingingDaemon={isPingingDaemon}
                     onReloadDaemonAndBridge={reloadDaemonAndBridge}
                     isReloadingDaemon={isReloadingDaemon}
+                    onUpdateEngine={updateEngine}
+                    isUpdatingEngine={isUpdatingEngine}
                     onReconnectDaemon={reconnectDaemon}
                     onOpenOutputLog={openOutputLog}
                     onUpdateRuntime={updateRuntime}

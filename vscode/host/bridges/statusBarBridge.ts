@@ -81,6 +81,33 @@ export class StatusBarBridge implements vscode.Disposable {
     ).length;
     this.activeRunningTasks = runningCount;
 
+    const isInstallingOrUpdating =
+      daemonStatus.state === "downloading" ||
+      (daemonStatus.downloadPhase !== undefined &&
+        daemonStatus.downloadPhase !== "starting");
+
+    if (isInstallingOrUpdating) {
+      const pct =
+        daemonStatus.downloadProgress !== undefined
+          ? ` ${daemonStatus.downloadProgress}%`
+          : "";
+      const ver = daemonStatus.downloadVersion
+        ? ` ${daemonStatus.downloadVersion}`
+        : "";
+      const verb = daemonStatus.state === "connected" ? "Updating" : "Installing";
+      this.item.text = `$(sync~spin) ${verb} Rayu${pct}`;
+      this.item.backgroundColor = undefined;
+      this.item.tooltip = new vscode.MarkdownString(
+        [
+          "**RayuCode Engine — Please Wait**",
+          `- ${daemonStatus.statusMessage ?? `Downloading Rayu engine${ver} — please wait...`}`,
+          "- RayuCode will connect automatically once installation completes.",
+          "- *Click for RayuCode Quick Actions*",
+        ].join("\n"),
+      );
+      return;
+    }
+
     if (daemonStatus.state === "disconnected" || daemonStatus.state === "error") {
       this.item.text = "$(rayucode) Offline";
       this.item.backgroundColor =

@@ -1639,6 +1639,22 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     },
   });
 
+  const updateEngineMutation = useMutation({
+    mutationFn: () => callRpc("daemon.updateEngine"),
+    onSuccess: (nextStatus) => {
+      setDaemonStatus(nextStatus);
+      queryClient.setQueryData(["daemon", "status"], nextStatus);
+      if (nextStatus.error) {
+        setStatusMessage(`Rayu engine update failed: ${nextStatus.error}`);
+      } else {
+        setStatusMessage(
+          nextStatus.statusMessage ??
+            `Rayu engine ready${nextStatus.managedVersion ? ` (${nextStatus.managedVersion})` : ""}.`,
+        );
+      }
+    },
+  });
+
   const openOutputLogMutation = useMutation({
     mutationFn: () => callRpc("daemon.openOutputLog"),
     onSuccess: () => {
@@ -1932,6 +1948,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     isPingingDaemon: pingDaemonMutation.isPending,
     reloadDaemonAndBridge: () => reloadDaemonMutation.mutateAsync(),
     isReloadingDaemon: reloadDaemonMutation.isPending,
+    updateEngine: () => updateEngineMutation.mutateAsync(),
+    isUpdatingEngine: updateEngineMutation.isPending,
     reconnectDaemon: () => reconnectDaemonMutation.mutateAsync(),
     openOutputLog: () => openOutputLogMutation.mutateAsync(),
     updateRuntime: (patch: {

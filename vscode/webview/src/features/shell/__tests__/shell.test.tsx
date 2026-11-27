@@ -1,6 +1,6 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -15,8 +15,10 @@ import {
 import {
   AppShell,
   AuthWelcomeScreen,
+  DaemonBanner,
   EMOJI_PRESETS,
   ProjectIconPicker,
+  StatusBarPill,
   resolveFormFactorFromWidth,
 } from "@/features/shell";
 import {
@@ -356,6 +358,64 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     await waitFor(() => {
       expect(screen.getByText("Rayu Daemon Socket")).toBeTruthy();
     });
+  });
+
+  it("renders downloading progress strip and invokes daemon.updateEngine from offline controls", async () => {
+    useAppStore.setState({
+      daemonStatus: {
+        state: "downloading",
+        capabilities: [],
+        downloadProgress: 42,
+        downloadPhase: "downloading",
+        downloadVersion: "3.1.0",
+        statusMessage: "Downloading Rayu engine 3.1.0 (42%, 12.0 MB / 28.5 MB) — please wait...",
+      },
+    });
+
+    renderWithQuery(
+      <div>
+        <DaemonBanner />
+        <StatusBarPill />
+        <AuthWelcomeScreen />
+      </div>,
+    );
+
+    expect(screen.getByTestId("auth-daemon-downloading-strip")).toBeTruthy();
+    expect(screen.getByTestId("auth-daemon-progress-bar")).toBeTruthy();
+    expect(screen.getByTestId("daemon-banner-progress")).toBeTruthy();
+    expect(screen.getAllByText(/Downloading Rayu engine 3\.1\.0/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("status-bar-pill").textContent).toContain("Installing 42%");
+
+    act(() => {
+      useAppStore.setState({
+        daemonStatus: {
+          state: "error",
+          capabilities: [],
+          error: "Rayu CLI missing",
+        },
+      });
+    });
+
+    fireEvent.click(screen.getByTestId("auth-install-engine"));
+    await waitFor(() => {
+      expect(useAppStore.getState().daemonStatus.state).toBe("connected");
+    });
+
+    // Background release updates keep live sessions connected while showing progress
+    act(() => {
+      useAppStore.setState({
+        daemonStatus: {
+          state: "connected",
+          capabilities: [],
+          downloadProgress: 60,
+          downloadPhase: "downloading",
+          downloadVersion: "3.1.0",
+          statusMessage: "Downloading Rayu engine 3.1.0 (60%) — please wait...",
+        },
+      });
+    });
+    expect(screen.getByTestId("daemon-banner-progress")).toBeTruthy();
+    expect(screen.getByTestId("status-bar-pill").textContent).toContain("Updating 60%");
   });
 
   it("posts beside: true from TopBar and CompactTopBar pop-out actions and focusSidebar on editorPanel surface", () => {

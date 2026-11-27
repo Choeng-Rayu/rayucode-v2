@@ -971,6 +971,7 @@ export interface FeatureRouterBridge {
   ping(): Promise<{ ok: boolean; latencyMs: number; version?: string }>;
   reconnect(): Promise<DaemonStatusView>;
   restart(): Promise<DaemonStatusView>;
+  updateEngine?(): Promise<DaemonStatusView>;
   reloadDaemon(activeSessionId?: string): Promise<{ ok: boolean; message?: string }>;
   openOutputLog(): void;
 }
@@ -1843,6 +1844,10 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "daemon.ping": async () => deps.bridgeManager.ping(),
     "daemon.reconnect": async () => deps.bridgeManager.reconnect(),
     "daemon.restart": async () => deps.bridgeManager.restart(),
+    "daemon.updateEngine": async () =>
+      deps.bridgeManager.updateEngine
+        ? deps.bridgeManager.updateEngine()
+        : deps.bridgeManager.restart(),
     "daemon.reload": async () => {
       const sid = deps.sessionHub.getActiveSessionId();
       if (sid && deps.sessionHub.ensureAttachedClient) {

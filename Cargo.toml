@@ -221,6 +221,7 @@ rayucode-provider-openai-runtime = { path = "crates/rayucode-provider-openai-run
 rayucode-provider-grok-build-runtime = { path = "crates/rayucode-provider-grok-build-runtime" }
 rayucode-provider-rayu-runtime = { path = "crates/rayucode-provider-rayu-runtime" }
 rayucode-selfdev-types = { path = "crates/rayucode-selfdev-types" }
+rayucode-harness-api-server = { path = "crates/rayucode-harness-api-server" }
 
 # Archive extraction (for auto-update)
 tempfile = "3"
@@ -253,12 +254,7 @@ mmdr-size-api = ["rayucode-tui/mmdr-size-api"]
 pdf = ["rayucode-tui/pdf"]
 
 # The harness API bridge ships inside the released binary as `rayu api-bridge`.
-# SDK users must not need a Rust toolchain to reach the API: requiring
-# `cargo run -p rayucode-harness-api-server` made the TypeScript SDK unusable for
-# anyone who installed rayu from a release artifact. Unix-only because the
-# bridge listens on a Unix socket.
-[target.'cfg(unix)'.dependencies]
-rayucode-harness-api-server = { path = "crates/rayucode-harness-api-server" }
+# Cross-platform via `rayucode-transport` (Unix domain sockets on Unix, named pipes on Windows).
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
