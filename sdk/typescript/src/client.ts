@@ -61,6 +61,9 @@ export interface RuntimeInfo {
   sessionId: string;
   provider?: string;
   model?: string;
+  reasoningEffort?: string;
+  authMethod?: string;
+  accountLabel?: string;
   providers: string[];
   routes: ModelRouteInfo[];
 }
@@ -170,6 +173,8 @@ export interface ConnectOptions {
   supportsUserResponse?: boolean;
   /** Enable when this client renders interactive permission_request prompts. */
   supportsPermissions?: boolean;
+  /** Enable when this client renders interactive ask_user_question prompts. */
+  supportsUserQuestions?: boolean;
   /** Supply a custom transport instead of dialing a Unix socket. */
   transport?: Transport;
   /** Milliseconds before a request without a reply rejects. 0 disables. */
@@ -363,6 +368,7 @@ export class RayucodeClient extends EventEmitter {
         client: clientName,
         supports_user_response: options.supportsUserResponse ?? false,
         ...(options.supportsPermissions ? { supports_permissions: true } : {}),
+        ...(options.supportsUserQuestions ? { supports_user_questions: true } : {}),
       });
       if (frame.ev !== "hello_ok") {
         throw new HarnessError("handshake_failed", `unexpected reply: ${frame.ev}`);
@@ -748,7 +754,22 @@ export class RayucodeClient extends EventEmitter {
         else resolve();
       };
       const onEvent = (frame: ServerFrame) => {
-        if (frame.ev === "message_accepted" && frame.session_id === request.session_id) {
+        const sameSession =
+          frame.session_id === request.session_id || frame.session_id === undefined;
+        if (
+          sameSession &&
+          (frame.ev === "message_accepted" ||
+            frame.ev === "turn_start" ||
+            frame.ev === "text_delta" ||
+            frame.ev === "reasoning_delta" ||
+            frame.ev === "thinking_delta" ||
+            frame.ev === "tool_start" ||
+            frame.ev === "tool_call" ||
+            (frame.ev === "session_status" &&
+              (frame.status === "running" ||
+                frame.status === "generating" ||
+                frame.status === "tool_running")))
+        ) {
           finish();
         } else if (strict && frame.ev === "error" && (frame.reply_to === undefined || frame.reply_to === id)) {
           finish(new HarnessError(String(frame.code ?? "internal"), String(frame.message ?? "Prompt failed")));
@@ -759,7 +780,7 @@ export class RayucodeClient extends EventEmitter {
         : undefined);
       const timer = setTimeout(() => finish(strict
         ? new HarnessError("timeout", "Rayu did not confirm the prompt. Check session history before retrying.")
-        : undefined), options.acceptTimeoutMs ?? 10_000);
+        : undefined), options.acceptTimeoutMs ?? 30_000);
       timer.unref?.();
       this.on("event", onEvent);
       this.once("close", onClose);
@@ -910,6 +931,9 @@ export class RayucodeClient extends EventEmitter {
       sessionId: frame.session_id,
       provider: frame.provider,
       model: frame.model,
+      reasoningEffort: frame.reasoning_effort,
+      authMethod: frame.auth_method,
+      accountLabel: frame.account_label,
       providers: [
         ...new Set(
           [frame.provider, ...routes.map((route) => route.provider)].filter(

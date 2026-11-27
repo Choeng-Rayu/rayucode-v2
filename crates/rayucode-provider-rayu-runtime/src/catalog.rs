@@ -606,7 +606,11 @@ impl CatalogCache {
         credential_scope: &str,
     ) -> Result<()> {
         let _gate = self.fetch_gate.lock().await;
-        match fetch_live(route, endpoint).await {
+        let fetched = tokio::time::timeout(Duration::from_secs(25), fetch_live(route, endpoint))
+            .await
+            .map_err(|_| anyhow::anyhow!("Rayu model catalog refresh timed out after 25s"))
+            .and_then(|res| res);
+        match fetched {
             Ok((models, subagent_tiers)) => {
                 save_disk(endpoint, route, credential_scope, &models, &subagent_tiers);
                 self.store_memory(CachedCatalog {

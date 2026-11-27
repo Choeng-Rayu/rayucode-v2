@@ -1,12 +1,5 @@
 import * as React from "react";
-import {
-  Calendar,
-  Globe,
-  Laptop,
-  Mail,
-  Play,
-  Terminal,
-} from "lucide-react";
+import { Calendar, Globe, Laptop, Mail } from "lucide-react";
 
 import {
   Badge,
@@ -308,17 +301,17 @@ export function WorkspaceToolsTab() {
 
             <Button
               type="button"
-              variant="ghost"
+              variant="outline"
               size="xs"
-              onClick={() =>
+              data-testid="browser-open-simple-btn"
+              onClick={() => {
                 postToHost({
                   type: "rayucode.editor.openSimpleBrowser",
-                  url: browser?.activeUrl ?? "http://localhost:5173",
-                })
-              }
+                });
+              }}
             >
-              <Play className="size-3" aria-hidden="true" />
-              <span>VS Code Simple Browser</span>
+              <Globe className="size-3" aria-hidden="true" />
+              <span>Open in VS Code Browser</span>
             </Button>
           </div>
         </section>
@@ -355,8 +348,7 @@ export function WorkspaceToolsTab() {
 
             <p className="mt-3 text-xs leading-relaxed text-muted-ink">
               Provides lid-close keep-awake power override for overnight swarms,
-              macOS Computer Use readiness, and native terminal/open bridge
-              health.
+              macOS Computer Use readiness, and native desktop bridge health.
             </p>
           </div>
 
@@ -377,22 +369,6 @@ export function WorkspaceToolsTab() {
               />
               <span className="text-body">Keep-Awake Power Override</span>
             </div>
-
-            <Button
-              type="button"
-              variant="outline"
-              size="xs"
-              data-testid="companion-open-terminal-btn"
-              onClick={() =>
-                postToHost({
-                  type: "rayucode.editor.openTerminal",
-                  name: "Rayu Companion",
-                })
-              }
-            >
-              <Terminal className="size-3" aria-hidden="true" />
-              <span>Native Terminal</span>
-            </Button>
           </div>
         </section>
       </div>

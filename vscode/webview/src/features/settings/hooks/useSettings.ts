@@ -32,18 +32,22 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc, onHostMessage } from "@/lib/rpc-client";
+import { callRpc, onHostMessage, sendHarnessRequest } from "@/lib/rpc-client";
 
 export type SettingsSectionId =
   | "account"
   | "appearance"
   | "models"
   | "features"
+  | "agents"
+  | "swarm"
+  | "automations"
+  | "remote"
   | "safety"
   | "runtime"
   | "shortcuts";
 
-export type SettingsNavGroup = "Account" | "App" | "System";
+export type SettingsNavGroup = "Account" | "App" | "Workspace" | "System";
 
 export interface SettingsSectionMeta {
   id: SettingsSectionId;
@@ -68,9 +72,9 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
     group: "App",
     label: "Appearance",
     description:
-      "Theme polarity (Auto, Warm Graphite Dark, Warm Paper Light, Match VS Code), Rayu Green & Ocean Blue accent, density",
+      "Theme polarity (Auto, Warm Graphite Dark, Warm Paper Light, Match VS Code), Rayu Green & Ocean Blue accent, density, and VS Code workbench placement",
     keywords:
-      "appearance theme dark light auto match vscode accent rayu green ocean blue density comfortable compact motion",
+      "appearance theme dark light auto match vscode accent rayu green ocean blue density comfortable compact motion workbench placement secondary sidebar editor tab bar icon beside auto-submit",
   },
   {
     id: "models",
@@ -89,6 +93,42 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
       "All 11 Rust runtime [features] flags, Codemode QuickJS sandbox, integration tools, streaming voice dictation & TTS",
     keywords:
       "features voice memory swarm mermaid auto_poke todo_gate_digest todo_gate_diagnostics message_timestamps persist_memory_injections kv_cache_miss_notices check_updates update_channel codemode integration_tools microphone dictation noise suppression",
+  },
+  {
+    id: "agents",
+    group: "Workspace",
+    label: "Agents & Personas",
+    description:
+      "Custom worker personas, default subagent model, and per-role model bindings shared across CLI, Desktop & VS Code",
+    keywords:
+      "agents personas profiles subagent swarm review judge memory ambient roles studio",
+  },
+  {
+    id: "swarm",
+    group: "Workspace",
+    label: "Swarm",
+    description:
+      "Multi-agent mission control, worker roster, shared plan proposals, coordination board, and git worktrees",
+    keywords:
+      "swarm multi-agent coordinator workers roster worktrees message board shared plan mission control",
+  },
+  {
+    id: "automations",
+    group: "Workspace",
+    label: "Automations",
+    description:
+      "Unattended overnight missions, recurring cron schedules, autonomous ambient cycles, and morning handoff reports",
+    keywords:
+      "automations overnight cron schedules ambient cycles morning reports quality gates",
+  },
+  {
+    id: "remote",
+    group: "Workspace",
+    label: "Remote Access",
+    description:
+      "Telegram bot pairing, mobile pending approvals, and Rayu Cloud gateway sessions",
+    keywords:
+      "remote telegram bot pairing qr approvals cloud gateway mobile access",
   },
   {
     id: "safety",
@@ -113,11 +153,19 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
     group: "System",
     label: "Shortcuts",
     description:
-      "Searchable keyboard shortcuts reference (Shift+Tab, Alt+B, Cmd/Ctrl+Shift+P, session & inspector navigation)",
+      "Searchable keyboard shortcuts reference (Shift+Tab, Alt+B, Cmd/Ctrl+Shift+P, and session navigation)",
     keywords:
-      "shortcuts keybindings keyboard shift+tab alt+b cmd ctrl terminal sidebar inspector permissions background",
+      "shortcuts keybindings keyboard shift+tab alt+b cmd ctrl sidebar permissions background",
   },
 ];
+
+const SETTINGS_SECTION_ID_SET = new Set<string>(
+  SETTINGS_SECTIONS.map((sec) => sec.id),
+);
+
+export function isSettingsSectionId(value: string): value is SettingsSectionId {
+  return SETTINGS_SECTION_ID_SET.has(value);
+}
 
 export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
   {
@@ -298,6 +346,10 @@ export const ENTERPRISE_2_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
 function normalizeProviderIdForUi(rawId: string): string {
   switch (rawId.trim().toLowerCase()) {
     case "rayu-cloud":
+    case "rayu cloud":
+    case "rayu cloud gateway":
+    case "rayucode":
+    case "subscription":
     case "rayu":
       return "rayu";
     case "claude":
@@ -316,6 +368,7 @@ function normalizeProviderIdForUi(rawId: string): string {
     case "azure-openai":
     case "azure":
       return "azure";
+    case "google":
     case "google-gemini":
     case "gemini-api":
     case "gemini":
@@ -449,6 +502,86 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
   ShortcutEntryView & { category: string }
 > = [
   {
+    id: "open-from-editor-title",
+    label: "Open / Focus RayuCode (Preferred Surface)",
+    keybinding: "Cmd/Ctrl+Alt+R",
+    when: "global",
+    commandId: "rayucode.openFromEditorTitle",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "open-beside",
+    label: "Open RayuCode Split Beside Editor",
+    keybinding: "Cmd/Ctrl+Alt+Shift+R",
+    when: "global",
+    commandId: "rayucode.openBeside",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "open-workspace-panel",
+    label: "Open Mission Control Editor Panel",
+    keybinding: "Cmd/Ctrl+Shift+R",
+    when: "global",
+    commandId: "rayucode.openWorkspacePanel",
+    category: "Workbench & Placement",
+  },
+  {
+    id: "send-selection",
+    label: "Add Active Editor Selection to RayuCode Context",
+    keybinding: "Cmd/Ctrl+Shift+L",
+    when: "editorTextFocus",
+    commandId: "rayucode.sendSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "open-background-processes",
+    label: "Open Background Processes Drawer",
+    keybinding: "Alt+Shift+B",
+    when: "global",
+    commandId: "rayucode.openBackgroundProcesses",
+    category: "Workspace & Navigation",
+  },
+  {
+    id: "add-to-context",
+    label: "Add File(s) to RayuCode Context (Explorer & Editor Tab)",
+    keybinding: "Context Menu",
+    when: "explorerResourceScheme == file",
+    commandId: "rayucode.addToContext",
+    category: "Context Actions",
+  },
+  {
+    id: "explain-selection",
+    label: "Explain Selection with RayuCode",
+    keybinding: "Editor Menu",
+    when: "editorHasSelection",
+    commandId: "rayucode.explainSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "refactor-selection",
+    label: "Refactor / Fix Selection with RayuCode",
+    keybinding: "Editor Menu",
+    when: "editorHasSelection",
+    commandId: "rayucode.refactorSelection",
+    category: "Context Actions",
+  },
+  {
+    id: "fix-diagnostic",
+    label: "Fix Error / Diagnostic with RayuCode (Quick Fix)",
+    keybinding: "Cmd/Ctrl+.",
+    when: "editorTextFocus",
+    commandId: "rayucode.fixDiagnostic",
+    category: "Context Actions",
+  },
+  {
+    id: "ask-terminal",
+    label: "Ask RayuCode about Terminal Output",
+    keybinding: "Terminal Menu",
+    when: "terminalFocus",
+    commandId: "rayucode.askTerminal",
+    category: "Context Actions",
+  },
+  {
     id: "cycle-permission-mode",
     label: "Cycle Permission Mode (Ask / Auto-edit / Plan / Full Manage / Orchestrator)",
     keybinding: "Shift+Tab",
@@ -481,14 +614,6 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
     category: "Workspace & Navigation",
   },
   {
-    id: "open-integrated-terminal",
-    label: "Open Native VS Code Integrated Terminal",
-    keybinding: "Cmd/Ctrl+J",
-    when: "global",
-    commandId: "workbench.action.terminal.toggleTerminal",
-    category: "Workspace & Navigation",
-  },
-  {
     id: "search-sessions",
     label: "Cross-Tool Session Search (Rayu, Claude, Codex, Cursor, OpenCode, Pi)",
     keybinding: "Cmd/Ctrl+K",
@@ -511,14 +636,6 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
     when: "rayucode.focused",
     commandId: "rayucode.navigateForward",
     category: "Workspace & Navigation",
-  },
-  {
-    id: "restore-clipped-chat",
-    label: "Restore Chat Session Canvas from Full-Width Inspector",
-    keybinding: "Cmd/Ctrl+1",
-    when: "rayucode.inspectorFullView",
-    commandId: "rayucode.restoreChatCanvas",
-    category: "Inspector & Review",
   },
   {
     id: "send-prompt",
@@ -612,6 +729,10 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
+  const storeSettingsSection = useAppStore((s) => s.activeSettingsSection);
+  const setStoreSettingsSection = useAppStore(
+    (s) => s.setActiveSettingsSection,
+  );
   const daemonStatusFromStore = useAppStore((s) => s.daemonStatus);
   const setDaemonStatus = useAppStore((s) => s.setDaemonStatus);
   const setAccountStatus = useAppStore((s) => s.setAccountStatus);
@@ -619,8 +740,32 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
 
-  const [activeSection, setActiveSection] =
-    React.useState<SettingsSectionId>(initialSection);
+  const resolvedInitialSection: SettingsSectionId =
+    initialSection !== "account"
+      ? initialSection
+      : isSettingsSectionId(storeSettingsSection)
+        ? storeSettingsSection
+        : "account";
+  const [activeSection, setActiveSectionState] =
+    React.useState<SettingsSectionId>(resolvedInitialSection);
+  const prevStoreSectionRef = React.useRef(storeSettingsSection);
+
+  React.useEffect(() => {
+    if (prevStoreSectionRef.current === storeSettingsSection) return;
+    prevStoreSectionRef.current = storeSettingsSection;
+    if (isSettingsSectionId(storeSettingsSection)) {
+      setActiveSectionState(storeSettingsSection);
+    }
+  }, [storeSettingsSection]);
+
+  const setActiveSection = React.useCallback(
+    (section: SettingsSectionId) => {
+      prevStoreSectionRef.current = section;
+      setActiveSectionState(section);
+      setStoreSettingsSection(section);
+    },
+    [setStoreSettingsSection],
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [analyticsRange, setAnalyticsRange] = React.useState<"7d" | "30d">(
@@ -629,8 +774,29 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const [analyticsGroupBy, setAnalyticsGroupBy] = React.useState<
     "feature" | "model"
   >("feature");
+  const storeDefaultPermissionMode = useAppStore(
+    (s) => s.defaultPermissionMode,
+  );
+  const setStoreDefaultPermissionMode = useAppStore(
+    (s) => s.setDefaultPermissionMode,
+  );
   const [defaultPermissionMode, setDefaultPermissionModeState] =
-    React.useState<PermissionModeId>("default");
+    React.useState<PermissionModeId>(storeDefaultPermissionMode);
+  React.useEffect(() => {
+    setDefaultPermissionModeState(storeDefaultPermissionMode);
+  }, [storeDefaultPermissionMode]);
+  const defaultPermissionQuery = useQuery(
+    queryOptions({
+      queryKey: ["settings", "permission", "default"] as const,
+      queryFn: () => callRpc("settings.permission.getDefault"),
+    }),
+  );
+  React.useEffect(() => {
+    if (defaultPermissionQuery.data?.mode) {
+      setDefaultPermissionModeState(defaultPermissionQuery.data.mode);
+      setStoreDefaultPermissionMode(defaultPermissionQuery.data.mode);
+    }
+  }, [defaultPermissionQuery.data?.mode, setStoreDefaultPermissionMode]);
   const [doctorResults, setDoctorResults] = React.useState<DoctorCheckView[]>(
     [],
   );
@@ -773,6 +939,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       return normalized;
     },
@@ -846,9 +1018,15 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         const roleOverrides = DEFAULT_5_ROLE_OVERRIDES.map(
           (def) => byRole.get(def.role) ?? def,
         );
+        const fallbackRoute =
+          res.routes?.find((r) => r.available !== false) ?? res.routes?.[0];
         return {
           ...res,
-          defaultModel: res.defaultModel ?? "claude-sonnet-4-5",
+          defaultModel:
+            res.defaultModel ??
+            fallbackRoute?.modelSpec ??
+            fallbackRoute?.model ??
+            "rayu:claude-sonnet-4-5",
           roleOverrides,
           swarmAllowlist: res.swarmAllowlist ?? [
             "claude-opus-4-5",
@@ -1074,6 +1252,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -1110,6 +1294,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -1151,6 +1341,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         queryKey: ["settings", "providers"],
       });
       void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       if (providerId === "rayu") {
         void queryClient.invalidateQueries({
@@ -1176,8 +1372,23 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         sessionId: activeSessionId ?? undefined,
       }),
     onSuccess: (res) => {
+      if (res.routes && res.routes.length > 0) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev ? { ...prev, routes: res.routes } : prev,
+        );
+      }
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "providers"],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
       setStatusMessage(
-        `Refreshed live model discovery catalog (${res.routeCount ?? 38} routes discovered).`,
+        `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
       );
     },
   });
@@ -1194,6 +1405,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, serviceTier: tier } : prev,
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Service tier updated to ${tier}.`);
     },
   });
@@ -1210,6 +1424,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, cacheTtl: ttl } : prev,
       );
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Prompt KV-Cache TTL updated to ${ttl}.`);
     },
   });
@@ -1331,14 +1548,43 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
 
   const setPermissionModeMutation = useMutation({
     mutationFn: async (mode: PermissionModeId) => {
+      const previous = defaultPermissionMode;
       setDefaultPermissionModeState(mode);
-      return callRpc("sessions.setPermissionMode", {
-        sessionId: activeSessionId ?? "ses_vscode_shell",
-        mode,
-      });
+      setStoreDefaultPermissionMode(mode);
+      try {
+        const res = await callRpc("settings.permission.setDefault", {
+          mode,
+          applyToActiveSession: Boolean(activeSessionId),
+        });
+        if (!res.ok) {
+          setDefaultPermissionModeState(previous);
+          setStoreDefaultPermissionMode(previous);
+          throw new Error("RayuCode rejected the permission mode.");
+        }
+        if (activeSessionId) {
+          useAppStore
+            .getState()
+            .setSessionPrefs(activeSessionId, { permissionMode: mode });
+        }
+        return res;
+      } catch (err) {
+        setDefaultPermissionModeState(previous);
+        setStoreDefaultPermissionMode(previous);
+        throw err;
+      }
     },
     onSuccess: (_res, mode) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "permission", "default"],
+      });
       setStatusMessage(`Default permission mode set to ${mode}.`);
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to update default permission mode.",
+      );
     },
   });
 
@@ -1390,6 +1636,22 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
       setStatusMessage("Reconnected to Rayu Daemon socket.");
+    },
+  });
+
+  const updateEngineMutation = useMutation({
+    mutationFn: () => callRpc("daemon.updateEngine"),
+    onSuccess: (nextStatus) => {
+      setDaemonStatus(nextStatus);
+      queryClient.setQueryData(["daemon", "status"], nextStatus);
+      if (nextStatus.error) {
+        setStatusMessage(`Rayu engine update failed: ${nextStatus.error}`);
+      } else {
+        setStatusMessage(
+          nextStatus.statusMessage ??
+            `Rayu engine ready${nextStatus.managedVersion ? ` (${nextStatus.managedVersion})` : ""}.`,
+        );
+      }
     },
   });
 
@@ -1536,6 +1798,14 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, defaultModel: model } : prev,
       );
+      sendHarnessRequest({
+        req: "set_model",
+        session_id: activeSessionId ?? undefined,
+        model,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
       setStatusMessage(`Default model route set to ${model}.`);
     },
     [activeSessionId, configSupported, patchConfig, queryClient],
@@ -1578,7 +1848,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     filteredSections,
     statusMessage,
     clearStatusMessage: () => setStatusMessage(null),
-    goBackToWorkspace: () => setActiveRoute("home"),
+    goBackToWorkspace: () =>
+      setActiveRoute(activeSessionId ? "workspace" : "home"),
 
     // Data
     account: accountQuery.data ?? null,
@@ -1677,6 +1948,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     isPingingDaemon: pingDaemonMutation.isPending,
     reloadDaemonAndBridge: () => reloadDaemonMutation.mutateAsync(),
     isReloadingDaemon: reloadDaemonMutation.isPending,
+    updateEngine: () => updateEngineMutation.mutateAsync(),
+    isUpdatingEngine: updateEngineMutation.isPending,
     reconnectDaemon: () => reconnectDaemonMutation.mutateAsync(),
     openOutputLog: () => openOutputLogMutation.mutateAsync(),
     updateRuntime: (patch: {

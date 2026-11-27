@@ -1,6 +1,12 @@
 // Comprehensive typed IPC client with Live Electron + RayuCode Harness SDK wiring
 // Shared contract between Electron window.rayu.*, Vite browser preview, and Vitest
 
+import {
+  normalizeTodoItems,
+  type SessionTodoItem,
+} from "@rayu-dev/rayucode-session-core/client"
+
+import { useAppStore } from "./app-store"
 import { findMcpBlueprint, REAL_MCP_BLUEPRINTS } from "./mcp-registry"
 
 import {
@@ -842,6 +848,43 @@ export interface TelegramState {
   daemonError?: string | null
 }
 
+export type AgentRoleId = "swarm" | "review" | "judge" | "memory" | "ambient"
+
+export interface AgentProfileItem {
+  name: string
+  model: string
+  description: string
+  effort: string | null
+  scope: "global" | "session"
+}
+
+export interface AgentsRouteOption {
+  id: string
+  label: string
+  provider: string
+  model: string
+  modelSpec: string
+  available: boolean
+}
+
+export interface AgentsState {
+  sessionId: string | null
+  subagentModel: string | null
+  inheritModel: string | null
+  defaults: Record<AgentRoleId, string | null>
+  overrides: Record<AgentRoleId, string | null>
+  effective: Record<AgentRoleId, string | null>
+  profiles: AgentProfileItem[]
+  globalProfiles: AgentProfileItem[]
+  sessionProfiles: AgentProfileItem[]
+  swarmAllowlist: string[]
+  models: string[]
+  routes: AgentsRouteOption[]
+  configPath: string
+  daemonConnected: boolean
+  daemonError: string | null
+}
+
 export interface SettingsState {
   account: {
     name: string
@@ -887,6 +930,62 @@ export interface DaemonStatus {
 // Realistic Prototype Mock State (1:1 with prototype/*.html & prototype/js/app.js)
 // ============================================================================
 
+// Engine-derived effort ladders (aligned 1:1 with crates/rayucode-provider-core/src/reasoning.rs
+// & crates/rayucode-provider-core/src/anthropic.rs, minus TUI-only `swarm` sentinel).
+const RAYU_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+const ANTHROPIC_FULL_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+const ANTHROPIC_NO_XHIGH_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "max",
+]
+const OPENAI_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+const OPENAI_PRO_FALLBACK_EFFORTS: readonly string[] = [
+  "medium",
+  "high",
+  "xhigh",
+]
+const DEEPSEEK_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "max",
+]
+const OPENROUTER_FALLBACK_EFFORTS: readonly string[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]
+
 const MOCK_MODELS: ModelOption[] = [
   {
     id: "default",
@@ -894,26 +993,112 @@ const MOCK_MODELS: ModelOption[] = [
     subtitle: "Recommended set of models",
     provider: "rayu",
     recommended: true,
+    supportedEfforts: [...RAYU_FALLBACK_EFFORTS],
+    defaultEffort: "low",
   },
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic" },
-  { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", provider: "openai" },
-  { id: "gpt-6-astra", label: "GPT-6 Astra", provider: "openai" },
-  { id: "claude-opus-5", label: "Claude Opus 5", provider: "anthropic" },
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1", provider: "anthropic" },
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5", provider: "anthropic" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6", provider: "anthropic" },
+  {
+    id: "claude-opus-5-5",
+    label: "Claude Opus 5.5",
+    provider: "anthropic",
+    supportedEfforts: [...ANTHROPIC_FULL_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "gpt-6-astra",
+    label: "GPT-6 Astra",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "claude-opus-5",
+    label: "Claude Opus 5",
+    provider: "anthropic",
+    supportedEfforts: [...ANTHROPIC_FULL_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "claude-fable-5-1",
+    label: "Claude Fable 5.1",
+    provider: "anthropic",
+    supportedEfforts: [...ANTHROPIC_FULL_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "claude-sonnet-5",
+    label: "Claude Sonnet 5",
+    provider: "anthropic",
+    supportedEfforts: [...ANTHROPIC_FULL_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "claude-sonnet-4-6",
+    label: "Claude Sonnet 4.6",
+    provider: "anthropic",
+    supportedEfforts: [...ANTHROPIC_NO_XHIGH_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", provider: "anthropic" },
-  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", provider: "openai" },
-  { id: "gpt-5.6-pro", label: "GPT-5.6 Pro", provider: "openai" },
-  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", provider: "openai" },
-  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", provider: "openai" },
+  {
+    id: "gpt-5.6-sol",
+    label: "GPT-5.6 Sol",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "gpt-5.6-pro",
+    label: "GPT-5.6 Pro",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_PRO_FALLBACK_EFFORTS],
+    defaultEffort: "high",
+  },
+  {
+    id: "gpt-5.6-terra",
+    label: "GPT-5.6 Terra",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
+  {
+    id: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    provider: "openai",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", provider: "google" },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", provider: "google" },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", provider: "deepseek" },
+  {
+    id: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    provider: "deepseek",
+    supportedEfforts: [...DEEPSEEK_FALLBACK_EFFORTS],
+    defaultEffort: "medium",
+  },
   { id: "kimi-k2.5", label: "Kimi K2.5", provider: "moonshot" },
-  { id: "gpt-oss-120b", label: "GPT-OSS 120B", provider: "openrouter" },
+  {
+    id: "gpt-oss-120b",
+    label: "GPT-OSS 120B",
+    provider: "openrouter",
+    supportedEfforts: [...OPENROUTER_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
   { id: "minimax-m2.7", label: "MiniMax M2.7", provider: "minimax" },
-  { id: "GLM-5.1", label: "GLM-5.1", provider: "zhipu" },
+  {
+    id: "GLM-5.1",
+    label: "GLM-5.1",
+    provider: "zhipu",
+    supportedEfforts: [...OPENAI_FALLBACK_EFFORTS],
+    defaultEffort: "low",
+  },
 ]
 
 const MOCK_PERMISSION_MODES: PermissionModeOption[] = [
@@ -2871,6 +3056,8 @@ export interface RayuCloudModelEntry {
   description?: string
   contextWindow?: number
   supportsReasoning?: boolean
+  supportedEfforts?: string[]
+  defaultEffort?: string
 }
 
 export interface RayuAuthState {
@@ -2974,6 +3161,8 @@ export interface RayuBridgeApi {
     getRuntimeInfo?: (sessionId: string) => Promise<{
       provider?: string
       model?: string
+      reasoningEffort?: string
+      reasoning_effort?: string
       routes?: HarnessModelRouteLike[]
     }>
     setModel?: (
@@ -3013,6 +3202,13 @@ export interface RayuBridgeApi {
       action: FileChangeActionKind,
       opts?: { path?: string; force?: boolean }
     ) => Promise<FileChangeActionResponse>
+  }
+  todos?: {
+    get?: (
+      sessionId: string
+    ) => Promise<
+      { sessionId: string; todos: SessionTodoItem[] } | SessionTodoItem[]
+    >
   }
   workspace?: {
     getInfo?: () => Promise<WorkspaceInfo>
@@ -3279,6 +3475,7 @@ export interface RayuBridgeApi {
       sessionId: string
       model: string
       messages: CloudChatMessage[]
+      reasoningEffort?: string
     }) => Promise<{ ok: boolean }>
     cancelStream?: (sessionId: string) => Promise<{ ok: boolean }>
   }
@@ -3397,6 +3594,33 @@ export interface RayuBridgeApi {
       chatId?: string
     }>
   }
+  agents?: {
+    getState?: (sessionId?: string) => Promise<AgentsState>
+    setRoleModel?: (input: {
+      role: AgentRoleId
+      model: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    setSubagentModel?: (input: {
+      model: string
+      scope?: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    upsertProfile?: (input: {
+      name: string
+      model: string
+      effort?: string | null
+      description?: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+    deleteProfile?: (input: {
+      name: string
+      scope: "global" | "session"
+      sessionId?: string
+    }) => Promise<AgentsState>
+  }
 }
 
 declare global {
@@ -3451,17 +3675,141 @@ let lastActiveHarnessSessionId: string | null = null
 let lastKnownAuthState: RayuAuthState | null = null
 let lastListedModelOptions: ModelOption[] = []
 const lastSyncedModelBySession = new Map<string, string>()
+const lastSyncedEffortBySession = new Map<string, string>()
+const pendingEffortBySession = new Map<string, string>()
+
+function isLiveHarnessSessionId(sessionId?: string | null): sessionId is string {
+  return Boolean(sessionId && sessionId.trim().length > 0 && !sessionId.startsWith("ses_"))
+}
+
+async function resolveLiveHarnessSessionId(
+  explicitSessionId?: string | null
+): Promise<string | null> {
+  if (isLiveHarnessSessionId(explicitSessionId)) {
+    lastActiveHarnessSessionId = explicitSessionId
+    return explicitSessionId
+  }
+  const activeSid = useAppStore.getState().activeSessionId
+  if (isLiveHarnessSessionId(activeSid)) {
+    lastActiveHarnessSessionId = activeSid
+    return activeSid
+  }
+  if (isLiveHarnessSessionId(lastActiveHarnessSessionId)) {
+    return lastActiveHarnessSessionId
+  }
+  const bridge = getBridge()
+  if (bridge?.harness?.listSessions && (await isHarnessLive())) {
+    try {
+      const liveSessions = await bridge.harness.listSessions({
+        includeExternal: false,
+      })
+      const firstLive = liveSessions.find(
+        (s) => isLiveHarnessSessionId(s.session_id) && !s.archived
+      )
+      if (firstLive) {
+        lastActiveHarnessSessionId = firstLive.session_id
+        return firstLive.session_id
+      }
+    } catch {
+      // Ignore probe failure and fall through to fallback catalog
+    }
+  }
+  return null
+}
+
+function hydrateSessionRuntimeInfo(
+  sessionId: string,
+  info: {
+    provider?: string
+    model?: string
+    reasoningEffort?: string
+    reasoning_effort?: string
+  }
+): void {
+  const rawEffort =
+    typeof info.reasoningEffort === "string"
+      ? info.reasoningEffort
+      : typeof info.reasoning_effort === "string"
+        ? info.reasoning_effort
+        : undefined
+  const trimmedEffort = rawEffort?.trim().toLowerCase()
+  const cleanEffort =
+    trimmedEffort && trimmedEffort !== "auto" ? trimmedEffort : undefined
+  const model = typeof info.model === "string" && info.model.trim() ? info.model.trim() : undefined
+  const provider =
+    typeof info.provider === "string" && info.provider.trim()
+      ? info.provider.trim()
+      : undefined
+
+  useAppStore.getState().setSessionModelInfo(sessionId, {
+    provider,
+    model,
+    reasoningEffort: cleanEffort,
+  })
+  if (model) {
+    const spec = formatHarnessModelSpec(model, provider)
+    if (spec) {
+      lastSyncedModelBySession.set(sessionId, spec)
+    }
+  }
+  if (cleanEffort) {
+    lastSyncedEffortBySession.set(sessionId, cleanEffort)
+  } else {
+    lastSyncedEffortBySession.delete(sessionId)
+  }
+}
+
+function resolveRayuCloudFallbackEffort(entry: RayuCloudModelEntry): {
+  supportedEfforts: string[]
+  defaultEffort?: string
+} {
+  if (entry.supportsReasoning === false) {
+    return { supportedEfforts: [] }
+  }
+  const hasExplicitEfforts = Array.isArray(entry.supportedEfforts)
+  const serverEfforts = hasExplicitEfforts
+    ? (entry.supportedEfforts ?? [])
+        .map((v) => v.trim().toLowerCase())
+        .filter((v) => v.length > 0 && v !== "auto" && !v.startsWith("swarm"))
+    : []
+  if (hasExplicitEfforts && serverEfforts.length === 0) {
+    return { supportedEfforts: [] }
+  }
+  const supportedEfforts = hasExplicitEfforts
+    ? serverEfforts
+    : [...RAYU_FALLBACK_EFFORTS]
+  const rawDefault = entry.defaultEffort?.trim().toLowerCase()
+  const defaultEffort =
+    rawDefault &&
+    rawDefault !== "auto" &&
+    supportedEfforts.includes(rawDefault)
+      ? rawDefault
+      : supportedEfforts.includes("low")
+        ? "low"
+        : supportedEfforts[0]
+  return {
+    supportedEfforts,
+    ...(defaultEffort ? { defaultEffort } : {}),
+  }
+}
 
 function resolveHarnessModelSpec(modelId: string): string {
-  const matched = lastListedModelOptions.find((m) => m.id === modelId)
+  const normalized = modelId.trim().replace(/^rayu:/i, "").toLowerCase()
+  const matched =
+    lastListedModelOptions.find((m) => m.id === modelId) ??
+    lastListedModelOptions.find(
+      (m) => m.id.trim().replace(/^rayu:/i, "").toLowerCase() === normalized
+    )
   if (matched) {
     return formatHarnessModelSpec(matched.id, matched.provider, matched.apiMethod)
   }
   const cloudMatched = lastKnownAuthState?.allowedModels?.find(
-    (m) => m.code === modelId
+    (m) =>
+      m.code === modelId ||
+      m.code.trim().replace(/^rayu:/i, "").toLowerCase() === normalized
   )
   if (cloudMatched) {
-    return formatHarnessModelSpec(modelId, "rayu", "rayu")
+    return formatHarnessModelSpec(cloudMatched.code, "rayu", "rayu")
   }
   return formatHarnessModelSpec(modelId)
 }
@@ -3492,13 +3840,106 @@ let runtimeTelegram: TelegramState = {
   chatId: "Not paired",
   drivingSession: "None",
   mediaDelivery: "Disabled until paired",
-  authPath: "~/.rayu/telegram.json",
-  pairingCommand: "rayu telegram pair",
+  authPath: "~/.rayu/telegram-remote.json",
+  pairingCommand: "rayu telegram link",
   pairingLink: "https://t.me/rayucode_bot",
   remoteUninstallEnabled: false,
   approvals: [],
   commands: mockTelegram.commands,
 }
+
+let mockAgents: AgentsState = {
+  sessionId: null,
+  subagentModel: null,
+  inheritModel: "rayu:claude-sonnet-4-5",
+  defaults: {
+    swarm: "rayu:claude-sonnet-4-5",
+    review: "architect",
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  overrides: {
+    swarm: null,
+    review: null,
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  effective: {
+    swarm: "rayu:claude-sonnet-4-5",
+    review: "rayu:claude-opus-4-5",
+    judge: null,
+    memory: null,
+    ambient: null,
+  },
+  profiles: [
+    {
+      name: "architect",
+      model: "rayu:claude-opus-4-5",
+      effort: "high",
+      description: "Systems design, architecture reviews, and complex debugging.",
+      scope: "global",
+    },
+    {
+      name: "coder",
+      model: "rayu:claude-sonnet-4-5",
+      effort: "medium",
+      description: "Fast feature implementation, refactoring, and unit tests.",
+      scope: "global",
+    },
+  ],
+  globalProfiles: [
+    {
+      name: "architect",
+      model: "rayu:claude-opus-4-5",
+      effort: "high",
+      description: "Systems design, architecture reviews, and complex debugging.",
+      scope: "global",
+    },
+    {
+      name: "coder",
+      model: "rayu:claude-sonnet-4-5",
+      effort: "medium",
+      description: "Fast feature implementation, refactoring, and unit tests.",
+      scope: "global",
+    },
+  ],
+  sessionProfiles: [],
+  swarmAllowlist: [],
+  models: ["rayu:claude-sonnet-4-5", "rayu:claude-opus-4-5", "openai:gpt-5"],
+  routes: [
+    {
+      id: "rayu:claude-sonnet-4-5",
+      label: "Claude Sonnet 4.5",
+      provider: "rayu",
+      model: "claude-sonnet-4-5",
+      modelSpec: "rayu:claude-sonnet-4-5",
+      available: true,
+    },
+    {
+      id: "rayu:claude-opus-4-5",
+      label: "Claude Opus 4.5",
+      provider: "rayu",
+      model: "claude-opus-4-5",
+      modelSpec: "rayu:claude-opus-4-5",
+      available: true,
+    },
+    {
+      id: "openai:gpt-5",
+      label: "GPT-5",
+      provider: "openai",
+      model: "gpt-5",
+      modelSpec: "openai:gpt-5",
+      available: true,
+    },
+  ],
+  configPath: "~/.rayu/config.toml",
+  daemonConnected: true,
+  daemonError: null,
+}
+
+let runtimeAgents: AgentsState = structuredClone(mockAgents)
 
 function normalizeWorkspacePath(raw?: string | null): string {
   if (!raw) return ""
@@ -3576,7 +4017,7 @@ const DEFAULT_SIGNED_OUT_AUTH_STATE: RayuAuthState = {
 async function isHarnessLive(): Promise<boolean> {
   const bridge = getBridge()
   if (!bridge?.harness || !bridge?.daemon?.getStatus) return false
-  if (lastKnownDaemonLive) return true
+  if (lastKnownDaemonLive && !IS_TEST_ENV) return true
   try {
     const status = await bridge.daemon.getStatus()
     lastKnownDaemonLive = Boolean(status.connected && status.mode !== "demo")
@@ -3661,6 +4102,14 @@ export const ipcClient = {
               }
             })
             mappedLive.sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0))
+            if (!lastActiveHarnessSessionId) {
+              const firstLive = mappedLive.find(
+                (s) => isLiveHarnessSessionId(s.id) && !s.archived && !s.imported
+              )
+              if (firstLive) {
+                lastActiveHarnessSessionId = firstLive.id
+              }
+            }
             return mappedLive
           } catch {
             // Fall through if daemon could not be reached
@@ -3904,10 +4353,23 @@ export const ipcClient = {
             normalizedEffort !== "auto" &&
             bridge.harness.setReasoningEffort
           ) {
-            await bridge.harness
+            const effortRes = await bridge.harness
               .setReasoningEffort(live.session_id, normalizedEffort)
-              .catch(() => {})
+              .catch(() => ({ ok: false }))
+            if (effortRes?.ok !== false) {
+              lastSyncedEffortBySession.set(live.session_id, normalizedEffort)
+            }
           }
+          useAppStore.getState().setSessionModelInfo(live.session_id, {
+            model:
+              input.modelId && input.modelId !== "default"
+                ? input.modelId
+                : undefined,
+            reasoningEffort:
+              normalizedEffort && normalizedEffort !== "auto"
+                ? normalizedEffort
+                : undefined,
+          })
           const mapped = mapSessionInfoToSummary(live)
           const summary: SessionSummary = {
             ...mapped,
@@ -4018,24 +4480,43 @@ export const ipcClient = {
   },
 
   models: {
-    async list(): Promise<ModelOption[]> {
+    async list(sessionId?: string | null): Promise<ModelOption[]> {
       const bridge = getBridge()
-      if (
-        bridge?.harness?.getRuntimeInfo &&
-        lastActiveHarnessSessionId &&
-        (await isHarnessLive())
-      ) {
-        try {
-          const info = await bridge.harness.getRuntimeInfo(
-            lastActiveHarnessSessionId
-          )
-          if (info.routes && info.routes.length > 0) {
-            const mapped = mapModelRoutesToOptions(info.routes)
-            lastListedModelOptions = mapped
-            return mapped
+      if (bridge?.harness?.getRuntimeInfo && (await isHarnessLive())) {
+        const usedCachedOnly =
+          !isLiveHarnessSessionId(sessionId) &&
+          !isLiveHarnessSessionId(useAppStore.getState().activeSessionId) &&
+          isLiveHarnessSessionId(lastActiveHarnessSessionId)
+        const targetSid = await resolveLiveHarnessSessionId(sessionId)
+        if (targetSid) {
+          try {
+            const info = await bridge.harness.getRuntimeInfo(targetSid)
+            hydrateSessionRuntimeInfo(targetSid, info)
+            if (info.routes && info.routes.length > 0) {
+              const mapped = mapModelRoutesToOptions(info.routes)
+              lastListedModelOptions = mapped
+              return mapped
+            }
+          } catch {
+            // If a stale cached session ID failed, clear it and probe once for a live session
+            if (usedCachedOnly) {
+              lastActiveHarnessSessionId = null
+              const probedSid = await resolveLiveHarnessSessionId(null)
+              if (probedSid && probedSid !== targetSid) {
+                try {
+                  const info = await bridge.harness.getRuntimeInfo(probedSid)
+                  hydrateSessionRuntimeInfo(probedSid, info)
+                  if (info.routes && info.routes.length > 0) {
+                    const mapped = mapModelRoutesToOptions(info.routes)
+                    lastListedModelOptions = mapped
+                    return mapped
+                  }
+                } catch {
+                  // Fall back to Rayu Cloud or curated catalog
+                }
+              }
+            }
           }
-        } catch {
-          // Fall back to Rayu Cloud or curated catalog
         }
       }
       if (
@@ -4050,35 +4531,43 @@ export const ipcClient = {
             provider: "rayu",
             apiMethod: "rayu",
             recommended: true,
+            supportedEfforts: [...RAYU_FALLBACK_EFFORTS],
+            defaultEffort: "low",
           },
-          ...lastKnownAuthState.allowedModels.map((m) => ({
-            id: m.code,
-            label: m.label || m.code,
-            subtitle: m.description,
-            provider: "rayu",
-            apiMethod: "rayu",
-          })),
+          ...lastKnownAuthState.allowedModels.map((m) => {
+            const effortMeta = resolveRayuCloudFallbackEffort(m)
+            return {
+              id: m.code,
+              label: m.label || m.code,
+              subtitle: m.description,
+              provider: "rayu",
+              apiMethod: "rayu",
+              ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}),
+              supportedEfforts: effortMeta.supportedEfforts,
+              ...(effortMeta.defaultEffort
+                ? { defaultEffort: effortMeta.defaultEffort }
+                : {}),
+            }
+          }),
         ]
         lastListedModelOptions = cloudOptions
         return cloudOptions
       }
       return [...MOCK_MODELS]
     },
-    async refresh(): Promise<ModelOption[]> {
+    async refresh(sessionId?: string | null): Promise<ModelOption[]> {
       const bridge = getBridge()
-      if (
-        bridge?.harness?.runtimeCommand &&
-        lastActiveHarnessSessionId &&
-        (await isHarnessLive())
-      ) {
+      const live = await isHarnessLive()
+      const targetSid = live ? await resolveLiveHarnessSessionId(sessionId) : null
+      if (bridge?.harness?.runtimeCommand && targetSid && live) {
         await bridge.harness
-          .runtimeCommand(lastActiveHarnessSessionId, "refresh_model_list")
+          .runtimeCommand(targetSid, "refresh_model_list")
           .catch(() => {})
       } else if (bridge?.auth?.refresh) {
         const refreshed = await bridge.auth.refresh().catch(() => null)
         if (refreshed) lastKnownAuthState = refreshed
       }
-      return ipcClient.models.list()
+      return ipcClient.models.list(targetSid)
     },
   },
 
@@ -4149,11 +4638,17 @@ export const ipcClient = {
       images?: PromptImageAttachment[]
       modelId?: string
       modelLabel: string
+      effort?: string
       history?: CloudChatMessage[]
     }): Promise<ExecutionTurn> {
       if (input.sessionId) {
         newlyCreatedEmptySessions.delete(input.sessionId)
       }
+      const stagedEffort = pendingEffortBySession.get(input.sessionId)
+      pendingEffortBySession.delete(input.sessionId)
+      const normalizedEffort = (input.effort ?? stagedEffort ?? "")
+        .trim()
+        .toLowerCase()
       const bridge = getBridge()
       const imageTuples: Array<[string, string]> = (input.images ?? [])
         .map((img) => parseImageDataUrl(img.dataUrl))
@@ -4190,6 +4685,20 @@ export const ipcClient = {
               )
             }
             lastSyncedModelBySession.set(input.sessionId, modelSpec)
+            lastSyncedEffortBySession.delete(input.sessionId)
+          }
+        }
+        if (
+          normalizedEffort &&
+          normalizedEffort !== "auto" &&
+          bridge.harness.setReasoningEffort &&
+          lastSyncedEffortBySession.get(input.sessionId) !== normalizedEffort
+        ) {
+          const effortRes = await bridge.harness
+            .setReasoningEffort(input.sessionId, normalizedEffort)
+            .catch(() => ({ ok: false }))
+          if (effortRes && effortRes.ok !== false) {
+            lastSyncedEffortBySession.set(input.sessionId, normalizedEffort)
           }
         }
         await bridge.harness.sendMessage(
@@ -4240,6 +4749,9 @@ export const ipcClient = {
           sessionId: input.sessionId,
           model: input.modelId || "default",
           messages,
+          ...(normalizedEffort && normalizedEffort !== "auto"
+            ? { reasoningEffort: normalizedEffort }
+            : {}),
         })
         return {
           id: `cloud_turn_${Date.now()}`,
@@ -5705,6 +6217,24 @@ export const ipcClient = {
         lastSyncedModelBySession.set(sessionId, spec)
       }
     },
+    recordSyncedEffort(sessionId: string, effort?: string): void {
+      if (!sessionId) return
+      const normalized = effort?.trim().toLowerCase() ?? ""
+      if (normalized && normalized !== "auto") {
+        lastSyncedEffortBySession.set(sessionId, normalized)
+      } else {
+        lastSyncedEffortBySession.delete(sessionId)
+      }
+    },
+    stagePromptEffort(sessionId: string, effort?: string): void {
+      if (!sessionId) return
+      const normalized = effort?.trim().toLowerCase() ?? ""
+      if (normalized && normalized !== "auto") {
+        pendingEffortBySession.set(sessionId, normalized)
+      } else {
+        pendingEffortBySession.delete(sessionId)
+      }
+    },
     async setModel(
       sessionId: string,
       model: string
@@ -5714,6 +6244,7 @@ export const ipcClient = {
         const res = await bridge.harness.setModel(sessionId, model)
         if (res.ok !== false) {
           lastSyncedModelBySession.set(sessionId, model)
+          lastSyncedEffortBySession.delete(sessionId)
         }
         return res
       }
@@ -5725,7 +6256,14 @@ export const ipcClient = {
     ): Promise<{ ok: boolean; error?: string; code?: string }> {
       const bridge = getBridge()
       if (bridge?.harness?.setReasoningEffort && (await isHarnessLive())) {
-        return bridge.harness.setReasoningEffort(sessionId, effort)
+        const res = await bridge.harness.setReasoningEffort(sessionId, effort)
+        if (res.ok !== false) {
+          const normalized = effort.trim().toLowerCase()
+          if (normalized && normalized !== "auto") {
+            lastSyncedEffortBySession.set(sessionId, normalized)
+          }
+        }
+        return res
       }
       return { ok: true }
     },
@@ -6011,6 +6549,7 @@ export const ipcClient = {
       sessionId: string
       model: string
       messages: CloudChatMessage[]
+      reasoningEffort?: string
     }): Promise<{ ok: boolean }> {
       const bridge = getBridge()
       if (bridge?.cloud?.streamChat) {
@@ -6635,6 +7174,178 @@ export const ipcClient = {
         conflicts: [],
         snapshot: structuredClone(updated),
       }
+    },
+  },
+
+  todos: {
+    async get(sessionId: string): Promise<SessionTodoItem[]> {
+      if (!sessionId) return []
+      const bridge = getBridge()
+      if (
+        bridge?.todos?.get &&
+        !sessionId.startsWith("ses_") &&
+        !IS_TEST_ENV
+      ) {
+        try {
+          const result = await bridge.todos.get(sessionId)
+          return normalizeTodoItems(result)
+        } catch {
+          return []
+        }
+      }
+      return []
+    },
+  },
+
+  agents: {
+    async getState(sessionId?: string): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.getState && !IS_TEST_ENV) {
+        return bridge.agents.getState(sessionId)
+      }
+      if (IS_DEV_SERVER) {
+        const query = sessionId
+          ? `agents/state?sessionId=${encodeURIComponent(sessionId)}`
+          : "agents/state"
+        return devAuthFetch<AgentsState>(query)
+      }
+      return structuredClone(IS_TEST_ENV ? mockAgents : runtimeAgents)
+    },
+    async setRoleModel(input: {
+      role: AgentRoleId
+      model: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.setRoleModel && !IS_TEST_ENV) {
+        return bridge.agents.setRoleModel(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/set-role-model", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const nextVal = input.model === "default" ? null : input.model
+      const updated: AgentsState = structuredClone(target)
+      if (input.scope === "global") {
+        updated.defaults[input.role] = nextVal
+      } else {
+        updated.overrides[input.role] = nextVal
+      }
+      const rawEff =
+        updated.overrides[input.role] ?? updated.defaults[input.role]
+      const matchedProfile = rawEff
+        ? updated.profiles.find(
+            (p) => p.name.toLowerCase() === rawEff.toLowerCase()
+          )
+        : undefined
+      updated.effective[input.role] = matchedProfile?.model ?? rawEff ?? null
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async setSubagentModel(input: {
+      model: string
+      scope?: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.setSubagentModel && !IS_TEST_ENV) {
+        return bridge.agents.setSubagentModel(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/set-subagent-model", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const nextVal = input.model === "default" ? null : input.model
+      const updated: AgentsState = structuredClone(target)
+      if (input.scope === "global") {
+        updated.defaults.swarm = nextVal
+      } else {
+        updated.subagentModel = nextVal
+      }
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async upsertProfile(input: {
+      name: string
+      model: string
+      effort?: string | null
+      description?: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.upsertProfile && !IS_TEST_ENV) {
+        return bridge.agents.upsertProfile(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/upsert-profile", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const updated: AgentsState = structuredClone(target)
+      const normalized: AgentProfileItem = {
+        name: input.name.trim().toLowerCase(),
+        model: input.model.trim(),
+        effort: input.effort?.trim() || null,
+        description: input.description?.trim() || "",
+        scope: input.scope,
+      }
+      const listKey =
+        input.scope === "global" ? "globalProfiles" : "sessionProfiles"
+      const list = updated[listKey].filter((p) => p.name !== normalized.name)
+      list.push(normalized)
+      updated[listKey] = list
+      updated.profiles = [
+        ...updated.globalProfiles.filter(
+          (gp) => !updated.sessionProfiles.some((sp) => sp.name === gp.name)
+        ),
+        ...updated.sessionProfiles,
+      ]
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
+    },
+    async deleteProfile(input: {
+      name: string
+      scope: "global" | "session"
+      sessionId?: string
+    }): Promise<AgentsState> {
+      const bridge = getBridge()
+      if (bridge?.agents?.deleteProfile && !IS_TEST_ENV) {
+        return bridge.agents.deleteProfile(input)
+      }
+      if (IS_DEV_SERVER) {
+        return devAuthFetch<AgentsState>("agents/delete-profile", {
+          method: "POST",
+          body: input,
+        })
+      }
+      const target = IS_TEST_ENV ? mockAgents : runtimeAgents
+      const updated: AgentsState = structuredClone(target)
+      const cleanName = input.name.trim().toLowerCase()
+      const listKey =
+        input.scope === "global" ? "globalProfiles" : "sessionProfiles"
+      updated[listKey] = updated[listKey].filter((p) => p.name !== cleanName)
+      updated.profiles = [
+        ...updated.globalProfiles.filter(
+          (gp) => !updated.sessionProfiles.some((sp) => sp.name === gp.name)
+        ),
+        ...updated.sessionProfiles,
+      ]
+      if (IS_TEST_ENV) mockAgents = updated
+      else runtimeAgents = updated
+      return structuredClone(updated)
     },
   },
 }

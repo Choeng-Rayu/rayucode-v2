@@ -4,31 +4,37 @@ Official releases have two gates: **successful CI for the exact tagged commit** 
 
 
 
-    # How to Release a New Version (`rayucode-v2`)
+## How to Release a New Version (`rayucode-v2`)
 
-    ## Patch Release (`v3.0.1` → `v3.0.2` → `v3.0.3`)
-    Work on `dev`, then merge and push to `main`:
+### Patch Release (`v3.0.1` → `v3.0.2` → `v3.0.3`)
 
-    ```bash
-    git checkout main
-    git merge dev
-    git push origin main
+Work on `dev`, then merge and push to `main`:
 
-  GitHub Actions automatically bumps the patch version, compiles all 6 targets (Linux x64/ARM64, macOS Apple Silicon/Intel, Windows x64/ARM64), creates the git tag, and publishes to GitHub Releases + rayu update.
+```bash
+git checkout main
+git merge dev
+git push origin main
+```
 
-  Minor / Major Release (e.g. v3.1.0 or v4.0.0)
+GitHub Actions automatically bumps the patch version, compiles all 6 targets (Linux x64/ARM64, macOS Apple Silicon/Intel, Windows x64/ARM64), creates the git tag, and publishes to GitHub Releases + `rayu update`.
 
-  1. Update version in Cargo.toml.
-  2. Run cargo check (updates Cargo.lock).
-  3. Commit and push/merge to main.
+### Minor / Major Release (e.g. v3.1.0 or v4.0.0)
 
-  Skip a Release on main
+1. Update version in `Cargo.toml`.
+2. Run `cargo check` (updates `Cargo.lock`).
+3. Commit and push/merge to `main`.
 
-  Include [skip release] in the commit message (e.g. docs: fix typo [skip release]).
+### Skip a Release on main
 
-  If scripts/install.sh or scripts/install.ps1 Changed
+Include `[skip release]` in the commit message (e.g. `docs: fix typo [skip release]`).
 
-  Copy the updated script(s) to rayu-web/public/ and deploy rayu-web.
+### If `scripts/install.sh` or `scripts/install.ps1` changed
+
+Copy the updated script(s) to `rayu-web/public/` and deploy `rayu-web`.
+
+### VS Code extension
+
+The Marketplace extension ships on its own version line from `vscode/extension.manifest.json`; see [how-to-release-vscode.md](how-to-release-vscode.md).
 
 
 

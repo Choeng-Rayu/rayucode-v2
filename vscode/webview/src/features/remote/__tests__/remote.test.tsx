@@ -16,7 +16,7 @@ function renderWithQuery(ui: React.ReactElement) {
   );
 }
 
-describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
+describe("Remote Access Feature (Real Telegram & Gateway)", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,
@@ -31,9 +31,9 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
     });
   });
 
-  it("builds a deterministic 21x21 QR matrix with 7x7 finder patterns", () => {
-    const m1 = buildDeterministicQrMatrix("https://t.me/RayuCodeOfficialBot?start=pair_1");
-    const m2 = buildDeterministicQrMatrix("https://t.me/RayuCodeOfficialBot?start=pair_1");
+  it("builds a deterministic 21x21 fallback QR matrix with 7x7 finder patterns", () => {
+    const m1 = buildDeterministicQrMatrix("rayu://gateway/pair?code=1");
+    const m2 = buildDeterministicQrMatrix("rayu://gateway/pair?code=1");
     expect(m1.length).toBe(21);
     expect(m1[0]?.length).toBe(21);
     expect(m1).toEqual(m2);
@@ -41,7 +41,7 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
     expect(m1[2]?.[2]).toBe(true);
   });
 
-  it("renders Telegram Bot tab with Hosted QR Pairing, @BotFather form, ApprovalRow decisions, and Remote Uninstall guardrail", async () => {
+  it("renders truthful disconnected Telegram state, generates real Hosted QR, links @BotFather token, and enforces Remote Uninstall guardrail", async () => {
     renderWithQuery(<RemoteView />);
 
     await waitFor(() => {
@@ -50,27 +50,24 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
 
     expect(screen.getByTestId("tg-status-banner")).toBeTruthy();
     expect(screen.getByTestId("tg-approvals-list")).toBeTruthy();
-
-    // Approve pending tool request via ApprovalRow
-    fireEvent.click(
-      screen.getByTestId("tg-approval-allow-tg_appr_cargo_bench"),
+    // Truthful empty approvals queue (zero fabricated sample approvals)
+    expect(screen.getByTestId("tg-pending-count-badge").textContent).toContain(
+      "0 pending",
     );
-    await waitFor(() => {
-      expect(
-        screen.getByTestId("tg-approval-status-tg_appr_cargo_bench").textContent,
-      ).toContain("Approved via host");
-    });
 
-    // Switch to Hosted Pairing QR mode
+    // Hosted Pairing QR mode -> Generate Hosted QR -> renders real Rust SVG path
     const hostedTab = screen.getByTestId("tg-mode-hosted");
     fireEvent.mouseDown(hostedTab);
     fireEvent.click(hostedTab);
+    const generateBtn = await screen.findByTestId("tg-generate-qr-btn");
+    fireEvent.click(generateBtn);
     await waitFor(() => {
-      expect(screen.getByTestId("tg-qr-matrix")).toBeTruthy();
+      const qr = screen.getByTestId("tg-qr-matrix");
+      expect(qr.querySelector("svg path")).toBeTruthy();
       expect(screen.getByTestId("tg-pairing-code")).toBeTruthy();
     });
 
-    // Switch to BYO @BotFather Token mode
+    // Switch to BYO @BotFather Token mode & link directly with chat ID
     const botfatherTab = screen.getByTestId("tg-mode-botfather");
     fireEvent.mouseDown(botfatherTab);
     fireEvent.click(botfatherTab);
@@ -79,7 +76,10 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
     });
 
     fireEvent.change(screen.getByTestId("tg-byo-token-input"), {
-      target: { value: "123456789:AAFakeBotFatherToken" },
+      target: { value: "123456789:AAF_ValidBotFatherToken123456789" },
+    });
+    fireEvent.change(screen.getByTestId("tg-byo-chat-id-input"), {
+      target: { value: "842910443" },
     });
     fireEvent.click(screen.getByTestId("tg-byo-submit-btn"));
     await waitFor(() => {
@@ -99,7 +99,7 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
     });
   });
 
-  it("renders Cloud, SSH & Mobile Gateway tab with :7643 WebSocket controls, QR matrix, SSH hosts, and Cloud 26-op sessions", async () => {
+  it("renders Cloud, SSH & Mobile Gateway tab with :7643 WebSocket controls and SSH hosts", async () => {
     renderWithQuery(<RemoteView />);
 
     await waitFor(() => {
@@ -117,24 +117,14 @@ describe("Remote Access Feature (Wave 3F — Spec 08)", () => {
     expect(screen.getByTestId("gateway-bind-address").textContent).toBe(
       "127.0.0.1:7643",
     );
-    expect(screen.getByTestId("gateway-qr-matrix")).toBeTruthy();
     expect(screen.getByTestId("ssh-hosts-list")).toBeTruthy();
     expect(screen.getByTestId("cloud-26-ops-grid").children.length).toBe(26);
 
-    // Start WebSocket Gateway
     fireEvent.click(screen.getByTestId("gateway-toggle-btn"));
     await waitFor(() => {
       expect(screen.getByTestId("gateway-status-badge").textContent).toBe(
         "Enabled",
       );
-    });
-
-    // Revoke paired device
-    fireEvent.click(screen.getByTestId("gateway-revoke-dev_iphone_16_pro"));
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("gateway-device-row-dev_iphone_16_pro"),
-      ).toBeNull();
     });
   });
 });

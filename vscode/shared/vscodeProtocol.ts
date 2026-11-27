@@ -16,6 +16,7 @@ export const AppRouteSchema = z.enum([
   "home",
   "workspace",
   "swarm",
+  "agents",
   "automations",
   "plugins",
   "changes",
@@ -35,6 +36,45 @@ export type AccentPreference = z.infer<typeof AccentPreferenceSchema>;
 
 export const DensityPreferenceSchema = z.enum(["comfortable", "compact"]);
 export type DensityPreference = z.infer<typeof DensityPreferenceSchema>;
+
+export const OpenLocationSchema = z.enum([
+  "secondarySidebar",
+  "beside",
+  "editorTab",
+]);
+export type OpenLocation = z.infer<typeof OpenLocationSchema>;
+
+export const WorkbenchPreferencesSchema = z.object({
+  openLocation: OpenLocationSchema,
+  contextActionsAutoSubmit: z.boolean(),
+  showEditorTitleIcon: z.boolean(),
+});
+export type WorkbenchPreferences = z.infer<typeof WorkbenchPreferencesSchema>;
+
+export const ComposerInjectionPayloadSchema = z.object({
+  id: z.string().min(1),
+  mentions: z.array(z.string().min(1)).optional(),
+  prompt: z.string().optional(),
+  mode: z.enum(["append", "replace"]).optional(),
+  selection: z
+    .object({
+      filePath: z.string(),
+      relativePath: z.string(),
+      languageId: z.string().optional(),
+      lineStart: z.number().int().min(1),
+      lineEnd: z.number().int().min(1),
+      lineCount: z.number().int().min(0),
+      selectedText: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+  workingDir: z.string().optional(),
+  autoSubmit: z.boolean().optional(),
+  sourceLabel: z.string().optional(),
+});
+export type ComposerInjectionPayload = z.infer<
+  typeof ComposerInjectionPayloadSchema
+>;
 
 export const PermissionModeIdSchema = z.enum([
   "default",
@@ -90,8 +130,25 @@ export type EffortLevel = z.infer<typeof EffortLevelSchema>;
 export const EffortChoiceSchema = EffortLevelSchema.nullable();
 export type EffortChoice = z.infer<typeof EffortChoiceSchema>;
 
-export const RiskTierSchema = z.enum(["safe", "bounded", "confirm", "hard_deny"]);
+export const RiskTierSchema = z.enum([
+  "safe",
+  "bounded",
+  "confirm",
+  "catastrophic",
+  "hard_deny",
+]);
 export type RiskTier = z.infer<typeof RiskTierSchema>;
+
+export const PendingPermissionViewSchema = z.object({
+  sessionId: z.string(),
+  requestId: z.string(),
+  toolName: z.string(),
+  description: z.string(),
+  riskTier: RiskTierSchema.optional(),
+  command: z.string().optional(),
+  permissionMode: PermissionModeIdSchema.optional(),
+});
+export type PendingPermissionView = z.infer<typeof PendingPermissionViewSchema>;
 
 export const ServiceTierSchema = z.enum(["auto", "priority", "ultrafast", "flex", "off"]);
 export type ServiceTier = z.infer<typeof ServiceTierSchema>;
@@ -130,6 +187,7 @@ export const DaemonConnectionStateSchema = z.enum([
   "connected",
   "connecting",
   "starting",
+  "downloading",
   "reconnecting",
   "disconnected",
   "error",
@@ -147,6 +205,23 @@ export const DaemonStatusViewSchema = z.object({
   capabilities: z.array(z.string()),
   error: z.string().optional(),
   isRayuRepo: z.boolean().optional(),
+  downloadProgress: z.number().min(0).max(100).optional(),
+  downloadPhase: z
+    .enum([
+      "checking",
+      "downloading",
+      "verifying",
+      "extracting",
+      "installing",
+      "starting",
+    ])
+    .optional(),
+  downloadVersion: z.string().optional(),
+  downloadedBytes: z.number().nonnegative().optional(),
+  totalBytes: z.number().nonnegative().optional(),
+  statusMessage: z.string().optional(),
+  binarySource: z.string().optional(),
+  managedVersion: z.string().optional(),
 });
 export type DaemonStatusView = z.infer<typeof DaemonStatusViewSchema>;
 
@@ -245,6 +320,9 @@ export const SessionSummaryViewSchema = z.object({
   status: z.enum(["idle", "running", "waiting", "error"]),
   model: z.string().optional(),
   provider: z.string().optional(),
+  effort: EffortLevelSchema.optional(),
+  serviceTier: ServiceTierSchema.optional(),
+  cacheTtl: CacheTtlSchema.optional(),
   permissionMode: PermissionModeIdSchema.optional(),
   updatedAtMs: z.number(),
   createdAtMs: z.number().optional(),
@@ -903,18 +981,36 @@ export type TelegramApprovalView = z.infer<typeof TelegramApprovalViewSchema>;
 
 export const TelegramStatusViewSchema = z.object({
   linked: z.boolean(),
+  configured: z.boolean().optional(),
+  statusLabel: z.string().optional(),
+  generation: z.string().optional(),
+  expired: z.boolean().optional(),
+  activeAccount: z.boolean().optional(),
   mode: z.enum(["hosted", "botfather"]).optional(),
   botHandle: z.string().optional(),
   chatId: z.string().optional(),
   boundSessionId: z.string().optional(),
+  authPath: z.string().optional(),
   daemonOnline: z.boolean(),
   remoteUninstallEnabled: z.boolean(),
   pairingUrl: z.string().optional(),
   pairingCode: z.string().optional(),
   pairingExpiresAtMs: z.number().optional(),
+  qrSize: z.number().int().positive().nullable().optional(),
+  qrPath: z.string().nullable().optional(),
+  daemonError: z.string().nullable().optional(),
   approvals: z.array(TelegramApprovalViewSchema),
 });
 export type TelegramStatusView = z.infer<typeof TelegramStatusViewSchema>;
+
+export const AgentProfileViewSchema = z.object({
+  name: z.string().min(1),
+  model: z.string().min(1),
+  description: z.string(),
+  effort: z.string().nullable().optional(),
+  scope: z.enum(["global", "session"]),
+});
+export type AgentProfileView = z.infer<typeof AgentProfileViewSchema>;
 
 export const GatewayDeviceViewSchema = z.object({
   id: z.string(),
@@ -1063,9 +1159,12 @@ export type AgentRoleOverrideView = z.infer<typeof AgentRoleOverrideViewSchema>;
 export const ModelRouteOptionViewSchema = z.object({
   id: z.string(),
   model: z.string(),
+  modelSpec: z.string().optional(),
   provider: z.string(),
   label: z.string(),
   apiMethod: z.string().optional(),
+  authMethod: z.enum(["oauth", "api_key", "env", "none"]).optional(),
+  accountLabel: z.string().optional(),
   available: z.boolean().optional(),
   detail: z.string().optional(),
   supportsEffort: z.boolean().optional(),
@@ -1291,9 +1390,13 @@ export const AppletStateViewSchema = z.object({
 export type AppletStateView = z.infer<typeof AppletStateViewSchema>;
 
 export const TodoItemViewSchema = z.object({
+  id: z.string().optional(),
   content: z.string(),
-  status: z.enum(["pending", "in_progress", "completed"]),
+  status: z.enum(["pending", "in_progress", "completed", "cancelled"]),
   activeForm: z.string().optional(),
+  group: z.string().optional(),
+  stage: z.number().optional(),
+  blockedReason: z.string().optional(),
 });
 export type TodoItemView = z.infer<typeof TodoItemViewSchema>;
 
@@ -1319,6 +1422,10 @@ export const RpcContractSchemas = {
     result: DaemonStatusViewSchema,
   },
   "daemon.restart": {
+    params: EmptyParamsSchema,
+    result: DaemonStatusViewSchema,
+  },
+  "daemon.updateEngine": {
     params: EmptyParamsSchema,
     result: DaemonStatusViewSchema,
   },
@@ -1490,6 +1597,11 @@ export const RpcContractSchemas = {
         workingDir: z.string().optional(),
         permissionMode: PermissionModeIdSchema.optional(),
         model: z.string().optional(),
+        provider: z.string().optional(),
+        apiMethod: z.string().optional(),
+        effort: EffortLevelSchema.optional(),
+        serviceTier: ServiceTierSchema.optional(),
+        cacheTtl: CacheTtlSchema.optional(),
       })
       .optional(),
     result: z.object({ session: SessionSummaryViewSchema }),
@@ -1538,10 +1650,18 @@ export const RpcContractSchemas = {
   },
   "sessions.setPermissionMode": {
     params: z.object({ sessionId: z.string(), mode: PermissionModeIdSchema }),
-    result: z.object({ ok: z.boolean(), mode: PermissionModeIdSchema }),
+    result: z.object({
+      ok: z.boolean(),
+      mode: PermissionModeIdSchema,
+      deferred: z.boolean().optional(),
+    }),
   },
   "sessions.rewind": {
-    params: z.object({ sessionId: z.string(), turnId: z.string() }),
+    params: z.object({
+      sessionId: z.string(),
+      turnId: z.string(),
+      messageIndex: z.number().int().positive().optional(),
+    }),
     result: OkResultSchema,
   },
   "sessions.rewindUndo": {
@@ -1553,12 +1673,18 @@ export const RpcContractSchemas = {
       sessionId: z.string(),
       text: z.string().min(1),
       urgent: z.boolean().optional(),
+      clientId: z.string().min(1).optional(),
+      images: z.array(ImageAttachmentViewSchema).optional(),
     }),
     result: z.object({ ok: z.boolean(), interruptId: z.string().optional() }),
   },
   "sessions.cancelSoftInterrupts": {
     params: z.object({ sessionId: z.string(), interruptId: z.string().optional() }),
-    result: OkResultSchema,
+    result: z.object({
+      ok: z.boolean(),
+      cancelled: z.boolean().optional(),
+      message: z.string().optional(),
+    }),
   },
   "sessions.respondPermission": {
     params: z.object({
@@ -1573,7 +1699,9 @@ export const RpcContractSchemas = {
       sessionId: z.string(),
       requestId: z.string(),
       answers: z.record(z.string(), z.string()),
+      selected: z.record(z.string(), z.array(z.number().int().nonnegative())).optional(),
       notes: z.record(z.string(), z.string()).optional(),
+      declined: z.boolean().optional(),
     }),
     result: OkResultSchema,
   },
@@ -1595,7 +1723,7 @@ export const RpcContractSchemas = {
     result: BackgroundProcessOutputViewSchema,
   },
   "background.cancel": {
-    params: z.object({ taskId: z.string() }),
+    params: z.object({ taskId: z.string(), sessionId: z.string().optional() }),
     result: OkResultSchema,
   },
   "background.cleanup": {
@@ -2101,23 +2229,29 @@ export const RpcContractSchemas = {
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.linkHosted": {
-    params: EmptyParamsSchema,
+    params: z.object({ replaceExisting: z.boolean().optional() }).optional(),
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.linkBotfather": {
     params: z.object({
       botToken: z.string().min(1),
       allowedChatId: z.string().optional(),
+      replaceExisting: z.boolean().optional(),
     }),
     result: TelegramStatusViewSchema,
   },
   "remote.telegram.disconnect": {
-    params: EmptyParamsSchema,
+    params: z.object({ localOnly: z.boolean().optional() }).optional(),
     result: OkResultSchema,
   },
   "remote.telegram.testPing": {
     params: EmptyParamsSchema,
-    result: OkResultSchema,
+    result: z.object({
+      ok: z.boolean(),
+      target: z.string().optional(),
+      chatId: z.string().optional(),
+      message: z.string().optional(),
+    }),
   },
   "remote.telegram.driveSession": {
     params: z.object({ sessionId: z.string() }),
@@ -2263,8 +2397,15 @@ export const RpcContractSchemas = {
       serviceTier: ServiceTierSchema,
       cacheTtl: CacheTtlSchema,
       transport: ProviderTransportSchema,
+      subagentModel: z.string().nullable().optional(),
+      inheritModel: z.string().nullable().optional(),
       roleOverrides: z.array(AgentRoleOverrideViewSchema),
+      effectiveRoleModels: z.record(z.string(), z.string().nullable()).optional(),
+      profiles: z.array(AgentProfileViewSchema).optional(),
+      globalProfiles: z.array(AgentProfileViewSchema).optional(),
+      sessionProfiles: z.array(AgentProfileViewSchema).optional(),
       swarmAllowlist: z.array(z.string()).optional(),
+      configPath: z.string().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
     }),
   },
@@ -2296,6 +2437,46 @@ export const RpcContractSchemas = {
       sessionId: z.string().optional(),
     }),
     result: OkResultSchema,
+  },
+  "settings.agents.setSubagentModel": {
+    params: z.object({
+      model: z.string().min(1),
+      scope: z.enum(["session", "global"]).optional(),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      model: z.string().nullable().optional(),
+      configuredDefault: z.string().nullable().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "settings.agents.upsertProfile": {
+    params: z.object({
+      name: z.string().min(1).max(32),
+      model: z.string().min(1).max(256),
+      effort: z.string().nullable().optional(),
+      description: z.string().max(500).optional(),
+      scope: z.enum(["session", "global"]),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      profiles: z.array(AgentProfileViewSchema),
+      message: z.string().optional(),
+    }),
+  },
+  "settings.agents.deleteProfile": {
+    params: z.object({
+      name: z.string().min(1).max(32),
+      scope: z.enum(["session", "global"]),
+      sessionId: z.string().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      profiles: z.array(AgentProfileViewSchema),
+      message: z.string().optional(),
+    }),
   },
   "settings.features.get": {
     params: EmptyParamsSchema,
@@ -2338,6 +2519,21 @@ export const RpcContractSchemas = {
   "settings.hooks.openConfig": {
     params: EmptyParamsSchema,
     result: OkResultSchema,
+  },
+  "settings.permission.getDefault": {
+    params: EmptyParamsSchema,
+    result: z.object({ mode: PermissionModeIdSchema }),
+  },
+  "settings.permission.setDefault": {
+    params: z.object({
+      mode: PermissionModeIdSchema,
+      applyToActiveSession: z.boolean().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      mode: PermissionModeIdSchema,
+      deferred: z.boolean().optional(),
+    }),
   },
   "settings.shortcuts.list": {
     params: EmptyParamsSchema,
@@ -2390,6 +2586,9 @@ export const RpcContractSchemas = {
     params: z.object({
       sessionId: z.string(),
       model: z.string().min(1),
+      provider: z.string().optional(),
+      apiMethod: z.string().optional(),
+      applyNextTurn: z.boolean().optional(),
     }),
     result: z.object({
       ok: z.boolean(),
@@ -2402,6 +2601,7 @@ export const RpcContractSchemas = {
     params: z.object({
       sessionId: z.string(),
       effort: z.string().min(1),
+      applyNextTurn: z.boolean().optional(),
     }),
     result: z.object({
       ok: z.boolean(),
@@ -2499,6 +2699,10 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("rayucode.ui.openEditorPanel"),
     route: AppRouteSchema.optional(),
     sessionId: z.string().optional(),
+    beside: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.focusSidebar"),
   }),
   z.object({
     type: z.literal("rayucode.ui.setAppearance"),
@@ -2506,6 +2710,12 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
     accent: AccentPreferenceSchema.optional(),
     density: DensityPreferenceSchema.optional(),
     reduceMotion: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.setWorkbench"),
+    openLocation: OpenLocationSchema.optional(),
+    contextActionsAutoSubmit: z.boolean().optional(),
+    showEditorTitleIcon: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("rayucode.editor.openFile"),
@@ -2541,7 +2751,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openSimpleBrowser"),
-    url: z.string().min(1),
+    url: z.string().optional(),
   }),
   z.object({
     type: z.literal("rayucode.editor.openExternal"),
@@ -2602,6 +2812,13 @@ export const HostToWebviewMessageSchema = z.union([
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
     accountStatus: AccountStatusViewSchema.optional(),
     fileChanges: FileChangesSnapshotViewSchema.nullable().optional(),
+    todos: z.array(TodoItemViewSchema).optional(),
+    workbench: WorkbenchPreferencesSchema.optional(),
+    defaultPermissionMode: PermissionModeIdSchema.optional(),
+    activePermissionMode: PermissionModeIdSchema.optional(),
+    pendingPermissions: z
+      .record(z.string(), z.array(PendingPermissionViewSchema))
+      .optional(),
   }),
   RpcResultSuccessSchema,
   RpcResultErrorSchema,
@@ -2615,6 +2832,11 @@ export const HostToWebviewMessageSchema = z.union([
     snapshot: FileChangesSnapshotViewSchema,
   }),
   z.object({
+    type: z.literal("rayucode.todos.updated"),
+    sessionId: z.string(),
+    todos: z.array(TodoItemViewSchema),
+  }),
+  z.object({
     type: z.literal("rayucode.config.changed"),
     changedKeys: z.array(z.string()),
     requiresRestart: z.boolean().optional(),
@@ -2625,11 +2847,24 @@ export const HostToWebviewMessageSchema = z.union([
     frame: z.record(z.string(), z.unknown()),
   }),
   z.object({
+    type: z.literal("rayucode.permission.resolved"),
+    sessionId: z.string(),
+    requestId: z.string(),
+    decision: z.enum(["allow_once", "allow_always", "deny"]),
+  }),
+  z.object({
+    type: z.literal("rayucode.permission.modeSync"),
+    sessionId: z.string().optional(),
+    mode: PermissionModeIdSchema,
+    isDefault: z.boolean().optional(),
+  }),
+  z.object({
     type: z.literal("rayucode.editor.selectionChanged"),
     selection: EditorSelectionViewSchema.nullable(),
   }),
   z.object({
     type: z.literal("rayucode.processes.snapshot"),
+    sessionId: z.string().optional(),
     tasks: z.array(BackgroundProcessViewSchema),
   }),
   z.object({
@@ -2657,6 +2892,14 @@ export const HostToWebviewMessageSchema = z.union([
     accent: AccentPreferenceSchema,
     density: DensityPreferenceSchema.optional(),
     reduceMotion: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.ui.workbenchSync"),
+    workbench: WorkbenchPreferencesSchema,
+  }),
+  z.object({
+    type: z.literal("rayucode.composer.inject"),
+    injection: ComposerInjectionPayloadSchema,
   }),
   z.object({
     type: z.literal("rayucode.dialog.filesPicked"),

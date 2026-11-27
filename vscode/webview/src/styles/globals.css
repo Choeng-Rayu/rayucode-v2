@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "../../../../packages/ui/src/components/TaskChecklistCard.tsx";
 
 /* Keep Tailwind v4 scanner fast and isolated to vscode/webview/src */
 @source not "../../../prototype";

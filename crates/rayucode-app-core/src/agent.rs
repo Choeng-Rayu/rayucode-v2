@@ -619,6 +619,7 @@ impl Agent {
         agent.session.model = Some(agent.provider_model());
         agent.session.provider_key = agent.provider_key_for_new_session();
         agent.reconcile_explicit_provider_pin_route();
+        agent.sync_session_reasoning_effort();
         mark("provider", &mut lap);
         // A provisional Agent is usually replaced by a resumed session (every
         // reconnect after a reload), so do not fork the git/hardware probes
@@ -1255,6 +1256,7 @@ impl Agent {
     /// blocking flushes (up to ~800ms each), which stalled every reload
     /// reconnect's restore by 0.4-2s.
     pub(crate) fn mark_closed_for_replacement(&mut self) {
+        crate::session_effort::forget_session_effort(&self.session.id);
         if let Some(mut guard) = self.concurrency_session.take() {
             guard.finish_background();
         }

@@ -9,7 +9,7 @@ RayuCode for VS Code lives in [vscode/](../vscode). See [vscode/README.md](../vs
 | **Extension Host** | [vscode/host/harnessExtension.ts](../vscode/host/harnessExtension.ts) | `esbuild` (Node 22 CJS) | Extension activation, commands, status bar, `BridgeManager` auto-spawn, `SessionHub` multi-surface fanout, Zod RPC routers, `EditorBridge`, `GitChangesBridge`, and `WorkspacePanelManager` |
 | **Shared Protocol** | [vscode/shared/vscodeProtocol.ts](../vscode/shared/vscodeProtocol.ts) | TypeScript (`zod` only) | Frozen browser-safe Host ↔ Webview message envelopes and typed RPC contracts across all 11 domains |
 | **Webview App** | [vscode/webview/src/main.tsx](../vscode/webview/src/main.tsx) & [App.tsx](../vscode/webview/src/App.tsx) | Vite 6 + Tailwind CSS v4 (ESM) | React 19 dual-form-factor UI (`sidebar` & `editorPanel`), 11 feature-sliced modules, self-hosted Inter/JetBrains Mono fonts, and VS Code polarity observer |
-| **Staging & VSIX** | [vscode/build.mjs](../vscode/build.mjs) & [vscode/package.mjs](../vscode/package.mjs) | Node + `@vscode/vsce` | Stages `dist/extension/{extension.js,media/*,package.json,README.md,LICENSE}` and packages `vscode/dist/rayucode-vscode-preview.vsix` |
+| **Staging & VSIX** | [vscode/build.mjs](../vscode/build.mjs) & [vscode/package.mjs](../vscode/package.mjs) | Node + `@vscode/vsce` | Stages `dist/extension/{extension.js,media/*,package.json,README.md,LICENSE}` and packages `vscode/dist/rayucode-<version>.vsix` |
 
 ## Runtime Contract (Harness API v1.14)
 
@@ -64,7 +64,7 @@ cargo test -p rayucode-app-core --lib runtime_commands
 # Build SDK, UI, Extension Host (esbuild), and React 19 Webview (Vite 6)
 npm run build:vscode
 
-# Build + package vscode/dist/rayucode-vscode-preview.vsix
+# Build + package vscode/dist/rayucode-<version>.vsix
 npm run package:vscode
 ```
 
@@ -79,7 +79,11 @@ code --extensionDevelopmentPath="$PWD/vscode/dist/extension" /path/to/trusted-wo
 Or install the generated VSIX into a dedicated VS Code profile:
 
 ```sh
-code --profile rayu-dev --install-extension "$PWD/vscode/dist/rayucode-vscode-preview.vsix"
+code --profile rayu-dev --install-extension "$PWD/vscode/dist/rayucode-<version>.vsix"
 ```
 
 Verify both the Compact Sidebar (`rayucode.chat`) and the Full Editor Panel (`rayucode.workspace`) across Warm Graphite Dark (Rayu Green & Ocean Blue), Warm Paper Light, and Match VS Code Theme modes.
+
+### 7. Release
+
+Versioning, credentials, Marketplace publishing, and rollback are covered in [how-to-release-vscode.md](../how-to-release-vscode.md). In short: bump `vscode/extension.manifest.json` and `vscode/CHANGELOG.md`, then run `node scripts/publish_vscode.mjs` (package) and `node scripts/publish_vscode.mjs --publish` (upload), or push a `vscode-v*` tag to run [.github/workflows/publish-vscode.yml](../.github/workflows/publish-vscode.yml).

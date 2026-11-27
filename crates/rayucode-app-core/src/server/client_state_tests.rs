@@ -1163,5 +1163,79 @@ fn history_reload_recovery_does_not_mark_delivered_until_continuation_is_accepte
     Ok(())
 }
 
+#[tokio::test]
+async fn model_prefetch_does_not_pin_retired_agent_in_session_manager() {
+    struct HangingPrefetchProvider {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Provider for HangingPrefetchProvider {
+        async fn complete(
+            &self,
+            _: &[Message],
+            _: &[ToolDefinition],
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<EventStream> {
+            anyhow::bail!("not used")
+        }
+        fn name(&self) -> &str {
+            "hanging-prefetch-owner-regression"
+        }
+        fn model(&self) -> String {
+            "fallback".into()
+        }
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self {
+                entered: Arc::clone(&self.entered),
+                release: Arc::clone(&self.release),
+            })
+        }
+        async fn prefetch_models(&self) -> Result<()> {
+            self.entered.notify_waiters();
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let provider: Arc<dyn Provider> = Arc::new(HangingPrefetchProvider {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    });
+    let session_id = "session_prefetch_retired_owner";
+    let session = crate::session::Session::create_with_id(session_id.into(), None, None);
+    let agent = Arc::new(Mutex::new(Agent::new_with_session(
+        provider.clone(),
+        Registry::empty(),
+        session,
+        None,
+    )));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::new());
+    sessions
+        .register_new(session_id.into(), Arc::clone(&agent))
+        .await
+        .unwrap();
+
+    let entered_wait = entered.notified();
+    super::spawn_model_prefetch_update(provider.clone(), Arc::clone(&agent));
+    tokio::time::timeout(Duration::from_secs(2), entered_wait)
+        .await
+        .expect("prefetch task entered prefetch_models");
+
+    let removed = sessions.remove(session_id).await;
+    drop(removed);
+    drop(agent);
+
+    assert!(
+        sessions.reserve(session_id).await.ensure_vacant().is_ok(),
+        "pending spawn_model_prefetch_update must not pin a retired Agent in SessionManager::owners"
+    );
+    release.notify_waiters();
+}
+
 #[path = "client_state_tests/history_delta.rs"]
 mod history_delta;

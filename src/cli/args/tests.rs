@@ -979,7 +979,27 @@ fn quiet_global_flag_parses() {
 fn acp_subcommand_parses() {
     let args = Args::try_parse_from(["rayu", "acp"]).unwrap();
     match args.command {
-        Some(Command::Acp) => {}
+        Some(Command::Acp { profile, product }) => {
+            assert!(profile.is_none());
+            assert!(product.is_none());
+        }
+        other => panic!("unexpected command: {:?}", other),
+    }
+
+    let args = Args::try_parse_from([
+        "rayu",
+        "acp",
+        "--profile",
+        "extended",
+        "--product",
+        "studio",
+    ])
+    .unwrap();
+    match args.command {
+        Some(Command::Acp { profile, product }) => {
+            assert_eq!(profile.as_deref(), Some("extended"));
+            assert_eq!(product.as_deref(), Some("studio"));
+        }
         other => panic!("unexpected command: {:?}", other),
     }
 }
@@ -1190,7 +1210,6 @@ fn onboarding_repair_brief_commands_are_valid_cli() {
 /// them. When the subcommand flag was also `--socket`, clap bound the global
 /// and the bridge listened on, and dialled, the same path: it came up looking
 /// healthy and every SDK client got ECONNREFUSED. Keep the names distinct.
-#[cfg(unix)]
 #[test]
 fn api_bridge_socket_flags_do_not_collide() {
     let args = Args::try_parse_from([

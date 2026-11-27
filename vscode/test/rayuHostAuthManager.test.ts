@@ -10,6 +10,7 @@ import {
   getRayuGatewayBase,
   getRayuWebBase,
   isSafeRayuBaseUrl,
+  parseHostedModelsPayload,
   resolveRayuAppConfigDir,
   resolveRayuAuthDir,
 } from "../host/auth/rayuHostAuthManager.js";
@@ -22,6 +23,12 @@ interface MockRayuServer {
     auth?: string;
     body?: Record<string, unknown>;
   }>;
+  setEntitlementsHandler(
+    handler: () => { status: number; body: unknown } | null,
+  ): void;
+  setGatewayModelsHandler(
+    handler: () => { status: number; body: unknown } | null,
+  ): void;
   close(): Promise<void>;
 }
 
@@ -29,9 +36,49 @@ async function startMockRayuServer(options?: {
   rejectApiKey?: boolean;
   rejectRefresh?: boolean;
   creditsResponse?: Record<string, unknown>;
+  entitlementsResponse?: { status: number; body: unknown };
+  gatewayModelsResponse?: { status: number; body: unknown };
 }): Promise<MockRayuServer> {
   const requests: MockRayuServer["requests"] = [];
   let limitMode: "gated" | "full_credits" = "gated";
+  let entitlementsHandler: () => { status: number; body: unknown } | null = () =>
+    options?.entitlementsResponse ?? {
+      status: 200,
+      body: {
+        hostedModels: [
+          {
+            code: "claude-sonnet-4-6",
+            label: "Claude Sonnet 4.6",
+            description: "Balanced coding model",
+            supportsEffort: true,
+            supportsFast: true,
+          },
+          {
+            code: "rayu:claude-opus-4-6",
+            label: "Claude Opus 4.6",
+            description: "Flagship reasoning",
+          },
+        ],
+      },
+    };
+  let gatewayModelsHandler: () => { status: number; body: unknown } | null = () =>
+    options?.gatewayModelsResponse ?? {
+      status: 200,
+      body: {
+        object: "list",
+        data: [
+          {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            description: "Gateway catalog model",
+          },
+          {
+            id: "gpt-5.4",
+            name: "GPT-5.4",
+          },
+        ],
+      },
+    };
 
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -154,6 +201,36 @@ async function startMockRayuServer(options?: {
         return;
       }
 
+      if (req.method === "GET" && reqPath === "/api/me/entitlements") {
+        if (!auth?.startsWith("Bearer jwt_")) {
+          sendJson(401, { message: "Unauthorized" });
+          return;
+        }
+        const reply = entitlementsHandler();
+        if (!reply) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{malformed-json");
+          return;
+        }
+        sendJson(reply.status, reply.body);
+        return;
+      }
+
+      if (req.method === "GET" && reqPath === "/v1/models") {
+        if (!auth?.startsWith("Bearer ")) {
+          sendJson(401, { message: "Unauthorized" });
+          return;
+        }
+        const reply = gatewayModelsHandler();
+        if (!reply) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end("{malformed-json");
+          return;
+        }
+        sendJson(reply.status, reply.body);
+        return;
+      }
+
       sendJson(404, { message: `Unhandled route ${req.method} ${reqPath}` });
     });
   });
@@ -167,6 +244,12 @@ async function startMockRayuServer(options?: {
   return {
     baseUrl: `http://127.0.0.1:${addr.port}`,
     requests,
+    setEntitlementsHandler: (handler) => {
+      entitlementsHandler = handler;
+    },
+    setGatewayModelsHandler: (handler) => {
+      gatewayModelsHandler = handler;
+    },
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
@@ -621,6 +704,271 @@ test("signInWithApiKey enforces rayu_sk_live_ prefix, verifies /v1/credits live,
         }
         assert.ok(daemonCalls.includes("clearApiKey"));
         assert.ok(daemonCalls.includes("notifyAuthChanged"));
+      } finally {
+        manager.dispose();
+      }
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test("parseHostedModelsPayload handles hostedModels, allowedModels, models, OpenAI data, and deduplicates preserving order", () => {
+  assert.deepEqual(
+    parseHostedModelsPayload({
+      hostedModels: [
+        {
+          code: "rayu:claude-sonnet-4-6",
+          label: "Claude Sonnet 4.6",
+          description: "Primary",
+          supportsEffort: true,
+          supportsFast: true,
+        },
+        {
+          code: "claude-sonnet-4-6",
+          label: "Duplicate Should Be Ignored",
+        },
+        {
+          model: "rayu-future-x1",
+          name: "Rayu Future X1",
+        },
+      ],
+    }),
+    [
+      {
+        code: "claude-sonnet-4-6",
+        label: "Claude Sonnet 4.6",
+        description: "Primary",
+        supportsEffort: true,
+        supportsFast: true,
+      },
+      {
+        code: "rayu-future-x1",
+        label: "Rayu Future X1",
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    parseHostedModelsPayload({
+      allowedModels: [
+        "rayu:model-alpha",
+        { id: "model-alpha" },
+        { id: "model-beta", name: "Beta", description: "Second" },
+      ],
+    }),
+    [
+      { code: "model-alpha" },
+      { code: "model-beta", label: "Beta", description: "Second" },
+    ],
+  );
+
+  assert.deepEqual(
+    parseHostedModelsPayload({
+      models: [{ code: "m-one" }, "m-two"],
+    }),
+    [{ code: "m-one" }, { code: "m-two" }],
+  );
+
+  assert.deepEqual(
+    parseHostedModelsPayload({
+      object: "list",
+      data: [
+        { id: "rayu:openai-style-1", name: "OpenAI Style 1", description: "Desc" },
+        { id: "openai-style-1" },
+        { id: "future-gateway-2099" },
+      ],
+    }),
+    [
+      { code: "openai-style-1", label: "OpenAI Style 1", description: "Desc" },
+      { code: "future-gateway-2099" },
+    ],
+  );
+});
+
+test("OAuth discovers arbitrary future models via /me/entitlements, caches, bypasses fresh cache on forceRefresh, preserves last-good on failure, and clears on signOut", async () => {
+  const mock = await startMockRayuServer({
+    entitlementsResponse: {
+      status: 200,
+      body: {
+        hostedModels: [
+          {
+            code: "rayu-future-omega-9999",
+            label: "Rayu Future Omega 9999",
+            description: "Unlisted future model",
+            supportsEffort: true,
+          },
+          {
+            code: "claude-opus-4-6",
+            label: "Claude Opus 4.6",
+          },
+        ],
+      },
+    },
+  });
+
+  try {
+    await withIsolatedAuthEnv(mock.baseUrl, async () => {
+      const manager = new RayuHostAuthManager();
+      try {
+        // Signed out -> empty
+        assert.deepEqual(await manager.fetchHostedModels(false), []);
+
+        // Sign in via OAuth -> refreshAccountDetails fetches /me/entitlements
+        const started = await manager.startBrowserSignIn("vscode");
+        const state = new URL(started.authUrl).searchParams.get("state")!;
+        await manager.handleUriCallback(
+          `vscode://rayucode.rayucode/auth?code=c_models&state=${state}`,
+        );
+
+        const initial = manager.getCachedHostedModels();
+        assert.deepEqual(
+          initial.map((m) => m.code),
+          ["rayu-future-omega-9999", "claude-opus-4-6"],
+        );
+
+        const entCallsBefore = mock.requests.filter(
+          (r) => r.path === "/api/me/entitlements",
+        ).length;
+        assert.equal(entCallsBefore, 1);
+
+        // Fresh cache hit (forceRefresh=false) MUST NOT hit network again
+        const cached = await manager.fetchHostedModels(false);
+        assert.deepEqual(
+          cached.map((m) => m.code),
+          ["rayu-future-omega-9999", "claude-opus-4-6"],
+        );
+        assert.equal(
+          mock.requests.filter((r) => r.path === "/api/me/entitlements").length,
+          entCallsBefore,
+        );
+
+        // Server publishes an arbitrary new future model -> forceRefresh=true bypasses fresh cache
+        mock.setEntitlementsHandler(() => ({
+          status: 200,
+          body: {
+            allowedModels: [
+              { code: "rayu-future-nova-2099", label: "Nova 2099" },
+              { code: "rayu-future-omega-9999", label: "Rayu Future Omega 9999" },
+            ],
+          },
+        }));
+        const forced = await manager.fetchHostedModels(true);
+        assert.deepEqual(
+          forced.map((m) => m.code),
+          ["rayu-future-nova-2099", "rayu-future-omega-9999"],
+        );
+        assert.equal(
+          mock.requests.filter((r) => r.path === "/api/me/entitlements").length,
+          entCallsBefore + 1,
+        );
+
+        // Failure on both /me/entitlements (500) and /v1/models (malformed) MUST preserve last-good cache
+        mock.setEntitlementsHandler(() => ({
+          status: 500,
+          body: { error: "upstream down" },
+        }));
+        mock.setGatewayModelsHandler(() => null);
+        const preserved = await manager.fetchHostedModels(true);
+        assert.deepEqual(
+          preserved.map((m) => m.code),
+          ["rayu-future-nova-2099", "rayu-future-omega-9999"],
+        );
+
+        // signOut clears cachedModels
+        await manager.signOut();
+        assert.deepEqual(manager.getCachedHostedModels(), []);
+        assert.deepEqual(await manager.fetchHostedModels(true), []);
+      } finally {
+        manager.dispose();
+      }
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test("OAuth falls back to /v1/models when /me/entitlements fails or returns empty, and API key fetches /v1/models directly", async () => {
+  const mock = await startMockRayuServer({
+    entitlementsResponse: {
+      status: 200,
+      body: { hostedModels: [] },
+    },
+    gatewayModelsResponse: {
+      status: 200,
+      body: {
+        object: "list",
+        data: [
+          {
+            id: "rayu-gateway-future-777",
+            name: "Gateway Future 777",
+            description: "Discovered from /v1/models",
+          },
+          { id: "claude-sonnet-4-6" },
+        ],
+      },
+    },
+  });
+
+  try {
+    await withIsolatedAuthEnv(mock.baseUrl, async () => {
+      const manager = new RayuHostAuthManager();
+      try {
+        // 1. OAuth with empty /me/entitlements falls back to /v1/models
+        const started = await manager.startBrowserSignIn("vscode");
+        const state = new URL(started.authUrl).searchParams.get("state")!;
+        await manager.handleUriCallback(
+          `vscode://rayucode.rayucode/auth?code=c_fallback&state=${state}`,
+        );
+        assert.deepEqual(
+          manager.getCachedHostedModels().map((m) => m.code),
+          ["rayu-gateway-future-777", "claude-sonnet-4-6"],
+        );
+        assert.ok(
+          mock.requests.some((r) => r.path === "/api/me/entitlements"),
+        );
+        assert.ok(mock.requests.some((r) => r.path === "/v1/models"));
+
+        // 2. Sign out and sign in with API key -> calls /v1/models directly (NOT /me/entitlements)
+        await manager.signOut();
+        const entCountAfterSignOut = mock.requests.filter(
+          (r) => r.path === "/api/me/entitlements",
+        ).length;
+
+        mock.setGatewayModelsHandler(() => ({
+          status: 200,
+          body: {
+            object: "list",
+            data: [{ id: "rayu-apikey-future-888", name: "API Key Future 888" }],
+          },
+        }));
+
+        await manager.signInWithApiKey("rayu_sk_live_models_test");
+        const apiKeyModels = await manager.fetchHostedModels(false);
+        assert.deepEqual(
+          apiKeyModels.map((m) => m.code),
+          ["rayu-apikey-future-888"],
+        );
+        assert.equal(
+          mock.requests.filter((r) => r.path === "/api/me/entitlements").length,
+          entCountAfterSignOut,
+          "API key auth should query /v1/models directly, not /me/entitlements",
+        );
+
+        // API key transient error preserves last-good models
+        mock.setGatewayModelsHandler(() => ({
+          status: 503,
+          body: { error: "temporarily unavailable" },
+        }));
+        const preservedApiKey = await manager.fetchHostedModels(true);
+        assert.deepEqual(
+          preservedApiKey.map((m) => m.code),
+          ["rayu-apikey-future-888"],
+        );
+
+        // signOut clears API key models too
+        await manager.signOut();
+        assert.deepEqual(manager.getCachedHostedModels(), []);
       } finally {
         manager.dispose();
       }

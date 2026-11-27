@@ -90,12 +90,35 @@ describe("App end-to-end integration", () => {
       authLoaded: true,
       authBypassed: false,
       authDialogOpen: false,
-      inspectorOpen: false,
+      activeSettingsSection: "account",
       mobileSidebarOpen: false,
       sidebarCollapsed: false,
       backgroundDrawerOpen: false,
       backgroundTasks: [],
+      todosBySession: {},
+      turnDurationsBySession: {},
       editorSelection: null,
+      pendingComposerInjection: null,
+      composerDrafts: {},
+      workbench: {
+        openLocation: "secondarySidebar",
+        contextActionsAutoSubmit: false,
+        showEditorTitleIcon: true,
+      },
+      activeProjectPath: "/workspace/rayucode-v2",
+      workspaces: [
+        {
+          name: "rayucode-v2",
+          path: "/workspace/rayucode-v2",
+          branch: "main",
+          isPrimary: true,
+        },
+        {
+          name: "rayu-cloud-api",
+          path: "/workspace/rayu-cloud-api",
+          branch: "feat/kv-cache",
+        },
+      ],
       isStreamActive: false,
       pendingUserTurn: null,
     });
@@ -113,7 +136,7 @@ describe("App end-to-end integration", () => {
   });
 
   it(
-    "mounts Home route and navigates cleanly across all 8 AppRoutes",
+    "mounts Home route, navigates core routes, and transparently routes workspace domains into Settings",
     async () => {
       renderApp();
 
@@ -123,17 +146,13 @@ describe("App end-to-end integration", () => {
         "home",
       );
 
-      const routes: Array<{ route: AppRoute; testId: string }> = [
+      const coreRoutes: Array<{ route: AppRoute; testId: string }> = [
         { route: "workspace", testId: "chat-workspace-view" },
-        { route: "swarm", testId: "swarm-view" },
-        { route: "automations", testId: "automations-view" },
         { route: "plugins", testId: "plugins-view" },
-        { route: "changes", testId: "changes-view" },
-        { route: "remote", testId: "remote-view" },
         { route: "settings", testId: "settings-view" },
       ];
 
-      for (const { route, testId } of routes) {
+      for (const { route, testId } of coreRoutes) {
         act(() => {
           __dispatchHostMessageForTest({
             type: "rayucode.ui.navigate",
@@ -152,6 +171,55 @@ describe("App end-to-end integration", () => {
           route,
         );
       }
+
+      // Relocated Workspace routes normalize into Settings -> matching Workspace section
+      const relocatedRoutes: Array<{
+        route: AppRoute;
+        section: string;
+        testId: string;
+      }> = [
+        { route: "swarm", section: "swarm", testId: "swarm-view" },
+        { route: "agents", section: "agents", testId: "agents-view" },
+        { route: "automations", section: "automations", testId: "automations-view" },
+        { route: "remote", section: "remote", testId: "remote-view" },
+      ];
+
+      for (const { route, section, testId } of relocatedRoutes) {
+        act(() => {
+          __dispatchHostMessageForTest({
+            type: "rayucode.ui.navigate",
+            route,
+            sessionId: "ses_vscode_shell",
+          });
+        });
+
+        await waitFor(
+          () => {
+            expect(screen.getByTestId("settings-view")).toBeTruthy();
+            expect(screen.getByTestId(testId)).toBeTruthy();
+          },
+          { timeout: 10_000 },
+        );
+        expect(screen.getByTestId("app-shell").getAttribute("data-route")).toBe(
+          "settings",
+        );
+        expect(useAppStore.getState().activeSettingsSection).toBe(section);
+      }
+
+      // Legacy "changes" route normalizes cleanly back to active workspace
+      act(() => {
+        __dispatchHostMessageForTest({
+          type: "rayucode.ui.navigate",
+          route: "changes",
+          sessionId: "ses_vscode_shell",
+        });
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("chat-workspace-view")).toBeTruthy();
+      });
+      expect(screen.getByTestId("app-shell").getAttribute("data-route")).toBe(
+        "workspace",
+      );
     },
     20_000,
   );
@@ -309,7 +377,7 @@ describe("App end-to-end integration", () => {
     });
   });
 
-  it("renders Right Inspector diff and browser tabs cleanly and shows close button in compact sheet mode", async () => {
+  it("omits Right Inspector chrome in compact sidebar mode and renders live shared TaskChecklistCard on rayucode.todos.updated", async () => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -318,23 +386,35 @@ describe("App end-to-end integration", () => {
 
     renderApp();
     expect(await screen.findByTestId("home-page")).toBeTruthy();
+    expect(screen.queryByTestId("compact-inspector-trigger")).toBeNull();
+    expect(screen.queryByTestId("compact-changes-trigger")).toBeNull();
+    expect(screen.queryByTestId("slide-over-inspector-sheet")).toBeNull();
 
-    // Open compact inspector sheet in context mode
-    fireEvent.click(screen.getByTestId("compact-inspector-trigger"));
-    expect(screen.getByTestId("slide-over-inspector-sheet")).toBeTruthy();
-    const closeBtn = screen.getByTestId("inspector-sheet-close-btn");
-    expect(closeBtn).toBeTruthy();
-
-    // Switch to Simple Browser tab -> renders browser view without stale code header
-    fireEvent.click(screen.getByTestId("inspector-strip-browser"));
-    expect(await screen.findByTestId("inspector-browser-view")).toBeTruthy();
-
-    // Return from document mode to context mode, then switch to Changes & Diff tab
-    fireEvent.click(screen.getByLabelText("Close document"));
-    fireEvent.click(screen.getByTestId("inspector-strip-diff"));
-    await waitFor(() => {
-      expect(screen.getByTestId("changes-view")).toBeTruthy();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.ui.navigate",
+        route: "workspace",
+        sessionId: "ses_vscode_shell",
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.todos.updated",
+        sessionId: "ses_vscode_shell",
+        todos: [
+          { id: "t1", content: "Inspect protocol", status: "completed" },
+          {
+            id: "t2",
+            content: "Render live task card",
+            status: "in_progress",
+            activeForm: "Rendering live task card",
+          },
+        ],
+      });
     });
+
+    expect(await screen.findByTestId("task-checklist-card")).toBeTruthy();
+    expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+      "1/2",
+    );
 
     // Restore window width for subsequent tests
     Object.defineProperty(window, "innerWidth", {
@@ -451,11 +531,12 @@ describe("App end-to-end integration", () => {
 
     // Clicking nav item inside compact drawer closes the slide-over
     expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
-    fireEvent.click(screen.getByTestId("rail-nav-automations"));
+    expect(screen.queryByTestId("rail-nav-automations")).toBeNull();
+    fireEvent.click(screen.getByTestId("rail-nav-plugins"));
     await waitFor(() => {
       expect(screen.queryByTestId("slide-over-sessions-drawer")).toBeNull();
     });
-    expect(useAppStore.getState().activeRoute).toBe("automations");
+    expect(useAppStore.getState().activeRoute).toBe("plugins");
     expect(postSpy).not.toHaveBeenCalled();
 
     Object.defineProperty(window, "innerWidth", {
@@ -463,5 +544,222 @@ describe("App end-to-end integration", () => {
       configurable: true,
       value: 1280,
     });
+  });
+
+  it("handles rayucode.composer.inject across both home (controlled) and workspace (uncontrolled) routes and hydrates workbench prefs", async () => {
+    // 1. Home route (no activeSessionId -> controlled HomePage composer)
+    useAppStore.setState({
+      activeSessionId: null,
+      activeSessionTitle: null,
+      route: "settings",
+      activeRoute: "settings",
+    });
+
+    renderApp();
+    expect(await screen.findByTestId("settings-view")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_app_home_1",
+          mentions: ["src/index.ts", "src/helper.ts"],
+          prompt: "Explain how these modules interact",
+          workingDir: "/workspace/rayu-cloud-api",
+          autoSubmit: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("home-page")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@src/index.ts @src/helper.ts\n\nExplain how these modules interact",
+      );
+    });
+    expect(useAppStore.getState().activeProjectPath).toBe(
+      "/workspace/rayu-cloud-api",
+    );
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+
+    // 2. Workspace route (activeSessionId present -> switches from settings to uncontrolled SessionComposer)
+    act(() => {
+      useAppStore.setState({
+        activeSessionId: "ses_vscode_shell",
+        activeSessionTitle: "Build VS Code dual-form-factor shell",
+        route: "settings",
+        activeRoute: "settings",
+      });
+    });
+    expect(await screen.findByTestId("settings-view")).toBeTruthy();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_app_ws_2",
+          mentions: ["crates/rayu-harness/src/lib.rs"],
+          prompt: "Fix compiler warning",
+          selection: {
+            filePath: "/workspace/rayucode-v2/crates/rayu-harness/src/lib.rs",
+            relativePath: "crates/rayu-harness/src/lib.rs",
+            languageId: "rust",
+            lineStart: 5,
+            lineEnd: 15,
+            lineCount: 11,
+          },
+          autoSubmit: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-workspace-view")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@crates/rayu-harness/src/lib.rs\n\nFix compiler warning",
+      );
+    });
+    expect(screen.getByTestId("active-selection-pill")).toBeTruthy();
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+
+    // 3. Workbench sync from host updates store cleanly
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.ui.workbenchSync",
+        workbench: {
+          openLocation: "beside",
+          contextActionsAutoSubmit: true,
+          showEditorTitleIcon: false,
+        },
+      });
+    });
+    expect(useAppStore.getState().workbench).toEqual({
+      openLocation: "beside",
+      contextActionsAutoSubmit: true,
+      showEditorTitleIcon: false,
+    });
+  });
+
+  it("preserves pendingComposerInjection across AuthWelcomeScreen gate until user bypasses/signs in", async () => {
+    useAppStore.setState({
+      activeSessionId: null,
+      activeSessionTitle: null,
+      daemonStatus: {
+        state: "disconnected",
+        capabilities: [],
+        error: "Bridge offline",
+      },
+      authBypassed: false,
+    });
+
+    renderApp();
+    expect(await screen.findByTestId("rayu-offline-gate")).toBeTruthy();
+
+    // Host injects context while composer is unmounted behind AuthWelcomeScreen
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.composer.inject",
+        injection: {
+          id: "inj_behind_gate_1",
+          mentions: ["src/auth.ts"],
+          prompt: "Explain this error after bypass",
+          autoSubmit: false,
+        },
+      });
+    });
+
+    // Injection remains queued in Zustand because composer is not mounted yet
+    expect(useAppStore.getState().pendingComposerInjection?.id).toBe(
+      "inj_behind_gate_1",
+    );
+
+    // User bypasses auth/offline gate -> Home mounts and immediately consumes the queued injection
+    fireEvent.click(screen.getByTestId("auth-continue-byok"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("home-page")).toBeTruthy();
+      const textarea = screen.getByTestId(
+        "composer-textarea",
+      ) as HTMLTextAreaElement;
+      expect(textarea.value).toBe(
+        "@src/auth.ts\n\nExplain this error after bypass",
+      );
+    });
+    expect(useAppStore.getState().pendingComposerInjection).toBeNull();
+  });
+
+  it("invalidates all composer & settings model/provider queries on rayucode.account.changed and rayucode.daemon.statusChanged (connected)", async () => {
+    const client = createQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={client}>
+        <TooltipProvider delayDuration={0}>
+          <App />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId("home-page")).toBeTruthy();
+
+    invalidateSpy.mockClear();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.account.changed",
+        account: {
+          signedIn: true,
+          authMethod: "oauth",
+          displayName: "Rayu Developer",
+          email: "dev@rayucode.com",
+          planName: "Plus",
+          windows: [],
+        },
+      });
+    });
+
+    const expectedModelAndProviderKeys = [
+      ["composer", "model-settings"],
+      ["composer", "providers"],
+      ["settings", "models"],
+      ["settings", "providers"],
+      ["models"],
+    ];
+
+    for (const key of expectedModelAndProviderKeys) {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: key }),
+      );
+    }
+
+    invalidateSpy.mockClear();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.daemon.statusChanged",
+        status: {
+          ...CONNECTED_DAEMON,
+          state: "reconnecting",
+        },
+      });
+    });
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.daemon.statusChanged",
+        status: CONNECTED_DAEMON,
+      });
+    });
+    for (const key of expectedModelAndProviderKeys) {
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: key }),
+      );
+    }
+
+    invalidateSpy.mockRestore();
   });
 });

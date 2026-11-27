@@ -93,10 +93,10 @@ const COMMAND_RISK_TIERS = [
     rule: "Network mutations, git push, package installs, and outside-workspace writes always require explicit confirmation.",
   },
   {
-    tier: "hard_deny",
-    label: "Hard-Deny",
+    tier: "catastrophic",
+    label: "Catastrophic",
     tone: "bg-danger-soft text-danger",
-    rule: "Destructive root/home wipes, SSH/cloud credential exfiltration, and force-push to main are mechanically blocked.",
+    rule: "Destructive root/home wipes, SSH/cloud credential exfiltration, and force-push to main are flagged catastrophic and require explicit guard.",
   },
 ] as const;
 
@@ -158,10 +158,7 @@ export function SafetyHooksSection({
           role="radiogroup"
           aria-label="Default permission mode"
           data-testid="permission-modes-list"
-          className={cn(
-            "mt-2 grid grid-cols-1 gap-2.5",
-            engineReadOnly && "opacity-60",
-          )}
+          className="mt-2 grid grid-cols-1 gap-2.5"
         >
           {FIVE_PERMISSION_MODES.map((m) => {
             const isSelected = defaultPermissionMode === m.id;
@@ -170,7 +167,6 @@ export function SafetyHooksSection({
                 key={m.id}
                 type="button"
                 role="radio"
-                disabled={engineReadOnly}
                 aria-checked={isSelected}
                 data-testid={`permission-mode-card-${m.id}`}
                 onClick={() => void onSelectPermissionMode(m.id)}

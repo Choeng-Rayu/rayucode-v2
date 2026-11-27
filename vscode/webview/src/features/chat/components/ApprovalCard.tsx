@@ -18,6 +18,7 @@ export interface ApprovalCardProps {
     decision: "allow_once" | "allow_always" | "deny",
     request: ApprovalCardRequest,
   ) => void;
+  queueCount?: number;
   isSubmitting?: boolean;
   className?: string;
 }
@@ -41,13 +42,25 @@ function resolveRiskBadge(riskTier?: ApprovalRiskTier): {
   }
 }
 
+function formatCommandPreview(request: ApprovalCardRequest): string {
+  if (request.command?.trim()) return request.command.trim();
+  const desc = request.description.trim();
+  const runBacktickMatch = /^Run `([\s\S]+)`$/.exec(desc);
+  if (runBacktickMatch?.[1]) {
+    return runBacktickMatch[1];
+  }
+  return desc;
+}
+
 export function ApprovalCard({
   request,
   onDecision,
+  queueCount = 1,
   isSubmitting = false,
   className,
 }: ApprovalCardProps) {
   const riskMeta = resolveRiskBadge(request.riskTier);
+  const previewText = formatCommandPreview(request);
 
   return (
     <div
@@ -67,6 +80,15 @@ export function ApprovalCard({
           <span className="font-mono text-xs font-semibold text-ink">
             {request.toolName}
           </span>
+          {queueCount > 1 ? (
+            <Badge
+              data-testid="approval-queue-badge"
+              variant="outline"
+              className="font-mono text-[10px]"
+            >
+              1 of {queueCount} pending
+            </Badge>
+          ) : null}
         </div>
 
         <Badge
@@ -94,9 +116,7 @@ export function ApprovalCard({
               className="size-3.5 shrink-0 text-muted-ink"
               aria-hidden="true"
             />
-            <code className="whitespace-pre">
-              {request.command ?? request.description}
-            </code>
+            <code className="whitespace-pre">{previewText}</code>
           </div>
         )}
       </div>

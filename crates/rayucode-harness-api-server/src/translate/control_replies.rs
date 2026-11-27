@@ -16,6 +16,8 @@ pub(super) enum SimpleKind {
     Ok,
     /// Fallible controls acknowledge receipt first, then finish with done/error.
     OkOnDone,
+    /// `clear` rotates the session id on the daemon before replying `done`.
+    Clear,
     /// Rewind controls finish with a replacement history rather than done.
     OkOnHistory,
     /// Awaiting `model_changed`, which carries its own error field.
@@ -56,20 +58,7 @@ impl BridgeState {
         let index = self
             .pending_simple
             .iter()
-            .position(|(pending_id, _, kind)| {
-                *pending_id == id
-                    && matches!(
-                        kind,
-                        SimpleKind::Tools
-                            | SimpleKind::ToolControl
-                            | SimpleKind::SetPermissionMode { .. }
-                            | SimpleKind::FileChanges
-                            | SimpleKind::FileChangeDiff
-                            | SimpleKind::FileChangeAction
-                            | SimpleKind::OkOnDone
-                            | SimpleKind::OkOnHistory
-                    )
-            })?;
+            .position(|(pending_id, _, _)| *pending_id == id)?;
         let (_, api_id, _) = self.pending_simple.remove(index);
         self.pending_control_done_ids.remove(&id);
         self.pending_activity_snapshots.remove(&id);

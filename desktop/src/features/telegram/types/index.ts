@@ -12,5 +12,6 @@ export type TelegramCommandItem = TelegramState["commands"][number]
 
 export interface ConnectBotTokenInput {
   botToken: string
-  allowedChatId: string
+  allowedChatId?: string
+  replaceExisting?: boolean
 }

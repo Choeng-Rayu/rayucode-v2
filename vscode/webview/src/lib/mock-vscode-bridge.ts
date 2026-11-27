@@ -23,6 +23,7 @@ import type {
   MemoryStatusView,
   ModelRouteOptionView,
   OvernightRunView,
+  PermissionModeId,
   ProviderEntryView,
   ProviderTransport,
   QualityStatusView,
@@ -42,6 +43,7 @@ import type {
   TodoItemView,
   VoiceStatusView,
   WebviewToHostMessage,
+  WorkbenchPreferences,
   WorkspaceFolderView,
   WorkspaceIntegrationsView,
   WorkspaceLedgerView,
@@ -86,7 +88,18 @@ interface MockBridgeState {
     serviceTier: ServiceTier;
     cacheTtl: CacheTtl;
     transport: ProviderTransport;
+    subagentModel?: string | null;
+    inheritModel?: string | null;
     roleOverrides: AgentRoleOverrideView[];
+    effectiveRoleModels?: Record<string, string | null>;
+    profiles: Array<{
+      name: string;
+      model: string;
+      description: string;
+      effort?: string | null;
+      scope: "global" | "session";
+    }>;
+    configPath?: string;
     routes: ModelRouteOptionView[];
   };
   appearance: {
@@ -95,6 +108,7 @@ interface MockBridgeState {
     density: DensityPreference;
     reduceMotion: boolean;
   };
+  workbench: WorkbenchPreferences;
 }
 
 interface MockV116State {
@@ -929,6 +943,9 @@ const mockState: MockBridgeState = {
 
   telegram: {
     linked: false,
+    configured: false,
+    statusLabel: "Disconnected",
+    authPath: "~/.rayu/telegram-remote.json",
     daemonOnline: true,
     remoteUninstallEnabled: false,
     approvals: [],
@@ -1042,22 +1059,54 @@ const mockState: MockBridgeState = {
   ],
 
   modelSettings: {
-    defaultModel: "claude-sonnet-4-5",
+    defaultModel: "rayu:claude-sonnet-4-5",
     defaultEffort: "medium",
     serviceTier: "auto",
     cacheTtl: "5m",
     transport: "auto",
+    subagentModel: null,
+    inheritModel: "rayu:claude-sonnet-4-5",
     roleOverrides: [
-      { role: "swarm", label: "Swarm Workers", model: "claude-sonnet-4-5", scope: "global" },
-      { role: "review", label: "Auto-Review", model: "claude-sonnet-4-5", scope: "global" },
+      { role: "swarm", label: "Swarm Workers", model: "rayu:claude-sonnet-4-5", scope: "global" },
+      { role: "review", label: "Code Review", model: "architect", scope: "global" },
+      { role: "judge", label: "Acceptance Judge", model: "inherit", scope: "global" },
+      { role: "memory", label: "Memory Extraction", model: "inherit", scope: "global" },
+      { role: "ambient", label: "Ambient Cycles", model: "inherit", scope: "global" },
     ],
+    effectiveRoleModels: {
+      swarm: "rayu:claude-sonnet-4-5",
+      review: "rayu:claude-opus-4-5",
+      judge: null,
+      memory: null,
+      ambient: null,
+    },
+    profiles: [
+      {
+        name: "architect",
+        model: "rayu:claude-opus-4-5",
+        effort: "high",
+        description: "Systems architecture, API design, and thorough code reviews.",
+        scope: "global",
+      },
+      {
+        name: "coder",
+        model: "rayu:claude-sonnet-4-5",
+        effort: "medium",
+        description: "Focused feature implementation, surgical edits, and unit tests.",
+        scope: "global",
+      },
+    ],
+    configPath: "~/.rayu/config.toml",
     routes: [
       {
         id: "claude-sonnet-4-5",
         model: "claude-sonnet-4-5",
-        provider: "rayu-cloud",
+        modelSpec: "rayu:claude-sonnet-4-5",
+        provider: "rayu",
         label: "Claude Sonnet 4.5",
-        apiMethod: "anthropic",
+        apiMethod: "rayu",
+        authMethod: "oauth",
+        accountLabel: "dev@rayucode.com",
         available: true,
         detail: "Balanced speed & reasoning",
         supportsEffort: true,
@@ -1069,9 +1118,12 @@ const mockState: MockBridgeState = {
       {
         id: "claude-opus-4-5",
         model: "claude-opus-4-5",
-        provider: "rayu-cloud",
+        modelSpec: "rayu:claude-opus-4-5",
+        provider: "rayu",
         label: "Claude Opus 4.5",
-        apiMethod: "anthropic",
+        apiMethod: "rayu",
+        authMethod: "oauth",
+        accountLabel: "dev@rayucode.com",
         available: true,
         detail: "Deep architecture & complex refactors",
         supportsEffort: true,
@@ -1083,11 +1135,13 @@ const mockState: MockBridgeState = {
       {
         id: "gpt-5.2",
         model: "gpt-5.2",
+        modelSpec: "gpt-5.2",
         provider: "openai",
         label: "GPT-5.2",
         apiMethod: "responses",
-        available: true,
-        detail: "Fast multi-file edits & verification",
+        authMethod: "none",
+        available: false,
+        detail: "Configure OpenAI API key",
         supportsEffort: true,
         supportedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
         defaultEffort: "medium",
@@ -1097,6 +1151,7 @@ const mockState: MockBridgeState = {
       {
         id: "gpt-4o-mini",
         model: "gpt-4o-mini",
+        modelSpec: "gpt-4o-mini",
         provider: "openai",
         label: "GPT-4o Mini",
         apiMethod: "responses",
@@ -1111,6 +1166,7 @@ const mockState: MockBridgeState = {
       {
         id: "gemini-2.5-pro",
         model: "gemini-2.5-pro",
+        modelSpec: "gemini-2.5-pro",
         provider: "google",
         label: "Gemini 2.5 Pro",
         apiMethod: "gemini",
@@ -1123,6 +1179,7 @@ const mockState: MockBridgeState = {
       {
         id: "deepseek-r1",
         model: "deepseek-r1",
+        modelSpec: "deepseek-r1",
         provider: "deepseek",
         label: "DeepSeek R1",
         apiMethod: "openai-compatible",
@@ -1140,6 +1197,12 @@ const mockState: MockBridgeState = {
     accent: "green",
     density: "comfortable",
     reduceMotion: false,
+  },
+
+  workbench: {
+    openLocation: "secondarySidebar",
+    contextActionsAutoSubmit: false,
+    showEditorTitleIcon: true,
   },
 };
 
@@ -1159,6 +1222,7 @@ export function createMockHostInitMessage(): Extract<
     accent: mockState.appearance.accent,
     density: mockState.appearance.density,
     reduceMotion: mockState.appearance.reduceMotion,
+    workbench: { ...mockState.workbench },
     route: "home",
     sessionId: mockState.activeSessionId,
     capabilities: [...mockState.daemon.capabilities],
@@ -1340,6 +1404,7 @@ export function __setMockAccountStateForTest(
         ? []
         : mockState.account.windows.map((w) => ({ ...w })),
   };
+  updateMockRayuProviderFromAccount();
   return {
     ...mockState.account,
     windows: mockState.account.windows.map((w) => ({ ...w })),
@@ -1348,19 +1413,30 @@ export function __setMockAccountStateForTest(
 
 function updateMockRayuProviderFromAccount(): void {
   const acct = mockState.account;
+  const authMethod = acct.signedIn
+    ? acct.authMethod === "apiKey"
+      ? ("api_key" as const)
+      : ("oauth" as const)
+    : ("none" as const);
+  const accountLabel = acct.signedIn
+    ? acct.email ?? acct.displayName ?? "Rayu Cloud"
+    : undefined;
   mockState.providers = mockState.providers.map((p) => {
     if (p.id !== "rayu") return p;
     return {
       ...p,
       status: acct.signedIn ? "ready" : "needs_key",
-      authMethod: acct.signedIn
-        ? acct.authMethod === "apiKey"
-          ? "api_key"
-          : "oauth"
-        : "none",
-      accountLabel: acct.signedIn
-        ? acct.email ?? acct.displayName ?? "Rayu Cloud"
-        : undefined,
+      authMethod,
+      accountLabel,
+    };
+  });
+  mockState.modelSettings.routes = mockState.modelSettings.routes.map((r) => {
+    if (r.provider !== "rayu") return r;
+    return {
+      ...r,
+      available: acct.signedIn,
+      authMethod,
+      accountLabel,
     };
   });
 }
@@ -1420,7 +1496,15 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     case "daemon.status":
     case "daemon.reconnect":
     case "daemon.restart":
-      mockState.daemon = { ...mockState.daemon, state: "connected", error: undefined };
+    case "daemon.updateEngine":
+      mockState.daemon = {
+        ...mockState.daemon,
+        state: "connected",
+        error: undefined,
+        downloadProgress: undefined,
+        downloadVersion: undefined,
+        statusMessage: undefined,
+      };
       return { ...mockState.daemon } as RpcResult<M>;
     case "daemon.ping":
       return { ok: true, latencyMs: 4, version: mockState.daemon.version } as RpcResult<M>;
@@ -1627,6 +1711,15 @@ export async function handleMockRpcCall<M extends RpcMethod>(
             ? params.model
             : mockState.modelSettings.defaultModel,
         provider: "rayu-cloud",
+        ...(typeof params.effort === "string"
+          ? { effort: params.effort as SessionSummaryView["effort"] }
+          : {}),
+        ...(typeof params.serviceTier === "string"
+          ? { serviceTier: params.serviceTier as SessionSummaryView["serviceTier"] }
+          : {}),
+        ...(typeof params.cacheTtl === "string"
+          ? { cacheTtl: params.cacheTtl as SessionSummaryView["cacheTtl"] }
+          : {}),
         permissionMode:
           (params.permissionMode as SessionSummaryView["permissionMode"]) ?? "default",
         updatedAtMs: Date.now(),
@@ -1716,20 +1809,43 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       );
       return { ok: true } as RpcResult<M>;
     }
-    case "sessions.setPermissionMode":
-      return { ok: true, mode: (params.mode as SessionSummaryView["permissionMode"]) ?? "default" } as RpcResult<M>;
+    case "sessions.setPermissionMode": {
+      const sid = typeof params.sessionId === "string" ? params.sessionId : "";
+      const mode =
+        (params.mode as SessionSummaryView["permissionMode"]) ?? "default";
+      if (sid) {
+        mockState.sessions = mockState.sessions.map((s) =>
+          s.sessionId === sid ? { ...s, permissionMode: mode } : s,
+        );
+      }
+      return { ok: true, mode } as RpcResult<M>;
+    }
     case "sessions.rewind":
     case "sessions.rewindUndo":
-    case "sessions.cancelSoftInterrupts":
     case "sessions.respondPermission":
     case "sessions.respondQuestion":
       return { ok: true } as RpcResult<M>;
-    case "sessions.softInterrupt":
-      return { ok: true, interruptId: `int_${Date.now()}` } as RpcResult<M>;
+    case "sessions.cancelSoftInterrupts":
+      return { ok: true, cancelled: true } as RpcResult<M>;
+    case "sessions.softInterrupt": {
+      const clientId =
+        typeof params.clientId === "string" && params.clientId.trim()
+          ? params.clientId.trim()
+          : `int_${Date.now()}`;
+      return { ok: true, interruptId: clientId } as RpcResult<M>;
+    }
 
     // --- Background ---
-    case "background.list":
-      return { tasks: mockState.backgroundTasks.map((t) => ({ ...t })) } as RpcResult<M>;
+    case "background.list": {
+      const sid =
+        typeof params.sessionId === "string" && params.sessionId.trim()
+          ? params.sessionId.trim()
+          : null;
+      const list = sid
+        ? mockState.backgroundTasks.filter((t) => t.sessionId === sid)
+        : mockState.backgroundTasks;
+      return { tasks: list.map((t) => ({ ...t })) } as RpcResult<M>;
+    }
     case "background.status": {
       const task =
         mockState.backgroundTasks.find((t) => t.taskId === params.taskId) ?? null;
@@ -1751,9 +1867,16 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true } as RpcResult<M>;
     }
     case "background.cleanup": {
+      const sid =
+        typeof params.sessionId === "string" && params.sessionId.trim()
+          ? params.sessionId.trim()
+          : null;
       const before = mockState.backgroundTasks.length;
       mockState.backgroundTasks = mockState.backgroundTasks.filter(
-        (t) => t.status === "running" || t.status === "stalled",
+        (t) =>
+          (sid !== null && t.sessionId !== sid) ||
+          t.status === "running" ||
+          t.status === "stalled",
       );
       return { ok: true, removedCount: before - mockState.backgroundTasks.length } as RpcResult<M>;
     }
@@ -2102,13 +2225,81 @@ export async function handleMockRpcCall<M extends RpcMethod>(
 
     // --- Remote ---
     case "remote.telegram.status":
+      return {
+        ...mockState.telegram,
+        approvals: mockState.telegram.approvals.map((a) => ({ ...a })),
+      } as RpcResult<M>;
     case "remote.telegram.linkHosted":
-    case "remote.telegram.linkBotfather":
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: false,
+        configured: true,
+        statusLabel: "Waiting for pairing",
+        mode: "hosted",
+        botHandle: "@RayuCodeBot",
+        pairingCode: "live_pair_9k4m2p",
+        pairingUrl: "https://t.me/RayuCodeBot?start=live_pair_9k4m2p",
+        pairingExpiresAtMs: Date.now() + 600_000,
+        qrSize: 29,
+        qrPath: "M2 2h7v1h-7zM2 3h1v5h-1zM8 3h1v5h-1zM4 4h3v3h-3zM2 8h7v1h-7z",
+      };
       return { ...mockState.telegram } as RpcResult<M>;
+    case "remote.telegram.linkBotfather": {
+      const chatId =
+        typeof params.allowedChatId === "string" && params.allowedChatId.trim()
+          ? params.allowedChatId.trim()
+          : undefined;
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: Boolean(chatId),
+        configured: true,
+        statusLabel: chatId ? "Linked" : "Waiting for pairing",
+        mode: "botfather",
+        botHandle: "@CustomRayuBot",
+        chatId,
+        pairingCode: chatId ? undefined : "bf_pair_8m2k",
+        pairingUrl: chatId
+          ? undefined
+          : "https://t.me/CustomRayuBot?start=bf_pair_8m2k",
+        pairingExpiresAtMs: chatId ? undefined : Date.now() + 600_000,
+        qrSize: chatId ? null : 29,
+        qrPath: chatId
+          ? null
+          : "M2 2h7v1h-7zM2 3h1v5h-1zM8 3h1v5h-1zM4 4h3v3h-3zM2 8h7v1h-7z",
+      };
+      return { ...mockState.telegram } as RpcResult<M>;
+    }
     case "remote.telegram.disconnect":
+      mockState.telegram = {
+        ...mockState.telegram,
+        linked: false,
+        configured: false,
+        statusLabel: "Disconnected",
+        chatId: undefined,
+        pairingCode: undefined,
+        pairingUrl: undefined,
+        qrSize: null,
+        qrPath: null,
+      };
+      return { ok: true } as RpcResult<M>;
     case "remote.telegram.testPing":
+      return {
+        ok: true,
+        target: mockState.telegram.botHandle ?? "@RayuCodeBot",
+        chatId: mockState.telegram.chatId,
+        message: "Sent Telegram ping.",
+      } as RpcResult<M>;
     case "remote.telegram.driveSession":
-    case "remote.telegram.decide":
+      mockState.telegram.boundSessionId = String(params.sessionId ?? "");
+      return { ok: true } as RpcResult<M>;
+    case "remote.telegram.decide": {
+      const id = String(params.id ?? "");
+      const decision = params.decision === "allow" ? "approved" : "denied";
+      mockState.telegram.approvals = mockState.telegram.approvals.map((a) =>
+        a.id === id ? { ...a, status: decision, resolvedVia: "host" } : a,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
     case "remote.gateway.revoke":
     case "remote.cloud.syncEnv":
       return { ok: true } as RpcResult<M>;
@@ -2324,7 +2515,61 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       );
       return { ok: true } as RpcResult<M>;
     }
-    case "settings.models.setRoleOverride":
+    case "settings.models.setRoleOverride": {
+      const role = String(params.role ?? "");
+      const model = String(params.model ?? "inherit");
+      const scope = params.scope === "session" ? "session" : "global";
+      mockState.modelSettings.roleOverrides =
+        mockState.modelSettings.roleOverrides.map((r) =>
+          r.role === role ? { ...r, model, scope } : r,
+        );
+      return { ok: true } as RpcResult<M>;
+    }
+    case "settings.agents.setSubagentModel": {
+      const model = String(params.model ?? "inherit");
+      mockState.modelSettings.subagentModel = model === "default" ? null : model;
+      return {
+        ok: true,
+        model: mockState.modelSettings.subagentModel,
+        configuredDefault: mockState.modelSettings.subagentModel,
+      } as RpcResult<M>;
+    }
+    case "settings.agents.upsertProfile": {
+      const name = String(params.name ?? "").trim().toLowerCase();
+      const model = String(params.model ?? "").trim();
+      const scope = params.scope === "session" ? "session" : "global";
+      const next = {
+        name,
+        model,
+        effort:
+          typeof params.effort === "string" && params.effort.trim()
+            ? params.effort.trim()
+            : null,
+        description: String(params.description ?? "").trim(),
+        scope,
+      } as const;
+      mockState.modelSettings.profiles = [
+        ...mockState.modelSettings.profiles.filter(
+          (p) => !(p.name === name && p.scope === scope),
+        ),
+        next,
+      ];
+      return {
+        ok: true,
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+      } as RpcResult<M>;
+    }
+    case "settings.agents.deleteProfile": {
+      const name = String(params.name ?? "").trim().toLowerCase();
+      const scope = params.scope === "session" ? "session" : "global";
+      mockState.modelSettings.profiles = mockState.modelSettings.profiles.filter(
+        (p) => !(p.name === name && p.scope === scope),
+      );
+      return {
+        ok: true,
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+      } as RpcResult<M>;
+    }
     case "settings.hooks.openConfig":
     case "settings.shortcuts.openKeybindings":
     case "settings.runtime.update":
@@ -2362,6 +2607,13 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return {
         ...mockState.modelSettings,
         roleOverrides: mockState.modelSettings.roleOverrides.map((r) => ({ ...r })),
+        profiles: mockState.modelSettings.profiles.map((p) => ({ ...p })),
+        globalProfiles: mockState.modelSettings.profiles
+          .filter((p) => p.scope === "global")
+          .map((p) => ({ ...p })),
+        sessionProfiles: mockState.modelSettings.profiles
+          .filter((p) => p.scope === "session")
+          .map((p) => ({ ...p })),
         routes: mockState.modelSettings.routes.map((r) => ({ ...r })),
       } as RpcResult<M>;
     case "settings.models.refresh":
@@ -2418,11 +2670,112 @@ export async function handleMockRpcCall<M extends RpcMethod>(
     case "settings.shortcuts.list":
       return {
         shortcuts: [
-          { id: "toggle-sidebar", label: "Toggle Sessions Sidebar", keybinding: "Shift+Cmd+S" },
-          { id: "open-terminal", label: "Open Integrated Terminal", keybinding: "Cmd+J" },
-          { id: "pop-out", label: "Open Full Editor Panel", keybinding: "Cmd+Shift+E" },
+          {
+            id: "open-from-editor-title",
+            label: "Open / Focus RayuCode (Preferred Surface)",
+            keybinding: "Cmd/Ctrl+Alt+R",
+            when: "global",
+            commandId: "rayucode.openFromEditorTitle",
+          },
+          {
+            id: "open-beside",
+            label: "Open RayuCode Split Beside Editor",
+            keybinding: "Cmd/Ctrl+Alt+Shift+R",
+            when: "global",
+            commandId: "rayucode.openBeside",
+          },
+          {
+            id: "open-workspace-panel",
+            label: "Open Mission Control Panel",
+            keybinding: "Cmd/Ctrl+Shift+R",
+            when: "global",
+            commandId: "rayucode.openWorkspacePanel",
+          },
+          {
+            id: "send-selection",
+            label: "Add Selection to RayuCode Context",
+            keybinding: "Cmd/Ctrl+Shift+L",
+            when: "editorTextFocus",
+            commandId: "rayucode.sendSelection",
+          },
+          {
+            id: "open-background-processes",
+            label: "Open Background Processes Drawer",
+            keybinding: "Alt+Shift+B",
+            when: "global",
+            commandId: "rayucode.openBackgroundProcesses",
+          },
+          {
+            id: "add-to-context",
+            label: "Add File(s) to RayuCode Context (Explorer & Tab)",
+            keybinding: "Context Menu",
+            when: "explorerResourceScheme == file",
+            commandId: "rayucode.addToContext",
+          },
+          {
+            id: "explain-selection",
+            label: "Explain Selection with RayuCode",
+            keybinding: "Editor Menu",
+            when: "editorHasSelection",
+            commandId: "rayucode.explainSelection",
+          },
+          {
+            id: "refactor-selection",
+            label: "Refactor / Fix Selection with RayuCode",
+            keybinding: "Editor Menu",
+            when: "editorHasSelection",
+            commandId: "rayucode.refactorSelection",
+          },
+          {
+            id: "fix-diagnostic",
+            label: "Fix Error / Diagnostic with RayuCode (Quick Fix)",
+            keybinding: "Cmd/Ctrl+.",
+            when: "editorTextFocus",
+            commandId: "rayucode.fixDiagnostic",
+          },
+          {
+            id: "ask-terminal",
+            label: "Ask RayuCode about Terminal Output",
+            keybinding: "Terminal Menu",
+            when: "terminalFocus",
+            commandId: "rayucode.askTerminal",
+          },
+          {
+            id: "scm-open-changes",
+            label: "Review Git Changes in RayuCode (SCM Header)",
+            keybinding: "SCM Title",
+            when: "scmProvider == git",
+            commandId: "rayucode.scmOpenChanges",
+          },
+          {
+            id: "toggle-sessions-pane",
+            label: "Toggle Sessions & Projects Sidebar Pane",
+            keybinding: "Shift+Cmd/Ctrl+S",
+            commandId: "rayucode.toggleSessionsPane",
+          },
+          {
+            id: "open-integrated-terminal",
+            label: "Open Native VS Code Integrated Terminal",
+            keybinding: "Cmd/Ctrl+J",
+            commandId: "workbench.action.terminal.toggleTerminal",
+          },
         ],
       } as RpcResult<M>;
+    case "settings.permission.getDefault":
+      return {
+        mode: (mockState as { defaultPermissionMode?: PermissionModeId })
+          .defaultPermissionMode ?? "default",
+      } as RpcResult<M>;
+    case "settings.permission.setDefault": {
+      const p = (params ?? {}) as {
+        mode?: PermissionModeId;
+        applyToActiveSession?: boolean;
+      };
+      const nextMode: PermissionModeId = p.mode ?? "default";
+      (mockState as { defaultPermissionMode?: PermissionModeId }).defaultPermissionMode =
+        nextMode;
+      return { ok: true, mode: nextMode } as RpcResult<M>;
+    }
     case "settings.runtime.get":
       return {
         socketPath: mockState.daemon.socketPath ?? "/run/user/1000/rayu-daemon.sock",
@@ -2622,6 +2975,26 @@ export function handleMockHostMessage(
         density: mockState.appearance.density,
         reduceMotion: mockState.appearance.reduceMotion,
       });
+      return;
+    }
+    case "rayucode.ui.setWorkbench": {
+      if (msg.openLocation !== undefined) {
+        mockState.workbench.openLocation = msg.openLocation;
+      }
+      if (msg.contextActionsAutoSubmit !== undefined) {
+        mockState.workbench.contextActionsAutoSubmit =
+          msg.contextActionsAutoSubmit;
+      }
+      if (msg.showEditorTitleIcon !== undefined) {
+        mockState.workbench.showEditorTitleIcon = msg.showEditorTitleIcon;
+      }
+      dispatch({
+        type: "rayucode.ui.workbenchSync",
+        workbench: { ...mockState.workbench },
+      });
+      return;
+    }
+    case "rayucode.ui.focusSidebar": {
       return;
     }
     case "rayucode.editor.copy":

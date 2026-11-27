@@ -1852,6 +1852,10 @@ pub struct App {
     expanded_file_change_paths: HashSet<String>,
     /// Whether a resolved 1-line file-changes receipt has been manually expanded
     file_changes_receipt_expanded: bool,
+    /// Optional manual collapse/expand override for the pending file-changes card,
+    /// scoped to `(is_processing, expanded)` so responding turns collapse by default
+    /// and finished turns automatically expand by default.
+    file_changes_card_override: Option<(bool, bool)>,
     /// Interactive File Review Overlay (`Alt+R` / `/changes` / `[Diff]`)
     file_review_overlay: Option<super::file_review_overlay::FileReviewOverlayState>,
     /// Queued remote file-change wire requests produced by synchronous UI handlers

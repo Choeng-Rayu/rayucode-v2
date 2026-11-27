@@ -27,6 +27,7 @@ import {
   type ExecutionTurn,
   type ShellCommandStep,
 } from "../index"
+import { executionTurnSchema, traceTimelineItemSchema } from "../schemas"
 
 if (typeof globalThis.ResizeObserver === "undefined") {
   globalThis.ResizeObserver = class ResizeObserver {
@@ -325,7 +326,7 @@ describe("execution-trace feature", () => {
     )
   })
 
-  it("renders model reasoning timeline items cleanly inside WorkTrace", () => {
+  it("renders live reasoning timeline items collapsed by default and toggles expand/collapse on click", () => {
     render(
       <WorkTrace
         workedDuration="3s"
@@ -342,8 +343,116 @@ describe("execution-trace feature", () => {
       />
     )
 
-    expect(screen.getByTestId("work-reasoning").textContent).toContain(
+    expect(screen.getByTestId("work-reasoning")).toHaveAttribute(
+      "data-slot",
+      "work-reasoning"
+    )
+    const toggle = screen.getByTestId("work-reasoning-toggle")
+    expect(toggle).toHaveAttribute("data-slot", "work-reasoning-toggle")
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(toggle).toHaveTextContent("Thinking")
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull()
+    expect(
+      screen.queryByText(
+        "Checking the session dedup logic before touching the composer."
+      )
+    ).toBeNull()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByTestId("work-reasoning-body")).toHaveTextContent(
       "Checking the session dedup logic before touching the composer."
+    )
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull()
+  })
+
+  it("keeps completed/historical reasoning collapsed by default inside expanded WorkTrace and toggles cleanly", () => {
+    render(
+      <WorkTrace
+        workedDuration="6s"
+        isLive={false}
+        notes={[]}
+        groups={[]}
+        timeline={[
+          {
+            type: "reasoning",
+            id: "r_hist_1",
+            text: "Auditing historical trace schema before finalizing reply.",
+          },
+        ]}
+      />
+    )
+
+    const traceToggle = screen.getByRole("button", { name: /Worked for 6s/i })
+    expect(traceToggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByTestId("work-reasoning-toggle")).toBeNull()
+
+    fireEvent.click(traceToggle)
+    expect(traceToggle).toHaveAttribute("aria-expanded", "true")
+
+    const reasoningToggle = screen.getByTestId("work-reasoning-toggle")
+    expect(reasoningToggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull()
+
+    fireEvent.click(reasoningToggle)
+    expect(reasoningToggle).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByTestId("work-reasoning-body")).toHaveTextContent(
+      "Auditing historical trace schema before finalizing reply."
+    )
+
+    fireEvent.click(reasoningToggle)
+    expect(reasoningToggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull()
+  })
+
+  it("mounts WorkTrace for reasoning-only turns in ChatStream and validates reasoning timeline items in Zod schema", () => {
+    const reasoningItem = {
+      type: "reasoning" as const,
+      id: "r_schema_1",
+      text: "Evaluating cache invalidation boundaries.",
+    }
+    expect(traceTimelineItemSchema.parse(reasoningItem)).toEqual(reasoningItem)
+
+    const reasoningOnlyTurn: ExecutionTurn = {
+      ...SAMPLE_TURN,
+      id: "turn_reasoning_only",
+      notes: [],
+      groups: [],
+      timeline: [reasoningItem],
+      answerIntro: "",
+      answerSummaryTitle: undefined,
+      answerBullets: [],
+      diffCard: {
+        id: "diff_empty",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+    }
+    expect(executionTurnSchema.parse(reasoningOnlyTurn).timeline).toEqual([
+      reasoningItem,
+    ])
+
+    const queryClient = createQueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ChatStream turns={[reasoningOnlyTurn]} />
+      </QueryClientProvider>
+    )
+
+    const reasoningToggle = screen.getByTestId("work-reasoning-toggle")
+    expect(reasoningToggle).toHaveAttribute("aria-expanded", "false")
+    expect(screen.queryByTestId("work-reasoning-body")).toBeNull()
+
+    fireEvent.click(reasoningToggle)
+    expect(reasoningToggle).toHaveAttribute("aria-expanded", "true")
+    expect(screen.getByTestId("work-reasoning-body")).toHaveTextContent(
+      "Evaluating cache invalidation boundaries."
     )
   })
 

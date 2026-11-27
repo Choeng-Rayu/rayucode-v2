@@ -263,6 +263,7 @@ impl Agent {
         self.session.provider_key = Some(selection.runtime_key.stable_id());
         self.session.route_api_method = Some(selection.api_method.clone());
         self.session.model = Some(self.provider_model());
+        self.sync_session_reasoning_effort();
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.refresh_compaction_budget();
@@ -316,6 +317,7 @@ impl Agent {
             self.session.route_api_method = None;
         }
         self.session.model = Some(self.provider_model());
+        self.sync_session_reasoning_effort();
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.refresh_compaction_budget();
@@ -332,13 +334,27 @@ impl Agent {
         self.provider_runtime_state.user_selected_after(generation)
     }
 
+    /// Mirror the active provider's reasoning effort into both the persisted
+    /// session record and the deadlock-free `session_effort` side-table.
+    pub(super) fn sync_session_reasoning_effort(&mut self) -> Option<String> {
+        let current = self.provider.reasoning_effort();
+        self.session.reasoning_effort = current.clone();
+        crate::session_effort::record_session_effort(&self.session.id, current.as_deref());
+        current
+    }
+
     pub fn restore_reasoning_effort_from_session(&mut self) {
         if let Some(effort) = self.session.reasoning_effort.clone() {
-            if let Err(e) = self.provider.set_reasoning_effort(&effort) {
-                crate::logging::error(&format!(
-                    "Failed to restore session reasoning effort '{}': {}",
-                    effort, e
-                ));
+            match self.provider.set_reasoning_effort(&effort) {
+                Ok(()) => {
+                    self.session.reasoning_effort = self.provider.reasoning_effort();
+                }
+                Err(e) => {
+                    crate::logging::error(&format!(
+                        "Failed to restore session reasoning effort '{}': {}",
+                        effort, e
+                    ));
+                }
             }
         } else {
             self.session.reasoning_effort = self.provider.reasoning_effort();
@@ -354,10 +370,7 @@ impl Agent {
 
     pub fn set_reasoning_effort(&mut self, effort: &str) -> Result<Option<String>> {
         self.provider.set_reasoning_effort(effort)?;
-        let current = self.provider.reasoning_effort();
-        self.session.reasoning_effort = current.clone();
-        // Keep the side-table in sync (see `restore_reasoning_effort_from_session`).
-        crate::session_effort::record_session_effort(&self.session.id, current.as_deref());
+        let current = self.sync_session_reasoning_effort();
         self.log_env_snapshot("set_reasoning_effort");
         self.session.save()?;
         Ok(current)
@@ -494,5 +507,204 @@ impl Agent {
     /// Get the stored messages (for transcript export)
     pub fn messages(&self) -> &[StoredMessage] {
         &self.session.messages
+    }
+}
+
+#[cfg(test)]
+mod reasoning_effort_sync_tests {
+    use super::*;
+    use async_trait::async_trait;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Clone)]
+    struct SwitchingEffortProvider {
+        model: Arc<StdMutex<String>>,
+        effort: Arc<StdMutex<Option<String>>>,
+    }
+
+    impl SwitchingEffortProvider {
+        fn new(model: &str, effort: Option<&str>) -> Self {
+            Self {
+                model: Arc::new(StdMutex::new(model.to_string())),
+                effort: Arc::new(StdMutex::new(effort.map(str::to_string))),
+            }
+        }
+
+        fn apply_model_transition(&self, model: &str) {
+            *self.model.lock().unwrap() = model.to_string();
+            let mut effort = self.effort.lock().unwrap();
+            match model {
+                // Model that does not support reasoning effort clears it.
+                "claude-haiku-4-5" | "cursor-model" => *effort = None,
+                // Model that clamps `max` down to `high`.
+                "gpt-5-pro" => {
+                    if effort.as_deref() == Some("max") || effort.as_deref() == Some("low") {
+                        *effort = Some("high".to_string());
+                    }
+                }
+                // Model that defaults to `low` when effort was cleared.
+                "gpt-5.6-sol" => {
+                    if effort.is_none() {
+                        *effort = Some("low".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for SwitchingEffortProvider {
+        async fn complete(
+            &self,
+            _: &[Message],
+            _: &[ToolDefinition],
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<crate::provider::EventStream> {
+            anyhow::bail!("unused in effort sync test")
+        }
+
+        fn name(&self) -> &str {
+            "openai"
+        }
+
+        fn model(&self) -> String {
+            self.model.lock().unwrap().clone()
+        }
+
+        fn set_model(&self, model: &str) -> Result<()> {
+            self.apply_model_transition(model);
+            Ok(())
+        }
+
+        fn set_route_selection(&self, selection: &crate::provider::RouteSelection) -> Result<()> {
+            self.apply_model_transition(&selection.model);
+            Ok(())
+        }
+
+        fn reasoning_effort(&self) -> Option<String> {
+            self.effort.lock().unwrap().clone()
+        }
+
+        fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
+            *self.effort.lock().unwrap() = Some(effort.to_string());
+            Ok(())
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_new_set_model_and_set_route_selection_sync_reasoning_effort() {
+        let _home = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
+        let provider: Arc<dyn Provider> = Arc::new(SwitchingEffortProvider::new(
+            "claude-opus-4-7",
+            Some("low"),
+        ));
+        let registry = Registry::new(provider.clone()).await;
+        let mut agent = Agent::new(provider, registry);
+        let session_id = agent.session.id.clone();
+
+        // Agent::new seeds session.reasoning_effort and the side-table from the provider.
+        assert_eq!(agent.session.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            crate::session_effort::session_effort(&session_id).as_deref(),
+            Some("low")
+        );
+
+        // Prepare session on disk so set_model / set_route_selection persist updates.
+        agent.persist_session_now().unwrap();
+        agent.set_reasoning_effort("max").unwrap();
+        assert_eq!(agent.session.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(
+            crate::session_effort::session_effort(&session_id).as_deref(),
+            Some("max")
+        );
+        assert_eq!(
+            crate::session::Session::load(&session_id)
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("max")
+        );
+
+        // Switching via set_model to a model that clamps effort syncs session + disk + side-table.
+        agent.set_model("gpt-5-pro").unwrap();
+        assert_eq!(agent.session.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            crate::session_effort::session_effort(&session_id).as_deref(),
+            Some("high")
+        );
+        assert_eq!(
+            crate::session::Session::load(&session_id)
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("high")
+        );
+
+        // Switching via set_model to a non-effort model clears session + disk + side-table.
+        agent.set_model("claude-haiku-4-5").unwrap();
+        assert_eq!(agent.session.reasoning_effort, None);
+        assert_eq!(crate::session_effort::session_effort(&session_id), None);
+        assert_eq!(
+            crate::session::Session::load(&session_id)
+                .unwrap()
+                .reasoning_effort,
+            None
+        );
+
+        // Switching via set_route_selection restores/syncs effort to session + disk + side-table.
+        let sol_route = crate::provider::RouteSelection::from_model_route(
+            &crate::provider::ModelRoute {
+                model: "gpt-5.6-sol".to_string(),
+                provider: "OpenAI".to_string(),
+                api_method: "openai-api-key".to_string(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+                cheapness: None,
+            },
+        );
+        agent.set_route_selection(&sol_route).unwrap();
+        assert_eq!(agent.session.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(
+            crate::session_effort::session_effort(&session_id).as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            crate::session::Session::load(&session_id)
+                .unwrap()
+                .reasoning_effort
+                .as_deref(),
+            Some("low")
+        );
+
+        // Switching via set_route_selection to a non-effort route clears effort everywhere.
+        let cursor_route = crate::provider::RouteSelection::from_model_route(
+            &crate::provider::ModelRoute {
+                model: "cursor-model".to_string(),
+                provider: "Cursor".to_string(),
+                api_method: "cursor".to_string(),
+                available: true,
+                detail: String::new(),
+                usage: None,
+                cheapness: None,
+            },
+        );
+        agent.set_route_selection(&cursor_route).unwrap();
+        assert_eq!(agent.session.reasoning_effort, None);
+        assert_eq!(crate::session_effort::session_effort(&session_id), None);
+        assert_eq!(
+            crate::session::Session::load(&session_id)
+                .unwrap()
+                .reasoning_effort,
+            None
+        );
+
+        crate::session_effort::forget_session_effort(&session_id);
     }
 }

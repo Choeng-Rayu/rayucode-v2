@@ -18,6 +18,10 @@ export * from "./components/ThinkingBlock.js";
 export * from "./components/ToolCallCard.js";
 export * from "./components/PermissionCard.js";
 export * from "./components/DiffViewer.js";
+export {
+  TaskChecklistCard,
+  type TaskChecklistCardProps,
+} from "./components/TaskChecklistCard.js";
 export * from "./components/TodoListCard.js";
 export * from "./components/AgentActivityBar.js";
 export * from "./components/ModelSelector.js";

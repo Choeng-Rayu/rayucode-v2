@@ -11,10 +11,9 @@ use crate::process_title::{compact_process_title, session_name, set_title};
 pub(crate) fn initial_title(args: &Args) -> String {
     match &args.command {
         Some(Command::Serve { .. }) => "rayu:server".to_string(),
-        Some(Command::Acp) => "rayu acp".to_string(),
+        Some(Command::Acp { .. }) => "rayu acp".to_string(),
         Some(Command::Server { .. }) => "rayu server".to_string(),
         Some(Command::Connect) => "rayu:client".to_string(),
-        #[cfg(unix)]
         Some(Command::ApiBridge { .. }) => "rayu api-bridge".to_string(),
         Some(Command::Run { .. }) => "rayu run".to_string(),
         Some(Command::Login { .. }) => "rayu login".to_string(),

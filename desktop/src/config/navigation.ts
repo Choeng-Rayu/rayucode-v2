@@ -3,12 +3,13 @@ import type { AppRoute, RightTabId } from "@/lib/app-store"
 export interface PrimaryNavItem {
   id: AppRoute
   label: string
-  icon: "home" | "swarm" | "clock" | "plug" | "branch" | "telegram"
+  icon: "home" | "swarm" | "agents" | "clock" | "plug" | "branch" | "telegram"
   hasLiveDot?: boolean
 }
 
 export const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
   { id: "home", label: "Home", icon: "home" },
+  { id: "agents", label: "Agents & Personas", icon: "agents" },
   { id: "automations", label: "Automations", icon: "clock" },
   { id: "plugins", label: "Plugins", icon: "plug" },
   { id: "changes", label: "Changes", icon: "branch" },

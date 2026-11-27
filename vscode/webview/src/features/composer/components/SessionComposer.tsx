@@ -5,16 +5,16 @@ import {
   ArrowUp,
   AtSign,
   Check,
-  ChevronDown,
   Clock,
   CornerDownLeft,
-  GitBranch,
   Image as ImageIcon,
   Lightbulb,
+  ListPlus,
   Loader2,
   Plug,
   Plus,
   Sparkles,
+  Square,
   X,
 } from "lucide-react";
 import type {
@@ -24,6 +24,7 @@ import type {
   ImageAttachmentView,
   PermissionModeId,
   ServiceTier,
+  SessionSummaryView,
 } from "@shared/vscodeProtocol";
 import {
   formatEffortLabel as formatSessionCoreEffortLabel,
@@ -39,23 +40,20 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui";
-import {
-  ProjectIconGlyph,
-  toProjectIconSpec,
-} from "@/features/shell";
-import { callRpc, cn, useAppStore } from "@/lib";
+import { callRpc, cn, useAppStore, type MidTurnSendMode } from "@/lib";
 
 import {
   DEFAULT_CHECKOUT,
   DEFAULT_PERMISSION_MODE_ID,
   DEFAULT_PROJECT,
+  formatHarnessModelSpec,
+  mergeComposerInjection,
   normalizeEffortLevel,
 } from "../constants";
 import {
   useComposerModelCatalog,
   useSlashCommandsCatalog,
   useWorkspaceFilesSearch,
-  workspaceBranchesQueryOptions,
   workspaceFoldersQueryOptions,
 } from "../hooks/useComposerData";
 import type {
@@ -271,10 +269,33 @@ export function SessionComposer({
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const composerFocusNonce = useAppStore((s) => s.composerFocusNonce);
+  const midTurnSendMode = useAppStore((s) => s.midTurnSendMode);
+  const setMidTurnSendMode = useAppStore((s) => s.setMidTurnSendMode);
+  const addMidTurnMessage = useAppStore((s) => s.addMidTurnMessage);
+  const setQueuePausedForSession = useAppStore(
+    (s) => s.setQueuePausedForSession,
+  );
+  const pendingComposerInjection = useAppStore(
+    (s) => s.pendingComposerInjection,
+  );
+  const consumeComposerInjection = useAppStore(
+    (s) => s.consumeComposerInjection,
+  );
 
   const effectiveSessionId =
     controlledSessionId !== undefined ? controlledSessionId : storeSessionId;
+  const draftKey = effectiveSessionId ?? "__home__";
+  const storedDraft = useAppStore((s) => s.composerDrafts[draftKey] ?? "");
+  const setComposerDraft = useAppStore((s) => s.setComposerDraft);
   const sessionOverrideKey = effectiveSessionId ?? "__draft__";
+  const sessionPrefs = useAppStore(
+    (s) => s.sessionPrefsBySession[sessionOverrideKey],
+  );
+  const setSessionPrefs = useAppStore((s) => s.setSessionPrefs);
+  const clearSessionPrefField = useAppStore((s) => s.clearSessionPrefField);
+  const seedSessionPrefsFromSummary = useAppStore(
+    (s) => s.seedSessionPrefsFromSummary,
+  );
   const isSubmitting =
     controlledIsSubmitting !== undefined
       ? controlledIsSubmitting
@@ -282,9 +303,6 @@ export function SessionComposer({
 
   const catalog = useComposerModelCatalog(effectiveSessionId);
   const foldersQuery = useQuery(workspaceFoldersQueryOptions());
-  const branchesQuery = useQuery(
-    workspaceBranchesQueryOptions(storeProjectPath),
-  );
 
   const workspaces = React.useMemo(() => {
     if (storeWorkspaces.length > 0) return storeWorkspaces;
@@ -301,37 +319,8 @@ export function SessionComposer({
     return workspaces[0] ?? null;
   }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
-  const [internalValue, setInternalValue] = React.useState("");
-  const [internalProject, setInternalProject] = React.useState(
-    activeWorkspace?.name ?? DEFAULT_PROJECT,
-  );
-  const [internalCheckout, setInternalCheckout] = React.useState(
-    activeWorkspace?.branch ?? DEFAULT_CHECKOUT,
-  );
-  const [modelOverride, setModelOverride] = React.useState<{
-    sessionKey: string;
-    id: string;
-    label: string;
-  } | null>(null);
-  const [effortOverride, setEffortOverride] = React.useState<{
-    sessionKey: string;
-    effort: EffortLevel;
-  } | null>(null);
-  const [serviceTierOverride, setServiceTierOverride] = React.useState<{
-    sessionKey: string;
-    tier: ServiceTier;
-  } | null>(null);
-  const [cacheTtlOverride, setCacheTtlOverride] = React.useState<{
-    sessionKey: string;
-    ttl: CacheTtl;
-  } | null>(null);
-  const [internalPermissionMode, setInternalPermissionMode] =
-    React.useState<PermissionModeId>(DEFAULT_PERMISSION_MODE_ID);
-
   const [images, setImages] = React.useState<ImageAttachmentView[]>([]);
   const [selectionIncluded, setSelectionIncluded] = React.useState(true);
-  const [workspacePickerOpen, setWorkspacePickerOpen] = React.useState(false);
-  const [branchPickerOpen, setBranchPickerOpen] = React.useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false);
   const [mentionIndex, setMentionIndex] = React.useState(0);
   const [slashIndex, setSlashIndex] = React.useState(0);
@@ -368,6 +357,52 @@ export function SessionComposer({
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const lastFocusNonceRef = React.useRef(composerFocusNonce);
+  const pendingCursorToEndRef = React.useRef(false);
+  const lastConsumedInjectionIdRef = React.useRef<string | null>(null);
+
+  // Hydrate remembered per-session prefs from cached sessions list when switching sessions
+  React.useEffect(() => {
+    if (!effectiveSessionId) return;
+    const listData = queryClient.getQueryData<{
+      sessions?: SessionSummaryView[];
+    }>(["sessions", "list", { includeArchived: false }]);
+    const summary = listData?.sessions?.find(
+      (s) => s.sessionId === effectiveSessionId,
+    );
+    if (summary) {
+      seedSessionPrefsFromSummary(summary);
+    }
+  }, [effectiveSessionId, queryClient, seedSessionPrefsFromSummary]);
+
+  // If a saved model for this session became unavailable (e.g. signed out of its provider),
+  // fall back cleanly to the live catalog default without wiping valid selections.
+  React.useEffect(() => {
+    if (catalog.models.length === 0) return;
+    const savedModelId = sessionPrefs?.modelId;
+    if (!savedModelId) return;
+    const matches = catalog.models.filter(
+      (m) => m.modelSpec === savedModelId || m.id === savedModelId,
+    );
+    const currentMatch =
+      matches.find((m) => m.available !== false) ?? matches[0];
+    const hasAvailableModel = catalog.models.some(
+      (m) => m.available !== false,
+    );
+    if (
+      currentMatch &&
+      currentMatch.available === false &&
+      hasAvailableModel
+    ) {
+      clearSessionPrefField(sessionOverrideKey, "modelId");
+      clearSessionPrefField(sessionOverrideKey, "modelLabel");
+      clearSessionPrefField(sessionOverrideKey, "apiMethod");
+    }
+  }, [
+    catalog.models,
+    clearSessionPrefField,
+    sessionOverrideKey,
+    sessionPrefs?.modelId,
+  ]);
 
   React.useEffect(() => {
     if (composerFocusNonce > lastFocusNonceRef.current) {
@@ -394,67 +429,81 @@ export function SessionComposer({
   );
 
   const textValue =
-    controlledValue !== undefined ? controlledValue : internalValue;
+    controlledValue !== undefined ? controlledValue : storedDraft;
   const activeProject =
     controlledProject !== undefined
       ? controlledProject
-      : activeWorkspace?.name ?? internalProject;
+      : (activeWorkspace?.name ?? DEFAULT_PROJECT);
   const activeCheckout =
     controlledCheckout !== undefined
       ? controlledCheckout
-      : branchesQuery.data?.current ??
-        activeWorkspace?.branch ??
-        internalCheckout;
-  const activeModelOverride =
-    modelOverride?.sessionKey === sessionOverrideKey ? modelOverride : null;
-  const activeEffortOverride =
-    effortOverride?.sessionKey === sessionOverrideKey ? effortOverride : null;
-  const activeServiceTierOverride =
-    serviceTierOverride?.sessionKey === sessionOverrideKey
-      ? serviceTierOverride
-      : null;
-  const activeCacheTtlOverride =
-    cacheTtlOverride?.sessionKey === sessionOverrideKey
-      ? cacheTtlOverride
-      : null;
-
+      : (activeWorkspace?.branch ?? DEFAULT_CHECKOUT);
   const activeModelId =
     controlledModelId !== undefined
       ? controlledModelId
-      : (activeModelOverride?.id ?? catalog.defaultModelId);
+      : (sessionPrefs?.modelId ?? catalog.defaultModelId);
+  const matchedActiveModel = React.useMemo(() => {
+    if (!activeModelId) return undefined;
+    return (
+      catalog.models.find(
+        (m) =>
+          (m.modelSpec === activeModelId || m.id === activeModelId) &&
+          m.available !== false,
+      ) ??
+      catalog.models.find(
+        (m) => m.modelSpec === activeModelId || m.id === activeModelId,
+      )
+    );
+  }, [activeModelId, catalog.models]);
   const activeModelLabel =
     controlledModelLabel !== undefined
       ? controlledModelLabel
-      : (activeModelOverride?.label ?? catalog.defaultModelLabel);
+      : (matchedActiveModel?.label ??
+        sessionPrefs?.modelLabel ??
+        catalog.defaultModelLabel);
   const activeEffort = normalizeEffortLevel(
     controlledEffort !== undefined
       ? controlledEffort
-      : (activeEffortOverride?.effort ?? catalog.defaultEffort),
+      : (sessionPrefs?.effort ?? catalog.defaultEffort),
   );
   const activeServiceTier =
     controlledServiceTier !== undefined
       ? controlledServiceTier
-      : (activeServiceTierOverride?.tier ?? catalog.serviceTier);
+      : (sessionPrefs?.serviceTier ?? catalog.serviceTier);
   const activeCacheTtl =
     controlledCacheTtl !== undefined
       ? controlledCacheTtl
-      : (activeCacheTtlOverride?.ttl ?? catalog.cacheTtl);
+      : (sessionPrefs?.cacheTtl ?? catalog.cacheTtl);
+  const storeDefaultPermissionMode = useAppStore(
+    (s) => s.defaultPermissionMode,
+  );
   const activePermissionMode =
     controlledPermissionMode !== undefined
       ? controlledPermissionMode
-      : internalPermissionMode;
+      : (sessionPrefs?.permissionMode ??
+        storeDefaultPermissionMode ??
+        DEFAULT_PERMISSION_MODE_ID);
   const activeSelection =
     controlledEditorSelection !== undefined
       ? controlledEditorSelection
       : storeEditorSelection;
 
-  // Auto-grow textarea height smoothly up to 180px
+  // Auto-grow textarea height smoothly up to 180px & place cursor at end after injection
   React.useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = "auto";
     const nextHeight = Math.min(180, Math.max(44, el.scrollHeight));
     el.style.height = `${nextHeight}px`;
+    if (pendingCursorToEndRef.current) {
+      pendingCursorToEndRef.current = false;
+      const end = el.value.length;
+      try {
+        el.setSelectionRange(end, end);
+      } catch {
+        // Ignore if selection API is unavailable
+      }
+    }
   }, [textValue]);
 
   React.useLayoutEffect(() => {
@@ -476,10 +525,10 @@ export function SessionComposer({
       if (onValueChange) {
         onValueChange(next);
       } else {
-        setInternalValue(next);
+        setComposerDraft(draftKey, next);
       }
     },
-    [onValueChange],
+    [draftKey, onValueChange, setComposerDraft],
   );
 
   const effectiveCursor =
@@ -590,6 +639,13 @@ export function SessionComposer({
               const res = await callRpc("workspace.compact", {
                 sessionId: effectiveSessionId,
               });
+              if (!res.ok) {
+                setCommandBanner({
+                  tone: "error",
+                  message: res.message || "Failed to compact context.",
+                });
+                return true;
+              }
               setTextValue("");
               setCursorPos(0);
               setCommandBanner({
@@ -615,21 +671,35 @@ export function SessionComposer({
                   sessionId: effectiveSessionId,
                   model: targetModel,
                 });
-                if (!res.ok && (res.deferred || res.code === "busy")) {
+                if (res.deferred || (!res.ok && res.code === "busy")) {
+                  setSessionPrefs(sessionOverrideKey, {
+                    modelId: targetModel,
+                    modelLabel: targetModel,
+                  });
                   setDeferredNotice("Applies on next turn");
                   setCommandBanner({
                     tone: "busy",
-                    message: "Applies on next turn",
+                    message: res.message || "Applies on next turn",
                   });
                   setTextValue("");
+                  setCursorPos(0);
+                  return true;
+                }
+                if (!res.ok) {
+                  setCommandBanner({
+                    tone: "error",
+                    message: res.message || `Failed to switch model to ${targetModel}.`,
+                  });
                   return true;
                 }
               }
-              setModelOverride({
-                sessionKey: sessionOverrideKey,
-                id: targetModel,
-                label: targetModel,
+              setSessionPrefs(sessionOverrideKey, {
+                modelId: targetModel,
+                modelLabel: targetModel,
               });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ model: targetModel });
+              }
               setTextValue("");
               setCursorPos(0);
               setCommandBanner({
@@ -650,25 +720,35 @@ export function SessionComposer({
                 });
                 return true;
               }
+              const normalizedEffort = normalizeEffortLevel(targetEffort);
               if (effectiveSessionId) {
                 const res = await callRpc("sessions.setEffort", {
                   sessionId: effectiveSessionId,
                   effort: targetEffort,
                 });
-                if (!res.ok && (res.deferred || res.code === "busy")) {
+                if (res.deferred || (!res.ok && res.code === "busy")) {
+                  setSessionPrefs(sessionOverrideKey, { effort: normalizedEffort });
                   setDeferredNotice("Applies on next turn");
                   setCommandBanner({
                     tone: "busy",
-                    message: "Applies on next turn",
+                    message: res.message || "Applies on next turn",
                   });
                   setTextValue("");
+                  setCursorPos(0);
+                  return true;
+                }
+                if (!res.ok) {
+                  setCommandBanner({
+                    tone: "error",
+                    message: res.message || `Failed to set reasoning effort to ${targetEffort}.`,
+                  });
                   return true;
                 }
               }
-              setEffortOverride({
-                sessionKey: sessionOverrideKey,
-                effort: normalizeEffortLevel(targetEffort),
-              });
+              setSessionPrefs(sessionOverrideKey, { effort: normalizedEffort });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ reasoningEffort: normalizedEffort });
+              }
               setTextValue("");
               setCursorPos(0);
               setCommandBanner({
@@ -692,7 +772,10 @@ export function SessionComposer({
                       : modeRaw === "plan"
                         ? "plan"
                         : "default";
-              setInternalPermissionMode(uiMode);
+              setSessionPrefs(sessionOverrideKey, { permissionMode: uiMode });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ permissionMode: uiMode });
+              }
               onPermissionModeChange?.(uiMode);
               if (effectiveSessionId) {
                 await callRpc("sessions.setPermissionMode", {
@@ -758,7 +841,15 @@ export function SessionComposer({
         return true;
       }
       if (parsed.command === "plan") {
-        setInternalPermissionMode("plan");
+        setSessionPrefs(sessionOverrideKey, { permissionMode: "plan" });
+        if (!effectiveSessionId) {
+          updateActiveDraft({ permissionMode: "plan" });
+        } else {
+          void callRpc("sessions.setPermissionMode", {
+            sessionId: effectiveSessionId,
+            mode: "plan",
+          }).catch(() => {});
+        }
         onPermissionModeChange?.("plan");
         setTextValue("");
         setCursorPos(0);
@@ -813,9 +904,11 @@ export function SessionComposer({
       setActiveRoute,
       setActiveSession,
       setBackgroundDrawerOpen,
+      setSessionPrefs,
       setTextValue,
       slashCatalog.commandDescriptors,
       slashCatalog.skillDescriptors,
+      updateActiveDraft,
     ],
   );
 
@@ -873,95 +966,78 @@ export function SessionComposer({
 
   const handleModelSelect = React.useCallback(
     (model: ModelOption) => {
-      setModelOverride({
-        sessionKey: sessionOverrideKey,
-        id: model.id,
-        label: model.label,
+      const spec =
+        model.modelSpec ||
+        formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
+        model.id;
+      setSessionPrefs(sessionOverrideKey, {
+        modelId: spec,
+        modelLabel: model.label,
+        apiMethod: model.apiMethod,
       });
       if (!effectiveSessionId) {
-        updateActiveDraft({ model: model.id });
+        updateActiveDraft({ model: spec });
       }
       onModelChange?.(model);
     },
-    [effectiveSessionId, onModelChange, sessionOverrideKey, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onModelChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
-      setEffortOverride({
-        sessionKey: sessionOverrideKey,
-        effort: nextEffort,
-      });
+      setSessionPrefs(sessionOverrideKey, { effort: nextEffort });
       if (!effectiveSessionId) {
         updateActiveDraft({ reasoningEffort: nextEffort });
       }
       onEffortChange?.(nextEffort);
     },
-    [effectiveSessionId, onEffortChange, sessionOverrideKey, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onEffortChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
 
   const handleServiceTierSelect = React.useCallback(
     (nextTier: ServiceTier) => {
-      setServiceTierOverride({
-        sessionKey: sessionOverrideKey,
-        tier: nextTier,
-      });
+      setSessionPrefs(sessionOverrideKey, { serviceTier: nextTier });
       onServiceTierChange?.(nextTier);
     },
-    [onServiceTierChange, sessionOverrideKey],
+    [onServiceTierChange, sessionOverrideKey, setSessionPrefs],
   );
 
   const handleCacheTtlSelect = React.useCallback(
     (nextTtl: CacheTtl) => {
-      setCacheTtlOverride({
-        sessionKey: sessionOverrideKey,
-        ttl: nextTtl,
-      });
+      setSessionPrefs(sessionOverrideKey, { cacheTtl: nextTtl });
       onCacheTtlChange?.(nextTtl);
     },
-    [onCacheTtlChange, sessionOverrideKey],
+    [onCacheTtlChange, sessionOverrideKey, setSessionPrefs],
   );
 
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
-      setInternalPermissionMode(nextMode);
+      setSessionPrefs(sessionOverrideKey, { permissionMode: nextMode });
       if (!effectiveSessionId) {
         updateActiveDraft({ permissionMode: nextMode });
       }
       onPermissionModeChange?.(nextMode);
     },
-    [effectiveSessionId, onPermissionModeChange, updateActiveDraft],
+    [
+      effectiveSessionId,
+      onPermissionModeChange,
+      sessionOverrideKey,
+      setSessionPrefs,
+      updateActiveDraft,
+    ],
   );
-
-  const handleWorkspaceSelect = (name: string, path: string) => {
-    setInternalProject(name);
-    setActiveProjectPath(path);
-    if (!effectiveSessionId) {
-      const matched = workspaces.find((w) => w.path === path);
-      updateActiveDraft({
-        workingDir: path,
-        workspaceId: matched?.id ?? null,
-      });
-    }
-    onProjectChange?.(name, path);
-    setWorkspacePickerOpen(false);
-  };
-
-  const handleBranchSelect = (branch: string) => {
-    setInternalCheckout(branch);
-    onCheckoutChange?.(branch);
-    setBranchPickerOpen(false);
-    if (activeWorkspace?.path) {
-      void callRpc("workspace.checkoutBranch", {
-        workspacePath: activeWorkspace.path,
-        branch,
-      }).then(() => {
-        void queryClient.invalidateQueries({
-          queryKey: ["composer", "workspace-branches"],
-        });
-      });
-    }
-  };
 
   const handlePaste = async (
     event: React.ClipboardEvent<HTMLTextAreaElement>,
@@ -978,52 +1054,139 @@ export function SessionComposer({
     }
   };
 
-  const triggerSubmit = React.useCallback(
-    (urgentSteer = false) => {
-      const trimmed = textValue.trim();
+  const submitWithText = React.useCallback(
+    (
+      rawText: string,
+      useAlternateMidTurnMode = false,
+      overrides?: {
+        editorSelection?: EditorSelectionView | null;
+        selectionIncluded?: boolean;
+      },
+    ) => {
+      const trimmed = rawText.trim();
       if (disabled) return;
       if (!trimmed && images.length === 0) return;
 
-      if (isSubmitting && trimmed && effectiveSessionId) {
-        void callRpc("sessions.softInterrupt", {
+      const resolvedSelection =
+        overrides?.editorSelection !== undefined
+          ? overrides.editorSelection
+          : activeSelection;
+      const resolvedSelectionIncluded =
+        overrides?.selectionIncluded !== undefined
+          ? overrides.selectionIncluded
+          : selectionIncluded;
+
+      const matchedModels = catalog.models.filter(
+        (m) => m.modelSpec === activeModelId || m.id === activeModelId,
+      );
+      const activeModelOption =
+        matchedModels.find((m) => m.available !== false) ?? matchedModels[0];
+      const resolvedModelSpec =
+        activeModelOption?.modelSpec ||
+        (activeModelOption
+          ? formatHarnessModelSpec(
+              activeModelOption.id,
+              activeModelOption.provider,
+              activeModelOption.apiMethod,
+            )
+          : formatHarnessModelSpec(activeModelId)) ||
+        activeModelId;
+
+      if (isSubmitting) {
+        if (!effectiveSessionId) return;
+        const effectiveMidTurnMode: MidTurnSendMode = useAlternateMidTurnMode
+          ? midTurnSendMode === "steer"
+            ? "queue"
+            : "steer"
+          : midTurnSendMode;
+        const attachedImages = images.length > 0 ? images : undefined;
+
+        if (effectiveMidTurnMode === "steer") {
+          const steerText = trimmed || "[Image attachment]";
+          const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          addMidTurnMessage({
+            id: clientId,
+            sessionId: effectiveSessionId,
+            mode: "steer",
+            text: steerText,
+            createdAtMs: Date.now(),
+            images: attachedImages,
+          });
+          void callRpc("sessions.softInterrupt", {
+            sessionId: effectiveSessionId,
+            text: steerText,
+            urgent: false,
+            clientId,
+            ...(attachedImages ? { images: attachedImages } : {}),
+          }).catch(() => {
+            useAppStore
+              .getState()
+              .removeMidTurnMessage(effectiveSessionId, clientId);
+            setTextValue(rawText);
+          });
+          setTextValue("");
+          setImages([]);
+          return;
+        }
+
+        const id = `q_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        addMidTurnMessage({
+          id,
           sessionId: effectiveSessionId,
+          mode: "queue",
           text: trimmed,
-          urgent: urgentSteer,
-        }).catch(() => {});
+          createdAtMs: Date.now(),
+          images: attachedImages,
+          editorSelection:
+            resolvedSelection && resolvedSelectionIncluded
+              ? resolvedSelection
+              : null,
+          modelSpec: resolvedModelSpec,
+          apiMethod: activeModelOption?.apiMethod,
+          effort: activeEffort,
+          permissionMode: activePermissionMode,
+          serviceTier: activeServiceTier,
+          cacheTtl: activeCacheTtl,
+        });
+        setQueuePausedForSession(effectiveSessionId, false);
         setTextValue("");
+        setImages([]);
         return;
       }
-
-      if (isSubmitting) return;
 
       // Route leading slash/skill commands through packages/session-core parseSlashInvocation
       if (images.length === 0) {
         const parsed = parseSlashInvocation(
-          textValue,
+          rawText,
           slashCatalog.commandDescriptors,
           slashCatalog.skillDescriptors,
         );
         if (parsed.kind === "api_request" || parsed.kind === "runtime_command") {
-          void executeSlashCommand(textValue);
+          void executeSlashCommand(rawText);
           return;
         }
       }
-
       const payload: ComposerSubmitPayload = {
         prompt: trimmed,
         images: images.length > 0 ? images : undefined,
         project: activeProject,
-        workingDir: activeWorkspace?.path ?? storeProjectPath ?? undefined,
+        workingDir: storeProjectPath ?? activeWorkspace?.path ?? undefined,
         checkout: activeCheckout,
-        modelId: activeModelId,
+        modelId: resolvedModelSpec,
+        modelSpec: resolvedModelSpec,
         modelLabel: activeModelLabel,
+        apiMethod: activeModelOption?.apiMethod,
         effort: activeEffort,
         serviceTier: activeServiceTier,
         cacheTtl: activeCacheTtl,
         permissionMode: activePermissionMode,
         editorSelection:
-          activeSelection && selectionIncluded ? activeSelection : null,
-        selectionIncluded: Boolean(activeSelection && selectionIncluded),
+          resolvedSelection && resolvedSelectionIncluded
+            ? resolvedSelection
+            : null,
+        selectionIncluded: Boolean(
+          resolvedSelection && resolvedSelectionIncluded,
+        ),
       };
 
       setTextValue("");
@@ -1041,17 +1204,92 @@ export function SessionComposer({
       activeSelection,
       activeServiceTier,
       activeWorkspace?.path,
+      addMidTurnMessage,
+      catalog.models,
       disabled,
       effectiveSessionId,
+      executeSlashCommand,
       images,
       isSubmitting,
+      midTurnSendMode,
       onSubmit,
       selectionIncluded,
+      setQueuePausedForSession,
       setTextValue,
+      slashCatalog.commandDescriptors,
+      slashCatalog.skillDescriptors,
       storeProjectPath,
-      textValue,
     ],
   );
+
+  const triggerSubmit = React.useCallback(
+    (useAlternateMidTurnMode = false) => {
+      submitWithText(textValue, useAlternateMidTurnMode);
+    },
+    [submitWithText, textValue],
+  );
+
+  // Atomically consume pending host composer injections across both controlled (HomePage) and uncontrolled (Workspace) composers.
+  React.useEffect(() => {
+    if (!pendingComposerInjection) return;
+    if (lastConsumedInjectionIdRef.current === pendingComposerInjection.id) {
+      return;
+    }
+    if (
+      useAppStore.getState().pendingComposerInjection?.id !==
+      pendingComposerInjection.id
+    ) {
+      return;
+    }
+    lastConsumedInjectionIdRef.current = pendingComposerInjection.id;
+
+    const injection = pendingComposerInjection;
+    const nextText = mergeComposerInjection(textValue, injection);
+    setTextValue(nextText);
+
+    if (injection.selection) {
+      setSelectionIncluded(true);
+    }
+
+    consumeComposerInjection(injection.id);
+
+    const el = textareaRef.current;
+    if (el) {
+      el.focus();
+      pendingCursorToEndRef.current = true;
+      const end = nextText.length;
+      try {
+        el.setSelectionRange(end, end);
+      } catch {
+        // Ignore if selection API is unavailable
+      }
+    }
+
+    if (
+      injection.autoSubmit === true &&
+      !isSubmitting &&
+      !disabled &&
+      nextText.trim().length > 0
+    ) {
+      submitWithText(nextText, false, {
+        editorSelection:
+          injection.selection !== undefined
+            ? injection.selection
+            : activeSelection,
+        selectionIncluded: injection.selection ? true : selectionIncluded,
+      });
+    }
+  }, [
+    activeSelection,
+    consumeComposerInjection,
+    disabled,
+    isSubmitting,
+    pendingComposerInjection,
+    selectionIncluded,
+    setTextValue,
+    submitWithText,
+    textValue,
+  ]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (mentionTrigger && mentionFiles.length > 0) {
@@ -1153,18 +1391,18 @@ export function SessionComposer({
 
   const effectivePlaceholder = React.useMemo(() => {
     if (placeholder) return placeholder;
+    if (isSubmitting) {
+      return midTurnSendMode === "steer"
+        ? "Steer without interrupting... (Enter to steer, Alt+Enter to queue)"
+        : "Queue follow-up for after response... (Enter to queue, Alt+Enter to steer)";
+    }
     if (activePermissionMode === "plan") {
       return "Describe your task to generate a plan... (@ files, / commands)";
     }
     return "Message RayuCode... (@ files, / commands)";
-  }, [activePermissionMode, placeholder]);
+  }, [activePermissionMode, isSubmitting, midTurnSendMode, placeholder]);
 
   const hasPromptContent = textValue.trim().length > 0 || images.length > 0;
-  const branchList = branchesQuery.data?.branches ?? [
-    activeCheckout,
-    "main",
-    "feat/kv-cache",
-  ];
 
   return (
     <div
@@ -1265,137 +1503,61 @@ export function SessionComposer({
               ) : null}
             </div>
           ) : null}
-          {/* Home Top Tray: Workspace Picker & Git Branch Checkout (only in mode === "home") */}
-          {mode === "home" ? (
-            <div
-              data-testid="composer-home-top-tray"
-              className="flex items-center justify-between gap-2 px-2 pt-0.5 pb-1.5 text-xs text-muted-ink"
-            >
-              <div className="flex min-w-0 items-center gap-1.5">
-                <Popover
-                  open={workspacePickerOpen}
-                  onOpenChange={setWorkspacePickerOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-workspace-picker"
-                      className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border border-transparent px-2 py-1 text-xs font-medium text-ink transition-colors hover:border-hairline hover:bg-hover focus:outline-none"
-                    >
-                      <ProjectIconGlyph
-                        {...toProjectIconSpec(activeWorkspace?.icon)}
-                        className="size-3.5 shrink-0"
-                      />
-                      <span className="truncate">{activeProject}</span>
-                      <ChevronDown
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    sideOffset={6}
-                    className="w-[240px] rounded-xl border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
-                  >
-                    <div className="px-2 py-1 text-[11px] font-medium text-muted-ink">
-                      Workspace folders
-                    </div>
-                    {workspaces.map((ws) => {
-                      const isCurrent = ws.name === activeProject;
-                      return (
-                        <button
-                          key={ws.path}
-                          type="button"
-                          onClick={() => handleWorkspaceSelect(ws.name, ws.path)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover",
-                            isCurrent && "bg-active text-ink",
-                          )}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <ProjectIconGlyph
-                              {...toProjectIconSpec(ws.icon)}
-                              className="size-3.5 shrink-0"
-                            />
-                            <span className="truncate font-medium text-ink">
-                              {ws.name}
-                            </span>
-                          </span>
-                          {isCurrent ? (
-                            <Check
-                              className="size-3.5 shrink-0 text-ink"
-                              aria-hidden="true"
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </PopoverContent>
-                </Popover>
-
-                <Popover
-                  open={branchPickerOpen}
-                  onOpenChange={setBranchPickerOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-branch-picker"
-                      className="inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-lg border border-transparent px-2 py-1 font-mono text-[11px] text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none"
-                    >
-                      <GitBranch
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{activeCheckout}</span>
-                      <ChevronDown
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    sideOffset={6}
-                    className="w-[210px] rounded-xl border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
-                  >
-                    <div className="px-2 py-1 text-[11px] font-medium text-muted-ink">
-                      Switch git branch
-                    </div>
-                    {branchList.map((branch) => {
-                      const isCurrent = branch === activeCheckout;
-                      return (
-                        <button
-                          key={branch}
-                          type="button"
-                          onClick={() => handleBranchSelect(branch)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-hover",
-                            isCurrent && "bg-active text-ink",
-                          )}
-                        >
-                          <span className="truncate">{branch}</span>
-                          {isCurrent ? (
-                            <Check
-                              className="size-3.5 shrink-0 text-ink"
-                              aria-hidden="true"
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </PopoverContent>
-                </Popover>
-              </div>
-            </div>
-          ) : null}
 
           {/* Inner Surface (.composer-inner: bg-raised border-hairline rounded-[14px], ZERO focus glow ring) */}
           <div
             data-testid="composer-inner-surface"
             className="flex flex-col rounded-[14px] border border-hairline bg-raised transition-colors focus-within:border-premium-hi"
           >
+            {/* Mid-Turn Steer / Queue Mode Bar (shown while AI is actively responding) */}
+            {isSubmitting ? (
+              <div
+                data-testid="composer-midturn-bar"
+                className="flex min-w-0 items-center justify-between gap-2 border-b border-hairline-soft px-3 py-1.5"
+              >
+                <span className="min-w-0 truncate text-[11px] text-muted-ink @max-[360px]/composer:hidden">
+                  {midTurnSendMode === "steer"
+                    ? "Auto-sends at next safe step"
+                    : "Waits until response finishes"}
+                </span>
+                <div
+                  role="group"
+                  aria-label="Mid-turn send mode"
+                  data-testid="midturn-mode-toggle"
+                  className="ml-auto inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-hairline bg-inset p-0.5"
+                >
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-steer"
+                    aria-pressed={midTurnSendMode === "steer"}
+                    onClick={() => setMidTurnSendMode("steer")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "steer"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink",
+                    )}
+                  >
+                    Steer
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="midturn-mode-queue"
+                    aria-pressed={midTurnSendMode === "queue"}
+                    onClick={() => setMidTurnSendMode("queue")}
+                    className={cn(
+                      "cursor-pointer rounded-[6px] px-2 py-0.5 text-[11px] font-medium transition-all focus:outline-none",
+                      midTurnSendMode === "queue"
+                        ? "bg-active text-ink shadow-bevel-surface"
+                        : "text-muted-ink hover:text-ink",
+                    )}
+                  >
+                    Queue
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {/* Active VS Code Editor Selection Pill (above textarea) */}
             {activeSelection ? (
               <div className="px-3 pt-2.5 pb-0.5">
@@ -1570,9 +1732,28 @@ export function SessionComposer({
                     type="button"
                     data-testid="composer-toggle-plan"
                     onClick={() => {
+                      const prevMode = activePermissionMode;
                       const nextMode: PermissionModeId =
-                        activePermissionMode === "plan" ? "default" : "plan";
+                        activePermissionMode === "plan"
+                          ? storeDefaultPermissionMode === "plan"
+                            ? "default"
+                            : storeDefaultPermissionMode
+                          : "plan";
                       handlePermissionSelect(nextMode);
+                      if (effectiveSessionId) {
+                        void callRpc("sessions.setPermissionMode", {
+                          sessionId: effectiveSessionId,
+                          mode: nextMode,
+                        })
+                          .then((res) => {
+                            if (res && res.ok === false) {
+                              handlePermissionSelect(prevMode);
+                            }
+                          })
+                          .catch(() => {
+                            handlePermissionSelect(prevMode);
+                          });
+                      }
                       setPlusMenuOpen(false);
                       textareaRef.current?.focus();
                     }}
@@ -1628,6 +1809,7 @@ export function SessionComposer({
                 onSelectCacheTtl={handleCacheTtlSelect}
                 onRefreshModels={catalog.refreshModels}
                 isRefreshing={catalog.isRefreshing}
+                isStreaming={isSubmitting}
                 disabled={disabled}
               />
 
@@ -1648,49 +1830,87 @@ export function SessionComposer({
                 value={activePermissionMode}
                 onChange={handlePermissionSelect}
                 sessionId={effectiveSessionId}
+                modes={slashCatalog.permissionModes}
                 enableShortcut={enablePermissionShortcut}
                 disabled={disabled}
               />
 
-              {isSubmitting && !hasPromptContent ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-stop-btn"
-                      aria-label="Abort active turn"
-                      onClick={() => onStop?.()}
-                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98]"
-                    >
-                      <span
-                        aria-hidden="true"
-                        className="block size-2.5 rounded-[2px] bg-brand-ink"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Stop generation</TooltipContent>
-                </Tooltip>
-              ) : isSubmitting && hasPromptContent ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-steer-btn"
-                      aria-label="Steer active turn"
-                      onClick={() => triggerSubmit(false)}
-                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98]"
-                    >
-                      <CornerDownLeft
-                        className="size-[15px]"
-                        strokeWidth={2.2}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    Queue / Steer active turn (Alt+Enter for urgent)
-                  </TooltipContent>
-                </Tooltip>
+              {isSubmitting ? (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        data-testid="composer-stop-btn"
+                        aria-label="Abort active turn"
+                        onClick={() => onStop?.()}
+                        className="ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-premium bg-active text-ink shadow-bevel-surface transition-colors hover:border-danger hover:bg-danger-soft hover:text-danger focus:outline-none"
+                      >
+                        <Square
+                          className="size-3.5 fill-current"
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">Stop / Abort</TooltipContent>
+                  </Tooltip>
+
+                  {midTurnSendMode === "steer" ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="composer-steer-btn"
+                          aria-label="Steer active turn without interrupting"
+                          disabled={disabled || !hasPromptContent}
+                          onClick={() => triggerSubmit(false)}
+                          className={cn(
+                            "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                            hasPromptContent && !disabled
+                              ? "rayu-primary-bevel cursor-pointer bg-brand text-brand-ink hover:scale-[1.04] hover:bg-brand-bright active:scale-[0.98]"
+                              : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
+                          )}
+                        >
+                          <CornerDownLeft
+                            className="size-[15px]"
+                            strokeWidth={2.2}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        Steer without interrupting (Enter · Alt+Enter to queue)
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="composer-queue-btn"
+                          aria-label="Queue message for after response"
+                          disabled={disabled || !hasPromptContent}
+                          onClick={() => triggerSubmit(false)}
+                          className={cn(
+                            "grid size-8 shrink-0 place-items-center rounded-full transition-all focus:outline-none",
+                            hasPromptContent && !disabled
+                              ? "cursor-pointer border border-premium bg-active text-ink shadow-bevel-surface hover:border-brand hover:bg-brand-soft hover:text-brand-text active:scale-95"
+                              : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
+                          )}
+                        >
+                          <ListPlus
+                            className="size-4"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        Queue for after response (Enter · Alt+Enter to steer)
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
+                </>
               ) : (
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1700,7 +1920,12 @@ export function SessionComposer({
                       aria-label="Send message"
                       disabled={disabled || !hasPromptContent}
                       onClick={() => triggerSubmit(false)}
-                      className="rayu-primary-bevel ml-0.5 grid size-8 shrink-0 cursor-pointer place-items-center rounded-full bg-brand text-brand-ink transition-all outline-none hover:scale-[1.04] hover:bg-brand-bright focus:outline-none active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50"
+                      className={cn(
+                        "ml-0.5 grid size-8 shrink-0 place-items-center rounded-full transition-all outline-none focus:outline-none",
+                        hasPromptContent && !disabled
+                          ? "rayu-primary-bevel cursor-pointer bg-brand text-brand-ink hover:scale-[1.04] hover:bg-brand-bright active:scale-[0.98]"
+                          : "cursor-not-allowed border border-hairline bg-control text-faint opacity-60",
+                      )}
                     >
                       <ArrowUp
                         className="size-[15px]"
@@ -1709,7 +1934,7 @@ export function SessionComposer({
                       />
                     </button>
                   </TooltipTrigger>
-                  <TooltipContent side="top">Send message</TooltipContent>
+                  <TooltipContent side="top">Send (Enter)</TooltipContent>
                 </Tooltip>
               )}
             </div>

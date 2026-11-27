@@ -1,5 +1,9 @@
 import * as React from "react";
-import { shouldClearStaleLiveTurn } from "@rayu-dev/rayucode-session-core/client";
+import {
+  extractTodosFromHarnessFrame,
+  shouldClearStaleLiveTurn,
+} from "@rayu-dev/rayucode-session-core/client";
+import { fromHarnessPermissionMode } from "@shared/vscodeProtocol";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
 
@@ -7,17 +11,22 @@ import {
   createHarnessStreamTracker,
   createStreamBatcher,
   formatDurationSeconds,
+  makeTurnDurationKey,
   mapHarnessFrameToLiveEvents,
   onHarnessFrame,
   useAppStore,
   type HarnessStreamTracker,
   type InlineDiffCardData,
   type MappedLiveTraceEvent,
+  type MidTurnMessageItem,
   type OptimisticUserTurn,
   type StreamBatcher,
 } from "@/lib";
 
-import type { ClarifyingQuestionRequest } from "../components/ClarifyingQuestionCard";
+import type {
+  ClarifyingQuestionItem,
+  ClarifyingQuestionRequest,
+} from "../components/ClarifyingQuestionCard";
 import type { ChatTurnView } from "./useChatStream";
 
 const FRAME_BATCH_WINDOW_MS = 16;
@@ -40,6 +49,7 @@ export interface StartSessionLiveTurnInput {
   userPrompt: string;
   userRefFiles?: string;
   userImages?: Array<{ name: string; dataUrl: string }>;
+  activeToolStatus?: string | null;
   startedAtMs?: number;
   baseHistoryTurnCount?: number;
 }
@@ -63,10 +73,54 @@ export const useLiveTraceStore = create<LiveTraceStoreState>(() => ({
 const trackersBySession = new Map<string, HarnessStreamTracker>();
 const batchersBySession = new Map<string, StreamBatcher<MappedLiveTraceEvent>>();
 const startedAtBySession = new Map<string, number>();
+const abnormalStopBySession = new Map<string, boolean>();
+const drainHandlersBySession = new Map<
+  string,
+  (item: MidTurnMessageItem) => void | Promise<void>
+>();
 const completedTurnIds = new Set<string>();
 let turnSequence = 1;
 let elapsedTimer: ReturnType<typeof setInterval> | null = null;
 let controllerMountCount = 0;
+let activeHarnessUnsub: (() => void) | null = null;
+let activeBridgeQueryClient: QueryClient | null = null;
+
+export function registerSessionQueueDrainHandler(
+  sessionId: string,
+  handler: ((item: MidTurnMessageItem) => void | Promise<void>) | undefined,
+): () => void {
+  if (!sessionId || !handler) return () => {};
+  drainHandlersBySession.set(sessionId, handler);
+  return () => {
+    if (drainHandlersBySession.get(sessionId) === handler) {
+      drainHandlersBySession.delete(sessionId);
+    }
+  };
+}
+
+export function settleSessionTurnQueue(
+  sessionId: string,
+  wasAbnormalStop: boolean,
+): void {
+  if (!sessionId) return;
+  const store = useAppStore.getState();
+  const isPaused = Boolean(store.pausedQueueSessions[sessionId]);
+  if (wasAbnormalStop || isPaused) {
+    store.demotePendingSteersToQueue(sessionId);
+    store.setQueuePausedForSession(sessionId, true);
+    return;
+  }
+  store.markSteersDelivered(sessionId);
+  const drain = drainHandlersBySession.get(sessionId);
+  if (drain) {
+    const nextQueued = store.shiftNextQueuedMessage(sessionId);
+    if (nextQueued) {
+      queueMicrotask(() => {
+        void drain(nextQueued);
+      });
+    }
+  }
+}
 
 function stopElapsedTimerIfIdle(): void {
   if (!elapsedTimer) return;
@@ -188,6 +242,16 @@ export function applyTraceEvents(
             /running command|cargo|npm|pnpm|pytest|bash|shell/i.test(ev.label),
         );
         break;
+      case "connection-phase":
+        next.connectionPhaseLabel = ev.phase;
+        break;
+      case "kv-cache-miss":
+        next.kvCacheMissReason = ev.reason;
+        break;
+      case "turn-stopped":
+        next.activeToolStatus = null;
+        next.connectionPhaseLabel = null;
+        break;
       case "step": {
         const gId =
           ev.groupId ?? next.groups[next.groups.length - 1]?.id ?? "wg_live";
@@ -228,6 +292,9 @@ export function applyTraceEvents(
       case "answer-delta":
         next.answerIntro = `${next.answerIntro}${ev.delta}`;
         break;
+      case "answer-replace":
+        next.answerIntro = ev.text;
+        break;
       case "duration":
         next.workedDuration = ev.workedDuration;
         break;
@@ -236,6 +303,7 @@ export function applyTraceEvents(
           ...next,
           isLive: false,
           activeToolStatus: null,
+          connectionPhaseLabel: null,
           showLiveBackgroundPill: false,
           workedDuration: ev.workedDuration || next.workedDuration,
           credits: ev.credits ?? next.credits,
@@ -259,10 +327,14 @@ export function startSessionLiveTurn(
       ? input.startedAtMs
       : Date.now();
   startedAtBySession.set(input.sessionId, startedAt);
+  abnormalStopBySession.delete(input.sessionId);
   const tracker = getOrCreateTracker(input.sessionId);
   tracker.startedAtMs = startedAt;
   tracker.turnActive = true;
   tracker.turnCompleted = false;
+  tracker.stoppedInTurn = false;
+  tracker.hasBufferedText = false;
+  tracker.textDonePendingTool = false;
   tracker.batchEpoch = 1;
   tracker.hasStreamedTextInPhase = false;
   tracker.phaseHasReads = false;
@@ -277,6 +349,10 @@ export function startSessionLiveTurn(
     userPrompt: input.userPrompt,
     userRefFiles: input.userRefFiles,
     userImages: input.userImages,
+    ...(typeof input.baseHistoryTurnCount === "number" &&
+    input.baseHistoryTurnCount >= 0
+      ? { baseHistoryTurnCount: input.baseHistoryTurnCount }
+      : {}),
     workedDuration: formatDurationSeconds(
       Math.max(1, Math.floor((Date.now() - startedAt) / 1000)),
     ),
@@ -284,7 +360,7 @@ export function startSessionLiveTurn(
     notes: [],
     groups: [],
     timeline: [],
-    activeToolStatus: null,
+    activeToolStatus: input.activeToolStatus ?? null,
     answerIntro: "",
     answerBullets: [],
     diffCard: EMPTY_DIFF,
@@ -372,7 +448,12 @@ export function clearSessionLiveTurn(sessionId: string): void {
     batchersBySession.delete(sessionId);
   }
   startedAtBySession.delete(sessionId);
-  trackersBySession.delete(sessionId);
+  abnormalStopBySession.delete(sessionId);
+  const tracker = trackersBySession.get(sessionId);
+  if (tracker) {
+    tracker.turnActive = false;
+    tracker.toolInputs.clear();
+  }
   useLiveTraceStore.setState((state) => {
     const hasLive = sessionId in state.liveTurnsBySession;
     const hasBase = sessionId in state.baseHistoryTurnCountBySession;
@@ -452,6 +533,7 @@ export function resetAllLiveTraces(): void {
   batchersBySession.clear();
   trackersBySession.clear();
   startedAtBySession.clear();
+  abnormalStopBySession.clear();
   completedTurnIds.clear();
   if (elapsedTimer) {
     clearInterval(elapsedTimer);
@@ -474,6 +556,10 @@ function getOrCreateBatcher(
   if (existing) return existing;
 
   const batcher = createStreamBatcher<MappedLiveTraceEvent>((events) => {
+    if (events.some((ev) => ev.type === "turn-stopped")) {
+      abnormalStopBySession.set(sessionId, true);
+    }
+
     const current =
       useLiveTraceStore.getState().liveTurnsBySession[sessionId] ?? null;
     const updated = applyTraceEvents(current, events);
@@ -481,8 +567,29 @@ function getOrCreateBatcher(
 
     const hasComplete = events.some((ev) => ev.type === "complete");
     if (hasComplete) {
+      const wasAbnormalStop = Boolean(abnormalStopBySession.get(sessionId));
       if (!completedTurnIds.has(updated.id)) {
         completedTurnIds.add(updated.id);
+        if (updated.workedDuration) {
+          const baseCount =
+            useLiveTraceStore.getState().baseHistoryTurnCountBySession[
+              sessionId
+            ];
+          const appStore = useAppStore.getState();
+          if (typeof baseCount === "number") {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(baseCount, updated.userPrompt),
+              updated.workedDuration,
+            );
+          } else if (updated.userPrompt.trim()) {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(-1, updated.userPrompt),
+              updated.workedDuration,
+            );
+          }
+        }
         useLiveTraceStore.setState((state) => {
           const prevCompleted = state.completedTurnsBySession[sessionId] ?? [];
           return {
@@ -499,11 +606,9 @@ function getOrCreateBatcher(
           queryKey: chatHistoryQueryKey(sessionId),
         });
       }
-      const perm = useAppStore.getState().pendingPermission;
-      if (perm && (!perm.sessionId || perm.sessionId === sessionId)) {
-        useAppStore.getState().setPendingPermission(null);
-      }
+      useAppStore.getState().clearPendingPermission(sessionId);
       clearSessionLiveTurn(sessionId);
+      settleSessionTurnQueue(sessionId, wasAbnormalStop);
       return;
     }
 
@@ -529,55 +634,241 @@ export function processHarnessFrame(
   fallbackSessionId?: string,
 ): void {
   const frameSession =
-    typeof frame.session_id === "string" ? frame.session_id : "";
+    typeof frame.session_id === "string" ? frame.session_id.trim() : "";
+  if (
+    !frameSession &&
+    (frame.ev === "error" ||
+      frame.ev === "turn_stopped" ||
+      frame.ev === "turn_aborted")
+  ) {
+    // Bound session sockets always stamp session_id onto terminal error/stop
+    // frames. Ignore sessionless transport disconnects (e.g. a foreign socket
+    // closing with "daemon connection closed") so they never abort or clear
+    // pending permissions for whichever session happens to be focused.
+    return;
+  }
   const targetSessionId = frameSession || fallbackSessionId || "";
   if (!targetSessionId) return;
 
+  const todoUpdate = extractTodosFromHarnessFrame(frame, targetSessionId);
+  if (todoUpdate) {
+    useAppStore.getState().setSessionTodos(todoUpdate.sessionId, todoUpdate.todos);
+    return;
+  }
+
+  if (frame.ev === "permission_resolved") {
+    const reqId =
+      typeof frame.request_id === "string" ? frame.request_id.trim() : "";
+    useAppStore
+      .getState()
+      .clearPendingPermission(targetSessionId, reqId || undefined);
+    return;
+  }
+
+  if (frame.ev === "permission_mode_changed") {
+    if (typeof frame.mode === "string") {
+      useAppStore.getState().setSessionPrefs(targetSessionId, {
+        permissionMode: fromHarnessPermissionMode(frame.mode),
+      });
+    }
+    return;
+  }
+
+  if (frame.ev === "soft_interrupt_injected") {
+    const clientIds = Array.isArray(frame.client_ids)
+      ? frame.client_ids.filter(
+          (id): id is string => typeof id === "string" && id.length > 0,
+        )
+      : [];
+    const store = useAppStore.getState();
+    const currentItems = store.midTurnMessagesBySession[targetSessionId] ?? [];
+    const matchedSteers = currentItems.filter(
+      (item) =>
+        item.mode === "steer" &&
+        (clientIds.length === 0 || clientIds.includes(item.id)),
+    );
+    store.markSteersDelivered(targetSessionId, clientIds);
+    if (matchedSteers.length > 0) {
+      const texts = matchedSteers
+        .map((item) => item.text.trim())
+        .filter(Boolean);
+      if (texts.length > 0) {
+        if (!useLiveTraceStore.getState().liveTurnsBySession[targetSessionId]) {
+          startSessionLiveTurn({
+            sessionId: targetSessionId,
+            userPrompt: "",
+          });
+        }
+        const batcher = getOrCreateBatcher(targetSessionId, queryClient);
+        batcher.push({ type: "note", text: `Steered: ${texts.join(" · ")}` });
+        batcher.flushNow();
+      }
+    }
+    return;
+  }
+
+  if (frame.ev === "soft_interrupts_cancelled") {
+    if (Array.isArray(frame.cancelled)) {
+      const store = useAppStore.getState();
+      for (const id of frame.cancelled) {
+        if (typeof id === "string" && id.length > 0) {
+          store.removeMidTurnMessage(targetSessionId, id);
+        }
+      }
+    }
+    return;
+  }
+
+  if (frame.ev === "question_closed") {
+    const closedReqId =
+      typeof frame.request_id === "string" ? frame.request_id : null;
+    const current =
+      useLiveTraceStore.getState().pendingQuestionsBySession[targetSessionId] ??
+      null;
+    if (current && (!closedReqId || current.requestId === closedReqId)) {
+      setSessionPendingQuestion(targetSessionId, null);
+    }
+    return;
+  }
+
   if (frame.ev === "question_request" || frame.ev === "ask_user_question") {
     const reqId = String(frame.request_id ?? `q_${Date.now()}`);
-    const prompt = String(
-      frame.prompt ?? frame.question ?? "How would you like to proceed?",
-    );
-    const rawOpts = Array.isArray(frame.options) ? frame.options : [];
+    const mapRawOptions = (rawOpts: unknown[]) =>
+      rawOpts.length > 0
+        ? rawOpts.map((o, idx) => {
+            const obj =
+              o && typeof o === "object"
+                ? (o as Record<string, unknown>)
+                : { title: String(o) };
+            return {
+              id: String(obj.id ?? `opt_${idx + 1}`),
+              key: String(obj.key ?? idx + 1),
+              title: String(obj.title ?? obj.label ?? `Option ${idx + 1}`),
+              subtitle:
+                typeof obj.subtitle === "string"
+                  ? obj.subtitle
+                  : typeof obj.description === "string"
+                    ? obj.description
+                    : undefined,
+              recommended: Boolean(obj.recommended),
+            };
+          })
+        : [
+            {
+              id: "opt_1",
+              key: "1",
+              title: "Proceed with recommended defaults",
+              recommended: true,
+            },
+            {
+              id: "opt_2",
+              key: "2",
+              title: "Review changes step-by-step first",
+            },
+          ];
+
+    const rawQuestions = Array.isArray(frame.questions)
+      ? frame.questions.filter(
+          (q): q is Record<string, unknown> =>
+            Boolean(q) && typeof q === "object" && !Array.isArray(q),
+        )
+      : [];
+
+    const parsedQuestions: ClarifyingQuestionItem[] =
+      rawQuestions.length > 0
+        ? rawQuestions.map((q) => ({
+            question: String(
+              q.question ?? q.prompt ?? "How would you like to proceed?",
+            ),
+            header: typeof q.header === "string" ? q.header : undefined,
+            placeholder:
+              typeof q.placeholder === "string" ? q.placeholder : undefined,
+            multiSelect: Boolean(q.multiSelect ?? q.multi_select),
+            options: mapRawOptions(Array.isArray(q.options) ? q.options : []),
+          }))
+        : [
+            {
+              question: String(
+                frame.prompt ??
+                  frame.question ??
+                  "How would you like to proceed?",
+              ),
+              placeholder:
+                typeof frame.placeholder === "string"
+                  ? frame.placeholder
+                  : undefined,
+              multiSelect: Boolean(frame.multiSelect ?? frame.multi_select),
+              options: mapRawOptions(
+                Array.isArray(frame.options) ? frame.options : [],
+              ),
+            },
+          ];
+
+    const primary = parsedQuestions[0]!;
     setSessionPendingQuestion(targetSessionId, {
       requestId: reqId,
       sessionId: targetSessionId,
-      prompt,
-      multiSelect: Boolean(frame.multi_select),
-      options:
-        rawOpts.length > 0
-          ? rawOpts.map((o, idx) => {
-              const obj =
-                o && typeof o === "object"
-                  ? (o as Record<string, unknown>)
-                  : { title: String(o) };
-              return {
-                id: String(obj.id ?? `opt_${idx + 1}`),
-                key: String(obj.key ?? idx + 1),
-                title: String(obj.title ?? obj.label ?? `Option ${idx + 1}`),
-                subtitle:
-                  typeof obj.subtitle === "string"
-                    ? obj.subtitle
-                    : typeof obj.description === "string"
-                      ? obj.description
-                      : undefined,
-                recommended: Boolean(obj.recommended),
-              };
-            })
-          : [
-              {
-                id: "opt_1",
-                key: "1",
-                title: "Proceed with recommended defaults",
-                recommended: true,
-              },
-              {
-                id: "opt_2",
-                key: "2",
-                title: "Review changes step-by-step first",
-              },
-            ],
+      prompt: primary.question,
+      placeholder: primary.placeholder,
+      multiSelect: primary.multiSelect,
+      options: primary.options,
+      questions: parsedQuestions,
     });
+    return;
+  }
+
+  if (frame.ev === "session_status") {
+    const status = typeof frame.status === "string" ? frame.status.trim().toLowerCase() : "";
+    if (
+      status === "running" ||
+      status === "processing" ||
+      status === "busy" ||
+      status === "generating" ||
+      status === "tool_running"
+    ) {
+      const existing =
+        useLiveTraceStore.getState().liveTurnsBySession[targetSessionId];
+      if (!existing) {
+        startSessionLiveTurn({
+          sessionId: targetSessionId,
+          userPrompt: "",
+          activeToolStatus:
+            status === "tool_running" ? "Running tool..." : "Thinking...",
+        });
+      } else if (!existing.isLive) {
+        useLiveTraceStore.setState((state) => ({
+          liveTurnsBySession: {
+            ...state.liveTurnsBySession,
+            [targetSessionId]: { ...existing, isLive: true },
+          },
+        }));
+      }
+    } else if (status === "idle") {
+      const existing =
+        useLiveTraceStore.getState().liveTurnsBySession[targetSessionId];
+      if (
+        existing &&
+        !existing.userPrompt.trim() &&
+        !existing.answerIntro.trim() &&
+        existing.groups.length === 0 &&
+        existing.notes.length === 0 &&
+        (existing.timeline?.length ?? 0) === 0
+      ) {
+        clearSessionLiveTurn(targetSessionId);
+      }
+    }
+    return;
+  }
+
+  if (
+    frame.ev === "error" &&
+    (frame.non_turn === true ||
+      frame.req === "set_model" ||
+      frame.req === "set_reasoning_effort" ||
+      frame.req === "set_permission_mode")
+  ) {
+    // Non-turn control requests (e.g. changing model/effort) must never
+    // abort or inject an error into an active AI response stream.
     return;
   }
 
@@ -585,6 +876,12 @@ export function processHarnessFrame(
     frame.ev === "turn_done" ||
     frame.ev === "turn_stopped" ||
     frame.ev === "error";
+
+  if (frame.ev === "turn_stopped" || frame.ev === "error") {
+    abnormalStopBySession.set(targetSessionId, true);
+  } else if (frame.ev === "turn_start" || frame.ev === "message_accepted") {
+    abnormalStopBySession.delete(targetSessionId);
+  }
 
   useLiveTraceStore.setState((state) => ({
     lastEventAtMsBySession: {
@@ -633,32 +930,48 @@ export function processHarnessFrame(
   for (const ev of traceEvents) {
     batcher.push(ev);
   }
-  if (traceEvents.some((e) => e.type === "complete")) {
+  if (
+    traceEvents.some(
+      (e) =>
+        e.type === "complete" ||
+        e.type === "turn-stopped" ||
+        e.type === "note",
+    )
+  ) {
     batcher.flushNow();
   }
 }
 
-export function LiveTraceController(): null {
+export function useLiveTraceBridge(fallbackSessionId?: string | null): void {
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const pendingUserTurn = useAppStore((s) => s.pendingUserTurn);
+  const effectiveSessionId = activeSessionId ?? fallbackSessionId ?? null;
   const isCurrentSessionStreaming = useLiveTraceStore((s) =>
-    Boolean(activeSessionId && s.liveTurnsBySession[activeSessionId]?.isLive),
+    Boolean(
+      effectiveSessionId && s.liveTurnsBySession[effectiveSessionId]?.isLive,
+    ),
   );
 
   React.useEffect(() => {
+    activeBridgeQueryClient = queryClient;
     controllerMountCount += 1;
-    const unsub = onHarnessFrame((frame) => {
-      processHarnessFrame(
-        frame,
-        queryClient,
-        useAppStore.getState().activeSessionId ?? undefined,
-      );
-    });
+    if (!activeHarnessUnsub) {
+      activeHarnessUnsub = onHarnessFrame((frame) => {
+        if (!activeBridgeQueryClient) return;
+        processHarnessFrame(
+          frame,
+          activeBridgeQueryClient,
+          useAppStore.getState().activeSessionId ?? undefined,
+        );
+      });
+    }
     return () => {
-      unsub();
       controllerMountCount = Math.max(0, controllerMountCount - 1);
       if (controllerMountCount === 0) {
+        activeHarnessUnsub?.();
+        activeHarnessUnsub = null;
+        activeBridgeQueryClient = null;
         resetAllLiveTraces();
       }
     };
@@ -666,6 +979,9 @@ export function LiveTraceController(): null {
 
   React.useEffect(() => {
     if (!pendingUserTurn) return;
+    if (useAppStore.getState().pendingUserTurn?.id !== pendingUserTurn.id) {
+      return;
+    }
     startLiveTurnFromOptimistic(pendingUserTurn);
     useAppStore.getState().consumeOptimisticTurn(pendingUserTurn.id);
   }, [pendingUserTurn]);
@@ -673,6 +989,9 @@ export function LiveTraceController(): null {
   React.useEffect(() => {
     useAppStore.getState().setIsStreamActive(isCurrentSessionStreaming);
   }, [isCurrentSessionStreaming]);
+}
 
+export function LiveTraceController(): null {
+  useLiveTraceBridge();
   return null;
 }

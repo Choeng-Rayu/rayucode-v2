@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./tasks": {
+      "types": "./dist/components/TaskChecklistCard.d.ts",
+      "default": "./dist/components/TaskChecklistCard.js"
+    },
     "./tailwind-preset": {
       "types": "./dist/styles/tailwind.preset.d.ts",
       "default": "./dist/styles/tailwind.preset.js"
@@ -39,6 +43,7 @@
   },
   "dependencies": {
     "@rayu-dev/rayucode-sdk": "1.2.0",
+    "@rayu-dev/rayucode-session-core": "0.1.0",
     "diff": "^7.0.0",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.0",

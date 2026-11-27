@@ -6,12 +6,14 @@ import {
   type RayucodeClient,
   type RuntimeCommand,
 } from "@rayu-dev/rayucode-sdk";
+import { normalizeTodoItems } from "@rayu-dev/rayucode-session-core/client";
 import {
   RPC_METHODS,
   RpcContractSchemas,
   fromHarnessPermissionMode,
   parseRpcParams,
   type AccountStatusView,
+  type AgentProfileView,
   type AgentRoleId,
   type AgentRoleOverrideView,
   type AmbientApprovalView,
@@ -28,6 +30,7 @@ import {
   type DaemonStatusView,
   type DoctorCheckView,
   type EffortChoice,
+  type EffortLevel,
   type FeatureFlagsView,
   type FileChangeActionKind,
   type FileChangeActionResultView,
@@ -92,6 +95,7 @@ import {
   buildRayuPlanLadder,
   buildVscodeLoginUrl,
   getRayuWebBase,
+  type RayuCloudModelEntry,
   type RayuSignInMode,
 } from "../auth/rayuHostAuthManager.js";
 
@@ -117,19 +121,66 @@ function formatCountdown(seconds: number): string {
   return `${mins}m`;
 }
 
-function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
+export function formatHarnessModelSpec(
+  model: string,
+  provider?: string,
+  apiMethod?: string,
+): string {
+  const trimmed = model.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default") return "";
+  if (trimmed.includes(":")) return trimmed;
+  if (
+    normalizeUiProviderId(provider ?? "") === "rayu" ||
+    normalizeUiProviderId(apiMethod ?? "") === "rayu"
+  ) {
+    return `rayu:${trimmed}`;
+  }
+  return trimmed;
+}
+
+export function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
   const r = asRecord(raw);
-  const model = typeof r.model === "string" ? r.model.trim() : "";
-  if (!model) return null;
+  const rawModel = typeof r.model === "string" ? r.model.trim() : "";
+  if (!rawModel) return null;
+  const bareModel = rawModel.replace(/^rayu:/i, "").trim();
+  if (!bareModel) return null;
+  const rawProvider = typeof r.provider === "string" ? r.provider.trim() : "";
   const provider =
-    typeof r.provider === "string" && r.provider.trim() ? r.provider.trim() : "rayu";
-  const id = typeof r.id === "string" && r.id.trim() ? r.id.trim() : model;
-  const label = typeof r.label === "string" && r.label.trim() ? r.label.trim() : model;
-  const apiMethod =
-    typeof r.api_method === "string"
-      ? r.api_method
-      : typeof r.apiMethod === "string"
-        ? r.apiMethod
+    /^rayu:/i.test(rawModel) || !rawProvider
+      ? "rayu"
+      : normalizeUiProviderId(rawProvider);
+  const rawApiMethod =
+    typeof r.api_method === "string" && r.api_method.trim()
+      ? r.api_method.trim()
+      : typeof r.apiMethod === "string" && r.apiMethod.trim()
+        ? r.apiMethod.trim()
+        : undefined;
+  const apiMethod = rawApiMethod ?? (provider === "rayu" ? "rayu" : undefined);
+  const modelSpec = formatHarnessModelSpec(rawModel, provider, apiMethod);
+  const id =
+    provider === "rayu"
+      ? `rayu:${bareModel}`
+      : `${apiMethod || provider}:${bareModel}`;
+  const label =
+    typeof r.label === "string" && r.label.trim() ? r.label.trim() : bareModel;
+  const rawAuthMethod =
+    typeof r.auth_method === "string"
+      ? r.auth_method.trim().toLowerCase()
+      : typeof r.authMethod === "string"
+        ? r.authMethod.trim().toLowerCase()
+        : undefined;
+  const authMethod: ModelRouteOptionView["authMethod"] =
+    rawAuthMethod === "oauth" ||
+    rawAuthMethod === "api_key" ||
+    rawAuthMethod === "env" ||
+    rawAuthMethod === "none"
+      ? rawAuthMethod
+      : undefined;
+  const accountLabel =
+    typeof r.account_label === "string" && r.account_label.trim()
+      ? r.account_label.trim()
+      : typeof r.accountLabel === "string" && r.accountLabel.trim()
+        ? r.accountLabel.trim()
         : undefined;
   const available = typeof r.available === "boolean" ? r.available : undefined;
   const detail = typeof r.detail === "string" ? r.detail : undefined;
@@ -180,10 +231,13 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
 
   return {
     id,
-    model,
+    model: bareModel,
+    ...(modelSpec ? { modelSpec } : {}),
     provider,
     label,
     ...(apiMethod !== undefined ? { apiMethod } : {}),
+    ...(authMethod !== undefined ? { authMethod } : {}),
+    ...(accountLabel !== undefined ? { accountLabel } : {}),
     ...(available !== undefined ? { available } : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(supportsEffort !== undefined ? { supportsEffort } : {}),
@@ -193,6 +247,161 @@ function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(pricingLabel !== undefined ? { pricingLabel } : {}),
   };
+}
+
+export interface ReconcileAuthConsistentRoutesInput {
+  rawRoutes?: readonly unknown[];
+  hostAccount?: AccountStatusView;
+  rayuHostedModels?: readonly RayuCloudModelEntry[];
+  runtimeModel?: string;
+  runtimeProvider?: string;
+  fallbackActiveModel?: string;
+}
+
+export interface ReconcileAuthConsistentRoutesResult {
+  routes: ModelRouteOptionView[];
+  defaultModel?: string;
+}
+
+export function reconcileAuthConsistentRoutes(
+  input: ReconcileAuthConsistentRoutesInput,
+): ReconcileAuthConsistentRoutesResult {
+  const seenIds = new Set<string>();
+  const mapped: ModelRouteOptionView[] = [];
+  for (const raw of input.rawRoutes ?? []) {
+    const option = mapModelRouteOption(raw);
+    if (!option || seenIds.has(option.id)) continue;
+    seenIds.add(option.id);
+    mapped.push(option);
+  }
+
+  const hostAccount = input.hostAccount;
+  let reconciled: ModelRouteOptionView[];
+
+  if (hostAccount?.signedIn === true) {
+    const rayuAuthMethod: "api_key" | "oauth" =
+      hostAccount.authMethod === "apiKey" ? "api_key" : "oauth";
+    const rayuAccountLabel =
+      hostAccount.email ??
+      hostAccount.displayName ??
+      (hostAccount.authMethod === "apiKey" ? "Rayu API Key" : "Rayu Cloud");
+
+    const existingRayuCodes = new Set<string>();
+    reconciled = mapped.map((route) => {
+      if (route.provider !== "rayu") return route;
+      existingRayuCodes.add(route.model);
+      return {
+        ...route,
+        available: true,
+        authMethod: rayuAuthMethod,
+        accountLabel: rayuAccountLabel,
+        modelSpec: formatHarnessModelSpec(route.model, "rayu", "rayu"),
+      };
+    });
+
+    for (const entry of input.rayuHostedModels ?? []) {
+      const bare = entry.code.trim().replace(/^rayu:/i, "").trim();
+      if (!bare || existingRayuCodes.has(bare)) continue;
+      existingRayuCodes.add(bare);
+      reconciled.push({
+        id: `rayu:${bare}`,
+        model: bare,
+        modelSpec: `rayu:${bare}`,
+        provider: "rayu",
+        label: entry.label?.trim() || bare,
+        apiMethod: "rayu",
+        authMethod: rayuAuthMethod,
+        accountLabel: rayuAccountLabel,
+        available: true,
+        detail: entry.description?.trim() || "Rayu Cloud",
+        ...(entry.supportsEffort !== undefined
+          ? { supportsEffort: entry.supportsEffort }
+          : {}),
+        ...(entry.supportsFast !== undefined
+          ? { supportsFast: entry.supportsFast }
+          : {}),
+      });
+    }
+  } else if (hostAccount?.signedIn === false) {
+    reconciled = mapped.map((route) => {
+      if (route.provider !== "rayu") return route;
+      return {
+        ...route,
+        available: false,
+        detail: "Sign in to Rayu Cloud",
+      };
+    });
+  } else {
+    reconciled = mapped;
+  }
+
+  const availableRayuRoutes: ModelRouteOptionView[] = [];
+  const availableOtherRoutes: ModelRouteOptionView[] = [];
+  const unavailableRoutes: ModelRouteOptionView[] = [];
+
+  for (const route of reconciled) {
+    if (route.available === false) {
+      unavailableRoutes.push(route);
+    } else if (route.provider === "rayu") {
+      availableRayuRoutes.push(route);
+    } else {
+      availableOtherRoutes.push(route);
+    }
+  }
+
+  const routes = [
+    ...availableRayuRoutes,
+    ...availableOtherRoutes,
+    ...unavailableRoutes,
+  ];
+
+  const candidateModel =
+    input.runtimeModel?.trim() || input.fallbackActiveModel?.trim() || "";
+  const candidateBare = candidateModel.replace(/^rayu:/i, "").trim();
+  const candidateProvider = /^rayu:/i.test(candidateModel)
+    ? "rayu"
+    : input.runtimeProvider?.trim()
+      ? normalizeUiProviderId(input.runtimeProvider)
+      : undefined;
+
+  let matched: ModelRouteOptionView | undefined;
+  if (candidateModel) {
+    if (candidateProvider) {
+      matched = routes.find(
+        (r) =>
+          r.provider === candidateProvider &&
+          (r.modelSpec === candidateModel || r.model === candidateBare),
+      );
+    }
+    if (!matched) {
+      matched = routes.find((r) => r.modelSpec === candidateModel);
+    }
+    if (!matched && !candidateProvider) {
+      matched =
+        routes.find(
+          (r) =>
+            r.available !== false &&
+            (r.model === candidateBare || r.modelSpec === candidateModel),
+        ) ??
+        routes.find(
+          (r) => r.model === candidateBare || r.modelSpec === candidateModel,
+        );
+    }
+  }
+
+  let defaultModel: string | undefined;
+  if (matched && matched.available !== false) {
+    defaultModel = matched.modelSpec || matched.model;
+  } else {
+    const firstAvailable = routes.find((r) => r.available !== false);
+    if (firstAvailable) {
+      defaultModel = firstAvailable.modelSpec || firstAvailable.model;
+    } else {
+      defaultModel = input.runtimeModel ?? input.fallbackActiveModel;
+    }
+  }
+
+  return { routes, defaultModel };
 }
 
 const DATA_URL_PREFIX_RE = /^data:([^;]+);base64,/i;
@@ -237,23 +446,47 @@ export function normalizeImageAttachments(raw: unknown): Array<[string, string]>
 
 /**
  * Build a Rust `QuestionResponse` wire object (`{ kind: "answered", answers }` or `{ kind: "declined" }`)
- * from flat `{ answers: Record<string, string>, notes?: Record<string, string> }`.
+ * from flat `{ answers: Record<string, string>, notes?: Record<string, string>, selected?: Record<string, number[]>, declined?: boolean }`.
  */
 export function buildQuestionResponseWire(
   answers: Record<string, string>,
   notes?: Record<string, string>,
+  options?: {
+    selected?: Record<string, number[]>;
+    declined?: boolean;
+  },
 ): Record<string, unknown> {
-  const entries = Object.entries(answers).filter(([, value]) => value.trim().length > 0);
-  if (entries.length === 0) {
+  if (options?.declined) {
     return { kind: "declined" };
   }
-  const structured: Record<string, { custom: string[]; notes?: string }> = {};
-  for (const [question, answer] of entries) {
+  const allQuestions = new Set<string>([
+    ...Object.keys(answers),
+    ...Object.keys(options?.selected ?? {}),
+  ]);
+  const structured: Record<
+    string,
+    { selected?: number[]; custom?: string[]; notes?: string }
+  > = {};
+  for (const question of allQuestions) {
+    const customAnswer = answers[question]?.trim() ?? "";
+    const selectedIndices = (options?.selected?.[question] ?? []).filter(
+      (idx) => Number.isInteger(idx) && idx >= 0,
+    );
     const note = notes?.[question]?.trim();
+    if (selectedIndices.length === 0 && !customAnswer) {
+      continue;
+    }
     structured[question] = {
-      custom: [answer],
+      ...(selectedIndices.length > 0
+        ? { selected: selectedIndices }
+        : customAnswer
+          ? { custom: [customAnswer] }
+          : {}),
       ...(note ? { notes: note } : {}),
     };
+  }
+  if (Object.keys(structured).length === 0) {
+    return { kind: "declined" };
   }
   return {
     kind: "answered",
@@ -282,12 +515,14 @@ export function normalizeHarnessRequestFrame(
   if (
     normalized.req === "question_response" &&
     normalized.response === undefined &&
-    typeof normalized.answers === "object" &&
-    normalized.answers !== null
+    (normalized.declined === true ||
+      (typeof normalized.answers === "object" && normalized.answers !== null))
   ) {
     const answersRec: Record<string, string> = {};
-    for (const [k, val] of Object.entries(normalized.answers as Record<string, unknown>)) {
-      if (typeof val === "string") answersRec[k] = val;
+    if (typeof normalized.answers === "object" && normalized.answers !== null) {
+      for (const [k, val] of Object.entries(normalized.answers as Record<string, unknown>)) {
+        if (typeof val === "string") answersRec[k] = val;
+      }
     }
     const notesRec: Record<string, string> | undefined =
       typeof normalized.notes === "object" && normalized.notes !== null
@@ -297,9 +532,26 @@ export function normalizeHarnessRequestFrame(
             ),
           )
         : undefined;
+    const selectedRec: Record<string, number[]> | undefined =
+      typeof normalized.selected === "object" && normalized.selected !== null
+        ? Object.fromEntries(
+            Object.entries(normalized.selected as Record<string, unknown>)
+              .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+              .map(([k, arr]) => [
+                k,
+                arr.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0),
+              ]),
+          )
+        : undefined;
+    const declined = normalized.declined === true;
     delete normalized.answers;
     delete normalized.notes;
-    normalized.response = buildQuestionResponseWire(answersRec, notesRec);
+    delete normalized.selected;
+    delete normalized.declined;
+    normalized.response = buildQuestionResponseWire(answersRec, notesRec, {
+      selected: selectedRec,
+      declined,
+    });
   }
   if (
     (normalized.req === "send_message" || normalized.req === "soft_interrupt") &&
@@ -719,6 +971,7 @@ export interface FeatureRouterBridge {
   ping(): Promise<{ ok: boolean; latencyMs: number; version?: string }>;
   reconnect(): Promise<DaemonStatusView>;
   restart(): Promise<DaemonStatusView>;
+  updateEngine?(): Promise<DaemonStatusView>;
   reloadDaemon(activeSessionId?: string): Promise<{ ok: boolean; message?: string }>;
   openOutputLog(): void;
 }
@@ -728,7 +981,27 @@ export interface FeatureRouterHub {
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
   getActivePermissionMode(): PermissionModeId;
+  getDefaultPermissionMode?(): PermissionModeId;
+  setDefaultPermissionMode?(
+    mode: PermissionModeId,
+    options?: { applyToActiveSession?: boolean },
+  ): Promise<{ ok: boolean; mode: PermissionModeId; deferred?: boolean }>;
   getClient(sessionId?: string): Promise<RayucodeClient>;
+  ensureAttachedClient?(sessionId?: string): Promise<RayucodeClient>;
+  setSessionModel?(
+    sessionId: string,
+    model: string,
+    options?: {
+      provider?: string;
+      apiMethod?: string;
+      applyNextTurn?: boolean;
+    },
+  ): Promise<{ ok: boolean; deferred?: boolean; code?: string; message?: string }>;
+  setSessionEffort?(
+    sessionId: string,
+    effort: string,
+    options?: { applyNextTurn?: boolean },
+  ): Promise<{ ok: boolean; deferred?: boolean; code?: string; message?: string }>;
   listSessions(
     includeArchived?: boolean,
     options?: { includeExternal?: boolean; sources?: string[] },
@@ -750,7 +1023,31 @@ export interface FeatureRouterHub {
     workingDir?: string;
     permissionMode?: PermissionModeId;
     model?: string;
+    provider?: string;
+    apiMethod?: string;
+    effort?: EffortLevel;
+    serviceTier?: ServiceTier;
+    cacheTtl?: CacheTtl;
   }): Promise<SessionSummaryView>;
+  getSessionPrefs?(sessionId: string): {
+    model?: string;
+    provider?: string;
+    effort?: EffortLevel;
+    permissionMode?: PermissionModeId;
+    serviceTier?: ServiceTier;
+    cacheTtl?: CacheTtl;
+  } | undefined;
+  saveSessionPrefs?(
+    sessionId: string,
+    patch: {
+      model?: string;
+      provider?: string;
+      effort?: EffortLevel;
+      permissionMode?: PermissionModeId;
+      serviceTier?: ServiceTier;
+      cacheTtl?: CacheTtl;
+    },
+  ): Promise<void>;
   attachSession(sessionId: string): Promise<SessionSummaryView>;
   getHistory(sessionId: string): Promise<SessionHistoryView>;
   setSessionPinned(sessionId: string, pinned: boolean): Promise<void>;
@@ -758,7 +1055,7 @@ export interface FeatureRouterHub {
   setPermissionMode(
     sessionId: string,
     mode: PermissionModeId,
-  ): Promise<{ ok: boolean; mode: PermissionModeId }>;
+  ): Promise<{ ok: boolean; mode: PermissionModeId; deferred?: boolean }>;
   respondPermission(options: {
     sessionId: string;
     requestId: string;
@@ -774,7 +1071,7 @@ export interface FeatureRouterHub {
     data: unknown;
     message: string;
   }>;
-  getBackgroundTasks(): BackgroundProcessView[];
+  getBackgroundTasks(sessionId?: string): BackgroundProcessView[];
   refreshBackgroundProcesses(sessionId?: string): Promise<BackgroundProcessView[]>;
   removeCompletedBackgroundTasks(sessionId?: string): number;
   getSidePanelState(sessionId: string): {
@@ -784,6 +1081,7 @@ export interface FeatureRouterHub {
   closeSidePanelPage(sessionId: string, pageId?: string): void;
   getApplets(sessionId: string): AppletStateView[];
   getCachedTodos(sessionId: string): TodoItemView[];
+  setCachedTodos?(sessionId: string, todos: TodoItemView[]): void;
   mapSessionInfoToSummary(info: {
     session_id: string;
     title?: string;
@@ -854,6 +1152,8 @@ export interface FeatureRouterAuthManager {
   signOut(): Promise<AccountStatusView>;
   clearSavedApiKeyOnly(): Promise<AccountStatusView>;
   setBypassPacing(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }>;
+  getCachedHostedModels?(): RayuCloudModelEntry[];
+  fetchHostedModels?(forceRefresh?: boolean): Promise<RayuCloudModelEntry[]>;
 }
 
 export interface FeatureRouterGit {
@@ -994,10 +1294,16 @@ const DEFAULT_TELEMETRY_CONFIG: TelemetryConfigView = {
 
 const DEFAULT_SHORTCUTS: ShortcutEntryView[] = [
   {
-    id: "cycle-permissions",
-    label: "Cycle Local Permission Mode",
-    keybinding: "Shift+Tab",
-    when: "Composer Focus",
+    id: "open-from-editor-title",
+    label: "Open RayuCode (Preferred Location)",
+    keybinding: "Cmd/Ctrl+Alt+R",
+    commandId: "rayucode.openFromEditorTitle",
+  },
+  {
+    id: "open-beside",
+    label: "Open RayuCode Beside Editor",
+    keybinding: "Cmd/Ctrl+Alt+Shift+R",
+    commandId: "rayucode.openBeside",
   },
   {
     id: "open-workspace-panel",
@@ -1007,21 +1313,68 @@ const DEFAULT_SHORTCUTS: ShortcutEntryView[] = [
   },
   {
     id: "send-selection",
-    label: "Send Active Selection to RayuCode",
+    label: "Add Active Selection to RayuCode Context",
     keybinding: "Cmd/Ctrl+Shift+L",
+    when: "Editor Focus",
     commandId: "rayucode.sendSelection",
-  },
-  {
-    id: "background-tool",
-    label: "Move Running Tool to Background",
-    keybinding: "Alt+B",
-    when: "Active Turn",
   },
   {
     id: "open-background-drawer",
     label: "Open Background Processes Drawer",
     keybinding: "Alt+Shift+B",
     commandId: "rayucode.openBackgroundProcesses",
+  },
+  {
+    id: "add-to-context",
+    label: "Add File(s) to RayuCode Context",
+    keybinding: "Explorer / Tab Context",
+    commandId: "rayucode.addToContext",
+  },
+  {
+    id: "explain-selection",
+    label: "Explain Selection with RayuCode",
+    keybinding: "Editor Context Menu",
+    when: "Editor Selection",
+    commandId: "rayucode.explainSelection",
+  },
+  {
+    id: "refactor-selection",
+    label: "Refactor / Fix Selection with RayuCode",
+    keybinding: "Editor Context Menu",
+    when: "Editor Selection",
+    commandId: "rayucode.refactorSelection",
+  },
+  {
+    id: "fix-diagnostic",
+    label: "Fix Diagnostic with RayuCode",
+    keybinding: "Cmd/Ctrl+. (Quick Fix)",
+    when: "Diagnostic on Line",
+    commandId: "rayucode.fixDiagnostic",
+  },
+  {
+    id: "ask-terminal",
+    label: "Ask RayuCode about Terminal Output",
+    keybinding: "Terminal Context Menu",
+    commandId: "rayucode.askTerminal",
+  },
+  {
+    id: "scm-open-changes",
+    label: "Review Changes in RayuCode",
+    keybinding: "Source Control Header",
+    when: "Git Repository",
+    commandId: "rayucode.scmOpenChanges",
+  },
+  {
+    id: "cycle-permissions",
+    label: "Cycle Local Permission Mode",
+    keybinding: "Shift+Tab",
+    when: "Composer Focus",
+  },
+  {
+    id: "background-tool",
+    label: "Move Running Tool to Background",
+    keybinding: "Alt+B",
+    when: "Active Turn",
   },
   {
     id: "toggle-session-pane",
@@ -1195,6 +1548,17 @@ const HOOK_EVENTS: Array<{ event: HookEventId; label: string; mode: "sync" | "as
 ];
 
 export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
+  let pendingTelegramPairing: {
+    generation: string | null;
+    mode: "hosted" | "botfather";
+    username?: string;
+    pairingUrl: string;
+    pairingCode?: string;
+    qrSize?: number | null;
+    qrPath?: string | null;
+    pairingExpiresAtMs?: number;
+  } | null = null;
+
   const execRuntimeCmd = async (
     command: RuntimeCommand,
     args: string[] = [],
@@ -1251,6 +1615,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     return matched?.path ?? rawPath;
   };
 
+  const getSessionClient = (sessionId?: string): Promise<RayucodeClient> =>
+    deps.sessionHub.ensureAttachedClient
+      ? deps.sessionHub.ensureAttachedClient(sessionId)
+      : deps.sessionHub.getClient(sessionId);
+
   const resolveEngineSnapshot = async (
     sessionId: string,
   ): Promise<FileChangesSnapshotView | null> => {
@@ -1258,7 +1627,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return deps.sessionHub.fetchFileChanges(sessionId);
     }
     try {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(sessionId);
       if (
         clientSupportsFileChanges(client) &&
         typeof client.getFileChanges === "function"
@@ -1285,7 +1654,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
     }
     try {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(sessionId);
       if (
         clientSupportsFileChanges(client) &&
         typeof client.getFileChangeDiff === "function"
@@ -1314,7 +1683,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         ...(opts?.force !== undefined ? { force: opts.force } : {}),
       });
     }
-    const client = await deps.sessionHub.getClient();
+    const client = await getSessionClient(sessionId);
     if (
       !clientSupportsFileChanges(client) ||
       typeof client.fileChangeAction !== "function"
@@ -1475,8 +1844,25 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "daemon.ping": async () => deps.bridgeManager.ping(),
     "daemon.reconnect": async () => deps.bridgeManager.reconnect(),
     "daemon.restart": async () => deps.bridgeManager.restart(),
-    "daemon.reload": async () =>
-      deps.bridgeManager.reloadDaemon(deps.sessionHub.getActiveSessionId()),
+    "daemon.updateEngine": async () =>
+      deps.bridgeManager.updateEngine
+        ? deps.bridgeManager.updateEngine()
+        : deps.bridgeManager.restart(),
+    "daemon.reload": async () => {
+      const sid = deps.sessionHub.getActiveSessionId();
+      if (sid && deps.sessionHub.ensureAttachedClient) {
+        try {
+          const out = await deps.sessionHub.runtimeCommand("server_reload", [], sid);
+          return { ok: true, message: out.message || "Daemon reloaded." };
+        } catch (error) {
+          return {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      return deps.bridgeManager.reloadDaemon(sid);
+    },
     "daemon.selfdev": async (params) => {
       const action = params?.action ?? "status";
       if (action === "status") {
@@ -1606,7 +1992,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const sid = params.sessionId ?? deps.sessionHub.getActiveSessionId();
       if (sid) {
         try {
-          const client = await deps.sessionHub.getClient();
+          const client = await getSessionClient(sid);
           const files = await client.findFiles(sid, params.query, limit);
           return { files };
         } catch {
@@ -1619,11 +2005,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "workspace.contextSnapshot": async (params) => {
       const data = await safeRuntimeCmd("context", [], params.sessionId);
       const breakdown = asRecord(data.token_breakdown ?? data);
-      const system = Number(breakdown.system ?? 4200);
-      const tools = Number(breakdown.tools ?? 3100);
-      const memory = Number(breakdown.memory ?? 1200);
-      const files = Number(breakdown.files ?? 2800);
-      const messages = Number(breakdown.messages ?? 6400);
+      const system = Number(breakdown.system ?? 0);
+      const tools = Number(breakdown.tools ?? 0);
+      const memory = Number(breakdown.memory ?? 0);
+      const files = Number(breakdown.files ?? 0);
+      const messages = Number(breakdown.messages ?? 0);
       const usedTokens = Number(
         breakdown.total_used ?? data.used_tokens ?? system + tools + memory + files + messages,
       );
@@ -1656,7 +2042,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "workspace.setContextCap": async (params) => {
       try {
-        const client = await deps.sessionHub.getClient();
+        const client = await getSessionClient(params.sessionId);
         await client.setContextCap(params.sessionId, params.maxTokens);
         return { ok: true };
       } catch (err) {
@@ -1668,7 +2054,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "workspace.compact": async (params) => {
       try {
-        const client = await deps.sessionHub.getClient();
+        const client = await getSessionClient(params.sessionId);
         const message = await client.compact(params.sessionId);
         return { ok: true, message };
       } catch (err) {
@@ -1785,22 +2171,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "sessions.history": async (params) => deps.sessionHub.getHistory(params.sessionId),
     "sessions.rename": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.renameSession(params.sessionId, params.title);
       return { ok: true, title: params.title };
     },
     "sessions.fork": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const info = await client.forkSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
     },
     "sessions.transfer": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const info = await client.transferSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
     },
     "sessions.export": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const history = await client.getHistory(params.sessionId);
       if (params.format === "json") {
         return { content: JSON.stringify(history, null, 2) };
@@ -1825,41 +2211,85 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "sessions.setPermissionMode": async (params) =>
       deps.sessionHub.setPermissionMode(params.sessionId, params.mode),
     "sessions.rewind": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
-      const index = Number.parseInt(params.turnId, 10);
-      await client.rewind(params.sessionId, Number.isFinite(index) ? index : 0);
+      const client = await getSessionClient(params.sessionId);
+      let index = 0;
+      if (
+        typeof params.messageIndex === "number" &&
+        Number.isInteger(params.messageIndex) &&
+        params.messageIndex >= 1
+      ) {
+        index = params.messageIndex;
+      } else {
+        const suffixMatch = /_(\d+)$/.exec(params.turnId);
+        if (suffixMatch) {
+          const parsedSuffix = Number.parseInt(suffixMatch[1]!, 10);
+          if (Number.isFinite(parsedSuffix) && parsedSuffix >= 1) {
+            index = parsedSuffix;
+          }
+        } else {
+          const parsedDirect = Number.parseInt(params.turnId, 10);
+          if (Number.isFinite(parsedDirect) && parsedDirect >= 1) {
+            index = parsedDirect;
+          }
+        }
+      }
+      if (index < 1) {
+        throw new HarnessError(
+          "invalid_request",
+          `Invalid rewind target '${params.turnId}': expected a 1-based user message index.`,
+        );
+      }
+      await client.rewind(params.sessionId, index);
       return { ok: true };
     },
     "sessions.rewindUndo": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       await client.rewindUndo(params.sessionId);
       return { ok: true };
     },
     "sessions.softInterrupt": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
-      const interruptId = `si_${Date.now()}`;
+      const client = await getSessionClient(params.sessionId);
+      const interruptId =
+        params.clientId?.trim() ||
+        `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const images = normalizeImageAttachments(params.images);
       await client.softInterruptWithId(params.sessionId, params.text, {
         urgent: params.urgent ?? false,
         clientId: interruptId,
+        ...(images.length > 0 ? { images } : {}),
       });
       return { ok: true, interruptId };
     },
     "sessions.cancelSoftInterrupts": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       if (params.interruptId) {
-        await client.cancelSoftInterrupt(params.sessionId, params.interruptId);
-      } else {
+        const supportsIds =
+          typeof client.supports === "function"
+            ? client.supports("soft_interrupt_ids")
+            : true;
+        if (supportsIds && typeof client.cancelSoftInterrupt === "function") {
+          const cancelled = await client.cancelSoftInterrupt(
+            params.sessionId,
+            params.interruptId,
+          );
+          return { ok: true, cancelled: Boolean(cancelled) };
+        }
         await client.cancelSoftInterrupts(params.sessionId);
+        return { ok: true, cancelled: true };
       }
-      return { ok: true };
+      await client.cancelSoftInterrupts(params.sessionId);
+      return { ok: true, cancelled: true };
     },
     "sessions.respondPermission": async (params) => {
       await deps.sessionHub.respondPermission(params);
       return { ok: true };
     },
     "sessions.respondQuestion": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
-      const response = buildQuestionResponseWire(params.answers, params.notes);
+      const client = await getSessionClient(params.sessionId);
+      const response = buildQuestionResponseWire(params.answers, params.notes, {
+        selected: params.selected,
+        declined: params.declined,
+      });
       const reply = await client.request({
         req: "question_response",
         session_id: params.sessionId,
@@ -1879,11 +2309,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 4. Background Tasks
     // -------------------------------------------------------------------------
     "background.list": async (params) => {
-      const tasks = await deps.sessionHub.refreshBackgroundProcesses(params?.sessionId);
-      const filtered = params?.sessionId
-        ? tasks.filter((t) => !t.sessionId || t.sessionId === params.sessionId)
-        : tasks;
-      return { tasks: filtered };
+      const targetSessionId =
+        params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (!targetSessionId) {
+        return { tasks: [] };
+      }
+      const tasks = await deps.sessionHub.refreshBackgroundProcesses(targetSessionId);
+      return { tasks: tasks.filter((t) => t.sessionId === targetSessionId) };
     },
     "background.status": async (params) => {
       const data = await safeRuntimeCmd("background", ["status", params.taskId]);
@@ -1940,11 +2372,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "background.cancel": async (params) => {
-      const { data, message } = await requireRuntimeCmd("background", [
-        "cancel",
-        params.taskId,
-      ]);
-      await deps.sessionHub.refreshBackgroundProcesses();
+      const { data, message } = await requireRuntimeCmd(
+        "background",
+        ["cancel", params.taskId],
+        params.sessionId,
+      );
+      await deps.sessionHub.refreshBackgroundProcesses(params.sessionId);
       const cancelled = data.cancelled !== false;
       return {
         ok: cancelled,
@@ -1952,14 +2385,15 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "background.cleanup": async (params) => {
+      const targetSessionId =
+        params?.sessionId ?? deps.sessionHub.getActiveSessionId();
       const { data } = await requireRuntimeCmd(
         "background",
         ["cleanup"],
-        params?.sessionId,
+        targetSessionId,
       );
-      const localRemoved = deps.sessionHub.removeCompletedBackgroundTasks(
-        params?.sessionId,
-      );
+      const localRemoved =
+        deps.sessionHub.removeCompletedBackgroundTasks(targetSessionId);
       const removedCount =
         typeof data.removed_files === "number"
           ? data.removed_files
@@ -1969,7 +2403,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, removedCount };
     },
     "background.backgroundTool": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const res = await client.backgroundToolResult(params.sessionId);
       await deps.sessionHub.refreshBackgroundProcesses(params.sessionId);
       return { ok: res.moved, taskId: res.toolCallId };
@@ -2360,18 +2794,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           client.todoState(params.sessionId).catch(() => null),
         ]);
         const todos = todoSnap
-          ? (todoSnap.todos ?? []).map((t) => ({
-              content: String(t.content ?? ""),
-              status: (
-                t.status === "completed"
-                  ? "completed"
-                  : t.status === "in_progress"
-                    ? "in_progress"
-                    : "pending"
-              ) as TodoItemView["status"],
-              activeForm:
-                typeof t.activeForm === "string" ? t.activeForm : undefined,
-            }))
+          ? normalizeTodoItems(todoSnap)
           : deps.sessionHub.getCachedTodos(params.sessionId);
         return { entries, todos };
       } catch {
@@ -2461,8 +2884,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { runs };
     },
     "automations.overnight.start": async (params) => {
+      // Rust `parse_overnight_command` expects `[duration, mission]` directly (no leading `"start"` token).
       const { data } = await requireRuntimeCmd("overnight", [
-        "start",
         params.duration,
         params.mission,
       ]);
@@ -3694,87 +4117,259 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 9. Remote (Telegram, Cloud, SSH, WS Gateway)
     // -------------------------------------------------------------------------
     "remote.telegram.status": async (): Promise<TelegramStatusView> => {
-      const [data, approvalsData] = await Promise.all([
-        safeRuntimeCmd("telegram", ["status"]),
-        safeRuntimeCmd("telegram", ["approvals"]),
+      const daemonOnline = deps.bridgeManager.getStatus().state === "connected";
+      if (!daemonOnline) {
+        pendingTelegramPairing = null;
+        return {
+          linked: false,
+          configured: false,
+          statusLabel: "Daemon offline",
+          daemonOnline: false,
+          remoteUninstallEnabled: false,
+          authPath: "~/.rayu/telegram-remote.json",
+          daemonError: "Start the local Rayu daemon to manage Telegram remote.",
+          approvals: [],
+        };
+      }
+      const [statusRes, approvalsRes] = await Promise.all([
+        execRuntimeCmd("telegram", ["status"]),
+        execRuntimeCmd("telegram", ["approvals"]),
       ]);
+      const data = statusRes.data;
+      const approvalsData = approvalsRes.data;
+      if (!statusRes.ok) {
+        return {
+          linked: false,
+          configured: false,
+          statusLabel: "Unavailable",
+          daemonOnline,
+          remoteUninstallEnabled: false,
+          authPath: "~/.rayu/telegram-remote.json",
+          daemonError:
+            statusRes.message ||
+            "Could not query Telegram remote status from the Rust daemon.",
+          approvals: [],
+        };
+      }
       const approvals = mapTelegramApprovals(
         approvalsData.approvals ?? data.approvals,
       );
+      const linked = Boolean(data.linked ?? data.connected ?? false);
+      const configured = Boolean(data.configured ?? linked);
+      const expired = Boolean(data.expired ?? false);
+      const generation =
+        typeof data.generation === "string" ? data.generation : undefined;
+
+      if (
+        linked ||
+        !configured ||
+        expired ||
+        (pendingTelegramPairing?.generation &&
+          generation &&
+          pendingTelegramPairing.generation !== generation)
+      ) {
+        pendingTelegramPairing = null;
+      }
+
+      const activePairing = pendingTelegramPairing;
       const chatIdRaw = data.owner_chat_id ?? data.chat_id;
       const pendingUntilRaw = data.pending_until;
+      const rawUsername =
+        typeof data.username === "string"
+          ? data.username
+          : typeof data.bot_handle === "string"
+            ? data.bot_handle
+            : activePairing?.username;
+      const cleanHandle = rawUsername?.trim().replace(/^@+/, "");
+      const mode: "hosted" | "botfather" | undefined =
+        data.mode === "hosted" || data.mode === "botfather"
+          ? data.mode
+          : activePairing?.mode;
+
       return {
-        linked: Boolean(data.linked ?? data.connected ?? false),
-        mode:
-          data.mode === "hosted" || data.mode === "botfather"
-            ? data.mode
+        linked,
+        configured,
+        statusLabel:
+          typeof data.status === "string"
+            ? data.status
+            : linked
+              ? "Linked"
+              : "Disconnected",
+        generation,
+        expired,
+        activeAccount:
+          typeof data.active_account === "boolean"
+            ? data.active_account
             : undefined,
-        botHandle:
-          typeof data.username === "string"
-            ? data.username
-            : typeof data.bot_handle === "string"
-              ? data.bot_handle
-              : undefined,
+        mode,
+        botHandle: cleanHandle ? `@${cleanHandle}` : undefined,
         chatId:
           chatIdRaw !== undefined && chatIdRaw !== null
             ? String(chatIdRaw)
             : undefined,
         boundSessionId:
-          typeof data.selected_session === "string"
-            ? data.selected_session
-            : deps.sessionHub.getActiveSessionId(),
-        daemonOnline: deps.bridgeManager.getStatus().state === "connected",
+          typeof data.selected_session === "string" &&
+          data.selected_session.trim().length > 0
+            ? data.selected_session.trim()
+            : undefined,
+        authPath:
+          typeof data.auth_path === "string" && data.auth_path.trim().length > 0
+            ? data.auth_path.trim()
+            : "~/.rayu/telegram-remote.json",
+        daemonOnline: true,
         remoteUninstallEnabled: Boolean(data.uninstall_enabled ?? false),
         pairingUrl:
-          typeof data.pairing_url === "string" ? data.pairing_url : undefined,
+          typeof data.pairing_url === "string"
+            ? data.pairing_url
+            : activePairing?.pairingUrl,
         pairingCode:
-          typeof data.pairing_code === "string" ? data.pairing_code : undefined,
+          typeof data.pairing_code === "string"
+            ? data.pairing_code
+            : activePairing?.pairingCode,
         pairingExpiresAtMs:
           pendingUntilRaw !== undefined && pendingUntilRaw !== null
             ? parseTimestampMs(pendingUntilRaw)
-            : typeof data.ttl_secs === "number"
-              ? Date.now() + data.ttl_secs * 1000
-              : undefined,
+            : activePairing?.pairingExpiresAtMs ??
+              (typeof data.ttl_secs === "number"
+                ? Date.now() + data.ttl_secs * 1000
+                : undefined),
+        qrSize:
+          typeof data.qr_size === "number"
+            ? data.qr_size
+            : activePairing?.qrSize ?? null,
+        qrPath:
+          typeof data.qr_path === "string"
+            ? data.qr_path
+            : activePairing?.qrPath ?? null,
+        daemonError: null,
         approvals,
       };
     },
-    "remote.telegram.linkHosted": async () => {
-      // Preserve pairing_url / username / pending_until directly from `link_hosted`
-      const { data } = await requireRuntimeCmd("telegram", ["link_hosted"]);
+    "remote.telegram.linkHosted": async (params) => {
+      const args = params?.replaceExisting
+        ? ["link_hosted", "replace"]
+        : ["link_hosted"];
+      const { data } = await requireRuntimeCmd("telegram", args);
+      const pairingUrl =
+        typeof data.pairing_url === "string" ? data.pairing_url : "";
+      const pairingCode =
+        typeof data.pairing_code === "string" ? data.pairing_code : undefined;
+      const username =
+        typeof data.username === "string" ? data.username : undefined;
+      const qrSize = typeof data.qr_size === "number" ? data.qr_size : null;
+      const qrPath = typeof data.qr_path === "string" ? data.qr_path : null;
+      const pairingExpiresAtMs =
+        data.pending_until !== undefined && data.pending_until !== null
+          ? parseTimestampMs(data.pending_until)
+          : undefined;
+      if (pairingUrl) {
+        pendingTelegramPairing = {
+          generation:
+            typeof data.generation === "string" ? data.generation : null,
+          mode: "hosted",
+          username,
+          pairingUrl,
+          pairingCode,
+          qrSize,
+          qrPath,
+          pairingExpiresAtMs,
+        };
+      }
       const status = await handlers["remote.telegram.status"](undefined);
       return {
         ...status,
         mode: "hosted",
-        botHandle:
-          typeof data.username === "string" ? data.username : status.botHandle,
-        pairingUrl:
-          typeof data.pairing_url === "string"
-            ? data.pairing_url
-            : status.pairingUrl,
-        pairingExpiresAtMs:
-          data.pending_until !== undefined && data.pending_until !== null
-            ? parseTimestampMs(data.pending_until)
-            : status.pairingExpiresAtMs,
+        botHandle: username
+          ? `@${username.replace(/^@+/, "")}`
+          : status.botHandle,
+        pairingUrl: pairingUrl || status.pairingUrl,
+        pairingCode: pairingCode ?? status.pairingCode,
+        qrSize: qrSize ?? status.qrSize,
+        qrPath: qrPath ?? status.qrPath,
+        pairingExpiresAtMs: pairingExpiresAtMs ?? status.pairingExpiresAtMs,
       };
     },
-    "remote.telegram.linkBotfather": async () => {
-      throw new HarnessError(
-        "invalid_request",
-        "BotFather token linking via runtime_command is not supported yet; use Hosted Telegram pairing or `rayu telegram` CLI.",
-      );
+    "remote.telegram.linkBotfather": async (params) => {
+      const args = ["link_botfather", params.botToken.trim()];
+      if (params.allowedChatId?.trim()) {
+        args.push(params.allowedChatId.trim());
+      }
+      if (params.replaceExisting) {
+        args.push("replace");
+      }
+      const { data } = await requireRuntimeCmd("telegram", args);
+      const linked = Boolean(data.linked);
+      const pairingUrl =
+        typeof data.pairing_url === "string" ? data.pairing_url : "";
+      const pairingCode =
+        typeof data.pairing_code === "string" ? data.pairing_code : undefined;
+      const username =
+        typeof data.username === "string" ? data.username : undefined;
+      const qrSize = typeof data.qr_size === "number" ? data.qr_size : null;
+      const qrPath = typeof data.qr_path === "string" ? data.qr_path : null;
+      const pairingExpiresAtMs =
+        data.pending_until !== undefined && data.pending_until !== null
+          ? parseTimestampMs(data.pending_until)
+          : undefined;
+      if (!linked && pairingUrl) {
+        pendingTelegramPairing = {
+          generation:
+            typeof data.generation === "string" ? data.generation : null,
+          mode: "botfather",
+          username,
+          pairingUrl,
+          pairingCode,
+          qrSize,
+          qrPath,
+          pairingExpiresAtMs,
+        };
+      } else {
+        pendingTelegramPairing = null;
+      }
+      const status = await handlers["remote.telegram.status"](undefined);
+      return {
+        ...status,
+        linked: linked || status.linked,
+        mode: "botfather",
+        botHandle: username
+          ? `@${username.replace(/^@+/, "")}`
+          : status.botHandle,
+        pairingUrl: pairingUrl || status.pairingUrl,
+        pairingCode: pairingCode ?? status.pairingCode,
+        qrSize: qrSize ?? status.qrSize,
+        qrPath: qrPath ?? status.qrPath,
+        pairingExpiresAtMs: pairingExpiresAtMs ?? status.pairingExpiresAtMs,
+      };
     },
-    "remote.telegram.disconnect": async () => {
-      const { message } = await requireRuntimeCmd("telegram", ["disconnect"]);
+    "remote.telegram.disconnect": async (params) => {
+      const args = params?.localOnly
+        ? ["disconnect", "local_only"]
+        : ["disconnect"];
+      const { message } = await requireRuntimeCmd("telegram", args);
+      pendingTelegramPairing = null;
       return { ok: true, message: message || undefined };
     },
-    "remote.telegram.testPing": async () => ({
-      ok: false,
-      message: "Telegram test ping is not exposed via runtime_command yet.",
-    }),
-    "remote.telegram.driveSession": async () => ({
-      ok: false,
-      message: "Switching Telegram active session via runtime_command is not supported yet.",
-    }),
+    "remote.telegram.testPing": async () => {
+      const { data, message } = await requireRuntimeCmd("telegram", ["ping"]);
+      const rawUser =
+        typeof data.username === "string" ? data.username.trim() : "";
+      return {
+        ok: data.ok !== false,
+        target: rawUser ? `@${rawUser.replace(/^@+/, "")}` : undefined,
+        chatId:
+          data.chat_id !== undefined && data.chat_id !== null
+            ? String(data.chat_id)
+            : undefined,
+        message: message || undefined,
+      };
+    },
+    "remote.telegram.driveSession": async (params) => {
+      const { message } = await requireRuntimeCmd("telegram", [
+        "select_session",
+        params.sessionId.trim(),
+      ]);
+      return { ok: true, message: message || undefined };
+    },
     "remote.telegram.uninstallToggle": async (params) => {
       const { data } = await requireRuntimeCmd("telegram", [
         "uninstall",
@@ -4373,17 +4968,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { checks, ranAtMs: Date.now() };
     },
     "settings.models.get": async (params) => {
-      const targetSessionId =
+      let targetSessionId =
         params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      const [data, runtimeInfo] = await Promise.all([
-        safeRuntimeCmd("agents", ["status"], targetSessionId),
-        targetSessionId
-          ? deps.sessionHub
-              .getClient()
-              .then((c) => c.getRuntimeInfo(targetSessionId))
-              .catch(() => null)
-          : Promise.resolve(null),
-      ]);
+      if (!targetSessionId) {
+        targetSessionId = await deps.sessionHub
+          .getClient()
+          .then((c) =>
+            typeof c.listSessions === "function"
+              ? c.listSessions({ limit: 1 })
+              : [],
+          )
+          .then((sessions) => sessions[0]?.session_id)
+          .catch(() => undefined);
+      }
+
+      const hostAccount = deps.authManager?.getAccountStatusSnapshot();
+      const [data, subagentData, runtimeInfo, rayuHostedModels] =
+        await Promise.all([
+          safeRuntimeCmd("agents", ["status"], targetSessionId),
+          safeRuntimeCmd("subagent_model", ["status"], targetSessionId),
+          targetSessionId
+            ? getSessionClient(targetSessionId)
+                .then((c) =>
+                  typeof c.getRuntimeInfo === "function"
+                    ? c.getRuntimeInfo(targetSessionId)
+                    : null,
+                )
+                .catch(() => null)
+            : Promise.resolve(null),
+          hostAccount?.signedIn && deps.authManager?.fetchHostedModels
+            ? deps.authManager.fetchHostedModels(false).catch(() => [])
+            : Promise.resolve([]),
+        ]);
 
       const roles: Array<{ role: AgentRoleId; label: string }> = [
         { role: "swarm", label: "Swarm Workers" },
@@ -4394,6 +5010,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       ];
       const overridesObj = asRecord(data.overrides);
       const defaultsObj = asRecord(data.defaults);
+      const effectiveObj = asRecord(data.effective);
       const roleOverrides: AgentRoleOverrideView[] = roles.map((r) => {
         const sessionOverride = overridesObj[r.role];
         const globalDefault = defaultsObj[r.role];
@@ -4416,63 +5033,183 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         };
       });
 
-      // Preserve exact backend route order from runtimeInfo.routes
-      const routes: ModelRouteOptionView[] | undefined = runtimeInfo?.routes
-        ? runtimeInfo.routes
-            .map((r) => mapModelRouteOption(r))
-            .filter((r): r is ModelRouteOptionView => r !== null)
+      const effectiveRoleModels: Record<string, string | null> = {};
+      for (const r of roles) {
+        const eff = effectiveObj[r.role];
+        effectiveRoleModels[r.role] =
+          typeof eff === "string" && eff.trim() ? eff.trim() : null;
+      }
+
+      const mapProfileList = (
+        raw: unknown,
+        fallbackScope: "global" | "session",
+      ): AgentProfileView[] => {
+        const out: AgentProfileView[] = [];
+        for (const item of asArray(raw)) {
+          const rec = asRecord(item);
+          const name = typeof rec.name === "string" ? rec.name.trim() : "";
+          const model = typeof rec.model === "string" ? rec.model.trim() : "";
+          if (!name || !model) continue;
+          const scope: "global" | "session" =
+            rec.scope === "global" || rec.scope === "session"
+              ? rec.scope
+              : fallbackScope;
+          out.push({
+            name,
+            model,
+            description:
+              typeof rec.description === "string" ? rec.description.trim() : "",
+            effort:
+              typeof rec.effort === "string" && rec.effort.trim()
+                ? rec.effort.trim()
+                : null,
+            scope,
+          });
+        }
+        return out;
+      };
+
+      const globalProfiles = mapProfileList(data.global_profiles, "global");
+      const sessionProfiles = mapProfileList(data.session_profiles, "session");
+      const mergedProfiles = mapProfileList(data.profiles, "global");
+      const profiles =
+        mergedProfiles.length > 0
+          ? mergedProfiles
+          : [
+              ...globalProfiles.filter(
+                (gp) =>
+                  !sessionProfiles.some(
+                    (sp) => sp.name.toLowerCase() === gp.name.toLowerCase(),
+                  ),
+              ),
+              ...sessionProfiles,
+            ];
+
+      const sessionScopedPrefs = params?.sessionId
+        ? deps.sessionHub.getSessionPrefs?.(params.sessionId)
         : undefined;
 
+      const { routes, defaultModel } = reconcileAuthConsistentRoutes({
+        rawRoutes: runtimeInfo?.routes,
+        hostAccount,
+        rayuHostedModels,
+        runtimeModel: sessionScopedPrefs?.model ?? runtimeInfo?.model,
+        runtimeProvider: sessionScopedPrefs?.provider ?? runtimeInfo?.provider,
+        fallbackActiveModel:
+          sessionScopedPrefs?.model ?? deps.sessionHub.getActiveModel(),
+      });
+
+      const subagentModel =
+        typeof subagentData.model === "string" && subagentData.model.trim()
+          ? subagentData.model.trim()
+          : typeof data.subagent_model === "string" && data.subagent_model.trim()
+            ? data.subagent_model.trim()
+            : null;
+      const inheritModel =
+        typeof subagentData.inherit_model === "string" &&
+        subagentData.inherit_model.trim()
+          ? subagentData.inherit_model.trim()
+          : typeof data.inherit_model === "string" && data.inherit_model.trim()
+            ? data.inherit_model.trim()
+            : defaultModel ?? null;
+
       return {
-        defaultModel: runtimeInfo?.model ?? deps.sessionHub.getActiveModel(),
-        defaultEffort: deps.getGlobalState<EffortChoice>(
-          "rayucode.settings.defaultEffort",
-          "medium",
-        ),
-        serviceTier: deps.getGlobalState<ServiceTier>(
-          "rayucode.settings.serviceTier",
-          "auto",
-        ),
-        cacheTtl: deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
+        defaultModel,
+        defaultEffort:
+          sessionScopedPrefs?.effort ??
+          deps.getGlobalState<EffortChoice>(
+            "rayucode.settings.defaultEffort",
+            "medium",
+          ),
+        serviceTier:
+          sessionScopedPrefs?.serviceTier ??
+          deps.getGlobalState<ServiceTier>(
+            "rayucode.settings.serviceTier",
+            "auto",
+          ),
+        cacheTtl:
+          sessionScopedPrefs?.cacheTtl ??
+          deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
         transport: deps.getGlobalState<ProviderTransport>(
           "rayucode.settings.transport",
           "auto",
         ),
+        subagentModel,
+        inheritModel,
         roleOverrides,
+        effectiveRoleModels,
+        profiles,
+        globalProfiles,
+        sessionProfiles,
         swarmAllowlist: Array.isArray(data.swarm_allowlist)
           ? data.swarm_allowlist.map(String)
           : undefined,
-        ...(routes ? { routes } : {}),
+        configPath:
+          typeof data.config_path === "string" && data.config_path.trim()
+            ? data.config_path.trim()
+            : "~/.rayu/config.toml",
+        ...(routes.length > 0 || runtimeInfo?.routes !== undefined
+          ? { routes }
+          : {}),
       };
     },
     "settings.models.refresh": async (params) => {
-      const { data } = await requireRuntimeCmd(
-        "refresh_model_list",
-        [],
-        params?.sessionId,
-      );
-      const rawRoutes = asArray(data.routes);
-      const routes = rawRoutes
-        .map((r) => mapModelRouteOption(r))
-        .filter((r): r is ModelRouteOptionView => r !== null);
+      const hostAccount = deps.authManager?.getAccountStatusSnapshot();
+      const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
+
+      const [rayuHostedModels, daemonRefresh] = await Promise.all([
+        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
+          ? deps.authManager.fetchHostedModels(true).catch(() => [])
+          : Promise.resolve([]),
+        daemonConnected
+          ? (async () => {
+              await deps.sessionHub
+                .notifyDaemonAuthChanged?.("rayu")
+                .catch(() => {});
+              return execRuntimeCmd("refresh_model_list", [], params?.sessionId);
+            })()
+          : Promise.resolve({
+              ok: false,
+              data: {} as Record<string, unknown>,
+              rawData: undefined,
+              message: "",
+            }),
+      ]);
+
+      const rawRoutes = asArray(daemonRefresh.data.routes);
+      const { routes } = reconcileAuthConsistentRoutes({
+        rawRoutes,
+        hostAccount,
+        rayuHostedModels,
+      });
       const routeCount =
         routes.length > 0
           ? routes.length
-          : typeof data.route_count === "number"
-            ? data.route_count
+          : typeof daemonRefresh.data.route_count === "number"
+            ? daemonRefresh.data.route_count
             : 0;
       return {
-        ok: true,
+        ok: daemonRefresh.ok || rayuHostedModels.length > 0,
         routeCount,
-        ...(routes.length > 0 ? { routes } : {}),
+        routes,
       };
     },
     "settings.models.setFast": async (params) => {
+      if (params.sessionId) {
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
+          serviceTier: params.tier,
+        });
+      }
       await requireRuntimeCmd("fast", [params.tier], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.serviceTier", params.tier);
       return { ok: true, tier: params.tier };
     },
     "settings.models.setCacheTtl": async (params) => {
+      if (params.sessionId) {
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
+          cacheTtl: params.ttl,
+        });
+      }
       await requireRuntimeCmd("cache", [params.ttl], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.cacheTtl", params.ttl);
       return { ok: true, ttl: params.ttl };
@@ -4494,6 +5231,101 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         params.sessionId,
       );
       return { ok: true, message: message || undefined };
+    },
+    "settings.agents.setSubagentModel": async (params) => {
+      const args =
+        params.scope === "global"
+          ? ["global", params.model.trim()]
+          : [params.model.trim()];
+      const { data, message } = await requireRuntimeCmd(
+        "subagent_model",
+        args,
+        params.sessionId,
+      );
+      return {
+        ok: true,
+        model: typeof data.model === "string" ? data.model : null,
+        configuredDefault:
+          typeof data.configured_default === "string"
+            ? data.configured_default
+            : null,
+        message: message || undefined,
+      };
+    },
+    "settings.agents.upsertProfile": async (params) => {
+      const args: string[] = [];
+      if (params.scope === "global") {
+        args.push("global");
+      }
+      args.push("profile", "add", params.name.trim(), params.model.trim());
+      const effort = params.effort?.trim();
+      if (effort && effort !== "auto" && effort !== "none") {
+        args.push("--effort", effort);
+      }
+      const description = params.description?.trim();
+      if (description) {
+        args.push(description);
+      }
+      const { data, message } = await requireRuntimeCmd(
+        "agents",
+        args,
+        params.sessionId,
+      );
+      const profiles: AgentProfileView[] = [];
+      for (const item of asArray(data.profiles)) {
+        const rec = asRecord(item);
+        const name = typeof rec.name === "string" ? rec.name.trim() : "";
+        const model = typeof rec.model === "string" ? rec.model.trim() : "";
+        if (!name || !model) continue;
+        profiles.push({
+          name,
+          model,
+          description:
+            typeof rec.description === "string" ? rec.description.trim() : "",
+          effort:
+            typeof rec.effort === "string" && rec.effort.trim()
+              ? rec.effort.trim()
+              : null,
+          scope:
+            rec.scope === "session" || rec.scope === "global"
+              ? rec.scope
+              : params.scope,
+        });
+      }
+      return { ok: true, profiles, message: message || undefined };
+    },
+    "settings.agents.deleteProfile": async (params) => {
+      const args =
+        params.scope === "global"
+          ? ["global", "profile", "rm", params.name.trim()]
+          : ["profile", "rm", params.name.trim()];
+      const { data, message } = await requireRuntimeCmd(
+        "agents",
+        args,
+        params.sessionId,
+      );
+      const profiles: AgentProfileView[] = [];
+      for (const item of asArray(data.profiles)) {
+        const rec = asRecord(item);
+        const name = typeof rec.name === "string" ? rec.name.trim() : "";
+        const model = typeof rec.model === "string" ? rec.model.trim() : "";
+        if (!name || !model) continue;
+        profiles.push({
+          name,
+          model,
+          description:
+            typeof rec.description === "string" ? rec.description.trim() : "",
+          effort:
+            typeof rec.effort === "string" && rec.effort.trim()
+              ? rec.effort.trim()
+              : null,
+          scope:
+            rec.scope === "session" || rec.scope === "global"
+              ? rec.scope
+              : "global",
+        });
+      }
+      return { ok: true, profiles, message: message || undefined };
     },
     "settings.features.get": async () => {
       const data = await safeRuntimeCmd("features", ["status"]);
@@ -4617,6 +5449,23 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       await deps.editorBridge.openFile({ path: configPath, preview: false });
       return { ok: true };
     },
+    "settings.permission.getDefault": async () => ({
+      mode: deps.sessionHub.getDefaultPermissionMode
+        ? deps.sessionHub.getDefaultPermissionMode()
+        : deps.sessionHub.getActivePermissionMode(),
+    }),
+    "settings.permission.setDefault": async (params) => {
+      if (deps.sessionHub.setDefaultPermissionMode) {
+        return deps.sessionHub.setDefaultPermissionMode(params.mode, {
+          applyToActiveSession: params.applyToActiveSession,
+        });
+      }
+      const activeSid = deps.sessionHub.getActiveSessionId();
+      if (params.applyToActiveSession && activeSid) {
+        return deps.sessionHub.setPermissionMode(activeSid, params.mode);
+      }
+      return { ok: true, mode: params.mode };
+    },
     "settings.shortcuts.list": async () => ({
       shortcuts: DEFAULT_SHORTCUTS,
     }),
@@ -4656,7 +5505,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       applets: deps.sessionHub.getApplets(params.sessionId),
     }),
     "inspector.applet.action": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.appletAction(
         params.sessionId,
         params.appletId,
@@ -4669,7 +5518,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, applet };
     },
     "inspector.applet.close": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.closeApplet(params.sessionId, params.appletId);
       return { ok: true };
     },
@@ -4776,9 +5625,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
     },
     "sessions.setModel": async (params) => {
+      if (typeof deps.sessionHub.setSessionModel === "function") {
+        return deps.sessionHub.setSessionModel(params.sessionId, params.model, {
+          provider: params.provider,
+          apiMethod: params.apiMethod,
+          applyNextTurn: params.applyNextTurn,
+        });
+      }
       try {
-        const client = await deps.sessionHub.getClient(params.sessionId);
-        await client.setModel(params.sessionId, params.model);
+        const client = await getSessionClient(params.sessionId);
+        const modelSpec = formatHarnessModelSpec(
+          params.model,
+          params.provider,
+          params.apiMethod,
+        );
+        await client.setModel(params.sessionId, modelSpec || params.model);
         return { ok: true };
       } catch (error) {
         if (error instanceof HarnessError && error.code === "busy") {
@@ -4793,8 +5654,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
     },
     "sessions.setEffort": async (params) => {
+      if (typeof deps.sessionHub.setSessionEffort === "function") {
+        return deps.sessionHub.setSessionEffort(params.sessionId, params.effort, {
+          applyNextTurn: params.applyNextTurn,
+        });
+      }
       try {
-        const client = await deps.sessionHub.getClient(params.sessionId);
+        const client = await getSessionClient(params.sessionId);
         await client.setReasoningEffort(params.sessionId, params.effort);
         return { ok: true };
       } catch (error) {
@@ -4841,20 +5707,10 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "inspector.todos.get": async (params) => {
       try {
-        const client = await deps.sessionHub.getClient();
+        const client = await getSessionClient(params.sessionId);
         const snap = await client.todoState(params.sessionId);
-        const todos: TodoItemView[] = (snap.todos ?? []).map((t) => ({
-          content: String(t.content ?? ""),
-          status: (
-            t.status === "completed"
-              ? "completed"
-              : t.status === "in_progress"
-                ? "in_progress"
-                : "pending"
-          ) as TodoItemView["status"],
-          activeForm:
-            typeof t.activeForm === "string" ? t.activeForm : undefined,
-        }));
+        const todos: TodoItemView[] = normalizeTodoItems(snap);
+        deps.sessionHub.setCachedTodos?.(params.sessionId, todos);
         return { todos };
       } catch {
         return { todos: deps.sessionHub.getCachedTodos(params.sessionId) };

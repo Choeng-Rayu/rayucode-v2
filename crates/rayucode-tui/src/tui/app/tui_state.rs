@@ -2319,8 +2319,8 @@ impl crate::tui::TuiState for App {
         Some(&self.expanded_file_change_paths)
     }
 
-    fn file_changes_receipt_expanded(&self) -> bool {
-        self.file_changes_receipt_expanded
+    fn file_changes_card_expanded(&self) -> bool {
+        self.file_changes_card_expanded_state()
     }
 
     fn file_review_overlay(

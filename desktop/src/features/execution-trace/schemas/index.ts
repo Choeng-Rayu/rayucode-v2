@@ -89,6 +89,11 @@ export const answerBulletSchema = z.object({
 
 export const traceTimelineItemSchema = z.union([
   z.object({
+    type: z.literal("reasoning"),
+    id: z.string(),
+    text: z.string(),
+  }),
+  z.object({
     type: z.literal("note"),
     id: z.string().min(1),
     text: z.string(),

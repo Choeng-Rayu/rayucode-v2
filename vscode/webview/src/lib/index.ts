@@ -8,4 +8,5 @@ export * from "./shiki-highlighter";
 export * from "./harness-adapter";
 export * from "./rpc-client";
 export * from "./app-store";
+export * from "./external-session";
 export * from "./mock-vscode-bridge";

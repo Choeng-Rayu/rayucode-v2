@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build as esbuild } from "esbuild";
+import { generateIconAssets } from "./scripts/generate-icon-assets.mjs";
 
 const source = import.meta.dirname;
 const stage = new URL("./dist/extension/", import.meta.url);
@@ -51,6 +52,7 @@ await Promise.all([
     format: "cjs",
     target: "node22",
     bundle: true,
+    minify: true,
     external: ["vscode"],
     // The Node SDK resolves its optional runtime packages relative to import.meta.url.
     define: { "import.meta.url": "rayucodeModuleUrl" },
@@ -59,17 +61,21 @@ await Promise.all([
     },
   }),
   buildWebview(),
-  cp(new URL("./assets/icon.svg", import.meta.url), new URL("icon.svg", media)),
+  generateIconAssets(fileURLToPath(media)),
+  cp(
+    new URL("./assets/rayu-fox-icon.svg", import.meta.url),
+    new URL("rayu-fox-icon.svg", media),
+  ),
   cp(
     new URL("./assets/rayu-fox.png", import.meta.url),
     new URL("rayu-fox.png", media),
   ),
-  cp(
-    new URL("./assets/app-icon.png", import.meta.url),
-    new URL("app-icon.png", media),
-  ),
   cp(new URL("../LICENSE", import.meta.url), new URL("LICENSE", stage)),
   cp(new URL("./README.md", import.meta.url), new URL("README.md", stage)),
+  cp(
+    new URL("./CHANGELOG.md", import.meta.url),
+    new URL("CHANGELOG.md", stage),
+  ),
   writeFile(
     new URL("package.json", stage),
     JSON.stringify(manifest, null, 2) + "\n",

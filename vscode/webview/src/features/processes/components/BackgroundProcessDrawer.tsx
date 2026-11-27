@@ -87,7 +87,6 @@ export function BackgroundProcessDrawer({
     cancelProcess,
     cleanupProcesses,
     openOutputFileInEditor,
-    openProcessTerminal,
     copyProcessOutput,
   } = useProcesses({
     drawerOpen: isVisible,
@@ -170,6 +169,14 @@ export function BackgroundProcessDrawer({
           <h2 className="truncate text-xs font-semibold tracking-tight text-ink">
             Background Processes
           </h2>
+
+          <Badge
+            variant="outline"
+            data-testid="drawer-session-scope-badge"
+            className="h-5 shrink-0 px-1.5 text-[10px] font-normal text-muted-ink"
+          >
+            Current session
+          </Badge>
 
           {runningCount > 0 && (
             <Badge
@@ -307,7 +314,9 @@ export function BackgroundProcessDrawer({
                 data-testid="process-list-empty"
                 className="flex flex-1 flex-col items-center justify-center p-6 text-center text-xs text-muted-ink"
               >
-                No background processes match this filter.
+                {counts.all === 0
+                  ? "No background processes in this session."
+                  : "No background processes match this filter."}
               </div>
             ) : (
               <div
@@ -398,7 +407,6 @@ export function BackgroundProcessDrawer({
               }}
               onCopy={copyProcessOutput}
               onOpenFile={openOutputFileInEditor}
-              onOpenTerminal={openProcessTerminal}
               onStop={(taskId) => {
                 void cancelProcess(taskId);
               }}

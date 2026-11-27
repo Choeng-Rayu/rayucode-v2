@@ -1,6 +1,6 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -15,8 +15,10 @@ import {
 import {
   AppShell,
   AuthWelcomeScreen,
+  DaemonBanner,
   EMOJI_PRESETS,
   ProjectIconPicker,
+  StatusBarPill,
   resolveFormFactorFromWidth,
 } from "@/features/shell";
 import {
@@ -44,11 +46,11 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       surface: "editorPanel",
       route: "home",
       activeRoute: "home",
+      activeSettingsSection: "account",
       theme: "auto",
       accent: "green",
       sidebarCollapsed: false,
       mobileSidebarOpen: false,
-      inspectorOpen: false,
       backgroundDrawerOpen: false,
     });
   });
@@ -62,7 +64,8 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     expect(resolveFormFactorFromWidth(1440)).toBe("wide");
   });
 
-  it("renders Wide Editor Panel AppShell (>=960px) with 5 primary rail items matching Desktop and TopBar", async () => {
+  it("renders Wide Editor Panel AppShell (>=960px) with slimmed 2-item rail, bottom Settings button, and no IDE-duplicated chrome", async () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -79,18 +82,39 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       screen.getByTestId("app-shell").getAttribute("data-form-factor"),
     ).toBe("wide");
     expect(screen.getByTestId("rail-nav-home")).toBeTruthy();
-    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
-    expect(screen.getByTestId("rail-nav-automations")).toBeTruthy();
     expect(screen.getByTestId("rail-nav-plugins")).toBeTruthy();
-    expect(screen.getByTestId("rail-nav-changes")).toBeTruthy();
-    expect(screen.getByTestId("rail-nav-remote")).toBeTruthy();
+    expect(screen.getByTestId("rail-nav-settings")).toBeTruthy();
+    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-automations")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-changes")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-remote")).toBeNull();
+    expect(screen.queryByTestId("six-icon-strip")).toBeNull();
     expect(screen.getByTestId("stage-child")).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId("rail-nav-automations"));
-    expect(useAppStore.getState().activeRoute).toBe("automations");
+    // TopBar provides 1-click Open Browser and Open Terminal actions in VS Code
+    fireEvent.click(screen.getByTestId("topbar-open-browser"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+    });
+    fireEvent.click(screen.getByTestId("topbar-open-terminal"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
+    postSpy.mockClear();
+
+    fireEvent.click(screen.getByTestId("rail-nav-settings"));
+    expect(useAppStore.getState().activeRoute).toBe("settings");
+
+    // Cmd/Ctrl+J must pass through to native VS Code instead of posting openTerminal
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(postSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
+    postSpy.mockRestore();
   });
 
-  it("renders Compact Docked Sidebar AppShell (<560px) with CompactTopBar and slide-over drawers", () => {
+  it("renders Compact Docked Sidebar AppShell (<560px) with CompactTopBar browser/terminal buttons and sessions drawer without inspector or changes buttons", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -108,12 +132,22 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     ).toBe("compact");
     expect(screen.getByTestId("compact-top-bar")).toBeTruthy();
     expect(screen.getByTestId("compact-expand-editor-panel")).toBeTruthy();
+    expect(screen.queryByTestId("compact-inspector-trigger")).toBeNull();
+    expect(screen.queryByTestId("compact-changes-trigger")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("compact-open-browser"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+    });
+    fireEvent.click(screen.getByTestId("compact-open-terminal"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
 
     fireEvent.click(screen.getByTestId("compact-sessions-drawer-trigger"));
     expect(screen.getByTestId("slide-over-sessions-drawer")).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId("compact-inspector-trigger"));
-    expect(screen.getByTestId("slide-over-inspector-sheet")).toBeTruthy();
+    expect(screen.queryByTestId("slide-over-inspector-sheet")).toBeNull();
+    postSpy.mockRestore();
   });
 
   it("renders all 32 BrandLogo SVGs, RayuProcessingMark, NavGlyph, UsageRingSvg, TechFileBadge, and MermaidDiagramSvg", () => {
@@ -324,5 +358,210 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     await waitFor(() => {
       expect(screen.getByText("Rayu Daemon Socket")).toBeTruthy();
     });
+  });
+
+  it("renders downloading progress strip and invokes daemon.updateEngine from offline controls", async () => {
+    useAppStore.setState({
+      daemonStatus: {
+        state: "downloading",
+        capabilities: [],
+        downloadProgress: 42,
+        downloadPhase: "downloading",
+        downloadVersion: "3.1.0",
+        statusMessage: "Downloading Rayu engine 3.1.0 (42%, 12.0 MB / 28.5 MB) — please wait...",
+      },
+    });
+
+    renderWithQuery(
+      <div>
+        <DaemonBanner />
+        <StatusBarPill />
+        <AuthWelcomeScreen />
+      </div>,
+    );
+
+    expect(screen.getByTestId("auth-daemon-downloading-strip")).toBeTruthy();
+    expect(screen.getByTestId("auth-daemon-progress-bar")).toBeTruthy();
+    expect(screen.getByTestId("daemon-banner-progress")).toBeTruthy();
+    expect(screen.getAllByText(/Downloading Rayu engine 3\.1\.0/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByTestId("status-bar-pill").textContent).toContain("Installing 42%");
+
+    act(() => {
+      useAppStore.setState({
+        daemonStatus: {
+          state: "error",
+          capabilities: [],
+          error: "Rayu CLI missing",
+        },
+      });
+    });
+
+    fireEvent.click(screen.getByTestId("auth-install-engine"));
+    await waitFor(() => {
+      expect(useAppStore.getState().daemonStatus.state).toBe("connected");
+    });
+
+    // Background release updates keep live sessions connected while showing progress
+    act(() => {
+      useAppStore.setState({
+        daemonStatus: {
+          state: "connected",
+          capabilities: [],
+          downloadProgress: 60,
+          downloadPhase: "downloading",
+          downloadVersion: "3.1.0",
+          statusMessage: "Downloading Rayu engine 3.1.0 (60%) — please wait...",
+        },
+      });
+    });
+    expect(screen.getByTestId("daemon-banner-progress")).toBeTruthy();
+    expect(screen.getByTestId("status-bar-pill").textContent).toContain("Updating 60%");
+  });
+
+  it("posts beside: true from TopBar and CompactTopBar pop-out actions and focusSidebar on editorPanel surface", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
+
+    // 1. Wide TopBar on sidebar surface -> openEditorPanel includes beside: true
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 1280,
+    });
+    useAppStore.setState({
+      surface: "sidebar",
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_abc",
+    });
+
+    const { unmount } = renderWithQuery(
+      <AppShell>
+        <div>Sidebar Stage</div>
+      </AppShell>,
+    );
+
+    const openBesideBtn = screen.getByTestId("topbar-open-editor-panel");
+    expect(openBesideBtn.getAttribute("aria-label")).toBe("Open Beside Editor");
+    fireEvent.click(openBesideBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.openEditorPanel",
+      route: "workspace",
+      sessionId: "ses_abc",
+      beside: true,
+    });
+    unmount();
+
+    // 2. Wide TopBar on editorPanel surface -> Focus Secondary Sidebar posts focusSidebar
+    postSpy.mockClear();
+    useAppStore.setState({
+      surface: "editorPanel",
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_abc",
+    });
+
+    const { unmount: unmountEditor } = renderWithQuery(
+      <AppShell>
+        <div>Editor Panel Stage</div>
+      </AppShell>,
+    );
+
+    const focusSidebarBtn = screen.getByTestId("topbar-focus-sidebar");
+    expect(focusSidebarBtn.getAttribute("aria-label")).toBe(
+      "Focus Secondary Sidebar",
+    );
+    fireEvent.click(focusSidebarBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.focusSidebar",
+    });
+    unmountEditor();
+
+    // 3. CompactTopBar on sidebar surface -> expand button posts beside: true
+    postSpy.mockClear();
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 360,
+    });
+    useAppStore.setState({
+      surface: "sidebar",
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_abc",
+    });
+
+    renderWithQuery(
+      <AppShell>
+        <div>Compact Stage</div>
+      </AppShell>,
+    );
+
+    const compactExpandBtn = screen.getByTestId("compact-expand-editor-panel");
+    expect(compactExpandBtn.getAttribute("aria-label")).toBe(
+      "Open Beside Editor",
+    );
+    fireEvent.click(compactExpandBtn);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.ui.openEditorPanel",
+      route: "workspace",
+      sessionId: "ses_abc",
+      beside: true,
+    });
+
+    postSpy.mockRestore();
+    Object.defineProperty(window, "innerWidth", {
+      writable: true,
+      configurable: true,
+      value: 1280,
+    });
+  });
+
+  it("persists { route, sessionId } via setWebviewState on editorPanel navigation for WebviewPanelSerializer", () => {
+    const savedStates: unknown[] = [];
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: () => {},
+      getState: () => undefined,
+      setState: (state: unknown) => {
+        savedStates.push(state);
+      },
+    });
+
+    try {
+      useAppStore.setState({
+        surface: "editorPanel",
+        route: "home",
+        activeRoute: "home",
+        activeSessionId: null,
+      });
+
+      useAppStore.getState().setActiveSession("ses_persist_1", "Persisted");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "workspace",
+        sessionId: "ses_persist_1",
+      });
+
+      useAppStore.getState().setActiveRoute("plugins");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "plugins",
+        sessionId: "ses_persist_1",
+      });
+
+      useAppStore.getState().setActiveRoute("swarm");
+      expect(useAppStore.getState().activeRoute).toBe("settings");
+      expect(useAppStore.getState().activeSettingsSection).toBe("swarm");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "settings",
+        sessionId: "ses_persist_1",
+      });
+
+      // Sidebar surface should NOT write editorPanel serializer state
+      const countBeforeSidebar = savedStates.length;
+      useAppStore.setState({ surface: "sidebar" });
+      useAppStore.getState().setActiveRoute("settings");
+      expect(savedStates.length).toBe(countBeforeSidebar);
+    } finally {
+      window.acquireVsCodeApi = prevAcquire;
+    }
   });
 });

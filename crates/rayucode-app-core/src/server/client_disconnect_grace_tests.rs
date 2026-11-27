@@ -492,3 +492,60 @@ async fn busy_without_successor_aborts_owner_and_marks_crashed() {
         SessionStatus::Crashed { .. }
     ));
 }
+
+#[tokio::test]
+async fn zero_grace_cleans_up_unsaved_empty_session_immediately() {
+    let _lock = crate::storage::lock_test_env();
+    let _home = Home::new();
+    let fixture = Fixture::new(false).await;
+    let id = fixture.id.clone();
+    let sessions = Arc::clone(&fixture.sessions);
+
+    let started = Instant::now();
+    fixture.cleanup(false, Duration::ZERO).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "zero-grace cleanup must not wait on reconnect grace"
+    );
+    assert!(sessions.read().await.is_empty());
+    drop(fixture);
+    assert!(
+        sessions.reserve(&id).await.ensure_vacant().is_ok(),
+        "cleaned-up unsaved placeholder must vacate SessionManager::owners"
+    );
+}
+
+#[tokio::test]
+async fn processing_task_abort_releases_agent_owner_before_cleanup_returns() {
+    let _lock = crate::storage::lock_test_env();
+    let _home = Home::new();
+    crate::server::clear_reload_marker();
+    let fixture = Fixture::new(true).await;
+    let id = fixture.id.clone();
+    let sessions = Arc::clone(&fixture.sessions);
+    let task_agent = Arc::clone(&fixture.agent);
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let mut task = Some(tokio::spawn(async move {
+        let _guard = task_agent.lock().await;
+        let _ = entered_tx.send(());
+        std::future::pending::<()>().await;
+    }));
+    timeout(Duration::from_secs(1), entered_rx)
+        .await
+        .expect("processing task acquired agent lock")
+        .unwrap();
+
+    assert!(
+        fixture
+            .cleanup_task(true, Duration::ZERO, &mut task)
+            .await
+            .is_none()
+    );
+    drop(fixture);
+
+    assert!(
+        sessions.reserve(&id).await.ensure_vacant().is_ok(),
+        "aborted processing_task must drop its Arc<Mutex<Agent>> before cleanup returns"
+    );
+}

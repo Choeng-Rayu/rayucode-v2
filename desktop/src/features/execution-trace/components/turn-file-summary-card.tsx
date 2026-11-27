@@ -3,7 +3,9 @@ import { useQueryClient } from "@tanstack/react-query"
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   ExternalLink,
   FileDiff,
   RotateCcw,
@@ -42,6 +44,7 @@ import { cn } from "@/lib/utils"
 import { openDiffInVSCode } from "../api/trace-api"
 
 const MAX_INLINE_PREVIEW_LINES = 40
+const DEFAULT_VISIBLE_FILES = 3
 
 interface RenderedHunkLine {
   key: string
@@ -184,11 +187,41 @@ export function TurnFileSummaryCard({
   const [receiptExpandedKey, setReceiptExpandedKey] = React.useState<
     string | null
   >(null)
+  const [showAllFilesSessionId, setShowAllFilesSessionId] = React.useState<
+    string | null
+  >(null)
   const [busyKey, setBusyKey] = React.useState<string | null>(null)
   const [conflictState, setConflictState] =
     React.useState<PendingConflictState | null>(null)
 
   const files = snapshot.files
+  const orderedFiles = React.useMemo(
+    () =>
+      files
+        .map((entry, idx) => ({ entry, idx }))
+        .sort((a, b) => {
+          const turnDiff =
+            (b.entry.changed_in_latest_turn ? 1 : 0) -
+            (a.entry.changed_in_latest_turn ? 1 : 0)
+          if (turnDiff !== 0) return turnDiff
+          const timeDiff =
+            (b.entry.updated_at_ms ?? 0) - (a.entry.updated_at_ms ?? 0)
+          if (timeDiff !== 0) return timeDiff
+          return a.idx - b.idx
+        })
+        .map(({ entry }) => entry),
+    [files]
+  )
+  const hasMoreFiles = orderedFiles.length > DEFAULT_VISIBLE_FILES
+  const showAllFiles = showAllFilesSessionId === sessionId
+  const visibleFiles =
+    hasMoreFiles && !showAllFiles
+      ? orderedFiles.slice(0, DEFAULT_VISIBLE_FILES)
+      : orderedFiles
+  const hiddenFileCount = Math.max(
+    0,
+    orderedFiles.length - DEFAULT_VISIBLE_FILES
+  )
   const pendingFiles = React.useMemo(
     () => files.filter((f) => f.status === "pending"),
     [files]
@@ -584,7 +617,7 @@ export function TurnFileSummaryCard({
 
         {/* Collapsible Per-File Rows */}
         <div className="divide-y divide-hairline-soft">
-          {files.map((entry) => {
+          {visibleFiles.map((entry) => {
             const isOpen = Boolean(expandedRows[`${sessionId}:${entry.path}`])
             const previewHunks = entry.preview_hunks ?? []
             const diffCacheKey = `${sessionId}:${entry.path}:${entry.updated_at_ms}`
@@ -861,6 +894,42 @@ export function TurnFileSummaryCard({
             )
           })}
         </div>
+
+        {hasMoreFiles && (
+          <div className="border-t border-hairline-soft bg-pane/60">
+            <button
+              type="button"
+              data-testid={
+                showAllFiles
+                  ? "file-summary-collapse-list-btn"
+                  : "file-summary-expand-all-btn"
+              }
+              aria-expanded={showAllFiles}
+              onClick={() =>
+                setShowAllFilesSessionId(showAllFiles ? null : sessionId)
+              }
+              className="flex w-full cursor-pointer items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-ink transition-colors hover:bg-hover/60 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {showAllFiles ? (
+                <>
+                  <ChevronUp className="size-3.5 shrink-0" aria-hidden="true" />
+                  <span>Show recent {DEFAULT_VISIBLE_FILES} files</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Expand all {orderedFiles.length} files (+{hiddenFileCount}{" "}
+                    more)
+                  </span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </section>
       {renderConflictDialog()}
     </>

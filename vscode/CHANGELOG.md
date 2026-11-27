@@ -1,5 +1,43 @@
 # Changelog
 
+## 3.0.2
+
+### Added
+
+- **Zero-Setup Cross-Platform Engine Auto-Download & Auto-Update:** Single universal `.vsix` automatically downloads, SHA-256 verifies, and installs the matching `rayu` Rust binary (`linux` x64/arm64, `darwin` arm64/x64, `win32` x64/arm64) into versioned extension storage on VS Code startup (`onStartupFinished`), even before opening the RayuCode sidebar or editor panel.
+- **Automatic Engine Release Updates:** Checks GitHub Releases on startup, immediately on VS Code Marketplace extension updates, and every 4 hours (`rayucode.autoUpdateEngine`), safely staging new versions alongside the running binary and restarting cleanly when idle.
+- **Live Download & Install Progress UI:** Displays `"please wait"` status messages, MB progress, and percentage progress bars across VS Code Notifications, the Status Bar, `AuthWelcomeScreen`, `DaemonBanner`, and `RuntimeDoctorSection`, alongside a one-click **Install / Update Rayu Engine** command (`rayucode.updateEngine`).
+
+### Fixed
+
+- Enabled `rayu api-bridge` across Windows named pipes (`Cargo.toml`, `src/cli/*`), allowing fresh Windows installs to connect without Unix-only restrictions.
+- Honored `RAYU_DEFERRED_AUTH_BOOTSTRAP=1` inside `Command::ApiBridge` so fresh unsigned-in computers can launch the bridge and complete onboarding in VS Code.
+- Captured `api-bridge` startup stderr logs, added `windowsHide: true`, automatically upgraded legacy CLI binaries lacking `api-bridge`, and added a fatal-error cooldown to eliminate infinite `"Connecting to Rayu daemon..."` UI flicker.
+
+## 3.0.1
+
+### Changed
+
+- Slim webview shell, inspector/changes panel cleanup, and Harness API v1.16 protocol sync.
+
+## 3.0.0
+
+### Added
+
+- **Native Rust Engine Architecture (`rayu api-bridge`, Harness API v1.14):** Rebuilt the VS Code extension host and React 19 + Tailwind CSS v4 webview to connect directly to the `rayucode-v2` Rust daemon with auto-discovery and lockfile-guarded auto-start.
+- **Dual Form-Factor Workbench Placement:** Dedicated Secondary Sidebar container (`rayucode.chat`), live RayuCode Fox button in the Editor Tab Bar, full Mission Control editor panel (`rayucode.workspace`), Explorer/Editor/Terminal/SCM context menus, and Diagnostic Quick Fixes.
+- **Agents & Personas Studio (`rayucode.openAgents`):** Dedicated page to configure the default subagent model (`/subagent-model`), per-role model/persona routing (`swarm`, `review`, `judge`, `memory`, `ambient`) in Global or Session scope, and full `[[agents.profiles]]` CRUD with live `~/.rayu/config.toml` preview.
+- **Real Telegram Remote Control:** Backed end-to-end by the Rust daemon with scannable ISO QR pairing for Rayu Hosted Bot, custom `@BotFather` token verification (direct chat link or 10-minute QR pairing), live session switcher, test ping, real-time pending tool approvals, and remote `/uninstall` guardrail.
+- **Mid-Turn Queue & Steer:** Send messages while the assistant is streaming using live **Steer** (soft-interrupt without cancelling the turn) or **Queue** (auto-dispatch on turn completion).
+- **Session-Scoped Background Processes, Swarm Mission Control, Automations, Plugins/MCP/Skills & Changes Review:** Full visual mission control synced with the local Rust engine and native VS Code diffs/terminals.
+
+### Fixed
+
+- Unified provider authentication and live model catalog discovery so authenticated providers immediately expose their models in the composer picker and settings.
+- Scoped the Background Processes viewer strictly to the active chat session.
+- Hardened external link and Simple Browser URI handling to strictly allow safe HTTP/HTTPS/mailto schemes.
+- Replaced placeholder daemon version/latency/PID fallbacks in Runtime Doctor with truthful live status telemetry.
+
 ## 2.4.1
 
 ### Added

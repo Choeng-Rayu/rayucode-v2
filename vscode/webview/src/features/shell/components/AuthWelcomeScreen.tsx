@@ -9,6 +9,7 @@ import {
   ChevronUp,
   ClipboardPaste,
   Copy,
+  Download,
   ExternalLink,
   Eye,
   EyeOff,
@@ -70,6 +71,7 @@ export function AuthWelcomeScreen({
   >(null);
   const [submitting, setSubmitting] = React.useState(false);
   const [restartingDaemon, setRestartingDaemon] = React.useState(false);
+  const [updatingEngine, setUpdatingEngine] = React.useState(false);
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
   const [doctorOpen, setDoctorOpen] = React.useState(false);
   const [doctorLoading, setDoctorLoading] = React.useState(false);
@@ -82,6 +84,7 @@ export function AuthWelcomeScreen({
     !accountStatus?.signedIn &&
       (accountStatus?.signingIn || pendingAuthUrl || waitingLocal),
   );
+  const isDaemonDownloading = daemonStatus.state === "downloading";
   const isDaemonOffline =
     daemonStatus.state === "disconnected" || daemonStatus.state === "error";
 
@@ -315,6 +318,26 @@ export function AuthWelcomeScreen({
       );
     } finally {
       setRestartingDaemon(false);
+    }
+  };
+
+  const handleUpdateEngine = async () => {
+    setErrorMsg(null);
+    setUpdatingEngine(true);
+    try {
+      const next = await callRpc("daemon.updateEngine");
+      setDaemonStatus(next);
+      if (next.state === "connected") {
+        toast.success(next.statusMessage ?? "Rayu Engine installed and ready");
+      } else if (next.error) {
+        setErrorMsg(next.error);
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : "Failed to install Rayu engine",
+      );
+    } finally {
+      setUpdatingEngine(false);
     }
   };
 
@@ -793,6 +816,52 @@ export function AuthWelcomeScreen({
               </button>
             </div>
 
+            {/* Downloading Engine Strip */}
+            {isDaemonDownloading && (
+              <div
+                data-testid="auth-daemon-downloading-strip"
+                className="mt-4 flex w-full min-w-0 flex-col gap-2 rounded-xl border border-warn/30 bg-warn-soft p-3"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs text-warn">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <RunStatusPulse status="warn" />
+                    <span className="truncate font-medium">
+                      Installing Rayu engine — please wait
+                    </span>
+                  </div>
+                  {daemonStatus.downloadProgress !== undefined && (
+                    <span className="shrink-0 font-mono text-[11px] font-semibold tabular-nums">
+                      {daemonStatus.downloadProgress}%
+                    </span>
+                  )}
+                </div>
+                <div
+                  data-testid="auth-daemon-progress-bar"
+                  className="h-1.5 w-full overflow-hidden rounded-full bg-inset"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={daemonStatus.downloadProgress ?? 0}
+                >
+                  <div
+                    className={cn(
+                      "h-full rounded-full bg-brand transition-[width] duration-200",
+                      daemonStatus.downloadProgress === undefined &&
+                        "animate-pulse",
+                    )}
+                    style={{
+                      width: `${Math.max(6, Math.min(100, daemonStatus.downloadProgress ?? 20))}%`,
+                    }}
+                  />
+                </div>
+                <p className="m-0 truncate text-[11px] text-muted-ink">
+                  {daemonStatus.statusMessage ??
+                    `Downloading Rayu engine${daemonStatus.downloadVersion ? ` ${daemonStatus.downloadVersion}` : ""} — please wait...`}{" "}
+                  RayuCode will connect automatically once setup finishes.
+                </p>
+              </div>
+            )}
+
             {/* Subtle compact Engine Offline Strip (ONLY when daemon is disconnected or error) */}
             {isDaemonOffline && (
               <div
@@ -806,7 +875,7 @@ export function AuthWelcomeScreen({
                       Engine offline
                     </span>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
                     <Button
                       type="button"
                       variant="ghost"
@@ -820,9 +889,28 @@ export function AuthWelcomeScreen({
                     </Button>
                     <Button
                       type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={updatingEngine || restartingDaemon}
+                      onClick={() => void handleUpdateEngine()}
+                      data-testid="auth-install-engine"
+                    >
+                      <Download
+                        className={cn(
+                          "size-3",
+                          updatingEngine && "animate-pulse",
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {updatingEngine ? "Installing..." : "Install / Update Engine"}
+                      </span>
+                    </Button>
+                    <Button
+                      type="button"
                       variant="default"
                       size="xs"
-                      disabled={restartingDaemon}
+                      disabled={restartingDaemon || updatingEngine}
                       onClick={() => void handleRestartDaemon()}
                       data-testid="auth-start-daemon"
                     >

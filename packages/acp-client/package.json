@@ -1,0 +1,31 @@
+{
+  "name": "@rayu-dev/rayucode-acp-client",
+  "version": "0.1.0",
+  "description": "Shared Agent Client Protocol (ACP v1) bidirectional client, types, and IDE config generators for RayuCode Desktop, VS Code extension, and external ACP hosts",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.1.4"
+  }
+}

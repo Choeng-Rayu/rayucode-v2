@@ -312,10 +312,7 @@ pub(super) async fn execute(
                 && matches!(first.as_str(), "profile" | "profiles")
             {
                 let message = crate::agent_profiles::run(agent.session_for_split(), global, rest)?;
-                return Ok((
-                    json!({"scope": if global { "global" } else { "session" }, "profiles": agent.session_for_split().effective_agent_profiles()}),
-                    message,
-                ));
+                return Ok((agents_snapshot_json(agent, global), message));
             }
             match args {
                 [] => {}
@@ -347,30 +344,44 @@ pub(super) async fn execute(
                             _ => String::new(),
                         }
                     );
-                    return Ok((
-                        json!({"scope": if global { "global" } else { "session" }, "target": target, "model": model, "overrides": agent.runtime_agent_model_overrides()}),
-                        message,
-                    ));
+                    let mut snapshot = agents_snapshot_json(agent, global);
+                    if let Some(obj) = snapshot.as_object_mut() {
+                        obj.insert("target".into(), json!(target));
+                        obj.insert("model".into(), json!(model));
+                    }
+                    return Ok((snapshot, message));
                 }
                 _ => bail!(
                     "Usage: /agents [global] [swarm|review|judge|memory|ambient] [model|inherit]."
                 ),
             }
-            let config = crate::config::Config::load();
-            json!({"scope": if global { "global" } else { "session" }, "defaults": {"swarm": config.agents.swarm_model, "memory": config.agents.memory_model, "review": config.autoreview.model, "judge": config.autojudge.model, "ambient": config.ambient.model}, "overrides": agent.runtime_agent_model_overrides(), "models": agent.available_models_for_switching()})
+            agents_snapshot_json(agent, global)
         }
         RuntimeCommand::SubagentModel => {
             match args {
                 [] => {}
                 [arg] if matches!(arg.as_str(), "status" | "show") => {}
+                [scope, model] if matches!(scope.as_str(), "global" | "default") => {
+                    let next = if model == "default" {
+                        None
+                    } else {
+                        Some(model.as_str())
+                    };
+                    crate::config::Config::set_agent_model_default("swarm", next)?;
+                }
                 [model] => agent.set_subagent_model(if model == "default" {
                     None
                 } else {
                     Some(model.clone())
                 })?,
-                _ => bail!("Usage: /subagent-model [show|inherit|model]"),
+                _ => bail!("Usage: /subagent-model [global] [show|inherit|default|model]"),
             }
-            json!({"model": agent.subagent_model(), "configured_default": config.agents.swarm_model, "inherit_model": agent.provider_model()})
+            let refreshed_cfg = crate::config::Config::load();
+            json!({
+                "model": agent.subagent_model(),
+                "configured_default": refreshed_cfg.agents.swarm_model,
+                "inherit_model": agent.provider_model(),
+            })
         }
         RuntimeCommand::Autoreview => {
             let current = agent
@@ -624,6 +635,61 @@ fn skills_report(data: &Value) -> String {
     }
     report.push_str("\nActivate a loaded skill using its slash command. Manage skills with the `skill_manage` tool.\n");
     report
+}
+
+fn agents_snapshot_json(agent: &crate::agent::Agent, global: bool) -> Value {
+    let config = crate::config::Config::load();
+    let session = agent.session_for_split();
+    let global_profiles = config.agents.profiles.clone();
+    let session_profiles = session.session_agent_profiles();
+    let effective_profiles = session.effective_agent_profiles();
+    let annotated_profiles: Vec<Value> = effective_profiles
+        .iter()
+        .map(|profile| {
+            let scope = if session_profiles
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(&profile.name))
+            {
+                "session"
+            } else {
+                "global"
+            };
+            json!({
+                "name": profile.name,
+                "model": profile.model,
+                "description": profile.description,
+                "effort": profile.effort,
+                "scope": scope,
+            })
+        })
+        .collect();
+    let effective = json!({
+        "swarm": session.effective_agent_model("swarm", config.agents.swarm_model.clone()),
+        "memory": session.effective_agent_model("memory", config.agents.memory_model.clone()),
+        "review": session.effective_agent_model("review", config.autoreview.model.clone()),
+        "judge": session.effective_agent_model("judge", config.autojudge.model.clone()),
+        "ambient": session.effective_agent_model("ambient", config.ambient.model.clone()),
+    });
+    json!({
+        "scope": if global { "global" } else { "session" },
+        "defaults": {
+            "swarm": config.agents.swarm_model,
+            "memory": config.agents.memory_model,
+            "review": config.autoreview.model,
+            "judge": config.autojudge.model,
+            "ambient": config.ambient.model,
+        },
+        "overrides": agent.runtime_agent_model_overrides(),
+        "effective": effective,
+        "subagent_model": agent.subagent_model(),
+        "inherit_model": agent.provider_model(),
+        "profiles": annotated_profiles,
+        "global_profiles": global_profiles,
+        "session_profiles": session_profiles,
+        "swarm_allowlist": config.agents.swarm_model_allowlist,
+        "models": agent.available_models_for_switching(),
+        "config_path": crate::config::Config::path().map(|p| p.display().to_string()),
+    })
 }
 
 #[cfg(test)]
@@ -1059,5 +1125,134 @@ mod tests {
         assert_eq!(apikey_data["credits"]["credits_per_week"], 2000.0);
 
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn agents_profiles_and_subagent_model_roundtrip() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::TempDir::new().unwrap();
+        let old_home = std::env::var_os("RAYU_HOME");
+        let old_cfg = std::env::var_os("RAYU_CONFIG_DIR");
+        crate::env::set_var("RAYU_HOME", home.path());
+        crate::env::set_var("RAYU_CONFIG_DIR", home.path());
+        struct Restore(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => crate::env::set_var("RAYU_HOME", v),
+                    None => crate::env::remove_var("RAYU_HOME"),
+                }
+                match &self.1 {
+                    Some(v) => crate::env::set_var("RAYU_CONFIG_DIR", v),
+                    None => crate::env::remove_var("RAYU_CONFIG_DIR"),
+                }
+                crate::config::invalidate_config_cache();
+            }
+        }
+        let _restore = Restore(old_home, old_cfg);
+        crate::config::invalidate_config_cache();
+
+        let provider: Arc<dyn crate::provider::Provider> = Arc::new(NoInferenceProvider::default());
+        let mut agent = crate::agent::Agent::new(
+            provider.clone(),
+            crate::tool::Registry::new(provider).await,
+        );
+
+        // Add global persona profile + session persona profile
+        let (added_global, _) = execute(
+            &mut agent,
+            RuntimeCommand::Agents,
+            &[
+                "global".into(),
+                "profile".into(),
+                "add".into(),
+                "architect".into(),
+                "rayu:claude-opus-4-5".into(),
+                "--effort".into(),
+                "high".into(),
+                "System design and deep reviews".into(),
+            ],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let profiles = added_global["profiles"].as_array().unwrap();
+        let arch = profiles.iter().find(|p| p["name"] == "architect").unwrap();
+        assert_eq!(arch["scope"], "global");
+        assert_eq!(arch["model"], "rayu:claude-opus-4-5");
+        assert_eq!(arch["effort"], "high");
+
+        let (added_session, _) = execute(
+            &mut agent,
+            RuntimeCommand::Agents,
+            &[
+                "profile".into(),
+                "add".into(),
+                "coder".into(),
+                "rayu:claude-sonnet-4-5".into(),
+                "--effort".into(),
+                "medium".into(),
+                "Fast edits and tests".into(),
+            ],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let profiles = added_session["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 2);
+        let coder = profiles.iter().find(|p| p["name"] == "coder").unwrap();
+        assert_eq!(coder["scope"], "session");
+
+        // Assign role to persona profile and confirm effective resolution
+        let (assigned, _) = execute(
+            &mut agent,
+            RuntimeCommand::Agents,
+            &["review".into(), "architect".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(assigned["overrides"]["review"], "architect");
+        assert_eq!(assigned["effective"]["review"], "rayu:claude-opus-4-5");
+
+        // Subagent default model session + global roundtrip
+        let (sub_data, _) = execute(
+            &mut agent,
+            RuntimeCommand::SubagentModel,
+            &["coder".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sub_data["model"], "coder");
+
+        let (sub_global, _) = execute(
+            &mut agent,
+            RuntimeCommand::SubagentModel,
+            &["global".into(), "rayu:claude-sonnet-4-5".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sub_global["configured_default"], "rayu:claude-sonnet-4-5");
+
+        // Remove session profile
+        let (after_rm, _) = execute(
+            &mut agent,
+            RuntimeCommand::Agents,
+            &["profile".into(), "rm".into(), "coder".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(after_rm["session_profiles"].as_array().unwrap().len(), 0);
+        assert_eq!(after_rm["global_profiles"].as_array().unwrap().len(), 1);
     }
 }

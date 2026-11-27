@@ -91,18 +91,56 @@ function persistPermissionMode(mode: PermissionModeId): void {
   }
 }
 
+function normalizeModelKey(id: string): string {
+  return id.trim().replace(/^rayu:/i, "").toLowerCase()
+}
+
+function findModelOption(
+  models: readonly ModelOption[],
+  modelId?: string | null,
+  provider?: string | null
+): ModelOption | undefined {
+  const raw = modelId?.trim()
+  if (!raw) return undefined
+  const prov = provider?.trim().toLowerCase()
+  const normalized = normalizeModelKey(raw)
+  if (prov === "rayu") {
+    const rayuPrefixed = raw.toLowerCase().startsWith("rayu:")
+      ? raw
+      : `rayu:${raw}`
+    const rayuMatch = models.find(
+      (m) =>
+        m.id === rayuPrefixed ||
+        (m.provider.toLowerCase() === "rayu" &&
+          normalizeModelKey(m.id) === normalized)
+    )
+    if (rayuMatch) return rayuMatch
+  }
+  const exact = models.find((m) => m.id === raw)
+  if (exact) return exact
+  return models.find(
+    (m) =>
+      normalizeModelKey(m.id) === normalized ||
+      m.label.trim().toLowerCase() === raw.toLowerCase()
+  )
+}
+
 export function useSessions() {
   return useQuery(sessionsQueryOptions())
 }
 
 export function useModelCatalog() {
   const queryClient = useQueryClient()
-  const query = useQuery(modelsQueryOptions())
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
+  const query = useQuery(modelsQueryOptions(activeSessionId))
 
   const refreshMutation = useMutation({
-    mutationFn: refreshModelsCatalog,
+    mutationFn: () => refreshModelsCatalog(activeSessionId),
     onSuccess: (models) => {
-      queryClient.setQueryData(sessionsQueryKeys.models(), models)
+      queryClient.setQueryData(sessionsQueryKeys.models(activeSessionId), models)
+      if (activeSessionId) {
+        queryClient.setQueryData(sessionsQueryKeys.models(), models)
+      }
     },
     // Preserve last good catalog on refresh failure (per AGENTS.md)
   })
@@ -145,35 +183,98 @@ export function useCreateSession() {
       void queryClient.invalidateQueries({
         queryKey: sessionsQueryKeys.list(),
       })
+      void queryClient.invalidateQueries({
+        queryKey: ["models"],
+      })
     },
   })
 }
 
 export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
   const activeSessionId = useAppStore((s) => s.activeSessionId)
-  const [modelId, setModelIdState] = React.useState<string>(readStoredModelId)
-  const [effort, setEffortState] = React.useState<ReasoningEffort>(readStoredEffort)
+  const sessionModelInfo = useAppStore((s) =>
+    s.activeSessionId ? s.sessionModelInfoBySession[s.activeSessionId] : undefined
+  )
+  const [localModelId, setLocalModelId] = React.useState<string>(readStoredModelId)
+  const [localEffort, setLocalEffort] =
+    React.useState<ReasoningEffort>(readStoredEffort)
   const [permissionMode, setPermissionModeState] =
     React.useState<PermissionModeId>(readStoredPermissionMode)
-  const [deferredNotice, setDeferredNotice] = React.useState<string | null>(null)
+  const [deferredNoticeState, setDeferredNoticeState] = React.useState<{
+    sessionId: string | null
+    text: string
+  } | null>(null)
 
-  const modelIdRef = React.useRef<string>(modelId)
-  const effortRef = React.useRef<ReasoningEffort>(effort)
+  const sessionModel = sessionModelInfo?.model
+  const sessionProvider = sessionModelInfo?.provider
+  const selectedModel = React.useMemo<ModelOption>(() => {
+    const fromSession = sessionModel
+      ? findModelOption(models, sessionModel, sessionProvider)
+      : undefined
+    if (fromSession) return fromSession
+
+    const fromLocal = findModelOption(models, localModelId)
+    if (fromLocal) return fromLocal
+
+    if (models[0]) return models[0]
+
+    const fallbackId = sessionModel || localModelId || DEFAULT_MODEL_ID
+    return {
+      id: fallbackId,
+      label:
+        fallbackId && fallbackId !== DEFAULT_MODEL_ID
+          ? fallbackId
+          : DEFAULT_MODEL_LABEL,
+      provider: sessionProvider || "rayu",
+    }
+  }, [localModelId, models, sessionModel, sessionProvider])
+
+  const effortLadder = React.useMemo(
+    () => resolveEffortLadder(selectedModel),
+    [selectedModel]
+  )
+
+  const rawEffort = React.useMemo<ReasoningEffort>(() => {
+    if (sessionModelInfo) {
+      const sessionEffort =
+        sessionModelInfo.reasoningEffort?.trim().toLowerCase() ?? ""
+      return sessionEffort && sessionEffort !== "auto" ? sessionEffort : ""
+    }
+    return localEffort
+  }, [localEffort, sessionModelInfo])
+
+  const effectiveEffort = React.useMemo<ReasoningEffort>(() => {
+    if (!effortLadder.supported) return ""
+    const normalized = rawEffort.trim().toLowerCase()
+    const match = effortLadder.stops.find((s) => s.toLowerCase() === normalized)
+    return match ?? effortLadder.defaultStop ?? ""
+  }, [effortLadder, rawEffort])
+
+  const deferredNotice =
+    deferredNoticeState && deferredNoticeState.sessionId === activeSessionId
+      ? deferredNoticeState.text
+      : null
+
+  const modelIdRef = React.useRef<string>(selectedModel.id)
+  const effortRef = React.useRef<ReasoningEffort>(effectiveEffort)
   const modelsRef = React.useRef<readonly ModelOption[]>(models)
 
   React.useEffect(() => {
-    modelIdRef.current = modelId
-  }, [modelId])
+    modelIdRef.current = selectedModel.id
+  }, [selectedModel.id])
 
   React.useEffect(() => {
-    effortRef.current = effort
-  }, [effort])
+    effortRef.current = effectiveEffort
+  }, [effectiveEffort])
 
   React.useEffect(() => {
     modelsRef.current = models
   }, [models])
 
-  // Reconcile live active model & effort whenever daemon emits `model_info`
+  // Reconcile live active model & effort whenever daemon emits `model_info`.
+  // Note: Rust `ApiEvent::ModelInfo` omits `reasoning_effort` when cleared
+  // (`skip_serializing_if = "Option::is_none"`), so absent effort overwrites
+  // (clears) any stale effort rather than preserving the prior value.
   React.useEffect(() => {
     return ipcClient.harness.onEvent((frame) => {
       if (frame.ev !== "model_info") return
@@ -183,68 +284,56 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
       if (sid && frameSid && frameSid !== sid) return
 
       const rawModel = typeof frame.model === "string" ? frame.model : ""
-      if (rawModel) {
-        const matched = modelsRef.current.find(
-          (m) =>
-            m.id === rawModel ||
-            m.label === rawModel ||
-            m.id.replace(/^rayu:/i, "") === rawModel.replace(/^rayu:/i, "")
-        )
-        if (matched) {
-          setModelIdState(matched.id)
-        }
-      }
-      const rawEffort =
+      const rawProvider =
+        typeof frame.provider === "string" ? frame.provider : undefined
+      const rawEffortFrame =
         typeof frame.reasoning_effort === "string"
           ? frame.reasoning_effort.trim().toLowerCase()
           : ""
-      if (rawEffort && rawEffort !== "auto") {
-        setEffortState(rawEffort)
+      const cleanEffort =
+        rawEffortFrame && rawEffortFrame !== "auto"
+          ? rawEffortFrame
+          : undefined
+
+      const targetSid = frameSid || sid
+      if (targetSid) {
+        useAppStore.getState().setSessionModelInfo(targetSid, {
+          model: rawModel || undefined,
+          provider: rawProvider,
+          reasoningEffort: cleanEffort,
+        })
       }
-      setDeferredNotice(null)
+
+      if (rawModel) {
+        const matched = findModelOption(modelsRef.current, rawModel, rawProvider)
+        if (matched) {
+          setLocalModelId(matched.id)
+        }
+      }
+      setLocalEffort(cleanEffort ?? "")
+      setDeferredNoticeState(null)
     })
   }, [])
 
-  const selectedModel = React.useMemo<ModelOption>(() => {
-    return (
-      models.find((m) => m.id === modelId) ??
-      models[0] ?? {
-        id: modelId || DEFAULT_MODEL_ID,
-        label: modelId && modelId !== DEFAULT_MODEL_ID ? modelId : DEFAULT_MODEL_LABEL,
-        provider: "rayu",
-      }
-    )
-  }, [modelId, models])
-
-  const effortLadder = React.useMemo(
-    () => resolveEffortLadder(selectedModel),
-    [selectedModel]
-  )
-
-  const effectiveEffort = React.useMemo<ReasoningEffort>(() => {
-    if (!effortLadder.supported) return ""
-    const normalized = effort.trim().toLowerCase()
-    const match = effortLadder.stops.find((s) => s.toLowerCase() === normalized)
-    return match ?? effortLadder.defaultStop ?? ""
-  }, [effort, effortLadder])
-
   const setModel = React.useCallback((model: ModelOption) => {
     const previousModelId = modelIdRef.current
-    setModelIdState(model.id)
-    setDeferredNotice(null)
+    const previousEffort = effortRef.current
+    setLocalModelId(model.id)
+    setDeferredNoticeState(null)
 
     const nextLadder = resolveEffortLadder(model)
+    let reconciledEffort = ""
     if (!nextLadder.supported) {
-      setEffortState("")
+      setLocalEffort("")
       persistEffort("")
     } else {
       const currentLower = effortRef.current.trim().toLowerCase()
       const validStop = nextLadder.stops.find(
         (s) => s.toLowerCase() === currentLower
       )
-      const reconciled = validStop ?? nextLadder.defaultStop ?? ""
-      setEffortState(reconciled)
-      persistEffort(reconciled)
+      reconciledEffort = validStop ?? nextLadder.defaultStop ?? ""
+      setLocalEffort(reconciledEffort)
+      persistEffort(reconciledEffort)
     }
 
     if (typeof window !== "undefined") {
@@ -256,24 +345,51 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
     }
 
     const sid = useAppStore.getState().activeSessionId
+    const previousSessionInfo = sid
+      ? useAppStore.getState().sessionModelInfoBySession[sid]
+      : undefined
+    if (sid) {
+      useAppStore.getState().setSessionModelInfo(sid, {
+        provider: model.provider,
+        model: model.id,
+        reasoningEffort: reconciledEffort || undefined,
+      })
+    }
+
     const spec = formatHarnessModelSpec(model.id, model.provider, model.apiMethod)
     if (sid && !sid.startsWith("ses_") && spec) {
+      const revertModel = () => {
+        setLocalModelId(previousModelId)
+        setLocalEffort(previousEffort)
+        persistEffort(previousEffort)
+        useAppStore.getState().setSessionModelInfo(sid, {
+          provider: previousSessionInfo?.provider,
+          model: previousSessionInfo?.model ?? previousModelId,
+          reasoningEffort:
+            previousSessionInfo?.reasoningEffort ??
+            (previousEffort || undefined),
+        })
+      }
+
       void ipcClient.harness
         .setModel(sid, spec)
         .then((res) => {
           if (!res || res.ok) {
-            setDeferredNotice(null)
+            setDeferredNoticeState(null)
             return
           }
           if (res.code === "busy") {
-            setDeferredNotice("Applies on next turn")
+            setDeferredNoticeState({
+              sessionId: sid,
+              text: "Applies on next turn",
+            })
             return
           }
-          setModelIdState(previousModelId)
+          revertModel()
           toast.error(res.error ?? `Failed to switch model to ${model.label}`)
         })
         .catch((error: unknown) => {
-          setModelIdState(previousModelId)
+          revertModel()
           toast.error(
             error instanceof Error
               ? error.message
@@ -288,30 +404,52 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
     if (!normalized || normalized === "auto") return
 
     const previousEffort = effortRef.current
-    setEffortState(normalized)
+    setLocalEffort(normalized)
     persistEffort(normalized)
-    setDeferredNotice(null)
+    setDeferredNoticeState(null)
 
     const sid = useAppStore.getState().activeSessionId
+    const previousSessionInfo = sid
+      ? useAppStore.getState().sessionModelInfoBySession[sid]
+      : undefined
+    if (sid) {
+      useAppStore.getState().setSessionModelInfo(sid, {
+        ...previousSessionInfo,
+        reasoningEffort: normalized,
+      })
+    }
+
     if (sid && !sid.startsWith("ses_")) {
+      const revertEffort = () => {
+        setLocalEffort(previousEffort)
+        persistEffort(previousEffort)
+        useAppStore.getState().setSessionModelInfo(sid, {
+          ...previousSessionInfo,
+          reasoningEffort:
+            previousSessionInfo?.reasoningEffort ??
+            (previousEffort || undefined),
+        })
+      }
+
       void ipcClient.harness
         .setReasoningEffort(sid, normalized)
         .then((res) => {
           if (!res || res.ok) {
-            setDeferredNotice(null)
+            setDeferredNoticeState(null)
             return
           }
           if (res.code === "busy") {
-            setDeferredNotice("Applies on next turn")
+            setDeferredNoticeState({
+              sessionId: sid,
+              text: "Applies on next turn",
+            })
             return
           }
-          setEffortState(previousEffort)
-          persistEffort(previousEffort)
+          revertEffort()
           toast.error(res.error ?? `Failed to set reasoning effort to ${normalized}`)
         })
         .catch((error: unknown) => {
-          setEffortState(previousEffort)
-          persistEffort(previousEffort)
+          revertEffort()
           toast.error(
             error instanceof Error
               ? error.message
@@ -370,7 +508,10 @@ export function usePersistedInferenceSettings(models: readonly ModelOption[]) {
     effort: effectiveEffort,
     effortLadder,
     deferredNotice,
-    clearDeferredNotice: React.useCallback(() => setDeferredNotice(null), []),
+    clearDeferredNotice: React.useCallback(
+      () => setDeferredNoticeState(null),
+      []
+    ),
     permissionMode,
     setModel,
     setEffort,

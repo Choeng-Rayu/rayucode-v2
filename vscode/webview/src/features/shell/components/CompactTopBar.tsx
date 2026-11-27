@@ -2,13 +2,16 @@ import * as React from "react";
 import {
   ChevronDown,
   ExternalLink,
+  Globe,
   Menu,
   MoreHorizontal,
   Palette,
+  PanelRight,
   Plus,
   RefreshCw,
   Settings,
   SunMoon,
+  Terminal,
 } from "lucide-react";
 
 import {
@@ -18,7 +21,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { InspectorTabIcon, NavGlyph, UsageRingSvg } from "@/components/ui/rayu-symbols";
+import { NavGlyph, UsageRingSvg } from "@/components/ui/rayu-symbols";
 import {
   Tooltip,
   TooltipContent,
@@ -33,15 +36,14 @@ import { StatusBarPill } from "./StatusBarPill";
 
 export interface CompactTopBarProps {
   onOpenSessionsDrawer: () => void;
-  onOpenInspectorSheet: () => void;
   className?: string;
 }
 
 export function CompactTopBar({
   onOpenSessionsDrawer,
-  onOpenInspectorSheet,
   className,
 }: CompactTopBarProps) {
+  const surface = useAppStore((s) => s.surface);
   const activeRoute = useAppStore((s) => s.activeRoute);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle);
@@ -65,10 +67,14 @@ export function CompactTopBar({
 
   const activeBgCount = React.useMemo(
     () =>
-      backgroundTasks.filter(
-        (t) => t.status === "running" || t.status === "stalled",
-      ).length,
-    [backgroundTasks],
+      !activeSessionId
+        ? 0
+        : backgroundTasks.filter(
+            (t) =>
+              t.sessionId === activeSessionId &&
+              (t.status === "running" || t.status === "stalled"),
+          ).length,
+    [activeSessionId, backgroundTasks],
   );
 
   const handlePopOutEditorPanel = () => {
@@ -76,6 +82,7 @@ export function CompactTopBar({
       type: "rayucode.ui.openEditorPanel",
       route: activeRoute,
       sessionId: activeSessionId ?? undefined,
+      beside: true,
     });
   };
 
@@ -162,49 +169,53 @@ export function CompactTopBar({
           </Tooltip>
         )}
 
-        {/* [±] Changes */}
+        {/* [🌐] Open Browser in VS Code */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              aria-label="Changes"
-              data-testid="compact-nav-changes"
-              onClick={() => setActiveRoute("changes")}
-              className={cn(
-                "grid size-7 cursor-pointer place-items-center rounded-[7px] transition-colors",
-                activeRoute === "changes"
-                  ? "bg-active text-ink"
-                  : "text-muted-ink hover:bg-hover hover:text-ink",
-              )}
-            >
-              <InspectorTabIcon icon="diff" className="size-3.5" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Changes</TooltipContent>
-        </Tooltip>
-
-        {/* [≡] Context & Outputs Slide-over Sheet */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="Context and Inspector sheet"
-              data-testid="compact-inspector-trigger"
-              onClick={onOpenInspectorSheet}
+              aria-label="Open Browser in VS Code"
+              data-testid="compact-open-browser"
+              onClick={() =>
+                postToHost({
+                  type: "rayucode.editor.openSimpleBrowser",
+                })
+              }
               className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
             >
-              <InspectorTabIcon icon="list" className="size-3.5" />
+              <Globe className="size-3.5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">Context &amp; Inspector</TooltipContent>
+          <TooltipContent side="bottom">Open Browser in VS Code</TooltipContent>
         </Tooltip>
 
-        {/* [⤢] Expand to Full Editor Mission Control */}
+        {/* [>_] Open Terminal in VS Code */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              aria-label="Expand to Full Editor Panel"
+              aria-label="Open Terminal in VS Code"
+              data-testid="compact-open-terminal"
+              onClick={() =>
+                postToHost({
+                  type: "rayucode.editor.openTerminal",
+                  cwd: activeProjectPath ?? undefined,
+                })
+              }
+              className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+            >
+              <Terminal className="size-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Open Terminal in VS Code</TooltipContent>
+        </Tooltip>
+
+        {/* [⤢] Open Beside Editor */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label="Open Beside Editor"
               data-testid="compact-expand-editor-panel"
               onClick={handlePopOutEditorPanel}
               className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
@@ -212,9 +223,7 @@ export function CompactTopBar({
               <ExternalLink className="size-3.5" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="bottom">
-            Expand to Full Editor Panel
-          </TooltipContent>
+          <TooltipContent side="bottom">Open Beside Editor</TooltipContent>
         </Tooltip>
 
         {/* [⋯] Overflow DropdownMenu */}
@@ -235,22 +244,51 @@ export function CompactTopBar({
             <TooltipContent side="bottom">More</TooltipContent>
           </Tooltip>
           <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem onClick={() => setActiveRoute("automations")}>
-              <NavGlyph icon="automations" className="size-3.5" />
-              <span>Automations</span>
+            <DropdownMenuItem
+              data-testid="compact-menu-open-browser"
+              onClick={() =>
+                postToHost({
+                  type: "rayucode.editor.openSimpleBrowser",
+                })
+              }
+            >
+              <Globe className="size-3.5" />
+              <span>Open Browser in VS Code</span>
             </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="compact-menu-open-terminal"
+              onClick={() =>
+                postToHost({
+                  type: "rayucode.editor.openTerminal",
+                  cwd: activeProjectPath ?? undefined,
+                })
+              }
+            >
+              <Terminal className="size-3.5" />
+              <span>Open Terminal</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => setActiveRoute("plugins")}>
               <NavGlyph icon="plugins" className="size-3.5" />
               <span>Plugins &amp; MCP</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setActiveRoute("remote")}>
-              <NavGlyph icon="remote" className="size-3.5" />
-              <span>Remote (Telegram / Cloud)</span>
             </DropdownMenuItem>
             <DropdownMenuItem onClick={toggleBackgroundDrawer}>
               <NavGlyph icon="processes" className="size-3.5" />
               <span>Background Processes</span>
             </DropdownMenuItem>
+            {surface === "editorPanel" && (
+              <DropdownMenuItem
+                data-testid="compact-focus-sidebar"
+                onClick={() =>
+                  postToHost({
+                    type: "rayucode.ui.focusSidebar",
+                  })
+                }
+              >
+                <PanelRight className="size-3.5" />
+                <span>Focus Secondary Sidebar</span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => setActiveRoute("settings")}>
               <UsageRingSvg className="size-3.5" />

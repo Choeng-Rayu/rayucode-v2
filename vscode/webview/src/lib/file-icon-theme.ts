@@ -25,6 +25,99 @@ export function getFileColorClass(filenameOrPath: string): string {
   return "text-code-fn";
 }
 
+const FILE_LINE_SUFFIX_RE =
+  /(?::\d+(?:-\d+|:\d+)?|#L\d+(?:-L?\d+)?)$/i;
+
+const EXTENSIONLESS_FILE_NAMES = new Set([
+  "makefile",
+  "dockerfile",
+  "justfile",
+  "procfile",
+  "jenkinsfile",
+  "vagrantfile",
+  "gemfile",
+  "rakefile",
+  "brewfile",
+  "license",
+  "readme",
+  "changelog",
+  "cargo.lock",
+  ".gitignore",
+  ".gitattributes",
+  ".gitmodules",
+  ".dockerignore",
+  ".npmrc",
+  ".nvmrc",
+  ".editorconfig",
+  ".prettierrc",
+  ".eslintrc",
+  ".env",
+  ".env.local",
+  ".env.example",
+  ".env.development",
+  ".env.production",
+  ".env.test",
+]);
+
+function stripFileTokenDecorations(raw: string): string {
+  let token = raw.trim();
+  if (token.startsWith("@") && !token.startsWith("@/")) {
+    token = token.slice(1);
+  }
+  if (/^file:\/\//i.test(token)) {
+    token = token.replace(/^file:\/\//i, "");
+  }
+  return token.replace(FILE_LINE_SUFFIX_RE, "");
+}
+
+function classifyPathLikeFile(rawToken: string): InlineCodeCategory | null {
+  if (!rawToken || /\s/.test(rawToken)) return null;
+  if (/^https?:\/\//i.test(rawToken) || /^mailto:/i.test(rawToken)) return null;
+
+  const cleaned = stripFileTokenDecorations(rawToken);
+  if (!cleaned || cleaned.endsWith("/")) return null;
+
+  // Reject bare extensions like `.tsx` or `.json` without a filename stem
+  if (/^\.[a-z0-9]{1,8}$/i.test(cleaned)) {
+    return null;
+  }
+
+  const baseName = cleaned.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (!baseName) return null;
+
+  if (
+    /\.(tsx?|jsx?|mjs|cjs|mts|cts|css|scss|sass|less|html?|svg|vue|svelte|astro)$/i.test(
+      baseName,
+    )
+  ) {
+    return "file-ts";
+  }
+  if (
+    /\.(rs|toml|go|py|pyi|sh|zsh|bash|fish|ps1|bat|cmd|c|h|cc|cpp|hpp|java|kt|kts|swift|rb|php|zig|lua|ex|exs|dart|scala|r|jl|dockerfile|prisma|proto|tf|hcl|sql|graphql|gql)$/i.test(
+      baseName,
+    )
+  ) {
+    return "file-rust";
+  }
+  if (/\.(md|mdx|markdown|rst|txt|pdf|pptx?|key|docx?|png|jpe?g|gif|webp|ico)$/i.test(baseName)) {
+    return "file-doc";
+  }
+  if (
+    /\.(jsonc?|json5|ya?ml|env(?:\.[a-z0-9_-]+)?|ini|cfg|conf|xml|lock|log|xlsx?|xlsm|csv|tsv)$/i.test(
+      baseName,
+    )
+  ) {
+    return "file-data";
+  }
+  if (EXTENSIONLESS_FILE_NAMES.has(baseName)) {
+    return baseName.startsWith(".env") || baseName.endsWith(".lock")
+      ? "file-data"
+      : "file-doc";
+  }
+
+  return null;
+}
+
 export function classifyInlineCode(raw: string): InlineCodeCategory {
   const val = raw.trim();
   if (!val) return "plain";
@@ -35,19 +128,9 @@ export function classifyInlineCode(raw: string): InlineCodeCategory {
     return "folder";
   }
 
-  if (!hasWhitespace && !val.startsWith(".")) {
-    if (/\.(tsx?|jsx?|mjs|cjs|css|html|svg)(:\d+(-\d+)?)?$/i.test(val)) {
-      return "file-ts";
-    }
-    if (/\.(rs|toml|go|py|sh|zsh)(:\d+(-\d+)?)?$/i.test(val)) {
-      return "file-rust";
-    }
-    if (/\.(md|mdx|pptx|ppt)(:\d+(-\d+)?)?$/i.test(val)) {
-      return "file-doc";
-    }
-    if (/\.(json|ya?ml|env|xlsx|xlsm|csv)(:\d+(-\d+)?)?$/i.test(val)) {
-      return "file-data";
-    }
+  const fileCategory = classifyPathLikeFile(val);
+  if (fileCategory) {
+    return fileCategory;
   }
 
   if (

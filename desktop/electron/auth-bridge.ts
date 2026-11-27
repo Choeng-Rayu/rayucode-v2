@@ -64,6 +64,8 @@ export interface RayuCloudModelEntry {
   description?: string
   contextWindow?: number
   supportsReasoning?: boolean
+  supportedEfforts?: string[]
+  defaultEffort?: string
 }
 
 /**
@@ -831,15 +833,70 @@ export class RayuAuthManager extends EventEmitter {
     if (modelsRes.status === "fulfilled" && modelsRes.value.ok) {
       try {
         const body = (await modelsRes.value.json()) as {
-          allowedModels?: RayuCloudModelEntry[]
-          hostedModels?: RayuCloudModelEntry[]
-          data?: Array<{ id: string }>
+          allowedModels?: Array<Record<string, unknown>>
+          hostedModels?: Array<Record<string, unknown>>
+          data?: Array<Record<string, unknown>>
         }
-        const entries =
-          body.hostedModels ??
-          body.allowedModels ??
-          body.data?.map((m) => ({ code: m.id, label: m.id })) ??
-          []
+        const rawList = body.hostedModels ?? body.allowedModels ?? body.data ?? []
+        const entries: RayuCloudModelEntry[] = rawList
+          .map((item): RayuCloudModelEntry | null => {
+            const rawCode =
+              typeof item.code === "string"
+                ? item.code
+                : typeof item.id === "string"
+                  ? item.id
+                  : ""
+            const code = rawCode.trim()
+            if (!code) return null
+
+            const label =
+              typeof item.label === "string" && item.label.trim()
+                ? item.label.trim()
+                : typeof item.name === "string" && item.name.trim()
+                  ? item.name.trim()
+                  : code
+            const description =
+              typeof item.description === "string" ? item.description : undefined
+            const rawCtx = item.contextWindow ?? item.context_window
+            const contextWindow =
+              typeof rawCtx === "number" && Number.isFinite(rawCtx) && rawCtx > 0
+                ? rawCtx
+                : undefined
+            const rawSupportsReasoning =
+              item.supportsReasoning ?? item.supports_reasoning
+            const supportsReasoning =
+              typeof rawSupportsReasoning === "boolean"
+                ? rawSupportsReasoning
+                : undefined
+            const rawSupportedEfforts =
+              item.supportedEfforts ?? item.supported_efforts
+            const supportedEfforts = Array.isArray(rawSupportedEfforts)
+              ? rawSupportedEfforts
+                  .filter((v): v is string => typeof v === "string")
+                  .map((v) => v.trim().toLowerCase())
+                  .filter(
+                    (v) => v.length > 0 && v !== "auto" && !v.startsWith("swarm")
+                  )
+              : undefined
+            const rawDefaultEffort = item.defaultEffort ?? item.default_effort
+            const defaultEffort =
+              typeof rawDefaultEffort === "string" &&
+              rawDefaultEffort.trim().length > 0 &&
+              rawDefaultEffort.trim().toLowerCase() !== "auto"
+                ? rawDefaultEffort.trim().toLowerCase()
+                : undefined
+
+            return {
+              code,
+              label,
+              ...(description ? { description } : {}),
+              ...(contextWindow !== undefined ? { contextWindow } : {}),
+              ...(supportsReasoning !== undefined ? { supportsReasoning } : {}),
+              ...(supportedEfforts !== undefined ? { supportedEfforts } : {}),
+              ...(defaultEffort ? { defaultEffort } : {}),
+            }
+          })
+          .filter((entry): entry is RayuCloudModelEntry => entry !== null)
         if (entries.length > 0) {
           this.cachedModels = entries
         }
@@ -1076,6 +1133,7 @@ export class RayuAuthManager extends EventEmitter {
     sessionId: string
     model: string
     messages: CloudChatMessage[]
+    reasoningEffort?: string
     workspaceDir?: string
     browserCdp?: BrowserCdpController
     onArtifact?: (artifact: DesktopArtifactEvent) => void
@@ -1140,12 +1198,86 @@ export class RayuAuthManager extends EventEmitter {
       }
     })
 
+    const matchedModelEntry = this.cachedModels.find(
+      (m) => m.code.replace(/^rayu:/i, "").toLowerCase() === bareModel.toLowerCase()
+    )
+    const rawEffort = input.reasoningEffort?.trim().toLowerCase() ?? ""
+    const normalizedEffort =
+      rawEffort === "off" || rawEffort === "disabled"
+        ? "none"
+        : rawEffort === "med"
+          ? "medium"
+          : ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(
+                rawEffort
+              )
+            ? rawEffort
+            : ""
+
     const makeRequest = (bearer: string) => {
       const payload: Record<string, unknown> = {
         model: bareModel,
         max_tokens: 4096,
         stream: true,
         messages: conversationMessages,
+      }
+      if (
+        normalizedEffort &&
+        matchedModelEntry?.supportsReasoning !== false
+      ) {
+        if (normalizedEffort === "none") {
+          payload.thinking = { type: "disabled" }
+        } else {
+          const lowerModel = bareModel.toLowerCase()
+          const isClaude = lowerModel.includes("claude-")
+          const isAdaptiveNoXhigh =
+            lowerModel.includes("mythos") ||
+            lowerModel.includes("opus-4-6") ||
+            lowerModel.includes("opus-4.6") ||
+            lowerModel.includes("sonnet-4-6") ||
+            lowerModel.includes("sonnet-4.6")
+          const isAdaptiveFull =
+            isClaude &&
+            !isAdaptiveNoXhigh &&
+            /(?:opus|sonnet|fable|haiku)[-.](?:[5-9]|4[.-][7-9])/.test(
+              lowerModel
+            )
+
+          if (isAdaptiveFull || isAdaptiveNoXhigh) {
+            const wireEffort =
+              normalizedEffort === "minimal"
+                ? "low"
+                : normalizedEffort === "xhigh" && isAdaptiveNoXhigh
+                  ? "high"
+                  : normalizedEffort
+            payload.thinking = { type: "adaptive", display: "summarized" }
+            payload.output_config = { effort: wireEffort }
+          } else {
+            const rawBudget =
+              normalizedEffort === "minimal"
+                ? 1024
+                : normalizedEffort === "low"
+                  ? 2048
+                  : normalizedEffort === "medium"
+                    ? 8192
+                    : normalizedEffort === "high"
+                      ? 16384
+                      : normalizedEffort === "xhigh"
+                        ? 24576
+                        : 32768
+            const maxTokens = Math.max(4096, rawBudget + 4096)
+            payload.max_tokens = maxTokens
+            payload.thinking = { type: "enabled", budget_tokens: rawBudget }
+            if (!isClaude || lowerModel.includes("opus-4-5") || lowerModel.includes("opus-4.5")) {
+              const wireEffort =
+                isClaude && normalizedEffort === "minimal"
+                  ? "low"
+                  : isClaude && (normalizedEffort === "xhigh" || normalizedEffort === "max")
+                    ? "high"
+                    : normalizedEffort
+              payload.output_config = { effort: wireEffort }
+            }
+          }
+        }
       }
       if (systemPrompt) {
         payload.system = systemPrompt

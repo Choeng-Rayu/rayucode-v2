@@ -98,7 +98,12 @@ export async function connectTelegramBotToken(
   try {
     const raw = await ipcClient.telegram.connectBotToken({
       botToken: parsed.data.botToken,
-      allowedChatId: parsed.data.allowedChatId,
+      ...(parsed.data.allowedChatId
+        ? { allowedChatId: parsed.data.allowedChatId }
+        : {}),
+      ...(parsed.data.replaceExisting
+        ? { replaceExisting: parsed.data.replaceExisting }
+        : {}),
     })
     return ok(telegramStateSchema.parse(raw))
   } catch (error) {

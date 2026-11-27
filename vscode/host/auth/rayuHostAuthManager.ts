@@ -37,6 +37,7 @@ const KEY_PREFIX = "rayu_sk_live_";
 const REFRESH_SKEW_MS = 60_000;
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const CREDITS_STALE_MS = 30_000;
+const MODELS_STALE_MS = 30_000;
 const WATCH_DEBOUNCE_MS = 250;
 const SELF_WRITE_SUPPRESS_MS = 600;
 
@@ -83,6 +84,14 @@ export interface RayuCloudCreditsSnapshot {
   sessionWindowMinutes: number;
   limitMode: "gated" | "full_credits" | "unlimited" | null;
   fetchedAt: number;
+}
+
+export interface RayuCloudModelEntry {
+  code: string;
+  label?: string;
+  description?: string;
+  supportsEffort?: boolean;
+  supportsFast?: boolean;
 }
 
 export interface RayuHostAuthDaemonBridge {
@@ -357,6 +366,71 @@ function parseCreditsPayload(raw: unknown): RayuCloudCreditsSnapshot | null {
     limitMode,
     fetchedAt: Date.now(),
   };
+}
+
+export function parseHostedModelsPayload(raw: unknown): RayuCloudModelEntry[] {
+  const candidates: unknown[][] = [];
+  if (Array.isArray(raw)) {
+    candidates.push(raw);
+  } else {
+    const r = asRecord(raw);
+    if (Array.isArray(r.hostedModels)) candidates.push(r.hostedModels);
+    if (Array.isArray(r.allowedModels)) candidates.push(r.allowedModels);
+    if (Array.isArray(r.models)) candidates.push(r.models);
+    if (Array.isArray(r.data)) candidates.push(r.data);
+  }
+
+  for (const list of candidates) {
+    const seen = new Set<string>();
+    const entries: RayuCloudModelEntry[] = [];
+    for (const item of list) {
+      if (typeof item === "string") {
+        const bare = item.trim().replace(/^rayu:/i, "").trim();
+        if (!bare || seen.has(bare)) continue;
+        seen.add(bare);
+        entries.push({ code: bare });
+        continue;
+      }
+      const obj = asRecord(item);
+      const rawCode = readStr(obj, "code", "model", "id");
+      if (!rawCode) continue;
+      const bare = rawCode.replace(/^rayu:/i, "").trim();
+      if (!bare || seen.has(bare)) continue;
+      seen.add(bare);
+
+      const label = readStr(obj, "label", "name") ?? undefined;
+      const description = readStr(obj, "description") ?? undefined;
+      const supportsEffort =
+        typeof obj.supportsEffort === "boolean"
+          ? obj.supportsEffort
+          : typeof obj.supports_effort === "boolean"
+            ? obj.supports_effort
+            : typeof obj.supportsReasoning === "boolean"
+              ? obj.supportsReasoning
+              : typeof obj.supports_reasoning === "boolean"
+                ? obj.supports_reasoning
+                : undefined;
+      const supportsFast =
+        typeof obj.supportsFast === "boolean"
+          ? obj.supportsFast
+          : typeof obj.supports_fast === "boolean"
+            ? obj.supports_fast
+            : undefined;
+
+      entries.push({
+        code: bare,
+        ...(label !== undefined ? { label } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+        ...(supportsFast !== undefined ? { supportsFast } : {}),
+      });
+    }
+    if (entries.length > 0) {
+      return entries;
+    }
+  }
+
+  return [];
 }
 
 function buildUsageWindows(
@@ -673,6 +747,8 @@ export class RayuHostAuthManager extends EventEmitter {
   private loginTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshInFlight: Promise<string | null> | null = null;
   private cachedCredits: RayuCloudCreditsSnapshot | null = null;
+  private cachedModels: RayuCloudModelEntry[] = [];
+  private modelsFetchedAt = 0;
   private lastError: string | null = null;
   private watchers: fs.FSWatcher[] = [];
   private watchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -886,13 +962,85 @@ export class RayuHostAuthManager extends EventEmitter {
   }
 
   // -------------------------------------------------------------------------
-  // Live Account Status & Credits
+  // Live Account Status, Credits & Entitled Models
   // -------------------------------------------------------------------------
+
+  private async fetchHostedModelsWithCredential(cred: {
+    token: string;
+    isOAuth: boolean;
+  }): Promise<RayuCloudModelEntry[] | null> {
+    const fetchAndParse = async (url: string): Promise<RayuCloudModelEntry[]> => {
+      try {
+        const res = await fetch(url, {
+          headers: { Authorization: `Bearer ${cred.token}` },
+          redirect: "manual",
+        });
+        if (!res.ok) return [];
+        const raw = await res.json();
+        return parseHostedModelsPayload(raw);
+      } catch {
+        return [];
+      }
+    };
+
+    if (cred.isOAuth) {
+      const fromEntitlements = await fetchAndParse(
+        `${getRayuApiBase()}/me/entitlements`,
+      );
+      if (fromEntitlements.length > 0) {
+        return fromEntitlements;
+      }
+      const fromGateway = await fetchAndParse(
+        `${getRayuGatewayBase()}/v1/models`,
+      );
+      return fromGateway.length > 0 ? fromGateway : null;
+    }
+
+    const fromGateway = await fetchAndParse(`${getRayuGatewayBase()}/v1/models`);
+    return fromGateway.length > 0 ? fromGateway : null;
+  }
+
+  getCachedHostedModels(): RayuCloudModelEntry[] {
+    return [...this.cachedModels];
+  }
+
+  async fetchHostedModels(forceRefresh = false): Promise<RayuCloudModelEntry[]> {
+    const { method } = this.resolveCurrentAuth();
+    if (method === "none") {
+      this.cachedModels = [];
+      this.modelsFetchedAt = 0;
+      return [];
+    }
+
+    if (
+      !forceRefresh &&
+      this.cachedModels.length > 0 &&
+      Date.now() - this.modelsFetchedAt < MODELS_STALE_MS
+    ) {
+      return [...this.cachedModels];
+    }
+
+    const cred = await this.getGatewayCredential();
+    if (!cred) {
+      this.cachedModels = [];
+      this.modelsFetchedAt = 0;
+      return [];
+    }
+
+    const entries = await this.fetchHostedModelsWithCredential(cred);
+    if (entries && entries.length > 0) {
+      this.cachedModels = entries;
+      this.modelsFetchedAt = Date.now();
+    }
+    return [...this.cachedModels];
+  }
 
   async getAccountStatus(forceRefresh = false): Promise<AccountStatusView> {
     const { method } = this.resolveCurrentAuth();
     if (method === "none") {
       this.cachedCredits = null;
+      this.cachedModels = [];
+      this.modelsFetchedAt = 0;
       return this.getAccountStatusSnapshot();
     }
 
@@ -911,10 +1059,12 @@ export class RayuHostAuthManager extends EventEmitter {
     const cred = await this.getGatewayCredential();
     if (!cred) {
       this.cachedCredits = null;
+      this.cachedModels = [];
+      this.modelsFetchedAt = 0;
       return this.emitAuthChanged();
     }
 
-    const [meResult, creditsResult] = await Promise.allSettled([
+    const [meResult, creditsResult, modelsResult] = await Promise.allSettled([
       cred.isOAuth
         ? fetch(`${getRayuApiBase()}/me`, {
             headers: { Authorization: `Bearer ${cred.token}` },
@@ -925,6 +1075,7 @@ export class RayuHostAuthManager extends EventEmitter {
         headers: { Authorization: `Bearer ${cred.token}` },
         redirect: "manual",
       }),
+      this.fetchHostedModelsWithCredential(cred),
     ]);
 
     if (meResult.status === "fulfilled" && meResult.value?.ok) {
@@ -952,6 +1103,15 @@ export class RayuHostAuthManager extends EventEmitter {
       } catch {
         // retain last good credits
       }
+    }
+
+    if (
+      modelsResult.status === "fulfilled" &&
+      modelsResult.value &&
+      modelsResult.value.length > 0
+    ) {
+      this.cachedModels = modelsResult.value;
+      this.modelsFetchedAt = Date.now();
     }
 
     return this.emitAuthChanged();
@@ -1284,6 +1444,7 @@ export class RayuHostAuthManager extends EventEmitter {
     this.markSelfWrite();
     saveApiKeyToEnvFile(key);
     process.env.RAYU_API_KEY = key;
+    this.modelsFetchedAt = 0;
 
     try {
       await this.daemonBridge?.setApiKey?.("rayu", key);
@@ -1356,6 +1517,8 @@ export class RayuHostAuthManager extends EventEmitter {
     await this.notifyDaemonAuthChangedBestEffort();
     if (this.resolveCurrentAuth().method === "none") {
       this.cachedCredits = null;
+      this.cachedModels = [];
+      this.modelsFetchedAt = 0;
     }
     return this.emitAuthChanged();
   }
@@ -1374,6 +1537,8 @@ export class RayuHostAuthManager extends EventEmitter {
     purgeRayuAccountCaches();
 
     this.cachedCredits = null;
+    this.cachedModels = [];
+    this.modelsFetchedAt = 0;
     this.lastError = null;
 
     // Best-effort daemon sync — sign-out MUST succeed even when daemon is offline!

@@ -116,6 +116,9 @@ const rayuApi = {
         ...(opts && opts.force !== undefined ? { force: opts.force } : {}),
       }),
   },
+  todos: {
+    get: (sessionId) => ipcRenderer.invoke("rayu:todos:get", { sessionId }),
+  },
   workspace: {
     getInfo: () => ipcRenderer.invoke("rayu:workspace:info"),
     setPath: (targetPath) =>
@@ -316,6 +319,18 @@ const rayuApi = {
     selectSession: (sessionId) =>
       ipcRenderer.invoke("rayu:telegram:select-session", { sessionId }),
     sendTestPing: () => ipcRenderer.invoke("rayu:telegram:ping"),
+  },
+  agents: {
+    getState: (sessionId) =>
+      ipcRenderer.invoke("rayu:agents:state", sessionId ? { sessionId } : {}),
+    setRoleModel: (input) =>
+      ipcRenderer.invoke("rayu:agents:set-role-model", input),
+    setSubagentModel: (input) =>
+      ipcRenderer.invoke("rayu:agents:set-subagent-model", input),
+    upsertProfile: (input) =>
+      ipcRenderer.invoke("rayu:agents:upsert-profile", input),
+    deleteProfile: (input) =>
+      ipcRenderer.invoke("rayu:agents:delete-profile", input),
   },
 }
 

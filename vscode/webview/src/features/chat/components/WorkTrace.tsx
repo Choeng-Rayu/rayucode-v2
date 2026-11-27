@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   Monitor,
   Search,
+  Sparkles,
   Wrench,
 } from "lucide-react";
 
@@ -218,6 +219,7 @@ export function summarizeWorkTraceMetrics(
 export interface WorkTraceProps {
   workedDuration: string;
   isLive?: boolean;
+  liveStatusPlacement?: "header" | "footer";
   connectionPhaseLabel?: string | null;
   notes: string[];
   groups: ExtendedWorkStepGroup[];
@@ -271,8 +273,7 @@ function TraceGroupIcon({ title }: { title: string }) {
 
 function renderFileReadStep(
   step: FileReadStep,
-  onOpenCodeFile: (file: string, line?: number | null) => void,
-  onOpenDocPreview: (kind: WorkPreviewDocKind, pillLabel: string) => void,
+  onOpenCodeFile?: (file: string, line?: number | null) => void,
 ) {
   const isSkillStep = step.label.toLowerCase().includes("skill");
 
@@ -296,41 +297,26 @@ function renderFileReadStep(
       )}
       <span>
         {step.label}{" "}
-        {step.files.map((target, idx) => {
-          const lower = target.file.toLowerCase();
-          const isMarkdown = lower.endsWith(".md");
-          const isExcel = lower.endsWith(".xlsx");
-          const isSlide =
-            lower.endsWith(".pptx") || lower.includes("slide");
-          return (
-            <React.Fragment key={`${step.id}-${target.path}-${target.line}`}>
-              {idx > 0 && ", "}
-              <button
-                type="button"
-                data-testid={`trace-file-link-${target.path}`}
-                onClick={() => {
-                  postToHost({
-                    type: "rayucode.editor.openFile",
-                    path: target.path,
-                    line: target.line,
-                  });
-                  if (isSlide) {
-                    onOpenDocPreview("slide", "Slide");
-                  } else if (isMarkdown) {
-                    onOpenDocPreview("markdown", target.file);
-                  } else if (isExcel) {
-                    onOpenDocPreview("excel", target.file);
-                  } else {
-                    onOpenCodeFile(target.path, target.line);
-                  }
-                }}
-                className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {target.rangeLabel}
-              </button>
-            </React.Fragment>
-          );
-        })}
+        {step.files.map((target, idx) => (
+          <React.Fragment key={`${step.id}-${target.path}-${target.line}`}>
+            {idx > 0 && ", "}
+            <button
+              type="button"
+              data-testid={`trace-file-link-${target.path}`}
+              onClick={() => {
+                postToHost({
+                  type: "rayucode.editor.openFile",
+                  path: target.path,
+                  line: target.line,
+                });
+                onOpenCodeFile?.(target.path, target.line);
+              }}
+              className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {target.rangeLabel}
+            </button>
+          </React.Fragment>
+        ))}
       </span>
     </div>
   );
@@ -474,7 +460,7 @@ function TraceGroupSection({
           />
         );
       case "read":
-        return renderFileReadStep(step, onOpenCodeFile, onOpenDocPreview);
+        return renderFileReadStep(step, onOpenCodeFile);
       case "list":
       case "search":
       case "previews":
@@ -525,9 +511,71 @@ function TraceGroupSection({
   );
 }
 
+interface ReasoningSectionProps {
+  id: string;
+  text: string;
+  isStreaming?: boolean;
+}
+
+function ReasoningSection({
+  id,
+  text,
+  isStreaming = false,
+}: ReasoningSectionProps) {
+  // Collapsed by default so thinking/reasoning stays quiet until user expands it.
+  const [open, setOpen] = React.useState(false);
+  const panelId = `work-reasoning-body-${id}`;
+
+  return (
+    <div
+      data-slot="work-reasoning"
+      data-testid="work-reasoning"
+      data-expanded={open ? "true" : "false"}
+      className="flex max-w-[70ch] flex-col gap-1"
+    >
+      <button
+        type="button"
+        data-testid="work-reasoning-toggle"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((prev) => !prev)}
+        className="group/reasoning inline-flex cursor-pointer items-center gap-1.5 self-start rounded-lg py-0.5 pr-2 pl-0.5 text-[12.5px] font-medium text-muted-ink transition-colors hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Sparkles
+          className={cn(
+            "size-3.5 shrink-0 text-muted-ink",
+            isStreaming && "animate-pulse text-brand-text",
+          )}
+          aria-hidden="true"
+        />
+        <span>{isStreaming ? "Thinking..." : "Thinking"}</span>
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 text-muted-ink transition-transform duration-150",
+            open && "rotate-90",
+          )}
+          aria-hidden="true"
+        />
+      </button>
+
+      {open && (
+        <div
+          id={panelId}
+          data-slot="work-reasoning-body"
+          data-testid="work-reasoning-body"
+          className="ml-2 border-l-2 border-hairline-strong py-0.5 pl-3 text-[13px] leading-[1.6] whitespace-pre-wrap text-muted-ink"
+        >
+          {text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkTrace({
   workedDuration,
   isLive = false,
+  liveStatusPlacement = "header",
   connectionPhaseLabel,
   notes,
   groups,
@@ -561,33 +609,24 @@ export function WorkTrace({
 
   const handleOpenCodeFile = React.useCallback(
     (file: string, line?: number | null) => {
-      if (onOpenCodeFile) {
-        onOpenCodeFile(file, line);
-      } else {
-        useAppStore.getState().openCodeFile(file, line ?? null);
-      }
+      onOpenCodeFile?.(file, line);
     },
     [onOpenCodeFile],
   );
 
   const handleOpenDocPreview = React.useCallback(
     (kind: WorkPreviewDocKind, pillLabel: string) => {
-      if (onOpenDocPreview) {
-        onOpenDocPreview(kind, pillLabel);
-      } else {
-        const tab =
-          kind === "slide" || kind === "excel" || kind === "pdf" || kind === "html"
-            ? "sidePanel"
-            : kind;
-        useAppStore.getState().openRightTab(tab, pillLabel);
-      }
+      onOpenDocPreview?.(kind, pillLabel);
     },
     [onOpenDocPreview],
   );
 
   const handleLiveBackgroundClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    onBackgroundTool?.();
+    if (onBackgroundTool) {
+      onBackgroundTool();
+      return;
+    }
     const sid =
       sessionId ?? useAppStore.getState().activeSessionId ?? "ses_vscode_shell";
     try {
@@ -598,12 +637,51 @@ export function WorkTrace({
   };
 
   const interleaveCount = Math.max(notes.length, coalescedGroups.length);
+  const hideLiveHeader = Boolean(isLive && liveStatusPlacement === "footer");
+  const hasTraceBodyContent =
+    hasTimeline || notes.length > 0 || coalescedGroups.length > 0;
+
+  const traceMetrics = React.useMemo(
+    () => summarizeWorkTraceMetrics(workedDuration, coalescedGroups),
+    [coalescedGroups, workedDuration],
+  );
 
   const liveHeaderLabel = React.useMemo(() => {
     return connectionPhaseLabel
       ? `Working · ${workedDuration} · ${connectionPhaseLabel}`
       : `Working · ${workedDuration}`;
   }, [connectionPhaseLabel, workedDuration]);
+
+  const completedHeaderLabel = React.useMemo(() => {
+    if (liveStatusPlacement === "footer") {
+      const detailParts: string[] = [];
+      if (traceMetrics.fileCount > 0) {
+        detailParts.push(
+          `${traceMetrics.fileCount} ${traceMetrics.fileCount === 1 ? "file" : "files"}`,
+        );
+      }
+      if (traceMetrics.cmdCount > 0) {
+        detailParts.push(
+          `${traceMetrics.cmdCount} ${traceMetrics.cmdCount === 1 ? "cmd" : "cmds"}`,
+        );
+      }
+      if (detailParts.length > 0) {
+        return `Steps · ${detailParts.join(" · ")}`;
+      }
+      if (traceMetrics.toolCount > 0) {
+        return `Steps · ${traceMetrics.toolCount} ${traceMetrics.toolCount === 1 ? "step" : "steps"}`;
+      }
+      if (hasTimeline && timeline?.some((e) => e.type === "reasoning")) {
+        return "Thinking & steps";
+      }
+      return "Execution trace";
+    }
+    return workedDuration ? `Worked for ${workedDuration}` : "Execution trace";
+  }, [hasTimeline, liveStatusPlacement, timeline, traceMetrics, workedDuration]);
+
+  if (hideLiveHeader && !hasTraceBodyContent) {
+    return null;
+  }
 
   return (
     <div
@@ -613,49 +691,51 @@ export function WorkTrace({
       data-depth={expanded ? "1" : "0"}
       className={cn("flex flex-col gap-2.5", className)}
     >
-      {/* Depth 0: Calm single-line header */}
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid="work-trace-toggle"
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          onClick={() => setUserExpanded(!expanded)}
-          title="Inspect execution steps and shell output"
-          className={cn(
-            "-ml-2 inline-flex cursor-pointer items-center gap-1.5 self-start rounded-full border border-transparent py-1 pr-2.5 pl-2 text-[13px] font-medium text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink focus-visible:border-brand focus-visible:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-            isLive && "text-ink",
-          )}
-        >
-          {isLive && (
-            <RayuProcessingMark animated className="size-4 shrink-0" />
-          )}
-          <span data-testid="work-trace-summary" className="tabular-nums">
-            {isLive ? liveHeaderLabel : `Worked for ${workedDuration}`}
-          </span>
-          <ChevronRight
-            className={cn(
-              "size-[13px] text-muted-ink transition-transform duration-150",
-              expanded && "rotate-90",
-            )}
-            aria-hidden="true"
-          />
-        </button>
-
-        {isLive && showLiveBackgroundPill && (
+      {/* Depth 0: Calm single-line header (hidden while live when rendered in message footer) */}
+      {!hideLiveHeader && (
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            data-testid="work-trace-live-bg-btn"
-            onClick={(e) => void handleLiveBackgroundClick(e)}
-            title="Move foreground command to Background Process Viewer (Alt+B)"
-            className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-hairline bg-pane px-2.5 py-0.5 text-[11px] font-medium text-muted-ink transition-colors hover:border-premium hover:bg-hover hover:text-ink"
+            data-testid="work-trace-toggle"
+            aria-expanded={expanded}
+            aria-controls={bodyId}
+            onClick={() => setUserExpanded(!expanded)}
+            title="Inspect execution steps and shell output"
+            className={cn(
+              "-ml-2 inline-flex cursor-pointer items-center gap-1.5 self-start rounded-full border border-transparent py-1 pr-2.5 pl-2 text-[13px] font-medium text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink focus-visible:border-brand focus-visible:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              isLive && "text-ink",
+            )}
           >
-            <Layers className="size-3 shrink-0" aria-hidden="true" />
-            <span>Background</span>
-            <kbd className="ml-0.5 font-mono text-[10px] text-faint">Alt+B</kbd>
+            {isLive && (
+              <RayuProcessingMark animated className="size-4 shrink-0" />
+            )}
+            <span data-testid="work-trace-summary" className="tabular-nums">
+              {isLive ? liveHeaderLabel : completedHeaderLabel}
+            </span>
+            <ChevronRight
+              className={cn(
+                "size-[13px] text-muted-ink transition-transform duration-150",
+                expanded && "rotate-90",
+              )}
+              aria-hidden="true"
+            />
           </button>
-        )}
-      </div>
+
+          {isLive && showLiveBackgroundPill && (
+            <button
+              type="button"
+              data-testid="work-trace-live-bg-btn"
+              onClick={(e) => void handleLiveBackgroundClick(e)}
+              title="Move foreground command to Background Process Viewer (Alt+B)"
+              className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-hairline bg-pane px-2.5 py-0.5 text-[11px] font-medium text-muted-ink transition-colors hover:border-premium hover:bg-hover hover:text-ink"
+            >
+              <Layers className="size-3 shrink-0" aria-hidden="true" />
+              <span>Background</span>
+              <kbd className="ml-0.5 font-mono text-[10px] text-faint">Alt+B</kbd>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Depth 1: Expanded vertical rail */}
       {expanded && (
@@ -666,22 +746,20 @@ export function WorkTrace({
           className="flex flex-col gap-2.5 pb-1.5"
         >
           {hasTimeline && timeline
-            ? timeline.map((entry) => {
+            ? timeline.map((entry, idx) => {
                 if (entry.type === "reasoning") {
+                  const isActivelyReasoning = Boolean(
+                    isLive &&
+                      !activeToolStatus &&
+                      idx === timeline.length - 1,
+                  );
                   return (
-                    <div
+                    <ReasoningSection
                       key={entry.id}
-                      data-slot="work-reasoning"
-                      data-testid="work-reasoning"
-                      className="max-w-[70ch] border-l-2 border-hairline-strong pl-3"
-                    >
-                      <div className="mb-1 text-[11px] font-medium tracking-[0.02em] text-faint">
-                        Reasoning
-                      </div>
-                      <div className="text-[13px] leading-[1.6] whitespace-pre-wrap text-muted-ink">
-                        {entry.text}
-                      </div>
-                    </div>
+                      id={entry.id}
+                      text={entry.text}
+                      isStreaming={isActivelyReasoning}
+                    />
                   );
                 }
                 if (entry.type === "note") {
@@ -741,7 +819,7 @@ export function WorkTrace({
                 );
               })}
 
-          {isLive && activeToolStatus ? (
+          {!hideLiveHeader && isLive && activeToolStatus ? (
             <div
               data-testid="work-active-tool-status"
               className="inline-flex items-center gap-2 py-0.5 text-[13px] text-muted-ink"
@@ -752,7 +830,8 @@ export function WorkTrace({
               />
               <span className="animate-pulse">{activeToolStatus}</span>
             </div>
-          ) : isLive &&
+          ) : !hideLiveHeader &&
+            isLive &&
             notes.length === 0 &&
             coalescedGroups.length === 0 &&
             !hasTimeline ? (

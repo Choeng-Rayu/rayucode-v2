@@ -5,6 +5,7 @@ import type { ServerFrame } from "@rayu-dev/rayucode-sdk";
 import { startMockHarness } from "../../sdk/typescript/test/mock-harness.js";
 import { HarnessSession } from "../host/harnessSession.js";
 import "./reversePatch.test.js";
+import "./binaryInstaller.test.js";
 import "./featureRouters.test.js";
 import "./sessionHub.test.js";
 

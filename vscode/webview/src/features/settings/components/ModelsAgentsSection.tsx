@@ -1,6 +1,7 @@
 import * as React from "react";
-import { RefreshCw } from "lucide-react";
+import { ArrowUpRight, Bot, RefreshCw } from "lucide-react";
 import type {
+  AgentProfileView,
   AgentRoleId,
   AgentRoleOverrideView,
   CacheTtl,
@@ -18,6 +19,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  formatHarnessModelSpec,
+  formatProviderBadgeLabel,
+} from "@/features/composer";
 import { cn } from "@/lib/utils";
 
 import {
@@ -36,6 +41,8 @@ export interface ModelsAgentsSectionProps {
   cacheTtl: CacheTtl;
   routes?: ReadonlyArray<ModelRouteOptionView>;
   roleOverrides: ReadonlyArray<AgentRoleOverrideView>;
+  profiles?: ReadonlyArray<AgentProfileView>;
+  subagentModel?: string | null;
   swarmAllowlist?: ReadonlyArray<string>;
   configSupported?: boolean;
   configPath?: string;
@@ -56,13 +63,14 @@ export interface ModelsAgentsSectionProps {
     model: string;
     scope: "session" | "global";
   }) => Promise<unknown>;
+  onOpenAgentsStudio?: () => void;
   onRefreshModels: () => Promise<unknown>;
   isRefreshingModels: boolean;
 }
 
-const FALLBACK_MODEL_ROUTES = [
-  "claude-sonnet-4-5",
-  "claude-opus-4-5",
+const DISCOVERED_MODEL_ROUTES = [
+  "rayu:claude-sonnet-4-5",
+  "rayu:claude-opus-4-5",
   "gpt-5.2",
   "gemini-2.5-pro",
   "deepseek-r1",
@@ -76,6 +84,8 @@ export function ModelsAgentsSection({
   cacheTtl,
   routes,
   roleOverrides,
+  profiles,
+  subagentModel,
   swarmAllowlist,
   configSupported = true,
   configPath = "~/.rayu/config.toml",
@@ -92,6 +102,7 @@ export function ModelsAgentsSection({
   onSelectServiceTier,
   onSelectCacheTtl,
   onSetRoleOverride,
+  onOpenAgentsStudio,
   onRefreshModels,
   isRefreshingModels,
 }: ModelsAgentsSectionProps) {
@@ -104,22 +115,89 @@ export function ModelsAgentsSection({
     [configSchema],
   );
 
-  const modelChoices = React.useMemo(() => {
-    const liveIds =
-      routes && routes.length > 0
-        ? routes.map((r) => r.model || r.id)
-        : [...FALLBACK_MODEL_ROUTES];
-    const seen = new Set<string>(liveIds);
-    if (defaultModel && !seen.has(defaultModel)) {
-      return [defaultModel, ...liveIds];
+  const { modelChoices, resolvedDefaultModel } = React.useMemo(() => {
+    const out: Array<{ value: string; label: string }> = [];
+    const seen = new Set<string>();
+    const rawIdToValue = new Map<string, string>();
+
+    if (routes && routes.length > 0) {
+      // Prefer available routes first while preserving backend order within each group
+      const ordered = [
+        ...routes.filter((r) => r.available !== false),
+        ...routes.filter((r) => r.available === false),
+      ];
+      for (const r of ordered) {
+        const rawModel = r.model || r.id;
+        if (!rawModel) continue;
+        const value =
+          r.modelSpec ||
+          formatHarnessModelSpec(rawModel, r.provider, r.apiMethod) ||
+          rawModel;
+        if (!rawIdToValue.has(rawModel)) {
+          rawIdToValue.set(rawModel, value);
+        }
+        if (r.id && !rawIdToValue.has(r.id)) {
+          rawIdToValue.set(r.id, value);
+        }
+        if (seen.has(value)) continue;
+        seen.add(value);
+        const providerBadge = formatProviderBadgeLabel(r.provider);
+        const baseLabel = r.label || rawModel;
+        out.push({
+          value,
+          label: `${baseLabel} (${providerBadge})`,
+        });
+      }
+    } else {
+      for (const m of DISCOVERED_MODEL_ROUTES) {
+        if (seen.has(m)) continue;
+        seen.add(m);
+        out.push({ value: m, label: m });
+      }
     }
-    return liveIds;
+
+    const matchedValue = defaultModel
+      ? seen.has(defaultModel)
+        ? defaultModel
+        : (rawIdToValue.get(defaultModel) ?? defaultModel)
+      : "";
+
+    if (matchedValue && !seen.has(matchedValue)) {
+      seen.add(matchedValue);
+      out.unshift({ value: matchedValue, label: matchedValue });
+    }
+
+    return { modelChoices: out, resolvedDefaultModel: matchedValue };
   }, [defaultModel, routes]);
 
-  const roleModelChoices = React.useMemo(
-    () => ["inherit", "default", ...modelChoices],
-    [modelChoices],
-  );
+  const roleModelChoices = React.useMemo(() => {
+    const out: Array<{ value: string; label: string }> = [
+      { value: "inherit", label: "inherit" },
+      { value: "default", label: "default" },
+    ];
+    const seen = new Set<string>(["inherit", "default"]);
+
+    for (const p of profiles ?? []) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      out.push({ value: p.name, label: `Persona: ${p.name} (${p.model})` });
+    }
+
+    for (const choice of modelChoices) {
+      if (seen.has(choice.value)) continue;
+      seen.add(choice.value);
+      out.push(choice);
+    }
+
+    for (const row of roleOverrides) {
+      if (row.model && !seen.has(row.model)) {
+        seen.add(row.model);
+        out.push({ value: row.model, label: row.model });
+      }
+    }
+
+    return out;
+  }, [modelChoices, profiles, roleOverrides]);
 
   const engineReadOnly = !configSupported;
 
@@ -199,7 +277,7 @@ export function ModelsAgentsSection({
             />
           </div>
           <Select
-            value={defaultModel}
+            value={resolvedDefaultModel}
             disabled={engineReadOnly}
             onValueChange={onSelectDefaultModel}
           >
@@ -207,7 +285,7 @@ export function ModelsAgentsSection({
               aria-label="Default model route"
               data-testid="default-model-select"
               className={cn(
-                "w-full sm:w-[210px]",
+                "w-full sm:w-[250px]",
                 configFieldErrors["provider.default_model"] &&
                   "border-danger/40",
               )}
@@ -215,9 +293,9 @@ export function ModelsAgentsSection({
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
-              {modelChoices.map((m) => (
-                <SelectItem key={m} value={m}>
-                  {m}
+              {modelChoices.map((choice) => (
+                <SelectItem key={choice.value} value={choice.value}>
+                  {choice.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -346,6 +424,46 @@ export function ModelsAgentsSection({
         </div>
       </div>
 
+      {/* Subagent Models & Agent Personas Studio Entry */}
+      <div
+        data-testid="models-agents-studio-card"
+        className="rayu-card-bevel flex flex-wrap items-center justify-between gap-3 rounded-xl border border-premium bg-pane px-4 py-3.5 text-xs"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+            <Bot className="size-4 text-brand-text" aria-hidden="true" />
+            <span>Subagent Models &amp; Agent Personas</span>
+            <span className="rounded-full bg-raised px-2 py-0.5 text-[10.5px] text-muted-ink tabular-nums">
+              {(profiles ?? []).length} persona
+              {(profiles ?? []).length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="mt-1 text-muted-ink">
+            Design custom worker personas (
+            <code className="rounded bg-inset px-1 py-0.5 font-mono text-[10.5px] text-body">
+              [[agents.profiles]]
+            </code>
+            ), set{" "}
+            <code className="rounded bg-inset px-1 py-0.5 font-mono text-[10.5px] text-body">
+              /subagent-model
+            </code>{" "}
+            ({subagentModel ?? "inherit"}), and bind personas to roles.
+          </div>
+        </div>
+        {onOpenAgentsStudio && (
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={onOpenAgentsStudio}
+            data-testid="settings-open-agents-studio-btn"
+          >
+            <span>Open Agents &amp; Personas</span>
+            <ArrowUpRight className="size-3.5" aria-hidden="true" />
+          </Button>
+        )}
+      </div>
+
       {/* Per-Role Subagent & Swarm Model Overrides */}
       <div>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -423,14 +541,14 @@ export function ModelsAgentsSection({
                 <SelectTrigger
                   aria-label={`${row.label} model`}
                   data-testid={`role-override-select-${row.role}`}
-                  className="w-full sm:w-[210px]"
+                  className="w-full sm:w-[250px]"
                 >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="end">
-                  {roleModelChoices.map((m) => (
-                    <SelectItem key={m} value={m}>
-                      {m}
+                  {roleModelChoices.map((choice) => (
+                    <SelectItem key={choice.value} value={choice.value}>
+                      {choice.label}
                     </SelectItem>
                   ))}
                 </SelectContent>

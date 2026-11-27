@@ -179,7 +179,7 @@ pub(super) async fn cleanup_client_connection(
         return Ok(None);
     }
 
-    if allow_reconnect {
+    if allow_reconnect && !idle_reconnect_grace.is_zero() {
         // Empty roots intentionally have no snapshot. A replacement UI/SDK
         // connection needs a bounded opportunity to reclaim the live Agent,
         // without creating history entries for every briefly opened panel.
@@ -268,6 +268,10 @@ pub(super) async fn cleanup_client_connection(
     // interrupted desktop turn must become `Crashed`.
     if let Some(handle) = processing_task.take() {
         handle.abort();
+        // Wait briefly for the aborted task future (and its strong
+        // Arc<Mutex<Agent>> clones) to drop so SessionManager::owners is
+        // vacant before the client immediately tries to reconnect.
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
     }
 
     {

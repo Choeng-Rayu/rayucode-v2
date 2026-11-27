@@ -136,6 +136,7 @@ export function HomeView({
       setPendingSubmit(null)
       setPendingElapsedSec(0)
       void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+      void queryClient.invalidateQueries({ queryKey: ["models"] })
 
       // Sync the chosen Local Permissions mode to the Rust core before the first turn runs
       void ipcClient.harness
@@ -154,12 +155,14 @@ export function HomeView({
               : "Failed to set permission mode for the new session"
           )
         })
+      ipcClient.harness.stagePromptEffort(result.data.id, payload.effort)
       useAppStore.getState().setPendingStreamPrompt({
         sessionId: result.data.id,
         prompt: payload.prompt,
         images: payload.images,
         modelId: payload.modelId,
         modelLabel: payload.modelLabel,
+        effort: payload.effort,
         startedAtMs: submitStartedAtMs,
       })
       useAppStore

@@ -1098,34 +1098,47 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                 let link = crate::telegram_remote::load()?;
                 let uninstall_enabled = crate::telegram_remote::uninstall::enabled();
                 let pending_count = crate::safety::telegram::pending().len();
+                let auth_path = crate::telegram_remote::settings_path()
+                    .ok()
+                    .map(|p| p.display().to_string());
                 let data = match link {
                     Some(link) => {
                         let mode = match link.mode {
                             rayucode_base::telegram::remote::Mode::Hosted { .. } => "hosted",
                             rayucode_base::telegram::remote::Mode::BotFather { .. } => "botfather",
                         };
+                        let expired = link.expired();
+                        let active_account = link.active_account();
                         json!({
+                            "generation": link.generation.to_string(),
                             "linked": link.owner.is_some(),
                             "configured": true,
                             "status": link.status(),
+                            "expired": expired,
+                            "active_account": active_account,
                             "username": link.username,
                             "mode": mode,
                             "owner_chat_id": link.owner,
                             "selected_session": link.selected,
                             "pending_until": link.pending_until,
+                            "auth_path": auth_path,
                             "uninstall_enabled": uninstall_enabled,
                             "pending_approvals_count": pending_count,
                         })
                     }
                     None => json!({
+                        "generation": null,
                         "linked": false,
                         "configured": false,
                         "status": "Disconnected",
+                        "expired": false,
+                        "active_account": true,
                         "username": null,
                         "mode": null,
                         "owner_chat_id": null,
                         "selected_session": null,
                         "pending_until": null,
+                        "auth_path": auth_path,
                         "uninstall_enabled": uninstall_enabled,
                         "pending_approvals_count": pending_count,
                     }),
@@ -1217,6 +1230,10 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
             .await?
         }
         "disconnect" => {
+            let local_only = args
+                .iter()
+                .skip(1)
+                .any(|arg| matches!(arg.as_str(), "local_only" | "--local-only" | "local"));
             let Some(link) = tokio::task::spawn_blocking(crate::telegram_remote::load).await??
             else {
                 return Ok((
@@ -1225,31 +1242,143 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                 ));
             };
             let username = link.username.clone();
-            crate::telegram_remote::disconnect(&link).await?;
+            if local_only {
+                tokio::task::spawn_blocking(move || crate::telegram_remote::disconnect_local(&link))
+                    .await??;
+            } else {
+                crate::telegram_remote::disconnect(&link).await?;
+            }
             let data = json!({
                 "disconnected": true,
                 "was_linked": true,
+                "local_only": local_only,
                 "username": username,
             });
             Ok((data, format!("Disconnected Telegram bot @{username}.")))
         }
         "link_hosted" => {
             let replace_existing = args
-                .get(1)
-                .is_some_and(|arg| matches!(arg.as_str(), "replace" | "--replace-existing"));
-            let (link, pairing_url) =
-                crate::telegram_remote::hosted_pairing(replace_existing).await?;
+                .iter()
+                .skip(1)
+                .any(|arg| matches!(arg.as_str(), "replace" | "--replace-existing"));
+            let (link, pairing_url, pairing_code) =
+                crate::telegram_remote::hosted_pairing_with_code(replace_existing).await?;
+            let (qr_size, qr_path) = crate::telegram_remote::qr_svg_path(&pairing_url)
+                .map(|(size, path)| (Some(size), Some(path)))
+                .unwrap_or((None, None));
+            let auth_path = crate::telegram_remote::settings_path()
+                .ok()
+                .map(|p| p.display().to_string());
             let data = json!({
+                "generation": link.generation.to_string(),
+                "linked": false,
+                "mode": "hosted",
                 "username": link.username,
                 "status": link.status(),
                 "pairing_url": pairing_url,
+                "pairing_code": pairing_code,
+                "qr_size": qr_size,
+                "qr_path": qr_path,
                 "pending_until": link.pending_until,
+                "auth_path": auth_path,
             });
             let message = format!("Pairing link generated for @{}: {pairing_url}", link.username);
             Ok((data, message))
         }
+        "link_botfather" => {
+            let Some(token) = args.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+                bail!("Usage: telegram link_botfather <bot_token> [allowed_chat_id] [replace]");
+            };
+            let mut allowed_chat_id: Option<i64> = None;
+            let mut replace_existing = false;
+            for arg in args.iter().skip(2) {
+                let trimmed = arg.trim();
+                if matches!(trimmed, "replace" | "--replace-existing") {
+                    replace_existing = true;
+                } else if !trimmed.is_empty() && trimmed != "-" {
+                    let parsed = trimmed.parse::<i64>().map_err(|_| {
+                        anyhow::anyhow!(
+                            "Allowed Telegram chat ID must be a positive integer (got `{trimmed}`)"
+                        )
+                    })?;
+                    allowed_chat_id = Some(parsed);
+                }
+            }
+            let (link, pairing) =
+                crate::telegram_remote::botfather_pairing(token, allowed_chat_id, replace_existing)
+                    .await?;
+            let (pairing_url, pairing_code, qr_size, qr_path) = match pairing {
+                Some((url, code)) => {
+                    let (size, path) = crate::telegram_remote::qr_svg_path(&url)
+                        .map(|(s, p)| (Some(s), Some(p)))
+                        .unwrap_or((None, None));
+                    (Some(url), Some(code), size, path)
+                }
+                None => (None, None, None, None),
+            };
+            let auth_path = crate::telegram_remote::settings_path()
+                .ok()
+                .map(|p| p.display().to_string());
+            let linked = link.owner.is_some();
+            let data = json!({
+                "generation": link.generation.to_string(),
+                "linked": linked,
+                "mode": "botfather",
+                "username": link.username,
+                "owner_chat_id": link.owner,
+                "status": link.status(),
+                "pairing_url": pairing_url,
+                "pairing_code": pairing_code,
+                "qr_size": qr_size,
+                "qr_path": qr_path,
+                "pending_until": link.pending_until,
+                "auth_path": auth_path,
+            });
+            let message = if linked {
+                format!(
+                    "Linked BotFather bot @{} to chat {}.",
+                    link.username,
+                    link.owner.unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "Verified BotFather bot @{}. Open the pairing link in Telegram and tap Start.",
+                    link.username
+                )
+            };
+            Ok((data, message))
+        }
+        "select_session" => {
+            let Some(session_id) = args.get(1).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+                bail!("Usage: telegram select_session <session_id>");
+            };
+            let session_id = session_id.to_owned();
+            tokio::task::spawn_blocking(move || {
+                let link = crate::telegram_remote::select_session(&session_id)?;
+                let data = json!({
+                    "ok": true,
+                    "generation": link.generation.to_string(),
+                    "username": link.username,
+                    "selected_session": link.selected,
+                });
+                let message = format!("Telegram remote now drives session `{session_id}`.");
+                Ok((data, message))
+            })
+            .await?
+        }
+        "ping" => {
+            let (username, chat_id, message_id) = crate::telegram_remote::send_ping().await?;
+            let data = json!({
+                "ok": true,
+                "username": username,
+                "chat_id": chat_id,
+                "message_id": message_id,
+            });
+            let message = format!("Sent Telegram ping to @{username} (chat {chat_id}).");
+            Ok((data, message))
+        }
         other => bail!(
-            "Unknown telegram subcommand `{other}`. Usage: telegram [status|approvals|decide <id> <allow|deny>|uninstall <status|enable|disable>|disconnect|link_hosted [replace]]"
+            "Unknown telegram subcommand `{other}`. Usage: telegram [status|approvals|decide <id> <allow|deny>|uninstall <status|enable|disable>|disconnect [local_only]|link_hosted [replace]|link_botfather <token> [chat_id] [replace]|select_session <session_id>|ping]"
         ),
     }
 }
@@ -2355,5 +2484,84 @@ endpoint = \"https://example.invalid\"
         assert_eq!(second_data["removed_oauth_accounts"], 0);
         assert_eq!(second_data["saved_api_key_cleared"], false);
         assert_eq!(second_data["errors"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn telegram_runtime_subcommands_select_session_qr_and_local_disconnect() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().unwrap();
+        let old_home = std::env::var_os("RAYU_HOME");
+        crate::env::set_var("RAYU_HOME", temp.path());
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(v) => crate::env::set_var("RAYU_HOME", v),
+                    None => crate::env::remove_var("RAYU_HOME"),
+                }
+            }
+        }
+        let _restore = Restore(old_home);
+
+        // 1. Real QR SVG generator produces valid non-empty ISO matrix + path.
+        let (qr_size, qr_path) =
+            crate::telegram_remote::qr_svg_path("https://t.me/RayuCodeBot?start=abc123")
+                .expect("valid qr");
+        assert!(qr_size >= 25);
+        assert!(qr_path.starts_with('M'));
+        assert!(qr_path.contains("v1h-"));
+
+        // 2. Unconfigured status reports configured=false and auth_path.
+        let (unlinked, _) = telegram(&["status".into()]).await.unwrap();
+        assert_eq!(unlinked["linked"], false);
+        assert_eq!(unlinked["configured"], false);
+        assert!(unlinked["auth_path"].as_str().is_some());
+
+        // 3. Persist a BotFather link and verify status + select_session + disconnect local_only.
+        let mut link = crate::telegram_remote::Link::new(
+            "fixture_rayu_bot".into(),
+            rayucode_base::telegram::remote::Mode::BotFather {
+                token: "123456:abcdefghijklmnopqrstuvwxyz".into(),
+                bot_id: 123456,
+            },
+        );
+        link.owner = Some(987654321);
+        link.pending_until = None;
+        assert!(crate::telegram_remote::replace(None, Some(&link)).unwrap());
+
+        let (linked_status, _) = telegram(&["status".into()]).await.unwrap();
+        assert_eq!(linked_status["linked"], true);
+        assert_eq!(linked_status["configured"], true);
+        assert_eq!(linked_status["mode"], "botfather");
+        assert_eq!(linked_status["username"], "fixture_rayu_bot");
+        assert_eq!(linked_status["owner_chat_id"], 987654321);
+        assert_eq!(linked_status["generation"], link.generation.to_string());
+
+        let (selected, _) = telegram(&["select_session".into(), "ses_alpha_42".into()])
+            .await
+            .unwrap();
+        assert_eq!(selected["ok"], true);
+        assert_eq!(selected["selected_session"], "ses_alpha_42");
+
+        let (after_select, _) = telegram(&["status".into()]).await.unwrap();
+        assert_eq!(after_select["selected_session"], "ses_alpha_42");
+
+        // Reject invalid session id traversal.
+        assert!(
+            telegram(&["select_session".into(), "../bad".into()])
+                .await
+                .is_err()
+        );
+
+        // Local-only disconnect removes local file cleanly without network calls.
+        let (disc, _) = telegram(&["disconnect".into(), "local_only".into()])
+            .await
+            .unwrap();
+        assert_eq!(disc["disconnected"], true);
+        assert_eq!(disc["local_only"], true);
+        let (final_status, _) = telegram(&["status".into()]).await.unwrap();
+        assert_eq!(final_status["configured"], false);
+        assert_eq!(final_status["linked"], false);
     }
 }

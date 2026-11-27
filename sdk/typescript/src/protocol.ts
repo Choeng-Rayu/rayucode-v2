@@ -523,6 +523,7 @@ export type ApiRequest =
       client: string;
       supports_user_response?: boolean;
       supports_permissions?: boolean;
+      supports_user_questions?: boolean;
     }
   | {
       req: "list_sessions";
@@ -540,7 +541,7 @@ export type ApiRequest =
     }
   | { req: "archive_session"; session_id: string }
   | { req: "restore_session"; session_id: string }
-  | { req: "set_retention_policy"; archive_after_days?: number }
+  | { req: "set_retention_policy"; archive_after_days?: number | null }
   | { req: "create_session"; working_dir?: string; system_prompt?: string }
   | { req: "attach_session"; session_id: string }
   | { req: "fork_session"; session_id: string }
@@ -576,6 +577,12 @@ export type ApiRequest =
       session_id: string;
       request_id: string;
       decision: PermissionDecision;
+    }
+  | {
+      req: "question_response";
+      session_id: string;
+      request_id: string;
+      response: Record<string, unknown>;
     }
   | {
       req: "set_permission_mode";
@@ -875,6 +882,17 @@ export type ApiEvent =
       session_id: string;
       title?: string;
       display_title: string;
+    }
+  | {
+      ev: "question_request";
+      session_id: string;
+      request_id: string;
+      questions: unknown[];
+    }
+  | {
+      ev: "question_closed";
+      session_id: string;
+      request_id: string;
     };
 
 /**
@@ -959,6 +977,8 @@ export const KNOWN_EVENT_KINDS = [
   "message_accepted",
   "permission_request",
   "permission_mode_changed",
+  "question_request",
+  "question_closed",
   "session_status",
   "session_recovery",
   "connection_phase",
@@ -1001,6 +1021,7 @@ export const KNOWN_REQUEST_KINDS = [
   "clear",
   "rewind",
   "permission_response",
+  "question_response",
   "set_permission_mode",
   "list_models",
   "get_runtime_info",

@@ -1,9 +1,79 @@
-//! ACP model and reasoning effort configuration presentation.
+//! ACP model, reasoning effort, and permission mode configuration presentation.
 
 use super::*;
+use crate::protocol::PermissionMode;
 
 pub(super) const CONFIG_ID_MODEL: &str = "model";
 pub(super) const CONFIG_ID_EFFORT: &str = "reasoning_effort";
+pub(super) const CONFIG_ID_MODE: &str = "mode";
+
+struct AcpModeSpec {
+    mode: PermissionMode,
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+}
+
+const ACP_MODES: &[AcpModeSpec] = &[
+    AcpModeSpec {
+        mode: PermissionMode::Default,
+        id: "default",
+        name: "Default",
+        description: "Ask permission before editing files or running shell commands",
+    },
+    AcpModeSpec {
+        mode: PermissionMode::AcceptEdits,
+        id: "accept_edits",
+        name: "Accept Edits",
+        description: "Auto-approve file edits; ask before running shell commands",
+    },
+    AcpModeSpec {
+        mode: PermissionMode::Plan,
+        id: "plan",
+        name: "Plan",
+        description: "Read-only planning mode without editing files or running commands",
+    },
+    AcpModeSpec {
+        mode: PermissionMode::FullManage,
+        id: "full_manage",
+        name: "Full Access",
+        description: "Auto-approve all file edits and shell commands",
+    },
+    AcpModeSpec {
+        mode: PermissionMode::Orchestrator,
+        id: "orchestrator",
+        name: "Orchestrator",
+        description: "Coordinate and plan without direct file edits or shell commands",
+    },
+];
+
+pub(super) fn acp_mode_id(mode: PermissionMode) -> &'static str {
+    ACP_MODES
+        .iter()
+        .find(|spec| spec.mode == mode)
+        .map(|spec| spec.id)
+        .unwrap_or("default")
+}
+
+/// Parse an ACP mode identifier into a daemon [`PermissionMode`].
+///
+/// Accepts canonical Rayu mode IDs as well as common IDE / ACP host aliases
+/// (`acceptEdits`, `ask`, `code`, `architect`, `bypassPermissions`, `fullManage`).
+pub(super) fn parse_acp_mode(value: &str) -> Option<PermissionMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "default" | "ask" => Some(PermissionMode::Default),
+        "accept_edits" | "acceptedits" | "accept-edits" | "code" => {
+            Some(PermissionMode::AcceptEdits)
+        }
+        "plan" | "architect" | "readonly" | "read_only" | "read-only" => Some(PermissionMode::Plan),
+        "full_manage" | "fullmanage" | "full-manage" | "full_access" | "full-access"
+        | "bypasspermissions" | "bypass_permissions" | "bypass-permissions" | "auto" => {
+            Some(PermissionMode::FullManage)
+        }
+        "orchestrator" => Some(PermissionMode::Orchestrator),
+        _ => None,
+    }
+}
 
 pub(super) fn acp_available_commands() -> Vec<Value> {
     vec![
@@ -21,6 +91,11 @@ pub(super) fn acp_available_commands() -> Vec<Value> {
             "description": "Set reasoning effort, or show the current effort",
             "input": { "hint": "none|minimal|low|medium|high|xhigh|max (optional)" },
         }),
+        json!({
+            "name": "mode",
+            "description": "Switch the permission mode for this session, or show the current mode",
+            "input": { "hint": "default|accept_edits|plan|full_manage|orchestrator (optional)" },
+        }),
     ]
 }
 
@@ -35,6 +110,27 @@ pub(super) fn insert_session_configuration(result: &mut Value, state: &SessionUi
     if let Some(models) = session_models(state) {
         object.insert("models".to_string(), models);
     }
+    if let Some(modes) = session_modes(state) {
+        object.insert("modes".to_string(), modes);
+    }
+}
+
+pub(super) fn session_modes(state: &SessionUiState) -> Option<Value> {
+    let current = state.permission_mode?;
+    let available_modes: Vec<Value> = ACP_MODES
+        .iter()
+        .map(|spec| {
+            json!({
+                "id": spec.id,
+                "name": spec.name,
+                "description": spec.description,
+            })
+        })
+        .collect();
+    Some(json!({
+        "currentModeId": acp_mode_id(current),
+        "availableModes": available_modes,
+    }))
 }
 
 pub(super) fn session_models(state: &SessionUiState) -> Option<Value> {
@@ -63,9 +159,9 @@ pub(super) fn available_efforts(state: &SessionUiState) -> Vec<&'static str> {
     .collect()
 }
 
-/// Build the ACP `configOptions` array (model selector plus reasoning effort)
-/// from the current session provider state. Empty when the daemon reported no
-/// usable model state.
+/// Build the ACP `configOptions` array (model selector, reasoning effort, and
+/// permission mode) from the current session state. Empty when the session has
+/// no model or mode state configured.
 pub(super) fn session_config_options(state: &SessionUiState) -> Vec<Value> {
     let mut options = Vec::new();
 
@@ -111,6 +207,27 @@ pub(super) fn session_config_options(state: &SessionUiState) -> Vec<Value> {
             "name": "Reasoning effort",
             "category": "thought_level",
             "currentValue": current,
+            "options": select_options,
+        }));
+    }
+
+    if let Some(mode) = state.permission_mode {
+        let select_options: Vec<Value> = ACP_MODES
+            .iter()
+            .map(|spec| {
+                json!({
+                    "value": spec.id,
+                    "name": spec.name,
+                    "description": spec.description,
+                })
+            })
+            .collect();
+        options.push(json!({
+            "type": "select",
+            "id": CONFIG_ID_MODE,
+            "name": "Mode",
+            "category": "mode",
+            "currentValue": acp_mode_id(mode),
             "options": select_options,
         }));
     }

@@ -87,6 +87,7 @@ export function PermissionPopover({
 }: PermissionPopoverProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const [triggerTipOpen, setTriggerTipOpen] = React.useState(false);
+  const [syncError, setSyncError] = React.useState<string | null>(null);
 
   const storeSessionId = useAppStore((s) => s.activeSessionId);
   const capabilities = useAppStore((s) => s.capabilities);
@@ -98,11 +99,13 @@ export function PermissionPopover({
 
   const isLegacyReadOnlyBridge =
     capabilities.length > 0 &&
-    !capabilities.includes("sessions") &&
-    !capabilities.includes("permissions");
+    !capabilities.includes("permissions") &&
+    !capabilities.includes("permission_modes");
 
   const dispatchModeChange = React.useCallback(
     (nextId: PermissionModeId) => {
+      const previousId = value;
+      setSyncError(null);
       onChange(nextId);
       const targetSessionId =
         effectiveSessionId ?? (!isVsCodeWebview() ? "ses_vscode_shell" : null);
@@ -110,9 +113,25 @@ export function PermissionPopover({
       void callRpc("sessions.setPermissionMode", {
         sessionId: targetSessionId,
         mode: nextId,
-      }).catch(() => {});
+      })
+        .then((res) => {
+          if (res && res.ok === false) {
+            onChange(previousId);
+            setSyncError("RayuCode rejected the permission mode change.");
+            setOpen(true);
+          }
+        })
+        .catch((err: unknown) => {
+          onChange(previousId);
+          setSyncError(
+            err instanceof Error
+              ? err.message
+              : "Failed to update permission mode.",
+          );
+          setOpen(true);
+        });
     },
-    [effectiveSessionId, onChange],
+    [effectiveSessionId, onChange, value],
   );
 
   React.useEffect(() => {
@@ -214,6 +233,16 @@ export function PermissionPopover({
               className="mx-3 mb-2 rounded-lg border border-hairline-soft bg-inset px-2.5 py-1.5 text-[11px] text-muted-ink"
             >
               Connected to legacy bridge without runtime permission switching.
+            </div>
+          ) : null}
+
+          {syncError ? (
+            <div
+              role="alert"
+              data-testid="permission-sync-error"
+              className="mx-3 mb-2 rounded-lg border border-danger/30 bg-danger-soft px-2.5 py-1.5 text-[11px] text-danger"
+            >
+              {syncError}
             </div>
           ) : null}
 

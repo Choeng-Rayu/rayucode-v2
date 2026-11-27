@@ -250,4 +250,105 @@ describe("ModelEffortPopover (v1.16 engine-driven adaptive effort ladder)", () =
       "Ask"
     )
   })
+
+  it("never renders duplicate 'Approve for me' button even while submitting with pendingPermission, keeping Local Permissions intact", async () => {
+    useAppStore.setState({
+      activeSessionId: "live_sess_perm",
+      pendingPermission: {
+        sessionId: "live_sess_perm",
+        requestId: "req_42",
+        toolName: "bash",
+        description: "Run git status",
+      },
+    })
+    vi.spyOn(ipcClient.models, "list").mockResolvedValue([...TEST_MODELS])
+
+    renderWithProviders(<SessionComposer mode="workspace" isSubmitting />)
+
+    expect(
+      screen.queryByTestId("composer-approve-for-me-btn")
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/approve for me/i)).not.toBeInTheDocument()
+
+    const permTrigger = screen.getByTestId("permission-mode-trigger")
+    expect(permTrigger).toBeInTheDocument()
+    fireEvent.click(permTrigger)
+    expect(await screen.findByText("Local Permissions")).toBeInTheDocument()
+
+    useAppStore.setState({ pendingPermission: null })
+  })
+
+  it("exposes engine-accurate effort ladder on Home fallback catalog without fabricating Auto and hides effort for unsupported models", async () => {
+    renderWithProviders(<SessionComposer mode="home" />)
+
+    const trigger = await screen.findByTestId("model-effort-trigger")
+    const effortBadge = await screen.findByTestId("model-effort-trigger-effort")
+    expect(effortBadge).toHaveTextContent("Low")
+    expect(effortBadge.className).toContain("@max-[360px]/composer:hidden")
+
+    fireEvent.click(trigger)
+    expect(screen.getByTestId("effort-stage-card")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Auto" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Extra High" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Max" })).toBeInTheDocument()
+
+    // Switch to Haiku (no engine effort support) via Stage 2
+    fireEvent.click(screen.getByTestId("open-model-list-btn"))
+    expect(screen.getByTestId("model-list-card")).toBeInTheDocument()
+    expect(screen.getByTestId("model-list-back-btn")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("option", { name: /Claude Haiku 4\.5/i }))
+
+    await waitFor(() => {
+      expect(trigger).toHaveTextContent("Claude Haiku 4.5")
+    })
+    expect(
+      screen.queryByTestId("model-effort-trigger-effort")
+    ).not.toBeInTheDocument()
+
+    // Reopening on Haiku goes straight to Stage 2 Select model
+    fireEvent.click(trigger)
+    expect(screen.getByTestId("model-list-card")).toBeInTheDocument()
+    expect(screen.queryByTestId("effort-stage-card")).not.toBeInTheDocument()
+  })
+
+  it("matches rayu:-prefixed catalog models cleanly and navigates between Stage 1 Effort and Stage 2 Select model", () => {
+    const rayuCatalog: readonly ModelOption[] = [
+      {
+        id: "rayu:claude-opus-4-6",
+        label: "Claude Opus 4.6",
+        provider: "rayu",
+        supportedEfforts: ["none", "low", "medium", "high", "max"],
+        defaultEffort: "low",
+      },
+    ]
+
+    renderWithProviders(
+      <ModelEffortPopover
+        modelId="claude-opus-4-6"
+        modelLabel="Claude Opus 4.6"
+        effort="high"
+        models={rayuCatalog}
+        onSelectModel={vi.fn()}
+        onSelectEffort={vi.fn()}
+      />
+    )
+
+    const trigger = screen.getByTestId("model-effort-trigger")
+    expect(screen.getByTestId("model-effort-trigger-effort")).toHaveTextContent(
+      "High"
+    )
+
+    fireEvent.click(trigger)
+    expect(screen.getByTestId("effort-stage-card")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId("open-model-list-btn"))
+    expect(screen.getByTestId("model-list-card")).toBeInTheDocument()
+    const option = screen.getByRole("option", { name: /Claude Opus 4\.6/i })
+    expect(option).toHaveAttribute("aria-selected", "true")
+
+    fireEvent.click(screen.getByTestId("model-list-back-btn"))
+    expect(screen.getByTestId("effort-stage-card")).toBeInTheDocument()
+  })
 })

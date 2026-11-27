@@ -9,6 +9,7 @@ import type {
 import {
   callRpc,
   createStreamBatcher,
+  isVsCodeWebview,
   onHarnessFrame,
   onHostMessage,
   postToHost,
@@ -181,7 +182,7 @@ let lastAltBHandledAtMs = 0;
 function extractProgressPatchFromFrame(
   frame: Record<string, unknown>,
 ): Partial<BackgroundProcessView> & { taskId: string } | null {
-  const frameType = String(frame.type ?? frame.event ?? "");
+  const frameType = String(frame.ev ?? frame.type ?? frame.event ?? "");
   if (
     frameType !== "background_progress" &&
     frameType !== "BackgroundProgress" &&
@@ -200,7 +201,11 @@ function extractProgressPatchFromFrame(
   const patch: Partial<BackgroundProcessView> & { taskId: string } = {
     taskId,
     updatedAtMs:
-      typeof frame.updatedAtMs === "number" ? frame.updatedAtMs : Date.now(),
+      typeof frame.updatedAtMs === "number"
+        ? frame.updatedAtMs
+        : typeof frame.updated_at_ms === "number"
+          ? frame.updated_at_ms
+          : Date.now(),
   };
 
   if (
@@ -211,6 +216,8 @@ function extractProgressPatchFromFrame(
     frame.status === "superseded"
   ) {
     patch.status = frame.status;
+  } else if (frame.done === true) {
+    patch.status = "completed";
   }
   if (typeof frame.percent === "number") {
     patch.percent = frame.percent;
@@ -220,11 +227,25 @@ function extractProgressPatchFromFrame(
   if (typeof frame.total === "number") patch.total = frame.total;
   if (typeof frame.unit === "string") patch.unit = frame.unit;
   if (typeof frame.summary === "string") patch.summary = frame.summary;
-  if (typeof frame.etaSeconds === "number") patch.etaSeconds = frame.etaSeconds;
-  if (typeof frame.exitCode === "number") patch.exitCode = frame.exitCode;
-  if (typeof frame.outputFile === "string") patch.outputFile = frame.outputFile;
+  if (typeof frame.etaSeconds === "number") {
+    patch.etaSeconds = frame.etaSeconds;
+  } else if (typeof frame.eta_seconds === "number") {
+    patch.etaSeconds = frame.eta_seconds;
+  }
+  if (typeof frame.exitCode === "number") {
+    patch.exitCode = frame.exitCode;
+  } else if (typeof frame.exit_code === "number") {
+    patch.exitCode = frame.exit_code;
+  }
+  if (typeof frame.outputFile === "string") {
+    patch.outputFile = frame.outputFile;
+  } else if (typeof frame.output_file === "string") {
+    patch.outputFile = frame.output_file;
+  }
   if (typeof frame.stallQuietSecs === "number") {
     patch.stallQuietSecs = frame.stallQuietSecs;
+  } else if (typeof frame.stall_quiet_secs === "number") {
+    patch.stallQuietSecs = frame.stall_quiet_secs;
   }
 
   return patch;
@@ -252,13 +273,20 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     enableAltBShortcut = true,
   } = options;
 
-  const tasks = useAppStore((s) => s.backgroundTasks);
+  const rawTasks = useAppStore((s) => s.backgroundTasks);
   const storeDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
-  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const setBackgroundTasks = useAppStore((s) => s.setBackgroundTasks);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
+
+  const tasks = React.useMemo(
+    () =>
+      !activeSessionId
+        ? []
+        : rawTasks.filter((t) => t.sessionId === activeSessionId),
+    [activeSessionId, rawTasks],
+  );
 
   const isDrawerOpen =
     drawerOpenProp !== undefined ? drawerOpenProp : storeDrawerOpen;
@@ -303,8 +331,10 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     const batcher = createStreamBatcher<
       Partial<BackgroundProcessView> & { taskId: string }
     >((patches) => {
-      const current = useAppStore.getState().backgroundTasks;
-      if (current.length === 0) return;
+      const state = useAppStore.getState();
+      const current = state.backgroundTasks;
+      const currentSessionId = state.activeSessionId;
+      if (current.length === 0 || !currentSessionId) return;
       const patchMap = new Map<
         string,
         Partial<BackgroundProcessView> & { taskId: string }
@@ -315,6 +345,7 @@ export function useProcesses(options: UseProcessesOptions = {}) {
       }
       let changed = false;
       const next = current.map((task) => {
+        if (task.sessionId !== currentSessionId) return task;
         const patch = patchMap.get(task.taskId);
         if (!patch) return task;
         changed = true;
@@ -327,12 +358,36 @@ export function useProcesses(options: UseProcessesOptions = {}) {
 
     const unsubHost = onHostMessage((msg) => {
       if (msg.type === "rayucode.processes.snapshot") {
-        useAppStore.getState().setBackgroundTasks(msg.tasks);
+        const currentSessionId = useAppStore.getState().activeSessionId;
+        if (
+          msg.sessionId &&
+          currentSessionId &&
+          msg.sessionId !== currentSessionId
+        ) {
+          return;
+        }
+        useAppStore
+          .getState()
+          .setBackgroundTasks(
+            currentSessionId
+              ? msg.tasks.filter((t) => t.sessionId === currentSessionId)
+              : [],
+          );
       } else if (
         msg.type === "rayucode.host.init" &&
         Array.isArray(msg.backgroundTasks)
       ) {
-        useAppStore.getState().setBackgroundTasks(msg.backgroundTasks);
+        const currentSessionId =
+          msg.sessionId ?? useAppStore.getState().activeSessionId;
+        useAppStore
+          .getState()
+          .setBackgroundTasks(
+            currentSessionId
+              ? msg.backgroundTasks.filter(
+                  (t) => t.sessionId === currentSessionId,
+                )
+              : [],
+          );
       } else if (
         msg.type === "rayucode.ui.navigate" &&
         msg.openProcessesDrawer !== undefined
@@ -344,6 +399,16 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     });
 
     const unsubHarness = onHarnessFrame((frame) => {
+      const frameSessionId =
+        typeof frame.session_id === "string"
+          ? frame.session_id
+          : typeof frame.sessionId === "string"
+            ? frame.sessionId
+            : null;
+      const currentSessionId = useAppStore.getState().activeSessionId;
+      if (frameSessionId && frameSessionId !== currentSessionId) {
+        return;
+      }
       const patch = extractProgressPatchFromFrame(frame);
       if (patch) {
         batcher.push(patch);
@@ -458,14 +523,22 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   // RPC Actions
   const refreshProcesses = React.useCallback(
     async (sessionId?: string) => {
+      const targetSessionId =
+        sessionId ?? useAppStore.getState().activeSessionId;
+      if (!targetSessionId) {
+        setBackgroundTasks([]);
+        return [];
+      }
       setIsLoadingList(true);
       try {
-        const res = await callRpc(
-          "background.list",
-          sessionId ? { sessionId } : undefined,
-        );
-        setBackgroundTasks(res.tasks);
-        return res.tasks;
+        const res = await callRpc("background.list", {
+          sessionId: targetSessionId,
+        });
+        const scoped = res.tasks.filter((t) => t.sessionId === targetSessionId);
+        if (useAppStore.getState().activeSessionId === targetSessionId) {
+          setBackgroundTasks(scoped);
+        }
+        return scoped;
       } finally {
         setIsLoadingList(false);
       }
@@ -473,15 +546,29 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     [setBackgroundTasks],
   );
 
+  // Re-fetch scoped background processes when activeSessionId changes inside VS Code webview
+  React.useEffect(() => {
+    if (!isVsCodeWebview()) return;
+    if (!activeSessionId) {
+      setBackgroundTasks([]);
+      return;
+    }
+    void refreshProcesses(activeSessionId).catch(() => {});
+  }, [activeSessionId, refreshProcesses, setBackgroundTasks]);
+
   const fetchProcessStatus = React.useCallback(async (taskId: string) => {
     const res = await callRpc("background.status", { taskId });
     if (res.task) {
-      const current = useAppStore.getState().backgroundTasks;
+      const state = useAppStore.getState();
+      if (state.activeSessionId && res.task.sessionId !== state.activeSessionId) {
+        return res.task;
+      }
+      const current = state.backgroundTasks;
       const exists = current.some((t) => t.taskId === taskId);
       const next = exists
         ? current.map((t) => (t.taskId === taskId && res.task ? res.task : t))
         : [res.task, ...current];
-      useAppStore.getState().setBackgroundTasks(next);
+      state.setBackgroundTasks(next);
     }
     return res.task;
   }, []);
@@ -529,16 +616,23 @@ export function useProcesses(options: UseProcessesOptions = {}) {
 
   const cleanupProcesses = React.useCallback(
     async (sessionId?: string) => {
+      const targetSessionId =
+        sessionId ?? useAppStore.getState().activeSessionId ?? undefined;
       const res = await callRpc(
         "background.cleanup",
-        sessionId ? { sessionId } : undefined,
+        targetSessionId ? { sessionId: targetSessionId } : undefined,
       );
       if (res.ok) {
         const current = useAppStore.getState().backgroundTasks;
         useAppStore
           .getState()
           .setBackgroundTasks(
-            current.filter((t) => isProcessActive(t.status)),
+            current.filter(
+              (t) =>
+                (targetSessionId !== undefined &&
+                  t.sessionId !== targetSessionId) ||
+                isProcessActive(t.status),
+            ),
           );
       }
       return res;
@@ -569,17 +663,6 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     });
   }, []);
 
-  const openProcessTerminal = React.useCallback(
-    (name?: string, cwd?: string) => {
-      postToHost({
-        type: "rayucode.editor.openTerminal",
-        cwd: cwd ?? activeProjectPath ?? undefined,
-        name: name ?? "RayuCode Background",
-      });
-    },
-    [activeProjectPath],
-  );
-
   const copyProcessOutput = React.useCallback((text: string) => {
     postToHost({
       type: "rayucode.editor.copy",
@@ -604,11 +687,9 @@ export function useProcesses(options: UseProcessesOptions = {}) {
         lastAltBHandledAtMs = now;
 
         const state = useAppStore.getState();
-        if (state.isStreamActive || state.activeSessionId || state.backgroundTasks.length >= 0) {
+        if (state.activeSessionId && state.isStreamActive) {
           event.preventDefault();
-          void handoffForegroundToBackground(
-            state.activeSessionId ?? "ses_vscode_shell",
-          );
+          void handoffForegroundToBackground(state.activeSessionId);
         }
       }
     };
@@ -701,7 +782,6 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     handoffForegroundToBackground,
     backgroundActiveTool: handoffForegroundToBackground,
     openOutputFileInEditor,
-    openProcessTerminal,
     copyProcessOutput,
   };
 }
