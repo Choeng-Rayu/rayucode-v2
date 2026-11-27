@@ -130,8 +130,25 @@ export type EffortLevel = z.infer<typeof EffortLevelSchema>;
 export const EffortChoiceSchema = EffortLevelSchema.nullable();
 export type EffortChoice = z.infer<typeof EffortChoiceSchema>;
 
-export const RiskTierSchema = z.enum(["safe", "bounded", "confirm", "hard_deny"]);
+export const RiskTierSchema = z.enum([
+  "safe",
+  "bounded",
+  "confirm",
+  "catastrophic",
+  "hard_deny",
+]);
 export type RiskTier = z.infer<typeof RiskTierSchema>;
+
+export const PendingPermissionViewSchema = z.object({
+  sessionId: z.string(),
+  requestId: z.string(),
+  toolName: z.string(),
+  description: z.string(),
+  riskTier: RiskTierSchema.optional(),
+  command: z.string().optional(),
+  permissionMode: PermissionModeIdSchema.optional(),
+});
+export type PendingPermissionView = z.infer<typeof PendingPermissionViewSchema>;
 
 export const ServiceTierSchema = z.enum(["auto", "priority", "ultrafast", "flex", "off"]);
 export type ServiceTier = z.infer<typeof ServiceTierSchema>;
@@ -1133,11 +1150,114 @@ export const ModelRouteOptionViewSchema = z.object({
   available: z.boolean().optional(),
   detail: z.string().optional(),
   supportsEffort: z.boolean().optional(),
+  supportedEfforts: z.array(z.string()).optional(),
+  defaultEffort: z.string().nullable().optional(),
   supportsFast: z.boolean().optional(),
   contextWindow: z.number().int().positive().optional(),
   pricingLabel: z.string().optional(),
 });
 export type ModelRouteOptionView = z.infer<typeof ModelRouteOptionViewSchema>;
+
+// --- v1.16 Engine Capabilities & Canonical config.toml Schemas ---
+
+export const CommandDispatchViewSchema = z.union([
+  z.object({ kind: z.literal("api_request"), req: z.string() }),
+  z.object({ kind: z.literal("runtime_command"), command: z.string() }),
+  z.object({ kind: z.literal("skill"), name: z.string() }),
+]);
+export type CommandDispatchView = z.infer<typeof CommandDispatchViewSchema>;
+
+export const CommandDescriptorViewSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  category: z.string(),
+  arg_hint: z.string().optional(),
+  requires_session: z.boolean().optional(),
+  dispatch: CommandDispatchViewSchema,
+});
+export type CommandDescriptorView = z.infer<typeof CommandDescriptorViewSchema>;
+
+export const PermissionModeDescriptorViewSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  is_default: z.boolean().optional(),
+});
+export type PermissionModeDescriptorView = z.infer<typeof PermissionModeDescriptorViewSchema>;
+
+export const FeatureFlagDescriptorViewSchema = z.object({
+  key: z.string(),
+  enabled: z.boolean(),
+  description: z.string(),
+  requires_restart: z.boolean().optional(),
+});
+export type FeatureFlagDescriptorView = z.infer<typeof FeatureFlagDescriptorViewSchema>;
+
+export const CapabilitiesResultViewSchema = z.object({
+  supported: z.boolean(),
+  commands: z.array(CommandDescriptorViewSchema),
+  permission_modes: z.array(PermissionModeDescriptorViewSchema),
+  features: z.array(FeatureFlagDescriptorViewSchema),
+});
+export type CapabilitiesResultView = z.infer<typeof CapabilitiesResultViewSchema>;
+
+export const ConfigFieldKindViewSchema = z.enum([
+  "boolean",
+  "string",
+  "integer",
+  "number",
+  "enum",
+  "string_array",
+]);
+export type ConfigFieldKindView = z.infer<typeof ConfigFieldKindViewSchema>;
+
+export const ConfigApplyModeViewSchema = z.enum([
+  "immediate",
+  "next_turn",
+  "restart_required",
+]);
+export type ConfigApplyModeView = z.infer<typeof ConfigApplyModeViewSchema>;
+
+export const ConfigEnumOptionViewSchema = z.object({
+  value: z.string(),
+  label: z.string(),
+});
+export type ConfigEnumOptionView = z.infer<typeof ConfigEnumOptionViewSchema>;
+
+export const ConfigFieldSchemaViewSchema = z.object({
+  key: z.string(),
+  section: z.string(),
+  label: z.string(),
+  description: z.string(),
+  kind: ConfigFieldKindViewSchema,
+  options: z.array(ConfigEnumOptionViewSchema).optional(),
+  default_value: z.unknown(),
+  apply_mode: ConfigApplyModeViewSchema,
+});
+export type ConfigFieldSchemaView = z.infer<typeof ConfigFieldSchemaViewSchema>;
+
+export const ConfigStateViewSchema = z.object({
+  path: z.string(),
+  sections: z.array(z.string()),
+  values: z.record(z.string(), z.unknown()),
+  schema: z.array(ConfigFieldSchemaViewSchema),
+});
+export type ConfigStateView = z.infer<typeof ConfigStateViewSchema>;
+
+export const ConfigGetResultViewSchema = z.object({
+  supported: z.boolean(),
+  config: ConfigStateViewSchema.nullable(),
+});
+export type ConfigGetResultView = z.infer<typeof ConfigGetResultViewSchema>;
+
+export const ConfigPatchResultViewSchema = z.object({
+  ok: z.boolean(),
+  config: ConfigStateViewSchema.nullable().optional(),
+  requiresRestart: z.boolean().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+});
+export type ConfigPatchResultView = z.infer<typeof ConfigPatchResultViewSchema>;
 
 export const FeatureFlagsViewSchema = z.object({
   memory: z.boolean(),
@@ -1252,9 +1372,13 @@ export const AppletStateViewSchema = z.object({
 export type AppletStateView = z.infer<typeof AppletStateViewSchema>;
 
 export const TodoItemViewSchema = z.object({
+  id: z.string().optional(),
   content: z.string(),
-  status: z.enum(["pending", "in_progress", "completed"]),
+  status: z.enum(["pending", "in_progress", "completed", "cancelled"]),
   activeForm: z.string().optional(),
+  group: z.string().optional(),
+  stage: z.number().optional(),
+  blockedReason: z.string().optional(),
 });
 export type TodoItemView = z.infer<typeof TodoItemViewSchema>;
 
@@ -1451,6 +1575,8 @@ export const RpcContractSchemas = {
         workingDir: z.string().optional(),
         permissionMode: PermissionModeIdSchema.optional(),
         model: z.string().optional(),
+        provider: z.string().optional(),
+        apiMethod: z.string().optional(),
         effort: EffortLevelSchema.optional(),
         serviceTier: ServiceTierSchema.optional(),
         cacheTtl: CacheTtlSchema.optional(),
@@ -1502,7 +1628,11 @@ export const RpcContractSchemas = {
   },
   "sessions.setPermissionMode": {
     params: z.object({ sessionId: z.string(), mode: PermissionModeIdSchema }),
-    result: z.object({ ok: z.boolean(), mode: PermissionModeIdSchema }),
+    result: z.object({
+      ok: z.boolean(),
+      mode: PermissionModeIdSchema,
+      deferred: z.boolean().optional(),
+    }),
   },
   "sessions.rewind": {
     params: z.object({
@@ -1547,7 +1677,9 @@ export const RpcContractSchemas = {
       sessionId: z.string(),
       requestId: z.string(),
       answers: z.record(z.string(), z.string()),
+      selected: z.record(z.string(), z.array(z.number().int().nonnegative())).optional(),
       notes: z.record(z.string(), z.string()).optional(),
+      declined: z.boolean().optional(),
     }),
     result: OkResultSchema,
   },
@@ -2366,6 +2498,21 @@ export const RpcContractSchemas = {
     params: EmptyParamsSchema,
     result: OkResultSchema,
   },
+  "settings.permission.getDefault": {
+    params: EmptyParamsSchema,
+    result: z.object({ mode: PermissionModeIdSchema }),
+  },
+  "settings.permission.setDefault": {
+    params: z.object({
+      mode: PermissionModeIdSchema,
+      applyToActiveSession: z.boolean().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      mode: PermissionModeIdSchema,
+      deferred: z.boolean().optional(),
+    }),
+  },
   "settings.shortcuts.list": {
     params: EmptyParamsSchema,
     result: z.object({ shortcuts: z.array(ShortcutEntryViewSchema) }),
@@ -2398,6 +2545,62 @@ export const RpcContractSchemas = {
       details: z.string().optional(),
     }),
     result: OkResultSchema,
+  },
+
+  // --- v1.16 Engine Capabilities & Canonical config.toml ---
+  "capabilities.get": {
+    params: z.object({ sessionId: z.string().optional() }).optional(),
+    result: CapabilitiesResultViewSchema,
+  },
+  "config.get": {
+    params: z.object({ sections: z.array(z.string()).optional() }).optional(),
+    result: ConfigGetResultViewSchema,
+  },
+  "config.patch": {
+    params: z.object({ patch: z.record(z.string(), z.unknown()) }),
+    result: ConfigPatchResultViewSchema,
+  },
+  "sessions.setModel": {
+    params: z.object({
+      sessionId: z.string(),
+      model: z.string().min(1),
+      provider: z.string().optional(),
+      apiMethod: z.string().optional(),
+      applyNextTurn: z.boolean().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      deferred: z.boolean().optional(),
+      code: z.string().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "sessions.setEffort": {
+    params: z.object({
+      sessionId: z.string(),
+      effort: z.string().min(1),
+      applyNextTurn: z.boolean().optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      deferred: z.boolean().optional(),
+      code: z.string().optional(),
+      message: z.string().optional(),
+    }),
+  },
+  "sessions.runtimeCommand": {
+    params: z.object({
+      sessionId: z.string().optional(),
+      command: z.string().min(1),
+      args: z.array(z.string()).optional(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      command: z.string(),
+      message: z.string().optional(),
+      data: z.unknown().optional(),
+      code: z.string().optional(),
+    }),
   },
 
   // --- Inspector (SidePanel, Applet, Todos) ---
@@ -2526,7 +2729,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openSimpleBrowser"),
-    url: z.string().min(1),
+    url: z.string().optional(),
   }),
   z.object({
     type: z.literal("rayucode.editor.openExternal"),
@@ -2587,7 +2790,13 @@ export const HostToWebviewMessageSchema = z.union([
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
     accountStatus: AccountStatusViewSchema.optional(),
     fileChanges: FileChangesSnapshotViewSchema.nullable().optional(),
+    todos: z.array(TodoItemViewSchema).optional(),
     workbench: WorkbenchPreferencesSchema.optional(),
+    defaultPermissionMode: PermissionModeIdSchema.optional(),
+    activePermissionMode: PermissionModeIdSchema.optional(),
+    pendingPermissions: z
+      .record(z.string(), z.array(PendingPermissionViewSchema))
+      .optional(),
   }),
   RpcResultSuccessSchema,
   RpcResultErrorSchema,
@@ -2601,8 +2810,31 @@ export const HostToWebviewMessageSchema = z.union([
     snapshot: FileChangesSnapshotViewSchema,
   }),
   z.object({
+    type: z.literal("rayucode.todos.updated"),
+    sessionId: z.string(),
+    todos: z.array(TodoItemViewSchema),
+  }),
+  z.object({
+    type: z.literal("rayucode.config.changed"),
+    changedKeys: z.array(z.string()),
+    requiresRestart: z.boolean().optional(),
+    values: z.record(z.string(), z.unknown()),
+  }),
+  z.object({
     type: z.literal("rayucode.harness.frame"),
     frame: z.record(z.string(), z.unknown()),
+  }),
+  z.object({
+    type: z.literal("rayucode.permission.resolved"),
+    sessionId: z.string(),
+    requestId: z.string(),
+    decision: z.enum(["allow_once", "allow_always", "deny"]),
+  }),
+  z.object({
+    type: z.literal("rayucode.permission.modeSync"),
+    sessionId: z.string().optional(),
+    mode: PermissionModeIdSchema,
+    isDefault: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("rayucode.editor.selectionChanged"),

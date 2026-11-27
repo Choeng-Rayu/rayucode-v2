@@ -273,8 +273,7 @@ function TraceGroupIcon({ title }: { title: string }) {
 
 function renderFileReadStep(
   step: FileReadStep,
-  onOpenCodeFile: (file: string, line?: number | null) => void,
-  onOpenDocPreview: (kind: WorkPreviewDocKind, pillLabel: string) => void,
+  onOpenCodeFile?: (file: string, line?: number | null) => void,
 ) {
   const isSkillStep = step.label.toLowerCase().includes("skill");
 
@@ -298,41 +297,26 @@ function renderFileReadStep(
       )}
       <span>
         {step.label}{" "}
-        {step.files.map((target, idx) => {
-          const lower = target.file.toLowerCase();
-          const isMarkdown = lower.endsWith(".md");
-          const isExcel = lower.endsWith(".xlsx");
-          const isSlide =
-            lower.endsWith(".pptx") || lower.includes("slide");
-          return (
-            <React.Fragment key={`${step.id}-${target.path}-${target.line}`}>
-              {idx > 0 && ", "}
-              <button
-                type="button"
-                data-testid={`trace-file-link-${target.path}`}
-                onClick={() => {
-                  postToHost({
-                    type: "rayucode.editor.openFile",
-                    path: target.path,
-                    line: target.line,
-                  });
-                  if (isSlide) {
-                    onOpenDocPreview("slide", "Slide");
-                  } else if (isMarkdown) {
-                    onOpenDocPreview("markdown", target.file);
-                  } else if (isExcel) {
-                    onOpenDocPreview("excel", target.file);
-                  } else {
-                    onOpenCodeFile(target.path, target.line);
-                  }
-                }}
-                className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {target.rangeLabel}
-              </button>
-            </React.Fragment>
-          );
-        })}
+        {step.files.map((target, idx) => (
+          <React.Fragment key={`${step.id}-${target.path}-${target.line}`}>
+            {idx > 0 && ", "}
+            <button
+              type="button"
+              data-testid={`trace-file-link-${target.path}`}
+              onClick={() => {
+                postToHost({
+                  type: "rayucode.editor.openFile",
+                  path: target.path,
+                  line: target.line,
+                });
+                onOpenCodeFile?.(target.path, target.line);
+              }}
+              className="cursor-pointer text-body underline decoration-hairline-strong underline-offset-[3px] transition-colors hover:text-ink hover:decoration-current focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {target.rangeLabel}
+            </button>
+          </React.Fragment>
+        ))}
       </span>
     </div>
   );
@@ -476,7 +460,7 @@ function TraceGroupSection({
           />
         );
       case "read":
-        return renderFileReadStep(step, onOpenCodeFile, onOpenDocPreview);
+        return renderFileReadStep(step, onOpenCodeFile);
       case "list":
       case "search":
       case "previews":
@@ -625,33 +609,24 @@ export function WorkTrace({
 
   const handleOpenCodeFile = React.useCallback(
     (file: string, line?: number | null) => {
-      if (onOpenCodeFile) {
-        onOpenCodeFile(file, line);
-      } else {
-        useAppStore.getState().openCodeFile(file, line ?? null);
-      }
+      onOpenCodeFile?.(file, line);
     },
     [onOpenCodeFile],
   );
 
   const handleOpenDocPreview = React.useCallback(
     (kind: WorkPreviewDocKind, pillLabel: string) => {
-      if (onOpenDocPreview) {
-        onOpenDocPreview(kind, pillLabel);
-      } else {
-        const tab =
-          kind === "slide" || kind === "excel" || kind === "pdf" || kind === "html"
-            ? "sidePanel"
-            : kind;
-        useAppStore.getState().openRightTab(tab, pillLabel);
-      }
+      onOpenDocPreview?.(kind, pillLabel);
     },
     [onOpenDocPreview],
   );
 
   const handleLiveBackgroundClick = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    onBackgroundTool?.();
+    if (onBackgroundTool) {
+      onBackgroundTool();
+      return;
+    }
     const sid =
       sessionId ?? useAppStore.getState().activeSessionId ?? "ses_vscode_shell";
     try {
@@ -666,11 +641,43 @@ export function WorkTrace({
   const hasTraceBodyContent =
     hasTimeline || notes.length > 0 || coalescedGroups.length > 0;
 
+  const traceMetrics = React.useMemo(
+    () => summarizeWorkTraceMetrics(workedDuration, coalescedGroups),
+    [coalescedGroups, workedDuration],
+  );
+
   const liveHeaderLabel = React.useMemo(() => {
     return connectionPhaseLabel
       ? `Working · ${workedDuration} · ${connectionPhaseLabel}`
       : `Working · ${workedDuration}`;
   }, [connectionPhaseLabel, workedDuration]);
+
+  const completedHeaderLabel = React.useMemo(() => {
+    if (liveStatusPlacement === "footer") {
+      const detailParts: string[] = [];
+      if (traceMetrics.fileCount > 0) {
+        detailParts.push(
+          `${traceMetrics.fileCount} ${traceMetrics.fileCount === 1 ? "file" : "files"}`,
+        );
+      }
+      if (traceMetrics.cmdCount > 0) {
+        detailParts.push(
+          `${traceMetrics.cmdCount} ${traceMetrics.cmdCount === 1 ? "cmd" : "cmds"}`,
+        );
+      }
+      if (detailParts.length > 0) {
+        return `Steps · ${detailParts.join(" · ")}`;
+      }
+      if (traceMetrics.toolCount > 0) {
+        return `Steps · ${traceMetrics.toolCount} ${traceMetrics.toolCount === 1 ? "step" : "steps"}`;
+      }
+      if (hasTimeline && timeline?.some((e) => e.type === "reasoning")) {
+        return "Thinking & steps";
+      }
+      return "Execution trace";
+    }
+    return workedDuration ? `Worked for ${workedDuration}` : "Execution trace";
+  }, [hasTimeline, liveStatusPlacement, timeline, traceMetrics, workedDuration]);
 
   if (hideLiveHeader && !hasTraceBodyContent) {
     return null;
@@ -703,7 +710,7 @@ export function WorkTrace({
               <RayuProcessingMark animated className="size-4 shrink-0" />
             )}
             <span data-testid="work-trace-summary" className="tabular-nums">
-              {isLive ? liveHeaderLabel : `Worked for ${workedDuration}`}
+              {isLive ? liveHeaderLabel : completedHeaderLabel}
             </span>
             <ChevronRight
               className={cn(

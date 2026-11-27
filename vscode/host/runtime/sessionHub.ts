@@ -43,6 +43,10 @@ function createVsCodeHostAdapter(
       vscode.workspace
         .getConfiguration("rayucode")
         .get<string>("defaultPermissionMode", "default"),
+    setDefaultPermissionMode: (mode) =>
+      vscode.workspace
+        .getConfiguration("rayucode")
+        .update("defaultPermissionMode", mode, vscode.ConfigurationTarget.Global),
     onDidChangeWorkspaceFolders: (listener) =>
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         listener();

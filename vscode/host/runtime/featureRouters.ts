@@ -6,6 +6,7 @@ import {
   type RayucodeClient,
   type RuntimeCommand,
 } from "@rayu-dev/rayucode-sdk";
+import { normalizeTodoItems } from "@rayu-dev/rayucode-session-core/client";
 import {
   RPC_METHODS,
   RpcContractSchemas,
@@ -189,6 +190,26 @@ export function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
       : typeof r.supportsEffort === "boolean"
         ? r.supportsEffort
         : undefined;
+  const rawSupportedEfforts = Array.isArray(r.supported_efforts)
+    ? r.supported_efforts
+    : Array.isArray(r.supportedEfforts)
+      ? r.supportedEfforts
+      : undefined;
+  const supportedEfforts = rawSupportedEfforts
+    ? rawSupportedEfforts
+        .filter((e): e is string => typeof e === "string" && e.trim().length > 0)
+        .map((e) => e.trim())
+    : undefined;
+  const defaultEffort =
+    typeof r.default_effort === "string"
+      ? r.default_effort
+      : r.default_effort === null
+        ? null
+        : typeof r.defaultEffort === "string"
+          ? r.defaultEffort
+          : r.defaultEffort === null
+            ? null
+            : undefined;
   const supportsFast =
     typeof r.supports_fast === "boolean"
       ? r.supports_fast
@@ -220,6 +241,8 @@ export function mapModelRouteOption(raw: unknown): ModelRouteOptionView | null {
     ...(available !== undefined ? { available } : {}),
     ...(detail !== undefined ? { detail } : {}),
     ...(supportsEffort !== undefined ? { supportsEffort } : {}),
+    ...(supportedEfforts !== undefined ? { supportedEfforts } : {}),
+    ...(defaultEffort !== undefined ? { defaultEffort } : {}),
     ...(supportsFast !== undefined ? { supportsFast } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(pricingLabel !== undefined ? { pricingLabel } : {}),
@@ -423,23 +446,47 @@ export function normalizeImageAttachments(raw: unknown): Array<[string, string]>
 
 /**
  * Build a Rust `QuestionResponse` wire object (`{ kind: "answered", answers }` or `{ kind: "declined" }`)
- * from flat `{ answers: Record<string, string>, notes?: Record<string, string> }`.
+ * from flat `{ answers: Record<string, string>, notes?: Record<string, string>, selected?: Record<string, number[]>, declined?: boolean }`.
  */
 export function buildQuestionResponseWire(
   answers: Record<string, string>,
   notes?: Record<string, string>,
+  options?: {
+    selected?: Record<string, number[]>;
+    declined?: boolean;
+  },
 ): Record<string, unknown> {
-  const entries = Object.entries(answers).filter(([, value]) => value.trim().length > 0);
-  if (entries.length === 0) {
+  if (options?.declined) {
     return { kind: "declined" };
   }
-  const structured: Record<string, { custom: string[]; notes?: string }> = {};
-  for (const [question, answer] of entries) {
+  const allQuestions = new Set<string>([
+    ...Object.keys(answers),
+    ...Object.keys(options?.selected ?? {}),
+  ]);
+  const structured: Record<
+    string,
+    { selected?: number[]; custom?: string[]; notes?: string }
+  > = {};
+  for (const question of allQuestions) {
+    const customAnswer = answers[question]?.trim() ?? "";
+    const selectedIndices = (options?.selected?.[question] ?? []).filter(
+      (idx) => Number.isInteger(idx) && idx >= 0,
+    );
     const note = notes?.[question]?.trim();
+    if (selectedIndices.length === 0 && !customAnswer) {
+      continue;
+    }
     structured[question] = {
-      custom: [answer],
+      ...(selectedIndices.length > 0
+        ? { selected: selectedIndices }
+        : customAnswer
+          ? { custom: [customAnswer] }
+          : {}),
       ...(note ? { notes: note } : {}),
     };
+  }
+  if (Object.keys(structured).length === 0) {
+    return { kind: "declined" };
   }
   return {
     kind: "answered",
@@ -468,12 +515,14 @@ export function normalizeHarnessRequestFrame(
   if (
     normalized.req === "question_response" &&
     normalized.response === undefined &&
-    typeof normalized.answers === "object" &&
-    normalized.answers !== null
+    (normalized.declined === true ||
+      (typeof normalized.answers === "object" && normalized.answers !== null))
   ) {
     const answersRec: Record<string, string> = {};
-    for (const [k, val] of Object.entries(normalized.answers as Record<string, unknown>)) {
-      if (typeof val === "string") answersRec[k] = val;
+    if (typeof normalized.answers === "object" && normalized.answers !== null) {
+      for (const [k, val] of Object.entries(normalized.answers as Record<string, unknown>)) {
+        if (typeof val === "string") answersRec[k] = val;
+      }
     }
     const notesRec: Record<string, string> | undefined =
       typeof normalized.notes === "object" && normalized.notes !== null
@@ -483,9 +532,26 @@ export function normalizeHarnessRequestFrame(
             ),
           )
         : undefined;
+    const selectedRec: Record<string, number[]> | undefined =
+      typeof normalized.selected === "object" && normalized.selected !== null
+        ? Object.fromEntries(
+            Object.entries(normalized.selected as Record<string, unknown>)
+              .filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]))
+              .map(([k, arr]) => [
+                k,
+                arr.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0),
+              ]),
+          )
+        : undefined;
+    const declined = normalized.declined === true;
     delete normalized.answers;
     delete normalized.notes;
-    normalized.response = buildQuestionResponseWire(answersRec, notesRec);
+    delete normalized.selected;
+    delete normalized.declined;
+    normalized.response = buildQuestionResponseWire(answersRec, notesRec, {
+      selected: selectedRec,
+      declined,
+    });
   }
   if (
     (normalized.req === "send_message" || normalized.req === "soft_interrupt") &&
@@ -914,7 +980,27 @@ export interface FeatureRouterHub {
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
   getActivePermissionMode(): PermissionModeId;
+  getDefaultPermissionMode?(): PermissionModeId;
+  setDefaultPermissionMode?(
+    mode: PermissionModeId,
+    options?: { applyToActiveSession?: boolean },
+  ): Promise<{ ok: boolean; mode: PermissionModeId; deferred?: boolean }>;
   getClient(sessionId?: string): Promise<RayucodeClient>;
+  ensureAttachedClient?(sessionId?: string): Promise<RayucodeClient>;
+  setSessionModel?(
+    sessionId: string,
+    model: string,
+    options?: {
+      provider?: string;
+      apiMethod?: string;
+      applyNextTurn?: boolean;
+    },
+  ): Promise<{ ok: boolean; deferred?: boolean; code?: string; message?: string }>;
+  setSessionEffort?(
+    sessionId: string,
+    effort: string,
+    options?: { applyNextTurn?: boolean },
+  ): Promise<{ ok: boolean; deferred?: boolean; code?: string; message?: string }>;
   listSessions(
     includeArchived?: boolean,
     options?: { includeExternal?: boolean; sources?: string[] },
@@ -968,7 +1054,7 @@ export interface FeatureRouterHub {
   setPermissionMode(
     sessionId: string,
     mode: PermissionModeId,
-  ): Promise<{ ok: boolean; mode: PermissionModeId }>;
+  ): Promise<{ ok: boolean; mode: PermissionModeId; deferred?: boolean }>;
   respondPermission(options: {
     sessionId: string;
     requestId: string;
@@ -994,6 +1080,7 @@ export interface FeatureRouterHub {
   closeSidePanelPage(sessionId: string, pageId?: string): void;
   getApplets(sessionId: string): AppletStateView[];
   getCachedTodos(sessionId: string): TodoItemView[];
+  setCachedTodos?(sessionId: string, todos: TodoItemView[]): void;
   mapSessionInfoToSummary(info: {
     session_id: string;
     title?: string;
@@ -1527,6 +1614,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     return matched?.path ?? rawPath;
   };
 
+  const getSessionClient = (sessionId?: string): Promise<RayucodeClient> =>
+    deps.sessionHub.ensureAttachedClient
+      ? deps.sessionHub.ensureAttachedClient(sessionId)
+      : deps.sessionHub.getClient(sessionId);
+
   const resolveEngineSnapshot = async (
     sessionId: string,
   ): Promise<FileChangesSnapshotView | null> => {
@@ -1534,7 +1626,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return deps.sessionHub.fetchFileChanges(sessionId);
     }
     try {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(sessionId);
       if (
         clientSupportsFileChanges(client) &&
         typeof client.getFileChanges === "function"
@@ -1561,7 +1653,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
     }
     try {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(sessionId);
       if (
         clientSupportsFileChanges(client) &&
         typeof client.getFileChangeDiff === "function"
@@ -1590,7 +1682,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         ...(opts?.force !== undefined ? { force: opts.force } : {}),
       });
     }
-    const client = await deps.sessionHub.getClient();
+    const client = await getSessionClient(sessionId);
     if (
       !clientSupportsFileChanges(client) ||
       typeof client.fileChangeAction !== "function"
@@ -1751,8 +1843,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "daemon.ping": async () => deps.bridgeManager.ping(),
     "daemon.reconnect": async () => deps.bridgeManager.reconnect(),
     "daemon.restart": async () => deps.bridgeManager.restart(),
-    "daemon.reload": async () =>
-      deps.bridgeManager.reloadDaemon(deps.sessionHub.getActiveSessionId()),
+    "daemon.reload": async () => {
+      const sid = deps.sessionHub.getActiveSessionId();
+      if (sid && deps.sessionHub.ensureAttachedClient) {
+        try {
+          const out = await deps.sessionHub.runtimeCommand("server_reload", [], sid);
+          return { ok: true, message: out.message || "Daemon reloaded." };
+        } catch (error) {
+          return {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      return deps.bridgeManager.reloadDaemon(sid);
+    },
     "daemon.selfdev": async (params) => {
       const action = params?.action ?? "status";
       if (action === "status") {
@@ -1882,7 +1987,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const sid = params.sessionId ?? deps.sessionHub.getActiveSessionId();
       if (sid) {
         try {
-          const client = await deps.sessionHub.getClient();
+          const client = await getSessionClient(sid);
           const files = await client.findFiles(sid, params.query, limit);
           return { files };
         } catch {
@@ -1895,11 +2000,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "workspace.contextSnapshot": async (params) => {
       const data = await safeRuntimeCmd("context", [], params.sessionId);
       const breakdown = asRecord(data.token_breakdown ?? data);
-      const system = Number(breakdown.system ?? 4200);
-      const tools = Number(breakdown.tools ?? 3100);
-      const memory = Number(breakdown.memory ?? 1200);
-      const files = Number(breakdown.files ?? 2800);
-      const messages = Number(breakdown.messages ?? 6400);
+      const system = Number(breakdown.system ?? 0);
+      const tools = Number(breakdown.tools ?? 0);
+      const memory = Number(breakdown.memory ?? 0);
+      const files = Number(breakdown.files ?? 0);
+      const messages = Number(breakdown.messages ?? 0);
       const usedTokens = Number(
         breakdown.total_used ?? data.used_tokens ?? system + tools + memory + files + messages,
       );
@@ -1932,7 +2037,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "workspace.setContextCap": async (params) => {
       try {
-        const client = await deps.sessionHub.getClient();
+        const client = await getSessionClient(params.sessionId);
         await client.setContextCap(params.sessionId, params.maxTokens);
         return { ok: true };
       } catch (err) {
@@ -1944,7 +2049,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "workspace.compact": async (params) => {
       try {
-        const client = await deps.sessionHub.getClient();
+        const client = await getSessionClient(params.sessionId);
         const message = await client.compact(params.sessionId);
         return { ok: true, message };
       } catch (err) {
@@ -2061,22 +2166,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "sessions.history": async (params) => deps.sessionHub.getHistory(params.sessionId),
     "sessions.rename": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.renameSession(params.sessionId, params.title);
       return { ok: true, title: params.title };
     },
     "sessions.fork": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const info = await client.forkSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
     },
     "sessions.transfer": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const info = await client.transferSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
     },
     "sessions.export": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const history = await client.getHistory(params.sessionId);
       if (params.format === "json") {
         return { content: JSON.stringify(history, null, 2) };
@@ -2101,38 +2206,44 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "sessions.setPermissionMode": async (params) =>
       deps.sessionHub.setPermissionMode(params.sessionId, params.mode),
     "sessions.rewind": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       let index = 0;
       if (
         typeof params.messageIndex === "number" &&
         Number.isInteger(params.messageIndex) &&
-        params.messageIndex > 0
+        params.messageIndex >= 1
       ) {
         index = params.messageIndex;
       } else {
         const suffixMatch = /_(\d+)$/.exec(params.turnId);
         if (suffixMatch) {
           const parsedSuffix = Number.parseInt(suffixMatch[1]!, 10);
-          if (Number.isFinite(parsedSuffix) && parsedSuffix >= 0) {
+          if (Number.isFinite(parsedSuffix) && parsedSuffix >= 1) {
             index = parsedSuffix;
           }
         } else {
           const parsedDirect = Number.parseInt(params.turnId, 10);
-          if (Number.isFinite(parsedDirect) && parsedDirect >= 0) {
+          if (Number.isFinite(parsedDirect) && parsedDirect >= 1) {
             index = parsedDirect;
           }
         }
+      }
+      if (index < 1) {
+        throw new HarnessError(
+          "invalid_request",
+          `Invalid rewind target '${params.turnId}': expected a 1-based user message index.`,
+        );
       }
       await client.rewind(params.sessionId, index);
       return { ok: true };
     },
     "sessions.rewindUndo": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       await client.rewindUndo(params.sessionId);
       return { ok: true };
     },
     "sessions.softInterrupt": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       const interruptId =
         params.clientId?.trim() ||
         `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -2145,7 +2256,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, interruptId };
     },
     "sessions.cancelSoftInterrupts": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
+      const client = await getSessionClient(params.sessionId);
       if (params.interruptId) {
         const supportsIds =
           typeof client.supports === "function"
@@ -2169,8 +2280,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true };
     },
     "sessions.respondQuestion": async (params) => {
-      const client = await deps.sessionHub.getClient(params.sessionId);
-      const response = buildQuestionResponseWire(params.answers, params.notes);
+      const client = await getSessionClient(params.sessionId);
+      const response = buildQuestionResponseWire(params.answers, params.notes, {
+        selected: params.selected,
+        declined: params.declined,
+      });
       const reply = await client.request({
         req: "question_response",
         session_id: params.sessionId,
@@ -2284,7 +2398,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, removedCount };
     },
     "background.backgroundTool": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       const res = await client.backgroundToolResult(params.sessionId);
       await deps.sessionHub.refreshBackgroundProcesses(params.sessionId);
       return { ok: res.moved, taskId: res.toolCallId };
@@ -2675,18 +2789,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           client.todoState(params.sessionId).catch(() => null),
         ]);
         const todos = todoSnap
-          ? (todoSnap.todos ?? []).map((t) => ({
-              content: String(t.content ?? ""),
-              status: (
-                t.status === "completed"
-                  ? "completed"
-                  : t.status === "in_progress"
-                    ? "in_progress"
-                    : "pending"
-              ) as TodoItemView["status"],
-              activeForm:
-                typeof t.activeForm === "string" ? t.activeForm : undefined,
-            }))
+          ? normalizeTodoItems(todoSnap)
           : deps.sessionHub.getCachedTodos(params.sessionId);
         return { entries, todos };
       } catch {
@@ -2776,8 +2879,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { runs };
     },
     "automations.overnight.start": async (params) => {
+      // Rust `parse_overnight_command` expects `[duration, mission]` directly (no leading `"start"` token).
       const { data } = await requireRuntimeCmd("overnight", [
-        "start",
         params.duration,
         params.mission,
       ]);
@@ -4880,8 +4983,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           safeRuntimeCmd("agents", ["status"], targetSessionId),
           safeRuntimeCmd("subagent_model", ["status"], targetSessionId),
           targetSessionId
-            ? deps.sessionHub
-                .getClient()
+            ? getSessionClient(targetSessionId)
                 .then((c) =>
                   typeof c.getRuntimeInfo === "function"
                     ? c.getRuntimeInfo(targetSessionId)
@@ -5082,7 +5184,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? daemonRefresh.data.route_count
             : 0;
       return {
-        ok: true,
+        ok: daemonRefresh.ok || rayuHostedModels.length > 0,
         routeCount,
         routes,
       };
@@ -5342,6 +5444,23 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       await deps.editorBridge.openFile({ path: configPath, preview: false });
       return { ok: true };
     },
+    "settings.permission.getDefault": async () => ({
+      mode: deps.sessionHub.getDefaultPermissionMode
+        ? deps.sessionHub.getDefaultPermissionMode()
+        : deps.sessionHub.getActivePermissionMode(),
+    }),
+    "settings.permission.setDefault": async (params) => {
+      if (deps.sessionHub.setDefaultPermissionMode) {
+        return deps.sessionHub.setDefaultPermissionMode(params.mode, {
+          applyToActiveSession: params.applyToActiveSession,
+        });
+      }
+      const activeSid = deps.sessionHub.getActiveSessionId();
+      if (params.applyToActiveSession && activeSid) {
+        return deps.sessionHub.setPermissionMode(activeSid, params.mode);
+      }
+      return { ok: true, mode: params.mode };
+    },
     "settings.shortcuts.list": async () => ({
       shortcuts: DEFAULT_SHORTCUTS,
     }),
@@ -5381,7 +5500,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       applets: deps.sessionHub.getApplets(params.sessionId),
     }),
     "inspector.applet.action": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.appletAction(
         params.sessionId,
         params.appletId,
@@ -5394,26 +5513,199 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, applet };
     },
     "inspector.applet.close": async (params) => {
-      const client = await deps.sessionHub.getClient();
+      const client = await getSessionClient(params.sessionId);
       await client.closeApplet(params.sessionId, params.appletId);
       return { ok: true };
     },
-    "inspector.todos.get": async (params) => {
+    "capabilities.get": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient(params?.sessionId);
+        if (typeof client.getCapabilities !== "function") {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        const caps = await client.getCapabilities(
+          params?.sessionId ?? deps.sessionHub.getActiveSessionId(),
+        );
+        if (!caps) {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        return {
+          supported: true,
+          commands: caps.commands ?? [],
+          permission_modes: caps.permission_modes ?? [],
+          features: caps.features ?? [],
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "unsupported" || error.code === "unknown_request")
+        ) {
+          return {
+            supported: false,
+            commands: [],
+            permission_modes: [],
+            features: [],
+          };
+        }
+        throw error;
+      }
+    },
+    "config.get": async (params) => {
       try {
         const client = await deps.sessionHub.getClient();
+        if (typeof client.getConfig !== "function") {
+          return { supported: false, config: null };
+        }
+        const config = await client.getConfig(params?.sections);
+        if (!config) {
+          return { supported: false, config: null };
+        }
+        return { supported: true, config };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "unsupported" || error.code === "unknown_request")
+        ) {
+          return { supported: false, config: null };
+        }
+        throw error;
+      }
+    },
+    "config.patch": async (params) => {
+      try {
+        const client = await deps.sessionHub.getClient();
+        if (typeof client.patchConfig !== "function") {
+          return {
+            ok: false,
+            code: "unsupported",
+            message: "This Rayu daemon does not support config_v1.",
+          };
+        }
+        const config = await client.patchConfig(params.patch);
+        const patchedKeys = new Set(Object.keys(params.patch));
+        const requiresRestart = (config.schema ?? []).some(
+          (field) =>
+            patchedKeys.has(field.key) &&
+            field.apply_mode === "restart_required",
+        );
+        return {
+          ok: true,
+          config,
+          requiresRestart,
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "invalid_request" ||
+            error.code === "unsupported" ||
+            error.code === "busy")
+        ) {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.setModel": async (params) => {
+      if (typeof deps.sessionHub.setSessionModel === "function") {
+        return deps.sessionHub.setSessionModel(params.sessionId, params.model, {
+          provider: params.provider,
+          apiMethod: params.apiMethod,
+          applyNextTurn: params.applyNextTurn,
+        });
+      }
+      try {
+        const client = await getSessionClient(params.sessionId);
+        const modelSpec = formatHarnessModelSpec(
+          params.model,
+          params.provider,
+          params.apiMethod,
+        );
+        await client.setModel(params.sessionId, modelSpec || params.model);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof HarnessError && error.code === "busy") {
+          return {
+            ok: false,
+            deferred: true,
+            code: "busy",
+            message: error.message || "Applies on next turn",
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.setEffort": async (params) => {
+      if (typeof deps.sessionHub.setSessionEffort === "function") {
+        return deps.sessionHub.setSessionEffort(params.sessionId, params.effort, {
+          applyNextTurn: params.applyNextTurn,
+        });
+      }
+      try {
+        const client = await getSessionClient(params.sessionId);
+        await client.setReasoningEffort(params.sessionId, params.effort);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof HarnessError && error.code === "busy") {
+          return {
+            ok: false,
+            deferred: true,
+            code: "busy",
+            message: error.message || "Applies on next turn",
+          };
+        }
+        throw error;
+      }
+    },
+    "sessions.runtimeCommand": async (params) => {
+      try {
+        const out = await deps.sessionHub.runtimeCommand(
+          params.command as RuntimeCommand,
+          params.args ?? [],
+          params.sessionId ?? deps.sessionHub.getActiveSessionId(),
+        );
+        return {
+          ok: true,
+          command: String(out.command ?? params.command),
+          message: out.message,
+          data: out.data,
+        };
+      } catch (error) {
+        if (
+          error instanceof HarnessError &&
+          (error.code === "busy" ||
+            error.code === "unsupported" ||
+            error.code === "invalid_request")
+        ) {
+          return {
+            ok: false,
+            command: params.command,
+            code: error.code,
+            message: error.message,
+          };
+        }
+        throw error;
+      }
+    },
+    "inspector.todos.get": async (params) => {
+      try {
+        const client = await getSessionClient(params.sessionId);
         const snap = await client.todoState(params.sessionId);
-        const todos: TodoItemView[] = (snap.todos ?? []).map((t) => ({
-          content: String(t.content ?? ""),
-          status: (
-            t.status === "completed"
-              ? "completed"
-              : t.status === "in_progress"
-                ? "in_progress"
-                : "pending"
-          ) as TodoItemView["status"],
-          activeForm:
-            typeof t.activeForm === "string" ? t.activeForm : undefined,
-        }));
+        const todos: TodoItemView[] = normalizeTodoItems(snap);
+        deps.sessionHub.setCachedTodos?.(params.sessionId, todos);
         return { todos };
       } catch {
         return { todos: deps.sessionHub.getCachedTodos(params.sessionId) };
@@ -5491,9 +5783,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
                 ? "SESSION_NOT_FOUND"
                 : error.code === "invalid_request"
                   ? "VALIDATION_ERROR"
-                  : error.code === "timeout"
-                    ? "TIMEOUT"
-                    : "INTERNAL_ERROR"
+                  : error.code === "busy"
+                    ? "BUSY"
+                    : error.code === "unsupported"
+                      ? "UNSUPPORTED"
+                      : error.code === "timeout"
+                        ? "TIMEOUT"
+                        : "INTERNAL_ERROR"
             : "INTERNAL_ERROR";
         const message =
           error instanceof Error ? error.message : String(error);

@@ -65,6 +65,7 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
       surface: "editorPanel",
       route: "settings",
       activeRoute: "settings",
+      activeSessionId: null,
       theme: "auto",
       accent: "green",
       density: "comfortable",
@@ -503,20 +504,92 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
         screen.getByRole("option", { name: "Claude Opus 4.5 (Rayu Cloud)" }),
       );
 
-      expect(harnessSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          req: "set_model",
-          model: "rayu:claude-opus-4-5",
-        }),
-      );
-      expect(invalidateSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ queryKey: ["composer", "model-settings"] }),
-      );
+      await waitFor(() => {
+        expect(harnessSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            req: "set_model",
+            model: "rayu:claude-opus-4-5",
+          }),
+        );
+        expect(invalidateSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ queryKey: ["composer", "model-settings"] }),
+        );
+      });
     } finally {
       harnessSpy.mockRestore();
       invalidateSpy.mockRestore();
       Element.prototype.scrollIntoView = prevScrollIntoView;
       HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
     }
+  });
+
+  it("renders relocated Workspace sections (Agents, Swarm, Automations, Remote) full-bleed inside Settings and returns to active workspace on Back", async () => {
+    useAppStore.setState({
+      route: "settings",
+      activeRoute: "settings",
+      activeSettingsSection: "account",
+      activeSessionId: "ses_active_chat",
+    });
+
+    renderWithQuery(<SettingsView />);
+
+    expect(await screen.findByTestId("settings-nav-agents")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-swarm")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-automations")).toBeTruthy();
+    expect(screen.getByTestId("settings-nav-remote")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-swarm"));
+    expect(await screen.findByTestId("swarm-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-agents"));
+    expect(await screen.findByTestId("agents-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-automations"));
+    expect(await screen.findByTestId("automations-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-nav-remote"));
+    expect(await screen.findByTestId("remote-view")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("settings-back-btn"));
+    expect(useAppStore.getState().activeRoute).toBe("workspace");
+  });
+
+  it("persists default permission mode via settings.permission.setDefault, keeps cards enabled when config.toml is unsupported, and displays catastrophic risk tier", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "config.get") {
+        return { supported: false, config: null };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    renderWithQuery(<SettingsView initialSection="safety" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("settings-section-safety")).toBeTruthy();
+    });
+
+    // Canonical Rust 4th risk tier is "catastrophic"
+    expect(screen.getByTestId("risk-tier-catastrophic")).toBeTruthy();
+
+    // All 5 permission mode cards remain clickable even when config.toml configSupported is false
+    const acceptEditsCard = screen.getByTestId(
+      "permission-mode-card-acceptEdits",
+    ) as HTMLButtonElement;
+    expect(acceptEditsCard.disabled).toBe(false);
+    fireEvent.click(acceptEditsCard);
+
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("settings.permission.setDefault", {
+        mode: "acceptEdits",
+        applyToActiveSession: false,
+      });
+    });
+
+    rpcSpy.mockRestore();
   });
 });

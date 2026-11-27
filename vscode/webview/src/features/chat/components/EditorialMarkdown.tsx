@@ -7,7 +7,6 @@ import {
   FileDiff,
   Folder,
   Network,
-  PanelRightOpen,
   TextCursorInput,
 } from "lucide-react";
 import remarkGfm from "remark-gfm";
@@ -262,10 +261,6 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
   const layout = React.useMemo(() => layoutMermaidFlowchart(value), [value]);
   const lines = React.useMemo(() => value.split(/\r?\n/), [value]);
 
-  const handleOpenInSidebar = () => {
-    useAppStore.getState().openDiagramPreview(value, layout.title);
-  };
-
   const handleCopy = async () => {
     postToHost({ type: "rayucode.editor.copy", text: value });
     try {
@@ -341,16 +336,6 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
 
           <button
             type="button"
-            data-testid="mermaid-open-sidebar-btn"
-            onClick={handleOpenInSidebar}
-            className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-brand/30 bg-brand-softer px-2 py-0.5 text-[11px] font-medium text-brand-text transition-colors hover:bg-brand-soft hover:text-brand-bright"
-          >
-            <PanelRightOpen className="size-3" aria-hidden="true" />
-            <span>Open in Inspector</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => void handleCopy()}
             aria-label="Copy Mermaid diagram source"
             className={cn(
@@ -375,10 +360,7 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
 
       {viewMode === "preview" ? (
         <div className="p-2">
-          <MermaidDiagramSvg
-            source={value}
-            onNodeClick={() => handleOpenInSidebar()}
-          />
+          <MermaidDiagramSvg source={value} />
         </div>
       ) : (
         <pre className="m-0 max-h-[320px] overflow-auto bg-inset px-3.5 py-3 font-mono text-[12.2px] leading-[1.6] tabular-nums">
@@ -399,14 +381,99 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
   );
 }
 
+const AT_FILE_MENTION_RE =
+  /(^|[\s([{"'])(@[A-Za-z0-9._\\/-]+(?::\d+(?:-\d+|:\d+)?|#L\d+(?:-L?\d+)?)?)/g;
+
+function isLocalhostBrowserUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      (parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "0.0.0.0" ||
+        parsed.hostname === "::1")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function renderTextWithFileMentions(
+  text: string,
+  keyPrefix: string,
+): React.ReactNode {
+  if (!text.includes("@")) {
+    return text;
+  }
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let matchIdx = 0;
+  AT_FILE_MENTION_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AT_FILE_MENTION_RE.exec(text)) !== null) {
+    const lead = match[1] ?? "";
+    const rawToken = match[2] ?? "";
+    const trimmedToken = rawToken.replace(/[.,;!?)]+$/, "");
+    const trailingPunct = rawToken.slice(trimmedToken.length);
+    const category = classifyInlineCode(trimmedToken);
+    const isFileMention =
+      category === "file-ts" ||
+      category === "file-rust" ||
+      category === "file-doc" ||
+      category === "file-data";
+    if (!isFileMention) continue;
+
+    const tokenStart = match.index + lead.length;
+    if (tokenStart > lastIndex) {
+      nodes.push(text.slice(lastIndex, tokenStart));
+    }
+    const parsed = parseFileLineTarget(trimmedToken);
+    nodes.push(
+      <CiteLink
+        key={`${keyPrefix}-mention-${matchIdx++}`}
+        citation={{
+          label: trimmedToken,
+          file: parsed.path,
+          line: parsed.line,
+          endLine: parsed.endLine,
+          column: parsed.column,
+          kind:
+            category === "file-doc"
+              ? "markdown"
+              : category === "file-data" && /\.(xlsx|csv)$/i.test(parsed.path)
+                ? "excel"
+                : "code",
+        }}
+      />,
+    );
+    if (trailingPunct) {
+      nodes.push(trailingPunct);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (nodes.length === 0) return text;
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+  return <React.Fragment key={keyPrefix}>{nodes}</React.Fragment>;
+}
+
 function renderMdastChildren(
   nodes: MdastNode[] | undefined,
   keyPrefix: string,
   contextDiagramSource: string | null,
+  insideLink = false,
 ): React.ReactNode {
   if (!nodes || nodes.length === 0) return null;
   return nodes.map((node, index) =>
-    renderMdastNode(node, `${keyPrefix}-${index}`, contextDiagramSource),
+    renderMdastNode(
+      node,
+      `${keyPrefix}-${index}`,
+      contextDiagramSource,
+      insideLink,
+    ),
   );
 }
 
@@ -414,18 +481,19 @@ function renderMdastNode(
   node: MdastNode,
   key: string,
   contextDiagramSource: string | null,
+  insideLink = false,
 ): React.ReactNode {
   switch (node.type) {
     case "root":
       return (
         <React.Fragment key={key}>
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </React.Fragment>
       );
     case "paragraph":
       return (
         <p key={key} className="rayu-prose m-0 max-w-[72ch] text-body">
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </p>
       );
     case "heading": {
@@ -435,7 +503,7 @@ function renderMdastNode(
             key={key}
             className="mt-4 mb-0.5 text-[15.5px] font-semibold tracking-tight text-ink"
           >
-            {renderMdastChildren(node.children, key, contextDiagramSource)}
+            {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
           </h3>
         );
       }
@@ -444,50 +512,50 @@ function renderMdastNode(
           key={key}
           className="mt-2.5 -mb-0.5 text-[14.5px] font-semibold tracking-tight text-ink"
         >
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </h4>
       );
     }
     case "strong":
       return (
         <strong key={key} className="font-semibold text-ink">
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </strong>
       );
     case "emphasis":
       return (
         <em key={key} className="italic">
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </em>
       );
     case "delete":
       return (
         <del key={key} className="text-muted-ink line-through">
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </del>
       );
     case "inlineCode": {
       const value = node.value ?? "";
+      if (insideLink) {
+        return (
+          <code
+            key={key}
+            className="font-mono text-[0.92em] break-all"
+          >
+            {value}
+          </code>
+        );
+      }
       if (isDiagramInlineToken(value)) {
         return (
-          <button
+          <code
             key={key}
-            type="button"
             data-code-kind="diagram"
-            title="Open flowchart preview in right inspector"
-            onClick={() => {
-              const store = useAppStore.getState();
-              if (contextDiagramSource) {
-                store.openDiagramPreview(contextDiagramSource, value);
-              } else {
-                store.openRightTab("diagram", value);
-              }
-            }}
-            className="inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all text-code-type transition-colors hover:bg-pill-edit-bg/60 hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex max-w-full items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all text-code-type"
           >
             <Network className="size-3 shrink-0" aria-hidden="true" />
             <span className="min-w-0 break-all">{value}</span>
-          </button>
+          </code>
         );
       }
 
@@ -522,22 +590,17 @@ function renderMdastNode(
 
       if (category === "folder") {
         return (
-          <button
+          <code
             key={key}
-            type="button"
             data-code-kind="folder"
-            title={`Open folder ${value} in right inspector`}
-            onClick={() => {
-              useAppStore.getState().openRightTab("files", value);
-            }}
             className={cn(
-              "inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all transition-colors hover:underline hover:underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "inline-flex max-w-full items-center gap-1 rounded px-1 py-[0.5px] text-left align-baseline font-mono text-[0.88em] font-medium break-all",
               getInlineCodeClasses(category),
             )}
           >
             <Folder className="size-3 shrink-0" aria-hidden="true" />
             <span className="min-w-0 break-all">{value}</span>
-          </button>
+          </code>
         );
       }
 
@@ -677,14 +740,15 @@ function renderMdastNode(
         </blockquote>
       );
     case "link": {
-      const href = node.url ?? "";
+      const href = (node.url ?? "").trim();
       const isLocalFile =
-        href &&
+        Boolean(href) &&
+        !href.startsWith("#") &&
         !href.startsWith("http://") &&
         !href.startsWith("https://") &&
         !href.startsWith("mailto:");
       if (isLocalFile) {
-        const parsed = parseFileLineTarget(href.replace(/^file:\/\//, ""));
+        const parsed = parseFileLineTarget(href);
         return (
           <button
             key={key}
@@ -696,19 +760,18 @@ function renderMdastNode(
                 line: parsed.line,
                 column: parsed.column,
               });
-              useAppStore
-                .getState()
-                .openCodeFile(parsed.path, parsed.line ?? null);
             }}
+            title={`Open ${parsed.path}${parsed.line ? `:${parsed.line}` : ""} in VS Code Editor`}
             className="cite-link inline-flex cursor-pointer items-center gap-1 font-medium text-brand-text hover:underline"
           >
             <TechFileBadge path={parsed.path} className="size-3.5" />
             <span>
-              {renderMdastChildren(node.children, key, contextDiagramSource)}
+              {renderMdastChildren(node.children, key, contextDiagramSource, true)}
             </span>
           </button>
         );
       }
+      const opensInSimpleBrowser = isLocalhostBrowserUrl(href);
       return (
         <a
           key={key}
@@ -718,12 +781,24 @@ function renderMdastNode(
           onClick={(e) => {
             if (href.startsWith("http://") || href.startsWith("https://")) {
               e.preventDefault();
-              postToHost({ type: "rayucode.editor.openExternal", url: href });
+              if (opensInSimpleBrowser) {
+                postToHost({
+                  type: "rayucode.editor.openSimpleBrowser",
+                  url: href,
+                });
+              } else {
+                postToHost({ type: "rayucode.editor.openExternal", url: href });
+              }
             }
           }}
+          title={
+            opensInSimpleBrowser
+              ? `Open ${href} in VS Code Simple Browser`
+              : undefined
+          }
           className="font-medium text-code-fn underline-offset-3 hover:text-brand-bright hover:underline"
         >
-          {renderMdastChildren(node.children, key, contextDiagramSource)}
+          {renderMdastChildren(node.children, key, contextDiagramSource, true)}
         </a>
       );
     }
@@ -732,7 +807,14 @@ function renderMdastNode(
     case "thematicBreak":
       return <hr key={key} className="my-2 border-hairline" />;
     case "text":
-      return <React.Fragment key={key}>{node.value ?? ""}</React.Fragment>;
+      if (insideLink) {
+        return <React.Fragment key={key}>{node.value ?? ""}</React.Fragment>;
+      }
+      return (
+        <React.Fragment key={key}>
+          {renderTextWithFileMentions(node.value ?? "", key)}
+        </React.Fragment>
+      );
     default:
       if (node.children) {
         return (

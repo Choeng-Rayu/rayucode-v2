@@ -4,7 +4,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileChangesSnapshotView } from "@shared/vscodeProtocol";
 
-import { ChangesView } from "@/features/changes";
 import { ChatStream, TurnFileSummaryCard, type ChatTurnView } from "@/features/chat";
 import {
   __dispatchHostMessageForTest,
@@ -331,7 +330,7 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
     });
   });
 
-  it("anchors TurnFileSummaryCard under the latest finished turn in ChatStream and syncs ChangesView on rayucode.fileChanges.updated", async () => {
+  it("anchors TurnFileSummaryCard under the latest finished turn in ChatStream and syncs store on rayucode.fileChanges.updated", async () => {
     const sampleTurn: ChatTurnView = {
       id: "turn_1",
       sessionId: "ses_vscode_shell",
@@ -361,79 +360,83 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
       surface: "editorPanel",
     });
 
-    renderWithQuery(
-      <div>
+    const unsub = rpcClient.onHostMessage((msg) => {
+      useAppStore.getState().applyHostMessage(msg);
+    });
+
+    try {
+      renderWithQuery(
         <ChatStream
           sessionId="ses_vscode_shell"
           turns={[sampleTurn]}
           fileChangesSnapshot={snapshot}
-        />
-        <ChangesView />
-      </div>,
-    );
-
-    expect(screen.getByTestId("turn-file-summary-card")).toBeTruthy();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("changes-view")).toBeTruthy();
-    });
-
-    const appShellPath =
-      "vscode/webview/src/features/shell/components/AppShell.tsx";
-    // Simulate host broadcasting rayucode.fileChanges.updated (e.g., user clicked Keep in Chat)
-    __dispatchHostMessageForTest({
-      type: "rayucode.fileChanges.updated",
-      sessionId: "ses_vscode_shell",
-      snapshot: {
-        sessionId: "ses_vscode_shell",
-        latestTurnId: 3,
-        totalPendingFiles: 0,
-        totalAdditions: 248,
-        totalDeletions: 34,
-        files: [
-          {
-            path: "/workspace/rayucode-v2/vscode/webview/src/styles/globals.css",
-            displayPath: "vscode/webview/src/styles/globals.css",
-            kind: "created",
-            status: "kept",
-            additions: 180,
-            deletions: 0,
-            changedInLatestTurn: false,
-            turnId: 1,
-            editCount: 1,
-            isBinary: false,
-            undoable: true,
-            canRedo: false,
-            previewHunks: [],
-            previewTruncated: false,
-            updatedAtMs: Date.now(),
-          },
-          {
-            path: `/workspace/rayucode-v2/${appShellPath}`,
-            displayPath: appShellPath,
-            kind: "modified",
-            status: "kept",
-            additions: 68,
-            deletions: 34,
-            changedInLatestTurn: true,
-            turnId: 3,
-            editCount: 2,
-            isBinary: false,
-            undoable: true,
-            canRedo: false,
-            previewHunks: [],
-            previewTruncated: false,
-            updatedAtMs: Date.now(),
-          },
-        ],
-      },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId(`decision-badge-${appShellPath}`).textContent).toBe(
-        "Accepted",
+        />,
       );
-    });
+
+      expect(screen.getByTestId("turn-file-summary-card")).toBeTruthy();
+
+      const appShellPath =
+        "vscode/webview/src/features/shell/components/AppShell.tsx";
+      // Simulate host broadcasting rayucode.fileChanges.updated (e.g., user clicked Keep in Chat)
+      __dispatchHostMessageForTest({
+        type: "rayucode.fileChanges.updated",
+        sessionId: "ses_vscode_shell",
+        snapshot: {
+          sessionId: "ses_vscode_shell",
+          latestTurnId: 3,
+          totalPendingFiles: 0,
+          totalAdditions: 248,
+          totalDeletions: 34,
+          files: [
+            {
+              path: "/workspace/rayucode-v2/vscode/webview/src/styles/globals.css",
+              displayPath: "vscode/webview/src/styles/globals.css",
+              kind: "created",
+              status: "kept",
+              additions: 180,
+              deletions: 0,
+              changedInLatestTurn: false,
+              turnId: 1,
+              editCount: 1,
+              isBinary: false,
+              undoable: true,
+              canRedo: false,
+              previewHunks: [],
+              previewTruncated: false,
+              updatedAtMs: Date.now(),
+            },
+            {
+              path: `/workspace/rayucode-v2/${appShellPath}`,
+              displayPath: appShellPath,
+              kind: "modified",
+              status: "kept",
+              additions: 68,
+              deletions: 34,
+              changedInLatestTurn: true,
+              turnId: 3,
+              editCount: 2,
+              isBinary: false,
+              undoable: true,
+              canRedo: false,
+              previewHunks: [],
+              previewTruncated: false,
+              updatedAtMs: Date.now(),
+            },
+          ],
+        },
+      });
+
+      await waitFor(() => {
+        const synced =
+          useAppStore.getState().fileChangesBySession["ses_vscode_shell"];
+        expect(synced?.totalPendingFiles).toBe(0);
+        expect(
+          synced?.files.find((f) => f.displayPath === appShellPath)?.status,
+        ).toBe("kept");
+      });
+    } finally {
+      unsub();
+    }
   });
 
   it("opens Diff when clicking a deleted file name and explains >10 MiB non-undoable entries", () => {
@@ -550,5 +553,70 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
     );
 
     expect(screen.getByTestId("turn-file-summary-card")).toBeTruthy();
+  });
+
+  it("shows only the 3 most recently changed files by default and toggles expand/collapse for all files", () => {
+    const baseEntry = makeSnapshot().files[0]!;
+    const fiveSnap = makeSnapshot({
+      totalPendingFiles: 5,
+      files: [
+        {
+          ...baseEntry,
+          path: "/repo/src/oldest.ts",
+          displayPath: "src/oldest.ts",
+          changedInLatestTurn: false,
+          updatedAtMs: 1_000,
+        },
+        {
+          ...baseEntry,
+          path: "/repo/src/recent-2.ts",
+          displayPath: "src/recent-2.ts",
+          changedInLatestTurn: true,
+          updatedAtMs: 4_000,
+        },
+        {
+          ...baseEntry,
+          path: "/repo/src/older.ts",
+          displayPath: "src/older.ts",
+          changedInLatestTurn: false,
+          updatedAtMs: 2_000,
+        },
+        {
+          ...baseEntry,
+          path: "/repo/src/recent-1.ts",
+          displayPath: "src/recent-1.ts",
+          changedInLatestTurn: true,
+          updatedAtMs: 5_000,
+        },
+        {
+          ...baseEntry,
+          path: "/repo/src/recent-3.ts",
+          displayPath: "src/recent-3.ts",
+          changedInLatestTurn: false,
+          updatedAtMs: 3_000,
+        },
+      ],
+    });
+
+    renderWithQuery(<TurnFileSummaryCard snapshot={fiveSnap} />);
+
+    expect(screen.getByTestId("file-summary-count").textContent).toBe(
+      "5 files changed",
+    );
+    expect(screen.getByTestId("file-summary-row-src/recent-1.ts")).toBeTruthy();
+    expect(screen.getByTestId("file-summary-row-src/recent-2.ts")).toBeTruthy();
+    expect(screen.getByTestId("file-summary-row-src/recent-3.ts")).toBeTruthy();
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).toBeNull();
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).toBeNull();
+
+    const expandBtn = screen.getByTestId("file-summary-expand-all-btn");
+    expect(expandBtn.textContent).toContain("Expand all 5 files (+2 more)");
+    fireEvent.click(expandBtn);
+    expect(screen.getByTestId("file-summary-row-src/older.ts")).toBeTruthy();
+    expect(screen.getByTestId("file-summary-row-src/oldest.ts")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("file-summary-collapse-list-btn"));
+    expect(screen.queryByTestId("file-summary-row-src/older.ts")).toBeNull();
+    expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).toBeNull();
   });
 });

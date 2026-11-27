@@ -3,7 +3,6 @@ export * from "./components/AuthWelcomeScreen";
 export * from "./components/CompactTopBar";
 export * from "./components/LeftSidebar";
 export * from "./components/ProjectIconPicker";
-export * from "./components/RightInspectorHost";
 export * from "./components/SidebarProjectsPane";
 export * from "./components/StatusBarPill";
 export * from "./components/TopBar";

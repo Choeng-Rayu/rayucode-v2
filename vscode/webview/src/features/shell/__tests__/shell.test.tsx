@@ -44,11 +44,11 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       surface: "editorPanel",
       route: "home",
       activeRoute: "home",
+      activeSettingsSection: "account",
       theme: "auto",
       accent: "green",
       sidebarCollapsed: false,
       mobileSidebarOpen: false,
-      inspectorOpen: false,
       backgroundDrawerOpen: false,
     });
   });
@@ -62,7 +62,8 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     expect(resolveFormFactorFromWidth(1440)).toBe("wide");
   });
 
-  it("renders Wide Editor Panel AppShell (>=960px) with 5 primary rail items matching Desktop and TopBar", async () => {
+  it("renders Wide Editor Panel AppShell (>=960px) with slimmed 2-item rail, bottom Settings button, and no IDE-duplicated chrome", async () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -79,18 +80,39 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       screen.getByTestId("app-shell").getAttribute("data-form-factor"),
     ).toBe("wide");
     expect(screen.getByTestId("rail-nav-home")).toBeTruthy();
-    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
-    expect(screen.getByTestId("rail-nav-automations")).toBeTruthy();
     expect(screen.getByTestId("rail-nav-plugins")).toBeTruthy();
-    expect(screen.getByTestId("rail-nav-changes")).toBeTruthy();
-    expect(screen.getByTestId("rail-nav-remote")).toBeTruthy();
+    expect(screen.getByTestId("rail-nav-settings")).toBeTruthy();
+    expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-automations")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-changes")).toBeNull();
+    expect(screen.queryByTestId("rail-nav-remote")).toBeNull();
+    expect(screen.queryByTestId("six-icon-strip")).toBeNull();
     expect(screen.getByTestId("stage-child")).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId("rail-nav-automations"));
-    expect(useAppStore.getState().activeRoute).toBe("automations");
+    // TopBar provides 1-click Open Browser and Open Terminal actions in VS Code
+    fireEvent.click(screen.getByTestId("topbar-open-browser"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+    });
+    fireEvent.click(screen.getByTestId("topbar-open-terminal"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
+    postSpy.mockClear();
+
+    fireEvent.click(screen.getByTestId("rail-nav-settings"));
+    expect(useAppStore.getState().activeRoute).toBe("settings");
+
+    // Cmd/Ctrl+J must pass through to native VS Code instead of posting openTerminal
+    fireEvent.keyDown(window, { key: "j", metaKey: true });
+    expect(postSpy).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
+    postSpy.mockRestore();
   });
 
-  it("renders Compact Docked Sidebar AppShell (<560px) with CompactTopBar and slide-over drawers", () => {
+  it("renders Compact Docked Sidebar AppShell (<560px) with CompactTopBar browser/terminal buttons and sessions drawer without inspector or changes buttons", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost");
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -108,12 +130,22 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     ).toBe("compact");
     expect(screen.getByTestId("compact-top-bar")).toBeTruthy();
     expect(screen.getByTestId("compact-expand-editor-panel")).toBeTruthy();
+    expect(screen.queryByTestId("compact-inspector-trigger")).toBeNull();
+    expect(screen.queryByTestId("compact-changes-trigger")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("compact-open-browser"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+    });
+    fireEvent.click(screen.getByTestId("compact-open-terminal"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "rayucode.editor.openTerminal" }),
+    );
 
     fireEvent.click(screen.getByTestId("compact-sessions-drawer-trigger"));
     expect(screen.getByTestId("slide-over-sessions-drawer")).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId("compact-inspector-trigger"));
-    expect(screen.getByTestId("slide-over-inspector-sheet")).toBeTruthy();
+    expect(screen.queryByTestId("slide-over-inspector-sheet")).toBeNull();
+    postSpy.mockRestore();
   });
 
   it("renders all 32 BrandLogo SVGs, RayuProcessingMark, NavGlyph, UsageRingSvg, TechFileBadge, and MermaidDiagramSvg", () => {
@@ -393,8 +425,8 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     });
     useAppStore.setState({
       surface: "sidebar",
-      route: "changes",
-      activeRoute: "changes",
+      route: "workspace",
+      activeRoute: "workspace",
       activeSessionId: "ses_abc",
     });
 
@@ -411,7 +443,7 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
     fireEvent.click(compactExpandBtn);
     expect(postSpy).toHaveBeenCalledWith({
       type: "rayucode.ui.openEditorPanel",
-      route: "changes",
+      route: "workspace",
       sessionId: "ses_abc",
       beside: true,
     });
@@ -449,9 +481,17 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
         sessionId: "ses_persist_1",
       });
 
-      useAppStore.getState().setActiveRoute("changes");
+      useAppStore.getState().setActiveRoute("plugins");
       expect(savedStates[savedStates.length - 1]).toEqual({
-        route: "changes",
+        route: "plugins",
+        sessionId: "ses_persist_1",
+      });
+
+      useAppStore.getState().setActiveRoute("swarm");
+      expect(useAppStore.getState().activeRoute).toBe("settings");
+      expect(useAppStore.getState().activeSettingsSection).toBe("swarm");
+      expect(savedStates[savedStates.length - 1]).toEqual({
+        route: "settings",
         sessionId: "ses_persist_1",
       });
 

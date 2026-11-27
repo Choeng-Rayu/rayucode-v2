@@ -2,7 +2,7 @@
   "name": "rayucode",
   "displayName": "RayuCode",
   "description": "RayuCode Rust AI coding engine and multi-agent mission control for VS Code.",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "publisher": "RayuCode",
   "icon": "media/rayu-fox.png",
   "homepage": "https://rayucode.com",
@@ -218,6 +218,18 @@
         "icon": "$(terminal)"
       },
       {
+        "command": "rayucode.openTerminal",
+        "title": "Open Terminal in VS Code",
+        "category": "RayuCode",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "rayucode.openBrowser",
+        "title": "Open Browser in VS Code",
+        "category": "RayuCode",
+        "icon": "$(globe)"
+      },
+      {
         "command": "rayucode.openChanges",
         "title": "Open Changes & Diff Review",
         "category": "RayuCode",
@@ -398,6 +410,16 @@
           "command": "rayucode.openWorkspacePanel",
           "when": "view == rayucode.chat",
           "group": "1_layout@1"
+        },
+        {
+          "command": "rayucode.openBrowser",
+          "when": "view == rayucode.chat",
+          "group": "1_tools@1"
+        },
+        {
+          "command": "rayucode.openTerminal",
+          "when": "view == rayucode.chat",
+          "group": "1_tools@2"
         },
         {
           "command": "rayucode.reloadDaemon",

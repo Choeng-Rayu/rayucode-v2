@@ -1,8 +1,8 @@
 import * as React from "react";
 import type { AppRoute } from "@shared/vscodeProtocol";
 
-import type { InspectorGlyphName, NavGlyphName } from "@/components/ui/rayu-symbols";
-import { useAppStore, type RightTabId } from "@/lib/app-store";
+import type { NavGlyphName } from "@/components/ui/rayu-symbols";
+import { useAppStore } from "@/lib/app-store";
 import { callRpc, postToHost } from "@/lib/rpc-client";
 
 export type ShellFormFactor = "compact" | "medium" | "wide";
@@ -10,19 +10,18 @@ export type ShellFormFactor = "compact" | "medium" | "wide";
 export interface RouteMeta {
   id: AppRoute;
   title: string;
-  hasRightInspector: boolean;
 }
 
 export const SHELL_ROUTES: Record<AppRoute, RouteMeta> = {
-  home: { id: "home", title: "New session", hasRightInspector: true },
-  workspace: { id: "workspace", title: "Active session", hasRightInspector: true },
-  swarm: { id: "swarm", title: "Swarm Mission Control", hasRightInspector: false },
-  agents: { id: "agents", title: "Agents & Personas", hasRightInspector: false },
-  automations: { id: "automations", title: "Automations", hasRightInspector: false },
-  plugins: { id: "plugins", title: "Plugins, MCP & Memory", hasRightInspector: false },
-  changes: { id: "changes", title: "Changes & Review", hasRightInspector: false },
-  remote: { id: "remote", title: "Remote Access", hasRightInspector: false },
-  settings: { id: "settings", title: "Settings", hasRightInspector: false },
+  home: { id: "home", title: "New session" },
+  workspace: { id: "workspace", title: "Active session" },
+  swarm: { id: "swarm", title: "Swarm Mission Control" },
+  agents: { id: "agents", title: "Agents & Personas" },
+  automations: { id: "automations", title: "Automations" },
+  plugins: { id: "plugins", title: "Plugins, MCP & Memory" },
+  changes: { id: "changes", title: "Changes & Review" },
+  remote: { id: "remote", title: "Remote Access" },
+  settings: { id: "settings", title: "Settings" },
 };
 
 export interface PrimaryNavItem {
@@ -32,54 +31,8 @@ export interface PrimaryNavItem {
 }
 
 export const PRIMARY_NAV_ITEMS: ReadonlyArray<PrimaryNavItem> = [
-  { id: "home", label: "Home", icon: "home" },
-  { id: "agents", label: "Agents", icon: "agents" },
-  { id: "automations", label: "Automations", icon: "clock" },
+  { id: "home", label: "Chat", icon: "home" },
   { id: "plugins", label: "Plugins", icon: "plug" },
-  { id: "changes", label: "Changes", icon: "branch" },
-  { id: "remote", label: "Remote", icon: "telegram" },
-];
-
-export interface RightInspectorTabItem {
-  id: RightTabId;
-  label: string;
-  shortcut?: string;
-  pillLabel: string | null;
-  icon: InspectorGlyphName;
-}
-
-export const RIGHT_INSPECTOR_TABS: ReadonlyArray<RightInspectorTabItem> = [
-  {
-    id: "overview",
-    label: "Context & Environment",
-    pillLabel: null,
-    icon: "list",
-  },
-  {
-    id: "terminal",
-    label: "Integrated Terminal",
-    shortcut: "⌘J",
-    pillLabel: "Terminal",
-    icon: "terminal",
-  },
-  {
-    id: "diff",
-    label: "Changes & Diff",
-    pillLabel: "Changes",
-    icon: "diff",
-  },
-  {
-    id: "browser",
-    label: "Simple Browser Preview",
-    pillLabel: "Preview",
-    icon: "globe",
-  },
-  {
-    id: "files",
-    label: "Files & Side Panel",
-    pillLabel: "Files",
-    icon: "folder",
-  },
 ];
 
 export function resolveFormFactorFromWidth(width: number): ShellFormFactor {
@@ -148,8 +101,6 @@ export function useShellNavigation() {
   const goBack = useAppStore((s) => s.goBack);
   const goForward = useAppStore((s) => s.goForward);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const toggleInspector = useAppStore((s) => s.toggleInspector);
-  const openRightTab = useAppStore((s) => s.openRightTab);
 
   const canGoBack = navHistoryIndex > 0;
   const canGoForward = navHistoryIndex < navHistory.length - 1;
@@ -189,17 +140,6 @@ export function useShellNavigation() {
     });
   }, []);
 
-  const openIntegratedTerminal = React.useCallback(
-    (cwd?: string) => {
-      postToHost({
-        type: "rayucode.editor.openTerminal",
-        cwd: cwd ?? activeProjectPath ?? undefined,
-        name: "RayuCode",
-      });
-    },
-    [activeProjectPath],
-  );
-
   return {
     surface,
     activeRoute,
@@ -214,10 +154,7 @@ export function useShellNavigation() {
     goBack,
     goForward,
     toggleSidebar,
-    toggleInspector,
-    openRightTab,
     openInEditorPanel,
     focusSidebar,
-    openIntegratedTerminal,
   };
 }

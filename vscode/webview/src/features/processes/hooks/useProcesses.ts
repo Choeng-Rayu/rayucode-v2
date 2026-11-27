@@ -182,7 +182,7 @@ let lastAltBHandledAtMs = 0;
 function extractProgressPatchFromFrame(
   frame: Record<string, unknown>,
 ): Partial<BackgroundProcessView> & { taskId: string } | null {
-  const frameType = String(frame.type ?? frame.event ?? "");
+  const frameType = String(frame.ev ?? frame.type ?? frame.event ?? "");
   if (
     frameType !== "background_progress" &&
     frameType !== "BackgroundProgress" &&
@@ -201,7 +201,11 @@ function extractProgressPatchFromFrame(
   const patch: Partial<BackgroundProcessView> & { taskId: string } = {
     taskId,
     updatedAtMs:
-      typeof frame.updatedAtMs === "number" ? frame.updatedAtMs : Date.now(),
+      typeof frame.updatedAtMs === "number"
+        ? frame.updatedAtMs
+        : typeof frame.updated_at_ms === "number"
+          ? frame.updated_at_ms
+          : Date.now(),
   };
 
   if (
@@ -212,6 +216,8 @@ function extractProgressPatchFromFrame(
     frame.status === "superseded"
   ) {
     patch.status = frame.status;
+  } else if (frame.done === true) {
+    patch.status = "completed";
   }
   if (typeof frame.percent === "number") {
     patch.percent = frame.percent;
@@ -221,11 +227,25 @@ function extractProgressPatchFromFrame(
   if (typeof frame.total === "number") patch.total = frame.total;
   if (typeof frame.unit === "string") patch.unit = frame.unit;
   if (typeof frame.summary === "string") patch.summary = frame.summary;
-  if (typeof frame.etaSeconds === "number") patch.etaSeconds = frame.etaSeconds;
-  if (typeof frame.exitCode === "number") patch.exitCode = frame.exitCode;
-  if (typeof frame.outputFile === "string") patch.outputFile = frame.outputFile;
+  if (typeof frame.etaSeconds === "number") {
+    patch.etaSeconds = frame.etaSeconds;
+  } else if (typeof frame.eta_seconds === "number") {
+    patch.etaSeconds = frame.eta_seconds;
+  }
+  if (typeof frame.exitCode === "number") {
+    patch.exitCode = frame.exitCode;
+  } else if (typeof frame.exit_code === "number") {
+    patch.exitCode = frame.exit_code;
+  }
+  if (typeof frame.outputFile === "string") {
+    patch.outputFile = frame.outputFile;
+  } else if (typeof frame.output_file === "string") {
+    patch.outputFile = frame.output_file;
+  }
   if (typeof frame.stallQuietSecs === "number") {
     patch.stallQuietSecs = frame.stallQuietSecs;
+  } else if (typeof frame.stall_quiet_secs === "number") {
+    patch.stallQuietSecs = frame.stall_quiet_secs;
   }
 
   return patch;
@@ -256,7 +276,6 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   const rawTasks = useAppStore((s) => s.backgroundTasks);
   const storeDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
-  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const setBackgroundTasks = useAppStore((s) => s.setBackgroundTasks);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
@@ -644,17 +663,6 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     });
   }, []);
 
-  const openProcessTerminal = React.useCallback(
-    (name?: string, cwd?: string) => {
-      postToHost({
-        type: "rayucode.editor.openTerminal",
-        cwd: cwd ?? activeProjectPath ?? undefined,
-        name: name ?? "RayuCode Background",
-      });
-    },
-    [activeProjectPath],
-  );
-
   const copyProcessOutput = React.useCallback((text: string) => {
     postToHost({
       type: "rayucode.editor.copy",
@@ -679,11 +687,9 @@ export function useProcesses(options: UseProcessesOptions = {}) {
         lastAltBHandledAtMs = now;
 
         const state = useAppStore.getState();
-        if (state.isStreamActive || state.activeSessionId || state.backgroundTasks.length >= 0) {
+        if (state.activeSessionId && state.isStreamActive) {
           event.preventDefault();
-          void handoffForegroundToBackground(
-            state.activeSessionId ?? "ses_vscode_shell",
-          );
+          void handoffForegroundToBackground(state.activeSessionId);
         }
       }
     };
@@ -776,7 +782,6 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     handoffForegroundToBackground,
     backgroundActiveTool: handoffForegroundToBackground,
     openOutputFileInEditor,
-    openProcessTerminal,
     copyProcessOutput,
   };
 }

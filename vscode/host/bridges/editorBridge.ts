@@ -100,27 +100,302 @@ function isAbsolutePath(filePath: string): boolean {
   );
 }
 
-export function resolveWorkspaceFileUri(targetPath: string): vscode.Uri | null {
-  const vscodeApi = getVscode();
-  const trimmed = targetPath.trim();
+const BINARY_VIEWER_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".ico",
+  ".bmp",
+  ".pdf",
+  ".xlsx",
+  ".xls",
+  ".xlsm",
+  ".pptx",
+  ".ppt",
+  ".docx",
+  ".doc",
+  ".zip",
+  ".tar",
+  ".gz",
+  ".woff",
+  ".woff2",
+  ".ttf",
+  ".otf",
+]);
+
+const FIND_FILES_EXCLUDE_GLOB =
+  "**/{node_modules,.git,dist,target,.next,build,coverage,.turbo}/**";
+
+export interface SanitizedFileOpenTarget {
+  path: string;
+  line?: number;
+  column?: number;
+}
+
+/**
+ * Normalizes a raw file reference from markdown, citations, or user pills:
+ * strips quotes/backticks, leading `@`, `file://` scheme, percent-encoding,
+ * and trailing `:line`, `:line-end`, `:line:col`, or `#Lline-Lend` suffixes.
+ */
+export function sanitizeFileOpenTarget(rawPath: string): SanitizedFileOpenTarget {
+  let text = rawPath.trim().replace(/^[`'"<]+|[`'">,;.!?]+$/g, "");
+  if (text.startsWith("@") && !text.startsWith("@/")) {
+    text = text.slice(1);
+  }
+
+  let line: number | undefined;
+  let column: number | undefined;
+
+  const hashMatch = text.match(/^(.+?)#L(\d+)(?:-L?\d+)?$/i);
+  if (hashMatch && hashMatch[1]) {
+    text = hashMatch[1];
+    line = Number.parseInt(hashMatch[2] ?? "1", 10);
+  } else {
+    const colonMatch = text.match(/^(.+?):(\d+)(?:-(\d+)|:(\d+))?$/);
+    if (colonMatch && colonMatch[1] && !/^[A-Za-z]$/.test(colonMatch[1])) {
+      text = colonMatch[1];
+      line = Number.parseInt(colonMatch[2] ?? "1", 10);
+      if (colonMatch[4]) {
+        column = Number.parseInt(colonMatch[4], 10);
+      }
+    }
+  }
+
+  if (/^file:\/\//i.test(text)) {
+    let withoutScheme = text.replace(/^file:\/\//i, "");
+    try {
+      withoutScheme = decodeURIComponent(withoutScheme);
+    } catch {
+      // keep raw path if malformed escape sequence
+    }
+    // Windows file:///C:/path -> C:/path
+    if (/^\/[A-Za-z]:[\\/]/.test(withoutScheme)) {
+      withoutScheme = withoutScheme.slice(1);
+    }
+    text = withoutScheme;
+  } else if (text.includes("%20")) {
+    try {
+      text = decodeURIComponent(text);
+    } catch {
+      // keep raw path
+    }
+  }
+
+  // Normalize leading ./ on relative paths
+  while (text.startsWith("./") || text.startsWith(".\\")) {
+    text = text.slice(2);
+  }
+
+  return {
+    path: text.trim(),
+    ...(line !== undefined && Number.isFinite(line) && line > 0 ? { line } : {}),
+    ...(column !== undefined && Number.isFinite(column) && column > 0
+      ? { column }
+      : {}),
+  };
+}
+
+/**
+ * Pure helper generating ordered filesystem candidate paths for a file mention
+ * given candidate root directories (active session workingDir, workspace folders,
+ * and active editor directory). Handles:
+ * - `~` / `~/...`
+ * - absolute paths
+ * - root-relative paths
+ * - workspace-folder-name-prefixed paths (e.g. `rayucode-v2/desktop/MIGRATION_PLAN.md`
+ *   when root is `/home/rayu/rayu/rayucode-v2`)
+ * - sibling/parent-relative paths (`path.dirname(root)` + `rel`)
+ */
+export function buildFilePathCandidates(
+  rawPath: string,
+  roots: readonly string[],
+): string[] {
+  const { path: clean } = sanitizeFileOpenTarget(rawPath);
+  if (!clean) return [];
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const add = (candidate: string) => {
+    const normalized = candidate.trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+
+  if (clean === "~") {
+    add(os.homedir());
+    return candidates;
+  }
+  if (clean.startsWith("~/") || clean.startsWith("~\\")) {
+    add(path.join(os.homedir(), clean.slice(2)));
+    return candidates;
+  }
+  if (isAbsolutePath(clean)) {
+    add(clean);
+    return candidates;
+  }
+
+  const normalizedRel = clean.replace(/\\/g, "/");
+  for (const rawRoot of roots) {
+    const root = rawRoot.trim();
+    if (!root) continue;
+
+    // 1. Direct root-relative match
+    add(path.join(root, normalizedRel));
+
+    // 2. Strip leading workspace folder name prefix (e.g. `rayucode-v2/how-to-run.md`)
+    const rootBase = path.basename(root);
+    if (
+      rootBase &&
+      normalizedRel.length > rootBase.length + 1 &&
+      normalizedRel.slice(0, rootBase.length).toLowerCase() ===
+        rootBase.toLowerCase() &&
+      normalizedRel[rootBase.length] === "/"
+    ) {
+      add(path.join(root, normalizedRel.slice(rootBase.length + 1)));
+    }
+
+    // 3. Parent directory fallback (when AI prefixes the repo folder name)
+    const parent = path.dirname(root);
+    if (parent && parent !== root) {
+      add(path.join(parent, normalizedRel));
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Pure helper ranking workspace `findFiles` matches for a file mention.
+ * Prefers exact suffix matches, matches inside `preferredDirs`, shallower paths,
+ * and deterministic alphabetical ordering.
+ */
+export function rankWorkspaceFileMatches(
+  rawTarget: string,
+  candidatePaths: readonly string[],
+  preferredDirs: readonly string[] = [],
+): string[] {
+  const { path: clean } = sanitizeFileOpenTarget(rawTarget);
+  const targetNorm = clean.replace(/\\/g, "/").replace(/^\/+/, "").toLowerCase();
+  const targetBase = path.posix.basename(targetNorm);
+  const targetSegments = targetNorm.split("/").filter(Boolean);
+  const strippedFirst =
+    targetSegments.length > 1 ? targetSegments.slice(1).join("/") : "";
+  const normPreferred = preferredDirs
+    .map((d) => d.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase())
+    .filter(Boolean);
+
+  const scored = candidatePaths.map((fsPath) => {
+    const norm = fsPath.replace(/\\/g, "/").toLowerCase();
+    let score = 0;
+    if (norm === targetNorm || norm.endsWith(`/${targetNorm}`)) {
+      score += 1000;
+    } else if (
+      strippedFirst &&
+      (norm === strippedFirst || norm.endsWith(`/${strippedFirst}`))
+    ) {
+      score += 800;
+    } else if (path.posix.basename(norm) === targetBase) {
+      score += 500;
+    }
+
+    for (let i = 0; i < normPreferred.length; i += 1) {
+      const pref = normPreferred[i]!;
+      if (norm === pref || norm.startsWith(`${pref}/`)) {
+        score += 120 - Math.min(i * 20, 80);
+        break;
+      }
+    }
+
+    const depth = norm.split("/").length;
+    return { fsPath, score, depth };
+  });
+
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.depth - b.depth ||
+      a.fsPath.localeCompare(b.fsPath),
+  );
+  return scored.map((entry) => entry.fsPath);
+}
+
+/**
+ * Normalizes a browser URL entered by a user or passed from the webview,
+ * prepending `http://` when no scheme is specified (e.g. `localhost:3000`).
+ */
+export function normalizeBrowserUrl(rawUrl: string): string | null {
+  const trimmed = rawUrl.trim();
   if (!trimmed) return null;
-  if (trimmed === "~") {
+  const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)
+    ? trimmed
+    : `http://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function escapeGlobPattern(segment: string): string {
+  return segment.replace(/[\[\]{}()*?!]/g, "\\$&");
+}
+
+function isExistingRegularFile(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveWorkspaceFileUri(
+  targetPath: string,
+  baseDir?: string,
+): vscode.Uri | null {
+  const vscodeApi = getVscode();
+  const { path: clean } = sanitizeFileOpenTarget(targetPath);
+  if (!clean) return null;
+
+  const roots: string[] = [];
+  if (baseDir?.trim()) roots.push(baseDir.trim());
+  for (const folder of vscodeApi.workspace.workspaceFolders ?? []) {
+    roots.push(folder.uri.fsPath);
+  }
+
+  const candidates = buildFilePathCandidates(clean, roots);
+  for (const candidate of candidates) {
+    if (isExistingRegularFile(candidate)) {
+      return vscodeApi.Uri.file(candidate);
+    }
+  }
+
+  if (clean === "~") {
     return vscodeApi.Uri.file(os.homedir());
   }
-  if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+  if (clean.startsWith("~/") || clean.startsWith("~\\")) {
     return vscodeApi.Uri.joinPath(
       vscodeApi.Uri.file(os.homedir()),
-      trimmed.slice(2).replace(/\\/g, "/"),
+      clean.slice(2).replace(/\\/g, "/"),
     );
   }
-  if (isAbsolutePath(trimmed)) {
-    return vscodeApi.Uri.file(trimmed);
+  if (isAbsolutePath(clean)) {
+    return vscodeApi.Uri.file(clean);
+  }
+  if (baseDir?.trim()) {
+    return vscodeApi.Uri.file(path.resolve(baseDir.trim(), clean));
   }
   const primaryFolder = vscodeApi.workspace.workspaceFolders?.[0];
   if (!primaryFolder) {
-    return vscodeApi.Uri.file(path.resolve(trimmed));
+    return vscodeApi.Uri.file(path.resolve(clean));
   }
-  return vscodeApi.Uri.joinPath(primaryFolder.uri, trimmed);
+  return vscodeApi.Uri.joinPath(primaryFolder.uri, clean);
 }
 
 export class EditorBridge implements vscode.Disposable {
@@ -135,6 +410,7 @@ export class EditorBridge implements vscode.Disposable {
     | undefined;
   private currentSelection: EditorSelectionView | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastBrowserUrl = "http://localhost:3000";
 
   constructor(
     private readonly onSelectionChanged: (selection: EditorSelectionView | null) => void,
@@ -285,34 +561,153 @@ export class EditorBridge implements vscode.Disposable {
     }, SELECTION_DEBOUNCE_MS);
   }
 
+  private collectResolutionRoots(baseDir?: string): string[] {
+    const vscodeApi = getVscode();
+    const roots: string[] = [];
+    const seen = new Set<string>();
+    const push = (dir?: string) => {
+      const trimmed = dir?.trim();
+      if (!trimmed || seen.has(trimmed)) return;
+      seen.add(trimmed);
+      roots.push(trimmed);
+    };
+
+    push(baseDir);
+    for (const folder of vscodeApi.workspace.workspaceFolders ?? []) {
+      push(folder.uri.fsPath);
+    }
+
+    const activeFile = vscodeApi.window.activeTextEditor?.document.uri;
+    if (activeFile?.scheme === "file" && activeFile.fsPath) {
+      push(path.dirname(activeFile.fsPath));
+    }
+    const lastFile = this.lastActiveEditor?.document.uri;
+    if (lastFile?.scheme === "file" && lastFile.fsPath) {
+      push(path.dirname(lastFile.fsPath));
+    }
+
+    return roots;
+  }
+
+  private async resolveExistingFileUri(
+    rawPath: string,
+    baseDir?: string,
+  ): Promise<vscode.Uri | null> {
+    const vscodeApi = getVscode();
+    const { path: clean } = sanitizeFileOpenTarget(rawPath);
+    if (!clean) return null;
+
+    const roots = this.collectResolutionRoots(baseDir);
+    const directCandidates = buildFilePathCandidates(clean, roots);
+    for (const candidate of directCandidates) {
+      if (isExistingRegularFile(candidate)) {
+        return vscodeApi.Uri.file(candidate);
+      }
+    }
+
+    // Fallback: search across all open workspace folders (handles bare filenames like
+    // `MIGRATION_PLAN.md` or partial paths like `desktop/MIGRATION_PLAN.md` or
+    // workspace-prefixed paths like `rayucode-v2/how-to-run.md`).
+    if ((vscodeApi.workspace.workspaceFolders?.length ?? 0) > 0) {
+      const normalizedSuffix = clean.replace(/\\/g, "/").replace(/^\/+/, "");
+      const segments = normalizedSuffix.split("/").filter(Boolean);
+      const globs: string[] = [];
+      if (normalizedSuffix) {
+        globs.push(`**/${escapeGlobPattern(normalizedSuffix)}`);
+      }
+      if (segments.length > 1) {
+        const withoutFirst = segments.slice(1).join("/");
+        globs.push(`**/${escapeGlobPattern(withoutFirst)}`);
+      }
+      const baseName = segments[segments.length - 1];
+      if (baseName && segments.length > 1) {
+        globs.push(`**/${escapeGlobPattern(baseName)}`);
+      }
+
+      for (const glob of globs) {
+        try {
+          const found = await vscodeApi.workspace.findFiles(
+            glob,
+            FIND_FILES_EXCLUDE_GLOB,
+            25,
+          );
+          if (found.length > 0) {
+            const ranked = rankWorkspaceFileMatches(
+              normalizedSuffix,
+              found.map((u) => u.fsPath),
+              roots,
+            );
+            const best = ranked[0];
+            if (best) {
+              return vscodeApi.Uri.file(best);
+            }
+          }
+        } catch {
+          // ignore malformed glob or workspace search error and continue fallback
+        }
+      }
+    }
+
+    return null;
+  }
+
   async openFile(options: {
     path: string;
     line?: number;
     column?: number;
     preview?: boolean;
+    baseDir?: string;
   }): Promise<void> {
     const vscodeApi = getVscode();
-    const uri = resolveWorkspaceFileUri(options.path);
-    if (!uri) return;
+    const parsed = sanitizeFileOpenTarget(options.path);
+    if (!parsed.path) return;
 
-    const line0 = options.line && options.line > 0 ? options.line - 1 : undefined;
-    const col0 = options.column && options.column > 0 ? options.column - 1 : 0;
+    const uri = await this.resolveExistingFileUri(parsed.path, options.baseDir);
+    if (!uri) {
+      void vscodeApi.window.showWarningMessage(
+        `File not found in workspace: ${options.path}`,
+      );
+      return;
+    }
+
+    const effectiveLine = options.line ?? parsed.line;
+    const effectiveColumn = options.column ?? parsed.column;
+    const line0 = effectiveLine && effectiveLine > 0 ? effectiveLine - 1 : undefined;
+    const col0 = effectiveColumn && effectiveColumn > 0 ? effectiveColumn - 1 : 0;
     const selection =
       line0 !== undefined
         ? new vscodeApi.Range(line0, col0, line0, col0)
         : undefined;
 
     const viewColumn = this.resolveCodeViewColumn();
-    const editor = await vscodeApi.window.showTextDocument(uri, {
-      viewColumn,
-      preview: options.preview ?? true,
-      selection,
-    });
-    if (selection) {
-      editor.revealRange(
+    const preview = options.preview ?? false;
+    const ext = path.extname(uri.fsPath).toLowerCase();
+
+    if (BINARY_VIEWER_EXTENSIONS.has(ext)) {
+      await vscodeApi.commands.executeCommand("vscode.open", uri, {
+        viewColumn,
+        preview,
+      });
+      return;
+    }
+
+    try {
+      const editor = await vscodeApi.window.showTextDocument(uri, {
+        viewColumn,
+        preview,
         selection,
-        vscodeApi.TextEditorRevealType.InCenterIfOutsideViewport,
-      );
+      });
+      if (selection) {
+        editor.revealRange(
+          selection,
+          vscodeApi.TextEditorRevealType.InCenterIfOutsideViewport,
+        );
+      }
+    } catch {
+      await vscodeApi.commands.executeCommand("vscode.open", uri, {
+        viewColumn,
+        preview,
+      });
     }
   }
 
@@ -524,23 +919,39 @@ export class EditorBridge implements vscode.Disposable {
     }
   }
 
-  async openSimpleBrowser(url: string): Promise<void> {
+  async openSimpleBrowser(url?: string): Promise<void> {
     const vscodeApi = getVscode();
-    const trimmed = url.trim();
-    if (!trimmed) return;
-    let parsed: URL;
-    try {
-      parsed = new URL(trimmed);
-    } catch {
+    let targetRaw = url?.trim() ?? "";
+    if (!targetRaw) {
+      const input = await vscodeApi.window.showInputBox({
+        title: "Open Browser in VS Code",
+        prompt: "Enter a URL to open in VS Code Simple Browser",
+        value: this.lastBrowserUrl,
+        placeHolder: "http://localhost:3000",
+        validateInput: (val) => {
+          if (!val.trim()) return "Enter a URL (e.g. http://localhost:3000)";
+          return normalizeBrowserUrl(val)
+            ? undefined
+            : "Enter a valid http:// or https:// URL";
+        },
+      });
+      if (!input) return;
+      targetRaw = input;
+    }
+
+    const normalized = normalizeBrowserUrl(targetRaw);
+    if (!normalized) {
+      void vscodeApi.window.showWarningMessage(
+        `Invalid browser URL: ${targetRaw}`,
+      );
       return;
     }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return;
-    }
+
+    this.lastBrowserUrl = normalized;
     try {
-      await vscodeApi.commands.executeCommand("simpleBrowser.show", parsed.toString());
+      await vscodeApi.commands.executeCommand("simpleBrowser.show", normalized);
     } catch {
-      await this.openExternal(parsed.toString());
+      await this.openExternal(normalized);
     }
   }
 

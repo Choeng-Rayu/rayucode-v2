@@ -38,6 +38,8 @@ import {
 } from "@/components/ui";
 import { basenameOf, callRpc, cn, postToHost, useAppStore } from "@/lib";
 
+const DEFAULT_VISIBLE_FILES = 3;
+
 export interface TurnFileSummaryCardProps {
   snapshot: FileChangesSnapshotView;
   sessionId?: string;
@@ -169,8 +171,35 @@ export function TurnFileSummaryCard({
   const [conflictPrompt, setConflictPrompt] =
     React.useState<ConflictDialogState | null>(null);
   const [receiptExpanded, setReceiptExpanded] = React.useState(false);
+  const [showAllFiles, setShowAllFiles] = React.useState(false);
 
   const files = snapshot.files;
+  const orderedFiles = React.useMemo(
+    () =>
+      files
+        .map((entry, idx) => ({ entry, idx }))
+        .sort((a, b) => {
+          const turnDiff =
+            (b.entry.changedInLatestTurn ? 1 : 0) -
+            (a.entry.changedInLatestTurn ? 1 : 0);
+          if (turnDiff !== 0) return turnDiff;
+          const timeDiff =
+            (b.entry.updatedAtMs ?? 0) - (a.entry.updatedAtMs ?? 0);
+          if (timeDiff !== 0) return timeDiff;
+          return a.idx - b.idx;
+        })
+        .map(({ entry }) => entry),
+    [files],
+  );
+  const hasMoreFiles = orderedFiles.length > DEFAULT_VISIBLE_FILES;
+  const visibleFiles =
+    hasMoreFiles && !showAllFiles
+      ? orderedFiles.slice(0, DEFAULT_VISIBLE_FILES)
+      : orderedFiles;
+  const hiddenFileCount = Math.max(
+    0,
+    orderedFiles.length - DEFAULT_VISIBLE_FILES,
+  );
   const pendingFiles = React.useMemo(
     () => files.filter((f) => f.status === "pending"),
     [files],
@@ -220,6 +249,7 @@ export function TurnFileSummaryCard({
     setExpandedPaths({});
     setLoadedHunksByPath({});
     setReceiptExpanded(false);
+    setShowAllFiles(false);
     setConflictPrompt(null);
     setActionError(null);
   }, [resolvedSessionId]);
@@ -746,7 +776,7 @@ export function TurnFileSummaryCard({
 
         {/* Per-File Collapsible Rows */}
         <div role="list" className="divide-y divide-hairline-soft">
-          {files.map((entry) => {
+          {visibleFiles.map((entry) => {
             const isExpanded = Boolean(expandedPaths[entry.path]);
             const baseName = basenameOf(entry.displayPath);
             const relDir = relativeDirOf(entry.displayPath);
@@ -1089,6 +1119,40 @@ export function TurnFileSummaryCard({
             );
           })}
         </div>
+
+        {hasMoreFiles && (
+          <div className="border-t border-hairline-soft bg-pane/60">
+            <button
+              type="button"
+              data-testid={
+                showAllFiles
+                  ? "file-summary-collapse-list-btn"
+                  : "file-summary-expand-all-btn"
+              }
+              aria-expanded={showAllFiles}
+              onClick={() => setShowAllFiles((prev) => !prev)}
+              className="flex w-full cursor-pointer items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-ink transition-colors hover:bg-hover/60 hover:text-ink focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            >
+              {showAllFiles ? (
+                <>
+                  <ChevronUp className="size-3.5 shrink-0" aria-hidden="true" />
+                  <span>Show recent {DEFAULT_VISIBLE_FILES} files</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Expand all {orderedFiles.length} files (+{hiddenFileCount}{" "}
+                    more)
+                  </span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </section>
       {conflictDialog}
     </>

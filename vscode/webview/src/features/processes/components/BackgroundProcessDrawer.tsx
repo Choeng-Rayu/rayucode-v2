@@ -87,7 +87,6 @@ export function BackgroundProcessDrawer({
     cancelProcess,
     cleanupProcesses,
     openOutputFileInEditor,
-    openProcessTerminal,
     copyProcessOutput,
   } = useProcesses({
     drawerOpen: isVisible,
@@ -408,7 +407,6 @@ export function BackgroundProcessDrawer({
               }}
               onCopy={copyProcessOutput}
               onOpenFile={openOutputFileInEditor}
-              onOpenTerminal={openProcessTerminal}
               onStop={(taskId) => {
                 void cancelProcess(taskId);
               }}

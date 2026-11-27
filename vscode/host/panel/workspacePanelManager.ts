@@ -214,10 +214,17 @@ export class WorkspacePanelManager
         ) {
           this.broadcastWorkbenchSync();
         }
+        if (event.affectsConfiguration("rayucode.defaultPermissionMode")) {
+          this.sessionHub.broadcastDefaultPermissionModeSync();
+        }
         if (
+          event.affectsConfiguration("rayucode.binaryPath") ||
+          event.affectsConfiguration("rayucode.runtime.binaryPath")
+        ) {
+          void this.bridgeManager.restart();
+        } else if (
           event.affectsConfiguration("rayucode.apiSocketPath") ||
-          event.affectsConfiguration("rayucode.runtime.socketPath") ||
-          event.affectsConfiguration("rayucode.binaryPath")
+          event.affectsConfiguration("rayucode.runtime.socketPath")
         ) {
           void this.bridgeManager.reconnect();
         }
@@ -695,6 +702,8 @@ export class WorkspacePanelManager
       postToSurface,
     );
 
+    let cleaned = false;
+
     const sendInit = async (): Promise<void> => {
       const { theme, accent, density, reduceMotion } = this.getAppearance();
       const workbench = this.getWorkbenchSettings();
@@ -703,9 +712,11 @@ export class WorkspacePanelManager
         .toString()
         .replace(/\/$/, "");
       const workspaces = await this.getWorkspaceFoldersView();
+      if (cleaned) return;
       const workspaceLedger = await this.sessionHub
         .waitUntilWorkspacesReady()
         .catch(() => this.sessionHub.getWorkspaceLedger());
+      if (cleaned) return;
       const daemonStatus = this.bridgeManager.getStatus();
       const route = initialNav?.route ?? this.currentRoute;
       const sessionId =
@@ -737,7 +748,11 @@ export class WorkspacePanelManager
           : [],
         ...(accountStatus ? { accountStatus } : {}),
         fileChanges,
+        todos: sessionId ? this.sessionHub.getCachedTodos(sessionId) : [],
         workbench,
+        defaultPermissionMode: this.sessionHub.getDefaultPermissionMode(),
+        activePermissionMode: this.sessionHub.getActivePermissionMode(),
+        pendingPermissions: this.sessionHub.getPendingPermissionsSnapshot(),
       });
 
       if (initialNav?.openProcessesDrawer) {
@@ -756,11 +771,57 @@ export class WorkspacePanelManager
     };
 
     const msgListener = webview.onDidReceiveMessage(async (raw: unknown) => {
-      if (!vscodeApi.workspace.isTrusted) return;
-      await this.handleWebviewMessage(raw, postToSurface, sendInit);
+      if (!vscodeApi.workspace.isTrusted) {
+        if (typeof raw === "object" && raw !== null) {
+          const rec = raw as Record<string, unknown>;
+          if (rec.type === "rayucode.rpc.call" && typeof rec.id === "number") {
+            postToSurface({
+              type: "rayucode.rpc.result",
+              id: rec.id,
+              ok: false,
+              code: "WORKSPACE_UNTRUSTED",
+              error: "Trust this workspace to use RayuCode.",
+            });
+          } else if (
+            rec.type === "rayucode.harness.request" &&
+            typeof rec.frame === "object" &&
+            rec.frame !== null
+          ) {
+            const frameId = (rec.frame as Record<string, unknown>).id;
+            postToSurface({
+              type: "rayucode.harness.frame",
+              frame: {
+                ev: "error",
+                ...(typeof frameId === "number" ? { reply_to: frameId } : {}),
+                code: "workspace_untrusted",
+                message: "Trust this workspace to use RayuCode.",
+              },
+            });
+          }
+        }
+        return;
+      }
+      try {
+        await this.handleWebviewMessage(raw, postToSurface, sendInit);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (
+          typeof raw === "object" &&
+          raw !== null &&
+          (raw as Record<string, unknown>).type === "rayucode.rpc.call" &&
+          typeof (raw as Record<string, unknown>).id === "number"
+        ) {
+          postToSurface({
+            type: "rayucode.rpc.result",
+            id: (raw as { id: number }).id,
+            ok: false,
+            code: "INTERNAL_ERROR",
+            error: message,
+          });
+        }
+      }
     });
 
-    let cleaned = false;
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
@@ -865,12 +926,20 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openFile": {
-        await this.editorBridge.openFile({
-          path: message.path,
-          line: message.line,
-          column: message.column,
-          preview: message.preview,
-        });
+        try {
+          await this.editorBridge.openFile({
+            path: message.path,
+            line: message.line,
+            column: message.column,
+            preview: message.preview,
+            baseDir: this.sessionHub.getSessionWorkingDir(),
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          void vscodeApi.window.showWarningMessage(
+            `Unable to open file "${message.path}": ${msg}`,
+          );
+        }
         break;
       }
       case "rayucode.editor.openDiff": {
@@ -902,7 +971,7 @@ export class WorkspacePanelManager
       }
       case "rayucode.editor.openTerminal": {
         this.editorBridge.openTerminal({
-          cwd: message.cwd,
+          cwd: message.cwd ?? this.sessionHub.getSessionWorkingDir(),
           name: message.name,
         });
         break;

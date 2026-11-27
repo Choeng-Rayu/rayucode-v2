@@ -880,7 +880,6 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       path,
       line,
     });
-    useAppStore.getState().openCodeFile(path, line);
   }, []);
 
   const openDiffInEditor = React.useCallback((path: string) => {

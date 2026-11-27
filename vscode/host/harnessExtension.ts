@@ -129,26 +129,12 @@ export function activate(context: vscode.ExtensionContext): void {
     daemonBridge: {
       notifyAuthChanged: (provider) =>
         sessionHub.notifyDaemonAuthChanged(provider),
-      setApiKey: async (provider, apiKey) => {
-        const client = bridgeManager.getActiveClient();
-        if (client) {
-          await client.setApiKey(provider, apiKey);
-        }
-      },
-      clearApiKey: async (provider) => {
-        const client = bridgeManager.getActiveClient();
-        if (client) {
-          await client.clearApiKey(provider);
-        }
-      },
-      logoutProvider: async (provider) => {
-        const client = bridgeManager.getActiveClient();
-        if (!client) return;
-        const sid = sessionHub.getActiveSessionId();
-        if (sid) {
-          await client.runtimeCommand(sid, "logout", [provider, "confirm"]);
-        }
-      },
+      setApiKey: (provider, apiKey) =>
+        sessionHub.setDaemonApiKey(provider, apiKey),
+      clearApiKey: (provider) =>
+        sessionHub.clearDaemonApiKey(provider),
+      logoutProvider: (provider) =>
+        sessionHub.logoutDaemonProvider(provider),
     },
   });
 
@@ -519,10 +505,10 @@ export function activate(context: vscode.ExtensionContext): void {
       await panelManager.openPreferredSurface({ route: "remote" });
     }),
     vscode.commands.registerCommand("rayucode.openChanges", async () => {
-      await panelManager.openPreferredSurface({ route: "changes" });
+      await vscode.commands.executeCommand("workbench.view.scm");
     }),
     vscode.commands.registerCommand("rayucode.scmOpenChanges", async () => {
-      await panelManager.openPreferredSurface({ route: "changes" });
+      await vscode.commands.executeCommand("workbench.view.scm");
     }),
     vscode.commands.registerCommand("rayucode.openBackgroundProcesses", async () => {
       await panelManager.openPreferredSurface({
@@ -740,8 +726,24 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     // --- Daemon, Auth & Status Bar QuickPick Hub ---
+    vscode.commands.registerCommand("rayucode.openTerminal", (cwd?: string) => {
+      editorBridge.openTerminal({
+        cwd:
+          typeof cwd === "string" && cwd.trim()
+            ? cwd.trim()
+            : sessionHub.getSessionWorkingDir(),
+      });
+    }),
+    vscode.commands.registerCommand(
+      "rayucode.openBrowser",
+      async (url?: string) => {
+        await editorBridge.openSimpleBrowser(
+          typeof url === "string" ? url : undefined,
+        );
+      },
+    ),
     vscode.commands.registerCommand("rayucode.reloadDaemon", async () => {
-      const res = await bridgeManager.reloadDaemon(sessionHub.getActiveSessionId());
+      const res = await featureRouter.call("daemon.reload", undefined);
       if (res.ok) {
         void vscode.window.showInformationMessage(
           res.message ?? "RayuCode daemon reloaded.",
@@ -797,6 +799,16 @@ export function activate(context: vscode.ExtensionContext): void {
           action: () => vscode.commands.executeCommand("rayucode.newSession"),
         },
         {
+          label: "$(globe) Open Browser in VS Code",
+          description: "Simple Browser",
+          action: () => vscode.commands.executeCommand("rayucode.openBrowser"),
+        },
+        {
+          label: "$(terminal) Open Terminal in VS Code",
+          description: "Integrated terminal",
+          action: () => vscode.commands.executeCommand("rayucode.openTerminal"),
+        },
+        {
           label: "$(shield) Switch Permission Mode",
           description: `Current: ${currentModeLabel}`,
           action: async () => {
@@ -826,13 +838,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 );
               }
             } else {
-              await vscode.workspace
-                .getConfiguration("rayucode")
-                .update(
-                  "defaultPermissionMode",
-                  pickedMode.mode,
-                  vscode.ConfigurationTarget.Global,
-                );
+              await sessionHub.setDefaultPermissionMode(pickedMode.mode);
               syncStatusBar();
             }
           },

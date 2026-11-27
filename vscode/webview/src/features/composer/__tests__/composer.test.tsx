@@ -198,9 +198,9 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(onSelectEffort).toHaveBeenLastCalledWith("high");
     expect(screen.getByTestId("effort-level-value").textContent).toBe("High");
 
-    fireEvent.click(screen.getByLabelText("xHigh"));
+    fireEvent.click(screen.getByLabelText("Extra High"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("xhigh");
-    expect(screen.getByTestId("effort-level-value").textContent).toBe("xHigh");
+    expect(screen.getByTestId("effort-level-value").textContent).toBe("Extra High");
 
     fireEvent.click(screen.getByLabelText("Max"));
     expect(onSelectEffort).toHaveBeenLastCalledWith("max");
@@ -316,6 +316,41 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     );
     fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
 
+    const rpcCalls = posted
+      .filter(
+        (
+          m,
+        ): m is {
+          type: string;
+          method: string;
+          params: Record<string, unknown>;
+        } =>
+          Boolean(
+            m &&
+              typeof m === "object" &&
+              (m as { type?: string }).type === "rayucode.rpc.call",
+          ),
+      );
+
+    expect(rpcCalls).toContainEqual(
+      expect.objectContaining({
+        method: "sessions.setEffort",
+        params: expect.objectContaining({
+          sessionId: "ses_live_1",
+          effort: "high",
+        }),
+      }),
+    );
+    expect(rpcCalls).toContainEqual(
+      expect.objectContaining({
+        method: "sessions.setModel",
+        params: expect.objectContaining({
+          sessionId: "ses_live_1",
+          model: "rayu:claude-sonnet-4-5",
+        }),
+      }),
+    );
+
     const harnessFrames = posted
       .filter(
         (m): m is { type: string; frame: Record<string, unknown> } =>
@@ -327,22 +362,15 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       )
       .map((m) => m.frame);
 
-    expect(harnessFrames).toContainEqual(
-      expect.objectContaining({
-        req: "set_reasoning_effort",
-        effort: "high",
-      }),
-    );
-    expect(harnessFrames).toContainEqual(
-      expect.objectContaining({
-        req: "set_model",
-        model: "rayu:claude-sonnet-4-5",
-      }),
-    );
-    // Zero legacy type:/op: frames and zero duplicate set_permission_mode harness frames
+    // Zero duplicate raw harness frames for set_model / set_reasoning_effort / set_permission_mode
     expect(harnessFrames.some((f) => "type" in f || "op" in f)).toBe(false);
     expect(
-      harnessFrames.some((f) => f.req === "set_permission_mode"),
+      harnessFrames.some(
+        (f) =>
+          f.req === "set_permission_mode" ||
+          f.req === "set_model" ||
+          f.req === "set_reasoning_effort",
+      ),
     ).toBe(false);
 
     delete window.acquireVsCodeApi;
@@ -660,9 +688,10 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       "/workspace/rayu-cloud-api",
     );
     expect(useAppStore.getState().pendingComposerInjection).toBeNull();
-    expect(
-      screen.getByTestId("composer-workspace-picker").textContent,
-    ).toContain("rayu-cloud-api");
+    // VS Code Home composer follows the open VS Code workspace without folder/branch dropdowns
+    expect(screen.queryByTestId("composer-home-top-tray")).toBeNull();
+    expect(screen.queryByTestId("composer-workspace-picker")).toBeNull();
+    expect(screen.queryByTestId("composer-branch-picker")).toBeNull();
   });
 
   it("preserves injected composer draft across unmount/remount (e.g. AppShell form-factor resize across 560px/960px)", async () => {
@@ -971,25 +1000,42 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
         }),
       );
 
-      const setModelFrames = posted
-        .filter(
-          (m): m is { type: string; frame: Record<string, unknown> } =>
-            Boolean(
-              m &&
-                typeof m === "object" &&
-                (m as { type?: string }).type === "rayucode.harness.request",
-            ),
-        )
-        .map((m) => m.frame)
-        .filter((f) => f.req === "set_model");
+      const setModelRpcCalls = posted.filter(
+        (
+          m,
+        ): m is {
+          type: string;
+          method: string;
+          params: Record<string, unknown>;
+        } =>
+          Boolean(
+            m &&
+              typeof m === "object" &&
+              (m as { type?: string }).type === "rayucode.rpc.call" &&
+              (m as { method?: string }).method === "sessions.setModel",
+          ),
+      );
 
-      expect(setModelFrames).toContainEqual(
+      expect(setModelRpcCalls).toContainEqual(
         expect.objectContaining({
-          req: "set_model",
-          session_id: "ses_same_bare_id",
-          model: "rayu:claude-sonnet-4-5",
+          method: "sessions.setModel",
+          params: expect.objectContaining({
+            sessionId: "ses_same_bare_id",
+            model: "rayu:claude-sonnet-4-5",
+          }),
         }),
       );
+
+      const duplicateSetModelFrames = posted.filter(
+        (m) =>
+          Boolean(
+            m &&
+              typeof m === "object" &&
+              (m as { type?: string }).type === "rayucode.harness.request" &&
+              (m as { frame?: { req?: string } }).frame?.req === "set_model",
+          ),
+      );
+      expect(duplicateSetModelFrames).toHaveLength(0);
     } finally {
       consoleErrorSpy.mockRestore();
       delete window.acquireVsCodeApi;
@@ -1191,26 +1237,44 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       fireEvent.click(screen.getByRole("button", { name: "High" }));
       expect(onSelectEffort).toHaveBeenCalledWith("high");
 
-      const effortFrames = posted
-        .filter(
-          (m): m is { type: string; frame: Record<string, unknown> } =>
-            Boolean(
-              m &&
-                typeof m === "object" &&
-                (m as { type?: string }).type === "rayucode.harness.request",
-            ),
-        )
-        .map((m) => m.frame)
-        .filter((f) => f.req === "set_reasoning_effort");
+      const effortRpcCalls = posted.filter(
+        (
+          m,
+        ): m is {
+          type: string;
+          method: string;
+          params: Record<string, unknown>;
+        } =>
+          Boolean(
+            m &&
+              typeof m === "object" &&
+              (m as { type?: string }).type === "rayucode.rpc.call" &&
+              (m as { method?: string }).method === "sessions.setEffort",
+          ),
+      );
 
-      expect(effortFrames).toContainEqual(
+      expect(effortRpcCalls).toContainEqual(
         expect.objectContaining({
-          req: "set_reasoning_effort",
-          session_id: "ses_streaming_opts",
-          effort: "high",
-          apply_next_turn: true,
+          method: "sessions.setEffort",
+          params: expect.objectContaining({
+            sessionId: "ses_streaming_opts",
+            effort: "high",
+            applyNextTurn: true,
+          }),
         }),
       );
+
+      const duplicateEffortFrames = posted.filter(
+        (m) =>
+          Boolean(
+            m &&
+              typeof m === "object" &&
+              (m as { type?: string }).type === "rayucode.harness.request" &&
+              (m as { frame?: { req?: string } }).frame?.req ===
+                "set_reasoning_effort",
+          ),
+      );
+      expect(duplicateEffortFrames).toHaveLength(0);
     } finally {
       delete window.acquireVsCodeApi;
     }
@@ -1312,16 +1376,16 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       />,
     );
 
-    // Configure Session Alpha: xHigh + Plan mode
+    // Configure Session Alpha: Extra High + Plan mode
     fireEvent.click(screen.getByTestId("model-effort-trigger"));
-    fireEvent.click(screen.getByRole("button", { name: "xHigh" }));
+    fireEvent.click(screen.getByRole("button", { name: "Extra High" }));
     fireEvent.click(screen.getByTestId("permission-mode-trigger"));
     fireEvent.click(
       document.querySelector('[data-perm-id="plan"]') as HTMLButtonElement,
     );
 
     expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
-      "xHigh",
+      "Extra High",
     );
     expect(
       screen.getByTestId("permission-mode-trigger").getAttribute(
@@ -1367,7 +1431,7 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     );
 
     expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
-      "xHigh",
+      "Extra High",
     );
     expect(
       screen.getByTestId("permission-mode-trigger").getAttribute(
@@ -1391,6 +1455,53 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       screen.getByTestId("permission-mode-trigger").getAttribute(
         "data-permission-mode",
       ),
+    ).toBe("fullManage");
+  });
+
+  it("reverts PermissionPopover UI state and shows permission-sync-error when sessions.setPermissionMode fails, and syncs on rayucode.permission.modeSync", async () => {
+    const onChange = vi.fn();
+    vi.spyOn(rpcClient, "callRpc").mockRejectedValueOnce(
+      new Error("daemon rejected mode change"),
+    );
+
+    renderWithQuery(
+      <PermissionPopover
+        value="default"
+        onChange={onChange}
+        sessionId="ses_perm_fail"
+        defaultOpen
+      />,
+    );
+
+    const planOption = document.querySelector(
+      '[data-perm-id="plan"]',
+    ) as HTMLButtonElement;
+    fireEvent.click(planOption);
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenNthCalledWith(1, "plan");
+      expect(onChange).toHaveBeenNthCalledWith(2, "default");
+      expect(screen.getByTestId("permission-sync-error").textContent).toContain(
+        "daemon rejected mode change",
+      );
+    });
+
+    // Host rayucode.permission.modeSync updates both defaultPermissionMode and session prefs
+    useAppStore.getState().applyHostMessage({
+      type: "rayucode.permission.modeSync",
+      mode: "acceptEdits",
+      isDefault: true,
+    });
+    expect(useAppStore.getState().defaultPermissionMode).toBe("acceptEdits");
+
+    useAppStore.getState().applyHostMessage({
+      type: "rayucode.permission.modeSync",
+      sessionId: "ses_perm_fail",
+      mode: "fullManage",
+    });
+    expect(
+      useAppStore.getState().sessionPrefsBySession["ses_perm_fail"]
+        ?.permissionMode,
     ).toBe("fullManage");
   });
 });

@@ -150,7 +150,7 @@ export function classifyRustTool(toolName: string): ToolDomainMeta {
       group: "bash_bg",
       groupLabel: "Execution",
       pillClass: "bg-brand-softer text-brand-text",
-      actionLabel: lower === "bg" ? "Open Process Viewer" : "Open Terminal",
+      actionLabel: lower === "bg" ? "Open Process Viewer" : undefined,
     };
   }
 
@@ -182,7 +182,7 @@ export function classifyRustTool(toolName: string): ToolDomainMeta {
       pillClass: "bg-pill-think-bg text-pill-think-fg",
       actionLabel:
         lower === "todo"
-          ? "View Todos"
+          ? undefined
           : lower === "memory"
             ? "Open Memory Graph"
             : "View Sessions",
@@ -200,10 +200,7 @@ export function classifyRustTool(toolName: string): ToolDomainMeta {
       group: "panel_ask_user",
       groupLabel: "Panel & Interactive",
       pillClass: "bg-pill-edit-bg text-pill-edit-fg",
-      actionLabel:
-        lower === "panel" || lower === "side_panel" || lower === "applet"
-          ? "Open in Inspector"
-          : undefined,
+      actionLabel: undefined,
     };
   }
 
@@ -393,14 +390,13 @@ export function ToolStepCard({
           path: step.filePath,
           line: step.line,
         });
-        store.openCodeFile(step.filePath, step.line ?? null);
       }
       return;
     }
 
     if (step.url) {
       postToHost({
-        type: "rayucode.editor.openSimpleBrowser",
+        type: "rayucode.editor.openExternal",
         url: step.url,
       });
       return;
@@ -408,10 +404,6 @@ export function ToolStepCard({
 
     if (lower === "bg") {
       store.setBackgroundDrawerOpen(true);
-    } else if (lower === "todo") {
-      store.openRightTab("tools");
-    } else if (lower === "panel" || lower === "side_panel" || lower === "applet") {
-      store.openRightTab("artifacts");
     } else if (lower === "swarm") {
       store.setActiveRoute("swarm");
     } else if (lower === "schedule" || lower === "overnight" || lower === "ambient") {

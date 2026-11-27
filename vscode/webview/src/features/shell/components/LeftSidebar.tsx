@@ -15,7 +15,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -85,18 +84,6 @@ export function IconRail({
     }
   }, [accountQuery.data, accountStatus, setAccountStatus]);
 
-  const telegramQuery = useQuery({
-    queryKey: ["shell", "remote", "telegram"],
-    queryFn: () => callRpc("remote.telegram.status"),
-    staleTime: 30_000,
-  });
-
-  const changesQuery = useQuery({
-    queryKey: ["shell", "changes", "status"],
-    queryFn: () => callRpc("changes.status"),
-    staleTime: 15_000,
-  });
-
   const account = accountStatus ?? accountQuery.data ?? null;
   const isSignedIn = Boolean(account?.signedIn);
 
@@ -111,19 +98,6 @@ export function IconRail({
           ).length,
     [activeSessionId, backgroundTasks],
   );
-
-  const hasLiveDotForRoute = (route: AppRoute): boolean => {
-    switch (route) {
-      case "changes":
-        return Boolean((changesQuery.data?.files.length ?? 0) > 0);
-      case "remote":
-        return Boolean(
-          telegramQuery.data?.linked && telegramQuery.data?.daemonOnline,
-        );
-      default:
-        return false;
-    }
-  };
 
   const isNavItemActive = (itemId: AppRoute) => {
     if (itemId === "home") {
@@ -219,10 +193,9 @@ export function IconRail({
         </Tooltip>
       </div>
 
-      {/* Exact 5 primary navigation items (matching Desktop) */}
+      {/* Primary navigation items */}
       {PRIMARY_NAV_ITEMS.map((item) => {
         const active = isNavItemActive(item.id);
-        const showDot = hasLiveDotForRoute(item.id);
         return (
           <Tooltip key={item.id}>
             <TooltipTrigger asChild>
@@ -243,15 +216,6 @@ export function IconRail({
                 )}
               >
                 <NavGlyph icon={item.icon} />
-                {showDot && (
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      "rail-live-dot absolute top-[7px] right-[7px] size-1.5 rounded-full bg-brand-bright ring-2",
-                      sidebarCollapsed ? "ring-canvas" : "ring-chrome",
-                    )}
-                  />
-                )}
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">{item.label}</TooltipContent>
@@ -287,7 +251,32 @@ export function IconRail({
 
       <div className="flex-1" />
 
-      {/* Bottom Icon 1: Plan & Usage Popover (#i-ring) */}
+      {/* Bottom Icon 1: Direct Settings Shortcut */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label="Settings"
+            aria-current={activeRoute === "settings" ? "page" : undefined}
+            data-testid="rail-nav-settings"
+            onClick={() => {
+              setActiveRoute("settings");
+              onCloseDrawer?.();
+            }}
+            className={cn(
+              "relative grid size-9 cursor-pointer place-items-center rounded-[10px] border transition-all",
+              activeRoute === "settings"
+                ? "border-premium bg-active text-ink shadow-bevel-surface"
+                : "border-transparent text-muted-ink hover:border-hairline hover:bg-hover hover:text-ink",
+            )}
+          >
+            <Settings className="size-[17px]" strokeWidth={1.7} aria-hidden="true" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">Settings</TooltipContent>
+      </Tooltip>
+
+      {/* Bottom Icon 2: Plan & Usage Popover (#i-ring) */}
       <Popover
         open={usageOpen}
         onOpenChange={(open) => {

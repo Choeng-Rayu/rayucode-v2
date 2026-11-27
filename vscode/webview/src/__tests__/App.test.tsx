@@ -90,11 +90,13 @@ describe("App end-to-end integration", () => {
       authLoaded: true,
       authBypassed: false,
       authDialogOpen: false,
-      inspectorOpen: false,
+      activeSettingsSection: "account",
       mobileSidebarOpen: false,
       sidebarCollapsed: false,
       backgroundDrawerOpen: false,
       backgroundTasks: [],
+      todosBySession: {},
+      turnDurationsBySession: {},
       editorSelection: null,
       pendingComposerInjection: null,
       composerDrafts: {},
@@ -134,7 +136,7 @@ describe("App end-to-end integration", () => {
   });
 
   it(
-    "mounts Home route and navigates cleanly across all 8 AppRoutes",
+    "mounts Home route, navigates core routes, and transparently routes workspace domains into Settings",
     async () => {
       renderApp();
 
@@ -144,18 +146,13 @@ describe("App end-to-end integration", () => {
         "home",
       );
 
-      const routes: Array<{ route: AppRoute; testId: string }> = [
+      const coreRoutes: Array<{ route: AppRoute; testId: string }> = [
         { route: "workspace", testId: "chat-workspace-view" },
-        { route: "swarm", testId: "swarm-view" },
-        { route: "agents", testId: "agents-view" },
-        { route: "automations", testId: "automations-view" },
         { route: "plugins", testId: "plugins-view" },
-        { route: "changes", testId: "changes-view" },
-        { route: "remote", testId: "remote-view" },
         { route: "settings", testId: "settings-view" },
       ];
 
-      for (const { route, testId } of routes) {
+      for (const { route, testId } of coreRoutes) {
         act(() => {
           __dispatchHostMessageForTest({
             type: "rayucode.ui.navigate",
@@ -174,6 +171,55 @@ describe("App end-to-end integration", () => {
           route,
         );
       }
+
+      // Relocated Workspace routes normalize into Settings -> matching Workspace section
+      const relocatedRoutes: Array<{
+        route: AppRoute;
+        section: string;
+        testId: string;
+      }> = [
+        { route: "swarm", section: "swarm", testId: "swarm-view" },
+        { route: "agents", section: "agents", testId: "agents-view" },
+        { route: "automations", section: "automations", testId: "automations-view" },
+        { route: "remote", section: "remote", testId: "remote-view" },
+      ];
+
+      for (const { route, section, testId } of relocatedRoutes) {
+        act(() => {
+          __dispatchHostMessageForTest({
+            type: "rayucode.ui.navigate",
+            route,
+            sessionId: "ses_vscode_shell",
+          });
+        });
+
+        await waitFor(
+          () => {
+            expect(screen.getByTestId("settings-view")).toBeTruthy();
+            expect(screen.getByTestId(testId)).toBeTruthy();
+          },
+          { timeout: 10_000 },
+        );
+        expect(screen.getByTestId("app-shell").getAttribute("data-route")).toBe(
+          "settings",
+        );
+        expect(useAppStore.getState().activeSettingsSection).toBe(section);
+      }
+
+      // Legacy "changes" route normalizes cleanly back to active workspace
+      act(() => {
+        __dispatchHostMessageForTest({
+          type: "rayucode.ui.navigate",
+          route: "changes",
+          sessionId: "ses_vscode_shell",
+        });
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("chat-workspace-view")).toBeTruthy();
+      });
+      expect(screen.getByTestId("app-shell").getAttribute("data-route")).toBe(
+        "workspace",
+      );
     },
     20_000,
   );
@@ -331,7 +377,7 @@ describe("App end-to-end integration", () => {
     });
   });
 
-  it("renders Right Inspector diff and browser tabs cleanly and shows close button in compact sheet mode", async () => {
+  it("omits Right Inspector chrome in compact sidebar mode and renders live shared TaskChecklistCard on rayucode.todos.updated", async () => {
     Object.defineProperty(window, "innerWidth", {
       writable: true,
       configurable: true,
@@ -340,23 +386,35 @@ describe("App end-to-end integration", () => {
 
     renderApp();
     expect(await screen.findByTestId("home-page")).toBeTruthy();
+    expect(screen.queryByTestId("compact-inspector-trigger")).toBeNull();
+    expect(screen.queryByTestId("compact-changes-trigger")).toBeNull();
+    expect(screen.queryByTestId("slide-over-inspector-sheet")).toBeNull();
 
-    // Open compact inspector sheet in context mode
-    fireEvent.click(screen.getByTestId("compact-inspector-trigger"));
-    expect(screen.getByTestId("slide-over-inspector-sheet")).toBeTruthy();
-    const closeBtn = screen.getByTestId("inspector-sheet-close-btn");
-    expect(closeBtn).toBeTruthy();
-
-    // Switch to Simple Browser tab -> renders browser view without stale code header
-    fireEvent.click(screen.getByTestId("inspector-strip-browser"));
-    expect(await screen.findByTestId("inspector-browser-view")).toBeTruthy();
-
-    // Return from document mode to context mode, then switch to Changes & Diff tab
-    fireEvent.click(screen.getByLabelText("Close document"));
-    fireEvent.click(screen.getByTestId("inspector-strip-diff"));
-    await waitFor(() => {
-      expect(screen.getByTestId("changes-view")).toBeTruthy();
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.ui.navigate",
+        route: "workspace",
+        sessionId: "ses_vscode_shell",
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.todos.updated",
+        sessionId: "ses_vscode_shell",
+        todos: [
+          { id: "t1", content: "Inspect protocol", status: "completed" },
+          {
+            id: "t2",
+            content: "Render live task card",
+            status: "in_progress",
+            activeForm: "Rendering live task card",
+          },
+        ],
+      });
     });
+
+    expect(await screen.findByTestId("task-checklist-card")).toBeTruthy();
+    expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+      "1/2",
+    );
 
     // Restore window width for subsequent tests
     Object.defineProperty(window, "innerWidth", {
@@ -473,11 +531,12 @@ describe("App end-to-end integration", () => {
 
     // Clicking nav item inside compact drawer closes the slide-over
     expect(screen.queryByTestId("rail-nav-swarm")).toBeNull();
-    fireEvent.click(screen.getByTestId("rail-nav-automations"));
+    expect(screen.queryByTestId("rail-nav-automations")).toBeNull();
+    fireEvent.click(screen.getByTestId("rail-nav-plugins"));
     await waitFor(() => {
       expect(screen.queryByTestId("slide-over-sessions-drawer")).toBeNull();
     });
-    expect(useAppStore.getState().activeRoute).toBe("automations");
+    expect(useAppStore.getState().activeRoute).toBe("plugins");
     expect(postSpy).not.toHaveBeenCalled();
 
     Object.defineProperty(window, "innerWidth", {

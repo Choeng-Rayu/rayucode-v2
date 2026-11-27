@@ -23,6 +23,7 @@ import type {
   MemoryStatusView,
   ModelRouteOptionView,
   OvernightRunView,
+  PermissionModeId,
   ProviderEntryView,
   ProviderTransport,
   QualityStatusView,
@@ -108,6 +109,228 @@ interface MockBridgeState {
     reduceMotion: boolean;
   };
   workbench: WorkbenchPreferences;
+}
+
+interface MockV116State {
+  capabilitiesSupported: boolean;
+  configSupported: boolean;
+  busyMode: boolean;
+  rejectPatchKeys: Record<string, string>;
+  commands: Array<{
+    name: string;
+    description: string;
+    category: string;
+    arg_hint?: string;
+    requires_session?: boolean;
+    dispatch:
+      | { kind: "api_request"; req: string }
+      | { kind: "runtime_command"; command: string }
+      | { kind: "skill"; name: string };
+  }>;
+  permissionModes: Array<{
+    id: string;
+    label: string;
+    description: string;
+    is_default?: boolean;
+  }>;
+  featureDescriptors: Array<{
+    key: string;
+    enabled: boolean;
+    description: string;
+    requires_restart?: boolean;
+  }>;
+  configPath: string;
+  configSections: string[];
+  configValues: Record<string, unknown>;
+  configSchema: Array<{
+    key: string;
+    section: string;
+    label: string;
+    description: string;
+    kind: "boolean" | "string" | "integer" | "number" | "enum" | "string_array";
+    options?: Array<{ value: string; label: string }>;
+    default_value: unknown;
+    apply_mode: "immediate" | "next_turn" | "restart_required";
+  }>;
+}
+
+function createDefaultMockV116State(): MockV116State {
+  return {
+    capabilitiesSupported: true,
+    configSupported: true,
+    busyMode: false,
+    rejectPatchKeys: {},
+    commands: [
+      {
+        name: "compact",
+        description: "Summarize conversation history to free context",
+        category: "session",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "compact" },
+      },
+      {
+        name: "effort",
+        description: "Set reasoning effort for the active model",
+        category: "model",
+        arg_hint: "<low|medium|high|xhigh|max>",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "set_reasoning_effort" },
+      },
+      {
+        name: "model",
+        description: "Switch provider route for the active session",
+        category: "model",
+        arg_hint: "<id>",
+        requires_session: true,
+        dispatch: { kind: "api_request", req: "set_model" },
+      },
+      {
+        name: "review",
+        description: "Run an independent engineering and diff review pass",
+        category: "quality",
+        requires_session: true,
+        dispatch: { kind: "runtime_command", command: "review" },
+      },
+      {
+        name: "context",
+        description: "Inspect context token usage breakdown",
+        category: "session",
+        requires_session: true,
+        dispatch: { kind: "runtime_command", command: "context" },
+      },
+      {
+        name: "clear",
+        description: "Reset to a fresh session on Home",
+        category: "session",
+        dispatch: { kind: "runtime_command", command: "clear" },
+      },
+    ],
+    permissionModes: [
+      {
+        id: "default",
+        label: "Ask",
+        description: "Ask before running tools that change anything.",
+        is_default: true,
+      },
+      {
+        id: "accept_edits",
+        label: "Auto-edit",
+        description: "Apply file edits without asking.",
+      },
+      {
+        id: "plan",
+        label: "Plan",
+        description: "Investigate and write a plan without editing.",
+      },
+    ],
+    featureDescriptors: [
+      {
+        key: "features.swarm",
+        enabled: true,
+        description: "Enable parallel coordinator/worker swarm mission control",
+        requires_restart: true,
+      },
+      {
+        key: "features.memory",
+        enabled: true,
+        description: "Persist and recall architectural facts across sessions",
+        requires_restart: false,
+      },
+    ],
+    configPath: "~/.rayu/config.toml",
+    configSections: ["provider", "compaction", "features", "safety", "agents"],
+    configValues: {
+      "provider.default_model": "claude-sonnet-4-5",
+      "provider.default_effort": "medium",
+      "provider.service_tier": "auto",
+      "provider.cache_ttl": "5m",
+      "features.memory": true,
+      "features.swarm": true,
+      "features.mermaid": true,
+      "features.auto_poke": false,
+      "features.todo_gate_digest": true,
+      "features.todo_gate_diagnostics": true,
+      "features.message_timestamps": true,
+      "features.persist_memory_injections": true,
+      "features.kv_cache_miss_notices": false,
+      "features.check_updates": true,
+      "features.update_channel": "stable",
+      "safety.default_permission_mode": "default",
+    },
+    configSchema: [
+      {
+        key: "provider.default_model",
+        section: "provider",
+        label: "Default model route",
+        description: "Primary model route used for new sessions",
+        kind: "string",
+        default_value: "claude-sonnet-4-5",
+        apply_mode: "next_turn",
+      },
+      {
+        key: "provider.default_effort",
+        section: "provider",
+        label: "Default reasoning effort",
+        description: "Default thinking budget for reasoning models",
+        kind: "enum",
+        default_value: "medium",
+        apply_mode: "next_turn",
+      },
+      {
+        key: "features.swarm",
+        section: "features",
+        label: "Swarm Multi-Agent Orchestration",
+        description: "Enable parallel coordinator/worker swarm mission control",
+        kind: "boolean",
+        default_value: true,
+        apply_mode: "restart_required",
+      },
+      {
+        key: "features.memory",
+        section: "features",
+        label: "Semantic & Jev Memory Graph",
+        description: "Persist and recall architectural facts across sessions",
+        kind: "boolean",
+        default_value: true,
+        apply_mode: "immediate",
+      },
+      {
+        key: "features.update_channel",
+        section: "features",
+        label: "Update Channel",
+        description: "Release channel for managed RayuCode binaries",
+        kind: "enum",
+        options: [
+          { value: "stable", label: "stable" },
+          { value: "preview", label: "preview" },
+          { value: "main", label: "main" },
+        ],
+        default_value: "stable",
+        apply_mode: "restart_required",
+      },
+    ],
+  };
+}
+
+let mockV116State: MockV116State = createDefaultMockV116State();
+
+export function __setMockV116StateForTest(
+  patch: Partial<MockV116State>,
+): void {
+  mockV116State = {
+    ...mockV116State,
+    ...patch,
+    configValues: patch.configValues
+      ? { ...patch.configValues }
+      : { ...mockV116State.configValues },
+    rejectPatchKeys: patch.rejectPatchKeys
+      ? { ...patch.rejectPatchKeys }
+      : { ...mockV116State.rejectPatchKeys },
+  };
+}
+
+export function __resetMockV116StateForTest(): void {
+  mockV116State = createDefaultMockV116State();
 }
 
 const mockState: MockBridgeState = {
@@ -887,6 +1110,8 @@ const mockState: MockBridgeState = {
         available: true,
         detail: "Balanced speed & reasoning",
         supportsEffort: true,
+        supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "medium",
         supportsFast: true,
         contextWindow: 200_000,
       },
@@ -902,6 +1127,8 @@ const mockState: MockBridgeState = {
         available: true,
         detail: "Deep architecture & complex refactors",
         supportsEffort: true,
+        supportedEfforts: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffort: "high",
         supportsFast: true,
         contextWindow: 200_000,
       },
@@ -916,8 +1143,51 @@ const mockState: MockBridgeState = {
         available: false,
         detail: "Configure OpenAI API key",
         supportsEffort: true,
+        supportedEfforts: ["none", "minimal", "low", "medium", "high", "xhigh"],
+        defaultEffort: "medium",
         supportsFast: true,
         contextWindow: 256_000,
+      },
+      {
+        id: "gpt-4o-mini",
+        model: "gpt-4o-mini",
+        modelSpec: "gpt-4o-mini",
+        provider: "openai",
+        label: "GPT-4o Mini",
+        apiMethod: "responses",
+        available: true,
+        detail: "Fast non-reasoning model",
+        supportsEffort: false,
+        supportedEfforts: [],
+        defaultEffort: null,
+        supportsFast: true,
+        contextWindow: 128_000,
+      },
+      {
+        id: "gemini-2.5-pro",
+        model: "gemini-2.5-pro",
+        modelSpec: "gemini-2.5-pro",
+        provider: "google",
+        label: "Gemini 2.5 Pro",
+        apiMethod: "gemini",
+        available: true,
+        detail: "1M-token long-context synthesis",
+        supportsEffort: true,
+        supportsFast: false,
+        contextWindow: 1_000_000,
+      },
+      {
+        id: "deepseek-r1",
+        model: "deepseek-r1",
+        modelSpec: "deepseek-r1",
+        provider: "deepseek",
+        label: "DeepSeek R1",
+        apiMethod: "openai-compatible",
+        available: true,
+        detail: "Open-weight reasoning model",
+        supportsEffort: true,
+        supportsFast: false,
+        contextWindow: 128_000,
       },
     ],
   },
@@ -2483,6 +2753,21 @@ export async function handleMockRpcCall<M extends RpcMethod>(
           },
         ],
       } as RpcResult<M>;
+    case "settings.permission.getDefault":
+      return {
+        mode: (mockState as { defaultPermissionMode?: PermissionModeId })
+          .defaultPermissionMode ?? "default",
+      } as RpcResult<M>;
+    case "settings.permission.setDefault": {
+      const p = (params ?? {}) as {
+        mode?: PermissionModeId;
+        applyToActiveSession?: boolean;
+      };
+      const nextMode: PermissionModeId = p.mode ?? "default";
+      (mockState as { defaultPermissionMode?: PermissionModeId }).defaultPermissionMode =
+        nextMode;
+      return { ok: true, mode: nextMode } as RpcResult<M>;
+    }
     case "settings.runtime.get":
       return {
         socketPath: mockState.daemon.socketPath ?? "/run/user/1000/rayu-daemon.sock",
@@ -2490,6 +2775,120 @@ export async function handleMockRpcCall<M extends RpcMethod>(
         autoStart: true,
         transport: mockState.modelSettings.transport,
       } as RpcResult<M>;
+
+    // --- v1.16 Capabilities, Config & Session Controls ---
+    case "capabilities.get":
+      return {
+        supported: mockV116State.capabilitiesSupported,
+        commands: mockV116State.capabilitiesSupported
+          ? mockV116State.commands.map((c) => ({ ...c }))
+          : [],
+        permission_modes: mockV116State.capabilitiesSupported
+          ? mockV116State.permissionModes.map((m) => ({ ...m }))
+          : [],
+        features: mockV116State.capabilitiesSupported
+          ? mockV116State.featureDescriptors.map((f) => ({ ...f }))
+          : [],
+      } as RpcResult<M>;
+    case "config.get":
+      if (!mockV116State.configSupported) {
+        return { supported: false, config: null } as RpcResult<M>;
+      }
+      return {
+        supported: true,
+        config: {
+          path: mockV116State.configPath,
+          sections: [...mockV116State.configSections],
+          values: { ...mockV116State.configValues },
+          schema: mockV116State.configSchema.map((f) => ({ ...f })),
+        },
+      } as RpcResult<M>;
+    case "config.patch": {
+      if (!mockV116State.configSupported) {
+        return {
+          ok: false,
+          code: "unsupported",
+          message: "This Rayu daemon does not support config_v1.",
+        } as RpcResult<M>;
+      }
+      const patch = (params as { patch?: Record<string, unknown> })?.patch ?? {};
+      for (const [k, v] of Object.entries(patch)) {
+        const rejection = mockV116State.rejectPatchKeys[k];
+        if (rejection) {
+          return {
+            ok: false,
+            code: "invalid_request",
+            message: rejection,
+          } as RpcResult<M>;
+        }
+        mockV116State.configValues[k] = v;
+        if (k === "provider.default_model" && typeof v === "string") {
+          mockState.modelSettings.defaultModel = v;
+        }
+        if (k.startsWith("features.")) {
+          const fk = k.slice("features.".length);
+          if (fk in mockState.features) {
+            (mockState.features as Record<string, unknown>)[fk] = v;
+          }
+        }
+      }
+      const patchedKeys = new Set(Object.keys(patch));
+      const requiresRestart = mockV116State.configSchema.some(
+        (field) =>
+          patchedKeys.has(field.key) && field.apply_mode === "restart_required",
+      );
+      return {
+        ok: true,
+        requiresRestart,
+        config: {
+          path: mockV116State.configPath,
+          sections: [...mockV116State.configSections],
+          values: { ...mockV116State.configValues },
+          schema: mockV116State.configSchema.map((f) => ({ ...f })),
+        },
+      } as RpcResult<M>;
+    }
+    case "sessions.setModel": {
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          deferred: true,
+          code: "busy",
+          message: "Applies on next turn",
+        } as RpcResult<M>;
+      }
+      const p = params as { model?: string };
+      if (p?.model) mockState.modelSettings.defaultModel = p.model;
+      return { ok: true } as RpcResult<M>;
+    }
+    case "sessions.setEffort": {
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          deferred: true,
+          code: "busy",
+          message: "Applies on next turn",
+        } as RpcResult<M>;
+      }
+      return { ok: true } as RpcResult<M>;
+    }
+    case "sessions.runtimeCommand": {
+      const p = params as { command?: string; args?: string[] };
+      if (mockV116State.busyMode) {
+        return {
+          ok: false,
+          command: p?.command ?? "",
+          code: "busy",
+          message: "Turn in progress; queued until active turn finishes.",
+        } as RpcResult<M>;
+      }
+      return {
+        ok: true,
+        command: p?.command ?? "",
+        message: `Ran /${p?.command ?? ""}`,
+        data: {},
+      } as RpcResult<M>;
+    }
 
     // --- Inspector ---
     case "inspector.sidePanel.get":

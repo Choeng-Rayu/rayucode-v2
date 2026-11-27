@@ -4,11 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type {
-  RayucodeClient,
-  RuntimeCommand,
-  ServerFrame,
-  SessionInfo,
+import {
+  HarnessError,
+  type RayucodeClient,
+  type RuntimeCommand,
+  type ServerFrame,
+  type SessionInfo,
 } from "@rayu-dev/rayucode-sdk";
 import { WorkspaceRegistry } from "@rayu-dev/rayucode-session-core/host";
 import type { HostToWebviewMessage } from "../shared/vscodeProtocol.js";
@@ -66,8 +67,38 @@ class FakeRayucodeClient extends EventEmitter {
   readonly setModelCalls: Array<{ sessionId: string; model: string }> = [];
   readonly setEffortCalls: Array<{ sessionId: string; effort: string }> = [];
   readonly setPermissionModeCalls: Array<{ sessionId: string; mode: string }> = [];
+  readonly attachCalls: string[] = [];
+  readonly historyCalls: string[] = [];
+  readonly importExternalCalls: Array<{
+    items: Array<{
+      source: string;
+      external_session_id: string;
+      external_path?: string;
+      working_dir?: string;
+    }>;
+    forkOnConflict?: boolean;
+  }> = [];
   readonly authNotifyCalls: string[] = [];
   throwTimeoutOnControl = false;
+  throwBusyOnControl = false;
+  onImportExternalSessions?: (
+    items: Array<{
+      source: string;
+      external_session_id: string;
+      external_path?: string;
+      working_dir?: string;
+    }>,
+    opts?: { forkOnConflict?: boolean },
+  ) => Promise<{
+    sessions: SessionInfo[];
+    skipped: Array<{
+      source: string;
+      external_session_id: string;
+      reason: string;
+      message?: string;
+      existing_session_id?: string;
+    }>;
+  }>;
 
   private readonly sessionsById: Map<string, SessionInfo>;
   private createSeq = 0;
@@ -102,6 +133,7 @@ class FakeRayucodeClient extends EventEmitter {
   }
 
   async attachSession(sessionId: string): Promise<SessionInfo> {
+    this.attachCalls.push(sessionId);
     const existing = this.sessionsById.get(sessionId);
     if (existing) return existing;
     const info: SessionInfo = {
@@ -113,6 +145,65 @@ class FakeRayucodeClient extends EventEmitter {
     };
     this.sessionsById.set(sessionId, info);
     return info;
+  }
+
+  async getHistory(sessionId: string): Promise<Array<Record<string, unknown>>> {
+    this.historyCalls.push(sessionId);
+    return [{ role: "user", content: `History for ${sessionId}` }];
+  }
+
+  async getHistoryWithImages(sessionId: string): Promise<{
+    messages: Array<Record<string, unknown>>;
+    images: Array<Record<string, unknown>>;
+  }> {
+    this.historyCalls.push(sessionId);
+    return {
+      messages: [{ role: "user", content: `History for ${sessionId}` }],
+      images: [],
+    };
+  }
+
+  async importExternalSessions(
+    items: Array<{
+      source: string;
+      external_session_id: string;
+      external_path?: string;
+      working_dir?: string;
+    }>,
+    opts?: { forkOnConflict?: boolean },
+  ): Promise<{
+    sessions: SessionInfo[];
+    skipped: Array<{
+      source: string;
+      external_session_id: string;
+      reason: string;
+      message?: string;
+      existing_session_id?: string;
+    }>;
+  }> {
+    this.importExternalCalls.push({
+      items,
+      forkOnConflict: opts?.forkOnConflict,
+    });
+    if (this.onImportExternalSessions) {
+      return this.onImportExternalSessions(items, opts);
+    }
+    const sessions: SessionInfo[] = items.map((item) => {
+      const id = `imported_${item.source}_${item.external_session_id}`;
+      const info: SessionInfo = {
+        session_id: id,
+        title: `Imported ${item.source}`,
+        working_dir: item.working_dir ?? "/workspace",
+        status: "idle",
+        updated_at_ms: Date.now(),
+        source: item.source as SessionInfo["source"],
+        external_session_id: item.external_session_id,
+        imported: true,
+      };
+      this.sessionsById.set(id, info);
+      return info;
+    });
+    return { sessions, skipped: [] };
   }
 
   async listSessions(): Promise<SessionInfo[]> {
@@ -134,6 +225,9 @@ class FakeRayucodeClient extends EventEmitter {
   }
 
   async setPermissionMode(sessionId: string, mode: string): Promise<void> {
+    if (this.throwBusyOnControl) {
+      throw new HarnessError("busy", "Session is busy processing a turn");
+    }
     if (this.throwTimeoutOnControl) {
       throw new Error("timeout: no reply to set_permission_mode within 15000ms");
     }
@@ -1230,7 +1324,8 @@ test("SessionHubCore remembers effort, permissionMode, and model independently p
     assert.equal(reattachedA.effort, "high");
     assert.equal(hub.getActivePermissionMode(), "acceptEdits");
 
-    // While Session A is actively streaming, changing permission mode defers without hitting busy client
+    // While Session A is actively streaming, changing permission mode applies immediately
+    // (Rust daemon handles SetPermissionMode lock-free mid-turn).
     const clientA = clients[0]!;
     clientA.setPermissionModeCalls.length = 0;
     clientA.emitFrame({
@@ -1240,10 +1335,20 @@ test("SessionHubCore remembers effort, permissionMode, and model independently p
     });
     const permRes = await hub.setPermissionMode(sessA.sessionId, "fullManage");
     assert.deepEqual(permRes, { ok: true, mode: "fullManage" });
-    assert.equal(clientA.setPermissionModeCalls.length, 0);
+    assert.deepEqual(clientA.setPermissionModeCalls, [
+      { sessionId: sessA.sessionId, mode: "full_manage" },
+    ]);
     assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "fullManage");
 
-    // Once turn finishes, deferred permission mode flushes cleanly to daemon
+    // If an older daemon times out mid-turn, setPermissionMode defers cleanly and flushes on turn_done
+    clientA.setPermissionModeCalls.length = 0;
+    clientA.throwTimeoutOnControl = true;
+    const deferredPermRes = await hub.setPermissionMode(sessA.sessionId, "plan");
+    assert.deepEqual(deferredPermRes, { ok: true, mode: "plan", deferred: true });
+    assert.equal(clientA.setPermissionModeCalls.length, 0);
+    assert.equal(hub.getSessionPrefs(sessA.sessionId)?.permissionMode, "plan");
+
+    clientA.throwTimeoutOnControl = false;
     clientA.emitFrame({
       v: 1,
       ev: "turn_done",
@@ -1251,11 +1356,580 @@ test("SessionHubCore remembers effort, permissionMode, and model independently p
     });
     await new Promise((r) => setTimeout(r, 20));
     assert.deepEqual(clientA.setPermissionModeCalls, [
-      { sessionId: sessA.sessionId, mode: "full_manage" },
+      { sessionId: sessA.sessionId, mode: "plan" },
     ]);
   } finally {
     hub.dispose();
     registry.dispose();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("SessionHubCore closes freshly dialed clients on failed attach and ignores sessionless daemon disconnect errors", async () => {
+  const sessionsById = new Map<string, SessionInfo>();
+  const dialedClients: FakeRayucodeClient[] = [];
+  const stateStore = new Map<string, unknown>();
+  const workspaceState = {
+    get<T>(key: string, defaultValue?: T): T {
+      return stateStore.has(key) ? (stateStore.get(key) as T) : (defaultValue as T);
+    },
+    async update(key: string, value: unknown): Promise<void> {
+      stateStore.set(key, value);
+    },
+  };
+  const primaryClient = new FakeRayucodeClient({ sessionsById });
+  const bridge = Object.assign(new EventEmitter(), {
+    getStatus: () => ({ state: "connected" as const, capabilities: ["permissions"] }),
+    getActiveClient: () => primaryClient as unknown as RayucodeClient,
+    ensureConnected: async () => primaryClient as unknown as RayucodeClient,
+    dialClient: async () => {
+      const c = new FakeRayucodeClient({ sessionsById });
+      const origAttach = c.attachSession.bind(c);
+      c.attachSession = async (sessionId: string) => {
+        if (sessionId === "sess_runtime_owner_error") {
+          throw new Error(
+            "unknown_session: Failed to restore session: Session sess_runtime_owner_error still has a runtime owner",
+          );
+        }
+        return origAttach(sessionId);
+      };
+      dialedClients.push(c);
+      return c as unknown as RayucodeClient;
+    },
+  }) as SessionHubBridgeLike;
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-session-disconnect-"));
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+  });
+  const host: SessionHubHostAdapter = {
+    workspaceState,
+    getWorkspaceFolders: () => [{ name: "workspace", fsPath: "/workspace" }],
+    getDefaultPermissionModeRaw: () => "default",
+  };
+  const hub = new SessionHubCore(host, bridge, { workspaceRegistry: registry });
+  const broadcasted: HostToWebviewMessage[] = [];
+  hub.registerSurface("webview-1", "sidebar", (msg) => {
+    broadcasted.push(msg);
+  });
+
+  try {
+    // Attempt to attach a session that fails restore -> dialed client must be closed immediately
+    await assert.rejects(
+      () => hub.attachSession("sess_runtime_owner_error"),
+      /still has a runtime owner/,
+    );
+    const failedClient = dialedClients[0]!;
+    assert.equal(failedClient.closed, true);
+
+    // Create a healthy session and start streaming a turn
+    const active = await hub.createSession({ workingDir: "/workspace" });
+    const activeClient = dialedClients[1]!;
+    activeClient.emitFrame({
+      v: 1,
+      ev: "turn_start",
+      session_id: active.sessionId,
+    });
+    assert.equal(hub.getIsTurnStreaming(), true);
+    broadcasted.length = 0;
+
+    // Simulate delayed sessionless "daemon connection closed" arriving on the failed unbound socket
+    // AND on the primary control bridge socket
+    failedClient.emitFrame({
+      v: 1,
+      ev: "error",
+      code: "internal",
+      message: "daemon connection closed",
+    });
+    bridge.emit("frame", {
+      v: 1,
+      ev: "error",
+      code: "internal",
+      message: "daemon connection closed",
+    } as ServerFrame);
+
+    // Active session MUST remain streaming and receive zero phantom error broadcasts
+    assert.equal(hub.getIsTurnStreaming(), true);
+    const errorBroadcasts = broadcasted.filter(
+      (msg) =>
+        msg.type === "rayucode.harness.frame" &&
+        (msg.frame as Record<string, unknown>).ev === "error",
+    );
+    assert.equal(errorBroadcasts.length, 0);
+  } finally {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("SessionHubCore refreshes and broadcasts rayucode.todos.updated on todo and batch tool_done events and normalizes all 4 statuses", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-todos-");
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const client = new FakeRayucodeClient({
+    capabilities: ["todo_state"],
+  });
+  let todoPullCount = 0;
+  (
+    client as unknown as {
+      todoState: (sessionId: string) => Promise<Record<string, unknown>>;
+    }
+  ).todoState = async () => {
+    todoPullCount += 1;
+    return {
+      todos: [
+        { id: "1", content: "Plan architecture", status: "done" },
+        {
+          id: "2",
+          name: "Implement checklist",
+          status: "running",
+          active_form: "Implementing checklist",
+          lane: "ui",
+          phase: 2,
+        },
+        { id: "3", title: "Legacy step", status: "canceled" },
+      ],
+    };
+  };
+
+  const { adapter } = createHostAdapter({ folders: [] });
+  const hub = new SessionHubCore(
+    adapter,
+    new FakeBridgeManager({ sharedClient: client }),
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const todoBroadcasts: Array<Extract<HostToWebviewMessage, { type: "rayucode.todos.updated" }>> = [];
+  hub.registerSurface("webview-todos", "sidebar", (msg) => {
+    if (msg.type === "rayucode.todos.updated") {
+      todoBroadcasts.push(msg);
+    }
+  });
+
+  await hub.attachSession("sess_todos");
+
+  // 1. Direct todo tool_done triggers todoState pull and broadcasts normalized todos
+  client.emitFrame({
+    v: 1,
+    ev: "tool_done",
+    session_id: "sess_todos",
+    call_id: "call_todo_1",
+    name: "todo",
+    output: "ok",
+  });
+  await flushMicrotasks();
+
+  assert.equal(todoPullCount, 1);
+  assert.equal(todoBroadcasts.length, 1);
+  assert.equal(todoBroadcasts[0]?.sessionId, "sess_todos");
+  assert.deepEqual(todoBroadcasts[0]?.todos, [
+    { id: "1", content: "Plan architecture", status: "completed" },
+    {
+      id: "2",
+      content: "Implement checklist",
+      status: "in_progress",
+      activeForm: "Implementing checklist",
+      group: "ui",
+      stage: 2,
+    },
+    { id: "3", content: "Legacy step", status: "cancelled" },
+  ]);
+  assert.deepEqual(hub.getCachedTodos("sess_todos"), todoBroadcasts[0]?.todos);
+
+  // 2. Batch tool_done containing a todo sub-call also triggers refresh
+  client.emitFrame({
+    v: 1,
+    ev: "tool_done",
+    session_id: "sess_todos",
+    call_id: "call_batch_1",
+    name: "batch",
+    tool_input: { tool_calls: [{ name: "todo", input: { action: "update" } }] },
+    output: "ok",
+  });
+  await flushMicrotasks();
+  assert.equal(todoPullCount, 2);
+  assert.equal(todoBroadcasts.length, 2);
+
+  // 3. Direct todo_state frame normalizes and broadcasts immediately
+  client.emitFrame({
+    v: 1,
+    ev: "todo_state",
+    session_id: "sess_todos",
+    state: {
+      todos: [
+        { id: "1", content: "Plan architecture", status: "completed" },
+        { id: "2", content: "Implement checklist", status: "completed" },
+      ],
+    },
+  });
+  assert.equal(todoBroadcasts.length, 3);
+  assert.equal(hub.getCachedTodos("sess_todos").length, 2);
+});
+
+test("SessionHubCore attaches unattached sessions on demand, resets pool on bridge disconnect, handles processing status, and broadcasts permission.resolved", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-lifecycle-");
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const sessionsById = new Map<string, SessionInfo>([
+    [
+      "sess_processing",
+      {
+        session_id: "sess_processing",
+        title: "Processing Session",
+        working_dir: "/workspace",
+        status: "processing",
+        updated_at_ms: Date.now(),
+      },
+    ],
+    [
+      "sess_bg_only",
+      {
+        session_id: "sess_bg_only",
+        title: "Unattached Session",
+        working_dir: "/workspace",
+        status: "idle",
+        updated_at_ms: Date.now(),
+      },
+    ],
+  ]);
+
+  const bridge = new FakeBridgeManager({ sessionsById });
+  const hub = new SessionHubCore(
+    createHostAdapter({ folders: [] }).adapter,
+    bridge,
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const messages: HostToWebviewMessage[] = [];
+  hub.registerSurface("webview-lifecycle", "sidebar", (msg) => {
+    messages.push(msg);
+  });
+
+  // 1. Attaching a session whose daemon status is "processing" marks turn streaming active
+  const attached = await hub.attachSession("sess_processing");
+  assert.equal(attached.status, "running");
+  assert.equal(hub.getIsTurnStreaming(), true);
+
+  // 2. respondPermission broadcasts rayucode.permission.resolved to all surfaces
+  await hub.respondPermission({
+    sessionId: "sess_processing",
+    requestId: "perm_req_42",
+    decision: "allow_once",
+  });
+  const permResolved = messages.find(
+    (m) => m.type === "rayucode.permission.resolved",
+  );
+  assert.deepEqual(permResolved, {
+    type: "rayucode.permission.resolved",
+    sessionId: "sess_processing",
+    requestId: "perm_req_42",
+    decision: "allow_once",
+  });
+
+  // 3. ensureAttachedClient attaches an unattached non-focused session on demand
+  const bgClient = await hub.ensureAttachedClient("sess_bg_only");
+  assert.ok(bgClient);
+  assert.equal(hub.getSocketPool().get("sess_bg_only"), bgClient);
+
+  // 4. Bridge "disconnected" event closes pooled sockets and clears streaming state
+  const pooledProcessing = bridge.dialedClients[0]!;
+  bridge.emit("disconnected");
+  assert.equal(pooledProcessing.closed, true);
+  assert.equal(hub.getIsTurnStreaming(), false);
+  assert.equal(hub.getSocketPool().get("sess_processing"), undefined);
+});
+
+test("SessionHubCore auto-imports synthetic codex_desktop sessions on attachSession and getHistory, deduplicates concurrent imports, and rejects cleanly on not_found", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-codex-import-");
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const syntheticId = "codex_desktop:01a20cda-5903-7ce3-978b-9c5b6a3938f0";
+  const missingSyntheticId = "codex_desktop:00000000-0000-0000-0000-000000000000";
+  const materializedId = "imported_codex_desktop_01a20cda-5903-7ce3-978b-9c5b6a3938f0";
+
+  const sessionsById = new Map<string, SessionInfo>([
+    [
+      syntheticId,
+      {
+        session_id: syntheticId,
+        title: "Codex Desktop Refactor",
+        working_dir: "/workspace/codex-app",
+        status: "idle",
+        updated_at_ms: Date.now(),
+        source: "codex_desktop",
+        external_session_id: "01a20cda-5903-7ce3-978b-9c5b6a3938f0",
+        external_path: "/home/rayu/.codex/sessions/rollout-1.jsonl",
+        imported: false,
+      },
+    ],
+  ]);
+
+  const sharedClient = new FakeRayucodeClient({
+    sessionsById,
+    capabilities: ["permissions", "external_sessions"],
+  });
+  sharedClient.onImportExternalSessions = async (items) => {
+    await new Promise((r) => setTimeout(r, 10));
+    const item = items[0]!;
+    if (item.external_session_id === "00000000-0000-0000-0000-000000000000") {
+      return {
+        sessions: [],
+        skipped: [
+          {
+            source: item.source,
+            external_session_id: item.external_session_id,
+            reason: "not_found",
+            message: "Codex rollout file no longer exists on disk",
+          },
+        ],
+      };
+    }
+    const info: SessionInfo = {
+      session_id: materializedId,
+      title: "Codex Desktop Refactor",
+      working_dir: item.working_dir ?? "/workspace/codex-app",
+      status: "idle",
+      updated_at_ms: Date.now(),
+      source: "codex_desktop",
+      external_session_id: item.external_session_id,
+      external_path: item.external_path,
+      imported: true,
+    };
+    sessionsById.set(materializedId, info);
+    return { sessions: [info], skipped: [] };
+  };
+
+  const bridge = new FakeBridgeManager({ sharedClient, sessionsById });
+  const hub = new SessionHubCore(
+    createHostAdapter({ folders: [] }).adapter,
+    bridge,
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Prime sessionInfoCache via listSessions so external_path/working_dir are known
+  await hub.listSessions(false, { includeExternal: true });
+
+  // Concurrent attachSession + getHistory on the synthetic ID must trigger only ONE import
+  const [attached, history] = await Promise.all([
+    hub.attachSession(syntheticId),
+    hub.getHistory(syntheticId),
+  ]);
+
+  assert.equal(attached.sessionId, materializedId);
+  assert.equal(hub.getActiveSessionId(), materializedId);
+  assert.equal(history.messages.length, 1);
+  assert.equal(sharedClient.importExternalCalls.length, 1);
+  assert.deepEqual(sharedClient.importExternalCalls[0]?.items, [
+    {
+      source: "codex_desktop",
+      external_session_id: "01a20cda-5903-7ce3-978b-9c5b6a3938f0",
+      external_path: "/home/rayu/.codex/sessions/rollout-1.jsonl",
+      working_dir: "/workspace/codex-app",
+    },
+  ]);
+  // Raw synthetic ID must NEVER reach client.attachSession or client.getHistory
+  assert.equal(sharedClient.attachCalls.includes(syntheticId), false);
+  assert.equal(sharedClient.attachCalls.includes(materializedId), true);
+  assert.deepEqual(sharedClient.historyCalls, [materializedId]);
+
+  // Missing external session returns clean HarnessError("not_found") without calling attachSession
+  await assert.rejects(
+    () => hub.attachSession(missingSyntheticId),
+    (err: unknown) =>
+      err instanceof HarnessError &&
+      err.code === "not_found" &&
+      /Codex rollout file no longer exists/.test(err.message),
+  );
+  assert.equal(sharedClient.attachCalls.includes(missingSyntheticId), false);
+});
+
+test("SessionHubCore syncs permissions on attach/eviction, caches FIFO pending permissions, marks waiting status, defers on busy, and broadcasts modeSync", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-perms-");
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  let defaultRaw = "acceptEdits";
+  const stateStore = new Map<string, unknown>();
+  const adapter: SessionHubHostAdapter = {
+    workspaceState: {
+      get<T>(key: string, defaultValue?: T): T {
+        return stateStore.has(key)
+          ? (stateStore.get(key) as T)
+          : (defaultValue as T);
+      },
+      async update(key: string, value: unknown): Promise<void> {
+        stateStore.set(key, value);
+      },
+    },
+    getWorkspaceFolders: () => [{ name: "workspace", fsPath: "/workspace" }],
+    getDefaultPermissionModeRaw: () => defaultRaw,
+  };
+
+  const sessionsById = new Map<string, SessionInfo>([
+    [
+      "sess_perm_1",
+      {
+        session_id: "sess_perm_1",
+        title: "Permission Sync Session",
+        working_dir: "/workspace",
+        status: "idle",
+        updated_at_ms: Date.now(),
+      },
+    ],
+  ]);
+
+  const bridge = new FakeBridgeManager({
+    sessionsById,
+    capabilities: ["permission_modes"],
+  });
+  const hub = new SessionHubCore(adapter, bridge, { workspaceRegistry: registry });
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const broadcasts: HostToWebviewMessage[] = [];
+  hub.registerSurface("webview-perms", "sidebar", (msg) => {
+    broadcasts.push(msg);
+  });
+
+  // 1. Attaching a session without saved per-session prefs pushes non-default defaultPermissionMode
+  //    even when capabilities advertise `permission_modes` (without legacy `permissions`)
+  await hub.attachSession("sess_perm_1");
+  const firstClient = bridge.dialedClients[0]!;
+  assert.deepEqual(firstClient.setPermissionModeCalls, [
+    { sessionId: "sess_perm_1", mode: "accept_edits" },
+  ]);
+
+  // 2. Evicting socket and re-acquiring via ensureAttachedClient re-syncs desired permission mode
+  hub.getSocketPool().closeAll();
+  await hub.ensureAttachedClient("sess_perm_1");
+  const redialedClient = bridge.dialedClients[1]!;
+  assert.deepEqual(redialedClient.setPermissionModeCalls, [
+    { sessionId: "sess_perm_1", mode: "accept_edits" },
+  ]);
+
+  // 3. Two parallel permission_request frames are queued FIFO, not overwritten, and mark status "waiting"
+  redialedClient.emitFrame({
+    v: 1,
+    ev: "permission_request",
+    session_id: "sess_perm_1",
+    request_id: "perm_1",
+    tool_name: "bash",
+    description: "Run cargo test",
+    risk_tier: "confirm",
+  });
+  redialedClient.emitFrame({
+    v: 1,
+    ev: "permission_request",
+    session_id: "sess_perm_1",
+    request_id: "perm_2",
+    tool_name: "bash",
+    description: "Drop temporary table",
+    risk_tier: "catastrophic",
+  });
+
+  const snapshot = hub.getPendingPermissionsSnapshot();
+  assert.equal(snapshot["sess_perm_1"]?.length, 2);
+  assert.equal(snapshot["sess_perm_1"]?.[0]?.requestId, "perm_1");
+  assert.equal(snapshot["sess_perm_1"]?.[1]?.requestId, "perm_2");
+  assert.equal(snapshot["sess_perm_1"]?.[1]?.riskTier, "catastrophic");
+
+  const listedWaiting = await hub.listSessions();
+  assert.equal(
+    listedWaiting.sessions.find((s) => s.sessionId === "sess_perm_1")?.status,
+    "waiting",
+  );
+
+  // Resolving perm_1 keeps perm_2 in the queue
+  redialedClient.emitFrame({
+    v: 1,
+    ev: "permission_resolved",
+    session_id: "sess_perm_1",
+    request_id: "perm_1",
+    decision: "allow_once",
+  });
+  assert.deepEqual(
+    hub.getPendingPermissionsSnapshot()["sess_perm_1"]?.map((p) => p.requestId),
+    ["perm_2"],
+  );
+
+  // Responding to perm_2 clears the queue and restores idle status
+  await hub.respondPermission({
+    sessionId: "sess_perm_1",
+    requestId: "perm_2",
+    decision: "deny",
+  });
+  assert.equal(hub.getPendingPermissionsSnapshot()["sess_perm_1"], undefined);
+
+  // 4. Busy daemon error defers permission mode and broadcasts rayucode.permission.modeSync
+  broadcasts.length = 0;
+  redialedClient.throwBusyOnControl = true;
+  const busyRes = await hub.setPermissionMode("sess_perm_1", "plan");
+  assert.deepEqual(busyRes, { ok: true, mode: "plan", deferred: true });
+  assert.equal(
+    broadcasts.some(
+      (m) =>
+        m.type === "rayucode.permission.modeSync" &&
+        m.sessionId === "sess_perm_1" &&
+        m.mode === "plan",
+    ),
+    true,
+  );
+
+  // When turn finishes, deferred mode flushes cleanly
+  redialedClient.throwBusyOnControl = false;
+  redialedClient.setPermissionModeCalls.length = 0;
+  redialedClient.emitFrame({
+    v: 1,
+    ev: "turn_done",
+    session_id: "sess_perm_1",
+  });
+  await flushMicrotasks();
+  await new Promise((r) => setTimeout(r, 15));
+  assert.deepEqual(redialedClient.setPermissionModeCalls, [
+    { sessionId: "sess_perm_1", mode: "plan" },
+  ]);
+
+  // 5. Updating default permission mode broadcasts isDefault sync
+  broadcasts.length = 0;
+  defaultRaw = "fullManage";
+  hub.broadcastDefaultPermissionModeSync();
+  assert.equal(
+    broadcasts.some(
+      (m) =>
+        m.type === "rayucode.permission.modeSync" &&
+        m.isDefault === true &&
+        m.mode === "fullManage",
+    ),
+    true,
+  );
 });

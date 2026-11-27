@@ -13,6 +13,9 @@ import type {
   AgentRoleOverrideView,
   AnalyticsSummaryView,
   CacheTtl,
+  ConfigFieldSchemaView,
+  ConfigGetResultView,
+  ConfigPatchResultView,
   DaemonStatusView,
   DoctorCheckView,
   EffortChoice,
@@ -29,18 +32,22 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc, sendHarnessRequest } from "@/lib/rpc-client";
+import { callRpc, onHostMessage, sendHarnessRequest } from "@/lib/rpc-client";
 
 export type SettingsSectionId =
   | "account"
   | "appearance"
   | "models"
   | "features"
+  | "agents"
+  | "swarm"
+  | "automations"
+  | "remote"
   | "safety"
   | "runtime"
   | "shortcuts";
 
-export type SettingsNavGroup = "Account" | "App" | "System";
+export type SettingsNavGroup = "Account" | "App" | "Workspace" | "System";
 
 export interface SettingsSectionMeta {
   id: SettingsSectionId;
@@ -88,6 +95,42 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
       "features voice memory swarm mermaid auto_poke todo_gate_digest todo_gate_diagnostics message_timestamps persist_memory_injections kv_cache_miss_notices check_updates update_channel codemode integration_tools microphone dictation noise suppression",
   },
   {
+    id: "agents",
+    group: "Workspace",
+    label: "Agents & Personas",
+    description:
+      "Custom worker personas, default subagent model, and per-role model bindings shared across CLI, Desktop & VS Code",
+    keywords:
+      "agents personas profiles subagent swarm review judge memory ambient roles studio",
+  },
+  {
+    id: "swarm",
+    group: "Workspace",
+    label: "Swarm",
+    description:
+      "Multi-agent mission control, worker roster, shared plan proposals, coordination board, and git worktrees",
+    keywords:
+      "swarm multi-agent coordinator workers roster worktrees message board shared plan mission control",
+  },
+  {
+    id: "automations",
+    group: "Workspace",
+    label: "Automations",
+    description:
+      "Unattended overnight missions, recurring cron schedules, autonomous ambient cycles, and morning handoff reports",
+    keywords:
+      "automations overnight cron schedules ambient cycles morning reports quality gates",
+  },
+  {
+    id: "remote",
+    group: "Workspace",
+    label: "Remote Access",
+    description:
+      "Telegram bot pairing, mobile pending approvals, and Rayu Cloud gateway sessions",
+    keywords:
+      "remote telegram bot pairing qr approvals cloud gateway mobile access",
+  },
+  {
     id: "safety",
     group: "System",
     label: "Safety & Hooks",
@@ -110,11 +153,19 @@ export const SETTINGS_SECTIONS: ReadonlyArray<SettingsSectionMeta> = [
     group: "System",
     label: "Shortcuts",
     description:
-      "Searchable keyboard shortcuts reference (Shift+Tab, Alt+B, Cmd/Ctrl+Shift+P, session & inspector navigation)",
+      "Searchable keyboard shortcuts reference (Shift+Tab, Alt+B, Cmd/Ctrl+Shift+P, and session navigation)",
     keywords:
-      "shortcuts keybindings keyboard shift+tab alt+b cmd ctrl terminal sidebar inspector permissions background",
+      "shortcuts keybindings keyboard shift+tab alt+b cmd ctrl sidebar permissions background",
   },
 ];
+
+const SETTINGS_SECTION_ID_SET = new Set<string>(
+  SETTINGS_SECTIONS.map((sec) => sec.id),
+);
+
+export function isSettingsSectionId(value: string): value is SettingsSectionId {
+  return SETTINGS_SECTION_ID_SET.has(value);
+}
 
 export const NATIVE_10_PROVIDERS: ReadonlyArray<ProviderEntryView> = [
   {
@@ -531,14 +582,6 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
     category: "Context Actions",
   },
   {
-    id: "scm-open-changes",
-    label: "Review Git Changes in RayuCode (SCM Header)",
-    keybinding: "SCM Title",
-    when: "scmProvider == git",
-    commandId: "rayucode.scmOpenChanges",
-    category: "Context Actions",
-  },
-  {
     id: "cycle-permission-mode",
     label: "Cycle Permission Mode (Ask / Auto-edit / Plan / Full Manage / Orchestrator)",
     keybinding: "Shift+Tab",
@@ -571,14 +614,6 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
     category: "Workspace & Navigation",
   },
   {
-    id: "open-integrated-terminal",
-    label: "Open Native VS Code Integrated Terminal",
-    keybinding: "Cmd/Ctrl+J",
-    when: "global",
-    commandId: "workbench.action.terminal.toggleTerminal",
-    category: "Workspace & Navigation",
-  },
-  {
     id: "search-sessions",
     label: "Cross-Tool Session Search (Rayu, Claude, Codex, Cursor, OpenCode, Pi)",
     keybinding: "Cmd/Ctrl+K",
@@ -601,14 +636,6 @@ export const DEFAULT_SHORTCUT_ENTRIES: ReadonlyArray<
     when: "rayucode.focused",
     commandId: "rayucode.navigateForward",
     category: "Workspace & Navigation",
-  },
-  {
-    id: "restore-clipped-chat",
-    label: "Restore Chat Session Canvas from Full-Width Inspector",
-    keybinding: "Cmd/Ctrl+1",
-    when: "rayucode.inspectorFullView",
-    commandId: "rayucode.restoreChatCanvas",
-    category: "Inspector & Review",
   },
   {
     id: "send-prompt",
@@ -702,6 +729,10 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
+  const storeSettingsSection = useAppStore((s) => s.activeSettingsSection);
+  const setStoreSettingsSection = useAppStore(
+    (s) => s.setActiveSettingsSection,
+  );
   const daemonStatusFromStore = useAppStore((s) => s.daemonStatus);
   const setDaemonStatus = useAppStore((s) => s.setDaemonStatus);
   const setAccountStatus = useAppStore((s) => s.setAccountStatus);
@@ -709,8 +740,32 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
 
-  const [activeSection, setActiveSection] =
-    React.useState<SettingsSectionId>(initialSection);
+  const resolvedInitialSection: SettingsSectionId =
+    initialSection !== "account"
+      ? initialSection
+      : isSettingsSectionId(storeSettingsSection)
+        ? storeSettingsSection
+        : "account";
+  const [activeSection, setActiveSectionState] =
+    React.useState<SettingsSectionId>(resolvedInitialSection);
+  const prevStoreSectionRef = React.useRef(storeSettingsSection);
+
+  React.useEffect(() => {
+    if (prevStoreSectionRef.current === storeSettingsSection) return;
+    prevStoreSectionRef.current = storeSettingsSection;
+    if (isSettingsSectionId(storeSettingsSection)) {
+      setActiveSectionState(storeSettingsSection);
+    }
+  }, [storeSettingsSection]);
+
+  const setActiveSection = React.useCallback(
+    (section: SettingsSectionId) => {
+      prevStoreSectionRef.current = section;
+      setActiveSectionState(section);
+      setStoreSettingsSection(section);
+    },
+    [setStoreSettingsSection],
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
   const [analyticsRange, setAnalyticsRange] = React.useState<"7d" | "30d">(
@@ -719,13 +774,148 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   const [analyticsGroupBy, setAnalyticsGroupBy] = React.useState<
     "feature" | "model"
   >("feature");
+  const storeDefaultPermissionMode = useAppStore(
+    (s) => s.defaultPermissionMode,
+  );
+  const setStoreDefaultPermissionMode = useAppStore(
+    (s) => s.setDefaultPermissionMode,
+  );
   const [defaultPermissionMode, setDefaultPermissionModeState] =
-    React.useState<PermissionModeId>("default");
+    React.useState<PermissionModeId>(storeDefaultPermissionMode);
+  React.useEffect(() => {
+    setDefaultPermissionModeState(storeDefaultPermissionMode);
+  }, [storeDefaultPermissionMode]);
+  const defaultPermissionQuery = useQuery(
+    queryOptions({
+      queryKey: ["settings", "permission", "default"] as const,
+      queryFn: () => callRpc("settings.permission.getDefault"),
+    }),
+  );
+  React.useEffect(() => {
+    if (defaultPermissionQuery.data?.mode) {
+      setDefaultPermissionModeState(defaultPermissionQuery.data.mode);
+      setStoreDefaultPermissionMode(defaultPermissionQuery.data.mode);
+    }
+  }, [defaultPermissionQuery.data?.mode, setStoreDefaultPermissionMode]);
   const [doctorResults, setDoctorResults] = React.useState<DoctorCheckView[]>(
     [],
   );
   const [selfDevOutput, setSelfDevOutput] = React.useState<string | null>(null);
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
+  const [configRequiresRestart, setConfigRequiresRestart] =
+    React.useState(false);
+  const [configFieldErrors, setConfigFieldErrors] = React.useState<
+    Record<string, string>
+  >({});
+  const [configSectionError, setConfigSectionError] = React.useState<
+    string | null
+  >(null);
+
+  const configQuery = useQuery(
+    queryOptions({
+      queryKey: ["settings", "config"] as const,
+      queryFn: () => callRpc("config.get"),
+    }),
+  );
+
+  // Live sync when CLI/Desktop or another surface updates ~/.rayu/config.toml
+  React.useEffect(() => {
+    return onHostMessage((msg) => {
+      if (msg.type !== "rayucode.config.changed") return;
+      queryClient.setQueryData<ConfigGetResultView>(
+        ["settings", "config"],
+        (prev) => {
+          if (!prev || !prev.config) return prev;
+          return {
+            ...prev,
+            config: {
+              ...prev.config,
+              values: {
+                ...prev.config.values,
+                ...msg.values,
+              },
+            },
+          };
+        },
+      );
+      if (msg.requiresRestart) {
+        setConfigRequiresRestart(true);
+      }
+      setStatusMessage("Synced update from ~/.rayu/config.toml");
+      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "features"] });
+    });
+  }, [queryClient]);
+
+  const configSupported = configQuery.data?.supported !== false;
+  const configPath = configQuery.data?.config?.path ?? "~/.rayu/config.toml";
+  const configValues = configQuery.data?.config?.values ?? {};
+  const configSchema: ConfigFieldSchemaView[] =
+    configQuery.data?.config?.schema ?? [];
+
+  const clearConfigFieldError = React.useCallback((key: string) => {
+    setConfigFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const patchConfig = React.useCallback(
+    async (
+      patch: Record<string, unknown>,
+    ): Promise<ConfigPatchResultView> => {
+      const keys = Object.keys(patch);
+      setConfigSectionError(null);
+      try {
+        const res = await callRpc("config.patch", { patch });
+        if (!res.ok) {
+          const message =
+            res.message || "Failed to update ~/.rayu/config.toml.";
+          if (keys.length === 1 && keys[0]) {
+            setConfigFieldErrors((prev) => ({
+              ...prev,
+              [keys[0]!]: message,
+            }));
+          } else {
+            setConfigSectionError(message);
+          }
+          return res;
+        }
+        setConfigFieldErrors((prev) => {
+          const next = { ...prev };
+          for (const k of keys) delete next[k];
+          return next;
+        });
+        if (res.config) {
+          queryClient.setQueryData<ConfigGetResultView>(["settings", "config"], {
+            supported: true,
+            config: res.config,
+          });
+        }
+        if (res.requiresRestart) {
+          setConfigRequiresRestart(true);
+        }
+        return res;
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : "Failed to update ~/.rayu/config.toml.";
+        if (keys.length === 1 && keys[0]) {
+          setConfigFieldErrors((prev) => ({
+            ...prev,
+            [keys[0]!]: message,
+          }));
+        } else {
+          setConfigSectionError(message);
+        }
+        return { ok: false, message };
+      }
+    },
+    [queryClient],
+  );
 
   const syncAccountEverywhere = React.useCallback(
     (next: AccountStatusView) => {
@@ -1280,11 +1470,29 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   });
 
   const setFeatureFlagMutation = useMutation({
-    mutationFn: (input: { key: keyof FeatureFlagsView; value: boolean | string }) =>
-      callRpc("settings.features.set", {
+    mutationFn: async (input: {
+      key: keyof FeatureFlagsView;
+      value: boolean | string;
+    }) => {
+      const configKey =
+        input.key === "codemode"
+          ? "tools.codemode"
+          : input.key === "integration_tools"
+            ? "sponsors.enabled"
+            : `features.${String(input.key)}`;
+      if (configSupported) {
+        const patchRes = await patchConfig({ [configKey]: input.value });
+        if (!patchRes.ok) {
+          throw new Error(
+            patchRes.message || `Failed to update ${configKey}.`,
+          );
+        }
+      }
+      return callRpc("settings.features.set", {
         key: String(input.key),
         value: input.value,
-      }),
+      });
+    },
     onSuccess: (res, input) => {
       queryClient.setQueryData(
         ["settings", "features"],
@@ -1308,7 +1516,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               }
             : prev,
       );
-      setStatusMessage(`Updated [features] ${String(input.key)} = ${String(input.value)}.`);
+      setStatusMessage(
+        `Updated [features] ${String(input.key)} = ${String(input.value)}.`,
+      );
     },
   });
 
@@ -1338,14 +1548,43 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
 
   const setPermissionModeMutation = useMutation({
     mutationFn: async (mode: PermissionModeId) => {
+      const previous = defaultPermissionMode;
       setDefaultPermissionModeState(mode);
-      return callRpc("sessions.setPermissionMode", {
-        sessionId: activeSessionId ?? "ses_vscode_shell",
-        mode,
-      });
+      setStoreDefaultPermissionMode(mode);
+      try {
+        const res = await callRpc("settings.permission.setDefault", {
+          mode,
+          applyToActiveSession: Boolean(activeSessionId),
+        });
+        if (!res.ok) {
+          setDefaultPermissionModeState(previous);
+          setStoreDefaultPermissionMode(previous);
+          throw new Error("RayuCode rejected the permission mode.");
+        }
+        if (activeSessionId) {
+          useAppStore
+            .getState()
+            .setSessionPrefs(activeSessionId, { permissionMode: mode });
+        }
+        return res;
+      } catch (err) {
+        setDefaultPermissionModeState(previous);
+        setStoreDefaultPermissionMode(previous);
+        throw err;
+      }
     },
     onSuccess: (_res, mode) => {
+      void queryClient.invalidateQueries({
+        queryKey: ["settings", "permission", "default"],
+      });
       setStatusMessage(`Default permission mode set to ${mode}.`);
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to update default permission mode.",
+      );
     },
   });
 
@@ -1386,6 +1625,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     onSuccess: (nextStatus) => {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
+      setConfigRequiresRestart(false);
       setStatusMessage("Reloaded Rayu Daemon & Bridge connection.");
     },
   });
@@ -1532,7 +1772,11 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   });
 
   const setDefaultModel = React.useCallback(
-    (model: string) => {
+    async (model: string) => {
+      if (configSupported) {
+        const res = await patchConfig({ "provider.default_model": model });
+        if (!res.ok) return;
+      }
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
         (prev: Record<string, unknown> | undefined) =>
@@ -1548,19 +1792,23 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       });
       setStatusMessage(`Default model route set to ${model}.`);
     },
-    [activeSessionId, queryClient],
+    [activeSessionId, configSupported, patchConfig, queryClient],
   );
 
   const setDefaultEffort = React.useCallback(
-    (effort: EffortChoice) => {
+    async (effort: EffortChoice) => {
+      if (configSupported && effort) {
+        const res = await patchConfig({ "provider.default_effort": effort });
+        if (!res.ok) return;
+      }
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
         (prev: Record<string, unknown> | undefined) =>
           prev ? { ...prev, defaultEffort: effort } : prev,
       );
-      setStatusMessage(`Default reasoning effort set to ${effort ?? "auto"}.`);
+      setStatusMessage(`Default reasoning effort set to ${effort ?? "default"}.`);
     },
-    [activeSessionId, queryClient],
+    [activeSessionId, configSupported, patchConfig, queryClient],
   );
 
   const filteredSections = React.useMemo(() => {
@@ -1584,7 +1832,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     filteredSections,
     statusMessage,
     clearStatusMessage: () => setStatusMessage(null),
-    goBackToWorkspace: () => setActiveRoute("home"),
+    goBackToWorkspace: () =>
+      setActiveRoute(activeSessionId ? "workspace" : "home"),
 
     // Data
     account: accountQuery.data ?? null,
@@ -1605,6 +1854,16 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     defaultPermissionMode,
     doctorResults,
     selfDevOutput,
+    configSupported,
+    configPath,
+    configValues,
+    configSchema,
+    configRequiresRestart,
+    configFieldErrors,
+    clearConfigFieldError,
+    configSectionError,
+    clearConfigSectionError: () => setConfigSectionError(null),
+    patchConfig,
 
     isLoading:
       accountQuery.isPending ||

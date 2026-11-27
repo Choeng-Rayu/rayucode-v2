@@ -5,6 +5,7 @@ import type {
   AgentRoleId,
   AgentRoleOverrideView,
   CacheTtl,
+  ConfigFieldSchemaView,
   EffortChoice,
   ModelRouteOptionView,
   ServiceTier,
@@ -24,16 +25,35 @@ import {
 } from "@/features/composer";
 import { cn } from "@/lib/utils";
 
+import {
+  ConfigRestartBanner,
+  ConfigScopeBadge,
+  FieldApplyModeBadge,
+  FieldValidationError,
+  LegacyDaemonBanner,
+  SectionErrorBanner,
+} from "./ConfigSyncChrome";
+
 export interface ModelsAgentsSectionProps {
   defaultModel: string;
   defaultEffort: EffortChoice;
   serviceTier: ServiceTier;
   cacheTtl: CacheTtl;
+  routes?: ReadonlyArray<ModelRouteOptionView>;
   roleOverrides: ReadonlyArray<AgentRoleOverrideView>;
   profiles?: ReadonlyArray<AgentProfileView>;
   subagentModel?: string | null;
   swarmAllowlist?: ReadonlyArray<string>;
-  routes?: ReadonlyArray<ModelRouteOptionView>;
+  configSupported?: boolean;
+  configPath?: string;
+  configSchema?: ReadonlyArray<ConfigFieldSchemaView>;
+  configRequiresRestart?: boolean;
+  configFieldErrors?: Readonly<Record<string, string>>;
+  configSectionError?: string | null;
+  onClearFieldError?: (key: string) => void;
+  onClearSectionError?: () => void;
+  onReloadDaemon?: () => Promise<unknown>;
+  isReloadingDaemon?: boolean;
   onSelectDefaultModel: (model: string) => void;
   onSelectDefaultEffort: (effort: EffortChoice) => void;
   onSelectServiceTier: (tier: ServiceTier) => Promise<unknown>;
@@ -62,11 +82,21 @@ export function ModelsAgentsSection({
   defaultEffort,
   serviceTier,
   cacheTtl,
+  routes,
   roleOverrides,
   profiles,
   subagentModel,
   swarmAllowlist,
-  routes,
+  configSupported = true,
+  configPath = "~/.rayu/config.toml",
+  configSchema = [],
+  configRequiresRestart = false,
+  configFieldErrors = {},
+  configSectionError = null,
+  onClearFieldError,
+  onClearSectionError,
+  onReloadDaemon,
+  isReloadingDaemon = false,
   onSelectDefaultModel,
   onSelectDefaultEffort,
   onSelectServiceTier,
@@ -80,9 +110,15 @@ export function ModelsAgentsSection({
     "session" | "global"
   >("global");
 
-  const modelChoices = React.useMemo(() => {
+  const schemaByKey = React.useMemo(
+    () => new Map(configSchema.map((f) => [f.key, f])),
+    [configSchema],
+  );
+
+  const { modelChoices, resolvedDefaultModel } = React.useMemo(() => {
     const out: Array<{ value: string; label: string }> = [];
     const seen = new Set<string>();
+    const rawIdToValue = new Map<string, string>();
 
     if (routes && routes.length > 0) {
       // Prefer available routes first while preserving backend order within each group
@@ -97,6 +133,12 @@ export function ModelsAgentsSection({
           r.modelSpec ||
           formatHarnessModelSpec(rawModel, r.provider, r.apiMethod) ||
           rawModel;
+        if (!rawIdToValue.has(rawModel)) {
+          rawIdToValue.set(rawModel, value);
+        }
+        if (r.id && !rawIdToValue.has(r.id)) {
+          rawIdToValue.set(r.id, value);
+        }
         if (seen.has(value)) continue;
         seen.add(value);
         const providerBadge = formatProviderBadgeLabel(r.provider);
@@ -114,12 +156,18 @@ export function ModelsAgentsSection({
       }
     }
 
-    if (defaultModel && !seen.has(defaultModel)) {
-      seen.add(defaultModel);
-      out.unshift({ value: defaultModel, label: defaultModel });
+    const matchedValue = defaultModel
+      ? seen.has(defaultModel)
+        ? defaultModel
+        : (rawIdToValue.get(defaultModel) ?? defaultModel)
+      : "";
+
+    if (matchedValue && !seen.has(matchedValue)) {
+      seen.add(matchedValue);
+      out.unshift({ value: matchedValue, label: matchedValue });
     }
 
-    return out;
+    return { modelChoices: out, resolvedDefaultModel: matchedValue };
   }, [defaultModel, routes]);
 
   const roleModelChoices = React.useMemo(() => {
@@ -151,6 +199,8 @@ export function ModelsAgentsSection({
     return out;
   }, [modelChoices, profiles, roleOverrides]);
 
+  const engineReadOnly = !configSupported;
+
   return (
     <section
       data-testid="settings-section-models"
@@ -159,12 +209,15 @@ export function ModelsAgentsSection({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1
-            id="settings-h-models"
-            className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
-          >
-            Models &amp; Agents
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1
+              id="settings-h-models"
+              className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
+            >
+              Models &amp; Agents
+            </h1>
+            <ConfigScopeBadge scope="synced" configPath={configPath} />
+          </div>
           <p className="mt-1 text-xs text-muted-ink">
             Configure default model route, reasoning effort, service tier,
             Anthropic KV-Cache TTL, and per-role subagent &amp; swarm defaults.
@@ -187,21 +240,55 @@ export function ModelsAgentsSection({
         </Button>
       </div>
 
+      <LegacyDaemonBanner visible={engineReadOnly} />
+      <ConfigRestartBanner
+        visible={configRequiresRestart}
+        onReload={() => onReloadDaemon?.()}
+        isReloading={isReloadingDaemon}
+      />
+      <SectionErrorBanner
+        message={configSectionError}
+        onDismiss={onClearSectionError}
+      />
+
       {/* Defaults & Performance */}
-      <div className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane">
+      <div
+        className={cn(
+          "rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane",
+          engineReadOnly && "opacity-60",
+        )}
+      >
         {/* Default Session Model */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
-          <div>
-            <div className="font-medium text-ink">Default model route</div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+              <span>Default model route</span>
+              <FieldApplyModeBadge
+                applyMode={schemaByKey.get("provider.default_model")?.apply_mode}
+              />
+            </div>
             <div className="mt-0.5 text-muted-ink">
               Primary model route used for new sessions without an override
             </div>
+            <FieldValidationError
+              fieldKey="provider.default_model"
+              message={configFieldErrors["provider.default_model"]}
+              onDismiss={() => onClearFieldError?.("provider.default_model")}
+            />
           </div>
-          <Select value={defaultModel} onValueChange={onSelectDefaultModel}>
+          <Select
+            value={resolvedDefaultModel}
+            disabled={engineReadOnly}
+            onValueChange={onSelectDefaultModel}
+          >
             <SelectTrigger
               aria-label="Default model route"
               data-testid="default-model-select"
-              className="w-full sm:w-[250px]"
+              className={cn(
+                "w-full sm:w-[250px]",
+                configFieldErrors["provider.default_model"] &&
+                  "border-danger/40",
+              )}
             >
               <SelectValue />
             </SelectTrigger>
@@ -217,30 +304,42 @@ export function ModelsAgentsSection({
 
         {/* Default Reasoning Effort */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
-          <div>
-            <div className="font-medium text-ink">Default reasoning effort</div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+              <span>Default reasoning effort</span>
+              <FieldApplyModeBadge
+                applyMode={schemaByKey.get("provider.default_effort")?.apply_mode}
+              />
+            </div>
             <div className="mt-0.5 text-muted-ink">
               Capability-filtered thinking budget across supported reasoning
               models
             </div>
+            <FieldValidationError
+              fieldKey="provider.default_effort"
+              message={configFieldErrors["provider.default_effort"]}
+              onDismiss={() => onClearFieldError?.("provider.default_effort")}
+            />
           </div>
           <Select
-            value={defaultEffort ?? "auto"}
+            value={defaultEffort ?? "medium"}
+            disabled={engineReadOnly}
             onValueChange={(v) =>
-              onSelectDefaultEffort(
-                v === "auto" ? null : (v as Exclude<EffortChoice, null>),
-              )
+              onSelectDefaultEffort(v as Exclude<EffortChoice, null>)
             }
           >
             <SelectTrigger
               aria-label="Default reasoning effort"
               data-testid="default-effort-select"
-              className="w-[170px]"
+              className={cn(
+                "w-[170px]",
+                configFieldErrors["provider.default_effort"] &&
+                  "border-danger/40",
+              )}
             >
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end">
-              <SelectItem value="auto">Auto</SelectItem>
               <SelectItem value="low">Low</SelectItem>
               <SelectItem value="medium">Medium</SelectItem>
               <SelectItem value="high">High</SelectItem>
@@ -253,8 +352,11 @@ export function ModelsAgentsSection({
         {/* Fast / Service Tier */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
           <div>
-            <div className="font-medium text-ink">
-              Fast / Service Tier (RuntimeCommand::Fast)
+            <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+              <span>Fast / Service Tier (RuntimeCommand::Fast)</span>
+              <FieldApplyModeBadge
+                applyMode={schemaByKey.get("provider.service_tier")?.apply_mode}
+              />
             </div>
             <div className="mt-0.5 text-muted-ink">
               Throughput and latency routing tier for supported providers
@@ -262,6 +364,7 @@ export function ModelsAgentsSection({
           </div>
           <Select
             value={serviceTier}
+            disabled={engineReadOnly}
             onValueChange={(v) => void onSelectServiceTier(v as ServiceTier)}
           >
             <SelectTrigger
@@ -284,8 +387,11 @@ export function ModelsAgentsSection({
         {/* Anthropic KV-Cache TTL */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
           <div>
-            <div className="font-medium text-ink">
-              Prompt KV-Cache TTL (RuntimeCommand::Cache)
+            <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
+              <span>Prompt KV-Cache TTL (RuntimeCommand::Cache)</span>
+              <FieldApplyModeBadge
+                applyMode={schemaByKey.get("provider.cache_ttl")?.apply_mode}
+              />
             </div>
             <div className="mt-0.5 text-muted-ink">
               Keep warm prefix cache alive for 5 minutes or 1 hour across turns
@@ -300,11 +406,12 @@ export function ModelsAgentsSection({
               <button
                 key={ttl}
                 type="button"
+                disabled={engineReadOnly}
                 data-testid={`cache-ttl-btn-${ttl}`}
                 aria-pressed={cacheTtl === ttl}
                 onClick={() => void onSelectCacheTtl(ttl)}
                 className={cn(
-                  "cursor-pointer rounded-xs px-3 py-1 font-mono text-xs font-medium",
+                  "cursor-pointer rounded-xs px-3 py-1 font-mono text-xs font-medium disabled:pointer-events-none",
                   cacheTtl === ttl
                     ? "border border-premium bg-active text-ink shadow-bevel-surface"
                     : "text-muted-ink hover:text-ink",
@@ -402,7 +509,10 @@ export function ModelsAgentsSection({
 
         <div
           data-testid="role-overrides-list"
-          className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane"
+          className={cn(
+            "rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane",
+            engineReadOnly && "opacity-60",
+          )}
         >
           {roleOverrides.map((row) => (
             <div
@@ -419,6 +529,7 @@ export function ModelsAgentsSection({
 
               <Select
                 value={row.model}
+                disabled={engineReadOnly}
                 onValueChange={(nextModel) =>
                   void onSetRoleOverride({
                     role: row.role,

@@ -13,7 +13,13 @@ import {
   selectRelevantDiagnostics,
   type DiagnosticLike,
 } from "../host/bridges/codeActionBridge.js";
-import { resolveTargetCodeColumn } from "../host/bridges/editorBridge.js";
+import {
+  buildFilePathCandidates,
+  normalizeBrowserUrl,
+  rankWorkspaceFileMatches,
+  resolveTargetCodeColumn,
+  sanitizeFileOpenTarget,
+} from "../host/bridges/editorBridge.js";
 import {
   buildTerminalInjection,
   stripAnsiCodes,
@@ -398,6 +404,77 @@ test("resolveTargetCodeColumn never overwrites RayuCode panel column", () => {
   assert.equal(resolveTargetCodeColumn(3, undefined), 3);
   // Sidebar only, no prior editor -> Column 1
   assert.equal(resolveTargetCodeColumn(undefined, undefined), 1);
+});
+
+test("sanitizeFileOpenTarget, buildFilePathCandidates, and rankWorkspaceFileMatches resolve workspace-prefixed, bare, file://, and multi-root mentions", () => {
+  assert.deepEqual(sanitizeFileOpenTarget("`@desktop/MIGRATION_PLAN.md:12-20`"), {
+    path: "desktop/MIGRATION_PLAN.md",
+    line: 12,
+  });
+  assert.deepEqual(
+    sanitizeFileOpenTarget("file:///home/rayu/my%20repo/how-to-run.md#L5-L9"),
+    {
+      path: "/home/rayu/my repo/how-to-run.md",
+      line: 5,
+    },
+  );
+  assert.deepEqual(sanitizeFileOpenTarget("./src/App.tsx:42:8"), {
+    path: "src/App.tsx",
+    line: 42,
+    column: 8,
+  });
+  assert.deepEqual(sanitizeFileOpenTarget("file:///C:/repo/src/main.rs:9"), {
+    path: "C:/repo/src/main.rs",
+    line: 9,
+  });
+
+  // Workspace-folder-name-prefixed path (`rayucode-v2/desktop/MIGRATION_PLAN.md`)
+  // resolves cleanly to `/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md`
+  const candidates = buildFilePathCandidates(
+    "rayucode-v2/desktop/MIGRATION_PLAN.md",
+    ["/home/rayu/rayu/rayucode-v2"],
+  );
+  assert.ok(
+    candidates.includes("/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md"),
+    `Expected stripped workspace-root candidate, got: ${JSON.stringify(candidates)}`,
+  );
+
+  // Bare filename `MIGRATION_PLAN.md` prefers active session dir & shallower depth
+  const ranked = rankWorkspaceFileMatches(
+    "MIGRATION_PLAN.md",
+    [
+      "/home/rayu/rayu/rayucode-v2/archive/old/MIGRATION_PLAN.md",
+      "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md",
+    ],
+    ["/home/rayu/rayu/rayucode-v2/desktop"],
+  );
+  assert.equal(ranked[0], "/home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md");
+
+  // Workspace-prefixed suffix ranking (`rayucode-v2/how-to-run.md`)
+  const rankedPrefixed = rankWorkspaceFileMatches(
+    "rayucode-v2/how-to-run.md",
+    [
+      "/home/rayu/rayu/rayucode-v2/docs/nested/how-to-run.md",
+      "/home/rayu/rayu/rayucode-v2/how-to-run.md",
+    ],
+    ["/home/rayu/rayu/rayucode-v2"],
+  );
+  assert.equal(rankedPrefixed[0], "/home/rayu/rayu/rayucode-v2/how-to-run.md");
+});
+
+test("normalizeBrowserUrl normalizes bare host/port URLs and rejects unsafe schemes", () => {
+  assert.equal(normalizeBrowserUrl("localhost:3000"), "http://localhost:3000/");
+  assert.equal(
+    normalizeBrowserUrl("127.0.0.1:5173/dashboard"),
+    "http://127.0.0.1:5173/dashboard",
+  );
+  assert.equal(
+    normalizeBrowserUrl("https://rayucode.com/docs"),
+    "https://rayucode.com/docs",
+  );
+  assert.equal(normalizeBrowserUrl("javascript:alert(1)"), null);
+  assert.equal(normalizeBrowserUrl("file:///etc/passwd"), null);
+  assert.equal(normalizeBrowserUrl("   "), null);
 });
 
 test("extension.manifest.json enforces Tier 1 + Tier 2 workbench placement and command invariants", () => {

@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   callRpc,
   isVsCodeWebview,
+  makeTurnDurationKey,
   mapHistoryMessagesToTurns,
   onHostMessage,
   sendHarnessRequest,
@@ -18,11 +19,15 @@ import {
 import type {
   FileChangesSnapshotView,
   SessionSummaryView,
+  TodoItemView,
 } from "@shared/vscodeProtocol";
 
 import type { ApprovalCardRequest } from "../components/ApprovalCard";
 import type { CitationItem } from "../components/CiteLink";
-import type { ClarifyingQuestionRequest } from "../components/ClarifyingQuestionCard";
+import type {
+  ClarifyingQuestionRequest,
+  ClarifyingQuestionSubmitMeta,
+} from "../components/ClarifyingQuestionCard";
 import type { ExtendedWorkStepGroup } from "../components/WorkTrace";
 import {
   applyTraceEvents,
@@ -47,6 +52,7 @@ export interface TurnBulletItem {
 export interface ChatTurnView
   extends Omit<ExecutionTurn, "groups" | "answerBullets"> {
   isLive?: boolean;
+  baseHistoryTurnCount?: number;
   compactedNotice?: string;
   userRefFiles?: string;
   userImages?: Array<{ name: string; dataUrl: string }>;
@@ -228,6 +234,7 @@ const DEFAULT_SAMPLE_TURNS: ChatTurnView[] = [
 ];
 
 const EMPTY_COMPLETED_TURNS: ChatTurnView[] = [];
+const EMPTY_TODOS: TodoItemView[] = [];
 
 function toChatTurnViews(
   sessionId: string,
@@ -252,10 +259,13 @@ export interface UseChatStreamOptions {
 export interface UseChatStreamResult {
   sessionId: string;
   turns: ChatTurnView[];
+  todos: TodoItemView[];
   isStreaming: boolean;
   fileChangesSnapshot: FileChangesSnapshotView | null;
   setFileChangesSnapshot: (snapshot: FileChangesSnapshotView) => void;
   pendingPermission: ApprovalCardRequest | null;
+  pendingPermissionQueueCount: number;
+  isPermissionSubmitting: boolean;
   pendingQuestion: ClarifyingQuestionRequest | null;
   softInterrupts: SoftInterruptQueueItem[];
   midTurnMessages: MidTurnMessageItem[];
@@ -276,6 +286,7 @@ export interface UseChatStreamResult {
   respondQuestion: (
     answers: Record<string, string>,
     notes?: Record<string, string>,
+    meta?: ClarifyingQuestionSubmitMeta,
   ) => Promise<void>;
   dismissQuestion: () => void;
   setPendingQuestion: React.Dispatch<
@@ -300,17 +311,42 @@ export function useChatStream(
 ): UseChatStreamResult {
   const queryClient = useQueryClient();
   const storeSessionId = useAppStore((s) => s.activeSessionId);
-  const storePermission = useAppStore((s) => s.pendingPermission);
   const setStorePermission = useAppStore((s) => s.setPendingPermission);
+  const clearStorePermission = useAppStore((s) => s.clearPendingPermission);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const setStoreFileChangesSnapshot = useAppStore(
     (s) => s.setFileChangesSnapshot,
   );
+  const setStoreSessionTodos = useAppStore((s) => s.setSessionTodos);
 
   const sessionId =
     options.sessionId ??
     storeSessionId ??
     (!isVsCodeWebview() ? "ses_vscode_shell" : "");
+
+  const storePermission = useAppStore((s) => {
+    if (!sessionId) return null;
+    const queue = s.pendingPermissionsBySession[sessionId];
+    if (queue && queue.length > 0) return queue[0] ?? null;
+    const perSession = s.pendingPermissionBySession[sessionId];
+    if (perSession !== undefined) return perSession;
+    if (
+      s.pendingPermission &&
+      (!s.pendingPermission.sessionId ||
+        s.pendingPermission.sessionId === sessionId)
+    ) {
+      return s.pendingPermission;
+    }
+    return null;
+  });
+  const pendingPermissionQueueCount = useAppStore((s) => {
+    if (!sessionId) return 0;
+    const queue = s.pendingPermissionsBySession[sessionId];
+    if (queue && queue.length > 0) return queue.length;
+    return storePermission ? 1 : 0;
+  });
+  const [isPermissionSubmitting, setIsPermissionSubmitting] =
+    React.useState(false);
 
   useLiveTraceBridge(sessionId);
 
@@ -373,9 +409,14 @@ export function useChatStream(
       ) {
         setLocalFileChanges(msg.snapshot);
         setStoreFileChangesSnapshot(msg.sessionId, msg.snapshot);
+      } else if (
+        msg.type === "rayucode.permission.resolved" &&
+        msg.sessionId === sessionId
+      ) {
+        clearStorePermission(msg.sessionId, msg.requestId);
       }
     });
-  }, [sessionId, setStoreFileChangesSnapshot]);
+  }, [clearStorePermission, sessionId, setStoreFileChangesSnapshot]);
 
   React.useEffect(() => {
     if (options.initialFileChanges !== undefined) return;
@@ -396,6 +437,35 @@ export function useChatStream(
   }, [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
 
   const fileChangesSnapshot = localFileChanges ?? storeFileChanges;
+
+  const todos = useAppStore((s) =>
+    sessionId ? (s.todosBySession[sessionId] ?? EMPTY_TODOS) : EMPTY_TODOS,
+  );
+  const sessionTurnDurations = useAppStore((s) =>
+    sessionId ? s.turnDurationsBySession[sessionId] : undefined,
+  );
+
+  React.useEffect(() => {
+    if (!sessionId || isMockDemoSession) return;
+    let cancelled = false;
+    const todosBefore = useAppStore.getState().todosBySession[sessionId];
+    void callRpc("inspector.todos.get", { sessionId })
+      .then((res) => {
+        if (cancelled || !Array.isArray(res?.todos)) return;
+        const currentTodos = useAppStore.getState().todosBySession[sessionId];
+        // Never overwrite fresher live todo_state updates that arrived while RPC was in-flight
+        if (currentTodos !== todosBefore) return;
+        if (res.todos.length > 0 || !currentTodos) {
+          setStoreSessionTodos(sessionId, res.todos);
+        }
+      })
+      .catch(() => {
+        // Offline / unsupported bridge: rely on live events if any
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isMockDemoSession, sessionId, setStoreSessionTodos]);
 
   const liveTurn = useLiveTraceStore((s) =>
     sessionId ? (s.liveTurnsBySession[sessionId] ?? null) : null,
@@ -460,12 +530,25 @@ export function useChatStream(
           return idx >= 0 ? baseTurns.slice(0, idx + 1) : baseTurns;
         })()
       : baseTurns;
-    return sliced.map((t) =>
-      pinnedOverrides[t.id] !== undefined
-        ? { ...t, pinned: pinnedOverrides[t.id]! }
-        : t,
-    );
-  }, [baseTurns, pinnedOverrides, rewoundTurnId]);
+    return sliced.map((t, idx) => {
+      const cachedDuration =
+        !t.workedDuration && sessionTurnDurations
+          ? (sessionTurnDurations[makeTurnDurationKey(idx, t.userPrompt)] ??
+              (idx === sliced.length - 1
+                ? sessionTurnDurations[makeTurnDurationKey(-1, t.userPrompt)]
+                : undefined))
+          : undefined;
+      const pinned = pinnedOverrides[t.id];
+      if (pinned === undefined && !cachedDuration) {
+        return t;
+      }
+      return {
+        ...t,
+        ...(cachedDuration ? { workedDuration: cachedDuration } : {}),
+        ...(pinned !== undefined ? { pinned } : {}),
+      };
+    });
+  }, [baseTurns, pinnedOverrides, rewoundTurnId, sessionTurnDurations]);
 
   const isStreaming = Boolean(liveTurn?.isLive);
   const turnsRef = React.useRef<ChatTurnView[]>([]);
@@ -499,6 +582,26 @@ export function useChatStream(
         const wasAbnormalStop = traceEvents.some(
           (ev) => ev.type === "turn-stopped",
         );
+        if (updated.workedDuration) {
+          const baseCount =
+            useLiveTraceStore.getState().baseHistoryTurnCountBySession[
+              sessionId
+            ];
+          const appStore = useAppStore.getState();
+          if (typeof baseCount === "number") {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(baseCount, updated.userPrompt),
+              updated.workedDuration,
+            );
+          } else if (updated.userPrompt.trim()) {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(-1, updated.userPrompt),
+              updated.workedDuration,
+            );
+          }
+        }
         useLiveTraceStore.setState((state) => {
           const prev = state.completedTurnsBySession[sessionId] ?? [];
           return {
@@ -549,22 +652,31 @@ export function useChatStream(
           text: trimmed,
           urgent: false,
           clientId,
-        }).catch(() => {});
+        }).catch(() => {
+          useAppStore.getState().removeMidTurnMessage(sessionId, clientId);
+        });
         return;
       }
 
+      const prefs = useAppStore.getState().sessionPrefsBySession[sessionId];
       startSessionLiveTurn({
         sessionId,
         userPrompt: trimmed,
         userRefFiles: opts?.refFiles,
         userImages: opts?.images,
-        baseHistoryTurnCount: visibleHistoryTurns.length,
+        baseHistoryTurnCount: Math.max(
+          visibleHistoryTurns.length,
+          turnsRef.current.length,
+        ),
       });
 
       sendHarnessRequest({
         req: "send_message",
         session_id: sessionId,
         content: trimmed,
+        ...(prefs?.modelId ? { model: prefs.modelId } : {}),
+        ...(prefs?.apiMethod ? { api_method: prefs.apiMethod } : {}),
+        ...(prefs?.effort ? { effort: prefs.effort } : {}),
       });
     },
     [isStreaming, sessionId, visibleHistoryTurns.length],
@@ -577,44 +689,66 @@ export function useChatStream(
     ) => {
       const target = req ?? storePermission;
       if (!target) return;
-      setStorePermission(null);
+      const targetSid = target.sessionId || sessionId;
+      setIsPermissionSubmitting(true);
+      clearStorePermission(targetSid, target.requestId);
       try {
         await callRpc("sessions.respondPermission", {
-          sessionId: target.sessionId || sessionId,
+          sessionId: targetSid,
           requestId: target.requestId,
           decision,
         });
       } catch {
-        // ignore offline errors
+        // Restore pending permission if RPC failed so the user can retry
+        setStorePermission(target, targetSid);
+      } finally {
+        setIsPermissionSubmitting(false);
       }
     },
-    [sessionId, setStorePermission, storePermission],
+    [clearStorePermission, sessionId, setStorePermission, storePermission],
   );
 
   const respondQuestion = React.useCallback(
     async (
       answers: Record<string, string>,
       notes?: Record<string, string>,
+      meta?: ClarifyingQuestionSubmitMeta,
     ) => {
       if (!pendingQuestion) return;
       const q = pendingQuestion;
-      setSessionPendingQuestion(sessionId, null);
       try {
         await callRpc("sessions.respondQuestion", {
           sessionId: q.sessionId || sessionId,
           requestId: q.requestId,
           answers,
-          notes,
+          ...(notes ? { notes } : {}),
+          ...(meta?.selected ? { selected: meta.selected } : {}),
+          ...(meta?.declined ? { declined: meta.declined } : {}),
         });
+        setSessionPendingQuestion(sessionId, null);
       } catch {
-        // ignore offline errors
+        // Keep question visible so user can retry on transient transport errors
       }
     },
     [pendingQuestion, sessionId],
   );
 
   const dismissQuestion = React.useCallback(() => {
+    const current = sessionId
+      ? (useLiveTraceStore.getState().pendingQuestionsBySession[sessionId] ??
+        null)
+      : null;
     setSessionPendingQuestion(sessionId, null);
+    if (current) {
+      void callRpc("sessions.respondQuestion", {
+        sessionId: current.sessionId || sessionId,
+        requestId: current.requestId,
+        answers: {},
+        declined: true,
+      }).catch(() => {
+        // ignore offline errors on decline
+      });
+    }
   }, [sessionId]);
 
   const setPendingQuestion = React.useCallback<
@@ -643,7 +777,10 @@ export function useChatStream(
   const rewindToTurn = React.useCallback(
     async (turnId: string) => {
       const idx = turnsRef.current.findIndex((t) => t.id === turnId);
-      const messageIndex = idx >= 0 ? idx + 1 : undefined;
+      const targetTurn = idx >= 0 ? turnsRef.current[idx] : undefined;
+      const messageIndex =
+        targetTurn?.userMessageIndex ?? (idx >= 0 ? idx + 1 : undefined);
+      const prevRewound = rewoundTurnId;
       setRewoundTurnId(turnId);
       try {
         await callRpc("sessions.rewind", {
@@ -651,11 +788,23 @@ export function useChatStream(
           turnId,
           ...(messageIndex !== undefined ? { messageIndex } : {}),
         });
+        // Prune local completed turns after rewind and refresh canonical history
+        useLiveTraceStore.setState((state) => {
+          if (!(sessionId in state.completedTurnsBySession)) return state;
+          const next = { ...state.completedTurnsBySession };
+          delete next[sessionId];
+          return { completedTurnsBySession: next };
+        });
+        if (!options.initialTurns && !isMockDemoSession && sessionId) {
+          await queryClient.invalidateQueries({
+            queryKey: chatHistoryQueryKey(sessionId),
+          });
+        }
       } catch {
-        // ignore offline errors
+        setRewoundTurnId(prevRewound);
       }
     },
-    [sessionId],
+    [isMockDemoSession, options.initialTurns, queryClient, rewoundTurnId, sessionId],
   );
 
   const undoRewind = React.useCallback(async () => {
@@ -692,7 +841,7 @@ export function useChatStream(
           clientId,
         });
       } catch {
-        // ignore offline errors
+        useAppStore.getState().removeMidTurnMessage(sessionId, clientId);
       }
     },
     [sessionId],
@@ -756,7 +905,10 @@ export function useChatStream(
             : {}),
         });
       } catch {
-        // ignore offline errors
+        // Revert back to queue if softInterrupt failed
+        useAppStore
+          .getState()
+          .updateMidTurnMessage(sessionId, id, { mode: "queue" });
       }
     },
     [sessionId],
@@ -822,13 +974,17 @@ export function useChatStream(
           sessionId,
           atTurnId: turnId,
         });
+        await callRpc("sessions.attach", {
+          sessionId: res.session.sessionId,
+        }).catch(() => {});
         setActiveSession(res.session.sessionId, res.session.title);
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         return res.session;
       } catch {
         return null;
       }
     },
-    [sessionId, setActiveSession],
+    [queryClient, sessionId, setActiveSession],
   );
 
   const togglePinTurn = React.useCallback(
@@ -841,9 +997,14 @@ export function useChatStream(
 
   const retryTurn = React.useCallback(
     (turnId: string) => {
-      const target = visibleHistoryTurns.find((t) => t.id === turnId);
+      const target =
+        turnsRef.current.find((t) => t.id === turnId) ??
+        visibleHistoryTurns.find((t) => t.id === turnId);
       if (target) {
-        sendPrompt(target.userPrompt);
+        sendPrompt(target.userPrompt, {
+          refFiles: target.userRefFiles,
+          images: target.userImages,
+        });
       }
     },
     [sendPrompt, visibleHistoryTurns],
@@ -882,10 +1043,13 @@ export function useChatStream(
   return {
     sessionId,
     turns: allTurns,
+    todos,
     isStreaming,
     fileChangesSnapshot,
     setFileChangesSnapshot,
     pendingPermission: storePermission,
+    pendingPermissionQueueCount,
+    isPermissionSubmitting,
     pendingQuestion,
     softInterrupts,
     midTurnMessages,

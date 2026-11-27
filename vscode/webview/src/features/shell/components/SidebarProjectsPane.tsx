@@ -9,6 +9,7 @@ import {
 } from "@rayu-dev/rayucode-session-core/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   Archive,
   ArchiveRestore,
   ChevronDown,
@@ -65,7 +66,12 @@ import {
   reconcileStaleLiveTurnsFromSessions,
   useLiveTraceStore,
 } from "@/features/chat";
-import { useAppStore } from "@/lib/app-store";
+import {
+  type ExternalSessionOpenTarget,
+  parseSyntheticExternalSessionId,
+  resolveSessionForOpen,
+  useAppStore,
+} from "@/lib";
 import { callRpc } from "@/lib/rpc-client";
 import { basenameOf, cn, formatRelativeTime } from "@/lib/utils";
 
@@ -164,6 +170,7 @@ export function SidebarProjectsPane({
     session: SessionSummaryView;
     message: string;
   } | null>(null);
+  const [importError, setImportError] = React.useState<string | null>(null);
   const [organizeMode, setOrganizeMode] =
     React.useState<OrganizeMode>("project");
   const [sortMode, setSortMode] = React.useState<SortMode>("updated");
@@ -441,68 +448,55 @@ export function SidebarProjectsPane({
     onSessionSelected?.();
   };
 
-  const handleSelectSession = async (session: SessionSummaryView) => {
+  const handleSelectSession = async (
+    session: SessionSummaryView | ExternalSessionOpenTarget,
+  ) => {
     setSyncConflict(null);
-    const isExternalUnimported =
-      Boolean(session.externalSessionId) &&
-      (session.imported === false || Boolean(session.syncStale));
+    setImportError(null);
 
-    if (isExternalUnimported && session.externalSessionId) {
-      try {
-        const result = await callRpc("sessions.importExternal", {
-          items: [
-            {
-              source: session.source ?? session.sourceTool ?? "claude_code",
-              externalSessionId: session.externalSessionId,
-              externalPath: session.externalPath,
-              workingDir: session.workingDir,
-            },
-          ],
-        });
-        const imported = result.sessions[0];
-        if (imported) {
-          setActiveSession(imported.sessionId, imported.title);
-          if (imported.workingDir) setActiveProjectPath(imported.workingDir);
-          refreshSessions();
-          void queryClient.invalidateQueries({
-            queryKey: ["chat", "history", imported.sessionId],
-          });
-          onSessionSelected?.();
-          void callRpc("sessions.attach", { sessionId: imported.sessionId })
-            .then((res) => {
-              reconcileStaleLiveTurnForSession(
-                res.session.sessionId,
-                res.session.status,
-              );
-            })
-            .catch(() => {});
-          return;
-        }
-        const conflictSkip = result.skipped.find((s) => s.reason === "conflict");
-        if (conflictSkip) {
-          const targetId = conflictSkip.existingSessionId ?? session.sessionId;
-          setSyncConflict({
-            session,
-            message: `Newer messages in ${formatSessionSourceLabel(session.source ?? session.sourceTool)}`,
-          });
-          setActiveSession(targetId, session.title);
-          if (session.workingDir) setActiveProjectPath(session.workingDir);
-          onSessionSelected?.();
-          void callRpc("sessions.attach", { sessionId: targetId }).catch(
-            () => {},
-          );
-          return;
-        }
-      } catch {
-        // Fall through to standard attach if import RPC is unavailable
-      }
+    const resolved = await resolveSessionForOpen(session);
+    if (resolved.kind === "error") {
+      setImportError(resolved.message);
+      return;
     }
 
-    useAppStore.getState().seedSessionPrefsFromSummary(session);
-    setActiveSession(session.sessionId, session.title);
-    if (session.workingDir) setActiveProjectPath(session.workingDir);
+    if (resolved.kind === "conflict") {
+      setSyncConflict({
+        session: session as SessionSummaryView,
+        message: resolved.message,
+      });
+      setActiveSession(resolved.sessionId, resolved.title);
+      if (resolved.workingDir) setActiveProjectPath(resolved.workingDir);
+      onSessionSelected?.();
+      void callRpc("sessions.attach", { sessionId: resolved.sessionId })
+        .then((res) => {
+          useAppStore.getState().seedSessionPrefsFromSummary(res.session);
+          reconcileStaleLiveTurnForSession(
+            res.session.sessionId,
+            res.session.status,
+          );
+        })
+        .catch(() => {});
+      return;
+    }
+
+    if (resolved.importedSession) {
+      useAppStore
+        .getState()
+        .seedSessionPrefsFromSummary(resolved.importedSession);
+    } else if ("status" in session) {
+      useAppStore.getState().seedSessionPrefsFromSummary(session);
+    }
+    setActiveSession(resolved.sessionId, resolved.title);
+    if (resolved.workingDir) setActiveProjectPath(resolved.workingDir);
+    if (resolved.wasImported) {
+      refreshSessions();
+      void queryClient.invalidateQueries({
+        queryKey: ["chat", "history", resolved.sessionId],
+      });
+    }
     onSessionSelected?.();
-    void callRpc("sessions.attach", { sessionId: session.sessionId })
+    void callRpc("sessions.attach", { sessionId: resolved.sessionId })
       .then((res) => {
         useAppStore.getState().seedSessionPrefsFromSummary(res.session);
         reconcileStaleLiveTurnForSession(
@@ -515,13 +509,21 @@ export function SidebarProjectsPane({
 
   const handleOpenSyncedConflictCopy = async () => {
     const s = syncConflict?.session;
-    const externalId = s?.externalSessionId;
+    const parsedSynthetic = s
+      ? parseSyntheticExternalSessionId(s.sessionId)
+      : null;
+    const externalId =
+      s?.externalSessionId ?? parsedSynthetic?.externalSessionId;
     if (!s || !externalId) return;
     try {
       const result = await callRpc("sessions.importExternal", {
         items: [
           {
-            source: s.source ?? s.sourceTool ?? "claude_code",
+            source:
+              s.source ??
+              parsedSynthetic?.source ??
+              s.sourceTool ??
+              "claude_code",
             externalSessionId: externalId,
             externalPath: s.externalPath,
             workingDir: s.workingDir,
@@ -532,10 +534,17 @@ export function SidebarProjectsPane({
       const copied = result.sessions[0];
       if (copied) {
         setSyncConflict(null);
+        useAppStore.getState().seedSessionPrefsFromSummary(copied);
         setActiveSession(copied.sessionId, copied.title);
         if (copied.workingDir) setActiveProjectPath(copied.workingDir);
         refreshSessions();
+        void queryClient.invalidateQueries({
+          queryKey: ["chat", "history", copied.sessionId],
+        });
         onSessionSelected?.();
+        void callRpc("sessions.attach", { sessionId: copied.sessionId }).catch(
+          () => {},
+        );
       }
     } catch {
       setSyncConflict(null);
@@ -791,8 +800,30 @@ export function SidebarProjectsPane({
       key={`${hit.sourceTool}-${hit.sessionId}`}
       type="button"
       onClick={() => {
-        setActiveSession(hit.sessionId, hit.title);
-        onSessionSelected?.();
+        const matched = allSessions.find(
+          (s) =>
+            s.sessionId === hit.sessionId ||
+            s.externalSessionId === hit.sessionId,
+        );
+        if (matched) {
+          void handleSelectSession(matched);
+          return;
+        }
+        const parsed = parseSyntheticExternalSessionId(hit.sessionId);
+        const inferredSource =
+          parsed?.source ??
+          (hit.sourceTool === "claude"
+            ? "claude_code"
+            : hit.sourceTool === "rayu"
+              ? undefined
+              : hit.sourceTool);
+        void handleSelectSession({
+          sessionId: hit.sessionId,
+          title: hit.title,
+          source: inferredSource,
+          sourceTool: hit.sourceTool,
+          ...(parsed ? { externalSessionId: parsed.externalSessionId } : {}),
+        });
       }}
       className="flex w-full cursor-pointer flex-col gap-1 rounded-md border border-hairline-soft bg-pane p-2 text-left text-xs transition-colors hover:border-premium hover:bg-hover"
     >
@@ -1047,6 +1078,30 @@ export function SidebarProjectsPane({
         </div>
       )}
 
+      {/* Non-blocking external session import error banner */}
+      {importError && (
+        <div
+          role="alert"
+          data-testid="sidebar-import-error-banner"
+          className="flex items-start justify-between gap-2 border-b border-danger/35 bg-danger-soft px-2.5 py-1.5 text-[11px] text-danger"
+        >
+          <div className="flex min-w-0 items-start gap-1.5">
+            <AlertCircle className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 break-words leading-snug">
+              {importError}
+            </span>
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss import error"
+            onClick={() => setImportError(null)}
+            className="shrink-0 cursor-pointer text-danger/80 hover:text-danger"
+          >
+            <X className="size-3" />
+          </button>
+        </div>
+      )}
+
       {/* Workspace Scope Toggle (shown when other projects exist outside open VS Code folders) */}
       {showScopeToggle && (
         <div className="flex items-center justify-between border-b border-hairline-soft px-2.5 py-1.5">
@@ -1200,9 +1255,23 @@ export function SidebarProjectsPane({
         open={importDialogOpen}
         onOpenChange={setImportDialogOpen}
         onImported={(imported) => {
+          useAppStore.getState().seedSessionPrefsFromSummary(imported);
           setActiveSession(imported.sessionId, imported.title);
           if (imported.workingDir) setActiveProjectPath(imported.workingDir);
+          refreshSessions();
+          void queryClient.invalidateQueries({
+            queryKey: ["chat", "history", imported.sessionId],
+          });
           onSessionSelected?.();
+          void callRpc("sessions.attach", { sessionId: imported.sessionId })
+            .then((res) => {
+              useAppStore.getState().seedSessionPrefsFromSummary(res.session);
+              reconcileStaleLiveTurnForSession(
+                res.session.sessionId,
+                res.session.status,
+              );
+            })
+            .catch(() => {});
         }}
       />
 

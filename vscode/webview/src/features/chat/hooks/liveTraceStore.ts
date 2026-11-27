@@ -1,5 +1,8 @@
 import * as React from "react";
-import { shouldClearStaleLiveTurn } from "@rayu-dev/rayucode-session-core/client";
+import {
+  extractTodosFromHarnessFrame,
+  shouldClearStaleLiveTurn,
+} from "@rayu-dev/rayucode-session-core/client";
 import { fromHarnessPermissionMode } from "@shared/vscodeProtocol";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { create } from "zustand";
@@ -8,6 +11,7 @@ import {
   createHarnessStreamTracker,
   createStreamBatcher,
   formatDurationSeconds,
+  makeTurnDurationKey,
   mapHarnessFrameToLiveEvents,
   onHarnessFrame,
   useAppStore,
@@ -19,7 +23,10 @@ import {
   type StreamBatcher,
 } from "@/lib";
 
-import type { ClarifyingQuestionRequest } from "../components/ClarifyingQuestionCard";
+import type {
+  ClarifyingQuestionItem,
+  ClarifyingQuestionRequest,
+} from "../components/ClarifyingQuestionCard";
 import type { ChatTurnView } from "./useChatStream";
 
 const FRAME_BATCH_WINDOW_MS = 16;
@@ -342,6 +349,10 @@ export function startSessionLiveTurn(
     userPrompt: input.userPrompt,
     userRefFiles: input.userRefFiles,
     userImages: input.userImages,
+    ...(typeof input.baseHistoryTurnCount === "number" &&
+    input.baseHistoryTurnCount >= 0
+      ? { baseHistoryTurnCount: input.baseHistoryTurnCount }
+      : {}),
     workedDuration: formatDurationSeconds(
       Math.max(1, Math.floor((Date.now() - startedAt) / 1000)),
     ),
@@ -559,6 +570,26 @@ function getOrCreateBatcher(
       const wasAbnormalStop = Boolean(abnormalStopBySession.get(sessionId));
       if (!completedTurnIds.has(updated.id)) {
         completedTurnIds.add(updated.id);
+        if (updated.workedDuration) {
+          const baseCount =
+            useLiveTraceStore.getState().baseHistoryTurnCountBySession[
+              sessionId
+            ];
+          const appStore = useAppStore.getState();
+          if (typeof baseCount === "number") {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(baseCount, updated.userPrompt),
+              updated.workedDuration,
+            );
+          } else if (updated.userPrompt.trim()) {
+            appStore.recordTurnDuration(
+              sessionId,
+              makeTurnDurationKey(-1, updated.userPrompt),
+              updated.workedDuration,
+            );
+          }
+        }
         useLiveTraceStore.setState((state) => {
           const prevCompleted = state.completedTurnsBySession[sessionId] ?? [];
           return {
@@ -575,10 +606,7 @@ function getOrCreateBatcher(
           queryKey: chatHistoryQueryKey(sessionId),
         });
       }
-      const perm = useAppStore.getState().pendingPermission;
-      if (perm && (!perm.sessionId || perm.sessionId === sessionId)) {
-        useAppStore.getState().setPendingPermission(null);
-      }
+      useAppStore.getState().clearPendingPermission(sessionId);
       clearSessionLiveTurn(sessionId);
       settleSessionTurnQueue(sessionId, wasAbnormalStop);
       return;
@@ -606,9 +634,36 @@ export function processHarnessFrame(
   fallbackSessionId?: string,
 ): void {
   const frameSession =
-    typeof frame.session_id === "string" ? frame.session_id : "";
+    typeof frame.session_id === "string" ? frame.session_id.trim() : "";
+  if (
+    !frameSession &&
+    (frame.ev === "error" ||
+      frame.ev === "turn_stopped" ||
+      frame.ev === "turn_aborted")
+  ) {
+    // Bound session sockets always stamp session_id onto terminal error/stop
+    // frames. Ignore sessionless transport disconnects (e.g. a foreign socket
+    // closing with "daemon connection closed") so they never abort or clear
+    // pending permissions for whichever session happens to be focused.
+    return;
+  }
   const targetSessionId = frameSession || fallbackSessionId || "";
   if (!targetSessionId) return;
+
+  const todoUpdate = extractTodosFromHarnessFrame(frame, targetSessionId);
+  if (todoUpdate) {
+    useAppStore.getState().setSessionTodos(todoUpdate.sessionId, todoUpdate.todos);
+    return;
+  }
+
+  if (frame.ev === "permission_resolved") {
+    const reqId =
+      typeof frame.request_id === "string" ? frame.request_id.trim() : "";
+    useAppStore
+      .getState()
+      .clearPendingPermission(targetSessionId, reqId || undefined);
+    return;
+  }
 
   if (frame.ev === "permission_mode_changed") {
     if (typeof frame.mode === "string") {
@@ -678,76 +733,96 @@ export function processHarnessFrame(
 
   if (frame.ev === "question_request" || frame.ev === "ask_user_question") {
     const reqId = String(frame.request_id ?? `q_${Date.now()}`);
-    const firstQuestion =
-      Array.isArray(frame.questions) &&
-      frame.questions[0] &&
-      typeof frame.questions[0] === "object"
-        ? (frame.questions[0] as Record<string, unknown>)
-        : null;
-    const prompt = String(
-      firstQuestion?.question ??
-        firstQuestion?.prompt ??
-        frame.prompt ??
-        frame.question ??
-        "How would you like to proceed?",
-    );
-    const rawOpts = Array.isArray(firstQuestion?.options)
-      ? firstQuestion.options
-      : Array.isArray(frame.options)
-        ? frame.options
-        : [];
-    const multiSelect = Boolean(
-      firstQuestion?.multiSelect ??
-        firstQuestion?.multi_select ??
-        frame.multiSelect ??
-        frame.multi_select,
-    );
+    const mapRawOptions = (rawOpts: unknown[]) =>
+      rawOpts.length > 0
+        ? rawOpts.map((o, idx) => {
+            const obj =
+              o && typeof o === "object"
+                ? (o as Record<string, unknown>)
+                : { title: String(o) };
+            return {
+              id: String(obj.id ?? `opt_${idx + 1}`),
+              key: String(obj.key ?? idx + 1),
+              title: String(obj.title ?? obj.label ?? `Option ${idx + 1}`),
+              subtitle:
+                typeof obj.subtitle === "string"
+                  ? obj.subtitle
+                  : typeof obj.description === "string"
+                    ? obj.description
+                    : undefined,
+              recommended: Boolean(obj.recommended),
+            };
+          })
+        : [
+            {
+              id: "opt_1",
+              key: "1",
+              title: "Proceed with recommended defaults",
+              recommended: true,
+            },
+            {
+              id: "opt_2",
+              key: "2",
+              title: "Review changes step-by-step first",
+            },
+          ];
+
+    const rawQuestions = Array.isArray(frame.questions)
+      ? frame.questions.filter(
+          (q): q is Record<string, unknown> =>
+            Boolean(q) && typeof q === "object" && !Array.isArray(q),
+        )
+      : [];
+
+    const parsedQuestions: ClarifyingQuestionItem[] =
+      rawQuestions.length > 0
+        ? rawQuestions.map((q) => ({
+            question: String(
+              q.question ?? q.prompt ?? "How would you like to proceed?",
+            ),
+            header: typeof q.header === "string" ? q.header : undefined,
+            placeholder:
+              typeof q.placeholder === "string" ? q.placeholder : undefined,
+            multiSelect: Boolean(q.multiSelect ?? q.multi_select),
+            options: mapRawOptions(Array.isArray(q.options) ? q.options : []),
+          }))
+        : [
+            {
+              question: String(
+                frame.prompt ??
+                  frame.question ??
+                  "How would you like to proceed?",
+              ),
+              placeholder:
+                typeof frame.placeholder === "string"
+                  ? frame.placeholder
+                  : undefined,
+              multiSelect: Boolean(frame.multiSelect ?? frame.multi_select),
+              options: mapRawOptions(
+                Array.isArray(frame.options) ? frame.options : [],
+              ),
+            },
+          ];
+
+    const primary = parsedQuestions[0]!;
     setSessionPendingQuestion(targetSessionId, {
       requestId: reqId,
       sessionId: targetSessionId,
-      prompt,
-      multiSelect,
-      options:
-        rawOpts.length > 0
-          ? rawOpts.map((o, idx) => {
-              const obj =
-                o && typeof o === "object"
-                  ? (o as Record<string, unknown>)
-                  : { title: String(o) };
-              return {
-                id: String(obj.id ?? `opt_${idx + 1}`),
-                key: String(obj.key ?? idx + 1),
-                title: String(obj.title ?? obj.label ?? `Option ${idx + 1}`),
-                subtitle:
-                  typeof obj.subtitle === "string"
-                    ? obj.subtitle
-                    : typeof obj.description === "string"
-                      ? obj.description
-                      : undefined,
-                recommended: Boolean(obj.recommended),
-              };
-            })
-          : [
-              {
-                id: "opt_1",
-                key: "1",
-                title: "Proceed with recommended defaults",
-                recommended: true,
-              },
-              {
-                id: "opt_2",
-                key: "2",
-                title: "Review changes step-by-step first",
-              },
-            ],
+      prompt: primary.question,
+      placeholder: primary.placeholder,
+      multiSelect: primary.multiSelect,
+      options: primary.options,
+      questions: parsedQuestions,
     });
     return;
   }
 
   if (frame.ev === "session_status") {
-    const status = typeof frame.status === "string" ? frame.status : "";
+    const status = typeof frame.status === "string" ? frame.status.trim().toLowerCase() : "";
     if (
       status === "running" ||
+      status === "processing" ||
+      status === "busy" ||
       status === "generating" ||
       status === "tool_running"
     ) {

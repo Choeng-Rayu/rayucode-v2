@@ -3,19 +3,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { HostToWebviewMessage } from "@shared/vscodeProtocol";
 
 import {
-  AutomationsSkeleton,
-  ChangesSkeleton,
   ChatSkeleton,
   PluginsSkeleton,
-  RemoteSkeleton,
   SectionErrorBoundary,
   SettingsSkeleton,
-  SwarmSkeleton,
 } from "@/components/ui";
 import {
   ChatWorkspaceView,
   LiveTraceController,
   chatHistoryQueryKey,
+  startSessionLiveTurn,
+  useLiveTraceStore,
   type ChatTurnView,
 } from "@/features/chat";
 import {
@@ -24,13 +22,6 @@ import {
   normalizeEffortLevel,
   type ComposerSubmitPayload,
 } from "@/features/composer";
-import {
-  ArtifactsPanel,
-  CodeViewer,
-  ContextPanel,
-  FilesSidePanel,
-  ToolsProgressPanel,
-} from "@/features/inspector";
 import {
   BackgroundDockBar,
   BackgroundProcessDrawer,
@@ -45,27 +36,8 @@ import {
   type MidTurnMessageItem,
 } from "@/lib";
 
-const SwarmView = React.lazy(() =>
-  import("@/features/swarm").then((m) => ({ default: m.SwarmView })),
-);
-const AgentsPersonasView = React.lazy(() =>
-  import("@/features/agents").then((m) => ({
-    default: m.AgentsPersonasView,
-  })),
-);
-const AutomationsView = React.lazy(() =>
-  import("@/features/automations").then((m) => ({
-    default: m.AutomationsView,
-  })),
-);
 const PluginsView = React.lazy(() =>
   import("@/features/plugins").then((m) => ({ default: m.PluginsView })),
-);
-const ChangesView = React.lazy(() =>
-  import("@/features/changes").then((m) => ({ default: m.ChangesView })),
-);
-const RemoteView = React.lazy(() =>
-  import("@/features/remote").then((m) => ({ default: m.RemoteView })),
 );
 const SettingsView = React.lazy(() =>
   import("@/features/settings").then((m) => ({ default: m.SettingsView })),
@@ -92,7 +64,6 @@ export function App() {
 
   const activeRoute = useAppStore((s) => s.activeRoute);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
-  const activeRightTab = useAppStore((s) => s.activeRightTab);
   const daemonStatus = useAppStore((s) => s.daemonStatus);
   const accountStatus = useAppStore((s) => s.accountStatus);
   const authLoaded = useAppStore((s) => s.authLoaded);
@@ -110,7 +81,6 @@ export function App() {
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
-  const enqueueOptimisticTurn = useAppStore((s) => s.enqueueOptimisticTurn);
   const requestSessionSearchFocus = useAppStore(
     (s) => s.requestSessionSearchFocus,
   );
@@ -197,7 +167,20 @@ export function App() {
       if (msg.type === "rayucode.daemon.statusChanged") {
         if (msg.status.state === "connected") {
           invalidateModelAndProviderQueries();
+          void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+          void queryClient.invalidateQueries({ queryKey: ["chat", "history"] });
+          void queryClient.invalidateQueries({ queryKey: ["processes"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["workspace", "ledger"],
+          });
+          void queryClient.invalidateQueries({ queryKey: ["settings", "config"] });
         }
+        return;
+      }
+      if (msg.type === "rayucode.config.changed") {
+        invalidateModelAndProviderQueries();
+        void queryClient.invalidateQueries({ queryKey: ["settings", "features"] });
+        void queryClient.invalidateQueries({ queryKey: ["settings", "config"] });
         return;
       }
       if (msg.type === "rayucode.processes.snapshot") {
@@ -252,10 +235,14 @@ export function App() {
   ]);
 
   const handleWorkspaceSubmit = React.useCallback(
-    async (payload: ComposerSubmitPayload) => {
+    async (
+      payload: ComposerSubmitPayload,
+      explicitTarget?: { sessionId?: string },
+    ) => {
       const storeState = useAppStore.getState();
       const draft = storeState.activeDraft;
-      let targetSessionId = storeState.activeSessionId;
+      let targetSessionId =
+        explicitTarget?.sessionId ?? storeState.activeSessionId;
       let isNewSession = false;
       const existingPrefs = targetSessionId
         ? storeState.sessionPrefsBySession[targetSessionId]
@@ -290,6 +277,7 @@ export function App() {
             workingDir: effectiveWorkingDir,
             permissionMode: effectivePermissionMode,
             model: effectiveModel,
+            ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
             effort: effectiveEffort,
             ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
             ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
@@ -313,6 +301,10 @@ export function App() {
             queryKey: ["workspace", "ledger"],
           });
         } catch {
+          // Restore user's prompt so it is never lost when session creation fails
+          if (payload.prompt.trim()) {
+            useAppStore.getState().setComposerDraft("__home__", payload.prompt);
+          }
           return;
         }
       } else {
@@ -334,6 +326,22 @@ export function App() {
         : (queryClient.getQueryData<ChatTurnView[]>(
             chatHistoryQueryKey(targetSessionId),
           ) ?? []);
+      const completedForSession = isNewSession
+        ? []
+        : (useLiveTraceStore.getState().completedTurnsBySession[
+            targetSessionId
+          ] ?? []);
+      const settledNextSlot = completedForSession.reduce(
+        (maxSlot, turn) =>
+          Math.max(
+            maxSlot,
+            typeof turn.baseHistoryTurnCount === "number" &&
+              turn.baseHistoryTurnCount >= 0
+              ? turn.baseHistoryTurnCount + 1
+              : 0,
+          ),
+        completedForSession.length,
+      );
 
       const selectionContext = payload.editorSelection
         ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
@@ -343,20 +351,23 @@ export function App() {
         ? `${payload.editorSelection.relativePath}:${payload.editorSelection.lineStart}-${payload.editorSelection.lineEnd}`
         : undefined;
 
-      enqueueOptimisticTurn({
-        id: `opt_${targetSessionId}_${Date.now()}`,
+      // Start live turn synchronously BEFORE dispatching send_message so early
+      // streaming frames cannot race ahead of a React useEffect.
+      startSessionLiveTurn({
         sessionId: targetSessionId,
-        prompt: payload.prompt,
-        refFiles,
-        images: payload.images?.map((img) => ({
+        userPrompt: payload.prompt,
+        userRefFiles: refFiles,
+        userImages: payload.images?.map((img) => ({
           name: img.name ?? "Attachment",
           dataUrl: img.data,
         })),
-        createdAtMs: Date.now(),
-        baseHistoryTurnCount: cachedHistory.length,
+        startedAtMs: Date.now(),
+        baseHistoryTurnCount: Math.max(cachedHistory.length, settledNextSlot),
       });
 
-      setIsStreamActive(true);
+      if (useAppStore.getState().activeSessionId === targetSessionId) {
+        setIsStreamActive(true);
+      }
       sendHarnessRequest({
         req: "send_message",
         session_id: targetSessionId,
@@ -368,7 +379,7 @@ export function App() {
         ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
       });
     },
-    [enqueueOptimisticTurn, queryClient, setActiveSession, setIsStreamActive],
+    [queryClient, setActiveSession, setIsStreamActive],
   );
 
   const handleDrainQueuedMessage = React.useCallback(
@@ -377,30 +388,29 @@ export function App() {
       const activeWs =
         state.workspaces.find((w) => w.path === state.activeProjectPath) ??
         state.workspaces[0];
-      const sessionPrefs =
-        state.sessionPrefsBySession[item.sessionId] ??
-        (state.activeSessionId
-          ? state.sessionPrefsBySession[state.activeSessionId]
-          : undefined);
+      const sessionPrefs = state.sessionPrefsBySession[item.sessionId];
       const resolvedModelSpec = sessionPrefs?.modelId ?? item.modelSpec;
-      await handleWorkspaceSubmit({
-        prompt: item.text,
-        images: item.images,
-        project: activeWs?.name ?? "workspace",
-        workingDir: state.activeProjectPath ?? activeWs?.path ?? undefined,
-        checkout: activeWs?.branch ?? "main",
-        modelId: resolvedModelSpec ?? "",
-        modelSpec: resolvedModelSpec,
-        modelLabel: sessionPrefs?.modelLabel ?? resolvedModelSpec ?? "",
-        apiMethod: sessionPrefs?.apiMethod ?? item.apiMethod,
-        effort: sessionPrefs?.effort ?? item.effort ?? "medium",
-        serviceTier: sessionPrefs?.serviceTier ?? item.serviceTier ?? "auto",
-        cacheTtl: sessionPrefs?.cacheTtl ?? item.cacheTtl ?? "5m",
-        permissionMode:
-          sessionPrefs?.permissionMode ?? item.permissionMode ?? "default",
-        editorSelection: item.editorSelection ?? null,
-        selectionIncluded: Boolean(item.editorSelection),
-      });
+      await handleWorkspaceSubmit(
+        {
+          prompt: item.text,
+          images: item.images,
+          project: activeWs?.name ?? "workspace",
+          workingDir: state.activeProjectPath ?? activeWs?.path ?? undefined,
+          checkout: activeWs?.branch ?? "main",
+          modelId: resolvedModelSpec ?? "",
+          modelSpec: resolvedModelSpec,
+          modelLabel: sessionPrefs?.modelLabel ?? resolvedModelSpec ?? "",
+          apiMethod: sessionPrefs?.apiMethod ?? item.apiMethod,
+          effort: sessionPrefs?.effort ?? item.effort ?? "medium",
+          serviceTier: sessionPrefs?.serviceTier ?? item.serviceTier ?? "auto",
+          cacheTtl: sessionPrefs?.cacheTtl ?? item.cacheTtl ?? "5m",
+          permissionMode:
+            sessionPrefs?.permissionMode ?? item.permissionMode ?? "default",
+          editorSelection: item.editorSelection ?? null,
+          selectionIncluded: Boolean(item.editorSelection),
+        },
+        { sessionId: item.sessionId },
+      );
     },
     [handleWorkspaceSubmit],
   );
@@ -425,38 +435,6 @@ export function App() {
     !accountStatus?.signedIn &&
     !authBypassed;
   const showAuthGate = authDialogOpen || isSignedOutGate || isDaemonOffline;
-
-  if (showAuthGate) {
-    return (
-      <>
-        <LiveTraceController />
-        <div
-          data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
-          className="h-screen w-screen overflow-hidden bg-canvas"
-        >
-          <AuthWelcomeScreen
-            onContinue={() => {
-              setAuthDialogOpen(false);
-              if (!useAppStore.getState().accountStatus?.signedIn || isDaemonOffline) {
-                setAuthBypassed(true);
-              }
-            }}
-          />
-        </div>
-      </>
-    );
-  }
-
-  const documentSlot =
-    activeRightTab === "code" ? (
-      <CodeViewer />
-    ) : activeRightTab === "sidePanel" ? (
-      <ArtifactsPanel />
-    ) : activeRightTab === "diff" ? (
-      <React.Suspense fallback={<ChangesSkeleton />}>
-        <ChangesView />
-      </React.Suspense>
-    ) : undefined;
 
   const renderRoute = () => {
     switch (activeRoute) {
@@ -494,36 +472,6 @@ export function App() {
           </RoutePanel>
         );
 
-      case "swarm":
-        return (
-          <RoutePanel
-            title="Swarm Mission Control failed to load"
-            fallback={<SwarmSkeleton />}
-          >
-            <SwarmView />
-          </RoutePanel>
-        );
-
-      case "agents":
-        return (
-          <RoutePanel
-            title="Agents & Personas failed to load"
-            fallback={<SettingsSkeleton />}
-          >
-            <AgentsPersonasView />
-          </RoutePanel>
-        );
-
-      case "automations":
-        return (
-          <RoutePanel
-            title="Automations failed to load"
-            fallback={<AutomationsSkeleton />}
-          >
-            <AutomationsView />
-          </RoutePanel>
-        );
-
       case "plugins":
         return (
           <RoutePanel
@@ -534,27 +482,11 @@ export function App() {
           </RoutePanel>
         );
 
-      case "changes":
-        return (
-          <RoutePanel
-            title="Changes review failed to load"
-            fallback={<ChangesSkeleton />}
-          >
-            <ChangesView />
-          </RoutePanel>
-        );
-
-      case "remote":
-        return (
-          <RoutePanel
-            title="Remote access failed to load"
-            fallback={<RemoteSkeleton />}
-          >
-            <RemoteView />
-          </RoutePanel>
-        );
-
       case "settings":
+      case "swarm":
+      case "agents":
+      case "automations":
+      case "remote":
         return (
           <RoutePanel
             title="Settings failed to load"
@@ -563,31 +495,77 @@ export function App() {
             <SettingsView />
           </RoutePanel>
         );
+
+      case "changes":
+      default:
+        return activeSessionId ? (
+          <RoutePanel
+            title="Chat workspace failed to render"
+            fallback={<ChatSkeleton />}
+          >
+            <ChatWorkspaceView
+              sessionId={activeSessionId}
+              onDrainQueuedMessage={handleDrainQueuedMessage}
+              backgroundDockSlot={<BackgroundDockBar />}
+              composerSlot={
+                <SessionComposer
+                  mode="workspace"
+                  sessionId={activeSessionId}
+                  isSubmitting={isStreamActive}
+                  onSubmit={handleWorkspaceSubmit}
+                  onStop={handleWorkspaceStop}
+                />
+              }
+            />
+          </RoutePanel>
+        ) : (
+          <RoutePanel title="Home failed to render" fallback={<ChatSkeleton />}>
+            <HomePage
+              onSelectSession={(sid) => {
+                setActiveSession(sid);
+              }}
+            />
+          </RoutePanel>
+        );
     }
   };
 
   return (
     <>
       <LiveTraceController />
-      <AppShell
-        contextSlot={<ContextPanel />}
-        toolsSlot={<ToolsProgressPanel />}
-        artifactsSlot={<ArtifactsPanel />}
-        filesSlot={<FilesSidePanel />}
-        documentSlot={documentSlot}
-        backgroundDockSlot={
-          activeRoute === "workspace" ? undefined : <BackgroundDockBar />
-        }
-        backgroundDrawerSlot={
-          <BackgroundProcessDrawer
-            open={backgroundDrawerOpen}
-            onOpenChange={setBackgroundDrawerOpen}
-            onClose={() => setBackgroundDrawerOpen(false)}
+      {showAuthGate ? (
+        <div
+          data-testid={isDaemonOffline ? "rayu-offline-gate" : "rayu-auth-gate"}
+          className="h-screen w-screen overflow-hidden bg-canvas"
+        >
+          <AuthWelcomeScreen
+            onContinue={() => {
+              setAuthDialogOpen(false);
+              if (
+                !useAppStore.getState().accountStatus?.signedIn ||
+                isDaemonOffline
+              ) {
+                setAuthBypassed(true);
+              }
+            }}
           />
-        }
-      >
-        {renderRoute()}
-      </AppShell>
+        </div>
+      ) : (
+        <AppShell
+          backgroundDockSlot={
+            activeRoute === "workspace" ? undefined : <BackgroundDockBar />
+          }
+          backgroundDrawerSlot={
+            <BackgroundProcessDrawer
+              open={backgroundDrawerOpen}
+              onOpenChange={setBackgroundDrawerOpen}
+              onClose={() => setBackgroundDrawerOpen(false)}
+            />
+          }
+        >
+          {renderRoute()}
+        </AppShell>
+      )}
     </>
   );
 }

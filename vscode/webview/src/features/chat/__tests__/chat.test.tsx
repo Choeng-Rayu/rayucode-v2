@@ -43,16 +43,17 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     resetAllLiveTraces();
     useAppStore.setState({
       activeSessionId: "ses_vscode_shell",
-      inspectorOpen: false,
-      activeCodeFile: null,
-      activeCodeLine: null,
       pendingPermission: null,
+      pendingPermissionBySession: {},
+      pendingPermissionsBySession: {},
       pendingUserTurn: null,
       isStreamActive: false,
       midTurnSendMode: "steer",
       midTurnMessagesBySession: {},
       pausedQueueSessions: {},
       composerDrafts: {},
+      todosBySession: {},
+      turnDurationsBySession: {},
     });
   });
 
@@ -383,7 +384,15 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     );
 
     fireEvent.click(screen.getByTestId("clarifying-option-1"));
-    expect(onQuestionSubmit).toHaveBeenCalledWith({ q_1: "main" }, undefined);
+    expect(onQuestionSubmit).toHaveBeenCalledWith(
+      { "Which target branch should receive the migration?": "main" },
+      undefined,
+      {
+        selected: {
+          "Which target branch should receive the migration?": [0],
+        },
+      },
+    );
   });
 
   it("renders ChatWorkspaceView with optional backgroundDockSlot and composerSlot", () => {
@@ -1147,8 +1156,11 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
     );
     expect(screen.queryByTestId("turn-live-footer-turn_footer_live")).toBeNull();
     expect(screen.getByTestId("turn-actions-turn_footer_live")).toBeTruthy();
+    expect(
+      screen.getByTestId("turn-duration-turn_footer_live").textContent,
+    ).toContain("Worked for 11s");
     expect(screen.getByTestId("work-trace-summary").textContent).toBe(
-      "Worked for 11s",
+      "Thinking & steps",
     );
   });
 
@@ -1336,5 +1348,680 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       </QueryClientProvider>,
     );
     expect(scrollTop).toBe(3200);
+  });
+
+  it("renders Worked for Xs in completed TurnActions footer (including quick replies without WorkTrace) and avoids duplicating duration in WorkTrace", () => {
+    const quickReplyTurn: ChatTurnView = {
+      id: "turn_quick_1",
+      sessionId: "ses_dur",
+      userPrompt: "hi",
+      workedDuration: "4s",
+      notes: [],
+      groups: [],
+      answerIntro: "Hello! How can I help today?",
+      answerBullets: [],
+      diffCard: {
+        id: "d_empty",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      timestamp: "Just now",
+      credits: "",
+      kvCachePct: 0,
+      pinned: false,
+      isLive: false,
+    };
+
+    const tracedTurn: ChatTurnView = {
+      ...quickReplyTurn,
+      id: "turn_traced_2",
+      userPrompt: "inspect lookup.rs",
+      workedDuration: "9s",
+      groups: [
+        {
+          id: "g_read",
+          title: "Read files",
+          steps: [
+            {
+              id: "r1",
+              kind: "read",
+              label: "Read",
+              files: [
+                {
+                  file: "lookup.rs",
+                  path: "crates/rayu-harness/src/lookup.rs",
+                  line: 10,
+                  rangeLabel: "lookup.rs:10-20",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    renderWithQuery(
+      <ChatStream sessionId="ses_dur" turns={[quickReplyTurn, tracedTurn]} />,
+    );
+
+    expect(screen.getByTestId("turn-duration-turn_quick_1").textContent).toContain(
+      "Worked for 4s",
+    );
+    expect(screen.getByTestId("turn-duration-turn_traced_2").textContent).toContain(
+      "Worked for 9s",
+    );
+    // WorkTrace toggle above the answer summarizes steps instead of duplicating "Worked for 9s"
+    expect(screen.getByTestId("work-trace-summary").textContent).toBe(
+      "Steps · 1 file",
+    );
+  });
+
+  it("preserves completed turn duration across sessions.history refetch when backend duration_secs is absent", async () => {
+    const rpcSpy = vi
+      .spyOn(rpcClient, "callRpc")
+      .mockImplementation((async (method: string) => {
+        if (method === "sessions.history") {
+          return {
+            sessionId: "ses_dur_persist",
+            messages: [
+              { role: "user", content: "hi" },
+              { role: "assistant", content: "Hello back!" },
+            ],
+          };
+        }
+        if (method === "inspector.todos.get") {
+          return { todos: [] };
+        }
+        if (method === "changes.getSessionSummary") {
+          return {
+            sessionId: "ses_dur_persist",
+            totalPendingFiles: 0,
+            totalAdditions: 0,
+            totalDeletions: 0,
+            files: [],
+          };
+        }
+        return { ok: true };
+      }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_dur_persist",
+      pendingUserTurn: {
+        id: "opt_dur_1",
+        sessionId: "ses_dur_persist",
+        prompt: "hi",
+        createdAtMs: Date.now() - 4000,
+        baseHistoryTurnCount: 0,
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_dur_persist" />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_dur_persist",
+          delta: "Hello back!",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_dur_persist",
+          duration_secs: 4,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const durationEl = document.querySelector('[data-slot="turn-duration"]');
+      expect(durationEl?.textContent).toContain("Worked for 4s");
+    });
+
+    // Even after history query settles with no duration_secs, Worked for 4s remains visible
+    await waitFor(() => {
+      expect(rpcSpy).toHaveBeenCalledWith("sessions.history", {
+        sessionId: "ses_dur_persist",
+      });
+    });
+    const durationAfterHistory = document.querySelector(
+      '[data-slot="turn-duration"]',
+    );
+    expect(durationAfterHistory?.textContent).toContain("Worked for 4s");
+  });
+
+  it("opens Terminal from ShellCard, omits ToolStepCard terminal jump, opens InlineDiffCard filename natively, and renders folder inline code as non-interactive badge", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost").mockImplementation(() => {});
+
+    renderWithQuery(
+      <div>
+        <ShellCard
+          standalone
+          step={{
+            id: "sh_noterm",
+            kind: "command",
+            command: "echo hi",
+            displayCommand: "echo hi",
+            output: "hi",
+            exitCode: 0,
+            statusLabel: "Success",
+            isMono: true,
+          }}
+        />
+        <ToolStepCard
+          step={{
+            id: "ts_bash",
+            toolName: "bash",
+            intent: "Run unit tests",
+          }}
+        />
+        <InlineDiffCard
+          diff={{
+            id: "diff_native",
+            file: "src/index.ts",
+            additions: 1,
+            deletions: 0,
+            hint: "Add export",
+            lines: [{ kind: "add", newLine: 7, text: "export const ok = true;" }],
+          }}
+        />
+        <EditorialMarkdown content="Inspect `crates/rayucode-app-core/` before editing." />
+      </div>,
+    );
+
+    fireEvent.click(screen.getByTestId("shell-open-terminal-sh_noterm"));
+    expect(postSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "rayucode.editor.openTerminal",
+      }),
+    );
+    expect(screen.queryByTestId("tool-step-jump-ts_bash")).toBeNull();
+
+    fireEvent.click(screen.getByText("src/index.ts"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "src/index.ts",
+      line: 7,
+    });
+
+    const folderBadge = document.querySelector('[data-code-kind="folder"]');
+    expect(folderBadge?.tagName).toBe("CODE");
+  });
+
+  it("opens every chat file mention format cleanly without nested buttons and routes localhost links to VS Code Simple Browser", () => {
+    const postSpy = vi.spyOn(rpcClient, "postToHost").mockImplementation(() => {});
+
+    const md = [
+      "Check `rayucode-v2/desktop/MIGRATION_PLAN.md`, `how-to-run.md`, `./src/App.tsx#L10-L25`, `.env.local`, and `Makefile`.",
+      "",
+      "Also review [`MIGRATION_PLAN.md`](desktop/MIGRATION_PLAN.md#L42) and @desktop/MIGRATION_PLAN.md:12 (not user@example.com).",
+      "",
+      "Preview at [Local App](http://localhost:5173) or read [Docs](https://rayucode.com).",
+    ].join("\n");
+
+    const { container } = renderWithQuery(<EditorialMarkdown content={md} />);
+
+    // Ensure no nested <button> inside <button> when a markdown link wraps inline code
+    expect(container.querySelector("button button")).toBeNull();
+
+    fireEvent.click(
+      screen.getByTestId("cite-link-rayucode-v2/desktop/MIGRATION_PLAN.md"),
+    );
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "rayucode-v2/desktop/MIGRATION_PLAN.md",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-how-to-run.md"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "how-to-run.md",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-./src/App.tsx:10"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "./src/App.tsx",
+      line: 10,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-.env.local"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: ".env.local",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-Makefile"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "Makefile",
+      line: undefined,
+      column: undefined,
+    });
+
+    fireEvent.click(screen.getByTestId("cite-link-desktop/MIGRATION_PLAN.md:12"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "desktop/MIGRATION_PLAN.md",
+      line: 12,
+      column: undefined,
+    });
+
+    // Markdown link wrapping inline code opens its href once
+    postSpy.mockClear();
+    const linkedCodeBtn = screen.getByTitle(
+      "Open desktop/MIGRATION_PLAN.md:42 in VS Code Editor",
+    );
+    fireEvent.click(linkedCodeBtn);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openFile",
+      path: "desktop/MIGRATION_PLAN.md",
+      line: 42,
+      column: undefined,
+    });
+
+    // Email address must stay plain text (not a CiteLink)
+    expect(screen.queryByTestId("cite-link-example.com")).toBeNull();
+
+    // Localhost URL opens in VS Code Simple Browser; external URL opens externally
+    fireEvent.click(screen.getByText("Local App"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openSimpleBrowser",
+      url: "http://localhost:5173",
+    });
+
+    fireEvent.click(screen.getByText("Docs"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openExternal",
+      url: "https://rayucode.com",
+    });
+
+    postSpy.mockRestore();
+  });
+
+  it("renders shared TaskChecklistCard in ChatWorkspaceView and updates live on todo_state frames", async () => {
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "inspector.todos.get") {
+        return { todos: [] };
+      }
+      if (method === "sessions.history") {
+        return { sessionId: "ses_live_todos", messages: [] };
+      }
+      if (method === "changes.getSessionSummary") {
+        return {
+          sessionId: "ses_live_todos",
+          totalPendingFiles: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+        };
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_live_todos",
+      todosBySession: {},
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_live_todos" />);
+
+    expect(screen.queryByTestId("task-checklist-card")).toBeNull();
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "todo_state",
+          session_id: "ses_live_todos",
+          state: {
+            todos: [
+              { id: "1", content: "Audit protocol", status: "completed" },
+              {
+                id: "2",
+                content: "Wire checklist card",
+                status: "in_progress",
+                active_form: "Wiring checklist card",
+              },
+              { id: "3", content: "Old unused step", status: "cancelled" },
+            ],
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByTestId("task-checklist-card")).toBeTruthy();
+    expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+      "1/2",
+    );
+    expect(screen.getByText("Wiring checklist card")).toBeTruthy();
+
+    // Completing remaining active tasks auto-collapses into 1-line receipt
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "todo_state",
+          session_id: "ses_live_todos",
+          state: {
+            todos: [
+              { id: "1", content: "Audit protocol", status: "completed" },
+              { id: "2", content: "Wire checklist card", status: "completed" },
+              { id: "3", content: "Old unused step", status: "cancelled" },
+            ],
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("task-checklist-progress").textContent).toBe(
+        "2/2",
+      );
+      expect(screen.getByText("Completed 2 tasks")).toBeTruthy();
+      expect(screen.queryByTestId("task-checklist-list")).toBeNull();
+    });
+  });
+
+  it("does not duplicate messages when active editor selection context is persisted in sessions.history", async () => {
+    const historyMessages: Array<{ role: string; content: string }> = [
+      {
+        role: "user",
+        content:
+          "hi\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Hey! RayuCode here. I see you've got MIGRATION_PLAN.md open.",
+      },
+      {
+        role: "user",
+        content:
+          "hll\n\n[Active Editor Selection: /home/rayu/rayu/rayucode-v2/desktop/MIGRATION_PLAN.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Looks like a typo. What do you need?",
+      },
+    ];
+
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "sessions.history") {
+        return {
+          sessionId: "ses_dedup_sel",
+          messages: [...historyMessages],
+        };
+      }
+      if (method === "inspector.todos.get") {
+        return { todos: [] };
+      }
+      if (method === "changes.getSessionSummary") {
+        return {
+          sessionId: "ses_dedup_sel",
+          totalPendingFiles: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+        };
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    useAppStore.setState({
+      activeSessionId: "ses_dedup_sel",
+      pendingUserTurn: {
+        id: "opt_sel_3",
+        sessionId: "ses_dedup_sel",
+        prompt: "hi",
+        refFiles: "rayucode-v2/how-to-run.md:1-1",
+        createdAtMs: Date.now() - 2000,
+        baseHistoryTurnCount: 2,
+      },
+    });
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_dedup_sel" />);
+
+    // Daemon persists turn 3 with [Active Editor Selection: ...] and finishes streaming
+    historyMessages.push(
+      {
+        role: "user",
+        content:
+          "hi\n\n[Active Editor Selection: rayucode-v2/how-to-run.md#L1-L1]",
+      },
+      {
+        role: "assistant",
+        content: "Hi again. Happy to help, just say what you need.",
+      },
+    );
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "text_delta",
+          session_id: "ses_dedup_sel",
+          delta: "Hi again. Happy to help, just say what you need.",
+        },
+      });
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_dedup_sel",
+          duration_secs: 2,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const turns = document.querySelectorAll('[data-slot="execution-turn"]');
+      expect(turns.length).toBe(3);
+    });
+
+    // Clean ref pills render on all 3 turns and raw [Active Editor Selection: ...] never leaks into prompt bubbles
+    const refPills = document.querySelectorAll('[data-slot="user-ref-pill"]');
+    expect(refPills.length).toBe(3);
+    expect(document.body.textContent).not.toContain("[Active Editor Selection:");
+    expect(screen.getByText(/Worked for 2s/)).toBeTruthy();
+  });
+
+  it("submits multi-question ClarifyingQuestionCard keyed by exact question text with selected indices and supports declined dismiss", () => {
+    const onSubmit = vi.fn();
+    renderWithQuery(
+      <ClarifyingQuestionCard
+        question={{
+          requestId: "q_multi_1",
+          sessionId: "ses_q",
+          prompt: "Target environment?",
+          options: [
+            { id: "e1", key: "1", title: "Staging" },
+            { id: "e2", key: "2", title: "Production" },
+          ],
+          questions: [
+            {
+              question: "Target environment?",
+              options: [
+                { id: "e1", key: "1", title: "Staging" },
+                { id: "e2", key: "2", title: "Production" },
+              ],
+            },
+            {
+              question: "Run migrations?",
+              options: [
+                { id: "m1", key: "1", title: "Yes" },
+                { id: "m2", key: "2", title: "No" },
+              ],
+            },
+          ],
+        }}
+        onSubmitAnswer={onSubmit}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Production"));
+    fireEvent.click(screen.getByText("Yes"));
+    fireEvent.click(screen.getByTestId("clarifying-submit-btn"));
+    expect(onSubmit).toHaveBeenCalledWith(
+      {
+        "Target environment?": "Production",
+        "Run migrations?": "Yes",
+      },
+      undefined,
+      {
+        selected: {
+          "Target environment?": [1],
+          "Run migrations?": [0],
+        },
+      },
+    );
+
+    onSubmit.mockClear();
+    fireEvent.click(screen.getByTestId("clarifying-skip-btn"));
+    expect(onSubmit).toHaveBeenCalledWith({}, undefined, { declined: true });
+  });
+
+  it("isolates pending permissions per session and clears only the matching session on rayucode.permission.resolved", () => {
+    useAppStore.getState().setPendingPermission({
+      requestId: "perm_a",
+      sessionId: "ses_a",
+      toolName: "bash",
+      description: "Run cargo test",
+    });
+    useAppStore.getState().setPendingPermission({
+      requestId: "perm_b",
+      sessionId: "ses_b",
+      toolName: "edit",
+      description: "Edit main.rs",
+    });
+
+    expect(useAppStore.getState().pendingPermissionBySession["ses_a"]?.requestId).toBe(
+      "perm_a",
+    );
+    expect(useAppStore.getState().pendingPermissionBySession["ses_b"]?.requestId).toBe(
+      "perm_b",
+    );
+
+    useAppStore.getState().clearPendingPermission("ses_a", "perm_a");
+    expect(
+      useAppStore.getState().pendingPermissionBySession["ses_a"],
+    ).toBeUndefined();
+    expect(useAppStore.getState().pendingPermissionBySession["ses_b"]?.requestId).toBe(
+      "perm_b",
+    );
+  });
+
+  it("queues parallel permission_request frames FIFO per session, renders queue badge, advances cleanly, and hydrates from host.init", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_parallel_perm",
+    });
+
+    // 1. Hydrate from rayucode.host.init with two cached pending permissions
+    useAppStore.getState().applyHostMessage({
+      type: "rayucode.host.init",
+      surface: "editorPanel",
+      mediaBaseUri: "vscode-webview-resource://rayu-ext/media",
+      theme: "dark",
+      accent: "green",
+      density: "comfortable",
+      route: "workspace",
+      sessionId: "ses_parallel_perm",
+      defaultPermissionMode: "acceptEdits",
+      activePermissionMode: "plan",
+      capabilities: ["permissions", "permission_modes"],
+      daemonStatus: {
+        state: "connected",
+        capabilities: ["permissions", "permission_modes"],
+      },
+      pendingPermissions: {
+        ses_parallel_perm: [
+          {
+            requestId: "perm_q1",
+            sessionId: "ses_parallel_perm",
+            toolName: "bash",
+            description: "Run `cargo test`",
+            riskTier: "confirm",
+          },
+          {
+            requestId: "perm_q2",
+            sessionId: "ses_parallel_perm",
+            toolName: "bash",
+            description: "Run `rm -rf build/`",
+            riskTier: "catastrophic",
+          },
+        ],
+      },
+      workspaces: [],
+    });
+
+    expect(useAppStore.getState().defaultPermissionMode).toBe("acceptEdits");
+    expect(
+      useAppStore.getState().sessionPrefsBySession["ses_parallel_perm"]
+        ?.permissionMode,
+    ).toBe("plan");
+    expect(
+      useAppStore.getState().pendingPermissionsBySession["ses_parallel_perm"]
+        ?.length,
+    ).toBe(2);
+
+    renderWithQuery(<ChatWorkspaceView sessionId="ses_parallel_perm" />);
+
+    expect(await screen.findByTestId("approval-card")).toBeTruthy();
+    expect(screen.getByTestId("approval-queue-badge").textContent).toBe(
+      "1 of 2 pending",
+    );
+    expect(screen.getByTestId("approval-command-preview").textContent).toBe(
+      "cargo test",
+    );
+
+    // Resolving perm_q1 via rayucode.permission.resolved advances to perm_q2 without losing it
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.permission.resolved",
+        sessionId: "ses_parallel_perm",
+        requestId: "perm_q1",
+        decision: "allow_once",
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("approval-command-preview").textContent).toBe(
+        "rm -rf build/",
+      );
+      expect(screen.getByTestId("approval-risk-badge").textContent).toBe(
+        "Catastrophic",
+      );
+      expect(screen.queryByTestId("approval-queue-badge")).toBeNull();
+    });
+
+    // Clearing perm_q2 via permission_resolved frame dismisses the card
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "permission_resolved",
+          session_id: "ses_parallel_perm",
+          request_id: "perm_q2",
+          decision: "deny",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("approval-card")).toBeNull();
+    });
   });
 });

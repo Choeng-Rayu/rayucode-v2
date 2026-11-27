@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
   Check,
+  Clock,
   Copy,
   Download,
   GitFork,
@@ -21,6 +22,7 @@ export interface TurnActionsProps {
   turnId: string;
   responseMarkdown: string;
   timestamp: string;
+  workedDuration?: string;
   credits?: string;
   kvCachePct?: number;
   kvCacheMissReason?: string;
@@ -37,6 +39,7 @@ export function TurnActions({
   turnId,
   responseMarkdown,
   timestamp,
+  workedDuration,
   credits,
   kvCachePct,
   kvCacheMissReason,
@@ -100,18 +103,10 @@ export function TurnActions({
     }
   };
 
-  const handleTogglePin = async () => {
+  const handleTogglePin = () => {
     const next = !pinned;
     setPinned(next);
     onPinToggled?.(turnId, next);
-    try {
-      await callRpc("sessions.pin", {
-        sessionId,
-        pinned: next,
-      });
-    } catch {
-      // ignore offline error
-    }
   };
 
   const handleExport = async () => {
@@ -242,6 +237,17 @@ export function TurnActions({
         </Tooltip>
 
         <span className="ml-2 text-xs text-muted-ink">{timestamp}</span>
+
+        {workedDuration && (
+          <span
+            data-slot="turn-duration"
+            data-testid={`turn-duration-${turnId}`}
+            className="ml-2 inline-flex items-center gap-1 font-mono text-[11px] text-muted-ink tabular-nums"
+          >
+            <Clock className="size-3 shrink-0 text-faint" aria-hidden="true" />
+            <span>Worked for {workedDuration}</span>
+          </span>
+        )}
 
         {credits && (
           <span className="ml-2 font-mono text-[11px] text-faint tabular-nums">

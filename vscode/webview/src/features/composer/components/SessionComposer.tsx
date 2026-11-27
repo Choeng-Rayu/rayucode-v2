@@ -1,15 +1,16 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertCircle,
   ArrowUp,
   AtSign,
   Check,
-  ChevronDown,
+  Clock,
   CornerDownLeft,
-  GitBranch,
   Image as ImageIcon,
   Lightbulb,
   ListPlus,
+  Loader2,
   Plug,
   Plus,
   Sparkles,
@@ -25,8 +26,13 @@ import type {
   ServiceTier,
   SessionSummaryView,
 } from "@shared/vscodeProtocol";
+import {
+  formatEffortLabel as formatSessionCoreEffortLabel,
+  parseSlashInvocation,
+} from "@rayu-dev/rayucode-session-core/client";
 
 import {
+  Badge,
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -34,10 +40,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui";
-import {
-  ProjectIconGlyph,
-  toProjectIconSpec,
-} from "@/features/shell";
 import { callRpc, cn, useAppStore, type MidTurnSendMode } from "@/lib";
 
 import {
@@ -52,7 +54,6 @@ import {
   useComposerModelCatalog,
   useSlashCommandsCatalog,
   useWorkspaceFilesSearch,
-  workspaceBranchesQueryOptions,
   workspaceFoldersQueryOptions,
 } from "../hooks/useComposerData";
 import type {
@@ -302,9 +303,6 @@ export function SessionComposer({
 
   const catalog = useComposerModelCatalog(effectiveSessionId);
   const foldersQuery = useQuery(workspaceFoldersQueryOptions());
-  const branchesQuery = useQuery(
-    workspaceBranchesQueryOptions(storeProjectPath),
-  );
 
   const workspaces = React.useMemo(() => {
     if (storeWorkspaces.length > 0) return storeWorkspaces;
@@ -321,17 +319,8 @@ export function SessionComposer({
     return workspaces[0] ?? null;
   }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
-  const [internalProject, setInternalProject] = React.useState(
-    activeWorkspace?.name ?? DEFAULT_PROJECT,
-  );
-  const [internalCheckout, setInternalCheckout] = React.useState(
-    activeWorkspace?.branch ?? DEFAULT_CHECKOUT,
-  );
-
   const [images, setImages] = React.useState<ImageAttachmentView[]>([]);
   const [selectionIncluded, setSelectionIncluded] = React.useState(true);
-  const [workspacePickerOpen, setWorkspacePickerOpen] = React.useState(false);
-  const [branchPickerOpen, setBranchPickerOpen] = React.useState(false);
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false);
   const [mentionIndex, setMentionIndex] = React.useState(0);
   const [slashIndex, setSlashIndex] = React.useState(0);
@@ -343,6 +332,27 @@ export function SessionComposer({
   const [popupDismissedForText, setPopupDismissedForText] = React.useState<
     string | null
   >(null);
+  const [deferredNotice, setDeferredNotice] = React.useState<string | null>(
+    null,
+  );
+  const [commandBanner, setCommandBanner] = React.useState<{
+    tone: "pending" | "success" | "busy" | "error";
+    message: string;
+  } | null>(null);
+
+  React.useEffect(() => {
+    if (!isSubmitting) {
+      setDeferredNotice(null);
+    }
+  }, [isSubmitting]);
+
+  React.useEffect(() => {
+    if (commandBanner?.tone !== "success") return;
+    const timer = window.setTimeout(() => {
+      setCommandBanner(null);
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [commandBanner]);
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -423,13 +433,11 @@ export function SessionComposer({
   const activeProject =
     controlledProject !== undefined
       ? controlledProject
-      : activeWorkspace?.name ?? internalProject;
+      : (activeWorkspace?.name ?? DEFAULT_PROJECT);
   const activeCheckout =
     controlledCheckout !== undefined
       ? controlledCheckout
-      : branchesQuery.data?.current ??
-        activeWorkspace?.branch ??
-        internalCheckout;
+      : (activeWorkspace?.branch ?? DEFAULT_CHECKOUT);
   const activeModelId =
     controlledModelId !== undefined
       ? controlledModelId
@@ -466,10 +474,15 @@ export function SessionComposer({
     controlledCacheTtl !== undefined
       ? controlledCacheTtl
       : (sessionPrefs?.cacheTtl ?? catalog.cacheTtl);
+  const storeDefaultPermissionMode = useAppStore(
+    (s) => s.defaultPermissionMode,
+  );
   const activePermissionMode =
     controlledPermissionMode !== undefined
       ? controlledPermissionMode
-      : (sessionPrefs?.permissionMode ?? DEFAULT_PERMISSION_MODE_ID);
+      : (sessionPrefs?.permissionMode ??
+        storeDefaultPermissionMode ??
+        DEFAULT_PERMISSION_MODE_ID);
   const activeSelection =
     controlledEditorSelection !== undefined
       ? controlledEditorSelection
@@ -508,6 +521,7 @@ export function SessionComposer({
   const setTextValue = React.useCallback(
     (next: string) => {
       setPopupDismissedForText(null);
+      setCommandBanner((prev) => (prev?.tone === "success" ? null : prev));
       if (onValueChange) {
         onValueChange(next);
       } else {
@@ -547,6 +561,7 @@ export function SessionComposer({
   const slashCatalog = useSlashCommandsCatalog(
     slashTrigger?.query ?? "",
     Boolean(slashTrigger),
+    effectiveSessionId,
   );
 
   const mentionFiles = React.useMemo(() => {
@@ -584,36 +599,248 @@ export function SessionComposer({
     [mentionTrigger, setTextValue, textValue],
   );
 
-  const handleSelectSlashCommand = React.useCallback(
-    (item: SlashCommandItem) => {
-      const clearOrStripToken = () => {
-        if (slashTrigger) {
-          const stripped = stripSlashRange(
-            textValue,
-            slashTrigger.slashIndex,
-            slashTrigger.endIndex,
-          );
-          if (stripped.nextValue.trim().length > 0) {
-            setTextValue(stripped.nextValue);
-            setPendingCaret((prev) => ({
-              pos: stripped.nextCursor,
-              seq: (prev?.seq ?? 0) + 1,
-            }));
-            return;
+  const executeSlashCommand = React.useCallback(
+    async (rawInput: string): Promise<boolean> => {
+      const parsed = parseSlashInvocation(
+        rawInput,
+        slashCatalog.commandDescriptors,
+        slashCatalog.skillDescriptors,
+      );
+      if (parsed.kind === "plain_prompt" || parsed.kind === "skill_prompt") {
+        return false;
+      }
+
+      const matchedDescriptor = slashCatalog.commandDescriptors.find(
+        (cmd) => cmd.name.toLowerCase() === parsed.slashName.toLowerCase(),
+      );
+      if (matchedDescriptor?.requires_session && !effectiveSessionId) {
+        setCommandBanner({
+          tone: "error",
+          message: `/${parsed.slashName} requires an active chat session.`,
+        });
+        return true;
+      }
+
+      if (parsed.kind === "api_request") {
+        setCommandBanner({
+          tone: "pending",
+          message: `Running /${parsed.slashName}...`,
+        });
+        try {
+          switch (parsed.req) {
+            case "compact": {
+              if (!effectiveSessionId) {
+                setCommandBanner({
+                  tone: "error",
+                  message: "/compact requires an active chat session.",
+                });
+                return true;
+              }
+              const res = await callRpc("workspace.compact", {
+                sessionId: effectiveSessionId,
+              });
+              if (!res.ok) {
+                setCommandBanner({
+                  tone: "error",
+                  message: res.message || "Failed to compact context.",
+                });
+                return true;
+              }
+              setTextValue("");
+              setCursorPos(0);
+              setCommandBanner({
+                tone: "success",
+                message: res.message || "Context compacted",
+              });
+              return true;
+            }
+            case "set_model": {
+              const targetModel =
+                typeof parsed.params.model === "string"
+                  ? parsed.params.model.trim()
+                  : "";
+              if (!targetModel) {
+                setCommandBanner({
+                  tone: "error",
+                  message: "Specify a model ID (e.g. /model claude-opus-5-5).",
+                });
+                return true;
+              }
+              if (effectiveSessionId) {
+                const res = await callRpc("sessions.setModel", {
+                  sessionId: effectiveSessionId,
+                  model: targetModel,
+                });
+                if (res.deferred || (!res.ok && res.code === "busy")) {
+                  setSessionPrefs(sessionOverrideKey, {
+                    modelId: targetModel,
+                    modelLabel: targetModel,
+                  });
+                  setDeferredNotice("Applies on next turn");
+                  setCommandBanner({
+                    tone: "busy",
+                    message: res.message || "Applies on next turn",
+                  });
+                  setTextValue("");
+                  setCursorPos(0);
+                  return true;
+                }
+                if (!res.ok) {
+                  setCommandBanner({
+                    tone: "error",
+                    message: res.message || `Failed to switch model to ${targetModel}.`,
+                  });
+                  return true;
+                }
+              }
+              setSessionPrefs(sessionOverrideKey, {
+                modelId: targetModel,
+                modelLabel: targetModel,
+              });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ model: targetModel });
+              }
+              setTextValue("");
+              setCursorPos(0);
+              setCommandBanner({
+                tone: "success",
+                message: `Model switched to ${targetModel}`,
+              });
+              return true;
+            }
+            case "set_reasoning_effort": {
+              const targetEffort =
+                typeof parsed.params.effort === "string"
+                  ? parsed.params.effort.trim().toLowerCase()
+                  : "";
+              if (!targetEffort) {
+                setCommandBanner({
+                  tone: "error",
+                  message: "Specify a reasoning effort (e.g. /effort high).",
+                });
+                return true;
+              }
+              const normalizedEffort = normalizeEffortLevel(targetEffort);
+              if (effectiveSessionId) {
+                const res = await callRpc("sessions.setEffort", {
+                  sessionId: effectiveSessionId,
+                  effort: targetEffort,
+                });
+                if (res.deferred || (!res.ok && res.code === "busy")) {
+                  setSessionPrefs(sessionOverrideKey, { effort: normalizedEffort });
+                  setDeferredNotice("Applies on next turn");
+                  setCommandBanner({
+                    tone: "busy",
+                    message: res.message || "Applies on next turn",
+                  });
+                  setTextValue("");
+                  setCursorPos(0);
+                  return true;
+                }
+                if (!res.ok) {
+                  setCommandBanner({
+                    tone: "error",
+                    message: res.message || `Failed to set reasoning effort to ${targetEffort}.`,
+                  });
+                  return true;
+                }
+              }
+              setSessionPrefs(sessionOverrideKey, { effort: normalizedEffort });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ reasoningEffort: normalizedEffort });
+              }
+              setTextValue("");
+              setCursorPos(0);
+              setCommandBanner({
+                tone: "success",
+                message: `Reasoning effort set to ${formatSessionCoreEffortLabel(targetEffort, "header")}`,
+              });
+              return true;
+            }
+            case "set_permission_mode": {
+              const modeRaw =
+                typeof parsed.params.mode === "string"
+                  ? parsed.params.mode.trim()
+                  : "plan";
+              const uiMode: PermissionModeId =
+                modeRaw === "accept_edits" || modeRaw === "acceptEdits"
+                  ? "acceptEdits"
+                  : modeRaw === "full_manage" || modeRaw === "fullManage"
+                    ? "fullManage"
+                    : modeRaw === "orchestrator"
+                      ? "orchestrator"
+                      : modeRaw === "plan"
+                        ? "plan"
+                        : "default";
+              setSessionPrefs(sessionOverrideKey, { permissionMode: uiMode });
+              if (!effectiveSessionId) {
+                updateActiveDraft({ permissionMode: uiMode });
+              }
+              onPermissionModeChange?.(uiMode);
+              if (effectiveSessionId) {
+                await callRpc("sessions.setPermissionMode", {
+                  sessionId: effectiveSessionId,
+                  mode: uiMode,
+                });
+              }
+              setCommandBanner({
+                tone: "success",
+                message: `Permission mode set to ${uiMode}`,
+              });
+              setTextValue("");
+              setCursorPos(0);
+              return true;
+            }
+            default: {
+              const res = await callRpc("sessions.runtimeCommand", {
+                sessionId: effectiveSessionId ?? undefined,
+                command: parsed.slashName,
+                args: parsed.rawArgs ? [parsed.rawArgs] : [],
+              });
+              if (!res.ok) {
+                setCommandBanner({
+                  tone: res.code === "busy" ? "busy" : "error",
+                  message:
+                    res.message ||
+                    `Command /${parsed.slashName} could not be completed.`,
+                });
+                return true;
+              }
+              setCommandBanner({
+                tone: "success",
+                message: res.message || `Ran /${parsed.slashName}`,
+              });
+              setTextValue("");
+              setCursorPos(0);
+              return true;
+            }
           }
+        } catch (error) {
+          const msg =
+            error instanceof Error ? error.message : String(error);
+          setCommandBanner({
+            tone: "error",
+            message: msg,
+          });
+          // Preserve user input on validation/execution error so they can fix typos immediately
+          return true;
         }
+      }
+
+      // runtime_command
+      if (parsed.command === "bg") {
+        setBackgroundDrawerOpen(true);
         setTextValue("");
         setCursorPos(0);
-      };
-
-      if (item.command === "/compact" && effectiveSessionId) {
-        void callRpc("workspace.compact", {
-          sessionId: effectiveSessionId,
-        }).catch(() => {});
-        clearOrStripToken();
-        return;
+        return true;
       }
-      if (item.command === "/plan") {
+      if (parsed.command === "clear") {
+        setActiveSession(null);
+        setTextValue("");
+        setCursorPos(0);
+        return true;
+      }
+      if (parsed.command === "plan") {
         setSessionPrefs(sessionOverrideKey, { permissionMode: "plan" });
         if (!effectiveSessionId) {
           updateActiveDraft({ permissionMode: "plan" });
@@ -624,47 +851,51 @@ export function SessionComposer({
           }).catch(() => {});
         }
         onPermissionModeChange?.("plan");
-        clearOrStripToken();
-        return;
+        setTextValue("");
+        setCursorPos(0);
+        return true;
       }
-      if (item.command === "/bg") {
-        setBackgroundDrawerOpen(true);
-        clearOrStripToken();
-        return;
-      }
-      if (item.command === "/clear") {
-        setActiveSession(null);
-        clearOrStripToken();
-        return;
-      }
-      if (item.command === "/mcp" || item.command === "/skills") {
+      if (parsed.command === "mcp" || parsed.command === "skills") {
         setActiveRoute("plugins");
-        clearOrStripToken();
-        return;
+        setTextValue("");
+        setCursorPos(0);
+        return true;
       }
 
-      if (slashTrigger) {
-        const applied = applySlashSelection(
-          textValue,
-          slashTrigger,
-          item.insertText,
-        );
-        setTextValue(applied.nextValue);
-        setPendingCaret((prev) => ({
-          pos: applied.nextCursor,
-          seq: (prev?.seq ?? 0) + 1,
-        }));
-        return;
+      setCommandBanner({
+        tone: "pending",
+        message: `Running /${parsed.slashName}...`,
+      });
+      try {
+        const res = await callRpc("sessions.runtimeCommand", {
+          sessionId: effectiveSessionId ?? undefined,
+          command: parsed.command,
+          args: parsed.args,
+        });
+        if (!res.ok) {
+          setCommandBanner({
+            tone: res.code === "busy" ? "busy" : "error",
+            message:
+              res.code === "busy"
+                ? `/${parsed.slashName} is queued until the active turn finishes.`
+                : res.message || `Command /${parsed.slashName} failed.`,
+          });
+          return true;
+        }
+        setTextValue("");
+        setCursorPos(0);
+        setCommandBanner({
+          tone: "success",
+          message: res.message || `Ran /${parsed.slashName}`,
+        });
+        return true;
+      } catch (error) {
+        setCommandBanner({
+          tone: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return true;
       }
-
-      const fallbackText = item.insertText.endsWith(" ")
-        ? item.insertText
-        : `${item.insertText} `;
-      setTextValue(fallbackText);
-      setPendingCaret((prev) => ({
-        pos: fallbackText.length,
-        seq: (prev?.seq ?? 0) + 1,
-      }));
     },
     [
       effectiveSessionId,
@@ -675,10 +906,62 @@ export function SessionComposer({
       setBackgroundDrawerOpen,
       setSessionPrefs,
       setTextValue,
-      slashTrigger,
-      textValue,
+      slashCatalog.commandDescriptors,
+      slashCatalog.skillDescriptors,
       updateActiveDraft,
     ],
+  );
+
+  const handleSelectSlashCommand = React.useCallback(
+    (item: SlashCommandItem, options?: { completeOnly?: boolean }) => {
+      const insertSlashToken = () => {
+        if (slashTrigger) {
+          const applied = applySlashSelection(
+            textValue,
+            slashTrigger,
+            item.insertText,
+          );
+          setTextValue(applied.nextValue);
+          setPendingCaret((prev) => ({
+            pos: applied.nextCursor,
+            seq: (prev?.seq ?? 0) + 1,
+          }));
+          return;
+        }
+        const fallbackText = item.insertText.endsWith(" ")
+          ? item.insertText
+          : `${item.insertText} `;
+        setTextValue(fallbackText);
+        setPendingCaret((prev) => ({
+          pos: fallbackText.length,
+          seq: (prev?.seq ?? 0) + 1,
+        }));
+      };
+
+      // Mid-sentence completion (e.g. "Please /rev") or Tab completion always splices the token
+      if (
+        options?.completeOnly ||
+        (slashTrigger && slashTrigger.slashIndex > 0) ||
+        item.kind === "skill" ||
+        Boolean(item.argHint)
+      ) {
+        insertSlashToken();
+        return;
+      }
+
+      // Session-gated check before dispatch
+      if (item.requiresSession && !effectiveSessionId) {
+        setCommandBanner({
+          tone: "error",
+          message: `${item.command} requires an active chat session.`,
+        });
+        return;
+      }
+
+      // At start of composer with no arg_hint: dispatch immediately via parseSlashInvocation
+      void executeSlashCommand(item.command);
+    },
+    [effectiveSessionId, executeSlashCommand, setTextValue, slashTrigger, textValue],
   );
 
   const handleModelSelect = React.useCallback(
@@ -755,36 +1038,6 @@ export function SessionComposer({
       updateActiveDraft,
     ],
   );
-
-  const handleWorkspaceSelect = (name: string, path: string) => {
-    setInternalProject(name);
-    setActiveProjectPath(path);
-    if (!effectiveSessionId) {
-      const matched = workspaces.find((w) => w.path === path);
-      updateActiveDraft({
-        workingDir: path,
-        workspaceId: matched?.id ?? null,
-      });
-    }
-    onProjectChange?.(name, path);
-    setWorkspacePickerOpen(false);
-  };
-
-  const handleBranchSelect = (branch: string) => {
-    setInternalCheckout(branch);
-    onCheckoutChange?.(branch);
-    setBranchPickerOpen(false);
-    if (activeWorkspace?.path) {
-      void callRpc("workspace.checkoutBranch", {
-        workspacePath: activeWorkspace.path,
-        branch,
-      }).then(() => {
-        void queryClient.invalidateQueries({
-          queryKey: ["composer", "workspace-branches"],
-        });
-      });
-    }
-  };
 
   const handlePaste = async (
     event: React.ClipboardEvent<HTMLTextAreaElement>,
@@ -865,7 +1118,12 @@ export function SessionComposer({
             urgent: false,
             clientId,
             ...(attachedImages ? { images: attachedImages } : {}),
-          }).catch(() => {});
+          }).catch(() => {
+            useAppStore
+              .getState()
+              .removeMidTurnMessage(effectiveSessionId, clientId);
+            setTextValue(rawText);
+          });
           setTextValue("");
           setImages([]);
           return;
@@ -896,6 +1154,18 @@ export function SessionComposer({
         return;
       }
 
+      // Route leading slash/skill commands through packages/session-core parseSlashInvocation
+      if (images.length === 0) {
+        const parsed = parseSlashInvocation(
+          rawText,
+          slashCatalog.commandDescriptors,
+          slashCatalog.skillDescriptors,
+        );
+        if (parsed.kind === "api_request" || parsed.kind === "runtime_command") {
+          void executeSlashCommand(rawText);
+          return;
+        }
+      }
       const payload: ComposerSubmitPayload = {
         prompt: trimmed,
         images: images.length > 0 ? images : undefined,
@@ -938,6 +1208,7 @@ export function SessionComposer({
       catalog.models,
       disabled,
       effectiveSessionId,
+      executeSlashCommand,
       images,
       isSubmitting,
       midTurnSendMode,
@@ -945,6 +1216,8 @@ export function SessionComposer({
       selectionIncluded,
       setQueuePausedForSession,
       setTextValue,
+      slashCatalog.commandDescriptors,
+      slashCatalog.skillDescriptors,
       storeProjectPath,
     ],
   );
@@ -1060,11 +1333,18 @@ export function SessionComposer({
         );
         return;
       }
-      if (event.key === "Enter" || event.key === "Tab") {
+      if (event.key === "Tab") {
         event.preventDefault();
         const target =
           slashCatalog.commands[slashIndex] ?? slashCatalog.commands[0];
-        if (target) handleSelectSlashCommand(target);
+        if (target) handleSelectSlashCommand(target, { completeOnly: true });
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const target =
+          slashCatalog.commands[slashIndex] ?? slashCatalog.commands[0];
+        if (target) handleSelectSlashCommand(target, { completeOnly: false });
         return;
       }
       if (event.key === "Escape") {
@@ -1123,11 +1403,6 @@ export function SessionComposer({
   }, [activePermissionMode, isSubmitting, midTurnSendMode, placeholder]);
 
   const hasPromptContent = textValue.trim().length > 0 || images.length > 0;
-  const branchList = branchesQuery.data?.branches ?? [
-    activeCheckout,
-    "main",
-    "feat/kv-cache",
-  ];
 
   return (
     <div
@@ -1161,9 +1436,10 @@ export function SessionComposer({
               open={Boolean(slashTrigger)}
               query={slashTrigger.query}
               commands={slashCatalog.commands}
+              activeSessionId={effectiveSessionId}
               activeIndex={slashIndex}
               onActiveIndexChange={setSlashIndex}
-              onSelectCommand={handleSelectSlashCommand}
+              onSelectCommand={(item) => handleSelectSlashCommand(item)}
               onClose={() => setPopupDismissedForText(textValue)}
             />
           </div>
@@ -1174,129 +1450,57 @@ export function SessionComposer({
           data-testid="composer-outer-tray"
           className="rounded-2xl border border-hairline bg-shell p-1.5 shadow-composer"
         >
-          {/* Home Top Tray: Workspace Picker & Git Branch Checkout (only in mode === "home") */}
-          {mode === "home" ? (
+          {/* Inline Command Feedback & Error Banner */}
+          {commandBanner ? (
             <div
-              data-testid="composer-home-top-tray"
-              className="flex items-center justify-between gap-2 px-2 pt-0.5 pb-1.5 text-xs text-muted-ink"
+              role={commandBanner.tone === "error" ? "alert" : "status"}
+              data-testid="composer-command-banner"
+              data-tone={commandBanner.tone}
+              className={cn(
+                "mb-1.5 flex items-center justify-between gap-2 rounded-[10px] border px-3 py-1.5 text-xs",
+                commandBanner.tone === "pending" &&
+                  "border-hairline bg-pane text-body",
+                commandBanner.tone === "success" &&
+                  "border-brand/30 bg-brand-soft text-ink",
+                commandBanner.tone === "busy" &&
+                  "border-warn/30 bg-warn-soft text-warn",
+                commandBanner.tone === "error" &&
+                  "border-danger/30 bg-danger-soft text-danger",
+              )}
             >
-              <div className="flex min-w-0 items-center gap-1.5">
-                <Popover
-                  open={workspacePickerOpen}
-                  onOpenChange={setWorkspacePickerOpen}
+              <span className="flex min-w-0 items-center gap-2">
+                {commandBanner.tone === "pending" ? (
+                  <Loader2
+                    className="size-3.5 shrink-0 animate-spin text-brand-text"
+                    aria-hidden="true"
+                  />
+                ) : commandBanner.tone === "success" ? (
+                  <Check
+                    className="size-3.5 shrink-0 text-brand-text"
+                    aria-hidden="true"
+                  />
+                ) : commandBanner.tone === "busy" ? (
+                  <Clock className="size-3.5 shrink-0" aria-hidden="true" />
+                ) : (
+                  <AlertCircle
+                    className="size-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="truncate">{commandBanner.message}</span>
+              </span>
+              {commandBanner.tone === "error" ||
+              commandBanner.tone === "busy" ? (
+                <button
+                  type="button"
+                  aria-label="Dismiss command error"
+                  data-testid="composer-command-banner-dismiss"
+                  onClick={() => setCommandBanner(null)}
+                  className="grid size-5 shrink-0 cursor-pointer place-items-center rounded text-current opacity-80 transition-opacity hover:opacity-100"
                 >
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-workspace-picker"
-                      className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-lg border border-transparent px-2 py-1 text-xs font-medium text-ink transition-colors hover:border-hairline hover:bg-hover focus:outline-none"
-                    >
-                      <ProjectIconGlyph
-                        {...toProjectIconSpec(activeWorkspace?.icon)}
-                        className="size-3.5 shrink-0"
-                      />
-                      <span className="truncate">{activeProject}</span>
-                      <ChevronDown
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    sideOffset={6}
-                    className="w-[240px] rounded-xl border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
-                  >
-                    <div className="px-2 py-1 text-[11px] font-medium text-muted-ink">
-                      Workspace folders
-                    </div>
-                    {workspaces.map((ws) => {
-                      const isCurrent = ws.name === activeProject;
-                      return (
-                        <button
-                          key={ws.path}
-                          type="button"
-                          onClick={() => handleWorkspaceSelect(ws.name, ws.path)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-hover",
-                            isCurrent && "bg-active text-ink",
-                          )}
-                        >
-                          <span className="flex min-w-0 items-center gap-2">
-                            <ProjectIconGlyph
-                              {...toProjectIconSpec(ws.icon)}
-                              className="size-3.5 shrink-0"
-                            />
-                            <span className="truncate font-medium text-ink">
-                              {ws.name}
-                            </span>
-                          </span>
-                          {isCurrent ? (
-                            <Check
-                              className="size-3.5 shrink-0 text-ink"
-                              aria-hidden="true"
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </PopoverContent>
-                </Popover>
-
-                <Popover
-                  open={branchPickerOpen}
-                  onOpenChange={setBranchPickerOpen}
-                >
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="composer-branch-picker"
-                      className="inline-flex min-w-0 cursor-pointer items-center gap-1 rounded-lg border border-transparent px-2 py-1 font-mono text-[11px] text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink focus:outline-none"
-                    >
-                      <GitBranch
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{activeCheckout}</span>
-                      <ChevronDown
-                        className="size-3 shrink-0 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    sideOffset={6}
-                    className="w-[210px] rounded-xl border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
-                  >
-                    <div className="px-2 py-1 text-[11px] font-medium text-muted-ink">
-                      Switch git branch
-                    </div>
-                    {branchList.map((branch) => {
-                      const isCurrent = branch === activeCheckout;
-                      return (
-                        <button
-                          key={branch}
-                          type="button"
-                          onClick={() => handleBranchSelect(branch)}
-                          className={cn(
-                            "flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left font-mono text-xs transition-colors hover:bg-hover",
-                            isCurrent && "bg-active text-ink",
-                          )}
-                        >
-                          <span className="truncate">{branch}</span>
-                          {isCurrent ? (
-                            <Check
-                              className="size-3.5 shrink-0 text-ink"
-                              aria-hidden="true"
-                            />
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </PopoverContent>
-                </Popover>
-              </div>
+                  <X className="size-3" aria-hidden="true" />
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1528,14 +1732,27 @@ export function SessionComposer({
                     type="button"
                     data-testid="composer-toggle-plan"
                     onClick={() => {
+                      const prevMode = activePermissionMode;
                       const nextMode: PermissionModeId =
-                        activePermissionMode === "plan" ? "default" : "plan";
+                        activePermissionMode === "plan"
+                          ? storeDefaultPermissionMode === "plan"
+                            ? "default"
+                            : storeDefaultPermissionMode
+                          : "plan";
                       handlePermissionSelect(nextMode);
                       if (effectiveSessionId) {
                         void callRpc("sessions.setPermissionMode", {
                           sessionId: effectiveSessionId,
                           mode: nextMode,
-                        }).catch(() => {});
+                        })
+                          .then((res) => {
+                            if (res && res.ok === false) {
+                              handlePermissionSelect(prevMode);
+                            }
+                          })
+                          .catch(() => {
+                            handlePermissionSelect(prevMode);
+                          });
                       }
                       setPlusMenuOpen(false);
                       textareaRef.current?.focus();
@@ -1583,6 +1800,9 @@ export function SessionComposer({
                 cacheTtl={activeCacheTtl}
                 sessionId={effectiveSessionId}
                 models={catalog.models}
+                defaultModelId={catalog.defaultModelId}
+                deferredNotice={deferredNotice}
+                onDeferredChange={setDeferredNotice}
                 onSelectModel={handleModelSelect}
                 onSelectEffort={handleEffortSelect}
                 onSelectServiceTier={handleServiceTierSelect}
@@ -1593,12 +1813,24 @@ export function SessionComposer({
                 disabled={disabled}
               />
 
+              {deferredNotice ? (
+                <Badge
+                  variant="warn"
+                  data-testid="composer-deferred-badge"
+                  className="shrink-0 gap-1 border-warn/30 bg-warn-soft text-warn"
+                >
+                  <Clock className="size-3" aria-hidden="true" />
+                  <span>{deferredNotice}</span>
+                </Badge>
+              ) : null}
+
               <span className="flex-1" />
 
               <PermissionPopover
                 value={activePermissionMode}
                 onChange={handlePermissionSelect}
                 sessionId={effectiveSessionId}
+                modes={slashCatalog.permissionModes}
                 enableShortcut={enablePermissionShortcut}
                 disabled={disabled}
               />

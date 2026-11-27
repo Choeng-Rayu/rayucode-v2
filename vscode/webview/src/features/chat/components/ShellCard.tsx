@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  ArrowUpRight,
   Check,
   ChevronRight,
   Copy,
@@ -43,6 +42,7 @@ export function ShellCard({
   className,
 }: ShellCardProps) {
   const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const resolvedSessionId = sessionId ?? activeSessionId ?? "ses_vscode_shell";
 
   const [uncontrolledExpanded, setUncontrolledExpanded] = React.useState(
@@ -122,13 +122,6 @@ export function ShellCard({
     }
   };
 
-  const handleOpenTerminal = () => {
-    postToHost({
-      type: "rayucode.editor.openTerminal",
-      name: "RayuCode Shell",
-    });
-  };
-
   const cardBody = (
     <div
       id={cardId}
@@ -150,6 +143,24 @@ export function ShellCard({
         </div>
 
         <div className="flex items-center gap-2">
+          {!isPlaintextTool && (
+            <button
+              type="button"
+              data-testid={`shell-open-terminal-${step.id}`}
+              onClick={() =>
+                postToHost({
+                  type: "rayucode.editor.openTerminal",
+                  cwd: activeProjectPath ?? undefined,
+                })
+              }
+              title="Open VS Code Integrated Terminal"
+              className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-hairline bg-pane px-2 py-0.5 text-[11px] font-medium text-muted-ink transition-colors hover:border-premium hover:bg-hover hover:text-ink"
+            >
+              <Terminal className="size-3 shrink-0" aria-hidden="true" />
+              <span>Terminal</span>
+            </button>
+          )}
+
           {showMoveToBackground && !isPlaintextTool && (
             <button
               type="button"
@@ -170,16 +181,6 @@ export function ShellCard({
               </kbd>
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={handleOpenTerminal}
-            title="Open VS Code Integrated Terminal"
-            className="inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
-          >
-            <ArrowUpRight className="size-3 shrink-0" aria-hidden="true" />
-            <span>Terminal</span>
-          </button>
 
           <span
             data-slot="shell-status"

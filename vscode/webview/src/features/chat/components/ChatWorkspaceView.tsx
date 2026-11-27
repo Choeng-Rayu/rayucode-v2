@@ -1,7 +1,9 @@
 import * as React from "react";
+import { TaskChecklistCard } from "@rayu-dev/rayucode-ui/tasks";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { ChatSkeleton, SectionErrorBoundary } from "@/components/ui";
-import { cn, type MidTurnMessageItem } from "@/lib";
+import { callRpc, cn, useAppStore, type MidTurnMessageItem } from "@/lib";
 
 import { useChatStream, type ChatTurnView } from "../hooks/useChatStream";
 import type { ApprovalCardRequest } from "./ApprovalCard";
@@ -29,6 +31,8 @@ export function ChatWorkspaceView({
   composerSlot,
   className,
 }: ChatWorkspaceViewProps) {
+  const queryClient = useQueryClient();
+  const setActiveSession = useAppStore((s) => s.setActiveSession);
   const stream = useChatStream({
     sessionId,
     initialTurns,
@@ -63,6 +67,14 @@ export function ChatWorkspaceView({
             fileChangesSnapshot={stream.fileChangesSnapshot}
             onFileChangesUpdated={stream.setFileChangesSnapshot}
             pendingPermission={effectivePermission}
+            pendingPermissionQueueCount={
+              pendingPermissionOverride !== undefined
+                ? pendingPermissionOverride
+                  ? 1
+                  : 0
+                : stream.pendingPermissionQueueCount
+            }
+            isPermissionSubmitting={stream.isPermissionSubmitting}
             pendingQuestion={effectiveQuestion}
             softInterrupts={stream.softInterrupts}
             midTurnMessages={stream.midTurnMessages}
@@ -71,10 +83,17 @@ export function ChatWorkspaceView({
             onPermissionDecision={(decision, req) => {
               void stream.respondPermission(decision, req);
             }}
-            onQuestionSubmit={(answers, notes) => {
-              void stream.respondQuestion(answers, notes);
+            onQuestionSubmit={(answers, notes, meta) => {
+              void stream.respondQuestion(answers, notes, meta);
             }}
             onQuestionDismiss={stream.dismissQuestion}
+            onForked={(forked) => {
+              void callRpc("sessions.attach", {
+                sessionId: forked.sessionId,
+              }).catch(() => {});
+              setActiveSession(forked.sessionId, forked.title);
+              void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+            }}
             onCancelSoftInterrupt={(id) => {
               void stream.cancelSoftInterrupt(id);
             }}
@@ -109,6 +128,18 @@ export function ChatWorkspaceView({
               className="mx-auto w-full max-w-[732px] shrink-0 px-4 @min-[640px]/app:px-6"
             >
               {backgroundDockSlot}
+            </div>
+          )}
+
+          {stream.todos.length > 0 && (
+            <div
+              data-slot="chat-tasks-dock-slot"
+              className="mx-auto w-full max-w-[732px] shrink-0 px-4 pb-2 @min-[640px]/app:px-6"
+            >
+              <TaskChecklistCard
+                sessionId={stream.sessionId}
+                todos={stream.todos}
+              />
             </div>
           )}
 

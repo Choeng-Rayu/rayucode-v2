@@ -1,4 +1,9 @@
-import { settleHarnessErrorFrame } from "@rayu-dev/rayucode-session-core/client";
+import {
+  extractActiveEditorSelectionFromPrompt,
+  filterVisibleHistory,
+  isVisibleHistoryMessage,
+  settleHarnessErrorFrame,
+} from "@rayu-dev/rayucode-session-core/client";
 import type {
   HistoryImageView,
   HistoryResponseStatsView,
@@ -59,6 +64,7 @@ export interface ShellCommandStep {
   isMono?: boolean;
   toolName?: string;
   intent?: string;
+  durationMs?: number;
 }
 
 export type TraceStepItem = FileReadStep | ListStep | ShellCommandStep;
@@ -127,7 +133,10 @@ export interface HiddenInternalMessage {
 export interface ExecutionTurn {
   id: string;
   sessionId: string;
+  /** 1-based visible user message index matching Rust `RewindToUserMessage`. */
+  userMessageIndex?: number;
   userPrompt: string;
+  userRefFiles?: string;
   userImages?: Array<{ name: string; dataUrl: string }>;
   workedDuration: string;
   notes: string[];
@@ -226,6 +235,7 @@ export type MappedLiveTraceEvent =
       workedDuration: string;
       credits?: string;
       kvCachePct?: number;
+      stopReason?: string;
       timestamp?: string;
     };
 
@@ -773,7 +783,10 @@ export function mapHistoryMessagesToTurns(
   messages: HarnessHistoryMessageLike[],
 ): ExecutionTurn[] {
   const turns: ExecutionTurn[] = [];
+  let visibleUserMessageCount = 0;
+  let currentUserMessageIndex: number | undefined;
   let currentUserPrompt: string | null = null;
+  let currentUserRefFiles: string | undefined;
   let currentUserImages: Array<{ name: string; dataUrl: string }> | undefined;
   let assistantChunks: string[] = [];
   let workNotes: string[] = [];
@@ -843,9 +856,16 @@ export function mapHistoryMessagesToTurns(
     turns.push({
       id: `hist_${sessionId}_${turns.length + 1}`,
       sessionId,
+      ...(currentUserMessageIndex !== undefined
+        ? { userMessageIndex: currentUserMessageIndex }
+        : {}),
       userPrompt: currentUserPrompt,
+      ...(currentUserRefFiles ? { userRefFiles: currentUserRefFiles } : {}),
       ...(currentUserImages ? { userImages: currentUserImages } : {}),
-      workedDuration: formatDurationSeconds(lastDurationSecs),
+      workedDuration:
+        typeof lastDurationSecs === "number" && lastDurationSecs > 0
+          ? formatDurationSeconds(lastDurationSecs)
+          : "",
       notes: workNotes,
       groups,
       ...(timeline ? { timeline } : {}),
@@ -864,6 +884,8 @@ export function mapHistoryMessagesToTurns(
     });
 
     currentUserPrompt = null;
+    currentUserMessageIndex = undefined;
+    currentUserRefFiles = undefined;
     currentUserImages = undefined;
     assistantChunks = [];
     workNotes = [];
@@ -880,15 +902,19 @@ export function mapHistoryMessagesToTurns(
   };
 
   for (const msg of messages) {
+    if (!isVisibleHistoryMessage(msg)) {
+      hiddenInternalMessages.push({
+        origin: msg.origin ?? "engine_internal",
+        visibility: msg.visibility ?? "hidden",
+        content: msg.content,
+      });
+      continue;
+    }
+  }
+  const visibleMessages = filterVisibleHistory(messages);
+
+  for (const msg of visibleMessages) {
     if (msg.role === "user") {
-      if (msg.origin === "engine_internal" || msg.visibility === "hidden") {
-        hiddenInternalMessages.push({
-          origin: msg.origin ?? "engine_internal",
-          visibility: msg.visibility ?? "hidden",
-          content: msg.content,
-        });
-        continue;
-      }
       if (isEngineInternalRecoveryPrompt(msg.content)) {
         hiddenInternalMessages.push({
           origin: "engine_internal",
@@ -929,7 +955,11 @@ export function mapHistoryMessagesToTurns(
         continue;
       }
       flushTurn();
-      currentUserPrompt = msg.content;
+      visibleUserMessageCount += 1;
+      currentUserMessageIndex = visibleUserMessageCount;
+      const extracted = extractActiveEditorSelectionFromPrompt(msg.content);
+      currentUserPrompt = extracted.prompt;
+      currentUserRefFiles = extracted.refFiles;
       currentUserImages = toUserImages(msg.images);
     } else if (msg.role === "tool") {
       if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
@@ -1437,6 +1467,15 @@ export function mapHarnessFrameToLiveEvents(
     }
     case "text_done": {
       tracker.textDonePendingTool = tracker.hasBufferedText;
+      const stopReason =
+        typeof frame.stop_reason === "string" && frame.stop_reason.trim()
+          ? frame.stop_reason.trim()
+          : undefined;
+      if (stopReason) {
+        (
+          tracker as HarnessStreamTracker & { lastStopReason?: string }
+        ).lastStopReason = stopReason;
+      }
       return [];
     }
     case "promote_answer_to_note": {
@@ -1784,6 +1823,10 @@ export function mapHarnessFrameToLiveEvents(
         ];
       }
 
+      const durationMs =
+        typeof frame.duration_ms === "number" && Number.isFinite(frame.duration_ms)
+          ? Math.max(0, Math.round(frame.duration_ms))
+          : undefined;
       const step = mapSingleWorkStep(
         callId,
         name,
@@ -1793,13 +1836,17 @@ export function mapHarnessFrameToLiveEvents(
         tracker,
         intent,
       );
+      const enrichedStep: TraceStepItem =
+        step.kind === "command" && durationMs !== undefined
+          ? { ...step, durationMs }
+          : step;
       return [
         { type: "tool-status", label: null },
         {
           type: "step",
           groupId: workGroupId,
           groupTitle: computePhaseGroupTitle(tracker),
-          step,
+          step: enrichedStep,
         },
       ];
     }
@@ -1898,10 +1945,19 @@ export function mapHarnessFrameToLiveEvents(
       }
       tracker.turnCompleted = true;
       tracker.stoppedInTurn = true;
-      const elapsedSec = Math.max(
-        1,
-        Math.floor((Date.now() - tracker.startedAtMs) / 1000),
-      );
+      const wireDurationSec =
+        typeof frame.duration_secs === "number" &&
+        Number.isFinite(frame.duration_secs) &&
+        frame.duration_secs > 0
+          ? frame.duration_secs
+          : typeof frame.duration_ms === "number" &&
+              Number.isFinite(frame.duration_ms) &&
+              frame.duration_ms > 0
+            ? frame.duration_ms / 1000
+            : undefined;
+      const elapsedSec =
+        wireDurationSec ??
+        Math.max(1, Math.floor((Date.now() - tracker.startedAtMs) / 1000));
       const reason =
         typeof frame.reason === "string" ? frame.reason : undefined;
       const message =
@@ -1918,23 +1974,36 @@ export function mapHarnessFrameToLiveEvents(
         { type: "connection-phase", phase: null },
         { type: "turn-stopped", reason, message },
       ];
-      if (
-        frame.reason === "failure" &&
-        typeof frame.message === "string" &&
-        frame.message.trim()
-      ) {
-        events.push({
-          type: "answer-delta",
-          delta: `\n\n**Error:** ${frame.message.trim()}`,
-        });
+      if (typeof frame.message === "string" && frame.message.trim()) {
+        if (frame.reason === "failure") {
+          events.push({
+            type: "answer-delta",
+            delta: `\n\n**Error:** ${frame.message.trim()}`,
+          });
+        } else if (
+          frame.reason !== "user_cancel" &&
+          frame.reason !== "cancelled"
+        ) {
+          events.push({
+            type: "answer-delta",
+            delta: `\n\n${frame.message.trim()}`,
+          });
+        }
       }
+      const lastStopReason = (
+        tracker as HarnessStreamTracker & { lastStopReason?: string }
+      ).lastStopReason;
       events.push({
         type: "complete",
         workedDuration: formatDurationSeconds(elapsedSec),
         credits: tracker.lastCredits,
         kvCachePct: tracker.lastKvCachePct,
+        ...(lastStopReason ? { stopReason: lastStopReason } : {}),
         timestamp: "Just now",
       });
+      (
+        tracker as HarnessStreamTracker & { lastStopReason?: string }
+      ).lastStopReason = undefined;
       return events;
     }
     case "turn_done": {
@@ -1943,10 +2012,25 @@ export function mapHarnessFrameToLiveEvents(
         return [];
       }
       tracker.turnCompleted = true;
-      const elapsedSec = Math.max(
-        1,
-        Math.floor((Date.now() - tracker.startedAtMs) / 1000),
-      );
+      const wireDurationSec =
+        typeof frame.duration_secs === "number" &&
+        Number.isFinite(frame.duration_secs) &&
+        frame.duration_secs > 0
+          ? frame.duration_secs
+          : typeof frame.duration_ms === "number" &&
+              Number.isFinite(frame.duration_ms) &&
+              frame.duration_ms > 0
+            ? frame.duration_ms / 1000
+            : undefined;
+      const elapsedSec =
+        wireDurationSec ??
+        Math.max(1, Math.floor((Date.now() - tracker.startedAtMs) / 1000));
+      const lastStopReason = (
+        tracker as HarnessStreamTracker & { lastStopReason?: string }
+      ).lastStopReason;
+      (
+        tracker as HarnessStreamTracker & { lastStopReason?: string }
+      ).lastStopReason = undefined;
       tracker.batchEpoch = 1;
       tracker.turnActive = false;
       tracker.hasBufferedText = false;
@@ -1962,6 +2046,7 @@ export function mapHarnessFrameToLiveEvents(
           workedDuration: formatDurationSeconds(elapsedSec),
           credits: tracker.lastCredits,
           kvCachePct: tracker.lastKvCachePct,
+          ...(lastStopReason ? { stopReason: lastStopReason } : {}),
           timestamp: "Just now",
         },
       ];

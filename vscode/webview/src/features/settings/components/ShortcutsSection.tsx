@@ -4,6 +4,8 @@ import type { ShortcutEntryView } from "@shared/vscodeProtocol";
 
 import { Button } from "@/components/ui/button";
 
+import { ConfigScopeBadge } from "./ConfigSyncChrome";
+
 export interface ShortcutsSectionProps {
   shortcuts: ReadonlyArray<ShortcutEntryView & { category?: string }>;
   onOpenKeybindings: () => Promise<unknown>;
@@ -34,12 +36,15 @@ export function ShortcutsSection({
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1
-            id="settings-h-shortcuts"
-            className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
-          >
-            Shortcuts
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1
+              id="settings-h-shortcuts"
+              className="m-0 text-xl font-semibold tracking-[-0.02em] text-ink"
+            >
+              Shortcuts
+            </h1>
+            <ConfigScopeBadge scope="local" />
+          </div>
           <p className="mt-1 text-xs text-muted-ink">
             Complete keyboard shortcuts reference including Shift+Tab, Alt+B,
             and Cmd/Ctrl+Shift+P commands.

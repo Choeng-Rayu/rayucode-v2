@@ -23,6 +23,7 @@ import type {
   SessionSummaryView,
   SurfaceKind,
   ThemePreference,
+  TodoItemView,
   WorkbenchPreferences,
   WorkspaceFolderView,
   WorkspaceLedgerView,
@@ -44,37 +45,38 @@ export type {
 };
 
 export type ResolvedThemePolarity = "dark" | "light";
-export type RightPaneMode = "context" | "document";
-
-export type RightTabId =
-  | "overview"
-  | "tools"
-  | "artifacts"
-  | "files"
-  | "terminal"
-  | "diff"
-  | "browser"
-  | "code"
-  | "markdown"
-  | "diagram"
-  | "sidePanel";
-
-export type InspectorTabId = RightTabId;
-
-export interface OpenDocTabItem {
-  tab: RightTabId;
-  pill: string;
-}
 
 export interface NavHistoryEntry {
   route: AppRoute;
   sessionId: string | null;
   sessionTitle: string | null;
+  settingsSection?: string;
 }
 
-export interface ActiveDiagramState {
-  title: string;
-  source: string;
+export function normalizeRouteTarget(
+  route: AppRoute,
+  activeSessionId: string | null,
+): { route: AppRoute; settingsSection?: string } {
+  if (
+    route === "agents" ||
+    route === "swarm" ||
+    route === "automations" ||
+    route === "remote"
+  ) {
+    return { route: "settings", settingsSection: route };
+  }
+  if (route === "changes") {
+    return { route: activeSessionId ? "workspace" : "home" };
+  }
+  return { route };
+}
+
+export function makeTurnDurationKey(
+  turnIndex: number,
+  userPrompt: string,
+): string {
+  const normalized = userPrompt.trim().replace(/\s+/g, " ").slice(0, 120);
+  return `${turnIndex}:${normalized}`;
 }
 
 export interface OptimisticUserTurn {
@@ -120,6 +122,7 @@ export interface AppStoreState {
   surface: SurfaceKind;
   route: AppRoute;
   activeRoute: AppRoute;
+  activeSettingsSection: string;
   navHistory: NavHistoryEntry[];
   navHistoryIndex: number;
 
@@ -145,20 +148,11 @@ export interface AppStoreState {
   // Shell chrome & drawers
   sidebarCollapsed: boolean;
   mobileSidebarOpen: boolean;
-  inspectorOpen: boolean;
-  rightMode: RightPaneMode;
-  inspectorTab: RightTabId;
-  activeRightTab: RightTabId;
-  activeDocPill: string | null;
-  activeCodeFile: string | null;
-  activeCodeLine: number | null;
-  openDocTabs: OpenDocTabItem[];
-  fullView: boolean;
-  rightWidthPx: number | null;
-  chatCollapsedByRight: boolean;
   backgroundDrawerOpen: boolean;
   backgroundTasks: BackgroundProcessView[];
   fileChangesBySession: Record<string, FileChangesSnapshotView>;
+  todosBySession: Record<string, TodoItemView[]>;
+  turnDurationsBySession: Record<string, Record<string, string>>;
 
   // Daemon, Auth & Notifications
   daemonStatus: DaemonStatusView;
@@ -168,10 +162,12 @@ export interface AppStoreState {
   authBypassed: boolean;
   authDialogOpen: boolean;
   pendingPermission: PendingPermissionRequest | null;
+  pendingPermissionBySession: Record<string, PendingPermissionRequest | null>;
+  pendingPermissionsBySession: Record<string, PendingPermissionRequest[]>;
+  defaultPermissionMode: PermissionModeId;
   isStreamActive: boolean;
   keepAwake: boolean;
   unreadNotifications: number;
-  activeDiagram: ActiveDiagramState;
   pendingUserTurn: OptimisticUserTurn | null;
   composerDrafts: Record<string, string>;
   sessionPrefsBySession: Record<string, SessionComposerPrefs>;
@@ -198,6 +194,8 @@ export interface AppStoreState {
 
   setRoute: (route: AppRoute) => void;
   setActiveRoute: (route: AppRoute) => void;
+  setActiveSettingsSection: (section: string) => void;
+  openSettingsSection: (section: string) => void;
   setActiveSession: (sessionId: string | null, title?: string | null) => void;
   setActiveSessionTitle: (title: string | null) => void;
   setActiveProjectPath: (path: string | null) => void;
@@ -248,16 +246,6 @@ export interface AppStoreState {
   setSidebarCollapsed: (collapsed: boolean) => void;
   toggleSidebar: () => void;
   setMobileSidebarOpen: (open: boolean) => void;
-  setInspectorOpen: (open: boolean) => void;
-  toggleInspector: () => void;
-  setInspectorTab: (tab: RightTabId) => void;
-  openRightTab: (tab: RightTabId, pillLabel?: string | null) => void;
-  openCodeFile: (file: string, line?: number | null) => void;
-  closeDocTab: (pill: string) => void;
-  closeDocumentToContext: () => void;
-  setFullView: (fullView: boolean) => void;
-  setRightWidthPx: (width: number | null) => void;
-  setChatCollapsedByRight: (collapsed: boolean) => void;
   setBackgroundDrawerOpen: (open: boolean) => void;
   toggleBackgroundDrawer: () => void;
   setBackgroundTasks: (tasks: BackgroundProcessView[]) => void;
@@ -265,18 +253,27 @@ export interface AppStoreState {
     sessionId: string,
     snapshot: FileChangesSnapshotView,
   ) => void;
+  setSessionTodos: (sessionId: string, todos: TodoItemView[]) => void;
+  recordTurnDuration: (
+    sessionId: string,
+    key: string,
+    workedDuration: string,
+  ) => void;
 
   setDaemonStatus: (status: DaemonStatusView) => void;
   setAccountStatus: (status: AccountStatusView | null) => void;
   setAuthLoaded: (loaded: boolean) => void;
   setAuthBypassed: (bypassed: boolean) => void;
   setAuthDialogOpen: (open: boolean) => void;
-  setPendingPermission: (perm: PendingPermissionRequest | null) => void;
+  setPendingPermission: (
+    perm: PendingPermissionRequest | null,
+    sessionId?: string,
+  ) => void;
+  clearPendingPermission: (sessionId: string, requestId?: string) => void;
+  setDefaultPermissionMode: (mode: PermissionModeId) => void;
   setIsStreamActive: (active: boolean) => void;
   setKeepAwake: (keepAwake: boolean) => void;
   setUnreadNotifications: (count: number) => void;
-  openDiagramPreview: (source: string, title?: string) => void;
-  setActiveDiagramSource: (source: string) => void;
   enqueueOptimisticTurn: (turn: OptimisticUserTurn) => void;
   consumeOptimisticTurn: (id: string) => void;
   setMidTurnSendMode: (mode: MidTurnSendMode) => void;
@@ -305,35 +302,6 @@ const DEFAULT_WORKBENCH_PREFERENCES: WorkbenchPreferences = {
   openLocation: "secondarySidebar",
   contextActionsAutoSubmit: false,
   showEditorTitleIcon: true,
-};
-
-const DEFAULT_TAB_PILLS: Record<RightTabId, string | null> = {
-  overview: null,
-  tools: null,
-  artifacts: null,
-  files: "Files",
-  terminal: "Terminal",
-  diff: "Changes",
-  browser: "Preview",
-  code: "Code",
-  markdown: "Markdown",
-  diagram: "Diagram",
-  sidePanel: "Side Panel",
-};
-
-const CONTEXT_MODE_TABS = new Set<RightTabId>(["overview", "tools", "artifacts"]);
-
-const DEFAULT_DIAGRAM_STATE: ActiveDiagramState = {
-  title: "RayuCode VS Code Architecture",
-  source: `flowchart LR
-  subgraph Webview["React 19 Webview"]
-    Shell[AppShell] --> RPC[rpc-client]
-    RPC --> Store[Zustand Store]
-  end
-  subgraph Host["Extension Host"]
-    Bridge[RPC Router] --> Daemon[rayu serve]
-  end
-  Shell --> Bridge`,
 };
 
 export function detectVsCodeBodyPolarity(): {
@@ -465,16 +433,37 @@ function readInitialSessionPrefs(): Record<string, SessionComposerPrefs> {
   return {};
 }
 
+function readInitialTurnDurations(): Record<string, Record<string, string>> {
+  try {
+    const raw = getWebviewState<{
+      turnDurationsBySession?: Record<string, Record<string, string>>;
+    }>();
+    if (
+      raw &&
+      typeof raw === "object" &&
+      raw.turnDurationsBySession &&
+      typeof raw.turnDurationsBySession === "object"
+    ) {
+      return { ...raw.turnDurationsBySession };
+    }
+  } catch {
+    // ignore storage read errors in test/non-webview environments
+  }
+  return {};
+}
+
 function persistWebviewStateSnapshot(state: {
   surface: SurfaceKind;
   activeRoute: AppRoute;
   activeSessionId: string | null;
   sessionPrefsBySession: Record<string, SessionComposerPrefs>;
+  turnDurationsBySession: Record<string, Record<string, string>>;
 }): void {
   try {
     const prev = getWebviewState<Record<string, unknown>>();
     const base = prev && typeof prev === "object" ? prev : {};
     const hasPrefs = Object.keys(state.sessionPrefsBySession).length > 0;
+    const hasDurations = Object.keys(state.turnDurationsBySession).length > 0;
     const nextState: Record<string, unknown> = {
       ...base,
       ...(state.surface === "editorPanel"
@@ -489,6 +478,11 @@ function persistWebviewStateSnapshot(state: {
     } else {
       delete nextState.sessionPrefsBySession;
     }
+    if (hasDurations) {
+      nextState.turnDurationsBySession = state.turnDurationsBySession;
+    } else {
+      delete nextState.turnDurationsBySession;
+    }
     setWebviewState(nextState);
   } catch {
     // ignore
@@ -499,6 +493,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   surface: detectInitialSurface(),
   route: "home",
   activeRoute: "home",
+  activeSettingsSection: "account",
   navHistory: [{ route: "home", sessionId: null, sessionTitle: null }],
   navHistoryIndex: 0,
 
@@ -521,20 +516,11 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   sidebarCollapsed: false,
   mobileSidebarOpen: false,
-  inspectorOpen: false,
-  rightMode: "context",
-  inspectorTab: "overview",
-  activeRightTab: "overview",
-  activeDocPill: null,
-  activeCodeFile: null,
-  activeCodeLine: null,
-  openDocTabs: [],
-  fullView: false,
-  rightWidthPx: null,
-  chatCollapsedByRight: false,
   backgroundDrawerOpen: false,
   backgroundTasks: [],
   fileChangesBySession: {},
+  todosBySession: {},
+  turnDurationsBySession: readInitialTurnDurations(),
 
   daemonStatus: DEFAULT_DAEMON_STATUS,
   capabilities: [],
@@ -543,10 +529,12 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   authBypassed: false,
   authDialogOpen: false,
   pendingPermission: null,
+  pendingPermissionBySession: {},
+  pendingPermissionsBySession: {},
+  defaultPermissionMode: "default",
   isStreamActive: false,
   keepAwake: false,
   unreadNotifications: 0,
-  activeDiagram: DEFAULT_DIAGRAM_STATE,
   pendingUserTurn: null,
   composerDrafts: {},
   sessionPrefsBySession: readInitialSessionPrefs(),
@@ -624,19 +612,26 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setRoute: (route) => get().setActiveRoute(route),
 
-  setActiveRoute: (activeRoute) => {
+  setActiveRoute: (rawRoute) => {
     set((state) => {
+      const normalized = normalizeRouteTarget(rawRoute, state.activeSessionId);
+      const nextRoute = normalized.route;
+      const nextSettingsSection =
+        normalized.settingsSection ??
+        (nextRoute === "settings" ? state.activeSettingsSection : undefined);
       const nextEntry: NavHistoryEntry = {
-        route: activeRoute,
-        sessionId: activeRoute === "workspace" ? state.activeSessionId : null,
+        route: nextRoute,
+        sessionId: nextRoute === "workspace" ? state.activeSessionId : null,
         sessionTitle:
-          activeRoute === "workspace" ? state.activeSessionTitle : null,
+          nextRoute === "workspace" ? state.activeSessionTitle : null,
+        ...(nextSettingsSection ? { settingsSection: nextSettingsSection } : {}),
       };
       const current = state.navHistory[state.navHistoryIndex];
       const isSame =
         current &&
         current.route === nextEntry.route &&
-        current.sessionId === nextEntry.sessionId;
+        current.sessionId === nextEntry.sessionId &&
+        current.settingsSection === nextEntry.settingsSection;
       const nextHistory = isSame
         ? state.navHistory
         : [
@@ -644,11 +639,49 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
             nextEntry,
           ].slice(-50);
       return {
-        route: activeRoute,
-        activeRoute,
+        route: nextRoute,
+        activeRoute: nextRoute,
+        ...(normalized.settingsSection
+          ? { activeSettingsSection: normalized.settingsSection }
+          : {}),
         navHistory: nextHistory,
         navHistoryIndex: nextHistory.length - 1,
-        inspectorOpen: activeRoute === "home" ? false : state.inspectorOpen,
+      };
+    });
+    const next = get();
+    if (next.surface === "editorPanel") {
+      persistWebviewStateSnapshot(next);
+    }
+  },
+
+  setActiveSettingsSection: (activeSettingsSection) =>
+    set({ activeSettingsSection }),
+
+  openSettingsSection: (section) => {
+    set((state) => {
+      const nextEntry: NavHistoryEntry = {
+        route: "settings",
+        sessionId: null,
+        sessionTitle: null,
+        settingsSection: section,
+      };
+      const current = state.navHistory[state.navHistoryIndex];
+      const isSame =
+        current &&
+        current.route === "settings" &&
+        current.settingsSection === section;
+      const nextHistory = isSame
+        ? state.navHistory
+        : [
+            ...state.navHistory.slice(0, state.navHistoryIndex + 1),
+            nextEntry,
+          ].slice(-50);
+      return {
+        route: "settings",
+        activeRoute: "settings",
+        activeSettingsSection: section,
+        navHistory: nextHistory,
+        navHistoryIndex: nextHistory.length - 1,
       };
     });
     const next = get();
@@ -690,12 +723,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         activeRoute: resolvedRoute,
         navHistory: nextHistory,
         navHistoryIndex: nextHistory.length - 1,
-        rightMode: "context",
-        inspectorTab: "overview",
-        activeRightTab: "overview",
-        activeDocPill: null,
-        fullView: false,
-        chatCollapsedByRight: false,
+        pendingPermission: activeSessionId
+          ? (state.pendingPermissionBySession[activeSessionId] ?? null)
+          : null,
         backgroundTasks: activeSessionId
           ? state.backgroundTasks.filter((t) => t.sessionId === activeSessionId)
           : [],
@@ -782,13 +812,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       activeRoute: "home",
       navHistory: nextHistory,
       navHistoryIndex: nextHistory.length - 1,
-      inspectorOpen: false,
-      rightMode: "context",
-      inspectorTab: "overview",
-      activeRightTab: "overview",
-      activeDocPill: null,
-      fullView: false,
-      chatCollapsedByRight: false,
+      pendingPermission: null,
       backgroundTasks: [],
     });
     return draft;
@@ -943,10 +967,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         navHistoryIndex: nextIndex,
         route: target.route,
         activeRoute: target.route,
+        ...(target.settingsSection
+          ? { activeSettingsSection: target.settingsSection }
+          : {}),
         activeSessionId: target.sessionId,
         activeSessionTitle: target.sessionTitle,
-        inspectorOpen: target.route === "home" ? false : state.inspectorOpen,
-        chatCollapsedByRight: false,
+        pendingPermission: target.sessionId
+          ? (state.pendingPermissionBySession[target.sessionId] ?? null)
+          : null,
         backgroundTasks: target.sessionId
           ? state.backgroundTasks.filter((t) => t.sessionId === target.sessionId)
           : [],
@@ -964,10 +992,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         navHistoryIndex: nextIndex,
         route: target.route,
         activeRoute: target.route,
+        ...(target.settingsSection
+          ? { activeSettingsSection: target.settingsSection }
+          : {}),
         activeSessionId: target.sessionId,
         activeSessionTitle: target.sessionTitle,
-        inspectorOpen: target.route === "home" ? false : state.inspectorOpen,
-        chatCollapsedByRight: false,
+        pendingPermission: target.sessionId
+          ? (state.pendingPermissionBySession[target.sessionId] ?? null)
+          : null,
         backgroundTasks: target.sessionId
           ? state.backgroundTasks.filter((t) => t.sessionId === target.sessionId)
           : [],
@@ -981,120 +1013,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 
   setMobileSidebarOpen: (mobileSidebarOpen) => set({ mobileSidebarOpen }),
-
-  setInspectorOpen: (inspectorOpen) =>
-    set((state) => ({
-      inspectorOpen,
-      fullView: inspectorOpen ? state.fullView : false,
-      chatCollapsedByRight: inspectorOpen ? state.chatCollapsedByRight : false,
-    })),
-
-  toggleInspector: () =>
-    set((state) => {
-      const next = !state.inspectorOpen;
-      return {
-        inspectorOpen: next,
-        fullView: next ? state.fullView : false,
-        chatCollapsedByRight: next ? state.chatCollapsedByRight : false,
-      };
-    }),
-
-  setInspectorTab: (tab) => get().openRightTab(tab),
-
-  openRightTab: (tab, pillLabel) => {
-    if (CONTEXT_MODE_TABS.has(tab)) {
-      set({
-        inspectorOpen: true,
-        rightMode: "context",
-        inspectorTab: tab,
-        activeRightTab: tab,
-        activeDocPill: null,
-        fullView: false,
-      });
-      return;
-    }
-    const resolvedPill =
-      pillLabel !== undefined ? pillLabel : DEFAULT_TAB_PILLS[tab];
-    set((state) => {
-      const nextTabs = resolvedPill
-        ? state.openDocTabs.some((t) => t.pill === resolvedPill)
-          ? state.openDocTabs
-          : [...state.openDocTabs, { tab, pill: resolvedPill }].slice(-5)
-        : state.openDocTabs;
-      return {
-        inspectorOpen: true,
-        rightMode: "document",
-        inspectorTab: tab,
-        activeRightTab: tab,
-        activeDocPill: resolvedPill,
-        openDocTabs: nextTabs,
-      };
-    });
-  },
-
-  openCodeFile: (file, line = null) => {
-    set((state) => ({
-      inspectorOpen: true,
-      rightMode: "document",
-      inspectorTab: "code",
-      activeRightTab: "code",
-      activeDocPill: file,
-      activeCodeFile: file,
-      activeCodeLine: line,
-      openDocTabs: state.openDocTabs.some((t) => t.pill === file)
-        ? state.openDocTabs
-        : [...state.openDocTabs, { tab: "code" as RightTabId, pill: file }].slice(
-            -5,
-          ),
-    }));
-  },
-
-  closeDocTab: (pill) => {
-    set((state) => {
-      const remaining = state.openDocTabs.filter((t) => t.pill !== pill);
-      if (remaining.length === 0 || state.activeDocPill === pill) {
-        const fallback = remaining[remaining.length - 1];
-        if (!fallback) {
-          return {
-            openDocTabs: [],
-            rightMode: "context",
-            inspectorTab: "overview",
-            activeRightTab: "overview",
-            activeDocPill: null,
-            fullView: false,
-          };
-        }
-        return {
-          openDocTabs: remaining,
-          inspectorTab: fallback.tab,
-          activeRightTab: fallback.tab,
-          activeDocPill: fallback.pill,
-        };
-      }
-      return { openDocTabs: remaining };
-    });
-  },
-
-  closeDocumentToContext: () =>
-    set({
-      rightMode: "context",
-      inspectorTab: "overview",
-      activeRightTab: "overview",
-      activeDocPill: null,
-      fullView: false,
-      chatCollapsedByRight: false,
-    }),
-
-  setFullView: (fullView) =>
-    set((state) => ({
-      fullView,
-      inspectorOpen: fullView ? true : state.inspectorOpen,
-    })),
-
-  setRightWidthPx: (rightWidthPx) => set({ rightWidthPx }),
-
-  setChatCollapsedByRight: (chatCollapsedByRight) =>
-    set({ chatCollapsedByRight }),
 
   setBackgroundDrawerOpen: (backgroundDrawerOpen) =>
     set({ backgroundDrawerOpen }),
@@ -1112,6 +1030,44 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       },
     })),
 
+  setSessionTodos: (sessionId, todos) => {
+    if (!sessionId) return;
+    set((state) => ({
+      todosBySession: {
+        ...state.todosBySession,
+        [sessionId]: todos,
+      },
+    }));
+  },
+
+  recordTurnDuration: (sessionId, key, workedDuration) => {
+    if (!sessionId || !key || !workedDuration.trim()) return;
+    let didChange = false;
+    set((state) => {
+      const prevSession = state.turnDurationsBySession[sessionId] ?? {};
+      if (prevSession[key] === workedDuration) return state;
+      didChange = true;
+      const nextSessionEntries = Object.entries({
+        ...prevSession,
+        [key]: workedDuration,
+      }).slice(-50);
+      const nextBySession: Record<string, Record<string, string>> = {
+        ...state.turnDurationsBySession,
+        [sessionId]: Object.fromEntries(nextSessionEntries),
+      };
+      const sessionKeys = Object.keys(nextBySession);
+      if (sessionKeys.length > 40) {
+        for (const staleKey of sessionKeys.slice(0, sessionKeys.length - 40)) {
+          delete nextBySession[staleKey];
+        }
+      }
+      return { turnDurationsBySession: nextBySession };
+    });
+    if (didChange) {
+      persistWebviewStateSnapshot(get());
+    }
+  },
+
   setDaemonStatus: (daemonStatus) =>
     set({ daemonStatus, capabilities: daemonStatus.capabilities }),
 
@@ -1123,39 +1079,107 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setAuthDialogOpen: (authDialogOpen) => set({ authDialogOpen }),
 
-  setPendingPermission: (pendingPermission) => set({ pendingPermission }),
+  setPendingPermission: (pendingPermission, explicitSessionId) =>
+    set((state) => {
+      const nextQueues = { ...state.pendingPermissionsBySession };
+      const nextMap = { ...state.pendingPermissionBySession };
+      if (pendingPermission) {
+        const targetSid =
+          pendingPermission.sessionId ||
+          explicitSessionId ||
+          state.activeSessionId ||
+          "__default__";
+        const currentQueue = nextQueues[targetSid] ?? [];
+        const existingIdx = currentQueue.findIndex(
+          (item) => item.requestId === pendingPermission.requestId,
+        );
+        const updatedQueue =
+          existingIdx >= 0
+            ? currentQueue.map((item, i) =>
+                i === existingIdx ? pendingPermission : item,
+              )
+            : [...currentQueue, pendingPermission];
+        nextQueues[targetSid] = updatedQueue;
+        const head = updatedQueue[0] ?? null;
+        nextMap[targetSid] = head;
+        const isActive =
+          !state.activeSessionId ||
+          targetSid === state.activeSessionId ||
+          targetSid === "__default__";
+        return {
+          pendingPermissionsBySession: nextQueues,
+          pendingPermissionBySession: nextMap,
+          ...(isActive ? { pendingPermission: head } : {}),
+        };
+      }
+      const targetSid = explicitSessionId ?? state.activeSessionId;
+      if (targetSid) {
+        delete nextQueues[targetSid];
+        delete nextMap[targetSid];
+      } else {
+        delete nextQueues.__default__;
+        delete nextMap.__default__;
+      }
+      const shouldClearActive =
+        !explicitSessionId || explicitSessionId === state.activeSessionId;
+      return {
+        pendingPermissionsBySession: nextQueues,
+        pendingPermissionBySession: nextMap,
+        ...(shouldClearActive ? { pendingPermission: null } : {}),
+      };
+    }),
+
+  clearPendingPermission: (sessionId, requestId) =>
+    set((state) => {
+      const existingQueue = state.pendingPermissionsBySession[sessionId] ?? [];
+      const fallbackSingle = state.pendingPermissionBySession[sessionId];
+      const effectiveQueue =
+        existingQueue.length > 0
+          ? existingQueue
+          : fallbackSingle
+            ? [fallbackSingle]
+            : [];
+      const nextQueue = requestId
+        ? effectiveQueue.filter((item) => item.requestId !== requestId)
+        : [];
+      const queueChanged = nextQueue.length !== effectiveQueue.length;
+      const activeMatch =
+        state.pendingPermission &&
+        (!state.pendingPermission.sessionId ||
+          state.pendingPermission.sessionId === sessionId) &&
+        (!requestId || state.pendingPermission.requestId === requestId);
+      if (!queueChanged && !activeMatch) return state;
+
+      const nextQueues = { ...state.pendingPermissionsBySession };
+      const nextMap = { ...state.pendingPermissionBySession };
+      const nextHead = nextQueue[0] ?? null;
+      if (nextQueue.length === 0) {
+        delete nextQueues[sessionId];
+        delete nextMap[sessionId];
+      } else {
+        nextQueues[sessionId] = nextQueue;
+        nextMap[sessionId] = nextHead;
+      }
+
+      const isActiveSession =
+        !state.activeSessionId || state.activeSessionId === sessionId;
+      return {
+        pendingPermissionsBySession: nextQueues,
+        pendingPermissionBySession: nextMap,
+        ...(isActiveSession || activeMatch
+          ? { pendingPermission: isActiveSession ? nextHead : state.pendingPermission }
+          : {}),
+      };
+    }),
+
+  setDefaultPermissionMode: (defaultPermissionMode) =>
+    set({ defaultPermissionMode }),
 
   setIsStreamActive: (isStreamActive) => set({ isStreamActive }),
 
   setKeepAwake: (keepAwake) => set({ keepAwake }),
 
   setUnreadNotifications: (unreadNotifications) => set({ unreadNotifications }),
-
-  openDiagramPreview: (source, title) =>
-    set((state) => ({
-      activeDiagram: {
-        title: title?.trim() || "Diagram",
-        source,
-      },
-      inspectorOpen: true,
-      rightMode: "document",
-      inspectorTab: "diagram",
-      activeRightTab: "diagram",
-      activeDocPill: title?.trim() || "Diagram",
-      openDocTabs: state.openDocTabs.some(
-        (t) => t.pill === (title?.trim() || "Diagram"),
-      )
-        ? state.openDocTabs
-        : [
-            ...state.openDocTabs,
-            { tab: "diagram" as RightTabId, pill: title?.trim() || "Diagram" },
-          ].slice(-5),
-    })),
-
-  setActiveDiagramSource: (source) =>
-    set((state) => ({
-      activeDiagram: { ...state.activeDiagram, source },
-    })),
 
   enqueueOptimisticTurn: (pendingUserTurn) => set({ pendingUserTurn }),
 
@@ -1309,10 +1333,52 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         }
         set((state) => {
           const resolvedSessionId = msg.sessionId ?? state.activeSessionId;
+          const normalized = normalizeRouteTarget(msg.route, resolvedSessionId);
           const rawTasks = msg.backgroundTasks ?? state.backgroundTasks;
           const scopedTasks = resolvedSessionId
             ? rawTasks.filter((t) => t.sessionId === resolvedSessionId)
             : [];
+          const nextPendingQueues: Record<string, PendingPermissionRequest[]> = {
+            ...state.pendingPermissionsBySession,
+          };
+          const nextPendingHeads: Record<
+            string,
+            PendingPermissionRequest | null
+          > = {
+            ...state.pendingPermissionBySession,
+          };
+          if (msg.pendingPermissions) {
+            for (const [sid, list] of Object.entries(msg.pendingPermissions)) {
+              const normalizedList: PendingPermissionRequest[] = list.map(
+                (item) => ({
+                  sessionId: item.sessionId || sid,
+                  requestId: item.requestId,
+                  toolName: item.toolName,
+                  description: item.description,
+                  riskTier:
+                    item.riskTier === "hard_deny"
+                      ? "catastrophic"
+                      : item.riskTier,
+                  command: item.command,
+                  permissionMode: item.permissionMode,
+                }),
+              );
+              if (normalizedList.length > 0) {
+                nextPendingQueues[sid] = normalizedList;
+                nextPendingHeads[sid] = normalizedList[0] ?? null;
+              }
+            }
+          }
+          const activePendingHead = resolvedSessionId
+            ? (nextPendingHeads[resolvedSessionId] ?? state.pendingPermission)
+            : state.pendingPermission;
+          const nextSessionPrefs = { ...state.sessionPrefsBySession };
+          if (resolvedSessionId && msg.activePermissionMode) {
+            nextSessionPrefs[resolvedSessionId] = {
+              ...nextSessionPrefs[resolvedSessionId],
+              permissionMode: msg.activePermissionMode,
+            };
+          }
           return {
             surface: msg.surface,
             theme: msg.theme,
@@ -1321,8 +1387,18 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
             density: msg.density ?? state.density,
             reduceMotion: msg.reduceMotion ?? state.reduceMotion,
             ...(msg.workbench ? { workbench: msg.workbench } : {}),
-            route: msg.route,
-            activeRoute: msg.route,
+            ...(msg.defaultPermissionMode
+              ? { defaultPermissionMode: msg.defaultPermissionMode }
+              : {}),
+            sessionPrefsBySession: nextSessionPrefs,
+            pendingPermissionsBySession: nextPendingQueues,
+            pendingPermissionBySession: nextPendingHeads,
+            pendingPermission: activePendingHead,
+            route: normalized.route,
+            activeRoute: normalized.route,
+            ...(normalized.settingsSection
+              ? { activeSettingsSection: normalized.settingsSection }
+              : {}),
             activeSessionId: resolvedSessionId,
             capabilities: msg.capabilities,
             daemonStatus: msg.daemonStatus,
@@ -1345,6 +1421,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
                   fileChangesBySession: {
                     ...state.fileChangesBySession,
                     [msg.sessionId]: msg.fileChanges,
+                  },
+                }
+              : {}),
+            ...(resolvedSessionId && msg.todos
+              ? {
+                  todosBySession: {
+                    ...state.todosBySession,
+                    [resolvedSessionId]: msg.todos,
                   },
                 }
               : {}),
@@ -1433,7 +1517,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
             activeRoute: nextRoute,
             navHistory: nextHistory,
             navHistoryIndex: nextHistory.length - 1,
-            inspectorOpen: nextRoute === "home" ? false : state.inspectorOpen,
             composerFocusNonce: state.composerFocusNonce + 1,
           };
         });
@@ -1496,6 +1579,26 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           },
         }));
         return;
+      case "rayucode.todos.updated":
+        set((state) => ({
+          todosBySession: {
+            ...state.todosBySession,
+            [msg.sessionId]: msg.todos,
+          },
+        }));
+        return;
+      case "rayucode.permission.resolved":
+        get().clearPendingPermission(msg.sessionId, msg.requestId);
+        return;
+      case "rayucode.permission.modeSync": {
+        if (msg.isDefault) {
+          set({ defaultPermissionMode: msg.mode });
+        }
+        if (msg.sessionId) {
+          get().setSessionPrefs(msg.sessionId, { permissionMode: msg.mode });
+        }
+        return;
+      }
       case "rayucode.ui.navigate": {
         if (msg.sessionId) {
           get().setActiveSession(msg.sessionId);

@@ -1,7 +1,6 @@
 import * as React from "react";
 import {
   ArrowDown,
-  ChevronDown,
   ExternalLink,
   FileSpreadsheet,
   FileText,
@@ -14,10 +13,6 @@ import {
 } from "lucide-react";
 
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
   RayuProcessingMark,
   ScrollArea,
   TechFileBadge,
@@ -39,10 +34,11 @@ import type {
   SoftInterruptQueueItem,
 } from "../hooks/useChatStream";
 import { ApprovalCard, type ApprovalCardRequest } from "./ApprovalCard";
-import { CiteLink } from "./CiteLink";
+import { CiteLink, parseFileLineTarget } from "./CiteLink";
 import {
   ClarifyingQuestionCard,
   type ClarifyingQuestionRequest,
+  type ClarifyingQuestionSubmitMeta,
 } from "./ClarifyingQuestionCard";
 import { EditorialMarkdown } from "./EditorialMarkdown";
 import { InlineDiffCard } from "./InlineDiffCard";
@@ -135,7 +131,10 @@ function TurnView({
   ]);
 
   const handleFooterBackgroundClick = async () => {
-    onBackgroundTool?.();
+    if (onBackgroundTool) {
+      onBackgroundTool();
+      return;
+    }
     const sid =
       turn.sessionId ||
       useAppStore.getState().activeSessionId ||
@@ -169,28 +168,32 @@ function TurnView({
 
       {/* User Prompt Bubble */}
       <div className="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
-        {turn.userRefFiles && (
-          <button
-            type="button"
-            data-slot="user-ref-pill"
-            onClick={() => {
-              const cleanPath = turn.userRefFiles!.split(":")[0] ?? turn.userRefFiles!;
-              postToHost({
-                type: "rayucode.editor.openFile",
-                path: cleanPath,
-              });
-            }}
-            className="inline-flex max-w-[340px] cursor-pointer items-center gap-1.5 rounded-[9px] border border-hairline bg-pane px-2.5 py-1 text-xs text-body transition-colors hover:border-premium hover:text-ink"
-          >
-            <TechFileBadge
-              path={turn.userRefFiles.split(":")[0] ?? turn.userRefFiles}
-              className="size-3.5"
-            />
-            <span className="truncate font-mono text-[11.5px]">
-              {turn.userRefFiles}
-            </span>
-          </button>
-        )}
+        {turn.userRefFiles && (() => {
+          const parsedRef = parseFileLineTarget(turn.userRefFiles);
+          return (
+            <button
+              type="button"
+              data-slot="user-ref-pill"
+              onClick={() => {
+                postToHost({
+                  type: "rayucode.editor.openFile",
+                  path: parsedRef.path,
+                  ...(parsedRef.line ? { line: parsedRef.line } : {}),
+                  ...(parsedRef.column ? { column: parsedRef.column } : {}),
+                });
+              }}
+              className="inline-flex max-w-[340px] cursor-pointer items-center gap-1.5 rounded-[9px] border border-hairline bg-pane px-2.5 py-1 text-xs text-body transition-colors hover:border-premium hover:text-ink"
+            >
+              <TechFileBadge
+                path={parsedRef.path}
+                className="size-3.5"
+              />
+              <span className="truncate font-mono text-[11.5px]">
+                {turn.userRefFiles}
+              </span>
+            </button>
+          );
+        })()}
 
         {turn.userImages && turn.userImages.length > 0 && (
           <div
@@ -326,12 +329,15 @@ function TurnView({
               >
                 <button
                   type="button"
+                  disabled={!artifact.filePath}
                   onClick={() => {
-                    useAppStore
-                      .getState()
-                      .openRightTab("artifacts", artifact.pillLabel);
+                    if (!artifact.filePath) return;
+                    postToHost({
+                      type: "rayucode.editor.openFile",
+                      path: artifact.filePath,
+                    });
                   }}
-                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left disabled:cursor-default"
                 >
                   <span className="grid size-8 shrink-0 place-items-center rounded-[10px] border border-hairline bg-inset text-code-type">
                     {artifact.kind === "slide" ? (
@@ -352,48 +358,25 @@ function TurnView({
                   </span>
                 </button>
 
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      data-testid="artifact-open-trigger"
-                      className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-hairline-strong bg-inset px-3 text-xs font-medium text-ink transition-colors hover:bg-hover"
-                    >
-                      <span>Open</span>
-                      <ChevronDown
-                        className="size-3.5 text-muted-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-52">
-                    <DropdownMenuItem
-                      onClick={() =>
-                        useAppStore
-                          .getState()
-                          .openRightTab("artifacts", artifact.pillLabel)
-                      }
-                    >
-                      <span>Open in Right Inspector</span>
-                    </DropdownMenuItem>
-                    {artifact.filePath && (
-                      <DropdownMenuItem
-                        onClick={() =>
-                          postToHost({
-                            type: "rayucode.editor.openFile",
-                            path: artifact.filePath!,
-                          })
-                        }
-                      >
-                        <ExternalLink
-                          className="mr-2 size-3.5"
-                          aria-hidden="true"
-                        />
-                        <span>Open in VS Code Editor</span>
-                      </DropdownMenuItem>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {artifact.filePath && (
+                  <button
+                    type="button"
+                    data-testid="artifact-open-trigger"
+                    onClick={() =>
+                      postToHost({
+                        type: "rayucode.editor.openFile",
+                        path: artifact.filePath!,
+                      })
+                    }
+                    className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full border border-hairline-strong bg-inset px-3 text-xs font-medium text-ink transition-colors hover:bg-hover"
+                  >
+                    <ExternalLink
+                      className="size-3.5 text-muted-ink"
+                      aria-hidden="true"
+                    />
+                    <span>Open</span>
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -466,6 +449,7 @@ function TurnView({
             turnId={turn.id}
             responseMarkdown={responseMarkdown}
             timestamp={turn.timestamp}
+            workedDuration={turn.workedDuration || undefined}
             credits={turn.credits}
             kvCachePct={turn.kvCachePct}
             kvCacheMissReason={turn.kvCacheMissReason}
@@ -487,6 +471,8 @@ export interface ChatStreamProps {
   fileChangesSnapshot?: FileChangesSnapshotView | null;
   onFileChangesUpdated?: (snapshot: FileChangesSnapshotView) => void;
   pendingPermission?: ApprovalCardRequest | null;
+  pendingPermissionQueueCount?: number;
+  isPermissionSubmitting?: boolean;
   pendingQuestion?: ClarifyingQuestionRequest | null;
   softInterrupts?: SoftInterruptQueueItem[];
   midTurnMessages?: MidTurnMessageItem[];
@@ -499,6 +485,7 @@ export interface ChatStreamProps {
   onQuestionSubmit?: (
     answers: Record<string, string>,
     notes?: Record<string, string>,
+    meta?: ClarifyingQuestionSubmitMeta,
   ) => void;
   onQuestionDismiss?: () => void;
   onCancelSoftInterrupt?: (interruptId?: string) => void;
@@ -523,6 +510,8 @@ export function ChatStream({
   fileChangesSnapshot,
   onFileChangesUpdated,
   pendingPermission,
+  pendingPermissionQueueCount = 1,
+  isPermissionSubmitting = false,
   pendingQuestion,
   softInterrupts = [],
   midTurnMessages,
@@ -677,6 +666,13 @@ export function ChatStream({
     return () => observer.disconnect();
   }, [isViewportNearBottom, scrollToBottom]);
 
+  // Always scroll an incoming approval or clarifying question prompt into view
+  React.useEffect(() => {
+    if (pendingPermission?.requestId || pendingQuestion?.requestId) {
+      scrollToBottom("auto");
+    }
+  }, [pendingPermission?.requestId, pendingQuestion?.requestId, scrollToBottom]);
+
   // Follow every live update (streaming deltas, tool steps, approvals, questions) when auto-follow is active
   React.useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -781,6 +777,8 @@ export function ChatStream({
           {pendingPermission && onPermissionDecision && (
             <ApprovalCard
               request={pendingPermission}
+              queueCount={pendingPermissionQueueCount}
+              isSubmitting={isPermissionSubmitting}
               onDecision={onPermissionDecision}
             />
           )}

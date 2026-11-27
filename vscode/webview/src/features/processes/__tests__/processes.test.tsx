@@ -218,7 +218,7 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
     });
   });
 
-  it("loads live output tail on selection and dispatches rayucode.editor.openFile and rayucode.editor.openTerminal", async () => {
+  it("loads live output tail on selection and dispatches rayucode.editor.openFile without rendering Open Terminal", async () => {
     const postSpy = vi.spyOn(rpcClient, "postToHost");
     const rpcSpy = vi.spyOn(rpcClient, "callRpc");
 
@@ -249,12 +249,7 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
       preview: false,
     });
 
-    fireEvent.click(screen.getByTestId("output-open-terminal-button"));
-    expect(postSpy).toHaveBeenCalledWith({
-      type: "rayucode.editor.openTerminal",
-      cwd: undefined,
-      name: "cargo test -p rayu-harness",
-    });
+    expect(screen.queryByTestId("output-open-terminal-button")).toBeNull();
   });
 
   it("executes background.cancel and background.cleanup RPC mutations and Alt+B foreground handoff", async () => {
@@ -422,7 +417,6 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
         onRefresh={() => {}}
         onCopy={() => {}}
         onOpenFile={() => {}}
-        onOpenTerminal={() => {}}
         onStop={() => {}}
       />,
     );
@@ -432,5 +426,58 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
     expect(screen.getByTestId("output-tail-well").textContent).toContain(
       "warning",
     );
+  });
+
+  it("applies live canonical ev: background_progress frames for the active session and ignores other sessions", async () => {
+    render(<BackgroundDockBar />);
+
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.processes.snapshot",
+        sessionId: "ses_vscode_shell",
+        tasks: [SAMPLE_TASKS[0]],
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("background-dock-bar")).toBeTruthy();
+    });
+
+    // Live canonical progress frame updates percent & summary for the active session
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          v: 1,
+          ev: "background_progress",
+          session_id: "ses_vscode_shell",
+          task_id: "bg_cargo_test",
+          percent: 88,
+          summary: "17/19 integration tests passed",
+          done: false,
+        },
+      });
+      // Frame for a different session must be ignored
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          v: 1,
+          ev: "background_progress",
+          session_id: "ses_other",
+          task_id: "bg_cargo_test",
+          percent: 5,
+          summary: "Wrong session update",
+          done: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const task = useAppStore
+        .getState()
+        .backgroundTasks.find((t) => t.taskId === "bg_cargo_test");
+      expect(task?.percent).toBe(88);
+      expect(task?.summary).toBe("17/19 integration tests passed");
+    });
   });
 });

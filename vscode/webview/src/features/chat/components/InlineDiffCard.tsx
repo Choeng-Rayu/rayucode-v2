@@ -3,7 +3,6 @@ import { Check, ExternalLink, FileDiff, RotateCcw } from "lucide-react";
 
 import { Button, TechFileBadge } from "@/components/ui";
 import {
-  basenameOf,
   callRpc,
   cn,
   postToHost,
@@ -90,10 +89,12 @@ export function InlineDiffCard({
     onOpenInVSCodeDiff?.(diff.file);
   };
 
-  const handleOpenInInspector = () => {
-    useAppStore
-      .getState()
-      .openCodeFile(basenameOf(diff.file), firstCodeLine ?? null);
+  const handleOpenFileInEditor = () => {
+    postToHost({
+      type: "rayucode.editor.openFile",
+      path: diff.file,
+      line: firstCodeLine,
+    });
   };
 
   return (
@@ -114,7 +115,8 @@ export function InlineDiffCard({
         <TechFileBadge path={diff.file} className="size-3.5" />
         <button
           type="button"
-          onClick={handleOpenInInspector}
+          onClick={handleOpenFileInEditor}
+          title={`Open ${diff.file}:${firstCodeLine} in VS Code Editor`}
           className="cursor-pointer truncate font-mono font-medium text-ink transition-colors hover:text-brand-text focus-visible:rounded-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {diff.file}
