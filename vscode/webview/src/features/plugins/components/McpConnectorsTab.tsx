@@ -22,7 +22,7 @@ import {
   type RunStatusTone,
   Switch,
 } from "@/components/ui";
-import { cn } from "@/lib";
+import { cn, useAppStore } from "@/lib";
 
 import {
   CATALOG_CONNECTOR_TEMPLATES,
@@ -82,6 +82,7 @@ function formatMcpStatusLabel(status: McpServerStatus): string {
 
 export function McpConnectorsTab() {
   const { data } = useMcpConnectors();
+  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const {
     toggleMutation,
     testMutation,
@@ -140,6 +141,7 @@ export function McpConnectorsTab() {
   const handleOpenAddCustomDialog = () => {
     setDialogDraft({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: "",
       displayName: "Custom MCP Server",
       scope: "global",
@@ -164,6 +166,7 @@ export function McpConnectorsTab() {
       displayName: server.name,
       brandId: server.brandId ?? server.id,
       scope: server.configLayer === "workspace" ? "workspace" : "global",
+      workspacePath: server.configPath?.replace(/[/\\]\.mcp\.json$/, "") ?? activeProjectPath ?? undefined,
       transport: server.transport,
       command: server.command ?? tpl?.command ?? "npx",
       argsText: (server.args ?? tpl?.args ?? []).join(" "),
@@ -186,6 +189,7 @@ export function McpConnectorsTab() {
     }
     setDialogDraft({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: tpl.id,
       displayName: tpl.name,
       brandId: tpl.brandId,
@@ -211,6 +215,7 @@ export function McpConnectorsTab() {
     }
     saveServerMutation.mutate({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: tpl.id,
       name: tpl.name,
       brandId: tpl.brandId,
@@ -743,8 +748,8 @@ export function McpConnectorsTab() {
         onSave={async (draft) => {
           await saveServerMutation.mutateAsync(draft);
         }}
-        onRemove={async (id, scope) => {
-          await removeServerMutation.mutateAsync({ id, scope });
+        onRemove={async (id, scope, workspacePath) => {
+          await removeServerMutation.mutateAsync({ id, scope, workspacePath });
         }}
       />
     </div>

@@ -434,12 +434,10 @@ export class GitChangesBridge {
     const absPath = path.resolve(root, relPath);
 
     let currentContent = "";
-    let fileExists = false;
     try {
       currentContent = fs.readFileSync(absPath, "utf8");
-      fileExists = true;
-    } catch {
-      fileExists = false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     const sessionRecord = options.sessionId
@@ -470,36 +468,10 @@ export class GitChangesBridge {
       return { ok: true, conflict: false, message: `Reverted changes in ${relPath}.` };
     }
 
-    // Fallback: reverse diff between HEAD and current disk file
-    const headContent = await this.readGitHeadFile(relPath, root);
-    if (!fileExists && headContent) {
-      fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      fs.writeFileSync(absPath, headContent, "utf8");
-      this.fileDecisions.set(relPath, "rejected");
-      return { ok: true, conflict: false, message: `Restored ${relPath} from HEAD.` };
-    }
-
-    const computed = computeUnifiedDiff(relPath, headContent, currentContent);
-    const reversed = tryReversePatch(currentContent, computed.hunks);
-    if (!reversed.ok) {
-      return {
-        ok: false,
-        conflict: true,
-        message: reversed.message,
-      };
-    }
-
-    if (headContent === "" && reversed.content === "") {
-      try {
-        fs.unlinkSync(absPath);
-      } catch {
-        // ignore
-      }
-    } else {
-      fs.writeFileSync(absPath, reversed.content, "utf8");
-    }
-    this.fileDecisions.set(relPath, "rejected");
-    return { ok: true, conflict: false, message: `Reverted ${relPath} to HEAD.` };
+    return {
+      ok: false,
+      message: "This file has no recorded pre-edit baseline for the selected session.",
+    };
   }
 
   async commit(message: string): Promise<{

@@ -910,19 +910,27 @@ export class SessionHubCore extends EventEmitter {
     if (!this.clientSupportsFileChanges(client)) {
       return null;
     }
-    const targetPath =
-      opts?.path !== undefined
-        ? this.resolveTrackedFilePath(sid, opts.path)
-        : undefined;
-    const raw = await client.fileChangeAction(sid, action, {
-      ...(targetPath !== undefined ? { path: targetPath } : {}),
-      ...(opts?.force !== undefined ? { force: opts.force } : {}),
-    });
-    const mapped = mapRawFileChangeActionResponse(raw, sid);
-    if (mapped.snapshot) {
-      this.broadcastFileChanges(sid, mapped.snapshot);
+    const snapshot = mapRawFileChangesSnapshot(await client.getFileChanges(sid), sid);
+    const target = opts?.path === undefined
+      ? undefined
+      : snapshot.files.find((file) => file.path === opts.path || file.displayPath === opts.path);
+    if (snapshot.sessionId !== sid || (opts?.path !== undefined && !target)) {
+      return { ok: false, message: "This file has no review snapshot in the selected session." };
     }
-    return mapped;
+    try {
+      const raw = await client.fileChangeAction(sid, action, {
+        ...(target ? { path: target.path } : {}),
+        ...(opts?.force ? { force: true } : {}),
+      });
+      const mapped = mapRawFileChangeActionResponse(raw, sid);
+      if (mapped.snapshot?.sessionId === sid) {
+        this.broadcastFileChanges(sid, mapped.snapshot);
+      }
+      return mapped;
+    } finally {
+      const latest = await this.fetchFileChanges(sid);
+      if (latest?.sessionId === sid) this.broadcastFileChanges(sid, latest);
+    }
   }
 
   registerSurface(

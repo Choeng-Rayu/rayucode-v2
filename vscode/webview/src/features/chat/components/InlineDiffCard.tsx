@@ -3,12 +3,13 @@ import { Check, ExternalLink, FileDiff, RotateCcw } from "lucide-react";
 
 import { Button, TechFileBadge } from "@/components/ui";
 import {
-  callRpc,
   cn,
   postToHost,
   useAppStore,
   type InlineDiffCardData,
 } from "@/lib";
+
+import { applyFileReview, useFileReviewAvailable } from "../hooks/fileReview";
 
 export type InlineDiffDecision = "pending" | "accepted" | "rejected";
 
@@ -35,11 +36,18 @@ export function InlineDiffCard({
   onOpenInVSCodeDiff,
   className,
 }: InlineDiffCardProps) {
-  const activeSessionId = useAppStore((s) => s.activeSessionId);
-  const resolvedSessionId = sessionId ?? activeSessionId ?? undefined;
-  const [decision, setDecision] = React.useState<InlineDiffDecision>(
-    initialDecision,
-  );
+  const resolvedSessionId = sessionId;
+  const canReview = useFileReviewAvailable(resolvedSessionId);
+  const entry = useAppStore((state) => resolvedSessionId
+    ? state.fileChangesBySession[resolvedSessionId]?.files.find(
+        (file) => file.path === diff.file || file.displayPath === diff.file,
+      )
+    : undefined);
+  const decision = entry?.status === "kept" ? "accepted"
+    : entry?.status === "undone" ? "rejected"
+    : initialDecision;
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string>();
 
   const firstCodeLine = React.useMemo(() => {
     const match = diff.lines.find(
@@ -48,35 +56,25 @@ export function InlineDiffCard({
     return match?.newLine ?? match?.oldLine ?? 1;
   }, [diff.lines]);
 
-  const handleAccept = async () => {
-    setDecision("accepted");
-    onAccept?.(diff.id, diff.file);
+  const review = async (action: "keep" | "undo" | "redo") => {
+    if (!canReview || busy) return;
+    setBusy(true);
+    setError(undefined);
     try {
-      await callRpc("changes.keep", {
-        path: diff.file,
-        sessionId: resolvedSessionId,
-      });
-    } catch {
-      // ignore offline errors
+      const result = await applyFileReview(resolvedSessionId, action, diff.file);
+      if (!result.ok) {
+        const conflicts = result.conflicts?.map((conflict) => `${conflict.displayPath}: ${conflict.reason}`).join(" ");
+        setError(conflicts ? `${conflicts} Open the turn’s file review to inspect or force restore.` : result.message ?? "File review failed.");
+        return;
+      }
+      if (action === "keep") onAccept?.(diff.id, diff.file);
+      if (action === "undo") onReject?.(diff.id, diff.file);
+      if (action === "redo") onReset?.(diff.id, diff.file);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "File review failed.");
+    } finally {
+      setBusy(false);
     }
-  };
-
-  const handleReject = async () => {
-    setDecision("rejected");
-    onReject?.(diff.id, diff.file);
-    try {
-      await callRpc("changes.undo", {
-        path: diff.file,
-        sessionId: resolvedSessionId,
-      });
-    } catch {
-      // ignore offline errors
-    }
-  };
-
-  const handleUndo = () => {
-    setDecision("pending");
-    onReset?.(diff.id, diff.file);
   };
 
   const handleOpenVSCodeDiff = () => {
@@ -93,6 +91,7 @@ export function InlineDiffCard({
     postToHost({
       type: "rayucode.editor.openFile",
       path: diff.file,
+      sessionId: resolvedSessionId,
       line: firstCodeLine,
     });
   };
@@ -217,7 +216,8 @@ export function InlineDiffCard({
               variant="destructive"
               size="xs"
               data-testid={`reject-diff-${diff.id}`}
-              onClick={() => void handleReject()}
+              disabled={!canReview || busy}
+              onClick={() => void review("undo")}
             >
               Reject
             </Button>
@@ -226,25 +226,28 @@ export function InlineDiffCard({
               variant="primary"
               size="xs"
               data-testid={`accept-diff-${diff.id}`}
-              onClick={() => void handleAccept()}
+              disabled={!canReview || busy}
+              onClick={() => void review("keep")}
             >
               <Check className="size-3" aria-hidden="true" />
               <span>Accept</span>
             </Button>
           </>
-        ) : (
+        ) : decision === "rejected" ? (
           <Button
             type="button"
             variant="ghost"
             size="xs"
             data-testid={`undo-diff-${diff.id}`}
-            onClick={handleUndo}
+            disabled={!canReview || busy}
+            onClick={() => void review("redo")}
           >
             <RotateCcw className="size-3" aria-hidden="true" />
-            <span>Undo</span>
+            <span>Redo</span>
           </Button>
-        )}
+        ) : null}
       </div>
+      {error && <p role="alert" className="px-3 pb-2 text-xs text-danger">{error}</p>}
     </div>
   );
 }

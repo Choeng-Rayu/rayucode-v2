@@ -1961,6 +1961,7 @@ export const RpcContractSchemas = {
   "plugins.mcp.add": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]),
       transport: McpTransportSchema,
       command: z.string().optional(),
@@ -1973,12 +1974,14 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      reloaded: z.boolean().optional(),
       message: z.string().optional(),
     }),
   },
   "plugins.mcp.edit": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]).optional(),
       transport: McpTransportSchema.optional(),
       command: z.string().optional(),
@@ -1991,15 +1994,17 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      reloaded: z.boolean().optional(),
       message: z.string().optional(),
     }),
   },
   "plugins.mcp.remove": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]).optional(),
     }),
-    result: OkResultSchema,
+    result: OkResultSchema.extend({ reloaded: z.boolean().optional() }),
   },
   "plugins.mcp.login": {
     params: z.object({ id: z.string() }),
@@ -2038,6 +2043,7 @@ export const RpcContractSchemas = {
       description: z.string().min(1),
       content: z.string().optional(),
       scope: z.enum(["project", "global"]).optional(),
+      workspacePath: z.string().optional(),
     }),
     result: z.object({ ok: z.boolean(), skill: SkillViewSchema }),
   },
@@ -2719,6 +2725,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openFile"),
+    sessionId: z.string().optional(),
     path: z.string().min(1),
     line: z.number().int().positive().optional(),
     column: z.number().int().positive().optional(),

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1547,6 +1548,40 @@ const HOOK_EVENTS: Array<{ event: HookEventId; label: string; mode: "sync" | "as
   { event: "session_end", label: "Session End Hook", mode: "async" },
 ];
 
+function readMcpConfig(target: string): Record<string, unknown> {
+  try {
+    if (!fs.lstatSync(target).isFile()) {
+      throw new HarnessError("invalid_request", "MCP config must be a regular file.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
+  if (
+    !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+    ("mcpServers" in parsed &&
+      (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Array.isArray(parsed.mcpServers)))
+  ) {
+    throw new HarnessError("invalid_request", "Repair the existing MCP config before editing it.");
+  }
+  return asRecord(parsed);
+}
+
+function writeMcpConfig(target: string, config: Record<string, unknown>): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
 export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
   let pendingTelegramPairing: {
     generation: string | null;
@@ -1668,36 +1703,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     return null;
   };
 
-  const tryEngineFileChangeAction = async (
-    sessionId: string,
+  const runReviewAction = async (
+    sessionId: string | undefined,
     action: FileChangeActionKind,
     opts?: { path?: string; force?: boolean },
-  ): Promise<FileChangeActionResultView | null> => {
-    const targetPath =
-      opts?.path !== undefined
-        ? resolveTrackedSessionPath(sessionId, opts.path)
-        : undefined;
-    if (typeof deps.sessionHub.runFileChangeAction === "function") {
-      return deps.sessionHub.runFileChangeAction(sessionId, action, {
-        ...(targetPath !== undefined ? { path: targetPath } : {}),
-        ...(opts?.force !== undefined ? { force: opts.force } : {}),
-      });
+  ): Promise<FileChangeActionResultView> => {
+    if (!sessionId) {
+      return { ok: false, message: "Select the session that made these edits." };
+    }
+    const unavailable = {
+      ok: false,
+      message: "Agent file actions require an engine with session file tracking.",
+    };
+    if (deps.sessionHub.runFileChangeAction) {
+      return (await deps.sessionHub.runFileChangeAction(sessionId, action, opts)) ?? unavailable;
     }
     const client = await getSessionClient(sessionId);
-    if (
-      !clientSupportsFileChanges(client) ||
-      typeof client.fileChangeAction !== "function"
-    ) {
-      return null;
+    if (!clientSupportsFileChanges(client) || !client.fileChangeAction || !client.getFileChanges) {
+      return unavailable;
+    }
+    const snapshot = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+    const target = opts?.path === undefined
+      ? undefined
+      : snapshot.files.find((file) => file.path === opts.path || file.displayPath === opts.path);
+    if (snapshot.sessionId !== sessionId || (opts?.path !== undefined && !target)) {
+      return { ok: false, message: "This file has no review snapshot in the selected session." };
     }
     const raw = await client.fileChangeAction(sessionId, action, {
-      ...(targetPath !== undefined ? { path: targetPath } : {}),
-      ...(opts?.force !== undefined ? { force: opts.force } : {}),
+      ...(target ? { path: target.path } : {}),
+      ...(opts?.force ? { force: true } : {}),
     });
     const mapped = mapRawFileChangeActionResponse(raw, sessionId);
-    if (mapped.snapshot) {
-      deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
-    }
+    if (mapped.snapshot) deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
     return mapped;
   };
 
@@ -1834,6 +1871,107 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
 
   type HandlerMap = {
     [M in RpcMethod]: (params: RpcParams<M>) => Promise<RpcResult<M>>;
+  };
+
+  const workspaceRootFor = async (requestedPath?: string): Promise<string> => {
+    const [folders, ledger] = await Promise.all([
+      deps.getWorkspaceFolders(),
+      deps.sessionHub.loadWorkspaceLedger?.() ?? deps.sessionHub.getWorkspaceLedger?.(),
+    ]);
+    const roots = new Set<string>();
+    for (const folder of [...folders, ...(ledger?.workspaces ?? [])]) {
+      try {
+        roots.add(fs.realpathSync(folder.path));
+      } catch {
+        // An unavailable workspace cannot be a configuration target.
+      }
+    }
+    if (requestedPath && path.isAbsolute(requestedPath)) {
+      const resolved = fs.realpathSync(requestedPath);
+      if (roots.has(resolved)) return resolved;
+    } else if (!requestedPath && roots.size === 1) {
+      return [...roots][0]!;
+    }
+    throw new HarnessError("invalid_request", "Select an available workspace for this change.");
+  };
+
+  const mcpConfigPath = async (
+    scope: "global" | "workspace" | undefined,
+    workspacePath?: string,
+  ): Promise<string> => {
+    if (scope === "workspace") return path.join(await workspaceRootFor(workspacePath), ".mcp.json");
+    if (scope === "global") {
+      return path.join(process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu"), "mcp.json");
+    }
+    throw new HarnessError("invalid_request", "Select the scope of the existing MCP connector.");
+  };
+
+  const saveMcpServer = async (
+    params: RpcParams<"plugins.mcp.edit">,
+    editing: boolean,
+  ): Promise<RpcResult<"plugins.mcp.edit">> => {
+    const id = params.id.trim();
+    if (!/^[a-zA-Z0-9._-]+$/.test(id) || Object.hasOwn(Object.prototype, id)) {
+      return { ok: false, message: "Enter a valid MCP server ID." };
+    }
+    const configPath = await mcpConfigPath(params.scope, params.workspacePath);
+    const config = readMcpConfig(configPath);
+    const servers = asRecord(config.mcpServers);
+    const exists = Object.hasOwn(servers, id);
+    if (editing !== exists) {
+      return { ok: false, message: editing ? "Connector does not exist in this config." : "This connector ID already exists in this scope." };
+    }
+
+    const entry = { ...asRecord(servers[id]) };
+    const transport = params.transport ?? (entry.command ? "stdio" : entry.type === "sse" ? "sse" : "streamable-http");
+    if (transport === "stdio") {
+      const command = params.command ?? entry.command;
+      if (typeof command !== "string" || !command.trim()) {
+        return { ok: false, message: "Provide an executable command for stdio MCP servers." };
+      }
+      entry.command = command.trim();
+      if (params.args !== undefined) entry.args = params.args;
+      if (params.transport) {
+        delete entry.type;
+        delete entry.url;
+      }
+    } else {
+      const url = params.url ?? entry.url;
+      if (typeof url !== "string" || !url.trim()) {
+        return { ok: false, message: "Provide a remote URL for HTTP/SSE MCP servers." };
+      }
+      entry.url = url.trim();
+      if (params.transport) {
+        entry.type = transport === "sse" ? "sse" : "http";
+        delete entry.command;
+        delete entry.args;
+      }
+    }
+    if (params.env) entry.env = { ...asRecord(entry.env), ...params.env };
+    if (params.shared !== undefined) entry.shared = params.shared;
+    if (params.timeoutSecs !== undefined) entry.timeout_secs = params.timeoutSecs;
+    writeMcpConfig(configPath, { ...config, mcpServers: { ...servers, [id]: entry } });
+
+    const reload = await execRuntimeCmd("mcp", ["reload"]);
+    return {
+      ok: true,
+      reloaded: reload.ok,
+      message: reload.ok ? "Connector saved and engine reloaded." : `Connector saved. Engine reload failed: ${reload.message}`,
+      server: {
+        id,
+        name: id,
+        status: "cached",
+        enabled: entry.enabled !== false,
+        transport,
+        configLayer: params.scope ?? "global",
+        configPath,
+        shared: entry.shared !== false,
+        command: typeof entry.command === "string" ? entry.command : undefined,
+        args: Array.isArray(entry.args) ? entry.args.map(String) : undefined,
+        url: typeof entry.url === "string" ? entry.url : undefined,
+        timeoutSecs: typeof entry.timeout_secs === "number" ? entry.timeout_secs : undefined,
+      },
+    };
   };
 
   const handlers: HandlerMap = {
@@ -3405,175 +3543,23 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const listed = await handlers["plugins.mcp.list"](undefined);
       return { ok: true, servers: listed.servers };
     },
-    "plugins.mcp.add": async (params) => {
-      const id = params.id.trim();
-      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
-        return {
-          ok: false,
-          message:
-            "MCP server ID must contain only letters, numbers, dots, hyphens, or underscores.",
-        };
+    "plugins.mcp.add": async (params) => saveMcpServer(params, false),
+    "plugins.mcp.edit": async (params) => saveMcpServer(params, true),
+    "plugins.mcp.remove": async (params) => {
+      const target = await mcpConfigPath(params.scope, params.workspacePath);
+      const config = readMcpConfig(target);
+      const servers = { ...asRecord(config.mcpServers) };
+      if (!Object.hasOwn(servers, params.id)) {
+        return { ok: false, message: "Connector does not exist in this config." };
       }
-      if (params.transport === "stdio" && !params.command?.trim()) {
-        return {
-          ok: false,
-          message: "Provide an executable command for stdio MCP servers.",
-        };
-      }
-      if (params.transport !== "stdio" && !params.url?.trim()) {
-        return {
-          ok: false,
-          message: "Provide a remote URL for HTTP/SSE MCP servers.",
-        };
-      }
-
-      const rayuHome =
-        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
-      const targetPath =
-        params.scope === "workspace"
-          ? path.join(workspaceRoot, ".mcp.json")
-          : path.join(rayuHome, "mcp.json");
-
-      let existing: Record<string, unknown> = {};
-      try {
-        if (fs.existsSync(targetPath)) {
-          const parsed = JSON.parse(fs.readFileSync(targetPath, "utf8"));
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            existing = parsed as Record<string, unknown>;
-          }
-        }
-      } catch {
-        existing = {};
-      }
-
-      const existingMap =
-        existing.mcpServers &&
-        typeof existing.mcpServers === "object" &&
-        !Array.isArray(existing.mcpServers)
-          ? { ...(existing.mcpServers as Record<string, unknown>) }
-          : {};
-
-      const entry: Record<string, unknown> = {};
-      if (params.transport === "stdio") {
-        entry.command = params.command!.trim();
-        if (params.args && params.args.length > 0) {
-          entry.args = params.args.filter((a) => a.length > 0);
-        }
-      } else {
-        entry.type = params.transport === "sse" ? "sse" : "http";
-        entry.url = params.url!.trim();
-      }
-      if (params.env && Object.keys(params.env).length > 0) {
-        const cleanEnv: Record<string, string> = {};
-        for (const [k, v] of Object.entries(params.env)) {
-          const key = k.trim();
-          if (key && v.trim()) cleanEnv[key] = v.trim();
-        }
-        if (Object.keys(cleanEnv).length > 0) entry.env = cleanEnv;
-      }
-      if (typeof params.shared === "boolean") {
-        entry.shared = params.shared;
-      }
-      if (typeof params.timeoutSecs === "number" && params.timeoutSecs > 0) {
-        entry.timeout_secs = Math.round(params.timeoutSecs);
-      }
-
-      existingMap[id] = entry;
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(
-        targetPath,
-        `${JSON.stringify({ ...existing, mcpServers: existingMap }, null, 2)}\n`,
-        { encoding: "utf8", mode: 0o600 },
-      );
-
-      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
-      const listed = await handlers["plugins.mcp.list"](undefined);
-      const server: McpServerView = listed.servers.find((s) => s.id === id) ?? {
-        id,
-        name: id,
-        status: "cached",
-        enabled: true,
-        transport: params.transport,
-        configLayer: params.scope,
-        configPath: targetPath,
-        shared: params.shared ?? true,
-        command: params.command,
-        args: params.args,
-        url: params.url,
-        timeoutSecs: params.timeoutSecs,
-      };
+      delete servers[params.id];
+      writeMcpConfig(target, { ...config, mcpServers: servers });
+      const reload = await execRuntimeCmd("mcp", ["reload"]);
       return {
         ok: true,
-        server,
-        message: `Saved MCP server '${id}' to ${targetPath}.`,
+        reloaded: reload.ok,
+        message: reload.ok ? "Connector removed and engine reloaded." : `Connector removed from config. Engine reload failed: ${reload.message}`,
       };
-    },
-    "plugins.mcp.edit": async (params) =>
-      handlers["plugins.mcp.add"]({
-        ...params,
-        scope: params.scope ?? "global",
-        transport:
-          params.transport ?? (params.url ? "streamable-http" : "stdio"),
-      }),
-    "plugins.mcp.remove": async (params) => {
-      const id = params.id.trim();
-      if (!id) {
-        return { ok: false, message: "MCP server ID is required." };
-      }
-      const rayuHome =
-        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
-      const targets =
-        params.scope === "workspace"
-          ? [path.join(workspaceRoot, ".mcp.json")]
-          : params.scope === "global"
-            ? [path.join(rayuHome, "mcp.json")]
-            : [
-                path.join(workspaceRoot, ".mcp.json"),
-                path.join(rayuHome, "mcp.json"),
-              ];
-
-      let removed = false;
-      for (const filePath of targets) {
-        if (!fs.existsSync(filePath)) continue;
-        try {
-          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<
-            string,
-            unknown
-          >;
-          if (
-            parsed.mcpServers &&
-            typeof parsed.mcpServers === "object" &&
-            !Array.isArray(parsed.mcpServers) &&
-            id in (parsed.mcpServers as Record<string, unknown>)
-          ) {
-            const nextServers = {
-              ...(parsed.mcpServers as Record<string, unknown>),
-            };
-            delete nextServers[id];
-            fs.writeFileSync(
-              filePath,
-              `${JSON.stringify({ ...parsed, mcpServers: nextServers }, null, 2)}\n`,
-              { encoding: "utf8", mode: 0o600 },
-            );
-            removed = true;
-          }
-        } catch {
-          // ignore malformed file
-        }
-      }
-
-      if (!removed) {
-        return {
-          ok: false,
-          message: `MCP server '${id}' was not found in ~/.rayu/mcp.json or .mcp.json.`,
-        };
-      }
-      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
-      return { ok: true, message: `Removed MCP server '${id}'.` };
     },
     "plugins.mcp.login": async () => ({
       ok: false,
@@ -3643,12 +3629,10 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const scope = params.scope === "global" ? "global" : "project";
       const rayuHome =
         process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
       const baseDir =
         scope === "global"
           ? path.join(rayuHome, "skills")
-          : path.join(workspaceRoot, ".agents", "skills");
+          : path.join(await workspaceRootFor(params.workspacePath), ".agents", "skills");
       const skillDir = path.join(baseDir, slug);
       const skillFile = path.join(skillDir, "SKILL.md");
       const body =
@@ -3656,7 +3640,14 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         `# ${params.name.trim()}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
       const markdown = `---\nname: ${slug}\ndescription: ${params.description.trim()}\n---\n\n${body}\n`;
       fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(skillFile, markdown, "utf8");
+      try {
+        fs.writeFileSync(skillFile, markdown, { encoding: "utf8", flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new HarnessError("invalid_request", "A skill with this name already exists in this scope.");
+        }
+        throw error;
+      }
       return {
         ok: true,
         skill: {
@@ -3978,138 +3969,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "changes.stage": async (params) => deps.gitBridge.stage(params.paths),
     "changes.unstage": async (params) => deps.gitBridge.unstage(params.paths),
-    "changes.keep": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "keep", {
-          path: params.path,
-        });
-        if (engineRes) return engineRes;
-      }
-      return deps.gitBridge.keep({
-        path: params.path,
-        sessionId,
-      });
-    },
-    "changes.undo": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "undo", {
-          path: params.path,
-          force: params.force,
-        });
-        if (engineRes) return engineRes;
-      }
-      const res = await deps.gitBridge.undo({
-        path: params.path,
-        sessionId,
-      });
-      return {
-        ...res,
-        ...(res.conflict
-          ? {
-              conflicts: [
-                {
-                  path: params.path,
-                  displayPath: params.path,
-                  reason:
-                    res.message ??
-                    "File changed on disk since the session snapshot.",
-                },
-              ],
-            }
-          : {}),
-      };
-    },
-    "changes.redo": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "redo", {
-          path: params.path,
-          force: params.force,
-        });
-        if (engineRes) return engineRes;
-      }
-      return {
-        ok: false,
-        message: "Redo requires a RayuCode bridge supporting file_changes.",
-      };
-    },
-    "changes.keepAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "keep_all",
-        );
-        if (engineRes) return engineRes;
-      }
-      const status = await deps.gitBridge.getStatus({
-        sessionId,
-        scope: "session",
-      });
-      const targets = status.files.filter((f) => f.fromSession);
-      for (const file of targets) {
-        deps.gitBridge.keep({ path: file.path, sessionId });
-      }
-      return {
-        ok: true,
-        message: `Kept ${targets.length} file(s).`,
-        conflicts: [],
-      };
-    },
-    "changes.undoAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "undo_all",
-          { force: params?.force },
-        );
-        if (engineRes) return engineRes;
-      }
-      const status = await deps.gitBridge.getStatus({
-        sessionId,
-        scope: "session",
-      });
-      const targets = status.files.filter((f) => f.fromSession);
-      const conflicts: FileChangeConflictView[] = [];
-      for (const file of targets) {
-        const res = await deps.gitBridge.undo({ path: file.path, sessionId });
-        if (!res.ok || res.conflict) {
-          conflicts.push({
-            path: file.path,
-            displayPath: file.path,
-            reason:
-              res.message ?? "File changed on disk since the session snapshot.",
-          });
-        }
-      }
-      return {
-        ok: conflicts.length === 0,
-        conflict: conflicts.length > 0,
-        conflicts,
-        message:
-          conflicts.length > 0
-            ? `${conflicts.length} file(s) had conflicts during undo.`
-            : `Reverted ${targets.length} file(s).`,
-      };
-    },
-    "changes.redoAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "redo_all",
-          { force: params?.force },
-        );
-        if (engineRes) return engineRes;
-      }
-      return {
-        ok: false,
-        message: "Redo all requires a RayuCode bridge supporting file_changes.",
-      };
-    },
+    "changes.keep": async (params) =>
+      runReviewAction(params.sessionId, "keep", { path: params.path }),
+    "changes.undo": async (params) =>
+      runReviewAction(params.sessionId, "undo", params),
+    "changes.redo": async (params) =>
+      runReviewAction(params.sessionId, "redo", params),
+    "changes.keepAll": async (params) =>
+      runReviewAction(params?.sessionId, "keep_all"),
+    "changes.undoAll": async (params) =>
+      runReviewAction(params?.sessionId, "undo_all", params),
+    "changes.redoAll": async (params) =>
+      runReviewAction(params?.sessionId, "redo_all", params),
     "changes.commit": async (params) => deps.gitBridge.commit(params.message),
     "changes.createPr": async (params) => deps.gitBridge.createPr(params),
 

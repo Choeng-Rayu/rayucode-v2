@@ -38,6 +38,8 @@ import {
 } from "@/components/ui";
 import { basenameOf, callRpc, cn, postToHost, useAppStore } from "@/lib";
 
+import { applyFileReview, useFileReviewAvailable } from "../hooks/fileReview";
+
 const DEFAULT_VISIBLE_FILES = 3;
 
 export interface TurnFileSummaryCardProps {
@@ -152,10 +154,10 @@ export function TurnFileSummaryCard({
   onSnapshotUpdated,
   className,
 }: TurnFileSummaryCardProps) {
-  const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setStoreSnapshot = useAppStore((s) => s.setFileChangesSnapshot);
   const resolvedSessionId =
-    sessionId || snapshot.sessionId || activeSessionId || undefined;
+    snapshot.sessionId || sessionId || undefined;
+  const canReview = useFileReviewAvailable(resolvedSessionId);
 
   const [expandedPaths, setExpandedPaths] = React.useState<
     Record<string, boolean>
@@ -319,6 +321,7 @@ export function TurnFileSummaryCard({
     postToHost({
       type: "rayucode.editor.openFile",
       path: entry.path || entry.displayPath,
+      sessionId: resolvedSessionId,
       line: firstChangedLineOf(entry),
     });
   };
@@ -390,102 +393,30 @@ export function TurnFileSummaryCard({
     }
   };
 
-  const runKeepFile = async (entry: FileChangeEntryView): Promise<void> => {
-    setBusyKey(`keep:${entry.path}`);
+  const runAction = async (
+    action: "keep" | "undo" | "redo" | "keep_all" | "undo_all" | "redo_all",
+    targetPath?: string,
+    force = false,
+  ): Promise<void> => {
+    if (!canReview || busyKey) return;
+    setBusyKey(targetPath ? `${action}:${targetPath}` : `batch:${action}`);
     setActionError(null);
     try {
-      const res = await callRpc("changes.keep", {
-        path: entry.path,
-        sessionId: resolvedSessionId,
-      });
-      applyActionResult(res);
+      const result = await applyFileReview(resolvedSessionId, action, targetPath, force);
+      const conflictAction = action === "keep" || action === "keep_all" || force ? undefined : action;
+      applyActionResult(result, conflictAction, targetPath);
     } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to keep file changes.",
-      );
+      setActionError(err instanceof Error ? err.message : "Could not update the file review.");
     } finally {
       setBusyKey(null);
     }
   };
 
-  const runUndoFile = async (
-    entryPath: string,
-    force = false,
-  ): Promise<void> => {
-    setBusyKey(`undo:${entryPath}`);
-    setActionError(null);
-    try {
-      const res = await callRpc("changes.undo", {
-        path: entryPath,
-        sessionId: resolvedSessionId,
-        ...(force ? { force: true } : {}),
-      });
-      applyActionResult(res, force ? undefined : "undo", entryPath);
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to undo file changes.",
-      );
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const runRedoFile = async (
-    entryPath: string,
-    force = false,
-  ): Promise<void> => {
-    setBusyKey(`redo:${entryPath}`);
-    setActionError(null);
-    try {
-      const res = await callRpc("changes.redo", {
-        path: entryPath,
-        sessionId: resolvedSessionId,
-        ...(force ? { force: true } : {}),
-      });
-      applyActionResult(res, force ? undefined : "redo", entryPath);
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to redo file changes.",
-      );
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const runBatchAction = async (
-    action: "keep_all" | "undo_all" | "redo_all",
-    force = false,
-  ): Promise<void> => {
-    setBusyKey(`batch:${action}`);
-    setActionError(null);
-    try {
-      let res: FileChangeActionResultView;
-      if (action === "keep_all") {
-        res = await callRpc("changes.keepAll", {
-          sessionId: resolvedSessionId,
-        });
-        applyActionResult(res);
-      } else if (action === "undo_all") {
-        res = await callRpc("changes.undoAll", {
-          sessionId: resolvedSessionId,
-          ...(force ? { force: true } : {}),
-        });
-        applyActionResult(res, force ? undefined : "undo_all");
-      } else {
-        res = await callRpc("changes.redoAll", {
-          sessionId: resolvedSessionId,
-          ...(force ? { force: true } : {}),
-        });
-        applyActionResult(res, force ? undefined : "redo_all");
-      }
-    } catch (err) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to apply batch action.",
-      );
-    } finally {
-      setBusyKey(null);
-    }
-  };
+  const runKeepFile = (entry: FileChangeEntryView) => runAction("keep", entry.path);
+  const runUndoFile = (targetPath: string, force = false) => runAction("undo", targetPath, force);
+  const runRedoFile = (targetPath: string, force = false) => runAction("redo", targetPath, force);
+  const runBatchAction = (action: "keep_all" | "undo_all" | "redo_all", force = false) =>
+    runAction(action, undefined, force);
 
   const handleForceRestore = async (): Promise<void> => {
     if (!conflictPrompt) return;
@@ -503,7 +434,7 @@ export function TurnFileSummaryCard({
   };
 
   const fileWord = files.length === 1 ? "file" : "files";
-  const isBusy = busyKey !== null;
+  const isBusy = busyKey !== null || !canReview;
 
   const conflictDialog = (
     <Dialog

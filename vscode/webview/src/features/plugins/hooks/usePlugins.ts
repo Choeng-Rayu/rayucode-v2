@@ -14,7 +14,8 @@ import type {
   WorkspaceIntegrationsView,
 } from "@shared/vscodeProtocol";
 
-import { callRpc } from "@/lib";
+import { toast } from "sonner";
+import { callRpc, useAppStore } from "@/lib";
 
 export type PluginsTabId = "mcp" | "skills" | "memory" | "workspace";
 
@@ -1033,6 +1034,7 @@ export function useMcpActions() {
       name?: string;
       brandId?: string;
       scope: "global" | "workspace";
+      workspacePath?: string;
       transport: McpTransport;
       command?: string;
       args?: string[];
@@ -1046,6 +1048,7 @@ export function useMcpActions() {
       const res = await callRpc(rpcMethod, {
         id: params.id,
         scope: params.scope,
+        workspacePath: params.scope === "workspace" ? params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined : undefined,
         transport: params.transport,
         command: params.command,
         args: params.args,
@@ -1059,90 +1062,35 @@ export function useMcpActions() {
           res.message ?? `Failed to save MCP server "${params.id}".`,
         );
       }
-      const tpl = findCatalogTemplate(params.brandId ?? params.id);
-      const server: McpServerView = res.server ?? {
-        id: params.id,
-        name: params.name ?? tpl?.name ?? params.id,
-        brandId: params.brandId ?? tpl?.brandId ?? params.id,
-        status: "connected",
-        enabled: true,
-        transport: params.transport,
-        configLayer: params.scope,
-        shared: params.shared ?? true,
-      };
+      if (res.reloaded === false) toast.warning(res.message ?? "Saved configuration. The engine did not reload.");
+      if (!res.server) throw new Error("The host returned no connector receipt.");
       return {
-        ...server,
-        name: params.name ?? tpl?.name ?? server.name,
-        brandId: params.brandId ?? tpl?.brandId ?? server.brandId ?? server.id,
-        command: params.command ?? server.command,
-        args: params.args ?? server.args,
-        url: params.url ?? server.url,
-        envKeys: params.env ? Object.keys(params.env) : server.envKeys,
-        timeoutSecs: params.timeoutSecs ?? server.timeoutSecs ?? 30,
-        cachedToolCount:
-          server.cachedToolCount ?? tpl?.defaultTools.length ?? 6,
-        tokenBudgetUsed: server.tokenBudgetUsed ?? 480,
-        tools: server.tools ?? tpl?.defaultTools,
+        ...res.server,
+        name: params.name ?? res.server.name,
+        brandId: params.brandId ?? res.server.brandId,
       };
     },
-    onSuccess: (saved) => {
-      queryClient.setQueryData(
-        PLUGINS_KEYS.mcp(),
-        (
-          prev:
-            | {
-                servers: McpServerView[];
-                totalTokenBudget: number;
-                usedTokenBudget: number;
-              }
-            | undefined,
-        ) => {
-          if (!prev) return prev;
-          const exists = prev.servers.some((s) => s.id === saved.id);
-          const servers = exists
-            ? prev.servers.map((s) => (s.id === saved.id ? saved : s))
-            : [saved, ...prev.servers];
-          return {
-            ...prev,
-            servers,
-          };
-        },
-      );
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.mcp() });
     },
+    onError: (error) => toast.error(error.message),
   });
 
   const removeServerMutation = useMutation({
     mutationFn: async (params: {
       id: string;
       scope?: "global" | "workspace";
+      workspacePath?: string;
     }) => {
-      const res = await callRpc("plugins.mcp.remove", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? `Failed to remove MCP server "${params.id}".`,
-        );
-      }
-      return params.id;
+      const res = await callRpc("plugins.mcp.remove", {
+        ...params,
+        workspacePath: params.scope === "workspace" ? params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined : undefined,
+      });
+      if (!res.ok) throw new Error(res.message ?? `Failed to remove MCP server "${params.id}".`);
+      if (res.reloaded === false) toast.warning(res.message ?? "Saved configuration. The engine did not reload.");
     },
-    onSuccess: (removedId) => {
-      queryClient.setQueryData(
-        PLUGINS_KEYS.mcp(),
-        (
-          prev:
-            | {
-                servers: McpServerView[];
-                totalTokenBudget: number;
-                usedTokenBudget: number;
-              }
-            | undefined,
-        ) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            servers: prev.servers.filter((s) => s.id !== removedId),
-          };
-        },
-      );
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.mcp() });
     },
   });
 
@@ -1222,8 +1170,13 @@ export function useSkillActions() {
       description: string;
       content?: string;
       scope?: "project" | "global";
+      workspacePath?: string;
     }) => {
-      const res = await callRpc("plugins.skills.create", params);
+      const res = await callRpc("plugins.skills.create", {
+        ...params,
+        workspacePath: params.scope === "global" ? undefined : params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined,
+      });
+      if (!res.ok) throw new Error("Failed to create the skill.");
       return res.skill;
     },
     onSuccess: (created) => {

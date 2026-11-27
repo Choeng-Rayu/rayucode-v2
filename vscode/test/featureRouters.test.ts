@@ -1373,7 +1373,7 @@ test("featureRouters wires settings.account.* to authManager and normalizes prov
   assert.equal(authCalls.filter((c) => c === "signOut").length, 2);
 });
 
-test("featureRouters routes session file-change RPCs through Rust RayucodeClient when file_changes capability is present and falls back on older bridges", async () => {
+test("featureRouters routes session file-change RPCs through Rust RayucodeClient when file_changes capability is present and keeps older bridge fallback read-only", async () => {
   const engineActions: Array<{
     sessionId: string;
     action: string;
@@ -1815,14 +1815,14 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
   const fallbackKeepAll = await legacyRouter.call("changes.keepAll", {
     sessionId: "sess_fc",
   });
-  assert.equal(fallbackKeepAll.ok, true);
-  assert.ok(gitFallbackCalls.includes("keep:src/app.ts"));
+  assert.equal(fallbackKeepAll.ok, false);
+  assert.ok(!gitFallbackCalls.includes("keep:src/app.ts"));
 
   const fallbackUndoAll = await legacyRouter.call("changes.undoAll", {
     sessionId: "sess_fc",
   });
-  assert.equal(fallbackUndoAll.ok, true);
-  assert.ok(gitFallbackCalls.includes("undo:src/app.ts"));
+  assert.equal(fallbackUndoAll.ok, false);
+  assert.ok(!gitFallbackCalls.includes("undo:src/app.ts"));
 
   const fallbackRedo = await legacyRouter.call("changes.redo", {
     path: "src/app.ts",
@@ -2585,6 +2585,19 @@ test("plugins.mcp.add/edit/remove and plugins.skills.create write real files on 
       true,
     );
 
+    const duplicate = await router.call("plugins.mcp.add", {
+      id: "context7", scope: "global", transport: "stdio", command: "other",
+    });
+    assert.equal(duplicate.ok, false);
+    const config = JSON.parse(fs.readFileSync(mcpJsonPath, "utf8"));
+    config.mcpServers.context7.headers = { "X-Fixture": "keep" };
+    fs.writeFileSync(mcpJsonPath, JSON.stringify(config));
+    const edit = await router.call("plugins.mcp.edit", {
+      id: "context7", scope: "global", timeoutSecs: 45,
+    });
+    assert.equal(edit.ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")).mcpServers.context7.headers, { "X-Fixture": "keep" });
+
     const removeRes = await router.call("plugins.mcp.remove", {
       id: "context7",
       scope: "global",
@@ -2606,6 +2619,29 @@ test("plugins.mcp.add/edit/remove and plugins.skills.create write real files on 
     const skillText = fs.readFileSync(skillRes.skill.path, "utf8");
     assert.match(skillText, /name: release-gate/);
     assert.match(skillText, /Verify release checklist before shipping/);
+    await assert.rejects(router.call("plugins.skills.create", {
+      name: "Release Gate", description: "Replacement", scope: "global",
+    }), /already exists/);
+    assert.equal(fs.readFileSync(skillRes.skill.path, "utf8"), skillText);
+
+    const malformed = '{"mcpServers":{"untouched":{"command":"keep"}}';
+    fs.writeFileSync(mcpJsonPath, malformed);
+    await assert.rejects(router.call("plugins.mcp.add", {
+      id: "new", scope: "global", transport: "stdio", command: "fixture",
+    }));
+    assert.equal(fs.readFileSync(mcpJsonPath, "utf8"), malformed);
+
+    fs.unlinkSync(mcpJsonPath);
+    const { router: offlineRouter } = createTestFeatureRouter({
+      runtimeHandler: () => { throw new Error("engine offline"); },
+    });
+    const offline = await offlineRouter.call("plugins.mcp.add", {
+      id: "saved", scope: "global", transport: "stdio", command: "fixture",
+    });
+    assert.equal(offline.ok, true);
+    assert.equal(offline.reloaded, false);
+    assert.match(offline.message ?? "", /engine offline/);
+    assert.equal(JSON.parse(fs.readFileSync(mcpJsonPath, "utf8")).mcpServers.saved.command, "fixture");
   } finally {
     if (prevRayuHome === undefined) {
       delete process.env.RAYU_HOME;

@@ -145,6 +145,7 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
     expect(postSpy).toHaveBeenCalledWith({
       type: "rayucode.editor.openFile",
       path: "/repo/src/auth.ts",
+      sessionId: "ses_review_1",
       line: 11,
     });
 

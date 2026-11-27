@@ -2039,9 +2039,12 @@ export async function handleMockRpcCall<M extends RpcMethod>(
         configLayer: String(params.scope ?? "workspace"),
         shared: Boolean(params.shared ?? true),
       };
-      return { ok: true, server } as RpcResult<M>;
+      mockState.mcpServers = [server, ...mockState.mcpServers.filter((previous) => previous.id !== server.id)];
+      return { ok: true, server, reloaded: true } as RpcResult<M>;
     }
     case "plugins.mcp.remove":
+      mockState.mcpServers = mockState.mcpServers.filter((server) => server.id !== params.id);
+      return { ok: true, reloaded: true } as RpcResult<M>;
     case "plugins.mcp.logout":
     case "plugins.skills.run":
     case "plugins.memory.forget":

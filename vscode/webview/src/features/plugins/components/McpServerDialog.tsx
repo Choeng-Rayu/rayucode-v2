@@ -20,6 +20,7 @@ export interface McpServerDraft {
   displayName: string;
   brandId?: string;
   scope: "global" | "workspace";
+  workspacePath?: string;
   transport: McpTransport;
   command: string;
   argsText: string;
@@ -40,6 +41,7 @@ export interface McpServerDialogProps {
     name?: string;
     brandId?: string;
     scope: "global" | "workspace";
+    workspacePath?: string;
     transport: McpTransport;
     command?: string;
     args?: string[];
@@ -48,7 +50,7 @@ export interface McpServerDialogProps {
     shared?: boolean;
     timeoutSecs?: number;
   }) => Promise<void>;
-  onRemove?: (id: string, scope: "global" | "workspace") => Promise<void>;
+  onRemove?: (id: string, scope: "global" | "workspace", workspacePath?: string) => Promise<void>;
   isSaving?: boolean;
 }
 
@@ -116,6 +118,7 @@ export function McpServerDialog({
         name: draft.displayName || cleanId,
         brandId: draft.brandId ?? cleanId,
         scope: draft.scope,
+        workspacePath: draft.workspacePath,
         transport: draft.transport,
         ...(draft.transport === "stdio"
           ? { command: draft.command.trim(), args }
@@ -190,6 +193,7 @@ export function McpServerDialog({
                     key={sc}
                     type="button"
                     data-testid={`mcp-dialog-scope-${sc}`}
+                    disabled={draft.mode === "edit"}
                     onClick={() =>
                       setDraft((prev) => ({ ...prev, scope: sc }))
                     }
@@ -374,7 +378,7 @@ export function McpServerDialog({
                 disabled={isSaving}
                 data-testid="mcp-dialog-remove-btn"
                 onClick={() => {
-                  void onRemove(draft.id, draft.scope)
+                  void onRemove(draft.id, draft.scope, draft.workspacePath)
                     .then(() => onOpenChange(false))
                     .catch((err) =>
                       setErrorMessage(
