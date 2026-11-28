@@ -138,6 +138,8 @@ pub struct BridgeState {
     /// Refreshed from an authoritative source-daemon Ping before each list.
     pub user_connected_sessions: std::collections::HashSet<String>,
     pub runtime_commands_supported: bool,
+    pub global_runtime_commands_supported: bool,
+    pub exact_session_fork_supported: bool,
     /// Set only after a safe legacy ping capability probe succeeds.
     pub session_tools_supported: bool,
     /// The daemon accepts soft interrupt ids and per-id cancellation, and
@@ -444,6 +446,46 @@ impl BridgeState {
                     ),
                 },
             ))];
+        }
+
+        if req == "global_runtime_command" {
+            if !self.global_runtime_commands_supported {
+                return Self::error_reply(
+                    api_id,
+                    ErrorCode::UnknownRequest,
+                    "daemon does not advertise global_runtime_commands capability",
+                );
+            }
+            let parsed =
+                serde_json::from_value::<rayucode_harness_api::ApiRequest>(request.clone());
+            let Ok(rayucode_harness_api::ApiRequest::GlobalRuntimeCommand { command, args }) =
+                parsed
+            else {
+                return Self::error_reply(
+                    api_id,
+                    ErrorCode::InvalidRequest,
+                    "Invalid global runtime command request",
+                );
+            };
+            if !command.supports_global_scope() {
+                return Self::error_reply(
+                    api_id,
+                    ErrorCode::InvalidRequest,
+                    &format!(
+                        "runtime command `{}` requires an attached session",
+                        command.as_str()
+                    ),
+                );
+            }
+            let id = self.legacy_id();
+            self.pending_simple
+                .push((id, api_id, SimpleKind::GlobalRuntimeCommand));
+            return vec![Outbound::Legacy(json!({
+                "type": "global_runtime_command",
+                "id": id,
+                "command": command,
+                "args": args
+            }))];
         }
 
         if req == "runtime_command" {
@@ -773,9 +815,35 @@ impl BridgeState {
                 vec![Outbound::Legacy(message)]
             }
             "fork_session" => {
+                let up_to_message_index = request
+                    .get("up_to_message_index")
+                    .and_then(Value::as_u64)
+                    .map(|idx| idx as usize);
+                let up_to_message_id = request
+                    .get("up_to_message_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                if (up_to_message_index.is_some() || up_to_message_id.is_some())
+                    && !self.exact_session_fork_supported
+                {
+                    return Self::error_reply(
+                        api_id,
+                        ErrorCode::UnknownRequest,
+                        "daemon does not advertise exact_session_fork capability",
+                    );
+                }
                 let id = self.legacy_id();
                 self.pending_fork_id = Some((id, api_id));
-                vec![Outbound::Legacy(json!({"type": "split", "id": id}))]
+                let mut payload = json!({"type": "split", "id": id});
+                if let Some(index) = up_to_message_index {
+                    payload["up_to_message_index"] = json!(index);
+                }
+                if let Some(message_id) = up_to_message_id {
+                    payload["up_to_message_id"] = json!(message_id);
+                }
+                vec![Outbound::Legacy(payload)]
             }
             "transfer_session" => {
                 let id = self.legacy_id();
@@ -2271,10 +2339,16 @@ impl BridgeState {
         };
         let kind = event["type"].as_str().unwrap_or("");
         if kind == "runtime_command_result" {
-            let Some(api_id) = self.take_simple(
-                event["id"].as_u64().unwrap_or(0),
-                SimpleKind::RuntimeCommand,
-            ) else {
+            let legacy_id = event["id"].as_u64().unwrap_or(0);
+            let (api_id, is_global) = if let Some(api_id) =
+                self.take_simple(legacy_id, SimpleKind::RuntimeCommand)
+            {
+                (api_id, false)
+            } else if let Some(api_id) =
+                self.take_simple(legacy_id, SimpleKind::GlobalRuntimeCommand)
+            {
+                (api_id, true)
+            } else {
                 return vec![];
             };
             let Ok(command) = serde_json::from_value(event["command"].clone()) else {
@@ -2289,7 +2363,11 @@ impl BridgeState {
             return vec![ServerFrame::reply(
                 api_id,
                 ApiEvent::RuntimeCommandResult {
-                    session_id: self.session_id.clone().unwrap_or_default(),
+                    session_id: if is_global {
+                        String::new()
+                    } else {
+                        self.session_id.clone().unwrap_or_default()
+                    },
                     command,
                     data: event["data"].clone(),
                     message: event["message"].as_str().unwrap_or("").into(),

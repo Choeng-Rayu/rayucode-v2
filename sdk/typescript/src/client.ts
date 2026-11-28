@@ -645,10 +645,22 @@ export class RayucodeClient extends EventEmitter {
     return frame.session;
   }
 
-  /** Clone a session's complete persisted context into a new idle session. */
-  async forkSession(sessionId: string): Promise<SessionInfo> {
+  /** Clone a session's persisted context (optionally up to an exact message boundary) into a new idle session. */
+  async forkSession(
+    sessionId: string,
+    options: { upToMessageIndex?: number; upToMessageId?: string } = {},
+  ): Promise<SessionInfo> {
     const frame = await this.expectReply(
-      { req: "fork_session", session_id: sessionId },
+      {
+        req: "fork_session",
+        session_id: sessionId,
+        ...(options.upToMessageIndex !== undefined
+          ? { up_to_message_index: options.upToMessageIndex }
+          : {}),
+        ...(options.upToMessageId !== undefined
+          ? { up_to_message_id: options.upToMessageId }
+          : {}),
+      },
       "session_forked",
     );
     return frame.session;
@@ -775,8 +787,10 @@ export class RayucodeClient extends EventEmitter {
                 frame.status === "tool_running")))
         ) {
           finish();
-        } else if (strict && frame.ev === "error" && (frame.reply_to === undefined || frame.reply_to === id)) {
+        } else if (frame.ev === "error" && (frame.reply_to === undefined || frame.reply_to === id)) {
           finish(new HarnessError(String(frame.code ?? "internal"), String(frame.message ?? "Prompt failed")));
+        } else if (sameSession && frame.ev === "turn_stopped" && frame.reason === "failure") {
+          finish(new HarnessError("internal", String(frame.message ?? "Turn failed before acceptance")));
         }
       };
       const onClose = () => finish(strict
@@ -869,6 +883,21 @@ export class RayucodeClient extends EventEmitter {
     await this.requestOk({ req: "rewind", session_id: sessionId, message_index: messageIndex });
   }
 
+  /** Answer a clarifying question raised by the attached session. */
+  async respondToQuestion(
+    sessionId: string,
+    requestId: string,
+    response: Record<string, unknown>,
+  ): Promise<void> {
+    await this.requestOk({
+      req: "question_response",
+      session_id: sessionId,
+      request_id: requestId,
+      response,
+    });
+  }
+
+  /** Reply to an interactive tool permission prompt on the attached session. */
   async respondToPermission(
     sessionId: string,
     requestId: string,
@@ -911,6 +940,15 @@ export class RayucodeClient extends EventEmitter {
     // capability without disturbing the session, and send the request once.
     const frame = await this.expectReply(
       { req: "runtime_command", session_id: sessionId, command, args }, "runtime_command_result",
+    );
+    return { session_id: frame.session_id, command: frame.command, data: frame.data, message: frame.message };
+  }
+
+  /** Execute a session-less global runtime command without attaching or creating a session. */
+  async globalRuntimeCommand(command: RuntimeCommand, args: string[] = []): Promise<RuntimeCommandOutput> {
+    const frame = await this.expectReply(
+      { req: "global_runtime_command", command, args },
+      "runtime_command_result",
     );
     return { session_id: frame.session_id, command: frame.command, data: frame.data, message: frame.message };
   }

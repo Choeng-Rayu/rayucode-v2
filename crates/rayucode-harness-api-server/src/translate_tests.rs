@@ -5195,3 +5195,77 @@ fn control_error_reply_for_simple_kind_does_not_clear_active_turn() {
         "active turn text_delta must continue after simple control error: {more_delta:?}"
     );
 }
+
+#[test]
+fn global_runtime_commands_are_sessionless_and_capability_gated() {
+    let request = json!({"id": 901, "req": "global_runtime_command", "command": "telegram", "args": ["status"]});
+    let mut state = BridgeState::default(); // unattached, no capabilities yet
+    let output = state.api_request_to_legacy(&request);
+    assert!(matches!(
+        &output[..],
+        [Outbound::Reply(ServerFrame {
+            event: ApiEvent::Error { code: ErrorCode::UnknownRequest, .. },
+            ..
+        })]
+    ));
+
+    state.global_runtime_commands_supported = true;
+    let output = state.api_request_to_legacy(&request);
+    let [Outbound::Legacy(legacy)] = &output[..] else {
+        panic!("expected global_runtime_command legacy frame, got {output:?}");
+    };
+    assert_eq!(legacy["type"], "global_runtime_command");
+    assert_eq!(legacy["command"], "telegram");
+    let frames = state.legacy_event_to_api(&json!({
+        "type": "runtime_command_result",
+        "id": legacy["id"],
+        "command": "telegram",
+        "data": {"status": "Disconnected"},
+        "message": "ok"
+    }));
+    assert_eq!(frames.len(), 1);
+    assert_eq!(frames[0].reply_to, Some(901));
+    assert!(matches!(
+        &frames[0].event,
+        ApiEvent::RuntimeCommandResult { session_id, command: rayucode_harness_api::RuntimeCommand::Telegram, .. } if session_id.is_empty()
+    ));
+
+    // Session-only command must be rejected on global_runtime_command
+    let bad = state.api_request_to_legacy(&json!({"id": 902, "req": "global_runtime_command", "command": "context"}));
+    assert!(matches!(
+        &bad[..],
+        [Outbound::Reply(ServerFrame {
+            event: ApiEvent::Error { code: ErrorCode::InvalidRequest, .. },
+            ..
+        })]
+    ));
+}
+
+#[test]
+fn fork_session_forwards_exact_boundary_fields_when_supported() {
+    let mut state = state_with_session();
+    let req = json!({
+        "id": 905,
+        "req": "fork_session",
+        "session_id": "s1",
+        "up_to_message_index": 2,
+        "up_to_message_id": "m3"
+    });
+    let gated = state.api_request_to_legacy(&req);
+    assert!(matches!(
+        &gated[..],
+        [Outbound::Reply(ServerFrame {
+            event: ApiEvent::Error { code: ErrorCode::UnknownRequest, .. },
+            ..
+        })]
+    ));
+
+    state.exact_session_fork_supported = true;
+    let out = state.api_request_to_legacy(&req);
+    let [Outbound::Legacy(legacy)] = &out[..] else {
+        panic!("expected split request, got {out:?}");
+    };
+    assert_eq!(legacy["type"], "split");
+    assert_eq!(legacy["up_to_message_index"], 2);
+    assert_eq!(legacy["up_to_message_id"], "m3");
+}

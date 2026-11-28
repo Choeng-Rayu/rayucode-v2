@@ -1,9 +1,9 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 use super::{
-    NotifySessionContext, clone_split_session, create_transfer_child_session,
-    handle_notify_session, handle_rename_session, handle_resume_all_sessions, handle_set_feature,
-    handle_split,
+    NotifySessionContext, clone_split_session, clone_split_session_with_boundary,
+    create_transfer_child_session, handle_notify_session, handle_rename_session,
+    handle_resume_all_sessions, handle_set_feature, handle_split,
 };
 use crate::agent::Agent;
 use crate::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
@@ -437,6 +437,51 @@ fn split_and_transfer_inherit_independent_ephemeral_environment() {
         let _loaded = crate::session::Session::load(child_id).unwrap();
         assert!(crate::session_env::session_env(child_id).is_empty());
     }
+}
+
+#[test]
+fn clone_split_session_with_boundary_truncates_by_index_and_id() {
+    let _guard = crate::storage::lock_test_env();
+    let _home = SplitTestHome::new();
+    let mut parent = crate::session::Session::create(None, Some("forkable".into()));
+    let mk_msg = |id: &str, role: crate::message::Role, text: &str| crate::session::StoredMessage {
+        id: id.to_string(),
+        role,
+        content: vec![crate::message::ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+        display_role: None,
+        timestamp: None,
+        tool_duration_ms: None,
+        token_usage: None,
+    };
+    parent.messages = vec![
+        mk_msg("m1", crate::message::Role::User, "first"),
+        mk_msg("m2", crate::message::Role::Assistant, "second"),
+        mk_msg("m3", crate::message::Role::User, "third"),
+        mk_msg("m4", crate::message::Role::Assistant, "fourth"),
+    ];
+    parent.save().unwrap();
+
+    // Index boundary: through m2 (0-based index 1) -> keeps m1, m2 + appended fork notice (3 msgs)
+    let (by_idx_id, _) =
+        clone_split_session_with_boundary(&parent.id, None, Some(1), None).unwrap();
+    let by_idx = crate::session::Session::load(&by_idx_id).unwrap();
+    assert_eq!(by_idx.messages.len(), 3);
+    assert_eq!(by_idx.messages[0].id, "m1");
+    assert_eq!(by_idx.messages[1].id, "m2");
+
+    // Message-ID boundary: through "m3" -> keeps m1, m2, m3 + appended fork notice (4 msgs)
+    let (by_id_id, _) =
+        clone_split_session_with_boundary(&parent.id, None, None, Some("m3")).unwrap();
+    let by_id = crate::session::Session::load(&by_id_id).unwrap();
+    assert_eq!(by_id.messages.len(), 4);
+    assert_eq!(by_id.messages[2].id, "m3");
+
+    // Out-of-range index or unknown message id returns clean error
+    assert!(clone_split_session_with_boundary(&parent.id, None, Some(99), None).is_err());
+    assert!(clone_split_session_with_boundary(&parent.id, None, None, Some("missing")).is_err());
 }
 
 #[tokio::test]

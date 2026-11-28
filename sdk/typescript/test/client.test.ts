@@ -921,3 +921,69 @@ test("setPermissionMode sends set_permission_mode and receives permission_mode_c
     await server.close();
   }
 });
+
+test("globalRuntimeCommand, forkSession boundary, respondToQuestion, and default sendMessage error rejection", async () => {
+  const seenRequests: Array<Record<string, unknown>> = [];
+  const server = await startMockHarness({
+    onRequest(request, send) {
+      seenRequests.push(request);
+      if (request.req === "global_runtime_command") {
+        send({
+          v: 1,
+          reply_to: request.id,
+          ev: "runtime_command_result",
+          session_id: "",
+          command: request.command,
+          data: { status: "Disconnected" },
+          message: "ok",
+        });
+      } else if (request.req === "fork_session") {
+        send({
+          v: 1,
+          reply_to: request.id,
+          ev: "session_forked",
+          session: { session_id: "s-fork", status: "idle" },
+        });
+      } else if (request.req === "question_response") {
+        send({ v: 1, reply_to: request.id, ev: "ok" });
+      } else if (request.req === "send_message") {
+        send({
+          v: 1,
+          reply_to: request.id,
+          ev: "error",
+          code: "auth_required",
+          message: "Rayu authentication required.",
+        });
+      }
+    },
+  });
+  const client = await RayucodeClient.connect({
+    socketPath: server.socketPath,
+    supportsUserQuestions: true,
+  });
+  try {
+    const out = await client.globalRuntimeCommand("telegram", ["status"]);
+    assert.equal(out.session_id, "");
+    assert.equal(out.command, "telegram");
+
+    const forked = await client.forkSession("s1", {
+      upToMessageIndex: 1,
+      upToMessageId: "m2",
+    });
+    assert.equal(forked.session_id, "s-fork");
+
+    await client.respondToQuestion("s1", "q-1", { answers: { choice: "yes" } });
+
+    await assert.rejects(
+      client.sendMessage("s1", "hello"),
+      { code: "auth_required", message: /authentication required/ },
+    );
+
+    const forkReq = seenRequests.find((r) => r.req === "fork_session");
+    assert.equal(forkReq?.up_to_message_index, 1);
+    assert.equal(forkReq?.up_to_message_id, "m2");
+  } finally {
+    client.close();
+    await server.close();
+  }
+});

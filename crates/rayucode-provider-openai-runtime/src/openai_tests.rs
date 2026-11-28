@@ -372,6 +372,71 @@ fn catalog_credential_identity_survives_token_refresh_but_changes_accounts() {
     );
 }
 
+#[test]
+fn refresh_model_catalog_discovers_future_model_and_preserves_last_good_on_error() {
+    let _lock = rayucode_base::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home_guard = EnvVarGuard::set_path("RAYU_HOME", home.path());
+    let _key_guard = EnvVarGuard::set("OPENAI_API_KEY", "sk-test-future-model-discovery");
+    let _no_proxy = EnvVarGuard::set("NO_PROXY", "127.0.0.1,localhost");
+
+    let future_model = "gpt-99-future-experimental";
+    assert!(!rayucode_provider_core::ALL_OPENAI_MODELS.contains(&future_model));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ok_body = serde_json::json!({
+        "data": [
+            { "id": future_model }
+        ]
+    })
+    .to_string();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        for (status, body) in [
+            ("200 OK", ok_body),
+            ("500 Internal Server Error", "{}".to_string()),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    let _base_guard = EnvVarGuard::set("RAYU_OPENAI_API_BASE", &format!("http://{addr}/v1"));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let provider = OpenAIProvider::new(CodexCredentials {
+            access_token: "sk-test-future-model-discovery".to_string(),
+            refresh_token: String::new(),
+            id_token: None,
+            account_id: None,
+            expires_at: None,
+        });
+        let summary = provider.refresh_model_catalog().await.unwrap();
+        assert!(summary.models_added_names.contains(&future_model.to_string()));
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+
+        assert!(provider.refresh_model_catalog().await.is_err());
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+    });
+    server.join().unwrap();
+}
+
 include!("openai_tests/persistent_terminal.rs");
 include!("openai_tests/opaque_recovery.rs");
 

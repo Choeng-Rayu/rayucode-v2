@@ -1,7 +1,8 @@
 use super::client_actions::{
     AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
     handle_notify_session, handle_rename_session, handle_run_subagent, handle_set_feature,
-    handle_set_session_saved, handle_set_subagent_model, handle_split, handle_stdin_response,
+    handle_set_session_saved, handle_set_subagent_model,
+    handle_split_with_boundary, handle_stdin_response,
     handle_transfer, handle_trigger_memory_extraction,
 };
 use super::client_comm::{
@@ -1593,6 +1594,36 @@ pub(super) async fn handle_client(
                 retry_after_secs: None,
             });
             continue;
+        }
+
+        // Reject unauthenticated or unready interactive turns BEFORE sending Ack
+        // so clients never observe a bogus MessageAccepted when no provider can
+        // run the turn (D5).
+        if let Request::Message { id, no_reply: false, .. } = &request {
+            if server_reload_starting() {
+                let _ = client_event_tx.send(ServerEvent::Reloading { new_socket: None });
+                continue;
+            }
+            if crate::rayu::auth_gate_active() {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id: *id,
+                    message: crate::rayu::auth_gate_error_message().to_string(),
+                    retry_after_secs: None,
+                });
+                continue;
+            }
+            let readiness_err = session_control
+                .provider_handle()
+                .and_then(|handle| handle.turn_readiness_error())
+                .or_else(|| provider.turn_readiness_error());
+            if let Some(message) = readiness_err {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id: *id,
+                    message,
+                    retry_after_secs: None,
+                });
+                continue;
+            }
         }
 
         // Send ack
@@ -3238,8 +3269,20 @@ pub(super) async fn handle_client(
                 .await;
             }
 
-            Request::Split { id } => {
-                handle_split(id, &client_session_id, &agent, &client_event_tx).await;
+            Request::Split {
+                id,
+                up_to_message_index,
+                up_to_message_id,
+            } => {
+                handle_split_with_boundary(
+                    id,
+                    &client_session_id,
+                    up_to_message_index,
+                    up_to_message_id,
+                    &agent,
+                    &client_event_tx,
+                )
+                .await;
             }
 
             Request::Transfer { id } => {
@@ -3309,6 +3352,23 @@ pub(super) async fn handle_client(
 
             Request::AgentCapabilities { id } => {
                 let _ = client_event_tx.send(ServerEvent::Done { id });
+            }
+
+            Request::GlobalRuntimeCommand { id, command, args } => {
+                super::runtime_commands::handle_global_runtime_command(
+                    id,
+                    &command,
+                    &args,
+                    &provider_template,
+                    Some(&mcp_pool),
+                    &swarm_members,
+                    &swarms_by_id,
+                    &swarm_coordinators,
+                    &swarm_plans,
+                    &event_history,
+                    &client_event_tx,
+                )
+                .await;
             }
 
             Request::RuntimeCommand { id, command, args } => {
@@ -4631,7 +4691,7 @@ pub(super) async fn process_reserved_message_streaming_mpsc(
     clippy::too_many_arguments,
     reason = "live swarm snapshot merges in-memory swarm maps with durable snapshots"
 )]
-async fn build_live_swarm_snapshot(
+pub(super) async fn build_live_swarm_snapshot(
     view: &str,
     client_session_id: &str,
     swarm_enabled: bool,

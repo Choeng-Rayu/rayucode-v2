@@ -2573,7 +2573,13 @@ async fn apply_permission_mode_idle(session: &DaemonSession, mode: PermissionMod
 
 async fn request_split(session: &DaemonSession) -> Result<String> {
     let id = session.next_id();
-    session.send(&Request::Split { id }).await?;
+    session
+        .send(&Request::Split {
+            id,
+            up_to_message_index: None,
+            up_to_message_id: None,
+        })
+        .await?;
     loop {
         match session.read_event().await? {
             ServerEvent::Ack { .. } => {}

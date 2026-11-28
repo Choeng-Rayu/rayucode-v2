@@ -1015,6 +1015,21 @@ impl Provider for GeminiProvider {
         Ok(())
     }
 
+    async fn refresh_model_catalog(&self) -> Result<rayucode_provider_core::ModelCatalogRefreshSummary> {
+        let before_models = self.available_models_display();
+        let before_routes = self.model_routes();
+        let refreshed = self.refresh_available_models().await?;
+        if refreshed.is_empty() {
+            anyhow::bail!("Gemini model catalog refresh returned no usable models");
+        }
+        Ok(rayucode_provider_core::summarize_model_catalog_refresh(
+            before_models,
+            self.available_models_display(),
+            before_routes,
+            self.model_routes(),
+        ))
+    }
+
     fn supports_compaction(&self) -> bool {
         // No native server-side compaction exists for this provider, so rayu's
         // own summary compaction is the only thing standing between a long

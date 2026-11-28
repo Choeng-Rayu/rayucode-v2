@@ -210,6 +210,7 @@ export type ErrorCode =
   | "invalid_request"
   | "busy"
   | "unsupported"
+  | "auth_required"
   | "internal";
 
 /** Cumulative built-in file-tool changes, not net worktree diff. */
@@ -544,7 +545,12 @@ export type ApiRequest =
   | { req: "set_retention_policy"; archive_after_days?: number | null }
   | { req: "create_session"; working_dir?: string; system_prompt?: string }
   | { req: "attach_session"; session_id: string }
-  | { req: "fork_session"; session_id: string }
+  | {
+      req: "fork_session";
+      session_id: string;
+      up_to_message_index?: number;
+      up_to_message_id?: string;
+    }
   | { req: "transfer_session"; session_id: string }
   | { req: "detach_session"; session_id: string }
   | { req: "configure_tools"; session_id: string; tools: ToolConfiguration }
@@ -592,6 +598,7 @@ export type ApiRequest =
   | { req: "list_models"; session_id: string }
   | { req: "get_runtime_info"; session_id: string }
   | { req: "runtime_command"; session_id: string; command: RuntimeCommand; args?: string[] }
+  | { req: "global_runtime_command"; command: RuntimeCommand; args?: string[] }
   | { req: "set_api_key"; provider: string; api_key: string }
   | { req: "notify_auth_changed"; provider: string }
   | { req: "invalidate_usage"; provider: string; account_label?: string }
@@ -998,6 +1005,7 @@ export const KNOWN_EVENT_KINDS = [
 /** Every request tag the SDK can send. */
 export const KNOWN_REQUEST_KINDS = [
   "runtime_command",
+  "global_runtime_command",
   "hello",
   "list_sessions",
   "list_external_projects",

@@ -905,6 +905,18 @@ impl Provider for AntigravityProvider {
         Ok(())
     }
 
+    async fn refresh_model_catalog(&self) -> Result<rayucode_provider_core::ModelCatalogRefreshSummary> {
+        let before_models = self.available_models_display();
+        let before_routes = self.model_routes();
+        self.prefetch_models().await?;
+        Ok(rayucode_provider_core::summarize_model_catalog_refresh(
+            before_models,
+            self.available_models_display(),
+            before_routes,
+            self.model_routes(),
+        ))
+    }
+
     fn context_window(&self) -> usize {
         let selected = self.model();
         let resolved = self.resolve_model_for_request(&selected);

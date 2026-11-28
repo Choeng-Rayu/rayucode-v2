@@ -272,11 +272,21 @@ enum CursorModelsAuth<'a> {
     Bearer(&'a str),
 }
 
+fn resolve_models_api_url() -> String {
+    if let Ok(base) = std::env::var("RAYU_CURSOR_API_BASE") {
+        let trimmed = base.trim();
+        if !trimmed.is_empty() {
+            return format!("{}/v0/models", trimmed.trim_end_matches('/'));
+        }
+    }
+    MODELS_API_URL.to_string()
+}
+
 async fn fetch_available_models(
     client: &reqwest::Client,
     auth: CursorModelsAuth<'_>,
 ) -> Result<Vec<String>> {
-    let request = client.get(MODELS_API_URL);
+    let request = client.get(resolve_models_api_url());
     let request = match auth {
         CursorModelsAuth::ApiKey(api_key) => request.basic_auth(api_key, Some("")),
         CursorModelsAuth::Bearer(access_token) => request.bearer_auth(access_token),
@@ -706,6 +716,18 @@ impl Provider for CursorCliProvider {
         }
 
         Ok(())
+    }
+
+    async fn refresh_model_catalog(&self) -> Result<rayucode_provider_core::ModelCatalogRefreshSummary> {
+        let before_models = self.available_models_display();
+        let before_routes = self.model_routes();
+        self.prefetch_models().await?;
+        Ok(rayucode_provider_core::summarize_model_catalog_refresh(
+            before_models,
+            self.available_models_display(),
+            before_routes,
+            self.model_routes(),
+        ))
     }
 
     fn handles_tools_internally(&self) -> bool {

@@ -849,9 +849,20 @@ impl RayucodeClient {
     }
 
     pub fn fork_session(&self, session_id: &str) -> Result<SessionInfo> {
+        self.fork_session_with_boundary(session_id, None, None)
+    }
+
+    pub fn fork_session_with_boundary(
+        &self,
+        session_id: &str,
+        up_to_message_index: Option<usize>,
+        up_to_message_id: Option<&str>,
+    ) -> Result<SessionInfo> {
         match self
             .request_ok(ApiRequest::ForkSession {
                 session_id: session_id.to_string(),
+                up_to_message_index,
+                up_to_message_id: up_to_message_id.map(str::to_string),
             })?
             .event
         {
@@ -1110,6 +1121,32 @@ impl RayucodeClient {
                 command,
                 args,
             })?
+            .event
+        {
+            ApiEvent::RuntimeCommandResult {
+                session_id,
+                command,
+                data,
+                message,
+            } => Ok(rayucode_harness_api::RuntimeCommandOutput {
+                session_id,
+                command,
+                data,
+                message,
+            }),
+            other => Err(unexpected("runtime_command_result", &other)),
+        }
+    }
+
+    /// Execute a session-less global runtime command on the daemon without
+    /// attaching or creating a session.
+    pub fn global_runtime_command(
+        &self,
+        command: rayucode_harness_api::RuntimeCommand,
+        args: Vec<String>,
+    ) -> Result<rayucode_harness_api::RuntimeCommandOutput> {
+        match self
+            .request_ok(ApiRequest::GlobalRuntimeCommand { command, args })?
             .event
         {
             ApiEvent::RuntimeCommandResult {

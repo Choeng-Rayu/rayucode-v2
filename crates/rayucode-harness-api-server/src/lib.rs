@@ -406,6 +406,10 @@ where
     ));
     let user_connections_supported = daemon_caps.iter().any(|cap| cap == "session_connections");
     let runtime_commands_supported = daemon_caps.iter().any(|cap| cap == "runtime_commands");
+    let global_runtime_commands_supported = daemon_caps
+        .iter()
+        .any(|cap| cap == "global_runtime_commands");
+    let exact_session_fork_supported = daemon_caps.iter().any(|cap| cap == "exact_session_fork");
     let session_tools_supported = daemon_caps.iter().any(|cap| cap == "session_tools");
     let user_questions_supported = daemon_caps.iter().any(|cap| cap == rayucode_harness_api::QUESTION_CAPABILITY);
     let soft_interrupt_ids_supported = daemon_caps.iter().any(|cap| cap == "soft_interrupt_ids");
@@ -441,6 +445,8 @@ where
             .into_iter()
             .map(str::to_string)
             .chain(user_connections_supported.then(|| "session_connections".to_string()))
+            .chain(global_runtime_commands_supported.then(|| "global_runtime_commands".to_string()))
+            .chain(exact_session_fork_supported.then(|| "exact_session_fork".to_string()))
             .chain(
                 [
                     "runtime_commands",
@@ -481,6 +487,8 @@ where
     state.supports_permissions = hello["supports_permissions"].as_bool().unwrap_or(false);
     state.client_name = Some(client_name.to_string()).filter(|n| !n.is_empty());
     state.runtime_commands_supported = runtime_commands_supported;
+    state.global_runtime_commands_supported = global_runtime_commands_supported;
+    state.exact_session_fork_supported = exact_session_fork_supported;
     state.soft_interrupt_ids_supported = soft_interrupt_ids_supported;
 
     // 3. Pump both directions in one select loop so translation state stays
@@ -534,10 +542,17 @@ where
                 // not a permanent rejection. Recheck on a disposable connection
                 // before dispatch, without reattaching or replaying anything on
                 // the live session stream.
-                if request["req"] == "runtime_command" && !state.runtime_commands_supported {
+                if (request["req"] == "runtime_command" && !state.runtime_commands_supported)
+                    || (request["req"] == "global_runtime_command"
+                        && !state.global_runtime_commands_supported)
+                {
                     match daemon_capabilities(&legacy_socket).await {
                         Some(capabilities) => {
-                            state.runtime_commands_supported = capabilities.iter().any(|cap| cap == "runtime_commands");
+                            state.runtime_commands_supported =
+                                capabilities.iter().any(|cap| cap == "runtime_commands");
+                            state.global_runtime_commands_supported = capabilities
+                                .iter()
+                                .any(|cap| cap == "global_runtime_commands");
                         }
                         None => {
                             write_json_line(&mut write_half, &ServerFrame::reply(
@@ -614,7 +629,8 @@ where
                     && matches!(
                         request["req"].as_str(),
                         Some(
-                            "notify_auth_changed"
+                            "global_runtime_command"
+                                | "notify_auth_changed"
                                 | "invalidate_usage"
                                 | "set_api_key"
                                 | "clear_api_key"
@@ -779,7 +795,12 @@ async fn send_unattached_lightweight_control(
 
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let timeout_secs = if legacy_request["type"] == "global_runtime_command" {
+        30
+    } else {
+        5
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         line.clear();
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
