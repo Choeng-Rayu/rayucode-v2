@@ -676,6 +676,9 @@ pub struct Config {
     /// Built-in tool exposure configuration
     pub tools: ToolConfig,
 
+    /// Skill management configuration (e.g. disabled skill names)
+    pub skills: SkillsConfig,
+
     /// Agent Client Protocol adapter configuration
     pub acp: AcpConfig,
 
@@ -747,6 +750,23 @@ pub struct Config {
     /// them verbatim so a CLI settings save never wipes Desktop preferences.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub desktop: Option<toml::Table>,
+}
+
+/// Skill management configuration (`[skills]` in `~/.rayu/config.toml`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SkillsConfig {
+    /// Skill names explicitly disabled by the user (case-insensitive).
+    #[serde(default)]
+    pub disabled: Vec<String>,
+}
+
+impl SkillsConfig {
+    pub fn is_disabled(&self, name: &str) -> bool {
+        self.disabled
+            .iter()
+            .any(|entry| entry.trim().eq_ignore_ascii_case(name.trim()))
+    }
 }
 
 /// Controls who owns autonomous wake execution.

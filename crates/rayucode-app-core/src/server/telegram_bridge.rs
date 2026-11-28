@@ -5,7 +5,11 @@ mod turn;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+static BRIDGE_TASK_SPAWNED: AtomicBool = AtomicBool::new(false);
+static BRIDGE_POLLING_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 use anyhow::{Result, ensure};
 use rayucode_base::telegram::remote::{Callback, Delivery, Message, Mode, PollFailure, Transport};
@@ -22,15 +26,22 @@ const HELP: &str = "/sessions — choose a session\n/status — show the selecte
 const INBOUND_WAIT: Duration = Duration::from_secs(2);
 
 pub(super) async fn run(socket: PathBuf, sessions: SessionAgents, server_name: String) {
+    BRIDGE_TASK_SPAWNED.store(true, Ordering::Relaxed);
     loop {
         let outcome = async {
             let Some(link) = telegram_remote::load()? else {
+                BRIDGE_POLLING_ACTIVE.store(false, Ordering::Relaxed);
                 return Ok(());
             };
             let Some(_leader) = telegram_remote::claim_polling()? else {
+                BRIDGE_POLLING_ACTIVE.store(false, Ordering::Relaxed);
                 return Ok(());
             };
-            Bridge::run(socket.clone(), sessions.clone(), link, server_name.clone()).await
+            BRIDGE_POLLING_ACTIVE.store(true, Ordering::Relaxed);
+            let res =
+                Bridge::run(socket.clone(), sessions.clone(), link, server_name.clone()).await;
+            BRIDGE_POLLING_ACTIVE.store(false, Ordering::Relaxed);
+            res
         }
         .await;
         if let Err(error) = outcome {
@@ -38,6 +49,16 @@ pub(super) async fn run(socket: PathBuf, sessions: SessionAgents, server_name: S
         }
         tokio::time::sleep(INBOUND_WAIT).await;
     }
+}
+
+/// True when a Telegram polling loop is active either inside this daemon process
+/// or in another daemon sharing the same `RAYU_HOME` (indicated by the advisory
+/// `telegram-remote.poll.lock` file being held).
+pub(super) fn is_polling_active_or_spawned() -> bool {
+    if BRIDGE_POLLING_ACTIVE.load(Ordering::Relaxed) || BRIDGE_TASK_SPAWNED.load(Ordering::Relaxed) {
+        return true;
+    }
+    matches!(telegram_remote::claim_polling(), Ok(None))
 }
 
 struct Bridge {

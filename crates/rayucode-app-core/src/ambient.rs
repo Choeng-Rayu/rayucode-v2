@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+pub mod cron;
 mod directives;
 mod manager;
 mod paths;
@@ -122,6 +123,49 @@ impl ScheduleTarget {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Optional recurrence policy for a scheduled task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScheduleRecurrence {
+    Cron { expr: String },
+    Interval { every_minutes: u32 },
+}
+
+impl ScheduleRecurrence {
+    /// Compute the next UTC run time strictly after `after`.
+    pub fn next_after(&self, after: DateTime<Utc>) -> Result<DateTime<Utc>> {
+        match self {
+            Self::Cron { expr } => cron::CronSchedule::parse(expr)?.next_after(after),
+            Self::Interval { every_minutes } => {
+                let mins = (*every_minutes).max(1) as i64;
+                Ok(after + chrono::Duration::minutes(mins))
+            }
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Cron { expr } => cron::describe_cron(expr),
+            Self::Interval { every_minutes } => {
+                if *every_minutes >= 60 && *every_minutes % 60 == 0 {
+                    let h = *every_minutes / 60;
+                    if h == 1 {
+                        "Every hour".to_string()
+                    } else {
+                        format!("Every {h} hours")
+                    }
+                } else {
+                    format!("Every {} min", (*every_minutes).max(1))
+                }
+            }
+        }
+    }
+}
+
 /// A scheduled ambient task
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScheduledItem {
@@ -143,6 +187,16 @@ pub struct ScheduledItem {
     pub git_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<ScheduleRecurrence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<String>,
 }
 
 /// Persistent ambient state
@@ -199,6 +253,12 @@ pub struct ScheduleRequest {
     pub git_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<ScheduleRecurrence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

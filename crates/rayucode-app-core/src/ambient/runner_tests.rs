@@ -304,6 +304,11 @@ async fn spawn_target_creates_one_child_session_and_runs_task() {
         relevant_files: vec!["src/lib.rs".to_string()],
         git_branch: None,
         additional_context: Some("Background: spawned schedule test".to_string()),
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     };
 
     let runner = AmbientRunnerHandle::new(Arc::new(crate::safety::SafetySystem::new()));

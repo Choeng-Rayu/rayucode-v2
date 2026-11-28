@@ -8,6 +8,7 @@ description = "Harness API endpoint: bridges versioned API clients onto the inte
 [dependencies]
 anyhow = "1"
 rayucode-base = { path = "../rayucode-base", default-features = false }
+rayucode-build-meta = { path = "../rayucode-build-meta" }
 rayucode-harness-api = { path = "../rayucode-harness-api" }
 rayucode-provider-core = { path = "../rayucode-provider-core" }
 rayucode-todo-policy = { path = "../rayucode-todo-policy" }

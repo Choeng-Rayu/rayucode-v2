@@ -78,6 +78,9 @@ fn external_blocker_reviews_are_durable_stable_and_cancel_only_owned_entries() {
             relevant_files: vec![],
             git_branch: None,
             additional_context: None,
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         })
         .unwrap();
     reconcile_todo_reviews("owner", std::slice::from_ref(&todo)).unwrap();
@@ -171,6 +174,9 @@ fn external_blocker_due_review_rechecks_live_todo_and_never_changes_status() {
             relevant_files: vec![],
             git_branch: None,
             additional_context: None,
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         })
         .unwrap();
     reconcile_todo_reviews("owner", std::slice::from_ref(&todo)).unwrap();

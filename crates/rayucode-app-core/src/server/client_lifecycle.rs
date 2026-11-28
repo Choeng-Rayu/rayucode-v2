@@ -3441,17 +3441,29 @@ pub(super) async fn handle_client(
             }
 
             Request::GlobalRuntimeCommand { id, command, args } => {
+                let swarm_ctx = super::runtime_commands::SwarmControlContext {
+                    sessions: &sessions,
+                    global_session_id: &global_session_id,
+                    provider_template: &provider_template,
+                    mcp_pool: &mcp_pool,
+                    swarm_members: &swarm_members,
+                    swarms_by_id: &swarms_by_id,
+                    swarm_coordinators: &swarm_coordinators,
+                    swarm_plans: &swarm_plans,
+                    channel_subscriptions: &channel_subscriptions,
+                    channel_subscriptions_by_session: &channel_subscriptions_by_session,
+                    event_history: &event_history,
+                    event_counter: &event_counter,
+                    swarm_event_tx: &swarm_event_tx,
+                    soft_interrupt_queues: &soft_interrupt_queues,
+                    client_connections: &client_connections,
+                    swarm_mutation_runtime: &swarm_mutation_runtime,
+                };
                 super::runtime_commands::handle_global_runtime_command(
                     id,
                     &command,
                     &args,
-                    &provider_template,
-                    Some(&mcp_pool),
-                    &swarm_members,
-                    &swarms_by_id,
-                    &swarm_coordinators,
-                    &swarm_plans,
-                    &event_history,
+                    &swarm_ctx,
                     &client_event_tx,
                 )
                 .await;
@@ -3558,7 +3570,7 @@ pub(super) async fn handle_client(
                                 first_arg.as_deref(),
                                 Some("on" | "enable" | "enabled" | "off" | "disable" | "disabled" | "toggle")
                             );
-                        let view = if is_toggle_mutation {
+                        if is_toggle_mutation {
                             let Some(enabled) = super::runtime_commands::boolean_action(&args, swarm_enabled, false)? else {
                                 unreachable!("toggle mutation always yields Some(bool)");
                             };
@@ -3572,26 +3584,45 @@ pub(super) async fn handle_client(
                             while let Ok(event) = rx.try_recv() {
                                 if let ServerEvent::Error { message, .. } = event { anyhow::bail!("{message}"); }
                             }
-                            first_arg.as_deref().unwrap_or("status")
-                        } else {
-                            let sub = first_arg.as_deref().unwrap_or("status");
-                            if !matches!(sub, "status" | "show" | "stats" | "list" | "board") || args.len() > 1 {
-                                anyhow::bail!("Usage: /swarm [status|show|list|board|on|off|toggle]");
-                            }
-                            sub
+                            let view = first_arg.as_deref().unwrap_or("status");
+                            let data = build_live_swarm_snapshot(
+                                view,
+                                &client_session_id,
+                                swarm_enabled,
+                                &swarm_members,
+                                &swarms_by_id,
+                                &swarm_coordinators,
+                                &swarm_plans,
+                                &event_history,
+                            )
+                            .await;
+                            return Ok((data.clone(), serde_json::to_string_pretty(&data)?));
+                        }
+                        let swarm_ctx = super::runtime_commands::SwarmControlContext {
+                            sessions: &sessions,
+                            global_session_id: &global_session_id,
+                            provider_template: &provider_template,
+                            mcp_pool: &mcp_pool,
+                            swarm_members: &swarm_members,
+                            swarms_by_id: &swarms_by_id,
+                            swarm_coordinators: &swarm_coordinators,
+                            swarm_plans: &swarm_plans,
+                            channel_subscriptions: &channel_subscriptions,
+                            channel_subscriptions_by_session: &channel_subscriptions_by_session,
+                            event_history: &event_history,
+                            event_counter: &event_counter,
+                            swarm_event_tx: &swarm_event_tx,
+                            soft_interrupt_queues: &soft_interrupt_queues,
+                            client_connections: &client_connections,
+                            swarm_mutation_runtime: &swarm_mutation_runtime,
                         };
-                        let data = build_live_swarm_snapshot(
-                            view,
-                            &client_session_id,
+                        return super::runtime_commands::execute_swarm_command(
+                            &swarm_ctx,
+                            Some(&client_session_id),
                             swarm_enabled,
-                            &swarm_members,
-                            &swarms_by_id,
-                            &swarm_coordinators,
-                            &swarm_plans,
-                            &event_history,
+                            &args,
                         )
                         .await;
-                        return Ok((data.clone(), serde_json::to_string_pretty(&data)?));
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::Subscription {
                         if !args.is_empty() && args != ["status".to_string()] { anyhow::bail!("Usage: subscription [status]"); }
@@ -3604,7 +3635,9 @@ pub(super) async fn handle_client(
                     // `"Session is busy"` while an active turn holds the Agent mutex.
                     if super::runtime_special_commands::is_lock_free(parsed, &args) {
                         let lock_free_ctx = if let Ok(guard) = agent.try_lock() {
-                            super::runtime_special_commands::LockFreeCommandContext::from_agent(&guard)
+                            let mut ctx = super::runtime_special_commands::LockFreeCommandContext::from_agent(&guard);
+                            ctx.mcp_pool = Some(Arc::clone(&mcp_pool));
+                            ctx
                         } else {
                             let cached_dir = swarm_members
                                 .read()
@@ -3619,6 +3652,7 @@ pub(super) async fn handle_client(
                                 session_id: client_session_id.clone(),
                                 working_dir: cached_dir,
                                 registry: Some(registry.clone()),
+                                mcp_pool: Some(Arc::clone(&mcp_pool)),
                                 provider_name: active_provider.name().to_string(),
                                 provider_model: active_provider.model(),
                                 provider_context_window: active_provider.context_window(),
@@ -3635,6 +3669,26 @@ pub(super) async fn handle_client(
                         {
                             return res;
                         }
+                    }
+                    if parsed == rayucode_harness_api::RuntimeCommand::Agents {
+                        if let Ok(mut guard) = agent.try_lock() {
+                            return super::runtime_commands::execute(
+                                &mut guard,
+                                parsed,
+                                &args,
+                                swarm_enabled,
+                                serde_json::Value::Null,
+                            )
+                            .await;
+                        }
+                        let active_provider = session_control
+                            .provider_handle()
+                            .unwrap_or_else(|| Arc::clone(&provider));
+                        return super::runtime_commands::execute_agents_lock_free(
+                            &client_session_id,
+                            &active_provider,
+                            &args,
+                        );
                     }
                     let mut guard = agent.try_lock().map_err(|_| anyhow::anyhow!("Session is busy. Retry this runtime command after the current turn."))?;
                     super::runtime_commands::execute(&mut guard, parsed, &args, swarm_enabled, serde_json::Value::Null).await
@@ -4839,6 +4893,10 @@ pub(super) async fn build_live_swarm_snapshot(
         sorted.sort_by(|a, b| a.session_id.cmp(&b.session_id));
 
         for m in sorted {
+            let elapsed_secs = m
+                .runtime
+                .elapsed_secs
+                .unwrap_or_else(|| m.joined_at.elapsed().as_secs());
             let member_json = serde_json::json!({
                 "session_id": m.session_id,
                 "swarm_id": m.swarm_id,
@@ -4854,6 +4912,20 @@ pub(super) async fn build_live_swarm_snapshot(
                 "latest_completion_report": m.latest_completion_report,
                 "output_tail": m.output_tail,
                 "todo_progress": m.todo_progress,
+                "todo_items": m.todo_items,
+                "runtime": m.runtime,
+                "model": m.runtime.model,
+                "provider": m.runtime.provider,
+                "auth_method": m.runtime.auth_method,
+                "effort": m.runtime.effort,
+                "elapsed_secs": elapsed_secs,
+                "activity_age_secs": m.runtime.activity_age_secs,
+                "files_touched": m.runtime.files_touched,
+                "context_tokens": m.runtime.context_tokens,
+                "context_limit": m.runtime.context_limit,
+                "output_tokens": m.runtime.output_tokens,
+                "live_status": m.runtime.live_status,
+                "wait_reason": m.runtime.wait_reason,
             });
             if let Some(ref sid) = m.swarm_id {
                 by_swarm.entry(sid.clone()).or_default().push(member_json.clone());

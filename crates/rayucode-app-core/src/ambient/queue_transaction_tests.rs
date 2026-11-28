@@ -27,6 +27,9 @@ fn request(name: &str, due: bool) -> ScheduleRequest {
         relevant_files: vec![],
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
     }
 }
 
