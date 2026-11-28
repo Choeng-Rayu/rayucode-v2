@@ -2,7 +2,6 @@ packages:
   - "sdk/typescript"
   - "packages/*"
   - "vscode"
-  - "desktop"
 
 linkWorkspacePackages: true
 onlyBuiltDependencies:
