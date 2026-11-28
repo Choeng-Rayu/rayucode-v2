@@ -1851,17 +1851,10 @@ export class SessionHubCore extends EventEmitter {
     sessionId: string,
     archived: boolean,
   ): Promise<WorkspaceLedgerView> {
+    await this.workspacesReadyPromise;
     const ledger = await this.workspaceRegistry.setArchived(sessionId, archived);
     const map = { ...this.getLegacyArchivedMap(), [sessionId]: archived };
     await this.host.workspaceState.update(ARCHIVED_SESSIONS_KEY, map);
-    const client = await this.getClient(sessionId).catch(() => null);
-    if (client) {
-      if (archived) {
-        await client.archiveSession(sessionId).catch(() => {});
-      } else {
-        await client.restoreSession(sessionId).catch(() => {});
-      }
-    }
     return this.buildWorkspaceLedgerView(ledger);
   }
 

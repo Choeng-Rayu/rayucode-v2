@@ -4197,3 +4197,222 @@ test("featureRouters rejects ambiguous sessions.create with >1 workspaces, binds
   });
   assert.deepEqual(fastCalls.at(-1), { args: ["off"], sessionId: "sess_a" });
 });
+
+test("featureRouters propagates daemon/disconnect failures on read RPCs instead of masking as live-empty and never hardcodes v1.14 in doctor", async () => {
+  // 1. Failing runtime commands propagate HarnessError across direct subsystem read RPCs
+  const { router: failingRouter } = createTestFeatureRouter({
+    runtimeHandler: (command) => {
+      throw new HarnessError("disconnected", `Daemon offline for ${command}`);
+    },
+  });
+
+  const readRpcsToReject: Array<{ method: string; params: unknown }> = [
+    { method: "sessions.search", params: { query: "needle", scope: "all" } },
+    { method: "background.status", params: { taskId: "bg_1" } },
+    { method: "background.output", params: { taskId: "bg_1" } },
+    { method: "automations.overnight.log", params: { runId: "ovn_1" } },
+    { method: "automations.overnight.report", params: { runId: "ovn_1" } },
+    { method: "automations.ambient.status", params: undefined },
+    { method: "automations.ambient.approvals", params: undefined },
+    { method: "automations.quality.status", params: undefined },
+    { method: "automations.quality.productivity", params: { range: "7d" } },
+    { method: "remote.telegram.status", params: undefined },
+    { method: "remote.telegram.approvals", params: undefined },
+    { method: "remote.infra.status", params: undefined },
+    { method: "settings.account.get", params: undefined },
+    { method: "settings.providers.list", params: undefined },
+    { method: "settings.features.get", params: undefined },
+    { method: "settings.doctor.run", params: { scope: "auth" } },
+    { method: "settings.hooks.list", params: undefined },
+  ];
+
+  for (const [idx, entry] of readRpcsToReject.entries()) {
+    const res = await failingRouter.dispatch(
+      900 + idx,
+      entry.method,
+      entry.params,
+    );
+    assert.equal(
+      res.ok,
+      false,
+      `Expected ${entry.method} to reject on daemon failure instead of returning fake live-empty success`,
+    );
+    if (!res.ok) {
+      assert.match(res.error, /Daemon offline for/);
+    }
+  }
+
+  // 2. settings.models.get degrades gracefully on engine failure without fabricating roleOverrides or configPath
+  const degradedModels = await failingRouter.call("settings.models.get", undefined);
+  assert.deepEqual(degradedModels.roleOverrides, []);
+  assert.equal(degradedModels.effectiveRoleModels, undefined);
+  assert.equal(degradedModels.configPath, undefined);
+  assert.equal(degradedModels.subagentModel, undefined);
+  assert.equal(degradedModels.inheritModel, undefined);
+
+  // 3. Offline daemon rejects remote.telegram.status explicitly and doctor uses negotiated protocol version (never hardcoded v1.14)
+  let currentDaemonStatus: DaemonStatusView = {
+    state: "disconnected",
+    capabilities: [],
+  };
+  const customRouter = createFeatureRouter({
+    bridgeManager: {
+      getStatus: () => currentDaemonStatus,
+      ping: async () => ({ ok: currentDaemonStatus.state === "connected", latencyMs: 1 }),
+      reconnect: async () => currentDaemonStatus,
+      restart: async () => currentDaemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => undefined,
+      getActiveModel: () => undefined,
+      getActiveProvider: () => undefined,
+      getActivePermissionMode: () => "default",
+      getClient: async () => {
+        throw new HarnessError("disconnected", "Bridge offline");
+      },
+      listSessions: async () => ({ sessions: [] }),
+      createSession: async () => {
+        throw new HarnessError("disconnected", "Bridge offline");
+      },
+      attachSession: async () => {
+        throw new HarnessError("disconnected", "Bridge offline");
+      },
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      runtimeCommand: async (command) => {
+        if (currentDaemonStatus.state !== "connected") {
+          throw new HarnessError("disconnected", "Bridge offline");
+        }
+        return { session_id: "", command, data: { checks: [] }, message: "ok" };
+      },
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+    },
+    authManager: {
+      getAccountStatusSnapshot: () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        windows: [],
+      }),
+      getAccountStatus: async () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        windows: [],
+      }),
+      startBrowserSignIn: async () => ({
+        ok: true,
+        authUrl: "https://rayucode.com/vscode-login",
+        state: { signedIn: true, authMethod: "oauth", windows: [] },
+      }),
+      cancelSignIn: () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signInWithApiKey: async () => ({ signedIn: true, authMethod: "apiKey", windows: [] }),
+      completeManualCallback: async () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signOut: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      clearSavedApiKeyOnly: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      setBypassPacing: async (enabled) => ({ ok: true, enabled }),
+      fetchHostedModels: async () => [
+        { code: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      ],
+    },
+    gitBridge: {
+      getStatus: async () => ({
+        branch: "main",
+        totalAdditions: 0,
+        totalDeletions: 0,
+        files: [],
+        stagedCount: 0,
+      }),
+      getDiff: async ({ path: p }) => ({
+        path: p,
+        originalContent: "",
+        modifiedContent: "",
+        unifiedDiff: "",
+        additions: 0,
+        deletions: 0,
+      }),
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: () => ({ ok: true }),
+      undo: async () => ({ ok: true }),
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(_k: string, d: T) => d,
+    updateGlobalState: async () => {},
+    getRuntimeSettings: () => ({
+      socketPath: "/tmp/rayu-test.sock",
+      binaryPath: "/usr/local/bin/rayu",
+      autoStart: true,
+    }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  });
+
+  // Offline: remote.telegram.status rejects with disconnected HarnessError
+  await assert.rejects(
+    () => customRouter.call("remote.telegram.status", undefined),
+    (err: unknown) => err instanceof HarnessError && err.code === "disconnected",
+  );
+  // Offline: settings.models.get still returns signed-in hosted models without throwing or fabricating role defaults
+  const offlineHomeModels = await customRouter.call("settings.models.get", undefined);
+  assert.equal(offlineHomeModels.defaultModel, "rayu:claude-sonnet-4-6");
+  assert.deepEqual(offlineHomeModels.roleOverrides, []);
+  assert.equal(offlineHomeModels.configPath, undefined);
+
+  // Connected with protocolVersion "1" -> doctor fallback reports v1 (never v1.14)
+  currentDaemonStatus = {
+    state: "connected",
+    protocolVersion: "1",
+    capabilities: ["permissions", "doctor"],
+  };
+  const docV1 = await customRouter.call("settings.doctor.run", { scope: "auth" });
+  assert.equal(docV1.checks[0]?.detail, "Connected to Harness API v1 socket.");
+  assert.equal(docV1.checks[0]?.detail.includes("v1.14"), false);
+
+  // Connected with protocolVersion "1.16" -> doctor fallback reports v1.16
+  currentDaemonStatus = {
+    state: "connected",
+    protocolVersion: "1.16",
+    capabilities: ["permissions", "doctor"],
+  };
+  const docV116 = await customRouter.call("settings.doctor.run", { scope: "providers" });
+  assert.equal(docV116.checks[0]?.detail, "Connected to Harness API v1.16 socket.");
+
+  // Connected with undefined protocolVersion -> doctor fallback omits hardcoded version
+  currentDaemonStatus = {
+    state: "connected",
+    capabilities: ["permissions"],
+  };
+  const docNoProto = await customRouter.call("settings.doctor.run", { scope: "auth" });
+  assert.equal(docNoProto.checks[0]?.detail, "Connected to Harness API socket.");
+  assert.equal(docNoProto.checks[0]?.detail.includes("v1.14"), false);
+});

@@ -5,6 +5,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type {
   GatewayStatusView,
   RemoteInfraStatusView,
@@ -13,6 +14,7 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
+import { requireOperation } from "@/lib/operation-result";
 import { callRpc, postToHost } from "@/lib/rpc-client";
 
 export type RemoteTopTabId = "telegram" | "cloud-gateway";
@@ -128,6 +130,11 @@ export function remoteSessionsQueryOptions() {
   });
 }
 
+/** Failures are already surfaced via toast + banner; fire-and-forget callers must not leak unhandled rejections. */
+function swallow<T>(promise: Promise<T>): Promise<T | undefined> {
+  return promise.catch(() => undefined);
+}
+
 export function useRemote() {
   const queryClient = useQueryClient();
   const activeSessionId = useAppStore((s) => s.activeSessionId);
@@ -206,6 +213,16 @@ export function useRemote() {
     [queryClient],
   );
 
+  const failBanner = React.useCallback(
+    (err: unknown, fallback: string, alreadyToasted: boolean) => {
+      const text =
+        err instanceof Error && err.message.trim() ? err.message : fallback;
+      if (!alreadyToasted) toast.error(text);
+      setFeedbackBanner({ kind: "error", text });
+    },
+    [],
+  );
+
   const linkHostedMutation = useMutation({
     mutationFn: (replaceExisting?: boolean) =>
       callRpc(
@@ -225,15 +242,8 @@ export function useRemote() {
           : "Generated hosted Telegram pairing link. Open in Telegram and tap Start.",
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to start hosted Telegram pairing.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to start hosted Telegram pairing.", false),
   });
 
   const linkBotfatherMutation = useMutation({
@@ -264,22 +274,17 @@ export function useRemote() {
         });
       }
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to verify and link @BotFather token.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to verify and link @BotFather token.", false),
   });
 
   const disconnectTelegramMutation = useMutation({
     mutationFn: (localOnly?: boolean) =>
-      callRpc(
-        "remote.telegram.disconnect",
-        localOnly ? { localOnly: true } : undefined,
+      requireOperation(
+        callRpc(
+          "remote.telegram.disconnect",
+          localOnly ? { localOnly: true } : undefined,
+        ),
       ),
     onSuccess: async (res) => {
       await queryClient.invalidateQueries({
@@ -291,27 +296,13 @@ export function useRemote() {
         text: res.message || "Disconnected Telegram bridge on this host.",
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to disconnect Telegram bridge.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to disconnect Telegram bridge.", true),
   });
 
   const testPingMutation = useMutation({
-    mutationFn: () => callRpc("remote.telegram.testPing"),
+    mutationFn: () => requireOperation(callRpc("remote.telegram.testPing")),
     onSuccess: (res) => {
-      if (!res.ok) {
-        setFeedbackBanner({
-          kind: "error",
-          text: res.message || "Telegram ping failed.",
-        });
-        return;
-      }
       const target = res.target
         ? `@${res.target.replace(/^@+/, "")}`
         : telegramQuery.data?.botHandle
@@ -324,26 +315,13 @@ export function useRemote() {
           `Sent live Telegram ping to ${target}${res.chatId ? ` (Chat ID ${res.chatId})` : ""}.`,
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error ? err.message : "Failed to send Telegram ping.",
-      });
-    },
+    onError: (err) => failBanner(err, "Failed to send Telegram ping.", true),
   });
 
   const driveSessionMutation = useMutation({
     mutationFn: (sessionId: string) =>
-      callRpc("remote.telegram.driveSession", { sessionId }),
+      requireOperation(callRpc("remote.telegram.driveSession", { sessionId })),
     onSuccess: async (res, sessionId) => {
-      if (!res.ok) {
-        setFeedbackBanner({
-          kind: "error",
-          text: res.message || "Could not bind session to Telegram bridge.",
-        });
-        return;
-      }
       updateTelegramCache((prev) => ({
         ...prev,
         boundSessionId: sessionId,
@@ -356,20 +334,13 @@ export function useRemote() {
         text: res.message || `Telegram now drives session ${sessionId}.`,
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to switch Telegram driving session.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to switch Telegram driving session.", true),
   });
 
   const decideApprovalMutation = useMutation({
     mutationFn: (input: { id: string; decision: "allow" | "deny" }) =>
-      callRpc("remote.telegram.decide", input),
+      requireOperation(callRpc("remote.telegram.decide", input)),
     onSuccess: (_res, { id, decision }) => {
       updateTelegramCache((prev) => ({
         ...prev,
@@ -391,20 +362,13 @@ export function useRemote() {
             : "Denied remote tool request via host.",
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to submit approval decision.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to submit approval decision.", true),
   });
 
   const uninstallToggleMutation = useMutation({
     mutationFn: (enabled: boolean) =>
-      callRpc("remote.telegram.uninstallToggle", { enabled }),
+      requireOperation(callRpc("remote.telegram.uninstallToggle", { enabled })),
     onSuccess: (res, enabled) => {
       const next = res.enabled ?? enabled;
       updateTelegramCache((prev) => ({
@@ -418,28 +382,19 @@ export function useRemote() {
           : "Remote /uninstall guardrail set to Blocked (safe default).",
       });
     },
-    onError: (err) => {
-      setFeedbackBanner({
-        kind: "error",
-        text:
-          err instanceof Error
-            ? err.message
-            : "Failed to update remote uninstall guardrail.",
-      });
-    },
+    onError: (err) =>
+      failBanner(err, "Failed to update remote uninstall guardrail.", true),
   });
 
   const toggleGatewayMutation = useMutation({
     mutationFn: (enabled: boolean) =>
       callRpc("remote.gateway.toggle", { enabled }),
-    onSuccess: (res, enabled) => {
+    onSuccess: (res) => {
       updateInfraCache((prev) => ({
         ...prev,
         gateway: {
           ...prev.gateway,
           ...res,
-          enabled,
-          restartRequired: true,
           pairingQr: res.pairingQr ?? prev.gateway.pairingQr,
           devices:
             res.devices.length > 0 ? res.devices : prev.gateway.devices,
@@ -447,11 +402,13 @@ export function useRemote() {
       }));
       setFeedbackBanner({
         kind: "info",
-        text: enabled
+        text: res.enabled
           ? "Local WebSocket Gateway (:7643) enabled."
           : "Local WebSocket Gateway (:7643) stopped.",
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to update the local WebSocket Gateway.", false),
   });
 
   const pairGatewayMutation = useMutation({
@@ -471,11 +428,13 @@ export function useRemote() {
           : "Generated WebSocket Gateway pairing invite.",
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to generate a Gateway pairing invite.", false),
   });
 
   const revokeDeviceMutation = useMutation({
     mutationFn: (deviceId: string) =>
-      callRpc("remote.gateway.revoke", { deviceId }),
+      requireOperation(callRpc("remote.gateway.revoke", { deviceId })),
     onSuccess: (_res, deviceId) => {
       updateInfraCache((prev) => ({
         ...prev,
@@ -489,11 +448,13 @@ export function useRemote() {
         text: `Revoked paired device ${deviceId}.`,
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to revoke the paired device.", true),
   });
 
   const moveToCloudMutation = useMutation({
     mutationFn: (sessionId: string) =>
-      callRpc("remote.cloud.moveToCloud", { sessionId }),
+      requireOperation(callRpc("remote.cloud.moveToCloud", { sessionId })),
     onSuccess: async (res, sessionId) => {
       await queryClient.invalidateQueries({
         queryKey: remoteInfraQueryOptions().queryKey,
@@ -505,11 +466,13 @@ export function useRemote() {
           `Moved session ${sessionId} to Rayu Cloud${res.remoteSessionId ? ` (${res.remoteSessionId})` : ""}.`,
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to move the session to Rayu Cloud.", true),
   });
 
   const returnLocalMutation = useMutation({
     mutationFn: (remoteSessionId: string) =>
-      callRpc("remote.cloud.returnLocal", { remoteSessionId }),
+      requireOperation(callRpc("remote.cloud.returnLocal", { remoteSessionId })),
     onSuccess: (res, remoteSessionId) => {
       updateInfraCache((prev) => ({
         ...prev,
@@ -525,27 +488,35 @@ export function useRemote() {
           `Returned remote session ${remoteSessionId} to local VS Code host.`,
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to return the remote session locally.", true),
   });
 
   const attachRemoteMutation = useMutation({
     mutationFn: (remoteSessionId: string) =>
-      callRpc("remote.cloud.attach", { remoteSessionId }),
+      requireOperation(callRpc("remote.cloud.attach", { remoteSessionId })),
     onSuccess: (res, remoteSessionId) => {
       setFeedbackBanner({
         kind: "info",
         text: res.message || `Attached to remote session ${remoteSessionId}.`,
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to attach to the remote session.", true),
   });
 
   const syncCloudEnvMutation = useMutation({
-    mutationFn: () => callRpc("remote.cloud.syncEnv"),
-    onSuccess: () => {
+    mutationFn: () => requireOperation(callRpc("remote.cloud.syncEnv")),
+    onSuccess: (res) => {
       setFeedbackBanner({
         kind: "info",
-        text: "Synced local workspace environment with Rayu Cloud.",
+        text:
+          res.message ||
+          "Synced local workspace environment with Rayu Cloud.",
       });
     },
+    onError: (err) =>
+      failBanner(err, "Failed to sync the Rayu Cloud environment.", true),
   });
 
   const copyToClipboard = React.useCallback((text: string, label: string) => {
@@ -584,7 +555,7 @@ export function useRemote() {
     copyToClipboard,
     openExternalUrl,
     linkHosted: (replaceExisting?: boolean) =>
-      linkHostedMutation.mutateAsync(replaceExisting),
+      swallow(linkHostedMutation.mutateAsync(replaceExisting)),
     isLinkingHosted: linkHostedMutation.isPending,
     hostedError:
       linkHostedMutation.error instanceof Error
@@ -601,9 +572,9 @@ export function useRemote() {
         ? linkBotfatherMutation.error.message
         : null,
     disconnectTelegram: (localOnly?: boolean) =>
-      disconnectTelegramMutation.mutateAsync(localOnly),
+      swallow(disconnectTelegramMutation.mutateAsync(localOnly)),
     isDisconnectingTelegram: disconnectTelegramMutation.isPending,
-    sendTestPing: () => testPingMutation.mutateAsync(),
+    sendTestPing: () => swallow(testPingMutation.mutateAsync()),
     isPingingTelegram: testPingMutation.isPending,
     driveActiveSession: (sessionId?: string) => {
       const target = sessionId ?? activeSessionId ?? "";
@@ -614,30 +585,40 @@ export function useRemote() {
         });
         return Promise.resolve();
       }
-      return driveSessionMutation.mutateAsync(target);
+      return swallow(driveSessionMutation.mutateAsync(target));
     },
     isDrivingSession: driveSessionMutation.isPending,
     decideApproval: (id: string, decision: "allow" | "deny") =>
-      decideApprovalMutation.mutateAsync({ id, decision }),
+      swallow(decideApprovalMutation.mutateAsync({ id, decision })),
     isDecidingApproval: decideApprovalMutation.isPending,
     setRemoteUninstall: (enabled: boolean) =>
-      uninstallToggleMutation.mutateAsync(enabled),
+      swallow(uninstallToggleMutation.mutateAsync(enabled)),
     isTogglingUninstall: uninstallToggleMutation.isPending,
     toggleGateway: (enabled: boolean) =>
-      toggleGatewayMutation.mutateAsync(enabled),
+      swallow(toggleGatewayMutation.mutateAsync(enabled)),
     isTogglingGateway: toggleGatewayMutation.isPending,
-    pairGateway: () => pairGatewayMutation.mutateAsync(),
+    pairGateway: () => swallow(pairGatewayMutation.mutateAsync()),
     isPairingGateway: pairGatewayMutation.isPending,
     revokeDevice: (deviceId: string) =>
-      revokeDeviceMutation.mutateAsync(deviceId),
+      swallow(revokeDeviceMutation.mutateAsync(deviceId)),
     isRevokingDevice: revokeDeviceMutation.isPending,
-    moveToCloud: (sessionId?: string) =>
-      moveToCloudMutation.mutateAsync(sessionId ?? activeSessionId ?? ""),
+    moveToCloud: (sessionId?: string) => {
+      const target = sessionId ?? activeSessionId ?? "";
+      if (!target) {
+        failBanner(
+          new Error("Open or select a local session first to move it to Rayu Cloud."),
+          "Open or select a local session first.",
+          false,
+        );
+        return Promise.resolve();
+      }
+      return swallow(moveToCloudMutation.mutateAsync(target));
+    },
     returnLocal: (remoteSessionId: string) =>
-      returnLocalMutation.mutateAsync(remoteSessionId),
+      swallow(returnLocalMutation.mutateAsync(remoteSessionId)),
     attachRemote: (remoteSessionId: string) =>
-      attachRemoteMutation.mutateAsync(remoteSessionId),
-    syncCloudEnv: () => syncCloudEnvMutation.mutateAsync(),
+      swallow(attachRemoteMutation.mutateAsync(remoteSessionId)),
+    syncCloudEnv: () => swallow(syncCloudEnvMutation.mutateAsync()),
     isSyncingCloud:
       moveToCloudMutation.isPending ||
       returnLocalMutation.isPending ||

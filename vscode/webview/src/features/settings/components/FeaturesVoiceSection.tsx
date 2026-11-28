@@ -396,19 +396,21 @@ export function FeaturesVoiceSection({
                 Enable voice dictation ({voice.hotkeyHint ?? "Alt+V"})
               </div>
               <div className="mt-0.5 text-muted-ink">
-                {voice.supported && operationAvailable("settings.voice.update")
-                  ? "Native audio capture pipeline ready"
-                  : "Audio capture unavailable in current host environment"}
+                {!voice.supported
+                  ? "Native audio capture hardware or pipeline is unavailable"
+                  : !operationAvailable("settings.voice.update")
+                    ? "Voice dictation settings are unavailable in this VS Code host"
+                    : "Native audio capture pipeline ready"}
               </div>
             </div>
             <Switch
               checked={voice.enabled}
               onCheckedChange={(checked) =>
-                void onUpdateVoice({ enabled: checked })
+                void onUpdateVoice({ enabled: checked }).catch(() => {})
               }
               aria-label="Enable voice dictation"
               data-testid="voice-enabled-switch"
-              disabled={!operationAvailable("settings.voice.update")}
+              disabled={!voice.supported || !operationAvailable("settings.voice.update")}
             />
           </div>
 
@@ -421,12 +423,14 @@ export function FeaturesVoiceSection({
             </div>
             <Select
               value={voice.deviceId ?? voice.devices[0]?.id ?? "default"}
-              onValueChange={(deviceId) => void onUpdateVoice({ deviceId })}
+              onValueChange={(deviceId) =>
+                void onUpdateVoice({ deviceId }).catch(() => {})
+              }
             >
               <SelectTrigger
                 aria-label="Input microphone"
                 data-testid="voice-device-select"
-                disabled={!operationAvailable("settings.voice.update")}
+                disabled={!voice.supported || !operationAvailable("settings.voice.update")}
                 className="w-full sm:w-[230px]"
               >
                 <SelectValue />
@@ -451,11 +455,11 @@ export function FeaturesVoiceSection({
             <Switch
               checked={voice.noiseSuppression}
               onCheckedChange={(checked) =>
-                void onUpdateVoice({ noiseSuppression: checked })
+                void onUpdateVoice({ noiseSuppression: checked }).catch(() => {})
               }
               aria-label="Noise suppression"
               data-testid="voice-noise-suppression-switch"
-                disabled={!operationAvailable("settings.voice.update")}
+              disabled={!voice.supported || !operationAvailable("settings.voice.update")}
             />
           </div>
 
@@ -470,11 +474,11 @@ export function FeaturesVoiceSection({
             <Switch
               checked={voice.autoSendOnSilence}
               onCheckedChange={(checked) =>
-                void onUpdateVoice({ autoSendOnSilence: checked })
+                void onUpdateVoice({ autoSendOnSilence: checked }).catch(() => {})
               }
               aria-label="Auto-send on silence"
               data-testid="voice-autosend-switch"
-                disabled={!operationAvailable("settings.voice.update")}
+              disabled={!voice.supported || !operationAvailable("settings.voice.update")}
             />
           </div>
         </div>

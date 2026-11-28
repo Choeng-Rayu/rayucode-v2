@@ -1,19 +1,28 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { toast } from "sonner";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildDeterministicQrMatrix,
   RemoteView,
 } from "@/features/remote";
-import { createQueryClient, useAppStore } from "@/lib";
+import {
+  __dispatchHostMessageForTest,
+  createQueryClient,
+  handleMockHostMessage,
+  useAppStore,
+} from "@/lib";
+import * as rpcClient from "@/lib/rpc-client";
 
-function renderWithQuery(ui: React.ReactElement) {
-  const client = createQueryClient();
-  return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
-  );
+function renderWithQuery(ui: React.ReactElement, client = createQueryClient()) {
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+    ),
+  };
 }
 
 describe("Remote Access Feature (Real Telegram & Gateway)", () => {
@@ -126,5 +135,179 @@ describe("Remote Access Feature (Real Telegram & Gateway)", () => {
         "Enabled",
       );
     });
+  });
+
+  it("surfaces visible errors on { ok: false } and rejected Remote RPC mutations without publishing success, mutating query cache, or clearing form inputs", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "remote.telegram.status") {
+        const base = (await origCallRpc(
+          method as never,
+          params as never,
+        )) as Record<string, unknown>;
+        return {
+          ...base,
+          linked: false,
+          remoteUninstallEnabled: false,
+        };
+      }
+      if (method === "remote.telegram.linkBotfather") {
+        throw new Error("BotFather token verification rejected by daemon");
+      }
+      if (method === "remote.telegram.uninstallToggle") {
+        return {
+          ok: false,
+          enabled: false,
+          message: "Remote uninstall toggle blocked by host policy",
+        };
+      }
+      if (method === "remote.gateway.revoke") {
+        return {
+          ok: false,
+          message: "Could not revoke paired gateway device",
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      const { client } = renderWithQuery(<RemoteView />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("remote-view")).toBeTruthy();
+      });
+
+      // 1. Rejected @BotFather link retains token + chatId inputs and does not mark linked
+      const botfatherTab = screen.getByTestId("tg-mode-botfather");
+      fireEvent.mouseDown(botfatherTab);
+      fireEvent.click(botfatherTab);
+
+      const tokenInput = (await screen.findByTestId(
+        "tg-byo-token-input",
+      )) as HTMLInputElement;
+      const chatIdInput = screen.getByTestId(
+        "tg-byo-chat-id-input",
+      ) as HTMLInputElement;
+
+      fireEvent.change(tokenInput, {
+        target: { value: "123456789:AAF_ValidBotFatherToken123456789" },
+      });
+      fireEvent.change(chatIdInput, {
+        target: { value: "842910443" },
+      });
+      fireEvent.click(screen.getByTestId("tg-byo-submit-btn"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("remote-feedback-banner").getAttribute("role")).toBe(
+          "alert",
+        );
+      });
+      expect(screen.getByTestId("remote-feedback-banner").textContent).toContain(
+        "BotFather token verification rejected by daemon",
+      );
+      expect(tokenInput.value).toBe("123456789:AAF_ValidBotFatherToken123456789");
+      expect(chatIdInput.value).toBe("842910443");
+      expect(screen.getByTestId("tg-status-pill").textContent).not.toBe(
+        "Connected",
+      );
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+
+      // 2. { ok: false } on remote.telegram.uninstallToggle does not flip cache or badge to Allowed
+      fireEvent.click(screen.getByTestId("tg-remote-uninstall-switch"));
+      await waitFor(() => {
+        expect(screen.getByTestId("tg-uninstall-confirm-dialog")).toBeTruthy();
+      });
+      fireEvent.click(screen.getByTestId("tg-uninstall-confirm-btn"));
+
+      await waitFor(() => {
+        expect(
+          toastErrorSpy.mock.calls.length > 0 ||
+            screen.queryByRole("alert") !== null,
+        ).toBe(true);
+      });
+      expect(
+        screen.getByTestId("tg-remote-uninstall-badge").textContent,
+      ).not.toContain("Allowed");
+      const tgCached = client.getQueryData<{ remoteUninstallEnabled?: boolean }>([
+        "remote",
+        "telegram",
+        "status",
+      ]);
+      expect(tgCached?.remoteUninstallEnabled).toBe(false);
+
+      // 3. { ok: false } on remote.gateway.revoke does not remove device from cache
+      const cloudTab = screen.getByTestId("remote-tab-cloud-gateway");
+      fireEvent.mouseDown(cloudTab);
+      fireEvent.click(cloudTab);
+      await waitFor(() => {
+        expect(screen.getByTestId("cloud-gateway-tab")).toBeTruthy();
+      });
+
+      const infraBefore = client.getQueryData<{
+        gateway: { devices: Array<{ id: string }> };
+      }>(["remote", "infra", "status"]);
+      const deviceCountBefore = infraBefore?.gateway.devices.length ?? 0;
+      const firstDeviceId = infraBefore?.gateway.devices[0]?.id;
+      if (firstDeviceId) {
+        fireEvent.click(screen.getByTestId(`gateway-revoke-${firstDeviceId}`));
+        await waitFor(() => {
+          expect(rpcSpy).toHaveBeenCalledWith("remote.gateway.revoke", {
+            deviceId: firstDeviceId,
+          });
+        });
+        const infraAfter = client.getQueryData<{
+          gateway: { devices: Array<{ id: string }> };
+        }>(["remote", "infra", "status"]);
+        expect(infraAfter?.gateway.devices.length).toBe(deviceCountBefore);
+      }
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+    }
+  });
+
+  it("keeps unsupported Cloud session & environment controls disabled in VS Code webview host mode", async () => {
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg: unknown) => {
+        handleMockHostMessage(msg as never, __dispatchHostMessageForTest);
+      },
+      getState: () => undefined,
+      setState: () => {},
+    });
+
+    try {
+      renderWithQuery(<RemoteView />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("remote-view")).toBeTruthy();
+      });
+
+      const cloudTab = screen.getByTestId("remote-tab-cloud-gateway");
+      fireEvent.mouseDown(cloudTab);
+      fireEvent.click(cloudTab);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("cloud-gateway-tab")).toBeTruthy();
+      });
+
+      expect(
+        (screen.getByTestId("cloud-sync-env-btn") as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByTestId("cloud-move-session-btn") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+    } finally {
+      window.acquireVsCodeApi = prevAcquire;
+    }
   });
 });

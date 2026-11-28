@@ -19,6 +19,10 @@ import {
 } from "../shared/vscodeProtocol.js";
 import { resolveMarkdownPreviewPath } from "../host/bridges/editorBridge.js";
 import {
+  buildConnectedStatusBarTooltipLines,
+  formatStatusBarVersionLabel,
+} from "../host/bridges/statusBarBridge.js";
+import {
   resolveMarkdownPreviewBaseDirForMessage,
   resolveTerminalCwdForMessage,
 } from "../host/panel/workspacePanelManager.js";
@@ -88,6 +92,8 @@ class FakeRayucodeClient extends EventEmitter {
     forkOnConflict?: boolean;
   }> = [];
   readonly authNotifyCalls: string[] = [];
+  readonly archiveSessionCalls: string[] = [];
+  readonly restoreSessionCalls: string[] = [];
   throwTimeoutOnControl = false;
   throwBusyOnControl = false;
   onImportExternalSessions?: (
@@ -257,8 +263,12 @@ class FakeRayucodeClient extends EventEmitter {
     this.setEffortCalls.push({ sessionId, effort });
   }
   async setSessionSaved(): Promise<void> {}
-  async archiveSession(): Promise<void> {}
-  async restoreSession(): Promise<void> {}
+  async archiveSession(sessionId: string): Promise<void> {
+    this.archiveSessionCalls.push(sessionId);
+  }
+  async restoreSession(sessionId: string): Promise<void> {
+    this.restoreSessionCalls.push(sessionId);
+  }
 
   async notifyAuthChanged(provider: string): Promise<void> {
     this.authNotifyCalls.push(provider);
@@ -2656,4 +2666,145 @@ test("SessionHubCore send_message timeout/disconnect checks history BEFORE markT
     `markTurnSettled:${created.sessionId}`,
   ]);
   assert.equal(pool.getActiveTurnSessionIds().includes(created.sessionId), false);
+});
+
+test("SessionHubCore setSessionArchivedLedger stores archive/restore locally in workspace ledger, preserves pre-existing archived IDs across reloads, and never invokes engine archive/restore RPCs", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-archive-");
+  const wsOne = path.join(tmpDir, "ws-archive");
+  fs.mkdirSync(wsOne, { recursive: true });
+  const registryPath = path.join(tmpDir, "workspaces.json");
+
+  const registry1 = new WorkspaceRegistry({
+    filePath: registryPath,
+    enableWatch: false,
+  });
+  const sessionsById = new Map<string, SessionInfo>([
+    [
+      "ses_preexisting_arch",
+      {
+        session_id: "ses_preexisting_arch",
+        title: "Pre-existing archived",
+        working_dir: wsOne,
+        status: "idle",
+        updated_at_ms: 1000,
+      },
+    ],
+    [
+      "ses_sidebar_target",
+      {
+        session_id: "ses_sidebar_target",
+        title: "Sidebar target",
+        working_dir: wsOne,
+        status: "idle",
+        updated_at_ms: 2000,
+      },
+    ],
+  ]);
+  const bridge = new FakeBridgeManager({ sessionsById });
+  const { adapter } = createHostAdapter({
+    folders: [{ name: "ws-archive", fsPath: wsOne }],
+    state: {
+      [ARCHIVED_SESSIONS_KEY]: { ses_preexisting_arch: true },
+    },
+  });
+
+  const hub1 = new SessionHubCore(adapter, bridge, {
+    workspaceRegistry: registry1,
+  });
+  t.after(() => {
+    hub1.dispose();
+    registry1.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Archive a second session while a pre-existing archived session is already present
+  const afterArchive = await hub1.setSessionArchivedLedger("ses_sidebar_target", true);
+  assert.ok(afterArchive.archivedSessionIds.includes("ses_preexisting_arch"));
+  assert.ok(afterArchive.archivedSessionIds.includes("ses_sidebar_target"));
+  assert.deepEqual(adapter.workspaceState.get(ARCHIVED_SESSIONS_KEY, {}), {
+    ses_preexisting_arch: true,
+    ses_sidebar_target: true,
+  });
+
+  // Never calls client.archiveSession or client.restoreSession (control or dialed clients)
+  for (const client of [bridge.controlClient, ...bridge.dialedClients]) {
+    assert.deepEqual(client.archiveSessionCalls, []);
+    assert.deepEqual(client.restoreSessionCalls, []);
+  }
+  assert.equal(bridge.dialedClients.length, 0);
+
+  // Reload a fresh SessionHubCore + WorkspaceRegistry pointing at the same workspaces.json & workspaceState
+  const registry2 = new WorkspaceRegistry({
+    filePath: registryPath,
+    enableWatch: false,
+  });
+  const hub2 = new SessionHubCore(adapter, bridge, {
+    workspaceRegistry: registry2,
+  });
+  t.after(() => {
+    hub2.dispose();
+    registry2.dispose();
+  });
+
+  const reloadedLedger = await hub2.loadWorkspaceLedger();
+  assert.ok(reloadedLedger.archivedSessionIds.includes("ses_preexisting_arch"));
+  assert.ok(reloadedLedger.archivedSessionIds.includes("ses_sidebar_target"));
+
+  // Restore ses_sidebar_target locally -> pre-existing archived ID remains preserved and no engine RPC is invoked
+  const afterRestore = await hub2.setSessionArchivedLedger("ses_sidebar_target", false);
+  assert.ok(afterRestore.archivedSessionIds.includes("ses_preexisting_arch"));
+  assert.equal(afterRestore.archivedSessionIds.includes("ses_sidebar_target"), false);
+  assert.deepEqual(adapter.workspaceState.get(ARCHIVED_SESSIONS_KEY, {}), {
+    ses_preexisting_arch: true,
+    ses_sidebar_target: false,
+  });
+  for (const client of [bridge.controlClient, ...bridge.dialedClients]) {
+    assert.deepEqual(client.archiveSessionCalls, []);
+    assert.deepEqual(client.restoreSessionCalls, []);
+  }
+  assert.equal(bridge.dialedClients.length, 0);
+});
+
+test("StatusBarBridge formats negotiated protocol version and engine fallback without hardcoding v1.14", () => {
+  assert.equal(
+    formatStatusBarVersionLabel({ version: "rayu-3.2.0", protocolVersion: "1.16" }),
+    "rayu-3.2.0",
+  );
+  assert.equal(
+    formatStatusBarVersionLabel({ protocolVersion: "1" }),
+    "v1",
+  );
+  assert.equal(
+    formatStatusBarVersionLabel({ protocolVersion: "1.16" }),
+    "v1.16",
+  );
+  assert.equal(
+    formatStatusBarVersionLabel({}),
+    "engine",
+  );
+
+  const tooltipWithProto = buildConnectedStatusBarTooltipLines({
+    daemonStatus: {
+      state: "connected",
+      protocolVersion: "1",
+      latencyMs: 4,
+      capabilities: ["permissions"],
+    },
+    model: "claude-sonnet-4-6",
+    permissionMode: "default",
+    backgroundTasks: [],
+  }).join("\n");
+  assert.match(tooltipWithProto, /\*\*RayuCode\*\* \(v1 · 4ms\)/);
+  assert.equal(tooltipWithProto.includes("v1.14"), false);
+
+  const tooltipNoVersion = buildConnectedStatusBarTooltipLines({
+    daemonStatus: {
+      state: "connected",
+      capabilities: [],
+    },
+    permissionMode: "acceptEdits",
+    backgroundTasks: [],
+  }).join("\n");
+  assert.match(tooltipNoVersion, /\*\*RayuCode\*\* \(engine\)/);
+  assert.equal(tooltipNoVersion.includes("v1.14"), false);
 });

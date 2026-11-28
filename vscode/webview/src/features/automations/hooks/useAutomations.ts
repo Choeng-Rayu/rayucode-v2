@@ -84,23 +84,24 @@ export interface StartOvernightInput {
 export function useStartOvernightRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: StartOvernightInput) => {
-      const res = await callRpc("automations.overnight.start", {
-        mission: input.mission,
-        duration: input.duration,
-        maxAgents: input.maxAgents,
-        permissionMode: input.permissionMode,
-        workingDir: input.workingDir,
-      });
-      const enriched: OvernightRunView = {
-        ...res.run,
-        mode: input.mode ?? res.run.mode ?? "worktree",
-        repo: input.repo ?? res.run.repo ?? "rayucode-v2",
-        branch: input.branch ?? res.run.branch ?? "overnight/auto",
-        wakesAt: res.run.wakesAt ?? "06:00",
-        handoffAt: input.handoffAt ?? res.run.handoffAt ?? "07:30",
-      };
-      return enriched;
+    mutationFn: async (input: StartOvernightInput): Promise<OvernightRunView> => {
+      // `automations.overnight.start` returns a run receipt rather than `{ ok }`;
+      // an absent/empty receipt means the engine did not start a run.
+      const res = await requireOperation(
+        callRpc("automations.overnight.start", {
+          mission: input.mission,
+          duration: input.duration,
+          maxAgents: input.maxAgents,
+          permissionMode: input.permissionMode,
+          workingDir: input.workingDir,
+        }).then((receipt) => ({
+          ...receipt,
+          ok: Boolean(receipt?.run?.runId),
+          message: "The engine did not return an overnight run receipt.",
+        })),
+      );
+      // Only engine-reported run facts are shown; no fabricated schedule/branch defaults.
+      return res.run;
     },
     onSuccess: (created) => {
       queryClient.setQueryData<OvernightRunView[]>(
@@ -224,21 +225,21 @@ export function useCreateSchedule() {
       schedule: string;
       permissionMode?: PermissionModeId;
       repo?: string;
-    }) => {
-      const res = await callRpc("automations.schedules.create", {
-        title: params.title,
-        prompt: params.prompt,
-        schedule: params.schedule,
-        permissionMode: params.permissionMode,
-      });
-      const enriched: ScheduleItemView = {
-        ...res.schedule,
-        permissionMode: params.permissionMode ?? res.schedule.permissionMode,
-        repo: params.repo ?? res.schedule.repo ?? "rayucode-v2",
-        description: res.schedule.description ?? params.prompt,
-        nextRunAt: res.schedule.nextRunAt ?? "Scheduled",
-      };
-      return enriched;
+    }): Promise<ScheduleItemView> => {
+      const res = await requireOperation(
+        callRpc("automations.schedules.create", {
+          title: params.title,
+          prompt: params.prompt,
+          schedule: params.schedule,
+          permissionMode: params.permissionMode,
+        }).then((receipt) => ({
+          ...receipt,
+          ok: Boolean(receipt?.schedule?.id),
+          message: "The engine did not return a schedule receipt.",
+        })),
+      );
+      // Show the engine receipt as-is: no fabricated repo or next-run labels.
+      return res.schedule;
     },
     onSuccess: (created) => {
       queryClient.setQueryData<ScheduleItemView[]>(
@@ -377,18 +378,22 @@ export function useQualityActions() {
 
   const runReviewMutation = useMutation({
     mutationFn: async (sessionId?: string) => {
-      return callRpc(
-        "automations.quality.runReview",
-        sessionId ? { sessionId } : undefined,
+      return requireOperation(
+        callRpc(
+          "automations.quality.runReview",
+          sessionId ? { sessionId } : undefined,
+        ),
       );
     },
   });
 
   const runJudgeMutation = useMutation({
     mutationFn: async (sessionId?: string) => {
-      return callRpc(
-        "automations.quality.runJudge",
-        sessionId ? { sessionId } : undefined,
+      return requireOperation(
+        callRpc(
+          "automations.quality.runJudge",
+          sessionId ? { sessionId } : undefined,
+        ),
       );
     },
   });

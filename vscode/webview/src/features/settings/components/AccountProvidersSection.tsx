@@ -496,17 +496,34 @@ export function AccountProvidersSection({
                   </div>
 
                   <div className="mt-3 space-y-2">
-                    {(analytics?.breakdown ?? []).map((row) => (
+                    {analytics == null || analytics.available === false ? (
                       <div
-                        key={row.key}
-                        className="flex items-center justify-between text-xs"
+                        data-testid="analytics-unavailable-notice"
+                        className="rounded-lg border border-hairline bg-inset px-3 py-2.5 text-xs text-muted-ink"
                       >
-                        <span className="text-body">{row.label}</span>
-                        <span className="font-mono text-ink tabular-nums">
-                          {row.credits.toLocaleString()} cr ({row.percent}%)
-                        </span>
+                        Live usage analytics are unavailable while offline or
+                        disconnected from Rayu Cloud.
                       </div>
-                    ))}
+                    ) : (analytics.breakdown ?? []).length === 0 ? (
+                      <div
+                        data-testid="analytics-empty-notice"
+                        className="rounded-lg border border-hairline bg-inset px-3 py-2.5 text-xs text-muted-ink"
+                      >
+                        No metered credit usage recorded for this period.
+                      </div>
+                    ) : (
+                      (analytics.breakdown ?? []).map((row) => (
+                        <div
+                          key={row.key}
+                          className="flex items-center justify-between text-xs"
+                        >
+                          <span className="text-body">{row.label}</span>
+                          <span className="font-mono text-ink tabular-nums">
+                            {row.credits.toLocaleString()} cr ({row.percent}%)
+                          </span>
+                        </div>
+                      ))
+                    )}
                   </div>
 
                   {(analytics?.topSessions ?? []).length > 0 && (
@@ -911,7 +928,12 @@ export function AccountProvidersSection({
           data-testid="providers-list"
           className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane"
         >
-          {visibleProviders.map((provider) => {
+          {visibleProviders.length === 0 ? (
+            <div className="px-4 py-5 text-center text-xs text-muted-ink">
+              No providers match the current filter.
+            </div>
+          ) : (
+            visibleProviders.map((provider) => {
             const isEditing = editingProviderId === provider.id;
             const isReady =
               provider.status === "ready" || provider.status === "env_key";
@@ -943,7 +965,9 @@ export function AccountProvidersSection({
                             ? "Env key"
                             : provider.status === "expired"
                               ? "Expired"
-                              : "Needs key"}
+                              : provider.status === ("unavailable" as string)
+                                ? "Unavailable"
+                                : "Needs key"}
                       </span>
                       {provider.authMethod && provider.authMethod !== "none" && (
                         <span className="rounded-full border border-hairline bg-inset px-1.5 py-0.5 font-mono text-[10px] text-muted-ink uppercase">
@@ -1052,7 +1076,8 @@ export function AccountProvidersSection({
                 )}
               </div>
             );
-          })}
+          })
+          )}
         </div>
       </div>
     </section>

@@ -1,10 +1,14 @@
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import { formatRayuCredits } from "@rayu-dev/rayucode-sdk";
 import type {
   BackgroundProcessView,
   DaemonStatusView,
   PermissionModeId,
 } from "../../shared/vscodeProtocol.js";
+
+function getVscode(): typeof vscode {
+  return require("vscode") as typeof vscode;
+}
 
 const PERMISSION_LABELS: Record<PermissionModeId, string> = {
   default: "Ask",
@@ -21,6 +25,18 @@ function formatShortModel(model?: string): string {
   return `${cleaned.slice(0, 20)}…`;
 }
 
+export function formatStatusBarVersionLabel(
+  daemonStatus: Pick<DaemonStatusView, "version" | "protocolVersion">,
+): string {
+  if (daemonStatus.version) return daemonStatus.version;
+  if (daemonStatus.protocolVersion) {
+    return daemonStatus.protocolVersion.startsWith("v")
+      ? daemonStatus.protocolVersion
+      : `v${daemonStatus.protocolVersion}`;
+  }
+  return "engine";
+}
+
 export interface StatusBarSnapshot {
   daemonStatus: DaemonStatusView;
   model?: string;
@@ -29,6 +45,56 @@ export interface StatusBarSnapshot {
   sessionCredits?: number;
   isStreaming?: boolean;
   signedIn?: boolean;
+}
+
+export function buildConnectedStatusBarTooltipLines(
+  snapshot: StatusBarSnapshot,
+): string[] {
+  const {
+    daemonStatus,
+    model,
+    permissionMode,
+    backgroundTasks,
+    sessionCredits,
+    isStreaming,
+    signedIn,
+  } = snapshot;
+  const runningCount = backgroundTasks.filter(
+    (task) => task.status === "running" || task.status === "stalled",
+  ).length;
+  const stalledCount = backgroundTasks.filter(
+    (task) => task.status === "stalled",
+  ).length;
+  const modeLabel = PERMISSION_LABELS[permissionMode] ?? "Ask";
+  const versionLabel = formatStatusBarVersionLabel(daemonStatus);
+
+  const tooltipLines = [
+    `**RayuCode** (${versionLabel}${
+      daemonStatus.latencyMs ? ` · ${daemonStatus.latencyMs}ms` : ""
+    })`,
+    `- **Status:** ${isStreaming ? "Working (streaming turn)" : "Ready"}`,
+    `- **Model:** ${model ?? "Default"}`,
+    `- **Permissions:** ${modeLabel}`,
+  ];
+  if (signedIn !== undefined) {
+    tooltipLines.push(
+      `- **Account:** ${signedIn ? "Signed in" : "Signed out"}`,
+    );
+  }
+  if (runningCount > 0) {
+    tooltipLines.push(
+      `- **Background Processes:** ${runningCount} active${
+        stalledCount > 0 ? ` (${stalledCount} stalled)` : ""
+      }`,
+    );
+  }
+  if (sessionCredits !== undefined && sessionCredits > 0) {
+    tooltipLines.push(
+      `- **Session Credits:** ${formatRayuCredits(sessionCredits)}`,
+    );
+  }
+  tooltipLines.push("- *Click for RayuCode Quick Actions*");
+  return tooltipLines;
 }
 
 /**
@@ -41,9 +107,10 @@ export class StatusBarBridge implements vscode.Disposable {
   private activeRunningTasks = 0;
 
   constructor() {
-    this.item = vscode.window.createStatusBarItem(
+    const vscodeApi = getVscode();
+    this.item = vscodeApi.window.createStatusBarItem(
       "rayucode.status",
-      vscode.StatusBarAlignment.Right,
+      vscodeApi.StatusBarAlignment.Right,
       100,
     );
     this.item.name = "RayuCode Status";
@@ -64,6 +131,7 @@ export class StatusBarBridge implements vscode.Disposable {
   }
 
   update(snapshot: StatusBarSnapshot): void {
+    const vscodeApi = getVscode();
     const {
       daemonStatus,
       model,
@@ -97,7 +165,7 @@ export class StatusBarBridge implements vscode.Disposable {
       const verb = daemonStatus.state === "connected" ? "Updating" : "Installing";
       this.item.text = `$(sync~spin) ${verb} Rayu${pct}`;
       this.item.backgroundColor = undefined;
-      this.item.tooltip = new vscode.MarkdownString(
+      this.item.tooltip = new vscodeApi.MarkdownString(
         [
           "**RayuCode Engine — Please Wait**",
           `- ${daemonStatus.statusMessage ?? `Downloading Rayu engine${ver} — please wait...`}`,
@@ -112,7 +180,7 @@ export class StatusBarBridge implements vscode.Disposable {
       this.item.text = "$(rayucode) Offline";
       this.item.backgroundColor =
         daemonStatus.state === "error"
-          ? new vscode.ThemeColor("statusBarItem.warningBackground")
+          ? new vscodeApi.ThemeColor("statusBarItem.warningBackground")
           : undefined;
       const offlineLines = [
         "**RayuCode Runtime Offline**",
@@ -120,7 +188,7 @@ export class StatusBarBridge implements vscode.Disposable {
         ...(signedIn === false ? ["- **Account:** Signed out"] : []),
         "- *Click for RayuCode Quick Actions*",
       ];
-      this.item.tooltip = new vscode.MarkdownString(offlineLines.join("\n"));
+      this.item.tooltip = new vscodeApi.MarkdownString(offlineLines.join("\n"));
       return;
     }
 
@@ -131,7 +199,7 @@ export class StatusBarBridge implements vscode.Disposable {
     ) {
       this.item.text = "$(sync~spin) Rayu · Connecting";
       this.item.backgroundColor = undefined;
-      this.item.tooltip = new vscode.MarkdownString(
+      this.item.tooltip = new vscodeApi.MarkdownString(
         [
           "**RayuCode**",
           "- Connecting to RayuCode Rust daemon...",
@@ -163,37 +231,12 @@ export class StatusBarBridge implements vscode.Disposable {
 
     this.item.backgroundColor =
       stalledCount > 0
-        ? new vscode.ThemeColor("statusBarItem.warningBackground")
+        ? new vscodeApi.ThemeColor("statusBarItem.warningBackground")
         : undefined;
 
-    const tooltipLines = [
-      `**RayuCode** (${daemonStatus.version ?? "v1.14"}${
-        daemonStatus.latencyMs ? ` · ${daemonStatus.latencyMs}ms` : ""
-      })`,
-      `- **Status:** ${isStreaming ? "Working (streaming turn)" : "Ready"}`,
-      `- **Model:** ${model ?? "Default"}`,
-      `- **Permissions:** ${modeLabel}`,
-    ];
-    if (signedIn !== undefined) {
-      tooltipLines.push(
-        `- **Account:** ${signedIn ? "Signed in" : "Signed out"}`,
-      );
-    }
-    if (runningCount > 0) {
-      tooltipLines.push(
-        `- **Background Processes:** ${runningCount} active${
-          stalledCount > 0 ? ` (${stalledCount} stalled)` : ""
-        }`,
-      );
-    }
-    if (sessionCredits !== undefined && sessionCredits > 0) {
-      tooltipLines.push(
-        `- **Session Credits:** ${formatRayuCredits(sessionCredits)}`,
-      );
-    }
-    tooltipLines.push("- *Click for RayuCode Quick Actions*");
-
-    this.item.tooltip = new vscode.MarkdownString(tooltipLines.join("\n"));
+    this.item.tooltip = new vscodeApi.MarkdownString(
+      buildConnectedStatusBarTooltipLines(snapshot).join("\n"),
+    );
   }
 
   dispose(): void {

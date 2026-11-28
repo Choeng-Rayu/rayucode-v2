@@ -190,7 +190,7 @@ export function RuntimeDoctorSection({
               variant="default"
               size="xs"
               disabled={isPingingDaemon}
-              onClick={() => void onPingDaemon()}
+              onClick={() => void onPingDaemon().catch(() => {})}
               data-testid="runtime-ping-btn"
             >
               <span>{isPingingDaemon ? "Pinging..." : "Ping"}</span>
@@ -200,7 +200,7 @@ export function RuntimeDoctorSection({
               type="button"
               variant="outline"
               size="xs"
-              onClick={() => void onReconnectDaemon()}
+              onClick={() => void onReconnectDaemon().catch(() => {})}
               data-testid="runtime-reconnect-btn"
             >
               <span>Reconnect</span>
@@ -212,7 +212,7 @@ export function RuntimeDoctorSection({
                 variant="outline"
                 size="xs"
                 disabled={isUpdatingEngine || isTransferring}
-                onClick={() => void onUpdateEngine()}
+                onClick={() => void onUpdateEngine().catch(() => {})}
                 data-testid="runtime-update-engine-btn"
               >
                 <Download className="size-3" aria-hidden="true" />
@@ -231,7 +231,7 @@ export function RuntimeDoctorSection({
               variant="primary"
               size="xs"
               disabled={isReloadingDaemon}
-              onClick={() => void onReloadDaemonAndBridge()}
+              onClick={() => void onReloadDaemonAndBridge().catch(() => {})}
               data-testid="reload-daemon-bridge-btn"
             >
               <RefreshCw
@@ -245,7 +245,7 @@ export function RuntimeDoctorSection({
               type="button"
               variant="ghost"
               size="xs"
-              onClick={() => void onOpenOutputLog()}
+              onClick={() => void onOpenOutputLog().catch(() => {})}
               data-testid="runtime-open-log-btn"
             >
               <FileText className="size-3" aria-hidden="true" />
@@ -314,7 +314,11 @@ export function RuntimeDoctorSection({
           <div>
             <div className="text-[11px] text-muted-ink">Harness protocol</div>
             <div className="mt-0.5 font-mono text-brand-text">
-              v{daemonStatus.protocolVersion ?? "1.14"}
+              {daemonStatus.protocolVersion
+                ? `v${daemonStatus.protocolVersion}`
+                : daemonStatus.state === "connected"
+                  ? "v1"
+                  : "Offline"}
             </div>
           </div>
           <div>
@@ -375,7 +379,7 @@ export function RuntimeDoctorSection({
               type="button"
               variant="default"
               size="xs"
-              onClick={() => void onUpdateRuntime({ socketPath })}
+              onClick={() => void onUpdateRuntime({ socketPath }).catch(() => {})}
               data-testid="runtime-save-socket-btn"
             >
               Save
@@ -400,7 +404,7 @@ export function RuntimeDoctorSection({
               type="button"
               variant="default"
               size="xs"
-              onClick={() => void onUpdateRuntime({ binaryPath })}
+              onClick={() => void onUpdateRuntime({ binaryPath }).catch(() => {})}
               data-testid="runtime-save-binary-btn"
             >
               Save
@@ -420,7 +424,7 @@ export function RuntimeDoctorSection({
           <Switch
             checked={runtime.autoStart}
             onCheckedChange={(checked) =>
-              void onUpdateRuntime({ autoStart: checked })
+              void onUpdateRuntime({ autoStart: checked }).catch(() => {})
             }
             aria-label="Auto-start shared daemon"
             data-testid="runtime-autostart-switch"
@@ -439,7 +443,9 @@ export function RuntimeDoctorSection({
           <Select
             value={runtime.transport}
             onValueChange={(v) =>
-              void onUpdateRuntime({ transport: v as ProviderTransport })
+              void onUpdateRuntime({
+                transport: v as ProviderTransport,
+              }).catch(() => {})
             }
           >
             <SelectTrigger
@@ -476,8 +482,13 @@ export function RuntimeDoctorSection({
               type="button"
               variant="default"
               size="xs"
-              disabled={isRunningDoctor}
-              onClick={() => void onRunDoctor("providers")}
+              disabled={!isConnected || isRunningDoctor}
+              title={
+                !isConnected
+                  ? "Connect to the local Rayu daemon to run Provider Doctor"
+                  : undefined
+              }
+              onClick={() => void onRunDoctor("providers").catch(() => {})}
               data-testid="run-provider-doctor-btn"
             >
               <span>Run Provider Doctor</span>
@@ -486,8 +497,13 @@ export function RuntimeDoctorSection({
               type="button"
               variant="default"
               size="xs"
-              disabled={isRunningDoctor}
-              onClick={() => void onRunDoctor("auth")}
+              disabled={!isConnected || isRunningDoctor}
+              title={
+                !isConnected
+                  ? "Connect to the local Rayu daemon to run Auth Doctor"
+                  : undefined
+              }
+              onClick={() => void onRunDoctor("auth").catch(() => {})}
               data-testid="run-auth-doctor-btn"
             >
               <span>Run Auth Doctor</span>
@@ -501,9 +517,9 @@ export function RuntimeDoctorSection({
         >
           {doctorResults.length === 0 ? (
             <div className="px-4 py-5 text-center text-xs text-muted-ink">
-              Click &ldquo;Run Provider Doctor&rdquo; or &ldquo;Run Auth
-              Doctor&rdquo; to inspect live endpoint reachability and credential
-              health.
+              {isConnected
+                ? "Click \u201cRun Provider Doctor\u201d or \u201cRun Auth Doctor\u201d to inspect live endpoint reachability and credential health."
+                : "Rayu daemon is offline \u2014 connect the local daemon to run Provider & Auth Doctor checks."}
             </div>
           ) : (
             doctorResults.map((chk) => (
@@ -560,8 +576,13 @@ export function RuntimeDoctorSection({
               type="button"
               variant="ghost"
               size="xs"
-              disabled={isRunningSelfDev}
-              onClick={() => void onRunSelfDev("status")}
+              disabled={!isConnected || isRunningSelfDev}
+              title={
+                !isConnected
+                  ? "Connect to the local Rayu daemon to check self-dev status"
+                  : undefined
+              }
+              onClick={() => void onRunSelfDev("status").catch(() => {})}
               data-testid="selfdev-status-btn"
             >
               Status
@@ -572,7 +593,7 @@ export function RuntimeDoctorSection({
               size="xs"
               disabled
               title="Use Rayu self-dev in the terminal"
-              onClick={() => void onRunSelfDev("build")}
+              onClick={() => void onRunSelfDev("build").catch(() => {})}
               data-testid="selfdev-build-btn"
             >
               Build Self-Dev
@@ -583,7 +604,7 @@ export function RuntimeDoctorSection({
               size="xs"
               disabled
               title="Use Rayu self-dev in the terminal"
-              onClick={() => void onRunSelfDev("reload")}
+              onClick={() => void onRunSelfDev("reload").catch(() => {})}
               data-testid="selfdev-reload-btn"
             >
               Repoint &amp; Reload
@@ -622,7 +643,7 @@ export function RuntimeDoctorSection({
               variant="ghost"
               size="xs"
               disabled={telemetry.lockedByEnv}
-              onClick={() => void onSetTelemetry("all", true)}
+              onClick={() => void onSetTelemetry("all", true).catch(() => {})}
               data-testid="telemetry-enable-all-btn"
             >
               Enable All
@@ -632,7 +653,7 @@ export function RuntimeDoctorSection({
               variant="ghost"
               size="xs"
               disabled={telemetry.lockedByEnv}
-              onClick={() => void onSetTelemetry("none", false)}
+              onClick={() => void onSetTelemetry("none", false).catch(() => {})}
               data-testid="telemetry-disable-all-btn"
             >
               Disable All
@@ -658,7 +679,7 @@ export function RuntimeDoctorSection({
                 checked={Boolean(telemetry[cat.id])}
                 disabled={telemetry.lockedByEnv}
                 onCheckedChange={(checked) =>
-                  void onSetTelemetry(cat.id, checked)
+                  void onSetTelemetry(cat.id, checked).catch(() => {})
                 }
                 aria-label={cat.label}
                 data-testid={`telemetry-switch-${cat.id}`}
@@ -695,7 +716,11 @@ export function RuntimeDoctorSection({
               }).then(() => setFeedbackSummary("")).catch(() => {});
             }}
             disabled={!operationAvailable("settings.feedback.submit")}
-            title="Feedback submission is unavailable in this runtime"
+            title={
+              !operationAvailable("settings.feedback.submit")
+                ? "Feedback submission is unavailable in this runtime"
+                : undefined
+            }
             data-testid="maintainer-feedback-submit"
           >
             Send Feedback

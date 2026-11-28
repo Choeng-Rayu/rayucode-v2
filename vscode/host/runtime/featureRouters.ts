@@ -1636,16 +1636,6 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     }
   };
 
-  /**
-   * Read-only runtime command helper that degrades to `{}` when offline or idle-locked.
-   * NEVER use for mutations — use `requireRuntimeCmd` so daemon errors propagate honestly.
-   */
-  const safeRuntimeCmd = async (
-    command: RuntimeCommand,
-    args: string[] = [],
-    sessionId?: string,
-  ): Promise<Record<string, unknown>> => (await execRuntimeCmd(command, args, sessionId)).data;
-
   const clientSupportsFileChanges = (client: RayucodeClient): boolean => {
     if (typeof client.supports === "function") {
       return client.supports("file_changes");
@@ -2400,7 +2390,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       if (params.scope && params.scope !== "all") {
         args.push("--scope", params.scope);
       }
-      const data = await safeRuntimeCmd("session_search", args);
+      const { data } = await requireRuntimeCmd("session_search", args);
       const rawMatches = asArray(data.results ?? data.matches ?? data.hits);
       const validSources = new Set([
         "rayu",
@@ -2598,7 +2588,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { tasks: tasks.filter((t) => t.sessionId === targetSessionId) };
     },
     "background.status": async (params) => {
-      const data = await safeRuntimeCmd("background", ["status", params.taskId]);
+      const { data } = await requireRuntimeCmd("background", ["status", params.taskId]);
       if (data.task && typeof data.task === "object") {
         return {
           task: mapRawBackgroundTask(
@@ -2615,7 +2605,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "background.output": async (params): Promise<BackgroundProcessOutputView> => {
       const maxBytes = params.maxBytes ?? 131_072;
-      const data = await safeRuntimeCmd("background", [
+      const { data } = await requireRuntimeCmd("background", [
         "output",
         params.taskId,
         String(maxBytes),
@@ -3212,7 +3202,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.overnight.log": async (params) => {
       // Rust parse_overnight_command accepts 1-arg `["log"]` and returns `data.events`
-      const data = await safeRuntimeCmd("overnight", ["log"]);
+      const { data } = await requireRuntimeCmd("overnight", ["log"]);
       const rawEvents = asArray(data.events ?? data.lines);
       const formatted = rawEvents.map((ev) => {
         if (typeof ev === "string") return ev;
@@ -3242,8 +3232,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.overnight.report": async (params) => {
       // Rust parse_overnight_command accepts 1-arg `["review"]` and returns `{ run_id, html, path, tasks }` + markdown in `out.message`
-      const out = await execRuntimeCmd("overnight", ["review"]);
-      const data = out.data;
+      const { data, message } = await requireRuntimeCmd("overnight", ["review"]);
       const r = asRecord(data.run ?? data);
       const rawTasks = asArray(data.tasks ?? r.tasks);
       const tasks = rawTasks.map((t, idx) => {
@@ -3295,7 +3284,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         markdown:
           typeof data.markdown === "string"
             ? data.markdown
-            : out.message || undefined,
+            : message || undefined,
         html: typeof data.html === "string" ? data.html : undefined,
       };
     },
@@ -3444,7 +3433,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "automations.ambient.approvals": async () => {
-      const data = await safeRuntimeCmd("ambient", ["approvals"]);
+      const { data } = await requireRuntimeCmd("ambient", ["approvals"]);
       return {
         approvals: mapAmbientApprovals(data.approvals ?? data.pending_approvals),
       };
@@ -3458,10 +3447,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "automations.quality.status": async (): Promise<QualityStatusView> => {
-      const [ar, aj] = await Promise.all([
-        safeRuntimeCmd("autoreview", ["status"]),
-        safeRuntimeCmd("autojudge", ["status"]),
+      const [arRes, ajRes] = await Promise.all([
+        requireRuntimeCmd("autoreview", ["status"]),
+        requireRuntimeCmd("autojudge", ["status"]),
       ]);
+      const ar = arRes.data;
+      const aj = ajRes.data;
       return {
         autoReviewEnabled: Boolean(ar.enabled ?? false),
         autoReviewModel: typeof ar.model === "string" ? ar.model : undefined,
@@ -3511,12 +3502,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.quality.productivity": async (): Promise<ProductivityReportView> => {
       // Rust `productivity` accepts `[] | ["status"|"show"]` (no range arg!)
-      const out = await execRuntimeCmd("productivity", []);
-      const data = out.data;
+      const { data, message } = await requireRuntimeCmd("productivity", []);
       const imageObj = asRecord(data.image);
       const markdown =
-        out.ok && out.message
-          ? out.message
+        message
+          ? message
           : typeof data.markdown === "string"
             ? data.markdown
             : typeof data.report === "string"
@@ -4162,37 +4152,17 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const daemonOnline = deps.bridgeManager.getStatus().state === "connected";
       if (!daemonOnline) {
         pendingTelegramPairing = null;
-        return {
-          linked: false,
-          configured: false,
-          statusLabel: "Daemon offline",
-          daemonOnline: false,
-          remoteUninstallEnabled: false,
-          authPath: "~/.rayu/telegram-remote.json",
-          daemonError: "Start the local Rayu daemon to manage Telegram remote.",
-          approvals: [],
-        };
+        throw new HarnessError(
+          "disconnected",
+          "Start the local Rayu daemon to manage Telegram remote.",
+        );
       }
       const [statusRes, approvalsRes] = await Promise.all([
-        execRuntimeCmd("telegram", ["status"]),
-        execRuntimeCmd("telegram", ["approvals"]),
+        requireRuntimeCmd("telegram", ["status"]),
+        requireRuntimeCmd("telegram", ["approvals"]),
       ]);
       const data = statusRes.data;
       const approvalsData = approvalsRes.data;
-      if (!statusRes.ok) {
-        return {
-          linked: false,
-          configured: false,
-          statusLabel: "Unavailable",
-          daemonOnline,
-          remoteUninstallEnabled: false,
-          authPath: "~/.rayu/telegram-remote.json",
-          daemonError:
-            statusRes.message ||
-            "Could not query Telegram remote status from the Rust daemon.",
-          approvals: [],
-        };
-      }
       const approvals = mapTelegramApprovals(
         approvalsData.approvals ?? data.approvals,
       );
@@ -4424,7 +4394,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "remote.telegram.approvals": async () => {
-      const data = await safeRuntimeCmd("telegram", ["approvals"]);
+      const { data } = await requireRuntimeCmd("telegram", ["approvals"]);
       return { approvals: mapTelegramApprovals(data.approvals) };
     },
     "remote.telegram.decide": async (params) => {
@@ -4436,7 +4406,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "remote.infra.status": async (): Promise<RemoteInfraStatusView> => {
-      const data = await safeRuntimeCmd("remote", ["status"]);
+      const { data } = await requireRuntimeCmd("remote", ["status"]);
       const gw = asRecord(data.gateway ?? data);
       const gateway: GatewayStatusView = {
         enabled: Boolean(gw.enabled ?? false),
@@ -4558,7 +4528,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         return deps.authManager.getAccountStatus(false);
       }
 
-      const data = await safeRuntimeCmd("subscription", ["status"]);
+      const { data } = await requireRuntimeCmd("subscription", ["status"]);
       const credits = asRecord(data.credits);
       const user = asRecord(data.user);
       const signedIn = Boolean(
@@ -4806,7 +4776,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       topSessions: [],
     }),
     "settings.providers.list": async () => {
-      const data = await safeRuntimeCmd("auth", ["status"]);
+      const { data } = await requireRuntimeCmd("auth", ["status"]);
       // Rust `auth status` returns `data.providers` as an ARRAY of `{ id, display_name, state, readiness, credential_source, refresh_support }`
       const remoteById = new Map<string, Record<string, unknown>>();
       if (Array.isArray(data.providers)) {
@@ -4973,8 +4943,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "settings.doctor.run": async (params) => {
-      const data = await safeRuntimeCmd("doctor", [params.scope]);
+      const { data } = await requireRuntimeCmd("doctor", [params.scope]);
       const rawChecks = asArray(data.checks);
+      const bridgeStatus = deps.bridgeManager.getStatus();
+      const proto = bridgeStatus.protocolVersion;
+      const socketMsg = proto
+        ? `Connected to Harness API ${proto.startsWith("v") ? proto : `v${proto}`} socket.`
+        : "Connected to Harness API socket.";
       const checks: DoctorCheckView[] =
         rawChecks.length > 0
           ? rawChecks.map((raw, idx) => {
@@ -4999,21 +4974,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
                 scope: params.scope,
                 label: "Harness API Bridge Connectivity",
                 status:
-                  deps.bridgeManager.getStatus().state === "connected"
+                  bridgeStatus.state === "connected"
                     ? "pass"
                     : "warn",
                 detail:
-                  deps.bridgeManager.getStatus().state === "connected"
-                    ? "Connected to Harness API v1.14 socket."
+                  bridgeStatus.state === "connected"
+                    ? socketMsg
                     : "Bridge is currently offline.",
               },
             ];
       return { checks, ranAtMs: Date.now() };
     },
     "settings.models.get": async (params) => {
+      const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
       let targetSessionId =
         params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (!targetSessionId) {
+      if (!targetSessionId && daemonConnected) {
         targetSessionId = await deps.sessionHub
           .getClient()
           .then((c) =>
@@ -5026,11 +5002,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
 
       const hostAccount = deps.authManager?.getAccountStatusSnapshot();
-      const [data, subagentData, runtimeInfo, rayuHostedModels] =
+      const emptyCmd = {
+        ok: false,
+        data: {} as Record<string, unknown>,
+        rawData: undefined as unknown,
+        message: "",
+      };
+      const [agentsRes, subagentRes, runtimeInfo, rayuHostedModels] =
         await Promise.all([
-          safeRuntimeCmd("agents", ["status"], targetSessionId),
-          safeRuntimeCmd("subagent_model", ["status"], targetSessionId),
-          targetSessionId
+          daemonConnected
+            ? execRuntimeCmd("agents", ["status"], targetSessionId)
+            : Promise.resolve(emptyCmd),
+          daemonConnected
+            ? execRuntimeCmd("subagent_model", ["status"], targetSessionId)
+            : Promise.resolve(emptyCmd),
+          targetSessionId && daemonConnected
             ? getSessionClient(targetSessionId)
                 .then((c) =>
                   typeof c.getRuntimeInfo === "function"
@@ -5043,6 +5029,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? deps.authManager.fetchHostedModels(false).catch(() => [])
             : Promise.resolve([]),
         ]);
+      const data = agentsRes.data;
+      const subagentData = subagentRes.data;
 
       const roles: Array<{ role: AgentRoleId; label: string }> = [
         { role: "swarm", label: "Swarm Workers" },
@@ -5054,33 +5042,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const overridesObj = asRecord(data.overrides);
       const defaultsObj = asRecord(data.defaults);
       const effectiveObj = asRecord(data.effective);
-      const roleOverrides: AgentRoleOverrideView[] = roles.map((r) => {
-        const sessionOverride = overridesObj[r.role];
-        const globalDefault = defaultsObj[r.role];
-        if (typeof sessionOverride === "string" && sessionOverride.trim()) {
-          return {
-            role: r.role,
-            label: r.label,
-            model: sessionOverride,
-            scope: "session",
-          };
-        }
-        return {
-          role: r.role,
-          label: r.label,
-          model:
-            typeof globalDefault === "string" && globalDefault.trim()
-              ? globalDefault
-              : "inherit",
-          scope: "global",
-        };
-      });
+      const roleOverrides: AgentRoleOverrideView[] = agentsRes.ok
+        ? roles.map((r) => {
+            const sessionOverride = overridesObj[r.role];
+            const globalDefault = defaultsObj[r.role];
+            if (typeof sessionOverride === "string" && sessionOverride.trim()) {
+              return {
+                role: r.role,
+                label: r.label,
+                model: sessionOverride,
+                scope: "session",
+              };
+            }
+            return {
+              role: r.role,
+              label: r.label,
+              model:
+                typeof globalDefault === "string" && globalDefault.trim()
+                  ? globalDefault
+                  : "inherit",
+              scope: "global",
+            };
+          })
+        : [];
 
-      const effectiveRoleModels: Record<string, string | null> = {};
-      for (const r of roles) {
-        const eff = effectiveObj[r.role];
-        effectiveRoleModels[r.role] =
-          typeof eff === "string" && eff.trim() ? eff.trim() : null;
+      const effectiveRoleModels: Record<string, string | null> | undefined =
+        agentsRes.ok ? {} : undefined;
+      if (effectiveRoleModels) {
+        for (const r of roles) {
+          const eff = effectiveObj[r.role];
+          effectiveRoleModels[r.role] =
+            typeof eff === "string" && eff.trim() ? eff.trim() : null;
+        }
       }
 
       const mapProfileList = (
@@ -5112,21 +5105,28 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         return out;
       };
 
-      const globalProfiles = mapProfileList(data.global_profiles, "global");
-      const sessionProfiles = mapProfileList(data.session_profiles, "session");
-      const mergedProfiles = mapProfileList(data.profiles, "global");
-      const profiles =
-        mergedProfiles.length > 0
+      const globalProfiles = agentsRes.ok
+        ? mapProfileList(data.global_profiles, "global")
+        : undefined;
+      const sessionProfiles = agentsRes.ok
+        ? mapProfileList(data.session_profiles, "session")
+        : undefined;
+      const mergedProfiles = agentsRes.ok
+        ? mapProfileList(data.profiles, "global")
+        : [];
+      const profiles = agentsRes.ok
+        ? mergedProfiles.length > 0
           ? mergedProfiles
           : [
-              ...globalProfiles.filter(
+              ...(globalProfiles ?? []).filter(
                 (gp) =>
-                  !sessionProfiles.some(
+                  !(sessionProfiles ?? []).some(
                     (sp) => sp.name.toLowerCase() === gp.name.toLowerCase(),
                   ),
               ),
-              ...sessionProfiles,
-            ];
+              ...(sessionProfiles ?? []),
+            ]
+        : undefined;
 
       const sessionScopedPrefs = params?.sessionId
         ? deps.sessionHub.getSessionPrefs?.(params.sessionId)
@@ -5143,18 +5143,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       });
 
       const subagentModel =
-        typeof subagentData.model === "string" && subagentData.model.trim()
-          ? subagentData.model.trim()
-          : typeof data.subagent_model === "string" && data.subagent_model.trim()
-            ? data.subagent_model.trim()
-            : null;
+        subagentRes.ok || agentsRes.ok
+          ? typeof subagentData.model === "string" && subagentData.model.trim()
+            ? subagentData.model.trim()
+            : typeof data.subagent_model === "string" && data.subagent_model.trim()
+              ? data.subagent_model.trim()
+              : null
+          : undefined;
       const inheritModel =
-        typeof subagentData.inherit_model === "string" &&
-        subagentData.inherit_model.trim()
-          ? subagentData.inherit_model.trim()
-          : typeof data.inherit_model === "string" && data.inherit_model.trim()
-            ? data.inherit_model.trim()
-            : defaultModel ?? null;
+        subagentRes.ok || agentsRes.ok
+          ? typeof subagentData.inherit_model === "string" &&
+            subagentData.inherit_model.trim()
+            ? subagentData.inherit_model.trim()
+            : typeof data.inherit_model === "string" && data.inherit_model.trim()
+              ? data.inherit_model.trim()
+              : defaultModel ?? null
+          : undefined;
 
       return {
         defaultModel,
@@ -5175,20 +5179,25 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           "rayucode.settings.transport",
           "auto",
         ),
-        subagentModel,
-        inheritModel,
+        ...(subagentModel !== undefined ? { subagentModel } : {}),
+        ...(inheritModel !== undefined ? { inheritModel } : {}),
         roleOverrides,
-        effectiveRoleModels,
-        profiles,
-        globalProfiles,
-        sessionProfiles,
-        swarmAllowlist: Array.isArray(data.swarm_allowlist)
-          ? data.swarm_allowlist.map(String)
-          : undefined,
-        configPath:
-          typeof data.config_path === "string" && data.config_path.trim()
-            ? data.config_path.trim()
-            : "~/.rayu/config.toml",
+        ...(effectiveRoleModels !== undefined ? { effectiveRoleModels } : {}),
+        ...(profiles !== undefined ? { profiles } : {}),
+        ...(globalProfiles !== undefined ? { globalProfiles } : {}),
+        ...(sessionProfiles !== undefined ? { sessionProfiles } : {}),
+        swarmAllowlist:
+          agentsRes.ok && Array.isArray(data.swarm_allowlist)
+            ? data.swarm_allowlist.map(String)
+            : undefined,
+        ...(agentsRes.ok
+          ? {
+              configPath:
+                typeof data.config_path === "string" && data.config_path.trim()
+                  ? data.config_path.trim()
+                  : "~/.rayu/config.toml",
+            }
+          : {}),
         ...(routes.length > 0 || runtimeInfo?.routes !== undefined
           ? { routes }
           : {}),
@@ -5363,7 +5372,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, profiles, message: message || undefined };
     },
     "settings.features.get": async () => {
-      const data = await safeRuntimeCmd("features", ["status"]);
+      const { data } = await requireRuntimeCmd("features", ["status"]);
       const features = extractFeatureFlags(data);
       const voice = deps.getGlobalState<VoiceStatusView>(
         "rayucode.settings.voice",
@@ -5451,7 +5460,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "settings.hooks.list": async () => {
       const configPath = path.join(os.homedir(), ".rayu", "config.toml");
-      const doctorData = await safeRuntimeCmd("doctor", ["status"]);
+      const { data: doctorData } = await requireRuntimeCmd("doctor", ["status"]);
       const remoteHooks = asArray(doctorData.hooks).map(asRecord);
       const configuredMap = new Map<string, boolean>();
       for (const h of remoteHooks) {

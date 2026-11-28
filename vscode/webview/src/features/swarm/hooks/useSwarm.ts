@@ -776,9 +776,9 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       path,
     });
     try {
-      await rpcClient.callRpc("swarm.worktreeOpen", { path });
+      await requireOperation(rpcClient.callRpc("swarm.worktreeOpen", { path }));
     } catch {
-      // host postMessage already dispatched
+      // requireOperation already toasted the error
     }
   }, []);
 

@@ -171,16 +171,22 @@ export function SchedulesTab() {
       return;
     }
     setFormError(null);
-    await createMutation.mutateAsync({
-      title: title.trim() || prompt.trim().slice(0, 48),
-      prompt: prompt.trim(),
-      schedule: scheduleExpr.trim(),
-      permissionMode,
-      repo: primaryRepo,
-    });
-    setTitle("");
-    setPrompt("");
-    setFormOpen(false);
+    try {
+      await createMutation.mutateAsync({
+        title: title.trim() || prompt.trim().slice(0, 48),
+        prompt: prompt.trim(),
+        schedule: scheduleExpr.trim(),
+        permissionMode,
+        repo: primaryRepo,
+      });
+      setTitle("");
+      setPrompt("");
+      setFormOpen(false);
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : "Failed to create schedule.",
+      );
+    }
   };
 
   return (
