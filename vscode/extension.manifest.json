@@ -2,7 +2,7 @@
   "name": "rayucode",
   "displayName": "RayuCode",
   "description": "RayuCode Rust AI coding engine and multi-agent mission control for VS Code.",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "publisher": "RayuCode",
   "icon": "media/rayu-fox.png",
   "homepage": "https://rayucode.com",
