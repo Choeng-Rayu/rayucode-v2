@@ -82,7 +82,7 @@ export function CloudGatewayTab({
             </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="default"
@@ -110,7 +110,7 @@ export function CloudGatewayTab({
 
         {/* Gateway Status & Pairing QR Card */}
         <div className="rayu-card-bevel overflow-hidden rounded-[14px] border border-premium bg-pane p-4">
-          <div className="grid grid-cols-1 gap-3 border-b border-hairline-soft pb-3.5 text-xs sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 border-b border-hairline-soft pb-3.5 text-xs @min-[520px]/remote:grid-cols-3">
             <div>
               <div className="text-[11px] text-muted-ink">Bind address</div>
               <code
@@ -148,7 +148,7 @@ export function CloudGatewayTab({
           )}
 
           {pairingQr && (
-            <div className="mt-4 flex flex-col items-center gap-5 md:flex-row md:items-start">
+            <div className="mt-4 flex flex-col items-center gap-5 @min-[600px]/remote:flex-row @min-[600px]/remote:items-start">
               <PairingQrMatrix
                 value={pairingQr.uri}
                 label="WebSocket Gateway pairing QR matrix"
@@ -164,7 +164,7 @@ export function CloudGatewayTab({
                   the 6-digit invite code below. Valid for 5 minutes.
                 </p>
 
-                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="mt-3 grid grid-cols-1 gap-2 @min-[480px]/remote:grid-cols-2">
                   <div className="rounded-lg border border-hairline bg-inset px-3 py-2">
                     <div className="text-[10.5px] text-muted-ink">
                       6-digit invite code
@@ -395,7 +395,7 @@ export function CloudGatewayTab({
                   </div>
                 </div>
 
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     variant="default"

@@ -311,7 +311,7 @@ export function IconRail({
           side="right"
           align="end"
           sideOffset={10}
-          className="w-[308px] rounded-2xl border-premium-hi bg-popover-solid p-0 text-ink shadow-popover"
+          className="w-[min(308px,calc(100vw-16px))] rounded-2xl border-premium-hi bg-popover-solid p-0 text-ink shadow-popover"
         >
           <div className="flex items-center justify-between gap-2 px-[18px] pt-[15px] pb-[13px]">
             <span className="text-[13px] font-medium text-muted-ink">
@@ -498,7 +498,7 @@ export function IconRail({
           side="right"
           align="end"
           sideOffset={10}
-          className="w-[240px] rounded-xl"
+          className="w-[min(240px,calc(100vw-16px))] rounded-xl"
         >
           <div className="px-2.5 py-2">
             <div className="truncate text-xs font-medium text-ink">

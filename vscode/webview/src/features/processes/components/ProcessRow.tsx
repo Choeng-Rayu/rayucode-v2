@@ -273,7 +273,7 @@ export function ProcessRow({
           {task.displayName || task.toolName}
         </span>
 
-        <span className="hidden shrink-0 font-mono text-[10px] text-faint tabular-nums sm:inline">
+        <span className="hidden shrink-0 font-mono text-[10px] text-faint tabular-nums @min-[420px]/drawer:inline">
           {task.taskId}
         </span>
 

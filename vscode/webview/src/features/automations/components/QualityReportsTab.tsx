@@ -101,7 +101,7 @@ export function QualityReportsTab() {
       {/* Quality Gate Metrics & Savings Breakdown */}
       <section
         aria-label="Quality gate metrics and credit savings"
-        className="grid grid-cols-1 gap-3 @min-[640px]/app:grid-cols-3"
+        className="grid grid-cols-1 gap-3 @min-[540px]/automations:grid-cols-3"
       >
         {QUALITY_METRICS.map((metric) => (
           <div
@@ -121,7 +121,7 @@ export function QualityReportsTab() {
       </section>
 
       {/* Auto-Review & Auto-Judge Gate Cards */}
-      <div className="grid grid-cols-1 gap-4 @min-[720px]/app:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 @min-[620px]/automations:grid-cols-2">
         {/* Auto-Review Card */}
         <section
           data-testid="auto-review-card"
@@ -306,7 +306,7 @@ export function QualityReportsTab() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex rounded-lg border border-hairline bg-inset p-0.5 text-xs">
               {(["7d", "30d"] as const).map((r) => (
                 <button

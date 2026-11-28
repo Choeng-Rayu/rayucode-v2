@@ -174,7 +174,7 @@ export function AgentRoster({
                       </span>
 
                       {agent.branch && (
-                        <span className="hidden max-w-[110px] items-center gap-1 truncate rounded-full border border-hairline bg-inset px-[7px] py-px font-mono text-[10px] text-muted-ink sm:inline-flex">
+                        <span className="hidden max-w-[110px] items-center gap-1 truncate rounded-full border border-hairline bg-inset px-[7px] py-px font-mono text-[10px] text-muted-ink @min-[360px]/swarm:inline-flex">
                           <GitBranch className="size-2.5 shrink-0" aria-hidden="true" />
                           <span className="truncate">{agent.branch}</span>
                         </span>

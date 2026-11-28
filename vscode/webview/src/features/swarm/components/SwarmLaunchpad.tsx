@@ -293,7 +293,7 @@ export function SwarmLaunchpad({
       data-slot="swarm-launchpad"
       data-testid="swarm-launchpad"
       className={cn(
-        "mx-auto flex w-full max-w-[680px] flex-1 flex-col justify-center gap-6 px-5 py-8",
+        "mx-auto flex w-full max-w-[680px] flex-1 flex-col justify-center gap-6 px-3.5 py-6 @min-[480px]/swarm:px-5 @min-[480px]/swarm:py-8",
         className,
       )}
     >
@@ -321,7 +321,7 @@ export function SwarmLaunchpad({
         <div
           role="radiogroup"
           aria-label="Swarm launch presets"
-          className="grid grid-cols-1 gap-2.5 sm:grid-cols-3"
+          className="grid grid-cols-1 gap-2.5 @min-[560px]/swarm:grid-cols-3"
         >
           {SWARM_LAUNCH_PRESETS.map((preset) => {
             const selected = preset.id === presetId;
@@ -420,7 +420,7 @@ export function SwarmLaunchpad({
                 <SelectTrigger
                   aria-label="Swarm model"
                   data-testid="swarm-model-select"
-                  className="h-7 min-w-[154px] rounded-[8px] font-mono text-xs"
+                  className="h-7 min-w-0 max-w-full rounded-[8px] font-mono text-xs @min-[360px]/swarm:min-w-[154px]"
                 >
                   <SelectValue placeholder="Model" />
                 </SelectTrigger>

@@ -35,10 +35,10 @@ export function SwarmSkeleton() {
   return (
     <div
       data-slot="swarm-skeleton"
-      className="mx-auto flex w-full max-w-[1120px] flex-col gap-4 p-5"
+      className="mx-auto flex w-full max-w-[1120px] flex-col gap-4 p-5 @container"
     >
       <Skeleton className="h-10 w-full rounded-lg" />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
+      <div className="grid grid-cols-1 gap-4 @min-[780px]:grid-cols-[320px_1fr]">
         <Skeleton className="h-64 w-full rounded-xl" />
         <Skeleton className="h-64 w-full rounded-xl" />
       </div>
@@ -64,11 +64,11 @@ export function PluginsSkeleton() {
   return (
     <div
       data-slot="plugins-skeleton"
-      className="mx-auto flex w-full max-w-[1040px] flex-col gap-5 p-5"
+      className="mx-auto flex w-full max-w-[1040px] flex-col gap-5 p-5 @container"
     >
       <Skeleton className="h-10 w-56" />
       <Skeleton className="h-40 w-full rounded-2xl" />
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 @min-[600px]:grid-cols-2">
         <Skeleton className="h-16 w-full rounded-xl" />
         <Skeleton className="h-16 w-full rounded-xl" />
       </div>

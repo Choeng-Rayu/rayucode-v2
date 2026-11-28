@@ -233,8 +233,8 @@ export function HomePage({
             aria-hidden="true"
             className="h-[1.5px] shrink-0 animate-pulse bg-brand"
           />
-          <div className="mx-auto flex w-full max-w-[732px] flex-1 flex-col gap-5 overflow-y-auto px-4 pt-6 pb-4 @min-[640px]/app:px-6 @min-[640px]/app:pt-8">
-            <div className="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
+          <div className="mx-auto flex w-full max-w-[732px] min-w-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pt-5 pb-4 @min-[420px]/home:px-4 @min-[640px]/home:px-6 @min-[640px]/home:pt-8">
+            <div className="flex max-w-[92%] min-w-0 flex-col items-end gap-1.5 self-end @min-[420px]/home:max-w-[85%]">
               {pendingSubmit.images && pendingSubmit.images.length > 0 ? (
                 <div className="flex flex-wrap justify-end gap-2">
                   {pendingSubmit.images.map((img, idx) => (
@@ -250,7 +250,7 @@ export function HomePage({
               {pendingSubmit.prompt.trim().length > 0 ? (
                 <div
                   data-testid="home-optimistic-prompt"
-                  className="rayu-prose max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14px] leading-[1.6] text-ink whitespace-pre-wrap"
+                  className="rayu-prose max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14px] leading-[1.6] break-words text-ink whitespace-pre-wrap"
                 >
                   {pendingSubmit.prompt}
                 </div>
@@ -271,12 +271,12 @@ export function HomePage({
           </div>
         </>
       ) : (
-        <div className="mx-auto flex w-full max-w-[732px] flex-1 flex-col items-center justify-center gap-3.5 px-4 pt-6 pb-4 text-center @min-[640px]/app:gap-4 @min-[640px]/app:px-6 @min-[640px]/app:pt-10">
+        <div className="mx-auto flex w-full max-w-[732px] min-w-0 flex-1 flex-col items-center justify-center gap-3.5 px-3 pt-6 pb-4 text-center @min-[420px]/home:px-4 @min-[640px]/home:gap-4 @min-[640px]/home:px-6 @min-[640px]/home:pt-10">
           <img
             src={mediaUrl("rayu-fox.png")}
             alt="Rayu Code"
             data-testid="home-hero-logo"
-            className="h-[48px] w-auto object-contain select-none @min-[640px]/app:h-[74px]"
+            className="h-[48px] w-auto object-contain select-none @min-[640px]/home:h-[74px]"
           />
 
           <div className="flex flex-col items-center gap-1">
@@ -290,7 +290,7 @@ export function HomePage({
             ) : null}
             <h1
               data-testid="home-hero-headline"
-              className="m-0 text-lg font-medium tracking-[-0.025em] text-ink @min-[640px]/app:text-2xl"
+              className="m-0 text-lg font-medium tracking-[-0.025em] text-ink @min-[640px]/home:text-2xl"
             >
               What shall we build{" "}
               <em className="font-serif text-[1.08em] font-normal tracking-[-0.005em] text-brand-text italic">
@@ -314,7 +314,7 @@ export function HomePage({
           {/* 4 Quiet Quick-Action Pills */}
           <div
             data-testid="home-quick-actions"
-            className="mt-1 flex flex-wrap items-center justify-center gap-1.5 @min-[640px]/app:gap-2"
+            className="mt-1 flex flex-wrap items-center justify-center gap-1.5 @min-[640px]/home:gap-2"
           >
             {HOME_QUICK_ACTIONS.map((action) => (
               <button
@@ -334,7 +334,7 @@ export function HomePage({
           {recentSessions.length > 0 ? (
             <div
               data-testid="home-recent-sessions"
-              className="mt-2 w-full max-w-[520px] rounded-xl border border-hairline-soft bg-pane/70 p-2 text-left @min-[960px]/app:max-w-[620px]"
+              className="mt-2 w-full max-w-[520px] rounded-xl border border-hairline-soft bg-pane/70 p-2 text-left @min-[720px]/home:max-w-[620px]"
             >
               <div className="mb-1 flex items-center justify-between px-1.5 text-[11px] font-medium text-muted-ink">
                 <span className="inline-flex items-center gap-1">
@@ -379,7 +379,7 @@ export function HomePage({
                     </span>
                     <span className="flex shrink-0 items-center gap-2 font-mono text-[10.5px] text-muted-ink tabular-nums">
                       {session.diffAdditions || session.diffDeletions ? (
-                        <span>
+                        <span className="hidden @min-[300px]/home:inline">
                           <span className="text-brand-text">
                             +{session.diffAdditions ?? 0}
                           </span>{" "}

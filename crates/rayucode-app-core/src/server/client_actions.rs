@@ -309,9 +309,11 @@ pub(super) fn handle_run_subagent(
     model: Option<String>,
     session_id: Option<String>,
     agent: &Arc<Mutex<Agent>>,
+    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
     let agent_weak = Arc::downgrade(agent);
+    let swarm_members = Arc::clone(swarm_members);
     let tx = client_event_tx.clone();
 
     crate::runtime_activity::spawn(async move {
@@ -330,12 +332,38 @@ pub(super) fn handle_run_subagent(
             "command": "/subagent",
         });
 
-        let message_id = {
-            let mut agent_guard = agent.lock().await;
+        let (turn_lease, message_id, registry, session_id, working_dir, shutdown_signal) = {
+            let mut agent_guard = match tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                agent.lock(),
+            )
+            .await
+            {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _ = tx.send(ServerEvent::Error {
+                        id,
+                        message: "Already processing a message".to_string(),
+                        retry_after_secs: None,
+                    });
+                    return;
+                }
+            };
             if Arc::strong_count(&agent) == 1 {
                 return;
             }
-            match agent_guard.add_manual_tool_use(
+            let turn_lease = match agent_guard.claim_server_turn() {
+                Ok(lease) => lease,
+                Err(error) => {
+                    let _ = tx.send(ServerEvent::Error {
+                        id,
+                        message: error.to_string(),
+                        retry_after_secs: None,
+                    });
+                    return;
+                }
+            };
+            let message_id = match agent_guard.add_manual_tool_use(
                 tool_call_id.clone(),
                 tool_name.clone(),
                 tool_input.clone(),
@@ -349,33 +377,42 @@ pub(super) fn handle_run_subagent(
                     });
                     return;
                 }
-            }
-        };
-
-        let _ = tx.send(ServerEvent::ToolStart {
-            id: tool_call_id.clone(),
-            name: tool_name.clone(),
-        });
-        let _ = tx.send(ServerEvent::ToolInput {
-            id: Some(tool_call_id.clone()),
-            delta: tool_input.to_string(),
-        });
-        let _ = tx.send(ServerEvent::ToolExec {
-            id: tool_call_id.clone(),
-            name: tool_name.clone(),
-        });
-
-        let (registry, session_id, working_dir) = {
-            let agent_guard = agent.lock().await;
+            };
             (
+                turn_lease,
+                message_id,
                 agent_guard.registry(),
                 agent_guard.session_id().to_string(),
                 agent_guard.working_dir().map(std::path::PathBuf::from),
+                agent_guard.graceful_shutdown_signal(),
             )
         };
         // Drop the strong reference before executing the potentially long-running
         // subagent so disconnecting during execution does not pin the retired Agent.
         drop(agent);
+
+        let _turn_cancel_guard =
+            crate::turn_cancel_registry::register_active_turn(&session_id, shutdown_signal.clone());
+        let events = super::state::TurnEventChannel::new(
+            session_id.clone(),
+            swarm_members,
+            tx.clone(),
+            &turn_lease,
+        );
+        let event_tx = events.sender();
+
+        let _ = event_tx.send(ServerEvent::ToolStart {
+            id: tool_call_id.clone(),
+            name: tool_name.clone(),
+        });
+        let _ = event_tx.send(ServerEvent::ToolInput {
+            id: Some(tool_call_id.clone()),
+            delta: tool_input.to_string(),
+        });
+        let _ = event_tx.send(ServerEvent::ToolExec {
+            id: tool_call_id.clone(),
+            name: tool_name.clone(),
+        });
 
         let ctx = crate::tool::ToolContext {
             session_id: session_id.clone(),
@@ -383,7 +420,7 @@ pub(super) fn handle_run_subagent(
             tool_call_id: tool_call_id.clone(),
             working_dir,
             stdin_request_tx: None,
-            graceful_shutdown_signal: None,
+            graceful_shutdown_signal: Some(shutdown_signal),
             execution_mode: crate::tool::ToolExecutionMode::Direct,
         };
 
@@ -410,64 +447,65 @@ pub(super) fn handle_run_subagent(
         };
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
-        match result {
+        let terminal_event = match result {
             Ok(output) => {
                 subagent_guard.finish("completed");
                 let output_text = output.output.clone();
-                let _ = tx.send(ServerEvent::ToolDone {
+                let _ = event_tx.send(ServerEvent::ToolDone {
                     tool_duration_ms: Some(duration_ms),
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: output_text,
                     error: None,
                 });
-                let Some(agent_arc) = agent_weak.upgrade() else {
-                    let _ = tx.send(ServerEvent::Done { id });
-                    return;
-                };
-                let persist = {
-                    let mut agent_guard = agent_arc.lock().await;
-                    agent_guard.add_manual_tool_result(tool_call_id, output, duration_ms)
-                };
-                if let Err(error) = persist {
-                    let _ = tx.send(ServerEvent::Error {
-                        id,
-                        message: crate::util::format_error_chain(&error),
-                        retry_after_secs: None,
-                    });
-                    return;
+                if let Some(agent_arc) = agent_weak.upgrade() {
+                    let persist = {
+                        let mut agent_guard = agent_arc.lock().await;
+                        agent_guard.add_manual_tool_result(tool_call_id, output, duration_ms)
+                    };
+                    match persist {
+                        Ok(()) => ServerEvent::Done { id },
+                        Err(error) => ServerEvent::Error {
+                            id,
+                            message: crate::util::format_error_chain(&error),
+                            retry_after_secs: None,
+                        },
+                    }
+                } else {
+                    ServerEvent::Done { id }
                 }
-                let _ = tx.send(ServerEvent::Done { id });
             }
             Err(error) => {
                 subagent_guard.finish("failed");
                 let error_msg = format!("Error: {}", error);
-                let _ = tx.send(ServerEvent::ToolDone {
+                let _ = event_tx.send(ServerEvent::ToolDone {
                     tool_duration_ms: Some(duration_ms),
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: error_msg.clone(),
                     error: Some(error_msg.clone()),
                 });
-                let Some(agent_arc) = agent_weak.upgrade() else {
-                    let _ = tx.send(ServerEvent::Done { id });
-                    return;
-                };
-                let persist = {
-                    let mut agent_guard = agent_arc.lock().await;
-                    agent_guard.add_manual_tool_error(tool_call_id, error_msg, duration_ms)
-                };
-                if let Err(persist_error) = persist {
-                    let _ = tx.send(ServerEvent::Error {
-                        id,
-                        message: crate::util::format_error_chain(&persist_error),
-                        retry_after_secs: None,
-                    });
-                    return;
+                if let Some(agent_arc) = agent_weak.upgrade() {
+                    let persist = {
+                        let mut agent_guard = agent_arc.lock().await;
+                        agent_guard.add_manual_tool_error(tool_call_id, error_msg, duration_ms)
+                    };
+                    match persist {
+                        Ok(()) => ServerEvent::Done { id },
+                        Err(persist_error) => ServerEvent::Error {
+                            id,
+                            message: crate::util::format_error_chain(&persist_error),
+                            retry_after_secs: None,
+                        },
+                    }
+                } else {
+                    ServerEvent::Done { id }
                 }
-                let _ = tx.send(ServerEvent::Done { id });
             }
-        }
+        };
+        let _ = event_tx.send(terminal_event);
+        events.finish().await;
+        drop(turn_lease);
     });
 }
 
@@ -1343,89 +1381,136 @@ pub(super) struct AgentTaskContext<'a> {
     pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
 }
 
-pub(super) async fn handle_agent_task(
+pub(super) fn handle_agent_task(
     id: u64,
     task: String,
     client_session_id: &str,
     agent: &Arc<Mutex<Agent>>,
     ctx: &AgentTaskContext<'_>,
 ) {
-    let mut agent = agent.lock().await;
-    let lease = match agent.claim_server_turn() {
-        Ok(lease) => lease,
-        Err(error) => {
-            let _ = ctx.client_event_tx.send(ServerEvent::Error {
-                id,
-                message: error.to_string(),
-                retry_after_secs: None,
-            });
-            return;
-        }
-    };
-    let events = super::state::TurnEventChannel::new(
-        client_session_id.into(),
-        Arc::clone(ctx.swarm_members),
-        ctx.client_event_tx.clone(),
-        &lease,
-    );
-    update_member_status(
-        client_session_id,
-        "running",
-        Some(truncate_detail(&task, 120)),
-        ctx.swarm_members,
-        ctx.swarms_by_id,
-        Some(ctx.event_history),
-        Some(ctx.event_counter),
-        Some(ctx.swarm_event_tx),
-    )
-    .await;
+    let session_id = client_session_id.to_string();
+    let agent = Arc::clone(agent);
+    let client_event_tx = ctx.client_event_tx.clone();
+    let swarm_members = Arc::clone(ctx.swarm_members);
+    let swarms_by_id = Arc::clone(ctx.swarms_by_id);
+    let event_history = Arc::clone(ctx.event_history);
+    let event_counter = Arc::clone(ctx.event_counter);
+    let swarm_event_tx = ctx.swarm_event_tx.clone();
+    let fallback_tx = ctx.client_event_tx.clone();
 
-    let result = process_reserved_message_streaming_mpsc(
-        &mut agent,
-        &lease,
-        &task,
-        vec![],
-        None,
-        events.sender(),
-    )
-    .await;
-    match result {
-        Ok(()) => {
-            update_member_status(
-                client_session_id,
-                "completed",
-                None,
-                ctx.swarm_members,
-                ctx.swarms_by_id,
-                Some(ctx.event_history),
-                Some(ctx.event_counter),
-                Some(ctx.swarm_event_tx),
+    if crate::runtime_activity::spawn_session(client_session_id, async move {
+        let mut agent = match agent.try_lock() {
+            Ok(guard) => guard,
+            Err(_) if crate::turn_cancel_registry::has_active_turn(&session_id) => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: "Already processing a message".to_string(),
+                    retry_after_secs: None,
+                });
+                return;
+            }
+            Err(_) => match tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                agent.lock(),
             )
-            .await;
-            let _ = events.sender().send(ServerEvent::Done { id });
+            .await
+            {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message: "Already processing a message".to_string(),
+                        retry_after_secs: None,
+                    });
+                    return;
+                }
+            },
+        };
+        let lease = match agent.claim_server_turn() {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: error.to_string(),
+                    retry_after_secs: None,
+                });
+                return;
+            }
+        };
+        let events = super::state::TurnEventChannel::new(
+            session_id.clone(),
+            Arc::clone(&swarm_members),
+            client_event_tx.clone(),
+            &lease,
+        );
+        update_member_status(
+            &session_id,
+            "running",
+            Some(truncate_detail(&task, 120)),
+            &swarm_members,
+            &swarms_by_id,
+            Some(&event_history),
+            Some(&event_counter),
+            Some(&swarm_event_tx),
+        )
+        .await;
+
+        let result = process_reserved_message_streaming_mpsc(
+            &mut agent,
+            &lease,
+            &task,
+            vec![],
+            None,
+            events.sender(),
+        )
+        .await;
+        match result {
+            Ok(()) => {
+                update_member_status(
+                    &session_id,
+                    "completed",
+                    None,
+                    &swarm_members,
+                    &swarms_by_id,
+                    Some(&event_history),
+                    Some(&event_counter),
+                    Some(&swarm_event_tx),
+                )
+                .await;
+                let _ = events.sender().send(ServerEvent::Done { id });
+            }
+            Err(e) => {
+                update_member_status(
+                    &session_id,
+                    "failed",
+                    Some(truncate_detail(&e.to_string(), 120)),
+                    &swarm_members,
+                    &swarms_by_id,
+                    Some(&event_history),
+                    Some(&event_counter),
+                    Some(&swarm_event_tx),
+                )
+                .await;
+                let retry_after_secs = e
+                    .downcast_ref::<StreamError>()
+                    .and_then(|stream_error| stream_error.retry_after_secs);
+                let _ = events.sender().send(ServerEvent::Error {
+                    id,
+                    message: crate::util::format_error_chain(&e),
+                    retry_after_secs,
+                });
+            }
         }
-        Err(e) => {
-            update_member_status(
-                client_session_id,
-                "failed",
-                Some(truncate_detail(&e.to_string(), 120)),
-                ctx.swarm_members,
-                ctx.swarms_by_id,
-                Some(ctx.event_history),
-                Some(ctx.event_counter),
-                Some(ctx.swarm_event_tx),
-            )
-            .await;
-            let retry_after_secs = e
-                .downcast_ref::<StreamError>()
-                .and_then(|stream_error| stream_error.retry_after_secs);
-            let _ = events.sender().send(ServerEvent::Error {
-                id,
-                message: crate::util::format_error_chain(&e),
-                retry_after_secs,
-            });
-        }
+        drop(agent);
+        events.finish().await;
+        drop(lease);
+    })
+    .is_none()
+    {
+        let _ = fallback_tx.send(ServerEvent::Error {
+            id,
+            message: "Runtime is shutting down".to_string(),
+            retry_after_secs: None,
+        });
     }
-    drop(agent);
-    events.finish().await;
 }

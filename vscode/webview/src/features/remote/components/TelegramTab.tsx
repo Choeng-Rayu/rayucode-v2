@@ -342,29 +342,34 @@ export function TelegramTab({
         onValueChange={(v) => onSetupModeChange(v as TelegramSetupMode)}
         className="gap-4"
       >
-        <TabsList aria-label="Telegram connection setup mode">
-          <TabsTrigger
-            value="connected"
-            onClick={() => onSetupModeChange("connected")}
-            data-testid="tg-mode-connected"
+        <div className="max-w-full overflow-x-auto pb-0.5">
+          <TabsList
+            className="w-fit min-w-max"
+            aria-label="Telegram connection setup mode"
           >
-            Connected
-          </TabsTrigger>
-          <TabsTrigger
-            value="hosted"
-            onClick={() => onSetupModeChange("hosted")}
-            data-testid="tg-mode-hosted"
-          >
-            Hosted QR Pairing
-          </TabsTrigger>
-          <TabsTrigger
-            value="botfather"
-            onClick={() => onSetupModeChange("botfather")}
-            data-testid="tg-mode-botfather"
-          >
-            @BotFather Token
-          </TabsTrigger>
-        </TabsList>
+            <TabsTrigger
+              value="connected"
+              onClick={() => onSetupModeChange("connected")}
+              data-testid="tg-mode-connected"
+            >
+              Connected
+            </TabsTrigger>
+            <TabsTrigger
+              value="hosted"
+              onClick={() => onSetupModeChange("hosted")}
+              data-testid="tg-mode-hosted"
+            >
+              Hosted QR Pairing
+            </TabsTrigger>
+            <TabsTrigger
+              value="botfather"
+              onClick={() => onSetupModeChange("botfather")}
+              data-testid="tg-mode-botfather"
+            >
+              @BotFather Token
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Mode 1: Connected State */}
         <TabsContent value="connected" data-testid="tg-panel-connected">
@@ -391,7 +396,7 @@ export function TelegramTab({
                     <SelectTrigger
                       aria-label="Choose Telegram driving session"
                       data-testid="tg-session-picker"
-                      className="h-7 w-[210px] text-xs"
+                      className="h-7 w-full max-w-full text-xs @min-[480px]/remote:w-[210px]"
                     >
                       <SelectValue placeholder="Choose a session..." />
                     </SelectTrigger>
@@ -420,7 +425,7 @@ export function TelegramTab({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 text-xs">
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">
                   Generated media delivery
                 </div>
@@ -439,7 +444,7 @@ export function TelegramTab({
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 text-xs">
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">
                   Bridge configuration path
                 </div>
@@ -448,10 +453,10 @@ export function TelegramTab({
                   local-only disconnect if the hosted account is unavailable.
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex max-w-full flex-wrap items-center gap-2">
                 <code
                   data-testid="tg-auth-path"
-                  className="rounded bg-inset px-2 py-0.5 font-mono text-[11px] text-body"
+                  className="max-w-full break-all rounded bg-inset px-2 py-0.5 font-mono text-[11px] text-body"
                 >
                   {authPath}
                 </code>
@@ -474,7 +479,7 @@ export function TelegramTab({
 
         {/* Mode 2: Hosted QR Pairing */}
         <TabsContent value="hosted" data-testid="tg-panel-hosted">
-          <div className="rayu-card-bevel grid grid-cols-1 items-center gap-6 rounded-xl border border-premium bg-pane p-5 md:grid-cols-[184px_minmax(0,1fr)]">
+          <div className="rayu-card-bevel grid grid-cols-1 items-center gap-6 rounded-xl border border-premium bg-pane p-5 @min-[600px]/remote:grid-cols-[184px_minmax(0,1fr)]">
             <PairingQrMatrix
               qrSize={telegram.qrSize}
               qrPath={telegram.qrPath}
@@ -691,7 +696,7 @@ export function TelegramTab({
             {telegram.mode === "botfather" && !telegram.linked && hasActiveQr && (
               <div
                 data-testid="tg-byo-pending-qr"
-                className="mt-4 grid grid-cols-1 items-center gap-5 rounded-xl border border-brand/30 bg-inset p-4 md:grid-cols-[184px_minmax(0,1fr)]"
+                className="mt-4 grid grid-cols-1 items-center gap-5 rounded-xl border border-brand/30 bg-inset p-4 @min-[600px]/remote:grid-cols-[184px_minmax(0,1fr)]"
               >
                 <PairingQrMatrix
                   qrSize={telegram.qrSize}
@@ -913,7 +918,7 @@ export function TelegramTab({
 
       {/* Telegram Slash Commands Reference */}
       <section className="border-t border-hairline pt-5">
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <Terminal className="size-4 text-muted-ink" aria-hidden="true" />
             <h2 className="m-0 text-sm font-semibold text-ink">
@@ -927,7 +932,7 @@ export function TelegramTab({
 
         <div
           data-testid="tg-commands-grid"
-          className="grid grid-cols-1 gap-x-6 gap-y-2 md:grid-cols-2"
+          className="grid grid-cols-1 gap-x-6 gap-y-2 @min-[600px]/remote:grid-cols-2"
         >
           {TELEGRAM_COMMANDS.map((cmd) => (
             <div

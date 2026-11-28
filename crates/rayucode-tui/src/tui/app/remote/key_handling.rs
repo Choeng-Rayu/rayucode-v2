@@ -97,6 +97,28 @@ pub(in crate::tui::app) use update::{
     handle_remote_char_input, handle_remote_update_command, send_interleave_now,
 };
 
+pub(super) async fn send_remote_command_prompt(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+    prompt: String,
+    action_label: &str,
+) -> Result<bool> {
+    match input_dispatch::begin_remote_send(app, remote, prompt, vec![], true, None, true, 0).await
+    {
+        Ok(_) => Ok(true),
+        Err(error) => {
+            if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                return Err(error);
+            }
+            app.push_display_message(DisplayMessage::error(format!(
+                "Failed to {action_label}: {error}"
+            )));
+            app.set_status_notice(format!("Failed to {action_label}"));
+            Ok(false)
+        }
+    }
+}
+
 /// Step the remote session's speed tier (Standard -> Fast -> Ultrafast).
 async fn apply_remote_speed_direction(
     app: &mut App,
@@ -557,6 +579,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                 return Ok(());
             }
             if matches!(rest, "inherit" | "reset" | "clear") {
+                if app.is_processing {
+                    app.push_display_message(DisplayMessage::error(
+                        "Cannot change subagent model while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                    ));
+                    app.set_status_notice("Turn in progress");
+                    return Ok(());
+                }
                 let current_model = app
                     .remote_provider_model
                     .clone()
@@ -568,6 +597,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                     current_model
                 )));
                 app.set_status_notice("Subagent model: inherit");
+                return Ok(());
+            }
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot change subagent model while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
                 return Ok(());
             }
             remote.set_subagent_model(Some(rest.to_string())).await?;
@@ -833,6 +869,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/autoreview on" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle autoreview while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Autoreview, true)
                 .await?;
@@ -845,6 +888,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/autoreview off" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle autoreview while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Autoreview, false)
                 .await?;
@@ -890,6 +940,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/autojudge on" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle autojudge while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Autojudge, true)
                 .await?;
@@ -902,6 +959,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/autojudge off" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle autojudge while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Autojudge, false)
                 .await?;
@@ -1059,6 +1123,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/memory" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle memory while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             let new_state = !app.memory_enabled;
             remote
                 .set_feature(crate::protocol::FeatureToggle::Memory, new_state)
@@ -1074,6 +1145,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/memory on" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle memory while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Memory, true)
                 .await?;
@@ -1086,6 +1164,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/memory off" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle memory while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Memory, false)
                 .await?;
@@ -1105,6 +1190,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/clear" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot clear session while a turn is processing. Press Esc to stop the current turn first.".to_string(),
+                ));
+                app.set_status_notice("Cannot clear while processing");
+                return Ok(());
+            }
             remote.clear().await?;
             app.clear_provider_messages();
             app.clear_display_messages();
@@ -1115,6 +1207,22 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
             app.clear_inline_image_state();
             app.clear_streaming_render_state();
             app.clear_live_usage_state();
+            app.clear_pending_tool_calls();
+            app.clear_pending_remote_retry();
+            app.clear_pending_fallback_offer();
+            app.clear_pending_soft_interrupt_tracking();
+            app.current_message_id = None;
+            app.processing_started = None;
+            app.clear_visible_turn_started();
+            app.remote_resume_activity = None;
+            app.deferred_stream_done_id = None;
+            app.deferred_stream_done_identity = None;
+            app.interleave_message = None;
+            app.interleave_images.clear();
+            app.pending_soft_interrupts.clear();
+            app.hidden_queued_system_messages.clear();
+            app.batch_progress = None;
+            app.pending_remote_rewind_notice = None;
             // Full transcript discard: diagrams and side panel pages
             // are both orphaned (same rationale as
             // reset_current_session; side panel is #605).
@@ -1216,6 +1324,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/swarm on" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle swarm while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Swarm, true)
                 .await?;
@@ -1228,6 +1343,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/swarm off" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot toggle swarm while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             remote
                 .set_feature(crate::protocol::FeatureToggle::Swarm, false)
                 .await?;
@@ -1258,6 +1380,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/save" || trimmed.starts_with("/save ") {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot save session bookmark while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             let label = trimmed.strip_prefix("/save").unwrap_or_default().trim();
             let label = if label.is_empty() {
                 None
@@ -1303,6 +1432,13 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
         }
 
         if trimmed == "/unsave" {
+            if app.is_processing {
+                app.push_display_message(DisplayMessage::error(
+                    "Cannot remove session bookmark while a turn is processing. Wait for the turn to finish or press Esc.".to_string(),
+                ));
+                app.set_status_notice("Turn in progress");
+                return Ok(());
+            }
             if let Err(e) = persist_remote_session_metadata(app, |session| {
                 session.unmark_saved();
             }) {
@@ -1639,18 +1775,16 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                                 app_mod::commands::poke_triggered_display_message(incomplete_count),
                             ));
 
-                            let _ = begin_remote_send(
+                            if send_remote_command_prompt(
                                 app,
                                 remote,
                                 poke_msg,
-                                vec![],
-                                true,
-                                None,
-                                true,
-                                0,
+                                "send poke message",
                             )
-                            .await;
-                            app.visible_turn_started = Some(Instant::now());
+                            .await?
+                            {
+                                app.visible_turn_started = Some(Instant::now());
+                            }
                         }
                     }
                 }
@@ -1671,7 +1805,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                 app.push_display_message(DisplayMessage::system(
                     app_mod::commands::plan_launch_notice(command.goal.as_deref(), false),
                 ));
-                let _ = begin_remote_send(app, remote, prompt, vec![], true, None, true, 0).await;
+                send_remote_command_prompt(app, remote, prompt, "start /plan").await?;
             }
             return Ok(());
         }
@@ -1726,8 +1860,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                             "♻️ Resuming {}...",
                             mode.status_label()
                         )));
-                        let _ = begin_remote_send(app, remote, prompt, vec![], true, None, true, 0)
-                            .await;
+                        send_remote_command_prompt(app, remote, prompt, "resume /improve").await?;
                     }
                 }
                 Ok(app_mod::commands::ImproveCommand::Status) => {
@@ -1778,17 +1911,8 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                         app.push_display_message(DisplayMessage::system(
                             app_mod::commands::improve_stop_notice(false),
                         ));
-                        let _ = begin_remote_send(
-                            app,
-                            remote,
-                            stop_prompt,
-                            vec![],
-                            true,
-                            None,
-                            true,
-                            0,
-                        )
-                        .await;
+                        send_remote_command_prompt(app, remote, stop_prompt, "stop /improve")
+                            .await?;
                     }
                 }
                 Ok(app_mod::commands::ImproveCommand::Run { plan_only, focus }) => {
@@ -1824,8 +1948,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                             ),
                         ));
 
-                        let _ = begin_remote_send(app, remote, prompt, vec![], true, None, true, 0)
-                            .await;
+                        send_remote_command_prompt(app, remote, prompt, "start /improve").await?;
                     }
                 }
             }
@@ -1882,8 +2005,7 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                             "♻️ Resuming {}...",
                             mode.status_label()
                         )));
-                        let _ = begin_remote_send(app, remote, prompt, vec![], true, None, true, 0)
-                            .await;
+                        send_remote_command_prompt(app, remote, prompt, "resume /refactor").await?;
                     }
                 }
                 Ok(app_mod::commands::RefactorCommand::Status) => {
@@ -1934,17 +2056,8 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                         app.push_display_message(DisplayMessage::system(
                             app_mod::commands::refactor_stop_notice(false),
                         ));
-                        let _ = begin_remote_send(
-                            app,
-                            remote,
-                            stop_prompt,
-                            vec![],
-                            true,
-                            None,
-                            true,
-                            0,
-                        )
-                        .await;
+                        send_remote_command_prompt(app, remote, stop_prompt, "stop /refactor")
+                            .await?;
                     }
                 }
                 Ok(app_mod::commands::RefactorCommand::Run { plan_only, focus }) => {
@@ -1980,8 +2093,8 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                             ),
                         ));
 
-                        let _ = begin_remote_send(app, remote, prompt, vec![], true, None, true, 0)
-                            .await;
+                        send_remote_command_prompt(app, remote, prompt, "start /refactor")
+                            .await?;
                     }
                 }
             }

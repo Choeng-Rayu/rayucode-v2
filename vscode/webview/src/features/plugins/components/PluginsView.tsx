@@ -77,15 +77,15 @@ function PluginsViewContent({
       onValueChange={(v) => setActiveTab(v as PluginsTabId)}
       data-testid="plugins-view"
       className={cn(
-        "flex h-full min-h-0 w-full flex-col gap-0 bg-canvas @min-[960px]/app:data-[orientation=horizontal]:flex-row",
+        "flex h-full min-h-0 w-full flex-col gap-0 bg-canvas @container/plugins @min-[820px]/plugins:data-[orientation=horizontal]:flex-row",
         className,
       )}
     >
-      {/* Wide (>=960px): 200px Left Customize Sub-Rail */}
+      {/* Wide (>=820px inside Plugins container): 200px Left Customize Sub-Rail */}
       <aside
         aria-label="Customize navigation"
         data-testid="plugins-customize-rail"
-        className="hidden w-[200px] shrink-0 flex-col border-r border-hairline bg-chrome/40 px-3 py-4 select-none @min-[960px]/app:flex"
+        className="hidden w-[200px] shrink-0 flex-col border-r border-hairline bg-chrome/40 px-3 py-4 select-none @min-[820px]/plugins:flex"
       >
         <div className="mb-2.5 px-2 text-xs font-semibold tracking-tight text-muted-ink uppercase">
           Customize
@@ -161,8 +161,8 @@ function PluginsViewContent({
         </div>
       </aside>
 
-      {/* Compact / Medium (<960px): Top 4-Segment Radix Tabs Bar */}
-      <div className="shrink-0 overflow-x-auto border-b border-hairline bg-chrome/40 px-4 py-2.5 @min-[960px]/app:hidden">
+      {/* Compact / Medium (<820px inside Plugins container): Top 4-Segment Radix Tabs Bar */}
+      <div className="shrink-0 overflow-x-auto border-b border-hairline bg-chrome/40 px-3 py-2 @min-[480px]/plugins:px-4 @min-[480px]/plugins:py-2.5 @min-[820px]/plugins:hidden">
         <TabsList className="w-fit min-w-max">
           {CUSTOMIZE_NAV_ITEMS.map((item) => (
             <TabsTrigger
@@ -178,8 +178,8 @@ function PluginsViewContent({
       </div>
 
       {/* Main Scrollable Content Area */}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto w-full max-w-[1000px] px-4 py-5 @min-[640px]/app:px-7 @min-[640px]/app:py-6">
+      <ScrollArea className="min-h-0 min-w-0 flex-1 @container/plugins-stage">
+        <div className="mx-auto w-full max-w-[1000px] px-3 py-4 @min-[480px]/plugins-stage:px-5 @min-[680px]/plugins-stage:px-7 @min-[680px]/plugins-stage:py-6">
           <TabsContent value="mcp" className="m-0">
             <McpConnectorsTab />
           </TabsContent>

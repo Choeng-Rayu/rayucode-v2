@@ -196,6 +196,7 @@ struct LocalRewindUndoSnapshot {
 
 #[derive(Debug, Clone)]
 struct PendingRemoteRewindNotice {
+    request_id: Option<u64>,
     undo: bool,
     message_index: Option<usize>,
     changed_messages: usize,

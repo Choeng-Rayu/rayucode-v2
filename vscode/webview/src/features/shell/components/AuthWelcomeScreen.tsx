@@ -875,7 +875,7 @@ export function AuthWelcomeScreen({
                       Engine offline
                     </span>
                   </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
                     <Button
                       type="button"
                       variant="ghost"

@@ -85,7 +85,7 @@ export function WorkspaceToolsTab() {
       )}
 
       {/* 4-Card Status Grid */}
-      <div className="grid grid-cols-1 gap-4 @min-[700px]/app:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 @min-[600px]/plugins-stage:grid-cols-2">
         {/* 1. Gmail Card */}
         <section
           data-testid="workspace-card-gmail"

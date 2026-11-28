@@ -210,3 +210,297 @@ fn agents_runtime_result_syncs_daemon_overrides_into_client_mirror() {
     ));
     assert_eq!(app.session.agent_model_overrides.len(), 1);
 }
+
+#[test]
+fn scoped_turn_fence_surfaces_control_errors_without_disrupting_turn() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut remote = RemoteConnection::dummy();
+    remote.mark_history_loaded();
+    handle_server_event(
+        &mut app,
+        ServerEvent::TurnStarted {
+            identity: crate::protocol::TurnIdentity {
+                runtime_generation: "gen-1".into(),
+                turn_id: 1,
+            },
+        },
+        &mut remote,
+    );
+    app.current_message_id = Some(999);
+    app.replace_streaming_text("streaming...".into());
+
+    // 1. Rewind error must surface, clear pending notice, and restore history readiness.
+    let rewind_id = runtime.block_on(remote.rewind(1)).unwrap();
+    assert!(!remote.has_loaded_history());
+    app.pending_remote_rewind_notice = Some(crate::tui::app::PendingRemoteRewindNotice {
+        request_id: Some(rewind_id),
+        undo: false,
+        message_index: Some(1),
+        changed_messages: 1,
+    });
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: rewind_id,
+            message: "Cannot rewind while a turn is processing.".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(app.pending_remote_rewind_notice.is_none());
+    assert!(remote.has_loaded_history());
+    assert!(app.is_processing);
+    assert_eq!(app.current_message_id, Some(999));
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Cannot rewind")
+    );
+
+    // 2. Split error must clear split launch state and surface cleanly.
+    let split_id = runtime.block_on(remote.split()).unwrap();
+    app.pending_split_request = true;
+    app.pending_split_label = Some("Review".into());
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: split_id,
+            message: "Split failed on daemon".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(!app.pending_split_request);
+    assert!(app.pending_split_label.is_none());
+    assert!(app.is_processing);
+    assert_eq!(
+        app.display_messages.last().unwrap().content,
+        "Split failed on daemon"
+    );
+
+    // 3. Clear / feature control error must surface cleanly without dropping active turn.
+    let clear_id = runtime.block_on(remote.clear()).unwrap();
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: clear_id,
+            message: "Cannot handle clear while the session is busy.".into(),
+            retry_after_secs: Some(1),
+        },
+        &mut remote,
+    ));
+    assert!(app.is_processing);
+    assert_eq!(app.current_message_id, Some(999));
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Cannot handle clear")
+    );
+
+    // 4. Usage-reset cache invalidation Error must NOT flip refresh_usage = true.
+    let reset_id = 777;
+    app.usage_reset.invalidate_requests.insert(reset_id, None);
+    app.usage_reset.refresh_usage = false;
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: reset_id,
+            message: "usage cache busy".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(!app.usage_reset.refresh_usage);
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("daemon usage cache could not be refreshed")
+    );
+}
+
+#[test]
+fn state_mutating_remote_events_request_redraw_and_error_clears_turn_fields() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("sess-1".into());
+    let mut remote = RemoteConnection::dummy();
+
+    app.is_processing = true;
+    app.status = ProcessingStatus::RunningTool("bash".into());
+    app.current_message_id = Some(55);
+    app.processing_started = Some(Instant::now());
+    app.visible_turn_started = Some(Instant::now());
+    app.remote_resume_activity = Some(RemoteResumeActivity {
+        session_id: "sess-1".into(),
+        observed_at: Instant::now(),
+        current_tool_name: Some("bash".into()),
+    });
+    app.streaming_tool_calls.push(crate::message::ToolCall {
+        id: "call_1".into(),
+        name: "bash".into(),
+        input: serde_json::json!({}),
+        intent: None,
+        thought_signature: None,
+    });
+    app.replace_streaming_text("partial text".into());
+
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: 55,
+            message: "provider error".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(!app.is_processing);
+    assert!(app.current_message_id.is_none());
+    assert!(app.processing_started.is_none());
+    assert!(app.remote_resume_activity.is_none());
+    assert!(app.streaming_tool_calls.is_empty());
+    assert!(app.streaming_text().is_empty());
+
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Interrupted,
+        &mut remote
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::ReasoningEffortChanged {
+            id: 1,
+            effort: Some("high".into()),
+            error: None,
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::TransportChanged {
+            id: 2,
+            transport: Some("websocket".into()),
+            error: None,
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::CompactionModeChanged {
+            id: 3,
+            mode: crate::config::CompactionMode::Reactive,
+            error: None,
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::CompactResult {
+            id: 4,
+            message: "Compacted".into(),
+            success: true,
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::ResumeAllResult {
+            id: 5,
+            resumed: 0,
+            skipped: 0,
+            resumed_sessions: vec![],
+            message: "None".into(),
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::StdinRequest {
+            request_id: "r1".into(),
+            prompt: "Password:".into(),
+            is_password: true,
+            tool_call_id: "c1".into(),
+        },
+        &mut remote,
+    ));
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::McpStatus {
+            servers: vec!["srv:1".into()],
+        },
+        &mut remote,
+    ));
+    assert!(!handle_server_event(
+        &mut app,
+        ServerEvent::McpStatus {
+            servers: vec!["srv:1".into()],
+        },
+        &mut remote,
+    ));
+}
+
+#[test]
+fn disconnect_clears_stale_per_connection_request_state_and_busy_clear_is_blocked() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut remote = RemoteConnection::dummy();
+    remote.mark_history_loaded();
+
+    app.push_display_message(DisplayMessage::user("keep me"));
+    app.is_processing = true;
+    app.input = "/clear".into();
+    app.cursor_pos = app.input.len();
+    runtime
+        .block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
+        .unwrap();
+    assert!(
+        app.display_messages
+            .iter()
+            .any(|m| m.role == "user" && m.content == "keep me"),
+        "/clear while busy must not wipe transcript"
+    );
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Cannot clear session while a turn is processing")
+    );
+
+    app.remote_model_switch_in_flight = true;
+    app.pending_agent_model_request_id = Some(42);
+    app.pending_remote_file_change_request_ids.insert(43);
+    app.pending_remote_rewind_notice = Some(crate::tui::app::PendingRemoteRewindNotice {
+        request_id: Some(44),
+        undo: false,
+        message_index: Some(1),
+        changed_messages: 1,
+    });
+    app.deferred_stream_done_id = Some(45);
+    app.deferred_stream_done_identity = Some(crate::protocol::TurnIdentity {
+        runtime_generation: "g".into(),
+        turn_id: 2,
+    });
+
+    let mut run_state = super::super::RemoteRunState::default();
+    super::super::handle_disconnect(&mut app, &mut run_state, None);
+
+    assert!(!app.remote_model_switch_in_flight);
+    assert!(app.pending_agent_model_request_id.is_none());
+    assert!(app.pending_remote_file_change_request_ids.is_empty());
+    assert!(app.pending_remote_rewind_notice.is_none());
+    assert!(app.deferred_stream_done_id.is_none());
+    assert!(app.deferred_stream_done_identity.is_none());
+}

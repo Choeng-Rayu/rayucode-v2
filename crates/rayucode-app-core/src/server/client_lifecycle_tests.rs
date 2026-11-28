@@ -1935,3 +1935,239 @@ mod socket_workflows;
 
 #[path = "client_lifecycle_tests/system_prompt.rs"]
 mod system_prompt;
+
+#[test]
+fn classify_connection_activity_avoids_per_delta_writes_and_protects_active_turn() {
+    let mut active = None;
+    let id1 = crate::protocol::TurnIdentity {
+        runtime_generation: "gen-1".into(),
+        turn_id: 1,
+    };
+    let stale_id = crate::protocol::TurnIdentity {
+        runtime_generation: "gen-1".into(),
+        turn_id: 0,
+    };
+
+    assert!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TextDelta {
+                text: "hello".into()
+            }
+        )
+        .is_none()
+    );
+    assert!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::ReasoningDelta {
+                text: "think".into()
+            }
+        )
+        .is_none()
+    );
+
+    assert_eq!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnStarted {
+                identity: id1.clone()
+            }
+        ),
+        Some(ConnectionActivityUpdate::Started)
+    );
+    assert_eq!(active.as_ref(), Some(&id1));
+
+    // Per-delta scoped events must not take the connection map write lock.
+    assert!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnEvent {
+                identity: id1.clone(),
+                event: Box::new(ServerEvent::TextDelta {
+                    text: "chunk".into()
+                }),
+            }
+        )
+        .is_none()
+    );
+
+    // Unscoped Done/Error/Tool events must not clear or mutate an active scoped turn.
+    assert!(classify_connection_activity(&mut active, &ServerEvent::Done { id: 1 }).is_none());
+    assert!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::Error {
+                id: 2,
+                message: "rewind busy".into(),
+                retry_after_secs: None,
+            }
+        )
+        .is_none()
+    );
+    assert_eq!(active.as_ref(), Some(&id1));
+
+    // Stale scoped terminal must be ignored while newer turn is active.
+    assert!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnEvent {
+                identity: stale_id,
+                event: Box::new(ServerEvent::Done { id: 1 }),
+            }
+        )
+        .is_none()
+    );
+    assert_eq!(active.as_ref(), Some(&id1));
+
+    // Scoped tool + terminal events update activity and finish the active turn.
+    assert_eq!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnEvent {
+                identity: id1.clone(),
+                event: Box::new(ServerEvent::ToolStart {
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                }),
+            }
+        ),
+        Some(ConnectionActivityUpdate::ToolStart("bash".into()))
+    );
+    assert_eq!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnEvent {
+                identity: id1.clone(),
+                event: Box::new(ServerEvent::ToolDone {
+                    tool_duration_ms: Some(12),
+                    id: "call_1".into(),
+                    name: "bash".into(),
+                    output: "ok".into(),
+                    error: None,
+                }),
+            }
+        ),
+        Some(ConnectionActivityUpdate::ToolDone)
+    );
+    assert_eq!(
+        classify_connection_activity(
+            &mut active,
+            &ServerEvent::TurnEvent {
+                identity: id1.clone(),
+                event: Box::new(ServerEvent::Done { id: 1 }),
+            }
+        ),
+        Some(ConnectionActivityUpdate::Finished)
+    );
+    assert!(active.is_none());
+
+    // Unscoped Interrupted still clears active_turn when needed, and unscoped Done works when idle.
+    active = Some(id1);
+    assert_eq!(
+        classify_connection_activity(&mut active, &ServerEvent::Interrupted),
+        Some(ConnectionActivityUpdate::Finished)
+    );
+    assert!(active.is_none());
+    assert_eq!(
+        classify_connection_activity(&mut active, &ServerEvent::Done { id: 9 }),
+        Some(ConnectionActivityUpdate::Finished)
+    );
+}
+
+#[tokio::test]
+async fn handle_run_subagent_emits_scoped_turn_events_and_rejects_busy_lock() {
+    let _guard = crate::storage::lock_test_env();
+    let _env = IsolatedReloadRecoveryEnv::new();
+    let session_id = "session_run_subagent_scoped_test";
+    let provider: Arc<dyn Provider> = Arc::new(CompleteImmediatelyProvider);
+    let registry = Registry::new(Arc::clone(&provider)).await;
+    let mut session = crate::session::Session::create_with_id(session_id.into(), None, None);
+    session.model = Some("complete-immediately".into());
+    let agent = Arc::new(Mutex::new(Agent::new_with_session(
+        provider, registry, session, None,
+    )));
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+
+    // Busy lock must fail quickly instead of wedging subagent execution.
+    {
+        let _busy_guard = agent.lock().await;
+        crate::server::client_actions::handle_run_subagent(
+            11,
+            "inspect repo".into(),
+            "explore".into(),
+            None,
+            None,
+            &agent,
+            &swarm_members,
+            &event_tx,
+        );
+        let first = tokio::time::timeout(Duration::from_secs(2), event_rx.recv())
+            .await
+            .expect("busy subagent error timeout")
+            .expect("busy subagent error event");
+        match first {
+            ServerEvent::Error { id, message, .. } => {
+                assert_eq!(id, 11);
+                assert_eq!(message, "Already processing a message");
+            }
+            other => panic!("expected busy ServerEvent::Error, got {other:?}"),
+        }
+    }
+
+    // Idle agent must emit TurnStarted + TurnEvent-wrapped tool lifecycle + terminal event.
+    crate::server::client_actions::handle_run_subagent(
+        12,
+        "inspect repo".into(),
+        "explore".into(),
+        None,
+        None,
+        &agent,
+        &swarm_members,
+        &event_tx,
+    );
+
+    let mut events = Vec::new();
+    let mut turn_identity = None;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = event_rx.recv().await {
+            let is_terminal = match &event {
+                ServerEvent::TurnStarted { identity } => {
+                    turn_identity = Some(identity.clone());
+                    false
+                }
+                ServerEvent::TurnEvent { identity, event } => {
+                    assert_eq!(
+                        Some(identity),
+                        turn_identity.as_ref(),
+                        "subagent events must share one TurnStarted identity"
+                    );
+                    matches!(
+                        event.as_ref(),
+                        ServerEvent::Done { id: 12 } | ServerEvent::Error { id: 12, .. }
+                    )
+                }
+                other => panic!("expected scoped TurnStarted/TurnEvent from handle_run_subagent, got {other:?}"),
+            };
+            events.push(event);
+            if is_terminal {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("subagent scoped turn timeout");
+
+    assert!(turn_identity.is_some());
+    assert!(events.iter().any(|e| matches!(
+        e,
+        ServerEvent::TurnEvent { event, .. }
+            if matches!(event.as_ref(), ServerEvent::ToolStart { name, .. } if name == "subagent")
+    )));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        ServerEvent::TurnEvent { event, .. }
+            if matches!(event.as_ref(), ServerEvent::ToolDone { name, .. } if name == "subagent")
+    )));
+}

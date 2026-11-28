@@ -2261,4 +2261,116 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       cwd: undefined,
     });
   });
+
+  it("matches AI text response font size (14px) to user messages while keeping thinking and tool usage at their existing sizes", () => {
+    const readGroup: ExtendedWorkStepGroup = {
+      id: "wg_font_1",
+      title: "Read files",
+      steps: [
+        {
+          id: "step_read_1",
+          kind: "read",
+          label: "Read",
+          files: [
+            {
+              file: "ChatStream.tsx",
+              path: "vscode/webview/src/features/chat/components/ChatStream.tsx",
+              line: 230,
+              rangeLabel: "ChatStream.tsx:230-290",
+            },
+          ],
+        },
+      ],
+      toolSteps: [
+        {
+          id: "ts_grep_1",
+          toolName: "agentgrep",
+          intent: 'Searched "msg-user" in chat components',
+          status: "completed",
+          durationLabel: "0.1s",
+        },
+      ],
+    };
+
+    const turn: ChatTurnView = {
+      id: "turn_font_parity",
+      sessionId: "ses_font_parity",
+      userPrompt: "Compare user prompt size against AI answer prose.",
+      timestamp: "12:00",
+      diffCard: {
+        id: "d_font_0",
+        file: "",
+        additions: 0,
+        deletions: 0,
+        hint: "",
+        lines: [],
+      },
+      workedDuration: "3s",
+      notes: ["Checking the message prose hierarchy before summarizing."],
+      groups: [readGroup],
+      timeline: [
+        {
+          type: "reasoning",
+          id: "rsn_1",
+          text: "Inspecting chat typography tokens.",
+        },
+        {
+          type: "note",
+          id: "note_1",
+          text: "Checking the message prose hierarchy before summarizing.",
+        },
+        {
+          type: "group",
+          group: readGroup,
+        },
+      ],
+      answerIntro:
+        "AI answer paragraph matches the user bubble.\n\n- Bullet item matches too\n\n> Quoted prose also matches",
+      answerBullets: [
+        {
+          id: "b_font_1",
+          title: "Consistent prose:",
+          body: "Final summary item matches user message size.",
+          citations: [],
+        },
+      ],
+      credits: "0.05 cr",
+      kvCachePct: 92,
+      pinned: false,
+    };
+
+    renderWithQuery(
+      <ChatStream
+        turns={[turn]}
+        sessionId="ses_font_parity"
+      />,
+    );
+
+    // Expand work trace, thinking, and tool group so work-note, work-reasoning-body, and tool steps mount
+    fireEvent.click(screen.getByTestId("work-trace-toggle"));
+    fireEvent.click(screen.getByTestId("work-reasoning-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: /Read files/i }));
+
+    const userMsg = document.querySelector('[data-slot="msg-user"]');
+    const agentAnswer = document.querySelector('[data-slot="agent-answer"]');
+    const workNote = document.querySelector('[data-slot="work-note"]');
+    const markdownRoot = document.querySelector('[data-slot="editorial-markdown"]');
+    const reasoningToggle = screen.getByTestId("work-reasoning-toggle");
+    const reasoningBody = screen.getByTestId("work-reasoning-body");
+    const readStep = document.querySelector('[data-slot="work-step-read"]');
+    const toolStep = document.querySelector('[data-slot="tool-step-card"]');
+
+    expect(userMsg?.className).toContain("text-[14px]");
+    expect(agentAnswer?.className).toContain("text-[14px]");
+    expect(workNote?.className).toContain("text-[14px]");
+    expect(markdownRoot?.className).toContain("text-[14px]");
+
+    // Tool usage and thinking stay at their existing distinct sizes (not 14px)
+    expect(reasoningToggle.className).toContain("text-[12.5px]");
+    expect(reasoningBody.className).not.toContain("text-[14px]");
+    expect(readStep?.className).toContain("text-[13px]");
+    expect(readStep?.className).not.toContain("text-[14px]");
+    expect(toolStep).toBeTruthy();
+    expect(toolStep?.className).not.toContain("text-[14px]");
+  });
 });

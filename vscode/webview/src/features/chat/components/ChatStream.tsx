@@ -169,7 +169,7 @@ function TurnView({
       )}
 
       {/* User Prompt Bubble */}
-      <div className="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
+      <div className="flex max-w-[92%] min-w-0 flex-col items-end gap-1.5 self-end @min-[420px]/chat:max-w-[85%]">
         {turn.userRefFiles && (() => {
           const parsedRef = parseFileLineTarget(turn.userRefFiles);
           return (
@@ -185,7 +185,7 @@ function TurnView({
                   ...(parsedRef.column ? { column: parsedRef.column } : {}),
                 });
               }}
-              className="inline-flex max-w-[340px] cursor-pointer items-center gap-1.5 rounded-[9px] border border-hairline bg-pane px-2.5 py-1 text-xs text-body transition-colors hover:border-premium hover:text-ink"
+              className="inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-[9px] border border-hairline bg-pane px-2.5 py-1 text-xs text-body transition-colors hover:border-premium hover:text-ink @min-[420px]/chat:max-w-[340px]"
             >
               <TechFileBadge
                 path={parsedRef.path}
@@ -229,7 +229,7 @@ function TurnView({
             )}
             <div
               data-slot="msg-user"
-              className="rayu-prose max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14px] leading-[1.6] text-ink whitespace-pre-wrap"
+              className="rayu-prose max-w-full rounded-2xl bg-active/85 px-4 py-2.5 text-[14px] leading-[1.6] break-words text-ink whitespace-pre-wrap"
             >
               {turn.userPrompt}
               {turn.userMeta && (
@@ -266,7 +266,7 @@ function TurnView({
         {hasAnswer && (
           <div
             data-slot="agent-answer"
-            className="flex min-w-0 flex-col gap-3 text-[14px] leading-[1.64] break-words text-body"
+            className="flex min-w-0 flex-col gap-3 text-[14px] leading-[1.6] break-words text-body"
           >
             {turn.answerIntro.trim().length > 0 && (
               <EditorialMarkdown content={turn.answerIntro} />
@@ -279,7 +279,7 @@ function TurnView({
             )}
 
             {turn.answerBullets.length > 0 && (
-              <ol className="rayu-prose m-0 flex max-w-[72ch] list-decimal flex-col gap-2.5 pl-5 text-body marker:font-medium marker:text-muted-ink">
+              <ol className="rayu-prose m-0 flex max-w-[72ch] list-decimal flex-col gap-2.5 pl-5 text-[14px] leading-[1.6] text-body marker:font-medium marker:text-muted-ink">
                 {turn.answerBullets.map((bullet) => (
                   <li key={bullet.id} className="pl-0.5 text-body">
                     <strong className="font-semibold text-ink">
@@ -328,7 +328,7 @@ function TurnView({
               <div
                 key={`${artifact.title}_${idx}`}
                 data-testid="turn-output-artifact-card"
-                className="flex min-w-0 items-center justify-between gap-3 rounded-[14px] border border-hairline bg-raised px-3.5 py-2.5 shadow-bevel-surface"
+                className="flex min-w-0 flex-wrap items-center justify-between gap-2.5 rounded-[14px] border border-hairline bg-raised px-3.5 py-2.5 shadow-bevel-surface"
               >
                 <button
                   type="button"
@@ -751,7 +751,7 @@ export function ChatStream({
         <div
           ref={contentRef}
           data-slot="stream-container"
-          className="mx-auto flex w-full max-w-[732px] min-w-0 flex-col gap-6 px-4 pt-5 pb-10 @min-[640px]/app:px-6"
+          className="mx-auto flex w-full max-w-[732px] min-w-0 flex-col gap-6 px-3 pt-4 pb-10 @min-[420px]/chat:px-4 @min-[420px]/chat:pt-5 @min-[640px]/chat:px-6"
         >
           {turns.map((turn, idx) => (
             <TurnView
@@ -848,7 +848,7 @@ export function ChatStream({
         return (
           <div
             data-testid="soft-interrupt-queue-strip"
-            className="mx-auto mb-1.5 flex w-full max-w-[732px] min-w-0 flex-col gap-1 px-4 @min-[640px]/app:px-6"
+            className="mx-auto mb-1.5 flex w-full max-w-[732px] min-w-0 flex-col gap-1 px-3 @min-[420px]/chat:px-4 @min-[640px]/chat:px-6"
           >
             {isQueuePaused && !isStreaming && hasQueued && (
               <div className="truncate px-1 text-[11px] text-muted-ink">
