@@ -105,7 +105,10 @@ export function MoreOptionsMenu({
           onClick={() =>
             postToHost({
               type: "rayucode.editor.openTerminal",
-              cwd: activeProjectPath ?? undefined,
+              sessionId: activeSessionId ?? undefined,
+              cwd: activeSessionId
+                ? undefined
+                : (activeProjectPath ?? undefined),
             })
           }
         >
@@ -394,7 +397,10 @@ export function TopBar() {
               onClick={() =>
                 postToHost({
                   type: "rayucode.editor.openTerminal",
-                  cwd: activeProjectPath ?? undefined,
+                  sessionId: activeSessionId ?? undefined,
+                  cwd: activeSessionId
+                    ? undefined
+                    : (activeProjectPath ?? undefined),
                 })
               }
               className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"

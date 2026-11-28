@@ -341,6 +341,15 @@ export const SessionSummaryViewSchema = z.object({
 });
 export type SessionSummaryView = z.infer<typeof SessionSummaryViewSchema>;
 
+export const SessionPrefsPatchSchema = z.object({
+  model: z.string().optional(),
+  provider: z.string().optional(),
+  effort: EffortLevelSchema.optional(),
+  permissionMode: PermissionModeIdSchema.optional(),
+  serviceTier: ServiceTierSchema.optional(),
+});
+export type SessionPrefsPatch = z.infer<typeof SessionPrefsPatchSchema>;
+
 export const ExternalProjectViewSchema = z.object({
   id: z.string(),
   source: SessionSourceIdSchema,
@@ -2767,6 +2776,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openTerminal"),
+    sessionId: z.string().optional(),
     cwd: z.string().optional(),
     name: z.string().optional(),
   }),
@@ -2776,6 +2786,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openMarkdownPreview"),
+    sessionId: z.string().optional(),
     path: z.string().min(1),
   }),
   z.object({
@@ -2891,6 +2902,12 @@ export const HostToWebviewMessageSchema = z.union([
     sessionId: z.string().optional(),
     mode: PermissionModeIdSchema,
     isDefault: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.session.prefsSync"),
+    sessionId: z.string(),
+    acknowledged: SessionPrefsPatchSchema,
+    pending: SessionPrefsPatchSchema,
   }),
   z.object({
     type: z.literal("rayucode.editor.selectionChanged"),

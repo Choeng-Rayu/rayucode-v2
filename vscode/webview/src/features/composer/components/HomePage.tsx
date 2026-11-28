@@ -93,6 +93,9 @@ export function HomePage({
     (next: string) => setComposerDraft("__home__", next),
     [setComposerDraft],
   );
+  const [composerImages, setComposerImages] = React.useState<
+    ImageAttachmentView[]
+  >([]);
   const [pendingSubmit, setPendingSubmit] = React.useState<{
     prompt: string;
     images?: ImageAttachmentView[];
@@ -130,10 +133,13 @@ export function HomePage({
     submitAttemptRef.current += 1;
     if (pendingSubmit) {
       setComposerValue(pendingSubmit.prompt);
+      if (pendingSubmit.images && pendingSubmit.images.length > 0) {
+        setComposerImages(pendingSubmit.images);
+      }
     }
     setPendingSubmit(null);
     setPendingElapsedSec(0);
-  }, [pendingSubmit]);
+  }, [pendingSubmit, setComposerValue]);
 
   const handleQuickActionClick = (action: QuickActionItem) => {
     setComposerValue(action.prompt);
@@ -186,6 +192,7 @@ export function HomePage({
       });
       setPendingElapsedSec(0);
       setComposerValue("");
+      setComposerImages([]);
 
       try {
         const created = await submitComposer(payload, {
@@ -193,6 +200,14 @@ export function HomePage({
           shouldContinue: () => submitAttemptRef.current === attemptId,
         });
         if (created && submitAttemptRef.current === attemptId) onSessionCreated?.(created);
+      } catch (error) {
+        if (submitAttemptRef.current === attemptId) {
+          setComposerValue(payload.prompt);
+          if (payload.images && payload.images.length > 0) {
+            setComposerImages(payload.images);
+          }
+        }
+        throw error;
       } finally {
         if (submitAttemptRef.current === attemptId) {
           setPendingSubmit(null);
@@ -388,6 +403,8 @@ export function HomePage({
         mode="home"
         value={composerValue}
         onValueChange={setComposerValue}
+        images={composerImages}
+        onImagesChange={setComposerImages}
         inputRef={textareaRef}
         modelId={activeDraft?.model}
         effort={activeDraft?.reasoningEffort}

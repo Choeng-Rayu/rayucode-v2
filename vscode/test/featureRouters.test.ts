@@ -3967,3 +3967,233 @@ test("plugins.skills.create rejects traversal/non-alnum names, safely quotes YAM
   assert.equal(degraded.reloadError, "skills reload unavailable");
   assert.equal(fs.existsSync(degraded.skill.path), true);
 });
+
+test("featureRouters rejects ambiguous sessions.create with >1 workspaces, binds session diffs strictly to originating worktree, and keeps cacheTtl global Anthropic config", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-vsc-router-w2-"));
+  const wtA = path.join(tmpDir, "project-a");
+  const wtB = path.join(tmpDir, "project-b");
+  fs.mkdirSync(wtA, { recursive: true });
+  fs.mkdirSync(wtB, { recursive: true });
+  const realWtA = fs.realpathSync(wtA);
+  const realWtB = fs.realpathSync(wtB);
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  const globalStore = new Map<string, unknown>();
+  const savedPrefsCalls: Array<{ sessionId: string; patch: Record<string, unknown> }> = [];
+  const createdWorkingDirs: Array<string | undefined> = [];
+  const gitDiffCalls: Array<{ path: string; workingDir?: string; sessionId?: string }> = [];
+  const fastCalls: Array<{ args: string[]; sessionId?: string }> = [];
+
+  const workingDirsBySession = new Map<string, string>([
+    ["sess_a", realWtA],
+    ["sess_b", realWtB],
+  ]);
+
+  const daemonStatus: DaemonStatusView = {
+    state: "connected",
+    version: "rayu-harness-v1.16",
+    protocolVersion: "1.16",
+    socketPath: "/tmp/rayu-w2.sock",
+    latencyMs: 2,
+    capabilities: ["permissions", "file_changes"],
+    isRayuRepo: true,
+  };
+
+  const router = createFeatureRouter({
+    bridgeManager: {
+      getStatus: () => daemonStatus,
+      ping: async () => ({ ok: true, latencyMs: 2 }),
+      reconnect: async () => daemonStatus,
+      restart: async () => daemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => "sess_b",
+      getActiveModel: () => "claude-opus-4-6",
+      getActiveProvider: () => "rayu",
+      getActivePermissionMode: () => "default",
+      getSessionWorkingDir: (sid) =>
+        sid !== undefined ? workingDirsBySession.get(sid) : workingDirsBySession.get("sess_b"),
+      getSessionWorkingDirForSession: (sid) => workingDirsBySession.get(sid),
+      getSessionPrefs: () => ({ model: "rayu:claude-opus-4-6", effort: "high" }),
+      saveSessionPrefs: async (sessionId, patch) => {
+        savedPrefsCalls.push({ sessionId, patch: patch as Record<string, unknown> });
+      },
+      getClient: async () =>
+        ({
+          supports: () => false,
+          getRuntimeInfo: async (sessionId: string) => ({
+            server: "rayu-harness-v1.16",
+            protocolVersion: 1,
+            capabilities: daemonStatus.capabilities,
+            healthy: true,
+            sessionId,
+            provider: "rayu",
+            model: "claude-opus-4-6",
+            providers: ["rayu"],
+            routes: [],
+          }),
+        }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+      listSessions: async () => ({ sessions: [], activeSessionId: "sess_b" }),
+      createSession: async (opts) => {
+        createdWorkingDirs.push(opts?.workingDir);
+        return {
+          sessionId: "sess_created",
+          title: "Created",
+          workingDir: opts?.workingDir,
+          status: "idle",
+          updatedAtMs: Date.now(),
+        };
+      },
+      attachSession: async (sessionId) => ({
+        sessionId,
+        title: "Attached",
+        status: "idle",
+        updatedAtMs: Date.now(),
+      }),
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      runtimeCommand: async (command, args = [], sessionId) => {
+        if (command === "fast") {
+          fastCalls.push({ args, sessionId });
+        }
+        return {
+          session_id: sessionId ?? "sess_b",
+          command,
+          data: {},
+          message: "ok",
+        };
+      },
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+    },
+    gitBridge: {
+      getStatus: async () => ({
+        branch: "main",
+        baseBranch: "main",
+        totalAdditions: 0,
+        totalDeletions: 0,
+        files: [],
+        stagedCount: 0,
+        hasGhCli: true,
+      }),
+      getDiff: async (opts) => {
+        gitDiffCalls.push(opts);
+        return {
+          path: opts.path,
+          originalContent: "before\n",
+          modifiedContent: `after from ${opts.workingDir}\n`,
+          unifiedDiff: "@@ -1 +1 @@\n-before\n+after\n",
+          additions: 1,
+          deletions: 1,
+          languageId: "typescript",
+        };
+      },
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: () => ({ ok: true }),
+      undo: async () => ({ ok: true }),
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_ws, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [
+      { name: "project-a", path: realWtA, isPrimary: true },
+      { name: "project-b", path: realWtB, isPrimary: false },
+    ],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(key: string, defaultValue: T): T =>
+      (globalStore.has(key) ? (globalStore.get(key) as T) : defaultValue),
+    updateGlobalState: async (key, value) => {
+      globalStore.set(key, value);
+    },
+    getRuntimeSettings: () => ({
+      socketPath: "/tmp/rayu-w2.sock",
+      binaryPath: "/usr/local/bin/rayu",
+      autoStart: true,
+    }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  });
+
+  // 1. Omitting workingDir with >1 workspaces rejects with invalid_request (with AND without deferSettings)
+  for (const params of [undefined, {}, { deferSettings: true }] as const) {
+    await assert.rejects(
+      () => router.call("sessions.create", params),
+      (err: unknown) =>
+        err instanceof HarnessError &&
+        err.code === "invalid_request" &&
+        /Select a project workspace/i.test(err.message),
+    );
+  }
+  assert.equal(createdWorkingDirs.length, 0);
+
+  // Explicit workspace resolves via realpath and succeeds
+  const created = await router.call("sessions.create", { workingDir: wtA });
+  assert.equal(created.session.workingDir, realWtA);
+  assert.deepEqual(createdWorkingDirs, [realWtA]);
+
+  // 2. changes.diff for sess_a while sess_b is active resolves sess_a's worktree strictly, and unknown session rejects
+  const diffA = await router.call("changes.diff", {
+    path: "src/shared.ts",
+    sessionId: "sess_a",
+    scope: "git",
+  });
+  assert.equal(gitDiffCalls.at(-1)?.workingDir, realWtA);
+  assert.match(diffA.modifiedContent, new RegExp(realWtA.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  await assert.rejects(
+    () =>
+      router.call("changes.diff", {
+        path: "src/shared.ts",
+        sessionId: "sess_unknown",
+        scope: "git",
+      }),
+    (err: unknown) => err instanceof HarnessError && err.code === "invalid_request",
+  );
+
+  // 3. cacheTtl stays strictly global Anthropic config (no per-session saveSessionPrefs)
+  await router.call("settings.models.setCacheTtl", {
+    ttl: "1h",
+    sessionId: "sess_a",
+  });
+  assert.equal(globalStore.get("rayucode.settings.cacheTtl"), "1h");
+  assert.equal(
+    savedPrefsCalls.some((c) => "cacheTtl" in c.patch),
+    false,
+  );
+  const modelsForOtherSession = await router.call("settings.models.get", {
+    sessionId: "sess_b",
+  });
+  assert.equal(modelsForOtherSession.cacheTtl, "1h");
+
+  // 4. settings.models.setFast maps "auto" -> "off" on the wire
+  await router.call("settings.models.setFast", {
+    tier: "auto",
+    sessionId: "sess_a",
+  });
+  assert.deepEqual(fastCalls.at(-1), { args: ["off"], sessionId: "sess_a" });
+});

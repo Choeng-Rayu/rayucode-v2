@@ -12,6 +12,7 @@ import {
 import {
   ChatWorkspaceView,
   LiveTraceController,
+  useLiveTraceStore,
 } from "@/features/chat";
 import {
   HomePage,
@@ -28,7 +29,7 @@ import {
   callRpc,
   isVsCodeWebview,
   onHostMessage,
-  sendHarnessRequest,
+  requestHarnessAck,
   useAppStore,
   type MidTurnMessageItem,
 } from "@/lib";
@@ -68,6 +69,12 @@ export function App() {
   const authDialogOpen = useAppStore((s) => s.authDialogOpen);
   const backgroundDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const isStreamActive = useAppStore((s) => s.isStreamActive);
+  const midTurnMessagesBySession = useAppStore(
+    (s) => s.midTurnMessagesBySession,
+  );
+  const pausedQueueSessions = useAppStore((s) => s.pausedQueueSessions);
+  const pendingUserTurn = useAppStore((s) => s.pendingUserTurn);
+  const liveTurnsBySession = useLiveTraceStore((s) => s.liveTurnsBySession);
 
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
@@ -77,7 +84,6 @@ export function App() {
   const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
-  const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
   const requestSessionSearchFocus = useAppStore(
     (s) => s.requestSessionSearchFocus,
   );
@@ -174,6 +180,23 @@ export function App() {
         }
         return;
       }
+      if (msg.type === "rayucode.models.changed") {
+        if (msg.credentialsChanged || msg.sessionIds.length === 0) {
+          invalidateModelAndProviderQueries();
+        } else {
+          for (const prefix of [["composer", "model-settings"], ["settings", "models"], ["models"]]) {
+            void queryClient.invalidateQueries({
+              queryKey: prefix,
+              predicate: (query) => {
+                const session = query.queryKey.at(-1);
+                return session === "global" || session === prefix.at(-1) ||
+                  (typeof session === "string" && msg.sessionIds.includes(session));
+              },
+            });
+          }
+        }
+        return;
+      }
       if (msg.type === "rayucode.config.changed") {
         invalidateModelAndProviderQueries();
         void queryClient.invalidateQueries({ queryKey: ["settings", "features"] });
@@ -199,6 +222,13 @@ export function App() {
       if (msg.type === "rayucode.workspaces.ledgerChanged") {
         queryClient.setQueryData(["workspace", "ledger"], msg.ledger);
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        return;
+      }
+      if (
+        msg.type === "rayucode.session.prefsSync" ||
+        msg.type === "rayucode.permission.modeSync"
+      ) {
+        useAppStore.getState().applyHostMessage(msg);
         return;
       }
       if (msg.type === "rayucode.host.command") {
@@ -232,51 +262,117 @@ export function App() {
   ]);
 
   const submitComposer = useSubmitComposer();
-  const handleWorkspaceSubmit = React.useCallback(async (payload: ComposerSubmitPayload) => {
-    await submitComposer(payload);
-  }, [submitComposer]);
+  const handleWorkspaceSubmit = React.useCallback(
+    async (
+      payload: ComposerSubmitPayload,
+      targetSessionId?: string | null,
+    ) => {
+      await submitComposer(
+        payload,
+        targetSessionId ? { sessionId: targetSessionId } : undefined,
+      );
+    },
+    [submitComposer],
+  );
+
+  const drainingSessionsRef = React.useRef(new Set<string>());
 
   const handleDrainQueuedMessage = React.useCallback(
     async (item: MidTurnMessageItem) => {
       const state = useAppStore.getState();
-      const project = state.workspaces.find((workspace) => workspace.path === item.workingDir);
+      const sessionPrefs = {
+        ...state.sessionPrefsBySession[item.sessionId],
+        ...state.pendingSessionPrefsBySession[item.sessionId],
+      };
+      const project = state.workspaces.find(
+        (workspace) => workspace.path === item.workingDir,
+      );
+      const modelSpec = item.modelSpec ?? sessionPrefs.modelId;
+      const apiMethod = item.apiMethod ?? sessionPrefs.apiMethod;
+      const effort = item.effort ?? sessionPrefs.effort;
+      const serviceTier = item.serviceTier ?? sessionPrefs.serviceTier;
+      const permissionMode =
+        item.permissionMode ??
+        sessionPrefs.permissionMode ??
+        state.defaultPermissionMode ??
+        "default";
+      drainingSessionsRef.current.add(item.sessionId);
       try {
-        await submitComposer({
-          prompt: item.text,
-          images: item.images,
-          project: project?.name ?? "workspace",
-          workingDir: item.workingDir,
-          checkout: project?.branch ?? "",
-          modelId: item.modelSpec ?? "",
-          modelSpec: item.modelSpec,
-          modelLabel: item.modelSpec ?? "",
-          apiMethod: item.apiMethod,
-          effort: item.effort,
-          serviceTier: item.serviceTier,
-          cacheTtl: item.cacheTtl,
-          permissionMode: item.permissionMode ?? "default",
-          editorSelection: item.editorSelection ?? null,
-          selectionIncluded: Boolean(item.editorSelection),
-        }, { sessionId: item.sessionId });
+        await submitComposer(
+          {
+            prompt: item.text,
+            images: item.images,
+            project: project?.name ?? "workspace",
+            workingDir: item.workingDir,
+            checkout: project?.branch ?? "",
+            modelId: modelSpec ?? "",
+            modelSpec,
+            modelLabel: sessionPrefs.modelLabel ?? modelSpec ?? "",
+            apiMethod,
+            effort,
+            serviceTier,
+            cacheTtl: item.cacheTtl,
+            permissionMode,
+            editorSelection: item.editorSelection ?? null,
+            selectionIncluded: Boolean(item.editorSelection),
+          },
+          { sessionId: item.sessionId },
+        );
       } catch (error) {
         state.setQueuePausedForSession(item.sessionId, true);
         state.addMidTurnMessage(item, true);
-        toast.error(error instanceof Error ? error.message : "Could not send the queued message.");
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not send the queued message.",
+        );
+      } finally {
+        drainingSessionsRef.current.delete(item.sessionId);
       }
     },
     [submitComposer],
   );
 
-  const handleWorkspaceStop = React.useCallback(() => {
-    const sid = useAppStore.getState().activeSessionId;
-    if (!sid) return;
-    useAppStore.getState().setQueuePausedForSession(sid, true);
-    setIsStreamActive(false);
-    sendHarnessRequest({
-      req: "cancel",
-      session_id: sid,
-    });
-  }, [setIsStreamActive]);
+  // Focus-switch-proof mid-turn queue drainer across ALL sessions in the store.
+  React.useEffect(() => {
+    for (const [sid, messages] of Object.entries(midTurnMessagesBySession)) {
+      if (!sid || !messages || messages.length === 0) continue;
+      if (pausedQueueSessions[sid]) continue;
+      if (liveTurnsBySession[sid]?.isLive) continue;
+      if (pendingUserTurn?.sessionId === sid) continue;
+      if (drainingSessionsRef.current.has(sid)) continue;
+      if (!messages.some((m) => m.mode === "queue")) continue;
+      const nextQueued = useAppStore.getState().shiftNextQueuedMessage(sid);
+      if (nextQueued) {
+        void handleDrainQueuedMessage(nextQueued);
+      }
+    }
+  }, [
+    handleDrainQueuedMessage,
+    liveTurnsBySession,
+    midTurnMessagesBySession,
+    pausedQueueSessions,
+    pendingUserTurn,
+  ]);
+
+  const handleWorkspaceStop = React.useCallback(
+    (targetSessionId?: string | null) => {
+      const state = useAppStore.getState();
+      const sessionId = targetSessionId ?? state.activeSessionId;
+      if (!sessionId) return;
+      state.setQueuePausedForSession(sessionId, true);
+      void requestHarnessAck({ req: "cancel", session_id: sessionId }).catch(
+        (error) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Rayu could not stop the turn.",
+          );
+        },
+      );
+    },
+    [],
+  );
 
   const isDaemonOffline =
     (daemonStatus.state === "disconnected" || daemonStatus.state === "error") &&
@@ -309,15 +405,16 @@ export function App() {
           >
             <ChatWorkspaceView
               sessionId={activeSessionId}
-              onDrainQueuedMessage={handleDrainQueuedMessage}
               backgroundDockSlot={<BackgroundDockBar />}
               composerSlot={
                 <SessionComposer
                   mode="workspace"
                   sessionId={activeSessionId}
                   isSubmitting={isStreamActive}
-                  onSubmit={handleWorkspaceSubmit}
-                  onStop={handleWorkspaceStop}
+                  onSubmit={(payload) =>
+                    handleWorkspaceSubmit(payload, activeSessionId)
+                  }
+                  onStop={() => handleWorkspaceStop(activeSessionId)}
                 />
               }
             />
@@ -357,15 +454,16 @@ export function App() {
           >
             <ChatWorkspaceView
               sessionId={activeSessionId}
-              onDrainQueuedMessage={handleDrainQueuedMessage}
               backgroundDockSlot={<BackgroundDockBar />}
               composerSlot={
                 <SessionComposer
                   mode="workspace"
                   sessionId={activeSessionId}
                   isSubmitting={isStreamActive}
-                  onSubmit={handleWorkspaceSubmit}
-                  onStop={handleWorkspaceStop}
+                  onSubmit={(payload) =>
+                    handleWorkspaceSubmit(payload, activeSessionId)
+                  }
+                  onStop={() => handleWorkspaceStop(activeSessionId)}
                 />
               }
             />

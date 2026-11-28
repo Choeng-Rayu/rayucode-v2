@@ -980,6 +980,7 @@ export interface FeatureRouterBridge {
 
 export interface FeatureRouterHub {
   getSessionWorkingDir?(sessionId?: string): string | undefined;
+  getSessionWorkingDirForSession?(sessionId: string): string | undefined;
   getActiveSessionId(): string | undefined;
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
@@ -1038,7 +1039,6 @@ export interface FeatureRouterHub {
     effort?: EffortLevel;
     permissionMode?: PermissionModeId;
     serviceTier?: ServiceTier;
-    cacheTtl?: CacheTtl;
   } | undefined;
   saveSessionPrefs?(
     sessionId: string,
@@ -1048,7 +1048,6 @@ export interface FeatureRouterHub {
       effort?: EffortLevel;
       permissionMode?: PermissionModeId;
       serviceTier?: ServiceTier;
-      cacheTtl?: CacheTtl;
     },
   ): Promise<void>;
   attachSession(sessionId: string): Promise<SessionSummaryView>;
@@ -1943,6 +1942,87 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     throw new HarnessError("invalid_request", "Select an available workspace for this change.");
   };
 
+  const canonicalizeWorkspacePath = (rawPath: string): string => {
+    const trimmed = rawPath.trim();
+    try {
+      return fs.realpathSync(trimmed);
+    } catch {
+      return path.resolve(trimmed);
+    }
+  };
+
+  const resolveSessionCreateRoot = async (
+    requestedPath?: string,
+  ): Promise<string | undefined> => {
+    const [folders, ledger] = await Promise.all([
+      deps.getWorkspaceFolders(),
+      deps.sessionHub.loadWorkspaceLedger?.() ??
+        deps.sessionHub.getWorkspaceLedger?.(),
+    ]);
+    const roots = new Set<string>();
+    const addRoot = (rawPath?: string) => {
+      const trimmed = rawPath?.trim();
+      if (!trimmed) return;
+      roots.add(canonicalizeWorkspacePath(trimmed));
+    };
+    for (const folder of folders) {
+      addRoot(folder.canonicalPath || folder.path);
+    }
+    for (const ws of ledger?.workspaces ?? []) {
+      if (!ws.hidden && !ws.missingOnDisk) {
+        addRoot(ws.canonicalPath || ws.path);
+      }
+    }
+
+    const trimmedReq = requestedPath?.trim();
+    if (trimmedReq) {
+      if (!path.isAbsolute(trimmedReq)) {
+        throw new HarnessError(
+          "invalid_request",
+          "Select a project workspace before starting a session.",
+        );
+      }
+      let existsOnDisk = false;
+      let canonicalReq = path.resolve(trimmedReq);
+      try {
+        canonicalReq = fs.realpathSync(trimmedReq);
+        existsOnDisk = true;
+      } catch {
+        existsOnDisk = false;
+      }
+      if (roots.size > 0) {
+        if (roots.has(canonicalReq)) {
+          return canonicalReq;
+        }
+        if (existsOnDisk) {
+          try {
+            if (fs.statSync(canonicalReq).isDirectory()) {
+              return canonicalReq;
+            }
+          } catch {
+            // fall through
+          }
+        }
+        throw new HarnessError(
+          "invalid_request",
+          "Selected workspace directory is not an available project workspace.",
+        );
+      }
+      return existsOnDisk ? canonicalReq : trimmedReq;
+    }
+
+    if (roots.size > 1) {
+      throw new HarnessError(
+        "invalid_request",
+        "Select a project workspace before starting a session.",
+      );
+    }
+    if (roots.size === 1) {
+      return [...roots][0];
+    }
+    return undefined;
+  };
+
   const mcpConfigPath = async (
     scope: "global" | "workspace" | undefined,
     workspacePath?: string,
@@ -2358,10 +2438,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { hits };
     },
     "sessions.create": async (params) => {
-      const folders = await deps.getWorkspaceFolders();
-      const workingDir = params?.deferSettings && (params.workingDir || folders.length > 1)
-        ? await workspaceRootFor(params.workingDir)
-        : params?.workingDir;
+      const workingDir = await resolveSessionCreateRoot(params?.workingDir);
       const session = await deps.sessionHub.createSession({ ...params, workingDir });
       return { session };
     },
@@ -4021,8 +4098,16 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         }
       }
       try {
-        const workingDir = sessionId && deps.sessionHub.getSessionWorkingDir?.(sessionId);
-        if (sessionId && deps.sessionHub.getSessionWorkingDir && !workingDir) {
+        const workingDir = sessionId
+          ? (deps.sessionHub.getSessionWorkingDirForSession?.(sessionId) ??
+            deps.sessionHub.getSessionWorkingDir?.(sessionId))
+          : undefined;
+        if (
+          sessionId &&
+          (deps.sessionHub.getSessionWorkingDirForSession ||
+            deps.sessionHub.getSessionWorkingDir) &&
+          !workingDir
+        ) {
           throw new HarnessError("invalid_request", "Could not resolve the session worktree for this diff.");
         }
         const gitDiff = await deps.gitBridge.getDiff({
@@ -5085,9 +5170,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             "rayucode.settings.serviceTier",
             "auto",
           ),
-        cacheTtl:
-          sessionScopedPrefs?.cacheTtl ??
-          deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
+        cacheTtl: deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
         transport: deps.getGlobalState<ProviderTransport>(
           "rayucode.settings.transport",
           "auto",
@@ -5153,7 +5236,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "settings.models.setFast": async (params) => {
-      await requireRuntimeCmd("fast", [params.tier], params.sessionId);
+      const wireArg = params.tier === "auto" ? "off" : params.tier;
+      await requireRuntimeCmd("fast", [wireArg], params.sessionId);
       if (params.sessionId) {
         await deps.sessionHub.saveSessionPrefs?.(params.sessionId, { serviceTier: params.tier });
       }

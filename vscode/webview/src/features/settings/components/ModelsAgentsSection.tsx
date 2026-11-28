@@ -388,7 +388,7 @@ export function ModelsAgentsSection({
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
           <div>
             <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
-              <span>Prompt KV-Cache TTL (RuntimeCommand::Cache)</span>
+              <span>Anthropic Prompt Cache TTL (Global)</span>
               <FieldApplyModeBadge
                 applyMode={schemaByKey.get("provider.cache_ttl")?.apply_mode}
               />
@@ -399,7 +399,7 @@ export function ModelsAgentsSection({
           </div>
           <div
             role="group"
-            aria-label="Prompt KV-Cache TTL"
+            aria-label="Anthropic Prompt Cache TTL (Global)"
             className="inline-flex items-center rounded-md border border-hairline bg-inset p-[2px]"
           >
             {(["5m", "1h"] as const).map((ttl) => (

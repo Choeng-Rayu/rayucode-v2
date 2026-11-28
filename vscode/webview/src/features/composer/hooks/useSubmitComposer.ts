@@ -3,11 +3,17 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { SessionSummaryView } from "@shared/vscodeProtocol";
 import {
   chatHistoryQueryKey,
+  clearSessionLiveTurn,
   startSessionLiveTurn,
   useLiveTraceStore,
   type ChatTurnView,
 } from "@/features/chat";
-import { callRpc, submitHarnessMessage, useAppStore } from "@/lib";
+import {
+  callRpc,
+  requestHarnessAck,
+  useAppStore,
+  type SessionComposerPrefs,
+} from "@/lib";
 import type { ComposerSubmitPayload } from "../types";
 
 interface SubmitTarget {
@@ -31,6 +37,7 @@ export function useSubmitComposer() {
     const permissionMode = payload.permissionMode ?? state.defaultPermissionMode;
     const model = payload.modelSpec || payload.modelId || undefined;
     let created: SessionSummaryView | undefined;
+    let liveTurnStarted = false;
     try {
       if (!sessionId) {
         if (retryDraft.current && (!workingDir || retryDraft.current.workingDir === workingDir)) {
@@ -51,6 +58,29 @@ export function useSubmitComposer() {
       }
       if (target?.shouldContinue?.() === false) return;
 
+      const currentAckPrefs = useAppStore.getState().sessionPrefsBySession[sessionId] ?? {};
+      const pendingPatch: Partial<SessionComposerPrefs> = {};
+      if (model !== undefined && model !== currentAckPrefs.modelId) {
+        pendingPatch.modelId = model;
+        if (payload.modelLabel) pendingPatch.modelLabel = payload.modelLabel;
+        if (payload.apiMethod) pendingPatch.apiMethod = payload.apiMethod;
+      }
+      if (payload.effort !== undefined && payload.effort !== currentAckPrefs.effort) {
+        pendingPatch.effort = payload.effort;
+      }
+      if (permissionMode !== undefined && permissionMode !== currentAckPrefs.permissionMode) {
+        pendingPatch.permissionMode = permissionMode;
+      }
+      if (
+        payload.serviceTier !== undefined &&
+        payload.serviceTier !== currentAckPrefs.serviceTier
+      ) {
+        pendingPatch.serviceTier = payload.serviceTier;
+      }
+      if (Object.keys(pendingPatch).length > 0) {
+        state.setPendingSessionPrefs(sessionId, pendingPatch);
+      }
+
       const selected = payload.editorSelection;
       const selectionContext = selected
         ? `\n\n[Active Editor Selection: ${selected.relativePath}#L${selected.lineStart}-L${selected.lineEnd}]`
@@ -69,8 +99,9 @@ export function useSubmitComposer() {
         startedAtMs: Date.now(),
         baseHistoryTurnCount: Math.max(history.length, nextSlot),
       });
+      liveTurnStarted = true;
       if (useAppStore.getState().activeSessionId === sessionId) state.setIsStreamActive(true);
-      await submitHarnessMessage({
+      await requestHarnessAck({
         req: "send_message",
         session_id: sessionId,
         content: payload.prompt + selectionContext,
@@ -89,8 +120,8 @@ export function useSubmitComposer() {
         effort: payload.effort,
         permissionMode,
         serviceTier: payload.serviceTier,
-        cacheTtl: payload.cacheTtl,
       });
+      state.clearPendingSessionPrefs(sessionId);
       if (created) {
         retryDraft.current = undefined;
         if (target?.shouldContinue?.() !== false && useAppStore.getState().activeRoute === "home") {
@@ -101,6 +132,9 @@ export function useSubmitComposer() {
       }
       return created;
     } catch (error) {
+      if (liveTurnStarted && sessionId) {
+        clearSessionLiveTurn(sessionId);
+      }
       if (sessionId === useAppStore.getState().activeSessionId) state.setIsStreamActive(false);
       if (sessionId) void queryClient.invalidateQueries({ queryKey: chatHistoryQueryKey(sessionId) });
       throw error;

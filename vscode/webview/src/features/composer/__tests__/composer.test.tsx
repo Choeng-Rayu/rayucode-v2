@@ -3,6 +3,10 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  resetAllLiveTraces,
+  useLiveTraceStore,
+} from "@/features/chat";
 import * as rpcClient from "@/lib/rpc-client";
 import {
   __dispatchHostMessageForTest,
@@ -21,6 +25,7 @@ import {
   normalizeProviderIdForLookup,
   PermissionPopover,
   SessionComposer,
+  useSubmitComposer,
 } from "../index";
 
 function renderWithQuery(ui: React.ReactElement) {
@@ -44,6 +49,7 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       pendingComposerInjection: null,
       composerDrafts: {},
       sessionPrefsBySession: {},
+      pendingSessionPrefsBySession: {},
       midTurnSendMode: "steer",
       midTurnMessagesBySession: {},
       pausedQueueSessions: {},
@@ -150,7 +156,7 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(screen.getByTestId("permission-mode-label").textContent).toBe("Ask");
   });
 
-  it("supports all 5 reasoning effort stops (low | medium | high | xhigh | max), service tier, cache TTL, and Stage 2 model selection", () => {
+  it("supports all 5 reasoning effort stops (low | medium | high | xhigh | max), service tier, cache TTL, and Stage 2 model selection", async () => {
     expect(EFFORT_STOPS.map((s) => s.level)).toEqual([
       "low",
       "medium",
@@ -211,7 +217,7 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(onSelectServiceTier).toHaveBeenCalledWith("priority");
 
     fireEvent.click(screen.getByTestId("cache-ttl-1h"));
-    expect(onSelectCacheTtl).toHaveBeenCalledWith("1h");
+    await waitFor(() => expect(onSelectCacheTtl).toHaveBeenCalledWith("1h"));
 
     // Switch to Stage 2 model list and select a model
     fireEvent.click(screen.getByTestId("open-model-list-btn"));
@@ -1503,5 +1509,300 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
       useAppStore.getState().sessionPrefsBySession["ses_perm_fail"]
         ?.permissionMode,
     ).toBe("fullManage");
+  });
+
+  it("preserves prompt and attachments and clears optimistic live turn on pre-send model/permission failure, and only updates acknowledged sessionPrefs after ack", async () => {
+    resetAllLiveTraces();
+    useAppStore.setState({
+      activeSessionId: "ses_presend_fail",
+      route: "workspace",
+      activeRoute: "workspace",
+      sessionPrefsBySession: {
+        ses_presend_fail: {
+          modelId: "rayu:claude-sonnet-4-5",
+          effort: "medium",
+          permissionMode: "default",
+        },
+      },
+      pendingSessionPrefsBySession: {},
+    });
+
+    const ackSpy = vi
+      .spyOn(rpcClient, "requestHarnessAck")
+      .mockRejectedValueOnce(
+        new Error("The engine cannot apply this permission mode."),
+      );
+
+    const sampleImage = {
+      name: "diagram.png",
+      mediaType: "image/png" as const,
+      data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      sizeBytes: 68,
+    };
+
+    const HarnessWrapper = () => {
+      const submitComposer = useSubmitComposer();
+      const [imgs, setImgs] = React.useState<
+        Array<{
+          name?: string;
+          mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+          data: string;
+          sizeBytes?: number;
+        }>
+      >([sampleImage]);
+      return (
+        <SessionComposer
+          mode="workspace"
+          sessionId="ses_presend_fail"
+          images={imgs}
+          onImagesChange={setImgs}
+          permissionMode="plan"
+          effort="high"
+          onSubmit={async (payload) => {
+            await submitComposer(payload, { sessionId: "ses_presend_fail" });
+          }}
+        />
+      );
+    };
+
+    renderWithQuery(<HarnessWrapper />);
+
+    expect(screen.getByTestId("composer-image-strip")).toBeTruthy();
+    const textarea = screen.getByTestId(
+      "composer-textarea",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: { value: "Verify pre-send rollback" },
+    });
+    fireEvent.click(screen.getByTestId("composer-submit-btn"));
+
+    await waitFor(() => {
+      expect(ackSpy).toHaveBeenCalledTimes(1);
+    });
+
+    // Prompt and image attachments are restored after pre-send rejection
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId("composer-textarea") as HTMLTextAreaElement).value,
+      ).toBe("Verify pre-send rollback");
+      expect(screen.getByTestId("composer-image-strip")).toBeTruthy();
+    });
+
+    // Optimistic live turn is cleared so no phantom failed turn remains in Chat
+    expect(
+      useLiveTraceStore.getState().liveTurnsBySession["ses_presend_fail"],
+    ).toBeUndefined();
+    expect(
+      useLiveTraceStore.getState().completedTurnsBySession[
+        "ses_presend_fail"
+      ] ?? [],
+    ).toHaveLength(0);
+
+    // Acknowledged sessionPrefs remain unchanged; requested changes stay pending until acked
+    expect(
+      useAppStore.getState().sessionPrefsBySession["ses_presend_fail"],
+    ).toEqual({
+      modelId: "rayu:claude-sonnet-4-5",
+      effort: "medium",
+      permissionMode: "default",
+    });
+    expect(
+      useAppStore.getState().pendingSessionPrefsBySession["ses_presend_fail"],
+    ).toEqual(
+      expect.objectContaining({
+        effort: "high",
+        permissionMode: "plan",
+      }),
+    );
+
+    // Next attempt succeeds -> updates acknowledged sessionPrefs and clears pendingSessionPrefs
+    ackSpy.mockResolvedValueOnce(undefined);
+    fireEvent.click(screen.getByTestId("composer-submit-btn"));
+
+    await waitFor(() => {
+      expect(
+        useAppStore.getState().sessionPrefsBySession["ses_presend_fail"],
+      ).toEqual(
+        expect.objectContaining({
+          effort: "high",
+          permissionMode: "plan",
+        }),
+      );
+      expect(
+        useAppStore.getState().pendingSessionPrefsBySession["ses_presend_fail"],
+      ).toBeUndefined();
+    });
+  });
+
+  it("restores prompt and image attachments on HomePage when stopped or failed before send", async () => {
+    const sampleImage = {
+      name: "mockup.png",
+      mediaType: "image/png" as const,
+      data: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      sizeBytes: 68,
+    };
+
+    const ackSpy = vi
+      .spyOn(rpcClient, "requestHarnessAck")
+      .mockRejectedValueOnce(new Error("Model route rejected pre-send"));
+
+    renderWithQuery(<HomePage userName="Rayu" />);
+
+    const textarea = screen.getByTestId(
+      "composer-textarea",
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: { value: "Draft prompt with image" },
+    });
+
+    // Simulate pasting an image into HomePage composer
+    const file = new File(["png"], "mockup.png", { type: "image/png" });
+    const OriginalFileReader = globalThis.FileReader;
+    class MockFileReader {
+      result = sampleImage.data;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsDataURL() {
+        this.onload?.();
+      }
+    }
+    globalThis.FileReader = MockFileReader as unknown as typeof FileReader;
+    try {
+      fireEvent.paste(textarea, {
+        clipboardData: { files: [file] },
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("composer-image-strip")).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByTestId("composer-submit-btn"));
+
+      await waitFor(() => {
+        expect(ackSpy).toHaveBeenCalledTimes(1);
+      });
+
+      // After pre-send failure, both prompt and image attachment strip are restored
+      await waitFor(() => {
+        expect(
+          (screen.getByTestId("composer-textarea") as HTMLTextAreaElement)
+            .value,
+        ).toBe("Draft prompt with image");
+        expect(screen.getByTestId("composer-image-strip")).toBeTruthy();
+      });
+    } finally {
+      globalThis.FileReader = OriginalFileReader;
+    }
+  });
+
+  it("displays Pending preference badges until acknowledged via rayucode.session.prefsSync, disables Fast service tiers when supportsFast is false, and keeps Cache TTL at Anthropic global scope", async () => {
+    useAppStore.setState({
+      activeSessionId: "ses_pending_ui",
+      isStreamActive: true,
+      sessionPrefsBySession: {
+        ses_pending_ui: {
+          modelId: "rayu:claude-sonnet-4-5",
+          modelLabel: "Claude Sonnet 4.5",
+          effort: "medium",
+          permissionMode: "default",
+          serviceTier: "auto",
+        },
+      },
+      pendingSessionPrefsBySession: {
+        ses_pending_ui: {
+          modelId: "rayu:claude-opus-5-5",
+          modelLabel: "Claude Opus 5.5",
+          effort: "high",
+          permissionMode: "plan",
+          serviceTier: "priority",
+        },
+      },
+    });
+
+    renderWithQuery(
+      <SessionComposer
+        mode="workspace"
+        sessionId="ses_pending_ui"
+        isSubmitting
+      />,
+    );
+
+    // Pending badges render on model/effort trigger and permission control
+    expect(screen.getByTestId("model-effort-pending-badge").textContent).toBe(
+      "Pending",
+    );
+    expect(screen.getByTestId("permission-pending-badge").textContent).toBe(
+      "Pending",
+    );
+
+    // Open ModelEffortPopover to verify effort, model, and service tier pending badges + global Cache TTL label
+    fireEvent.click(screen.getByTestId("model-effort-trigger"));
+    expect(screen.getByTestId("effort-pending-badge").textContent).toBe(
+      "Pending",
+    );
+    expect(screen.getByTestId("model-pending-badge").textContent).toBe(
+      "Pending",
+    );
+    expect(screen.getByTestId("service-tier-pending-badge").textContent).toBe(
+      "Pending",
+    );
+    expect(screen.getByTestId("cache-ttl-selector").textContent).toContain(
+      "Anthropic Prompt Cache TTL (Global)",
+    );
+
+    // Selecting Cache TTL never writes per-session cacheTtl into sessionPrefsBySession
+    fireEvent.click(screen.getByTestId("cache-ttl-1h"));
+    expect(
+      useAppStore.getState().sessionPrefsBySession["ses_pending_ui"]?.cacheTtl,
+    ).toBeUndefined();
+
+    // Host broadcasts rayucode.session.prefsSync acknowledging all pending changes
+    __dispatchHostMessageForTest({
+      type: "rayucode.session.prefsSync",
+      sessionId: "ses_pending_ui",
+      acknowledged: {
+        model: "rayu:claude-opus-5-5",
+        effort: "high",
+        permissionMode: "plan",
+        serviceTier: "priority",
+      },
+      pending: {},
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("model-effort-pending-badge")).toBeNull();
+      expect(screen.queryByTestId("permission-pending-badge")).toBeNull();
+      expect(screen.queryByTestId("effort-pending-badge")).toBeNull();
+      expect(screen.queryByTestId("model-pending-badge")).toBeNull();
+      expect(screen.queryByTestId("service-tier-pending-badge")).toBeNull();
+    });
+
+    // Verify supportsFast === false disables Fast service tier options
+    renderWithQuery(
+      <ModelEffortPopover
+        defaultOpen
+        modelId="deepseek-v4-flash"
+        modelLabel="DeepSeek V4 Flash"
+        effort="medium"
+        supportsFast={false}
+        onSelectModel={vi.fn()}
+        onSelectEffort={vi.fn()}
+      />,
+    );
+
+    expect(
+      (screen.getByTestId("service-tier-priority") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("service-tier-ultrafast") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("service-tier-flex") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("service-tier-auto") as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });

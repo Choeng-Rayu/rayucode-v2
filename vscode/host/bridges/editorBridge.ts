@@ -347,6 +347,27 @@ function escapeGlobPattern(segment: string): string {
   return segment.replace(/[\[\]{}()*?!]/g, "\\$&");
 }
 
+export function resolveMarkdownPreviewPath(
+  filePath: string,
+  baseDir?: string,
+): string | null {
+  const clean = sanitizeFileOpenTarget(filePath).path;
+  if (!clean) return null;
+  if (clean === "~") {
+    return os.homedir();
+  }
+  if (clean.startsWith("~/") || clean.startsWith("~\\")) {
+    return path.join(os.homedir(), clean.slice(2));
+  }
+  if (isAbsolutePath(clean)) {
+    return clean;
+  }
+  if (baseDir?.trim()) {
+    return path.resolve(baseDir.trim(), clean);
+  }
+  return null;
+}
+
 function isExistingRegularFile(filePath: string): boolean {
   try {
     return fs.statSync(filePath).isFile();
@@ -728,7 +749,12 @@ export class EditorBridge implements vscode.Disposable {
     isDeleted?: boolean;
   }): Promise<void> {
     const vscodeApi = getVscode();
-    const fileUri = resolveWorkspaceFileUri(options.path, options.baseDir);
+    const clean = sanitizeFileOpenTarget(options.path).path;
+    const fileUri = options.sessionId
+      ? isAbsolutePath(clean)
+        ? vscodeApi.Uri.file(clean)
+        : options.baseDir ? vscodeApi.Uri.file(path.resolve(options.baseDir, clean)) : null
+      : resolveWorkspaceFileUri(options.path, options.baseDir);
     if (!fileUri) return;
 
     const scopeKey = options.scope ?? "git";
@@ -914,14 +940,27 @@ export class EditorBridge implements vscode.Disposable {
     });
   }
 
-  async openMarkdownPreview(filePath: string): Promise<void> {
+  async openMarkdownPreview(
+    filePath: string,
+    baseDir?: string,
+  ): Promise<void> {
     const vscodeApi = getVscode();
-    const uri = resolveWorkspaceFileUri(filePath);
+    const resolved = baseDir?.trim()
+      ? resolveMarkdownPreviewPath(filePath, baseDir)
+      : null;
+    const uri = resolved
+      ? vscodeApi.Uri.file(resolved)
+      : resolveWorkspaceFileUri(filePath);
     if (!uri) return;
     try {
       await vscodeApi.commands.executeCommand("markdown.showPreviewToSide", uri);
     } catch {
-      await this.openFile({ path: filePath, preview: false });
+      await this.openFile({
+        path: filePath,
+        preview: false,
+        baseDir,
+        strictBase: Boolean(baseDir?.trim()),
+      });
     }
   }
 

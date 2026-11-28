@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -12,7 +13,15 @@ import {
   type SessionInfo,
 } from "@rayu-dev/rayucode-sdk";
 import { WorkspaceRegistry } from "@rayu-dev/rayucode-session-core/host";
-import type { HostToWebviewMessage } from "../shared/vscodeProtocol.js";
+import {
+  parseWebviewToHostMessage,
+  type HostToWebviewMessage,
+} from "../shared/vscodeProtocol.js";
+import { resolveMarkdownPreviewPath } from "../host/bridges/editorBridge.js";
+import {
+  resolveMarkdownPreviewBaseDirForMessage,
+  resolveTerminalCwdForMessage,
+} from "../host/panel/workspacePanelManager.js";
 import {
   ARCHIVED_SESSIONS_KEY,
   PINNED_SESSIONS_KEY,
@@ -1231,20 +1240,47 @@ test("SessionHub defers mid-turn set_model and set_reasoning_effort without time
     deferred: true,
   });
 
-  // Once daemon becomes free, next send_message applies the deferred effort ("xhigh")
+  // Once daemon becomes free, next send_message without explicit effort applies the deferred effort ("xhigh")
   client.throwTimeoutOnControl = false;
   await hub.handleHarnessRequest(
     {
       id: 45,
       req: "send_message",
       session_id: "sess_busy_opts",
-      content: "Follow-up prompt",
-      effort: "medium",
+      content: "Follow-up prompt using deferred effort",
     },
     (reply) => timeoutReplies.push(reply),
   );
   assert.deepEqual(client.setEffortCalls, [
     { sessionId: "sess_busy_opts", effort: "xhigh" },
+  ]);
+
+  // And when explicit effort IS supplied on send_message, requested.effort overrides an older deferred pendingEffort
+  client.emitFrame({ v: 1, ev: "turn_done", session_id: "sess_busy_opts" });
+  client.throwTimeoutOnControl = true;
+  await hub.handleHarnessRequest(
+    {
+      id: 46,
+      req: "set_reasoning_effort",
+      session_id: "sess_busy_opts",
+      effort: "max",
+    },
+    (reply) => timeoutReplies.push(reply),
+  );
+  client.throwTimeoutOnControl = false;
+  client.setEffortCalls.length = 0;
+  await hub.handleHarnessRequest(
+    {
+      id: 47,
+      req: "send_message",
+      session_id: "sess_busy_opts",
+      content: "Follow-up prompt overriding deferred effort",
+      effort: "medium",
+    },
+    (reply) => timeoutReplies.push(reply),
+  );
+  assert.deepEqual(client.setEffortCalls, [
+    { sessionId: "sess_busy_opts", effort: "medium" },
   ]);
 });
 
@@ -1944,4 +1980,680 @@ test("SessionHubCore syncs permissions on attach/eviction, caches FIFO pending p
     ),
     true,
   );
+});
+
+test("SessionHubCore isolates two sessions in separate temp Git worktrees with identical relative paths across queue drain, cancel, permissions, file review, streaming, and terminal/markdown actions", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-worktrees-");
+  const wtA = path.join(tmpDir, "worktree-alpha");
+  const wtB = path.join(tmpDir, "worktree-beta");
+  for (const [dir, label] of [
+    [wtA, "alpha"],
+    [wtB, "beta"],
+  ] as const) {
+    fs.mkdirSync(path.join(dir, "src"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "docs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "src", "shared.ts"),
+      `export const project = "${label}";\n`,
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(dir, "docs", "handoff.md"),
+      `# ${label} report\n`,
+      "utf8",
+    );
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+  }
+  const realWtA = fs.realpathSync(wtA);
+  const realWtB = fs.realpathSync(wtB);
+
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const sessionsById = new Map<string, SessionInfo>();
+  const fileChangeActions: Array<{
+    sessionId: string;
+    action: string;
+    path?: string;
+    cwd: string;
+  }> = [];
+  const fileDiffCalls: Array<{ sessionId: string; targetPath: string }> = [];
+
+  const bridge = new FakeBridgeManager({ sessionsById });
+  const origDial = bridge.dialClient.bind(bridge);
+  bridge.dialClient = async () => {
+    const client = (await origDial()) as unknown as Omit<
+      FakeRayucodeClient,
+      "getFileChanges"
+    > & {
+      getFileChanges: (sid?: string) => Promise<unknown>;
+      getFileChangeDiff: (sid: string, targetPath: string) => Promise<unknown>;
+      fileChangeAction: (
+        sid: string,
+        action: string,
+        opts?: { path?: string; force?: boolean },
+      ) => Promise<unknown>;
+    };
+    client.getFileChanges = async (sid?: string) => {
+      const targetSid = sid ?? "";
+      const dir = sessionsById.get(targetSid)?.working_dir ?? realWtA;
+      return {
+        session_id: targetSid,
+        latest_turn_id: 1,
+        total_pending_files: 1,
+        total_additions: 1,
+        total_deletions: 1,
+        files: [
+          {
+            path: path.join(dir, "src", "shared.ts"),
+            display_path: "src/shared.ts",
+            kind: "modified",
+            status: "pending",
+            additions: 1,
+            deletions: 1,
+            changed_in_latest_turn: true,
+            turn_id: 1,
+            edit_count: 1,
+            is_binary: false,
+            undoable: true,
+            can_redo: false,
+            preview_hunks: [],
+            preview_truncated: false,
+            updated_at_ms: Date.now(),
+          },
+        ],
+      };
+    };
+    client.getFileChangeDiff = async (sid: string, targetPath: string) => {
+      fileDiffCalls.push({ sessionId: sid, targetPath });
+      return {
+        path: targetPath,
+        display_path: "src/shared.ts",
+        kind: "modified",
+        status: "pending",
+        additions: 1,
+        deletions: 1,
+        is_binary: false,
+        original_content: `export const project = "before";\n`,
+        modified_content: fs.readFileSync(targetPath, "utf8"),
+        unified_diff: `--- a/src/shared.ts\n+++ b/src/shared.ts\n`,
+        hunks: [],
+      };
+    };
+    client.fileChangeAction = async (
+      sid: string,
+      action: string,
+      opts?: { path?: string; force?: boolean },
+    ) => {
+      const dir = sessionsById.get(sid)?.working_dir ?? "";
+      fileChangeActions.push({ sessionId: sid, action, path: opts?.path, cwd: dir });
+      return {
+        ok: true,
+        message: `Applied ${action}`,
+        conflicts: [],
+        snapshot: {
+          session_id: sid,
+          latest_turn_id: 1,
+          total_pending_files: 0,
+          total_additions: 0,
+          total_deletions: 0,
+          files: [],
+        },
+      };
+    };
+    return client as unknown as RayucodeClient;
+  };
+
+  const { adapter } = createHostAdapter({
+    folders: [
+      { name: "worktree-alpha", fsPath: realWtA },
+      { name: "worktree-beta", fsPath: realWtB },
+    ],
+  });
+  const hub = new SessionHubCore(adapter, bridge, { workspaceRegistry: registry });
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  await hub.waitUntilWorkspacesReady();
+
+  // Ambiguous createSession / create_session without workingDir rejects when >1 workspaces exist
+  await assert.rejects(
+    () => hub.createSession(),
+    (err: unknown) =>
+      err instanceof HarnessError &&
+      err.code === "invalid_request" &&
+      /Select a project workspace/i.test(err.message),
+  );
+  const createReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest({ id: 500, req: "create_session" }, (r) =>
+    createReplies.push(r),
+  );
+  assert.equal(createReplies[0]?.ev, "error");
+  assert.equal(createReplies[0]?.code, "invalid_request");
+
+  const broadcasts: HostToWebviewMessage[] = [];
+  hub.registerSurface("surf-wt", "editorPanel", (msg) => broadcasts.push(msg));
+
+  const sessA = await hub.createSession({ workingDir: realWtA });
+  const clientA = bridge.dialedClients[0]!;
+  const sessB = await hub.createSession({ workingDir: realWtB });
+  const clientB = bridge.dialedClients[1]!;
+
+  assert.equal(hub.getSessionWorkingDirForSession(sessA.sessionId), realWtA);
+  assert.equal(hub.getSessionWorkingDirForSession(sessB.sessionId), realWtB);
+  assert.equal(hub.getSessionWorkingDirForSession("sess_missing"), undefined);
+  assert.equal(hub.getActiveSessionId(), sessB.sessionId);
+
+  // Start a turn on Session A while Session B is focused
+  await hub.handleHarnessRequest(
+    { id: 501, req: "send_message", session_id: sessA.sessionId, content: "Edit alpha shared.ts" },
+    () => {},
+  );
+  clientA.emitFrame({ v: 1, ev: "turn_start", session_id: sessA.sessionId });
+  clientA.emitFrame({
+    v: 1,
+    ev: "text_delta",
+    session_id: sessA.sessionId,
+    text: "Working in alpha",
+  });
+  clientA.emitFrame({
+    v: 1,
+    ev: "permission_request",
+    session_id: sessA.sessionId,
+    request_id: "perm_alpha_1",
+    tool_name: "edit",
+    description: "Edit src/shared.ts",
+  });
+
+  // Also send first message on Session B
+  await hub.handleHarnessRequest(
+    { id: 502, req: "send_message", session_id: sessB.sessionId, content: "Edit beta shared.ts" },
+    () => {},
+  );
+
+  // Verify ledger keeps each session bound strictly to its own project worktree
+  const ledger = await hub.loadWorkspaceLedger();
+  const wsAlpha = ledger.workspaces.find((w) => w.canonicalPath === realWtA);
+  const wsBeta = ledger.workspaces.find((w) => w.canonicalPath === realWtB);
+  assert.deepEqual(wsAlpha?.sessionIds, [sessA.sessionId]);
+  assert.deepEqual(wsBeta?.sessionIds, [sessB.sessionId]);
+
+  // Streaming frame from Session A stays tagged with sessA while sessB is focused
+  assert.ok(
+    broadcasts.some(
+      (m) =>
+        m.type === "rayucode.harness.frame" &&
+        m.frame.ev === "text_delta" &&
+        m.frame.session_id === sessA.sessionId,
+    ),
+  );
+
+  // Permission approval & cancel for Session A route strictly to clientA while Session B is focused
+  await hub.respondPermission({
+    sessionId: sessA.sessionId,
+    requestId: "perm_alpha_1",
+    decision: "allow_once",
+  });
+  assert.equal(clientA.permissionResponses.length, 1);
+  assert.equal(clientB.permissionResponses.length, 0);
+
+  await hub.cancelSession(sessA.sessionId);
+  assert.deepEqual(clientA.cancelledSessions, [sessA.sessionId]);
+  assert.equal(clientB.cancelledSessions.length, 0);
+
+  // Finish Session A turn and drain a queued follow-up for Session A while Session B stays focused
+  clientA.emitFrame({ v: 1, ev: "turn_done", session_id: sessA.sessionId });
+  await hub.handleHarnessRequest(
+    { id: 503, req: "send_message", session_id: sessA.sessionId, content: "Queued alpha follow-up" },
+    () => {},
+  );
+  assert.deepEqual(
+    clientA.sentMessages.map((m) => m.content),
+    ["Edit alpha shared.ts", "Queued alpha follow-up"],
+  );
+  assert.deepEqual(
+    clientB.sentMessages.map((m) => m.content),
+    ["Edit beta shared.ts"],
+  );
+
+  // File review (diff & keep) for relative path `src/shared.ts` on Session A resolves to wtA, not focused wtB
+  await hub.fetchFileChanges(sessA.sessionId);
+  const diffA = await hub.getFileChangeDiff(sessA.sessionId, "src/shared.ts");
+  assert.ok(diffA);
+  assert.equal(fileDiffCalls.at(-1)?.targetPath, path.join(realWtA, "src", "shared.ts"));
+  assert.match(diffA.modifiedContent, /alpha/);
+
+  const keepRes = await hub.runFileChangeAction(sessA.sessionId, "keep", {
+    path: "src/shared.ts",
+  });
+  assert.equal(keepRes?.ok, true);
+  assert.deepEqual(fileChangeActions, [
+    {
+      sessionId: sessA.sessionId,
+      action: "keep",
+      path: path.join(realWtA, "src", "shared.ts"),
+      cwd: realWtA,
+    },
+  ]);
+
+  // Terminal & Markdown preview protocol & host resolution stay bound to Session A while Session B is focused
+  const parsedTerm = parseWebviewToHostMessage({
+    type: "rayucode.editor.openTerminal",
+    sessionId: sessA.sessionId,
+    name: "Alpha Shell",
+  });
+  assert.equal(parsedTerm.success, true);
+  assert.deepEqual(
+    resolveTerminalCwdForMessage(hub, { sessionId: sessA.sessionId }),
+    { ok: true, cwd: realWtA },
+  );
+  const missingTerm = resolveTerminalCwdForMessage(hub, {
+    sessionId: "sess_unresolvable",
+  });
+  assert.equal(missingTerm.ok, false);
+
+  const parsedMd = parseWebviewToHostMessage({
+    type: "rayucode.editor.openMarkdownPreview",
+    sessionId: sessA.sessionId,
+    path: "docs/handoff.md",
+  });
+  assert.equal(parsedMd.success, true);
+  const resolvedMdBase = resolveMarkdownPreviewBaseDirForMessage(hub, {
+    sessionId: sessA.sessionId,
+    path: "docs/handoff.md",
+  });
+  assert.deepEqual(resolvedMdBase, { ok: true, baseDir: realWtA });
+  assert.equal(
+    resolveMarkdownPreviewPath("docs/handoff.md", resolvedMdBase.baseDir),
+    path.join(realWtA, "docs", "handoff.md"),
+  );
+  const missingMd = resolveMarkdownPreviewBaseDirForMessage(hub, {
+    sessionId: "sess_unresolvable",
+    path: "docs/handoff.md",
+  });
+  assert.equal(missingMd.ok, false);
+
+  // Confirm neither session moved between projects after all operations
+  const finalLedger = await hub.loadWorkspaceLedger();
+  assert.deepEqual(
+    finalLedger.workspaces.find((w) => w.canonicalPath === realWtA)?.sessionIds,
+    [sessA.sessionId],
+  );
+  assert.deepEqual(
+    finalLedger.workspaces.find((w) => w.canonicalPath === realWtB)?.sessionIds,
+    [sessB.sessionId],
+  );
+});
+
+test("SessionHubCore enforces requested > pending precedence, broadcasts prefsSync, emits non_turn: true on pre-send rejection, handles serviceTier auto on non-fast providers, and keeps cacheTtl out of per-session prefs", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-prefs-precedence-");
+  const wsDir = path.join(tmpDir, "repo");
+  fs.mkdirSync(wsDir, { recursive: true });
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  let fastModeSupported = false;
+  let rejectPermission = false;
+  let rejectModel = false;
+  let rejectEffort = false;
+
+  const client = new FakeRayucodeClient({
+    capabilities: ["permissions", "permission_modes"],
+    onRuntimeCommand: async (sessionId, command, args) => {
+      if (command === "fast" && !fastModeSupported) {
+        throw new HarnessError("unsupported", "Fast service tier is not supported by this provider");
+      }
+      return { session_id: sessionId, command, data: { tier: args[0] }, message: "ok" };
+    },
+  });
+  const origSetPerm = client.setPermissionMode.bind(client);
+  client.setPermissionMode = async (sid, mode) => {
+    if (rejectPermission) throw new HarnessError("invalid_request", "Permission mode denied");
+    return origSetPerm(sid, mode);
+  };
+  const origSetModel = client.setModel.bind(client);
+  client.setModel = async (sid, model) => {
+    if (rejectModel) throw new HarnessError("invalid_request", "Model unavailable");
+    return origSetModel(sid, model);
+  };
+  const origSetEffort = client.setReasoningEffort.bind(client);
+  client.setReasoningEffort = async (sid, effort) => {
+    if (rejectEffort) throw new HarnessError("invalid_request", "Unsupported effort");
+    return origSetEffort(sid, effort);
+  };
+
+  const { adapter } = createHostAdapter({
+    folders: [{ name: "repo", fsPath: wsDir }],
+  });
+  const hub = new SessionHubCore(
+    adapter,
+    new FakeBridgeManager({ sharedClient: client }),
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const prefsSyncEvents: Array<
+    Extract<HostToWebviewMessage, { type: "rayucode.session.prefsSync" }>
+  > = [];
+  hub.registerSurface("surf-prefs", "sidebar", (msg) => {
+    if (msg.type === "rayucode.session.prefsSync") {
+      prefsSyncEvents.push(msg);
+    }
+  });
+
+  const created = await hub.createSession({
+    workingDir: wsDir,
+    permissionMode: "default",
+    model: "rayu:claude-sonnet-4-5",
+    effort: "low",
+    cacheTtl: "1h",
+  });
+  // cacheTtl must NOT be persisted per session or leaked onto session summaries
+  assert.equal("cacheTtl" in (hub.getSessionPrefs(created.sessionId) ?? {}), false);
+  assert.equal(created.cacheTtl, undefined);
+
+  // Defer model, effort, and permissionMode mid-turn
+  client.emitFrame({ v: 1, ev: "turn_start", session_id: created.sessionId });
+  client.throwBusyOnControl = true;
+  await hub.setPermissionMode(created.sessionId, "plan");
+  client.throwBusyOnControl = false;
+  await hub.setSessionModel(created.sessionId, "rayu:claude-haiku-4-5");
+  await hub.setSessionEffort(created.sessionId, "low");
+
+  const deferredSync = prefsSyncEvents.at(-1);
+  assert.equal(deferredSync?.sessionId, created.sessionId);
+  assert.equal(deferredSync?.pending.permissionMode, "plan");
+  assert.equal(deferredSync?.pending.model, "rayu:claude-haiku-4-5");
+  assert.equal(deferredSync?.pending.effort, "low");
+  // Unacknowledged deferred prefs must NOT overwrite persisted acknowledged prefs
+  assert.equal(hub.getSessionPrefs(created.sessionId)?.permissionMode, "default");
+  assert.equal(hub.getSessionPrefs(created.sessionId)?.model, "rayu:claude-sonnet-4-5");
+
+  // Clear streaming & pool active turn without flushing first, then test send_message pre-send checks & overrides
+  client.setPermissionModeCalls.length = 0;
+  client.setModelCalls.length = 0;
+  client.setEffortCalls.length = 0;
+  (hub as unknown as { streamingBySession: Map<string, boolean> }).streamingBySession.set(
+    created.sessionId,
+    false,
+  );
+  hub.getSocketPool().markTurnSettled(created.sessionId);
+
+  // 1. Pre-send permission, model, effort, and serviceTier failures emit non_turn: true and stop BEFORE sendMessage
+  rejectPermission = true;
+  const permFailReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 601,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Should not dispatch",
+      permission_mode: "accept_edits",
+    },
+    (r) => permFailReplies.push(r),
+  );
+  assert.equal(permFailReplies[0]?.ev, "error");
+  assert.equal(permFailReplies[0]?.non_turn, true);
+  assert.match(String(permFailReplies[0]?.message ?? ""), /Permission mode denied/);
+  assert.equal(client.sentMessages.length, 0);
+  rejectPermission = false;
+
+  rejectModel = true;
+  const modelFailReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 602,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Should not dispatch",
+      model: "rayu:claude-opus-4-6",
+    },
+    (r) => modelFailReplies.push(r),
+  );
+  assert.equal(modelFailReplies[0]?.ev, "error");
+  assert.equal(modelFailReplies[0]?.non_turn, true);
+  assert.match(String(modelFailReplies[0]?.message ?? ""), /Model unavailable/);
+  assert.equal(client.sentMessages.length, 0);
+  rejectModel = false;
+
+  rejectEffort = true;
+  const effortFailReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 603,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Should not dispatch",
+      effort: "high",
+    },
+    (r) => effortFailReplies.push(r),
+  );
+  assert.equal(effortFailReplies[0]?.ev, "error");
+  assert.equal(effortFailReplies[0]?.non_turn, true);
+  assert.match(String(effortFailReplies[0]?.message ?? ""), /Unsupported effort/);
+  assert.equal(client.sentMessages.length, 0);
+  rejectEffort = false;
+
+  // Non-fast provider: service_tier "priority" stops pre-send with non_turn: true
+  const tierFailReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 604,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Should not dispatch on non-fast provider",
+      service_tier: "priority",
+    },
+    (r) => tierFailReplies.push(r),
+  );
+  assert.equal(tierFailReplies[0]?.ev, "error");
+  assert.equal(tierFailReplies[0]?.non_turn, true);
+  assert.match(String(tierFailReplies[0]?.message ?? ""), /Fast service tier is not supported/);
+  assert.equal(client.sentMessages.length, 0);
+
+  // 2. Explicit requested.* overrides older pending*, and service_tier: "auto" succeeds on non-fast provider!
+  // Re-seed pending prefs (since #602/#603/#604 already applied earlier settings in the pipeline before failing later)
+  client.emitFrame({ v: 1, ev: "turn_start", session_id: created.sessionId });
+  client.throwBusyOnControl = true;
+  await hub.setPermissionMode(created.sessionId, "plan");
+  client.throwBusyOnControl = false;
+  await hub.setSessionModel(created.sessionId, "rayu:claude-haiku-4-5");
+  await hub.setSessionEffort(created.sessionId, "low");
+  (hub as unknown as { streamingBySession: Map<string, boolean> }).streamingBySession.set(
+    created.sessionId,
+    false,
+  );
+  hub.getSocketPool().markTurnSettled(created.sessionId);
+
+  client.setPermissionModeCalls.length = 0;
+  client.setModelCalls.length = 0;
+  client.setEffortCalls.length = 0;
+  client.runtimeCommands.length = 0;
+  const okReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 605,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Explicit settings override pending and auto works without fast",
+      permission_mode: "accept_edits",
+      model: "rayu:claude-opus-4-6",
+      effort: "high",
+      service_tier: "auto",
+    },
+    (r) => okReplies.push(r),
+  );
+  assert.equal(okReplies[0]?.ev, "ok");
+  assert.deepEqual(client.setPermissionModeCalls, [
+    { sessionId: created.sessionId, mode: "accept_edits" },
+  ]);
+  assert.deepEqual(client.setModelCalls, [
+    { sessionId: created.sessionId, model: "rayu:claude-opus-4-6" },
+  ]);
+  assert.deepEqual(client.setEffortCalls, [
+    { sessionId: created.sessionId, effort: "high" },
+  ]);
+  assert.equal(
+    client.runtimeCommands.filter((c) => c.command === "fast").length,
+    0,
+    'service_tier "auto" on unset/auto tier must not invoke fast runtime command',
+  );
+  assert.equal(client.sentMessages.length, 1);
+
+  const ackSync = prefsSyncEvents.at(-1);
+  assert.deepEqual(ackSync?.pending, {});
+  assert.equal(ackSync?.acknowledged.permissionMode, "acceptEdits");
+  assert.equal(ackSync?.acknowledged.model, "rayu:claude-opus-4-6");
+  assert.equal(ackSync?.acknowledged.effort, "high");
+
+  // 3. On a fast-capable provider, priority -> auto maps "auto" -> "off" once, then subsequent "auto" is a no-op
+  fastModeSupported = true;
+  client.emitFrame({ v: 1, ev: "turn_done", session_id: created.sessionId });
+  await hub.handleHarnessRequest(
+    {
+      id: 606,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Enable priority",
+      service_tier: "priority",
+    },
+    () => {},
+  );
+  client.emitFrame({ v: 1, ev: "turn_done", session_id: created.sessionId });
+  await hub.handleHarnessRequest(
+    {
+      id: 607,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Reset to auto",
+      service_tier: "auto",
+    },
+    () => {},
+  );
+  client.emitFrame({ v: 1, ev: "turn_done", session_id: created.sessionId });
+  await hub.handleHarnessRequest(
+    {
+      id: 608,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Stay on auto",
+      service_tier: "auto",
+    },
+    () => {},
+  );
+  assert.deepEqual(
+    client.runtimeCommands.filter((c) => c.command === "fast").map((c) => c.args),
+    [["priority"], ["off"]],
+  );
+});
+
+test("SessionHubCore send_message timeout/disconnect checks history BEFORE markTurnSettled and keeps accepted turn active without duplicate retry", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-timeout-race-");
+  const wsDir = path.join(tmpDir, "repo");
+  fs.mkdirSync(wsDir, { recursive: true });
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const historyMessages: Array<Record<string, unknown>> = [
+    { role: "user", content: "Earlier prompt" },
+  ];
+  const traceOrder: string[] = [];
+  let failSendWith: HarnessError | null = null;
+  let acceptInServerHistory = false;
+
+  const client = new FakeRayucodeClient({ capabilities: ["permissions"] });
+  client.getHistory = async () => [...historyMessages];
+  client.getHistoryWithImages = async () => {
+    traceOrder.push("getHistory");
+    return { messages: [...historyMessages], images: [] };
+  };
+  client.sendMessage = async (sessionId: string, content: string) => {
+    client.sentMessages.push({ sessionId, content });
+    if (acceptInServerHistory) {
+      historyMessages.push({ role: "user", content });
+    }
+    if (failSendWith) {
+      throw failSendWith;
+    }
+  };
+
+  const { adapter } = createHostAdapter({
+    folders: [{ name: "repo", fsPath: wsDir }],
+  });
+  const hub = new SessionHubCore(
+    adapter,
+    new FakeBridgeManager({ sharedClient: client }),
+    { workspaceRegistry: registry },
+  );
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const created = await hub.createSession({ workingDir: wsDir });
+
+  // Spy on socketPool.markTurnSettled to assert call ordering
+  const pool = hub.getSocketPool();
+  const origMarkSettled = pool.markTurnSettled.bind(pool);
+  pool.markTurnSettled = (sid: string) => {
+    traceOrder.push(`markTurnSettled:${sid}`);
+    origMarkSettled(sid);
+  };
+
+  // Case 1: Timeout after daemon actually accepted prompt -> check history, do NOT markTurnSettled, return ev: "ok"
+  traceOrder.length = 0;
+  acceptInServerHistory = true;
+  failSendWith = new HarnessError("timeout", "accept timed out");
+  const acceptedReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 701,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Accepted despite timeout",
+    },
+    (r) => acceptedReplies.push(r),
+  );
+  assert.deepEqual(acceptedReplies, [{ v: 1, reply_to: 701, ev: "ok" }]);
+  assert.deepEqual(traceOrder, ["getHistory"]);
+  assert.equal(pool.getActiveTurnSessionIds().includes(created.sessionId), true);
+
+  // Settle turn before Case 2
+  origMarkSettled(created.sessionId);
+  traceOrder.length = 0;
+
+  // Case 2: Timeout when prompt was NOT accepted in history -> check history BEFORE markTurnSettled, then return timeout error
+  acceptInServerHistory = false;
+  failSendWith = new HarnessError("timeout", "accept timed out");
+  const lostReplies: Array<Record<string, unknown>> = [];
+  await hub.handleHarnessRequest(
+    {
+      id: 702,
+      req: "send_message",
+      session_id: created.sessionId,
+      content: "Dropped before daemon persisted",
+    },
+    (r) => lostReplies.push(r),
+  );
+  assert.equal(lostReplies[0]?.ev, "error");
+  assert.equal(lostReplies[0]?.code, "timeout");
+  assert.deepEqual(traceOrder, [
+    "getHistory",
+    `markTurnSettled:${created.sessionId}`,
+  ]);
+  assert.equal(pool.getActiveTurnSessionIds().includes(created.sessionId), false);
 });
