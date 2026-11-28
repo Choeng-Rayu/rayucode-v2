@@ -106,6 +106,11 @@ fn scheduled_live_delivery_case(todo_review: bool) {
                 relevant_files: vec![],
                 git_branch: None,
                 additional_context: None,
+                enabled: true,
+                recurrence: None,
+                permission_mode: None,
+                last_run_at: None,
+                last_status: None,
             };
             runner
                 .deliver_scheduled_direct_item(&provider, &item)

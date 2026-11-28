@@ -224,6 +224,7 @@ export function useCreateSchedule() {
       prompt: string;
       schedule: string;
       permissionMode?: PermissionModeId;
+      workingDir?: string;
       repo?: string;
     }): Promise<ScheduleItemView> => {
       const res = await requireOperation(
@@ -232,6 +233,7 @@ export function useCreateSchedule() {
           prompt: params.prompt,
           schedule: params.schedule,
           permissionMode: params.permissionMode,
+          ...(params.workingDir ? { workingDir: params.workingDir } : {}),
         }).then((receipt) => ({
           ...receipt,
           ok: Boolean(receipt?.schedule?.id),

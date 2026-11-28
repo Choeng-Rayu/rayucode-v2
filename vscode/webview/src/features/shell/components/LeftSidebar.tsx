@@ -57,8 +57,10 @@ export function IconRail({
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
   const backgroundTasks = useAppStore((s) => s.backgroundTasks);
+  const activeSwarm = useAppStore((s) => s.activeSwarm);
   const accountStatus = useAppStore((s) => s.accountStatus);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
+  const openSettingsSection = useAppStore((s) => s.openSettingsSection);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const setTheme = useAppStore((s) => s.setTheme);
   const setAccent = useAppStore((s) => s.setAccent);
@@ -98,6 +100,20 @@ export function IconRail({
           ).length,
     [activeSessionId, backgroundTasks],
   );
+
+  const activeSwarmCount = React.useMemo(() => {
+    const agents = activeSwarm?.agents ?? [];
+    const workers = agents.filter((a) => a.role === "worker");
+    const pool = workers.length > 0 ? workers : agents;
+    return pool.filter(
+      (a) =>
+        a.status === "running" ||
+        a.status === "spawned" ||
+        a.status === "blocked",
+    ).length;
+  }, [activeSwarm]);
+
+  const totalBackgroundActive = activeBgCount + activeSwarmCount;
 
   const isNavItemActive = (itemId: AppRoute) => {
     if (itemId === "home") {
@@ -223,13 +239,13 @@ export function IconRail({
         );
       })}
 
-      {/* Background Processes Drawer Trigger (shown when tasks exist) */}
-      {activeBgCount > 0 && (
+      {/* Background Processes & Swarm Drawer Trigger (shown when active tasks or swarm agents exist) */}
+      {totalBackgroundActive > 0 && (
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              aria-label={`Background processes (${activeBgCount} active)`}
+              aria-label={`Background activity (${totalBackgroundActive} active)`}
               data-testid="rail-bg-processes"
               onClick={() => {
                 toggleBackgroundDrawer();
@@ -239,12 +255,45 @@ export function IconRail({
             >
               <NavGlyph icon="processes" />
               <span className="absolute -top-1 -right-1 grid min-w-4 place-items-center rounded-full bg-brand px-1 font-mono text-[9.5px] font-bold text-brand-ink tabular-nums">
-                {activeBgCount}
+                {totalBackgroundActive}
               </span>
             </button>
           </TooltipTrigger>
           <TooltipContent side="right">
-            Background processes ({activeBgCount} running)
+            {[
+              activeBgCount > 0 ? `${activeBgCount} background` : null,
+              activeSwarmCount > 0
+                ? `${activeSwarmCount} swarm ${activeSwarmCount === 1 ? "agent" : "agents"}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </TooltipContent>
+        </Tooltip>
+      )}
+
+      {/* Direct Swarm Mission Control shortcut when swarm agents are actively running */}
+      {activeSwarmCount > 0 && activeSwarm && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Active swarm (${activeSwarmCount} running)`}
+              data-testid="rail-active-swarm"
+              onClick={() => {
+                openSettingsSection("swarm");
+                onCloseDrawer?.();
+              }}
+              className="relative grid size-9 cursor-pointer place-items-center rounded-[10px] border border-info/30 bg-info-soft text-info transition-all hover:border-info/50"
+            >
+              <NavGlyph icon="swarm" />
+              <span className="absolute -top-1 -right-1 grid min-w-4 place-items-center rounded-full bg-info px-1 font-mono text-[9.5px] font-bold text-canvas tabular-nums">
+                {activeSwarmCount}
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">
+            Swarm Mission Control ({activeSwarmCount} active)
           </TooltipContent>
         </Tooltip>
       )}

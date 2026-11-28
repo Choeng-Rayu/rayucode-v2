@@ -13,6 +13,10 @@ impl RemoteEventState for RemoteConnection {
         Self::finish_split_request(self, id)
     }
 
+    fn finish_subagent_request(&mut self, id: u64) -> bool {
+        Self::finish_subagent_request(self, id)
+    }
+
     fn handle_tool_start(&mut self, id: &str, name: &str) {
         Self::handle_tool_start(self, id, name);
     }

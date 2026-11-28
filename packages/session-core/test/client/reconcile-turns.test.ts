@@ -325,4 +325,38 @@ describe("reconcileChatTurns", () => {
     expect(afterRefetch.map((t) => t.id)).toEqual(["hist_1", "hist_2"]);
     expect(afterRefetch[1]?.workedDuration).toBe("2s");
   });
+
+  it("preserves kvCachePct, creditsExact, and kvCacheMissReason even when history already has credits or turn is unmetered", () => {
+    const result = reconcileChatTurns({
+      historyTurns: [
+        {
+          id: "hist_byok",
+          userPrompt: "Check cache",
+          answerMarkdown: "Cache looks healthy.",
+          credits: "",
+          kvCachePct: 0,
+          isLive: false,
+        },
+      ],
+      liveTurn: null,
+      completedLiveTurns: [
+        {
+          id: "live_byok",
+          userPrompt: "Check cache",
+          answerMarkdown: "Cache looks healthy.",
+          workedDuration: "4s",
+          credits: "",
+          kvCachePct: 87,
+          kvCacheMissReason: "Prefix changed after tool schema update",
+          isLive: false,
+        },
+      ],
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.kvCachePct).toBe(87);
+    expect(result[0]?.kvCacheMissReason).toBe(
+      "Prefix changed after tool schema update"
+    );
+    expect(result[0]?.credits).toBe("");
+  });
 });

@@ -167,4 +167,30 @@ describe("SessionSocketPool", () => {
     expect(emitted).toEqual([]);
     expect(pool.getActiveTurnSessionIds()).toEqual(["active-sess"]);
   });
+
+  it("forwards global sessionless broadcasts once from the primary control client only", async () => {
+    let counter = 0;
+    const sessionFrames: HarnessFrameLike[] = [];
+    const globalFrames: HarnessFrameLike[] = [];
+    const pool = new SessionSocketPool<MockSessionClient>({
+      dialClient: async () => new MockSessionClient(`sock-${++counter}`),
+      onFrame: (frame) => sessionFrames.push(frame),
+      onGlobalFrame: (frame) => globalFrames.push(frame),
+    });
+
+    const primary = await pool.dialFreshClient();
+    pool.setPrimaryControlClient(primary);
+    const secondary = await pool.dialFreshClient();
+    pool.register("sess-2", secondary);
+
+    primary.emitFrame({ ev: "config_changed", changed_keys: ["provider.default_model"] });
+    secondary.emitFrame({ ev: "config_changed", changed_keys: ["provider.default_model"] });
+    primary.emitFrame({ ev: "credential_updated", provider: "rayu" });
+
+    expect(globalFrames).toEqual([
+      { ev: "config_changed", changed_keys: ["provider.default_model"] },
+      { ev: "credential_updated", provider: "rayu" },
+    ]);
+    expect(sessionFrames).toEqual([]);
+  });
 });

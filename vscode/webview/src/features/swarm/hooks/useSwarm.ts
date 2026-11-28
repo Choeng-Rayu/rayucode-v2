@@ -58,35 +58,23 @@ export interface SwarmTelemetrySummary {
   planVersion: number;
   planVersionShort: string;
   planLabel: string;
-  creditsUsed: number;
-  creditsLabel: string;
-  kvWarmPercent: number;
+  creditsUsed?: number;
+  creditsLabel?: string;
+  kvWarmPercent?: number;
   pendingProposalCount: number;
+  overallPercent: number | null;
 }
 
 export const DEFAULT_SWARM_MODELS: readonly string[] = [
   "inherit",
-  "claude-sonnet-4-5",
-  "claude-opus-4-5",
-  "gpt-5.2",
-  "gemini-2.5-pro",
 ];
-
-const DEFAULT_PENDING_PROPOSAL: SwarmPlanProposalView = {
-  proposalId: "prop_wave3_ledger",
-  version: 4,
-  author: "ui-shell",
-  summary: "Add worktree window launcher and compact sidebar inspector handoff",
-  diffSummary: "+2 tasks in Wave 3D (CoordinationLedger worktrees & plan approval actions)",
-  status: "pending",
-  createdAtMs: Date.now() - 45_000,
-};
 
 export const swarmQueryKeys = {
   all: ["vscode-swarm"] as const,
   list: () => [...swarmQueryKeys.all, "list"] as const,
   status: (swarmId?: string) => [...swarmQueryKeys.all, "status", swarmId ?? "active"] as const,
   peek: (sessionId?: string) => [...swarmQueryKeys.all, "peek", sessionId ?? "none"] as const,
+  models: () => [...swarmQueryKeys.all, "models"] as const,
 };
 
 export function computeSwarmTelemetry(
@@ -120,9 +108,37 @@ export function computeSwarmTelemetry(
     ? `Plan ${planVersionShort} · ${swarm.planLabel}`
     : `Shared Plan ${planVersionShort}`;
 
-  const creditsUsed = swarm?.creditsUsed ?? 0;
-  const creditsLabel = `${creditsUsed.toFixed(1)} cr`;
-  const kvWarmPercent = swarm?.kvWarmPercent ?? 94;
+  const creditsUsed = swarm?.creditsUsed;
+  const creditsLabel =
+    typeof creditsUsed === "number" ? `${creditsUsed.toFixed(1)} cr` : undefined;
+  const kvWarmPercent =
+    typeof swarm?.kvWarmPercent === "number" ? swarm.kvWarmPercent : undefined;
+
+  const progressPool = nonCoordinatorWorkers.length > 0 ? nonCoordinatorWorkers : agents;
+  let todoDone = 0;
+  let todoTotal = 0;
+  for (const agent of progressPool) {
+    if (typeof agent.todoTotal === "number" && agent.todoTotal > 0) {
+      todoTotal += agent.todoTotal;
+      todoDone += Math.min(agent.todoTotal, agent.todoCompleted ?? 0);
+    }
+  }
+  const overallPercent =
+    todoTotal > 0
+      ? Math.max(0, Math.min(100, Math.round((todoDone / todoTotal) * 100)))
+      : progressPool.length > 0 && completedCount > 0
+        ? Math.max(
+            0,
+            Math.min(
+              100,
+              Math.round(
+                (progressPool.filter((a) => a.status === "completed").length /
+                  progressPool.length) *
+                  100,
+              ),
+            ),
+          )
+        : null;
 
   return {
     totalAgents: agents.length,
@@ -141,15 +157,12 @@ export function computeSwarmTelemetry(
     creditsLabel,
     kvWarmPercent,
     pendingProposalCount: pendingProposals.length,
+    overallPercent,
   };
 }
 
-function normalizeSwarmSnapshot(
-  raw: SwarmStatusView | null,
-  injectDefaultProposal: boolean,
-): SwarmStatusView | null {
+function normalizeSwarmSnapshot(raw: SwarmStatusView | null): SwarmStatusView | null {
   if (!raw) return null;
-  const hasProposals = raw.pendingProposals && raw.pendingProposals.length > 0;
   return {
     ...raw,
     agents: raw.agents.map((a) => ({ ...a })),
@@ -157,10 +170,7 @@ function normalizeSwarmSnapshot(
     planItems: raw.planItems.map((p) => ({ ...p })),
     worktrees: raw.worktrees.map((w) => ({ ...w, agents: [...w.agents] })),
     conflicts: raw.conflicts.map((c) => ({ ...c, agents: [...c.agents] })),
-    pendingProposals:
-      hasProposals || !injectDefaultProposal
-        ? raw.pendingProposals.map((p) => ({ ...p }))
-        : [{ ...DEFAULT_PENDING_PROPOSAL, version: raw.planVersion + 1 }],
+    pendingProposals: (raw.pendingProposals ?? []).map((p) => ({ ...p })),
   };
 }
 
@@ -219,6 +229,10 @@ export interface UseSwarmResult {
     message: string,
   ) => Promise<{ ok: boolean; error?: string; seq?: number }>;
   isSendingDm: boolean;
+  sendBroadcast: (
+    message: string,
+  ) => Promise<{ ok: boolean; error?: string; seq?: number }>;
+  isSendingBroadcast: boolean;
   decidePlan: (
     proposalId: string,
     decision: "approve" | "reject",
@@ -240,10 +254,10 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
   const [showLaunchpad, setShowLaunchpad] = React.useState<boolean>(
     Boolean(options?.startInLaunchpad),
   );
-  const [selectedAgentId, setSelectedAgentId] = React.useState<string>("ui-shell");
+  const [selectedAgentId, setSelectedAgentId] = React.useState<string>("");
   const [boardFilter, setBoardFilter] = React.useState<SwarmBoardFilter>("all");
   const [workerFilter, setWorkerFilter] = React.useState<string>("all");
-  const proposalHandledRef = React.useRef<boolean>(false);
+  const pushedActiveSwarm = useAppStore((s) => s.activeSwarm);
 
   const listQuery = useQuery({
     queryKey: swarmQueryKeys.list(),
@@ -252,7 +266,7 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       return res.swarms;
     },
     initialData: options?.initialSwarms,
-    staleTime: 15_000,
+    staleTime: 10_000,
   });
 
   const statusQuery = useQuery({
@@ -262,13 +276,56 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
         "swarm.status",
         activeSwarmId ? { swarmId: activeSwarmId } : undefined,
       );
-      return normalizeSwarmSnapshot(res.swarm, !proposalHandledRef.current);
+      const normalized = normalizeSwarmSnapshot(res.swarm);
+      if (!activeSwarmId) {
+        useAppStore.getState().setActiveSwarm(normalized);
+      }
+      return normalized;
     },
     initialData:
       options?.initialSwarm !== undefined
-        ? normalizeSwarmSnapshot(options.initialSwarm, !proposalHandledRef.current)
+        ? normalizeSwarmSnapshot(options.initialSwarm)
         : undefined,
-    staleTime: 15_000,
+    staleTime: 5_000,
+    refetchInterval: (query) => {
+      if (!rpcClient.isVsCodeWebview()) return false;
+      const current = query.state.data;
+      const hasActive = Boolean(
+        current?.agents.some(
+          (a) =>
+            a.status === "running" ||
+            a.status === "spawned" ||
+            a.status === "blocked",
+        ),
+      );
+      return hasActive ? 2_500 : false;
+    },
+  });
+
+  // Sync host-pushed swarm snapshots into query cache so live background workers appear immediately
+  React.useEffect(() => {
+    if (!pushedActiveSwarm) return;
+    if (activeSwarmId && pushedActiveSwarm.swarmId !== activeSwarmId) return;
+    queryClient.setQueryData<SwarmStatusView | null>(
+      swarmQueryKeys.status(activeSwarmId),
+      normalizeSwarmSnapshot(pushedActiveSwarm),
+    );
+  }, [activeSwarmId, pushedActiveSwarm, queryClient]);
+
+  const modelsQuery = useQuery({
+    queryKey: swarmQueryKeys.models(),
+    queryFn: async () => {
+      try {
+        const res = await rpcClient.callRpc("settings.models.get");
+        return (res.routes ?? [])
+          .filter((r) => r.available !== false)
+          .map((r) => r.modelSpec || r.model)
+          .filter(Boolean);
+      } catch {
+        return [] as string[];
+      }
+    },
+    staleTime: 60_000,
   });
 
   const swarm = statusQuery.data;
@@ -296,7 +353,9 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
     const agents = swarm?.agents ?? [];
     if (agents.length === 0) return undefined;
     return (
-      agents.find((a) => a.agentId === selectedAgentId) ??
+      (selectedAgentId
+        ? agents.find((a) => a.agentId === selectedAgentId)
+        : undefined) ??
       agents.find((a) => a.role === "worker") ??
       agents[0]
     );
@@ -313,14 +372,28 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       });
     },
     enabled: Boolean(selectedAgent?.sessionId),
-    staleTime: 10_000,
+    staleTime: 5_000,
+    refetchInterval: () => {
+      if (!rpcClient.isVsCodeWebview()) return false;
+      const st = selectedAgent?.status;
+      return st === "running" || st === "spawned" ? 3_000 : false;
+    },
   });
 
   const availableModels = React.useMemo<string[]>(() => {
     const allowlist = swarm?.modelAllowlist ?? [];
-    const merged = new Set<string>(["inherit", ...allowlist, ...DEFAULT_SWARM_MODELS]);
+    const discovered = modelsQuery.data ?? [];
+    const agentModels = (swarm?.agents ?? [])
+      .map((a) => a.model)
+      .filter((m): m is string => Boolean(m));
+    const merged = new Set<string>([
+      "inherit",
+      ...allowlist,
+      ...discovered,
+      ...agentModels,
+    ]);
     return Array.from(merged);
-  }, [swarm?.modelAllowlist]);
+  }, [modelsQuery.data, swarm?.agents, swarm?.modelAllowlist]);
 
   const filteredBoardMessages = React.useMemo<SwarmBoardMessageView[]>(() => {
     const messages = swarm?.board ?? [];
@@ -384,7 +457,7 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       return res;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["swarm"] });
+      void queryClient.invalidateQueries({ queryKey: swarmQueryKeys.all });
     },
   });
 
@@ -460,27 +533,28 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       agentId: string;
       pauseOnly?: boolean;
     }) => {
+      const targetAgent = swarm?.agents.find(
+        (a) => a.agentId === agentId || a.sessionId === agentId,
+      );
+      const shouldResume = targetAgent?.status === "stopped";
       await requireOperation(rpcClient.callRpc("swarm.kill", {
         swarmId: swarm?.swarmId ?? activeSwarmId,
-        agentId,
+        agentId: targetAgent?.sessionId || agentId,
         pauseOnly,
+        ...(shouldResume ? { resume: true } : {}),
       }));
-      return { agentId, pauseOnly };
+      return { agentId, pauseOnly, shouldResume };
     },
-    onSuccess: ({ agentId, pauseOnly }) => {
+    onSuccess: ({ agentId, shouldResume }) => {
       updateSwarmCache((current) => ({
         ...current,
         agents: current.agents.map((agent) => {
-          if (agent.agentId !== agentId) return agent;
-          const nextStatus: SwarmAgentStatus =
-            agent.status === "stopped"
-              ? "running"
-              : pauseOnly
-                ? "stopped"
-                : "stopped";
+          if (agent.agentId !== agentId && agent.sessionId !== agentId) return agent;
+          const nextStatus: SwarmAgentStatus = shouldResume ? "running" : "stopped";
           return { ...agent, status: nextStatus, updatedAtMs: Date.now() };
         }),
       }));
+      void queryClient.invalidateQueries({ queryKey: swarmQueryKeys.all });
     },
   });
 
@@ -570,6 +644,38 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
     },
   });
 
+  const broadcastMutation = useMutation({
+    mutationFn: async (message: string) => {
+      const res = await requireOperation(
+        rpcClient.callRpc("swarm.broadcast", {
+          swarmId: swarm?.swarmId ?? activeSwarmId,
+          message,
+        }),
+      );
+      return { message, seq: res.seq };
+    },
+    onSuccess: ({ message, seq }) => {
+      updateSwarmCache((current) => {
+        const nextSeq =
+          seq ?? current.board.reduce((max, m) => Math.max(max, m.seq), 0) + 1;
+        return {
+          ...current,
+          board: [
+            ...current.board,
+            {
+              seq: nextSeq,
+              kind: "broadcast",
+              from: "coordinator",
+              text: message,
+              timestampMs: Date.now(),
+            },
+          ],
+        };
+      });
+      void queryClient.invalidateQueries({ queryKey: swarmQueryKeys.all });
+    },
+  });
+
   const decidePlanMutation = useMutation({
     mutationFn: async ({
       proposalId,
@@ -589,7 +695,6 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
       return { proposalId, decision };
     },
     onSuccess: ({ proposalId, decision }) => {
-      proposalHandledRef.current = true;
       updateSwarmCache((current) => {
         const target = current.pendingProposals.find(
           (p) => p.proposalId === proposalId,
@@ -665,7 +770,7 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
           agentId,
           message: `[model] switch model to ${model}`,
         }));
-        void queryClient.invalidateQueries({ queryKey: ["swarm"] });
+        void queryClient.invalidateQueries({ queryKey: swarmQueryKeys.all });
         return { ok: true };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : "Could not switch the worker model." };
@@ -727,6 +832,25 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
     [dmMutation],
   );
 
+  const sendBroadcast = React.useCallback(
+    async (message: string) => {
+      const trimmed = message.trim();
+      if (!trimmed) {
+        return { ok: false, error: "Broadcast message cannot be empty." };
+      }
+      try {
+        const res = await broadcastMutation.mutateAsync(trimmed);
+        return { ok: true, seq: res.seq };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : "Failed to send broadcast",
+        };
+      }
+    },
+    [broadcastMutation],
+  );
+
   const decidePlan = React.useCallback(
     async (
       proposalId: string,
@@ -771,10 +895,12 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
   );
 
   const openWorktreeWindow = React.useCallback(async (path: string) => {
-    rpcClient.postToHost({
-      type: "rayucode.editor.openWorktreeWindow",
-      path,
-    });
+    if (!rpcClient.isVsCodeWebview()) {
+      rpcClient.postToHost({
+        type: "rayucode.editor.openWorktreeWindow",
+        path,
+      });
+    }
     try {
       await requireOperation(rpcClient.callRpc("swarm.worktreeOpen", { path }));
     } catch {
@@ -848,6 +974,8 @@ export function useSwarm(options?: UseSwarmOptions): UseSwarmResult {
     isPausingAll: pauseAllMutation.isPending,
     sendDm,
     isSendingDm: dmMutation.isPending,
+    sendBroadcast,
+    isSendingBroadcast: broadcastMutation.isPending,
     decidePlan,
     isDecidingPlan: decidePlanMutation.isPending,
     setSwarmLabel,

@@ -37,6 +37,11 @@ fn test_scheduled_queue_push_and_pop() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     queue.push(ScheduledItem {
@@ -52,6 +57,11 @@ fn test_scheduled_queue_push_and_pop() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     assert_eq!(queue.len(), 2);
@@ -86,6 +96,11 @@ fn test_scheduled_queue_remove_by_id_persists_remaining_items() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
     queue.push(ScheduledItem {
         id: "cancel".into(),
@@ -100,6 +115,11 @@ fn test_scheduled_queue_remove_by_id_persists_remaining_items() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     let removed = queue.remove_by_id("cancel").unwrap().unwrap();
@@ -133,6 +153,11 @@ fn test_pop_ready_sorts_by_priority_then_time() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     queue.push(ScheduledItem {
@@ -148,6 +173,11 @@ fn test_pop_ready_sorts_by_priority_then_time() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     let ready = queue.pop_ready();
@@ -180,6 +210,11 @@ fn test_take_ready_direct_items_only_removes_direct_targets() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     queue.push(ScheduledItem {
@@ -197,6 +232,11 @@ fn test_take_ready_direct_items_only_removes_direct_targets() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     queue.push(ScheduledItem {
@@ -212,6 +252,11 @@ fn test_take_ready_direct_items_only_removes_direct_targets() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     let ready_direct = queue.take_ready_direct_items();
@@ -268,6 +313,9 @@ fn test_ambient_state_record_cycle_with_schedule() {
             relevant_files: Vec::new(),
             git_branch: None,
             additional_context: None,
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         }),
         started_at: Utc::now() - Duration::seconds(10),
         ended_at: Utc::now(),
@@ -371,6 +419,11 @@ fn test_build_ambient_system_prompt_with_data() {
         relevant_files: vec!["src/main.rs".into()],
         git_branch: Some("main".into()),
         additional_context: Some("Background: Tests were flaky yesterday".into()),
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     }];
 
     let health = MemoryGraphHealth {
@@ -449,9 +502,86 @@ fn test_scheduled_queue_items_accessor() {
         relevant_files: Vec::new(),
         git_branch: None,
         additional_context: None,
+        enabled: true,
+        recurrence: None,
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
     });
 
     let items = queue.items();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].id, "s1");
+}
+
+#[test]
+fn test_recurring_cron_and_disabled_schedules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("queue.json");
+    let mut queue = ScheduledQueue::load(path.clone());
+    let past = Utc::now() - Duration::minutes(5);
+
+    // 1. Recurring interval item re-schedules itself on pop_ready.
+    queue.push(ScheduledItem {
+        id: "recurring_1".into(),
+        scheduled_for: past,
+        context: "Check build health".into(),
+        priority: Priority::Normal,
+        target: ScheduleTarget::Ambient,
+        created_by_session: "".into(),
+        created_at: Utc::now(),
+        working_dir: None,
+        task_description: Some("Recurring build check".into()),
+        relevant_files: Vec::new(),
+        git_branch: None,
+        additional_context: None,
+        enabled: true,
+        recurrence: Some(ScheduleRecurrence::Interval { every_minutes: 60 }),
+        permission_mode: Some("default".into()),
+        last_run_at: None,
+        last_status: None,
+    });
+
+    // 2. Disabled item is ignored by pop_ready and peek_next.
+    queue.push(ScheduledItem {
+        id: "disabled_1".into(),
+        scheduled_for: past,
+        context: "Paused item".into(),
+        priority: Priority::High,
+        target: ScheduleTarget::Ambient,
+        created_by_session: "".into(),
+        created_at: Utc::now(),
+        working_dir: None,
+        task_description: None,
+        relevant_files: Vec::new(),
+        git_branch: None,
+        additional_context: None,
+        enabled: false,
+        recurrence: Some(ScheduleRecurrence::Cron {
+            expr: "0 9 * * 1-5".into(),
+        }),
+        permission_mode: None,
+        last_run_at: None,
+        last_status: None,
+    });
+
+    let ready = queue.pop_ready();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].id, "recurring_1");
+
+    // Both remain in queue: recurring_1 advanced into the future, disabled_1 untouched.
+    let reloaded = ScheduledQueue::load(path);
+    assert_eq!(reloaded.len(), 2);
+    let rec = reloaded.items().iter().find(|i| i.id == "recurring_1").unwrap();
+    assert!(rec.scheduled_for > Utc::now());
+    assert!(rec.last_run_at.is_some());
+    assert_eq!(rec.last_status.as_deref(), Some("dispatched"));
+
+    // Toggle disabled_1 on & trigger now
+    let mut queue2 = reloaded;
+    let toggled = queue2.toggle_by_id("disabled_1", Some(true)).unwrap().unwrap();
+    assert!(toggled.enabled);
+    assert!(toggled.scheduled_for > Utc::now());
+    let triggered = queue2.trigger_now_by_id("disabled_1").unwrap().unwrap();
+    assert!(triggered.scheduled_for <= Utc::now() + Duration::seconds(2));
 }

@@ -169,10 +169,10 @@ fn curated_commands() -> Vec<CommandDescriptor> {
         },
         CommandDescriptor {
             name: "skills".into(),
-            description: "List available skills discovered for this workspace".into(),
+            description: "List or toggle available skills discovered for this workspace".into(),
             category: CommandCategory::Tools,
-            arg_hint: None,
-            requires_session: true,
+            arg_hint: Some("[list|enable|disable|toggle <name>]".into()),
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "skills".into(),
             },
@@ -181,8 +181,8 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             name: "memory".into(),
             description: "Inspect or manage semantic session memory".into(),
             category: CommandCategory::Tools,
-            arg_hint: Some("[subcommand]".into()),
-            requires_session: true,
+            arg_hint: Some("[status|list|extract|on|off]".into()),
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "memory".into(),
             },
@@ -191,20 +191,50 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             name: "mcp".into(),
             description: "Inspect connected MCP servers and exposed tools".into(),
             category: CommandCategory::Tools,
-            arg_hint: Some("[status|reload]".into()),
-            requires_session: true,
+            arg_hint: Some("[list|status|test|toggle|reload]".into()),
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "mcp".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "swarm".into(),
+            description: "Inspect and orchestrate multi-agent swarm workers".into(),
+            category: CommandCategory::Runtime,
+            arg_hint: Some("[status|spawn|stop|resume|dm|broadcast]".into()),
+            requires_session: false,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "swarm".into(),
             },
         },
         CommandDescriptor {
             name: "agents".into(),
             description: "Inspect or configure agent profiles and worker defaults".into(),
             category: CommandCategory::Runtime,
-            arg_hint: Some("[args]".into()),
-            requires_session: true,
+            arg_hint: Some("[global] [role|profile ...]".into()),
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "agents".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "subagent".into(),
+            description: "Spawn a focused subagent worker for a delegated task".into(),
+            category: CommandCategory::Runtime,
+            arg_hint: Some("[--model <model>] <prompt>".into()),
+            requires_session: true,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "subagent".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "subagent-model".into(),
+            description: "Inspect or set the default subagent/swarm model".into(),
+            category: CommandCategory::Model,
+            arg_hint: Some("[global] [show|inherit|default|<model>]".into()),
+            requires_session: false,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "subagent_model".into(),
             },
         },
         CommandDescriptor {
@@ -242,7 +272,7 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             description: "Run runtime health and provider connectivity diagnostics".into(),
             category: CommandCategory::Runtime,
             arg_hint: None,
-            requires_session: true,
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "doctor".into(),
             },
@@ -252,7 +282,7 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             description: "Inspect or toggle runtime feature flags".into(),
             category: CommandCategory::Runtime,
             arg_hint: Some("[name on|off]".into()),
-            requires_session: true,
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "features".into(),
             },
@@ -262,7 +292,7 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             description: "Refresh live model catalogs from configured providers".into(),
             category: CommandCategory::Model,
             arg_hint: None,
-            requires_session: true,
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "refresh_model_list".into(),
             },
@@ -288,13 +318,43 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             },
         },
         CommandDescriptor {
-            name: "schedules".into(),
-            description: "List or manage scheduled recurring session tasks".into(),
+            name: "overnight".into(),
+            description: "Launch, inspect, review, or cancel supervised overnight runs".into(),
             category: CommandCategory::Runtime,
-            arg_hint: None,
-            requires_session: true,
+            arg_hint: Some("[list|status|log|review|cancel|start|<duration> <mission>]".into()),
+            requires_session: false,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "overnight".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "schedules".into(),
+            description: "List, create, toggle, trigger, or cancel one-shot and recurring tasks".into(),
+            category: CommandCategory::Runtime,
+            arg_hint: Some("[list|create|toggle|run|update|cancel]".into()),
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "schedules".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "ambient".into(),
+            description: "Inspect ambient status and resolve pending ambient approvals".into(),
+            category: CommandCategory::Runtime,
+            arg_hint: Some("[status|approvals|decide]".into()),
+            requires_session: false,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "ambient".into(),
+            },
+        },
+        CommandDescriptor {
+            name: "telegram".into(),
+            description: "Pair, inspect, and control Telegram remote bridge and approvals".into(),
+            category: CommandCategory::Runtime,
+            arg_hint: Some("[status|approvals|decide|link_hosted|link_botfather|disconnect|ping]".into()),
+            requires_session: false,
+            dispatch: CommandDispatch::RuntimeCommand {
+                command: "telegram".into(),
             },
         },
         CommandDescriptor {
@@ -302,7 +362,7 @@ fn curated_commands() -> Vec<CommandDescriptor> {
             description: "Search across past session transcripts".into(),
             category: CommandCategory::Session,
             arg_hint: Some("<query>".into()),
-            requires_session: true,
+            requires_session: false,
             dispatch: CommandDispatch::RuntimeCommand {
                 command: "session_search".into(),
             },

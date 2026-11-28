@@ -76,6 +76,7 @@ fn reconcile_items(items: &mut Vec<ScheduledItem>, session_id: &str, todos: &[To
             working_dir: None,
             task_description: Some(format!("Reassess external blocker: {}", todo.content)),
             relevant_files: Vec::new(), git_branch: None, additional_context: None,
+            enabled: true, recurrence: None, permission_mode: None,
         }));
         seen.insert(todo.id.clone());
     }

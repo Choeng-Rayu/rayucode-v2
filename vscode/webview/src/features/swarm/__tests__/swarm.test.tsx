@@ -367,4 +367,43 @@ describe("Swarm Mission Control (Wave 3D, Spec 04)", () => {
       window.acquireVsCodeApi = prevAcquire;
     }
   });
+
+  it("unlocks live swarm controls in VS Code webview host mode when engine advertises swarm_mutations_v1", async () => {
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg: unknown) => {
+        handleMockHostMessage(msg as never, __dispatchHostMessageForTest);
+      },
+      getState: () => undefined,
+      setState: () => {},
+    });
+    useAppStore.setState({
+      capabilities: ["swarm_control", "swarm_mutations_v1"],
+    });
+
+    try {
+      renderWithQuery(<SwarmView />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("swarm-header")).toBeTruthy();
+      });
+
+      expect(
+        (screen.getByTestId("swarm-toggle-spawn-btn") as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+      expect(
+        (screen.getByTestId("swarm-pause-all-btn") as HTMLButtonElement)
+          .disabled,
+      ).toBe(false);
+      expect(
+        (screen.getByTestId("agent-dm-submit") as HTMLButtonElement).disabled,
+      ).toBe(false);
+      expect(screen.getByTestId("inspector-kill-btn")).toBeTruthy();
+      expect(screen.getByTestId("ledger-broadcast-form")).toBeTruthy();
+    } finally {
+      useAppStore.setState({ capabilities: [] });
+      window.acquireVsCodeApi = prevAcquire;
+    }
+  });
 });

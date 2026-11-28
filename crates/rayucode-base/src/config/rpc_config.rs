@@ -10,7 +10,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-/// The 9 curated user-facing configuration sections exposed over Harness API v1.16.
+/// The 10 curated user-facing configuration sections exposed over Harness API v1.16+.
 pub const CURATED_CONFIG_SECTIONS: &[&str] = &[
     "provider",
     "compaction",
@@ -21,6 +21,7 @@ pub const CURATED_CONFIG_SECTIONS: &[&str] = &[
     "autoreview",
     "autojudge",
     "notifications",
+    "ambient",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1062,6 +1063,22 @@ fn field_specs() -> &'static [FieldSpec] {
                 default_fn: || json!("Glass"),
                 read_fn: |c| json!(c.notifications.turn_complete_sound),
             },
+            // --- ambient ---
+            FieldSpec {
+                key: "ambient.enabled",
+                section: "ambient",
+                field: "enabled",
+                label: "Ambient Mode Enabled",
+                description: "Run background ambient cycles and scheduled tasks automatically.",
+                kind: RpcConfigFieldKind::Boolean,
+                options: None,
+                nullable: false,
+                int_bounds: None,
+                float_bounds: None,
+                apply_mode: RpcConfigApplyMode::Immediate,
+                default_fn: || json!(false),
+                read_fn: |c| json!(c.ambient.enabled),
+            },
         ]
     })
 }
@@ -1456,7 +1473,8 @@ mod tests {
         Config::invalidate_cache();
 
         let snap = read_curated_config(None).unwrap();
-        assert_eq!(snap.sections.len(), 9);
+        assert_eq!(snap.sections.len(), CURATED_CONFIG_SECTIONS.len());
+        assert!(snap.values.contains_key("ambient.enabled"));
         let serialized = serde_json::to_string(&snap.values).unwrap();
         assert!(!serialized.contains("sk-secret-must-not-leak"));
         assert!(!serialized.contains("tg-secret-token"));

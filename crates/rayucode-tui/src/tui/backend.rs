@@ -266,6 +266,7 @@ pub struct RemoteConnection {
     // and must surface even while a scoped turn is active.
     pending_control_requests: std::sync::Mutex<std::collections::VecDeque<u64>>,
     pending_split_request_ids: std::sync::Mutex<std::collections::HashSet<u64>>,
+    pending_subagent_request_ids: std::sync::Mutex<std::collections::HashSet<u64>>,
     // Bootstrap Done is not turn completion. Retain ids for duplicate acks.
     control_done_ids: std::sync::Mutex<std::collections::VecDeque<u64>>,
     request_timings: super::cloud_latency::RequestTimings,
@@ -364,6 +365,10 @@ pub(crate) trait RemoteEventState {
     }
 
     fn finish_split_request(&mut self, _id: u64) -> bool {
+        false
+    }
+
+    fn finish_subagent_request(&mut self, _id: u64) -> bool {
         false
     }
 
@@ -492,6 +497,7 @@ impl RemoteConnection {
             pending_runtime_commands: Default::default(),
             pending_control_requests: Default::default(),
             pending_split_request_ids: Default::default(),
+            pending_subagent_request_ids: Default::default(),
             control_done_ids: Default::default(),
             request_timings: Default::default(),
             tool_diff: RemoteDiffTracker::default(),
@@ -709,7 +715,7 @@ impl RemoteConnection {
             }
             ids.push_back(id);
         }
-        if let Request::Split { id, .. } = &request {
+        if let Request::Split { id, .. } | Request::Transfer { id } = &request {
             let mut split_ids = self
                 .pending_split_request_ids
                 .lock()
@@ -718,6 +724,16 @@ impl RemoteConnection {
                 split_ids.clear();
             }
             split_ids.insert(*id);
+        }
+        if let Request::RunSubagent { id, .. } = &request {
+            let mut subagent_ids = self
+                .pending_subagent_request_ids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if subagent_ids.len() >= 256 {
+                subagent_ids.clear();
+            }
+            subagent_ids.insert(*id);
         }
         let json = serde_json::to_string(&request)? + "\n";
         let interrupt_log = self.interrupt_request_log_fields(&request, interrupt_trigger);
@@ -920,9 +936,17 @@ impl RemoteConnection {
         }
     }
 
-    /// Consume a tracked `Request::Split` ID on failure or `SplitResponse`.
+    /// Consume a tracked `Request::Split` or `Request::Transfer` ID on failure or `SplitResponse`.
     pub fn finish_split_request(&mut self, id: u64) -> bool {
         self.pending_split_request_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
+    }
+
+    /// Consume a tracked `Request::RunSubagent` ID on completion or failure.
+    pub fn finish_subagent_request(&mut self, id: u64) -> bool {
+        self.pending_subagent_request_ids
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id)
@@ -1930,6 +1954,7 @@ impl RemoteConnection {
             pending_runtime_commands: Default::default(),
             pending_control_requests: Default::default(),
             pending_split_request_ids: Default::default(),
+            pending_subagent_request_ids: Default::default(),
             control_done_ids: Default::default(),
             request_timings: Default::default(),
             tool_diff: RemoteDiffTracker::default(),

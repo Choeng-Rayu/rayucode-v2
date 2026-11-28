@@ -4,6 +4,7 @@ import type {
   BackgroundProcessView,
   DaemonStatusView,
   PermissionModeId,
+  SwarmStatusView,
 } from "../../shared/vscodeProtocol.js";
 
 function getVscode(): typeof vscode {
@@ -42,9 +43,27 @@ export interface StatusBarSnapshot {
   model?: string;
   permissionMode: PermissionModeId;
   backgroundTasks: readonly BackgroundProcessView[];
+  activeSwarm?: SwarmStatusView | null;
   sessionCredits?: number;
   isStreaming?: boolean;
   signedIn?: boolean;
+}
+
+function summarizeSwarmCounts(swarm?: SwarmStatusView | null): {
+  runningAgents: number;
+  blockedAgents: number;
+  totalWorkers: number;
+} {
+  if (!swarm || swarm.agents.length === 0) {
+    return { runningAgents: 0, blockedAgents: 0, totalWorkers: 0 };
+  }
+  const workers = swarm.agents.filter((a) => a.role === "worker");
+  const pool = workers.length > 0 ? workers : swarm.agents;
+  const runningAgents = pool.filter(
+    (a) => a.status === "running" || a.status === "spawned",
+  ).length;
+  const blockedAgents = pool.filter((a) => a.status === "blocked").length;
+  return { runningAgents, blockedAgents, totalWorkers: pool.length };
 }
 
 export function buildConnectedStatusBarTooltipLines(
@@ -55,6 +74,7 @@ export function buildConnectedStatusBarTooltipLines(
     model,
     permissionMode,
     backgroundTasks,
+    activeSwarm,
     sessionCredits,
     isStreaming,
     signedIn,
@@ -65,6 +85,8 @@ export function buildConnectedStatusBarTooltipLines(
   const stalledCount = backgroundTasks.filter(
     (task) => task.status === "stalled",
   ).length;
+  const { runningAgents, blockedAgents, totalWorkers } =
+    summarizeSwarmCounts(activeSwarm);
   const modeLabel = PERMISSION_LABELS[permissionMode] ?? "Ask";
   const versionLabel = formatStatusBarVersionLabel(daemonStatus);
 
@@ -85,6 +107,13 @@ export function buildConnectedStatusBarTooltipLines(
     tooltipLines.push(
       `- **Background Processes:** ${runningCount} active${
         stalledCount > 0 ? ` (${stalledCount} stalled)` : ""
+      }`,
+    );
+  }
+  if (runningAgents > 0 || blockedAgents > 0) {
+    tooltipLines.push(
+      `- **Background Swarm:** ${runningAgents}/${totalWorkers} active${
+        blockedAgents > 0 ? ` (${blockedAgents} blocked)` : ""
       }`,
     );
   }
@@ -137,6 +166,7 @@ export class StatusBarBridge implements vscode.Disposable {
       model,
       permissionMode,
       backgroundTasks,
+      activeSwarm,
       sessionCredits,
       isStreaming,
       signedIn,
@@ -147,7 +177,8 @@ export class StatusBarBridge implements vscode.Disposable {
     const stalledCount = backgroundTasks.filter(
       (task) => task.status === "stalled",
     ).length;
-    this.activeRunningTasks = runningCount;
+    const { runningAgents, blockedAgents } = summarizeSwarmCounts(activeSwarm);
+    this.activeRunningTasks = runningCount + runningAgents + blockedAgents;
 
     const isInstallingOrUpdating =
       daemonStatus.state === "downloading" ||
@@ -214,12 +245,18 @@ export class StatusBarBridge implements vscode.Disposable {
 
     if (isStreaming) {
       const parts = [`$(loading~spin) ${modelLabel} · Working`];
+      if (runningAgents > 0) {
+        parts.push(`${runningAgents} ${runningAgents === 1 ? "agent" : "agents"}`);
+      }
       if (runningCount > 0) {
         parts.push(`${runningCount} bg`);
       }
       this.item.text = parts.join(" · ");
     } else {
       const parts = [`$(rayucode) ${modelLabel}`, modeLabel];
+      if (runningAgents > 0) {
+        parts.push(`${runningAgents} ${runningAgents === 1 ? "agent" : "agents"}`);
+      }
       if (runningCount > 0) {
         parts.push(`${runningCount} bg`);
       }
@@ -230,7 +267,7 @@ export class StatusBarBridge implements vscode.Disposable {
     }
 
     this.item.backgroundColor =
-      stalledCount > 0
+      stalledCount > 0 || blockedAgents > 0
         ? new vscodeApi.ThemeColor("statusBarItem.warningBackground")
         : undefined;
 

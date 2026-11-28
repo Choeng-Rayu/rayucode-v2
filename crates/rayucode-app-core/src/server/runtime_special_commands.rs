@@ -82,6 +82,7 @@ pub(super) struct LockFreeCommandContext {
     pub session_id: String,
     pub working_dir: Option<std::path::PathBuf>,
     pub registry: Option<crate::tool::Registry>,
+    pub mcp_pool: Option<std::sync::Arc<crate::mcp::SharedMcpPool>>,
     pub provider_name: String,
     pub provider_model: String,
     pub provider_context_window: usize,
@@ -97,6 +98,7 @@ impl LockFreeCommandContext {
             session_id: agent.session_id().to_string(),
             working_dir: agent.working_dir().map(std::path::PathBuf::from),
             registry: Some(agent.registry()),
+            mcp_pool: crate::mcp::get_shared_pool(),
             provider_name: agent.provider_name(),
             provider_model: agent.provider_model(),
             provider_context_window: agent.provider_context_window(),
@@ -124,12 +126,14 @@ pub(super) fn is_lock_free(command: RuntimeCommand, args: &[String]) -> bool {
         | RuntimeCommand::Mcp => true,
         RuntimeCommand::Overnight => {
             // Only launching a new overnight run needs `&mut Agent` (`session_for_split`
-            // and `provider_fork`). `list`, `status`, `log`, `review`, `cancel`, and `help`
-            // operate strictly on persisted run manifests and are completely lock-free.
+            // and `provider_fork`). `list`, `status`, `log`, `review`, `open`, `cancel`,
+            // `stop`, and `help` operate strictly on persisted run manifests and are lock-free.
             let sub = args.first().map(|s| s.to_ascii_lowercase());
             matches!(
                 sub.as_deref(),
-                None | Some("list" | "status" | "log" | "review" | "cancel" | "help")
+                None | Some(
+                    "list" | "status" | "log" | "review" | "open" | "cancel" | "stop" | "help" | "--help" | "-h"
+                )
             )
         }
         _ => false,
@@ -457,9 +461,169 @@ fn remote(args: &[String]) -> Result<(Value, String)> {
     }
 }
 
+fn resolve_overnight_manifest(
+    session_id: &str,
+    explicit_run_id: Option<&str>,
+) -> Result<Option<crate::overnight::OvernightManifest>> {
+    if let Some(run_id) = explicit_run_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if run_id.contains('/') || run_id.contains('\\') || run_id == ".." {
+            bail!("Invalid overnight run id `{run_id}`");
+        }
+        let path = crate::overnight::manifest_path(run_id)?;
+        if !path.is_file() {
+            bail!("Overnight run `{run_id}` was not found.");
+        }
+        return Ok(Some(crate::overnight::load_manifest(run_id)?));
+    }
+    session_manifest(session_id)
+}
+
+#[derive(Debug)]
+struct ParsedOvernightLaunch {
+    duration: crate::overnight::OvernightDuration,
+    mission: Option<String>,
+    working_dir: Option<std::path::PathBuf>,
+    max_agents: Option<u8>,
+}
+
+fn parse_overnight_launch_args(args: &[String]) -> Result<ParsedOvernightLaunch> {
+    use crate::overnight;
+    if args.first().map(|s| s.to_ascii_lowercase()).as_deref() == Some("start") {
+        let rest = &args[1..];
+        if rest.len() == 1 && rest[0].trim_start().starts_with('{') {
+            let parsed: Value = serde_json::from_str(&rest[0])
+                .context("Invalid JSON payload for overnight start")?;
+            let duration = if let Some(mins) = parsed["duration_minutes"].as_u64() {
+                let m = u32::try_from(mins).unwrap_or(60).clamp(1, 72 * 60);
+                overnight::OvernightDuration { minutes: m }
+            } else if let Some(dur_str) = parsed["duration"].as_str() {
+                overnight::parse_duration(dur_str).map_err(anyhow::Error::msg)?
+            } else if let Some(hours) = parsed["duration_hours"].as_f64() {
+                let m = (hours * 60.0).round() as u32;
+                if m == 0 || m > 72 * 60 {
+                    bail!("Overnight duration must be between 1 minute and 72 hours.");
+                }
+                overnight::OvernightDuration { minutes: m }
+            } else {
+                overnight::OvernightDuration { minutes: 480 }
+            };
+            let mission = parsed["mission"]
+                .as_str()
+                .or_else(|| parsed["prompt"].as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let working_dir = parsed["working_dir"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from);
+            let max_agents = parsed["max_agents"]
+                .as_u64()
+                .map(|n| (n as u8).clamp(1, 8));
+            return Ok(ParsedOvernightLaunch {
+                duration,
+                mission,
+                working_dir,
+                max_agents,
+            });
+        }
+        return parse_overnight_launch_args(rest);
+    }
+
+    let mut working_dir = None;
+    let mut max_agents = None;
+    let mut positional = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--working-dir" | "--cwd" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for {}", args[i]))?;
+                if !val.trim().is_empty() {
+                    working_dir = Some(std::path::PathBuf::from(val.trim()));
+                }
+                i += 2;
+            }
+            "--max-agents" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for --max-agents"))?;
+                let parsed: u8 = val
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid --max-agents value `{val}`"))?;
+                max_agents = Some(parsed.clamp(1, 8));
+                i += 2;
+            }
+            "--permission-mode" | "--handoff" => {
+                // Accept optional metadata flags cleanly without rejecting launch.
+                i += 2;
+            }
+            other => {
+                positional.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+    let input = format!("/overnight {}", positional.join(" "));
+    let command = overnight::parse_overnight_command(&input)
+        .context("Invalid overnight command")?
+        .map_err(anyhow::Error::msg)?;
+    let overnight::OvernightCommand::Start { duration, mission } = command else {
+        bail!("{}", overnight::overnight_usage());
+    };
+    Ok(ParsedOvernightLaunch {
+        duration,
+        mission,
+        working_dir,
+        max_agents,
+    })
+}
+
+pub(super) async fn overnight_start_global(
+    provider_template: &std::sync::Arc<dyn crate::provider::Provider>,
+    args: &[String],
+) -> Result<(Value, String)> {
+    let parsed = parse_overnight_launch_args(args)?;
+    let working_dir_str = parsed
+        .working_dir
+        .as_ref()
+        .map(|p| p.display().to_string());
+    let mut parent_session =
+        crate::session::Session::create(working_dir_str, Some("Overnight".to_string()));
+    parent_session.save()?;
+    let provider = provider_template.fork();
+    let registry = crate::tool::Registry::new(provider.clone()).await;
+    let mut launch = crate::overnight::start_overnight_run(crate::overnight::OvernightStartOptions {
+        duration: parsed.duration,
+        mission: parsed.mission,
+        parent_session,
+        provider,
+        registry,
+        working_dir: parsed.working_dir,
+        use_current_session: false,
+    })?;
+    if let Some(max_agents) = parsed.max_agents {
+        launch.manifest.max_agents_guidance = max_agents;
+        let _ = crate::overnight::save_manifest(&launch.manifest);
+    }
+    let message = format!(
+        "Started supervised overnight coordinator `{}` in session `{}`. Target wake: {}.",
+        launch.manifest.run_id,
+        launch.manifest.coordinator_session_id,
+        launch.manifest.target_wake_at.to_rfc3339()
+    );
+    Ok((serde_json::to_value(launch.manifest)?, message))
+}
+
 async fn overnight_lock_free(session_id: &str, args: &[String]) -> Result<(Value, String)> {
-    use crate::overnight::{self, OvernightCommand, OvernightRunStatus};
-    if matches!(args.first().map(String::as_str), Some("list")) {
+    use crate::overnight::{self, OvernightRunStatus};
+    let sub = args.first().map(|s| s.to_ascii_lowercase());
+    if matches!(sub.as_deref(), Some("list")) {
         if args.len() > 1 {
             bail!("Usage: /overnight list");
         }
@@ -509,38 +673,47 @@ async fn overnight_lock_free(session_id: &str, args: &[String]) -> Result<(Value
         .await?;
     }
 
-    let input = format!("/overnight {}", args.join(" "));
-    let command = overnight::parse_overnight_command(&input)
-        .context("Invalid overnight command")?
-        .map_err(anyhow::Error::msg)?;
-    if command == OvernightCommand::Help {
+    if matches!(sub.as_deref(), None | Some("help" | "--help" | "-h")) {
         return Ok((
             json!({"usage": overnight::overnight_usage()}),
             overnight::overnight_usage().into(),
         ));
     }
 
+    let action = match sub.as_deref() {
+        Some("status") => "status",
+        Some("log") => "log",
+        Some("review" | "open") => "review",
+        Some("cancel" | "stop") => "cancel",
+        _ => bail!("Overnight start requires an idle session or `overnight start '<json>'`"),
+    };
+    if args.len() > 2 {
+        bail!("Usage: /overnight {action} [run_id]");
+    }
+    let explicit_run_id = args.get(1).cloned();
     let session_id_owned = session_id.to_owned();
     tokio::task::spawn_blocking(move || {
-        let Some(mut manifest) = session_manifest(&session_id_owned)? else {
+        let Some(mut manifest) =
+            resolve_overnight_manifest(&session_id_owned, explicit_run_id.as_deref())?
+        else {
             return Ok((
                 json!({"run": null}),
                 "No overnight runs belong to this session.".into(),
             ));
         };
-        match command {
-            OvernightCommand::Status => {
+        match action {
+            "status" => {
                 let message = overnight::format_status_markdown(&manifest);
                 Ok((serde_json::to_value(manifest)?, message))
             }
-            OvernightCommand::Log => {
+            "log" => {
                 let message = overnight::format_log_markdown(&manifest, 100);
                 Ok((
                     json!({"run_id": manifest.run_id, "events": overnight::read_events(&manifest)?}),
                     message,
                 ))
             }
-            OvernightCommand::Review => {
+            "review" => {
                 // Return the actual review document, not an opener on the remote host.
                 overnight::render_review_html(&manifest)?;
                 let html = std::fs::read_to_string(&manifest.review_path)?;
@@ -576,7 +749,7 @@ async fn overnight_lock_free(session_id: &str, args: &[String]) -> Result<(Value
                     message,
                 ))
             }
-            OvernightCommand::Cancel => {
+            "cancel" => {
                 if !matches!(
                     manifest.status,
                     OvernightRunStatus::Completed | OvernightRunStatus::Failed
@@ -596,23 +769,18 @@ async fn overnight_lock_free(session_id: &str, args: &[String]) -> Result<(Value
                 let message = overnight::format_status_markdown(&manifest);
                 Ok((serde_json::to_value(manifest)?, message))
             }
-            OvernightCommand::Start { .. } | OvernightCommand::Help => {
-                bail!("Overnight start requires an idle session")
-            }
+            _ => bail!("Overnight start requires an idle session"),
         }
     })
     .await?
 }
 
 async fn overnight(agent: &mut Agent, args: &[String]) -> Result<(Value, String)> {
-    use crate::overnight::{self, OvernightCommand, OvernightRunStatus};
-    let input = format!("/overnight {}", args.join(" "));
-    let command = overnight::parse_overnight_command(&input)
-        .context("Invalid overnight command")?
-        .map_err(anyhow::Error::msg)?;
-    let OvernightCommand::Start { duration, mission } = command else {
+    use crate::overnight::{self, OvernightRunStatus};
+    if is_lock_free(RuntimeCommand::Overnight, args) {
         return overnight_lock_free(agent.session_id(), args).await;
-    };
+    }
+    let parsed = parse_overnight_launch_args(args)?;
     let session_id = agent.session_id().to_owned();
     let existing = {
         let sid = session_id.clone();
@@ -629,15 +797,22 @@ async fn overnight(agent: &mut Agent, args: &[String]) -> Result<(Value, String)
             existing.run_id
         );
     }
-    let launch = overnight::start_overnight_run(overnight::OvernightStartOptions {
-        duration,
-        mission,
+    let working_dir = parsed
+        .working_dir
+        .or_else(|| agent.working_dir().map(std::path::PathBuf::from));
+    let mut launch = overnight::start_overnight_run(overnight::OvernightStartOptions {
+        duration: parsed.duration,
+        mission: parsed.mission,
         parent_session: agent.session_for_split().clone(),
         provider: agent.provider_fork(),
         registry: agent.registry(),
-        working_dir: agent.working_dir().map(std::path::PathBuf::from),
+        working_dir,
         use_current_session: false,
     })?;
+    if let Some(max_agents) = parsed.max_agents {
+        launch.manifest.max_agents_guidance = max_agents;
+        let _ = overnight::save_manifest(&launch.manifest);
+    }
     let message = format!(
         "Started supervised overnight coordinator `{}` in session `{}`. Target wake: {}. Use `/overnight status`, `/overnight log`, `/overnight review`, or `/overnight cancel`.",
         launch.manifest.run_id,
@@ -841,13 +1016,62 @@ async fn background(session_id: &str, args: &[String]) -> Result<(Value, String)
     }
 }
 
+fn strip_working_dir_flag(
+    args: &[String],
+    default_dir: Option<&std::path::Path>,
+) -> Result<(Option<std::path::PathBuf>, Vec<String>)> {
+    let mut working_dir = default_dir.map(|p| p.to_path_buf());
+    let mut clean = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if matches!(args[i].as_str(), "--working-dir" | "--cwd") {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("Missing value for {}", args[i]))?;
+            if !val.trim().is_empty() {
+                working_dir = Some(std::path::PathBuf::from(val.trim()));
+            }
+            i += 2;
+        } else {
+            clean.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((working_dir, clean))
+}
+
 async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, String)> {
-    let sub = args.first().map(String::as_str).unwrap_or("list");
-    let working_dir_owned = ctx.working_dir.clone();
+    let (working_dir_owned, clean_args) =
+        strip_working_dir_flag(args, ctx.working_dir.as_deref())?;
+    let sub = clean_args.first().map(String::as_str).unwrap_or("list");
     match sub {
         "list" | "status" => {
-            let filter_id = args.get(1).cloned();
+            let filter_id = clean_args.get(1).cloned();
             let registry = ctx.registry.clone();
+            let pool_connected: std::collections::HashSet<String> =
+                if let Some(ref pool) = ctx.mcp_pool {
+                    pool.connected_servers().await.into_iter().collect()
+                } else {
+                    std::collections::HashSet::new()
+                };
+            let mut pool_tools_by_server: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            let mut pool_errors: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(ref pool) = ctx.mcp_pool {
+                for (srv, tool) in pool.all_tools().await {
+                    pool_tools_by_server
+                        .entry(srv)
+                        .or_default()
+                        .push(tool.name);
+                }
+                let cfg_names: Vec<String> = pool.config().await.servers.keys().cloned().collect();
+                for srv in cfg_names {
+                    if let Some(err) = pool.last_error(&srv).await {
+                        pool_errors.insert(srv, err);
+                    }
+                }
+            }
             tokio::task::spawn_blocking(move || {
                 let config = crate::mcp::McpConfig::load_for_dir(working_dir_owned.as_deref());
                 let schema_cache = crate::mcp::McpSchemaCache::load();
@@ -870,7 +1094,8 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
                     }
                     let connected = registry
                         .as_ref()
-                        .is_some_and(|reg| reg.has_mcp_tools_for_server(name));
+                        .is_some_and(|reg| reg.has_mcp_tools_for_server(name))
+                        || pool_connected.contains(name);
                     if connected {
                         connected_count += 1;
                     }
@@ -889,6 +1114,16 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
                         .tools_for(name, cfg)
                         .map(|defs| defs.iter().map(|d| d.name.clone()).collect())
                         .unwrap_or_default();
+                    let live_tools = pool_tools_by_server
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let tool_count = if !live_tools.is_empty() {
+                        live_tools.len()
+                    } else {
+                        cached_tools.len()
+                    };
+                    let last_error = pool_errors.get(name).cloned();
                     let oauth_logged_in = if cfg.is_remote() {
                         cfg.url
                             .as_deref()
@@ -909,8 +1144,11 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
                         "url": cfg.url,
                         "timeout_secs": cfg.timeout_secs,
                         "display_target": cfg.display_target(),
+                        "tool_count": tool_count,
+                        "live_tools": live_tools,
                         "cached_tool_count": cached_tools.len(),
                         "cached_tools": cached_tools,
+                        "last_error": last_error,
                         "oauth_logged_in": oauth_logged_in,
                     }));
                 }
@@ -921,7 +1159,7 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
                     "connected_count": connected_count,
                 });
                 let message = format!(
-                    "MCP servers: {} configured ({} enabled, {} active in session).",
+                    "MCP servers: {} configured ({} enabled, {} connected).",
                     names.len(),
                     enabled_count,
                     connected_count
@@ -931,10 +1169,10 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
             .await?
         }
         "test" => {
-            let id = args
+            let id = clean_args
                 .get(1)
                 .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| anyhow::anyhow!("Usage: mcp test <server_id>"))?
+                .ok_or_else(|| anyhow::anyhow!("Usage: mcp test <server_id> [--working-dir <path>]"))?
                 .clone();
             let id_for_load = id.clone();
             let server_cfg = tokio::task::spawn_blocking(move || {
@@ -982,8 +1220,8 @@ async fn mcp(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, St
             }
         }
         "toggle" => {
-            let (Some(id), Some(state_raw)) = (args.get(1), args.get(2)) else {
-                bail!("Usage: mcp toggle <server_id> <on|off>");
+            let (Some(id), Some(state_raw)) = (clean_args.get(1), clean_args.get(2)) else {
+                bail!("Usage: mcp toggle <server_id> <on|off> [--working-dir <path>]");
             };
             let enable = match state_raw.to_ascii_lowercase().as_str() {
                 "on" | "enable" | "enabled" | "true" | "1" => true,
@@ -1100,6 +1338,7 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                 let link = crate::telegram_remote::load()?;
                 let uninstall_enabled = crate::telegram_remote::uninstall::enabled();
                 let pending_count = crate::safety::telegram::pending().len();
+                let bridge_running = super::telegram_bridge::is_polling_active_or_spawned();
                 let auth_path = crate::telegram_remote::settings_path()
                     .ok()
                     .map(|p| p.display().to_string());
@@ -1111,6 +1350,14 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                         };
                         let expired = link.expired();
                         let active_account = link.active_account();
+                        let bridge_warning = if !bridge_running {
+                            Some(
+                                "Telegram polling bridge is inactive on this daemon socket. Restart the shared daemon so incoming Telegram messages and QR pairing complete automatically."
+                                    .to_string(),
+                            )
+                        } else {
+                            None
+                        };
                         json!({
                             "generation": link.generation.to_string(),
                             "linked": link.owner.is_some(),
@@ -1126,6 +1373,8 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                             "auth_path": auth_path,
                             "uninstall_enabled": uninstall_enabled,
                             "pending_approvals_count": pending_count,
+                            "bridge_running": bridge_running,
+                            "bridge_warning": bridge_warning,
                         })
                     }
                     None => json!({
@@ -1143,6 +1392,8 @@ async fn telegram(args: &[String]) -> Result<(Value, String)> {
                         "auth_path": auth_path,
                         "uninstall_enabled": uninstall_enabled,
                         "pending_approvals_count": pending_count,
+                        "bridge_running": bridge_running,
+                        "bridge_warning": Value::Null,
                     }),
                 };
                 let message = format!(
@@ -1898,6 +2149,13 @@ async fn session_search(ctx: &LockFreeCommandContext, args: &[String]) -> Result
     Ok((data, output.output))
 }
 
+fn nudge_ambient_scheduler() {
+    crate::tool::ambient::nudge_schedule_runner();
+    if let Some(runner) = super::project_activity::current_ambient_runner() {
+        runner.nudge();
+    }
+}
+
 fn schedule_item_json(item: &crate::ambient::ScheduledItem) -> Value {
     let title = item
         .task_description
@@ -1905,17 +2163,27 @@ fn schedule_item_json(item: &crate::ambient::ScheduledItem) -> Value {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(&item.context);
     let next_run = item.scheduled_for.to_rfc3339();
+    let cron_summary = match &item.recurrence {
+        Some(rec) => rec.describe(),
+        None => format!(
+            "One-shot at {}",
+            item.scheduled_for.format("%Y-%m-%d %H:%M UTC")
+        ),
+    };
     json!({
         "id": item.id,
         "title": title,
         "prompt": item.context,
         "task_description": item.task_description,
         "context": item.context,
-        "cron_summary": format!("One-shot at {}", item.scheduled_for.format("%Y-%m-%d %H:%M UTC")),
+        "cron_summary": cron_summary,
+        "recurrence": item.recurrence,
         "next_run": next_run,
         "scheduled_for": item.scheduled_for,
-        "permission_mode": "default",
-        "enabled": true,
+        "permission_mode": item.permission_mode.as_deref().unwrap_or("default"),
+        "enabled": item.enabled,
+        "last_run_at": item.last_run_at,
+        "last_status": item.last_status,
         "priority": item.priority,
         "target": item.target,
         "created_by_session": item.created_by_session,
@@ -1925,9 +2193,14 @@ fn schedule_item_json(item: &crate::ambient::ScheduledItem) -> Value {
 }
 
 async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Value, String)> {
-    use crate::ambient::{AmbientManager, Priority, ScheduleRequest, ScheduleTarget};
-    let sub = args.first().map(String::as_str).unwrap_or("list");
-    match sub {
+    use crate::ambient::{
+        AmbientManager, Priority, ScheduleRecurrence, ScheduleRequest, ScheduleTarget,
+    };
+    let sub = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "list".to_string());
+    match sub.as_str() {
         "list" | "status" => {
             tokio::task::spawn_blocking(|| {
                 let manager = AmbientManager::new()?;
@@ -1955,104 +2228,182 @@ async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Val
                     "Usage: schedules create <minutes|rfc3339> <task...> OR schedules create '<json>'"
                 );
             }
-            let (task, title, wake_in_minutes, wake_at, priority, target_str) =
-                if rest.len() == 1 && rest[0].trim_start().starts_with('{') {
-                    let parsed: Value = serde_json::from_str(&rest[0])
-                        .context("Invalid JSON payload for schedules create")?;
-                    let task = parsed["task"]
-                        .as_str()
-                        .or_else(|| parsed["prompt"].as_str())
-                        .or_else(|| parsed["title"].as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("`task` (or `prompt`) is required"))?
-                        .to_string();
-                    let title = parsed["title"]
-                        .as_str()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| task.clone());
-                    let mut wake_in_minutes = match parsed.get("wake_in_minutes") {
-                        Some(Value::Null) | None => None,
-                        Some(v) => {
-                            let raw = v.as_u64().ok_or_else(|| {
-                                anyhow::anyhow!("`wake_in_minutes` must be a non-negative integer")
-                            })?;
-                            Some(u32::try_from(raw).map_err(|_| {
-                                anyhow::anyhow!(
-                                    "`wake_in_minutes` out of range (max {})",
-                                    u32::MAX
-                                )
-                            })?)
-                        }
-                    };
-                    let mut wake_at = parsed["wake_at"]
-                        .as_str()
-                        .map(|ts| {
-                            ts.parse::<chrono::DateTime<chrono::Utc>>()
-                                .with_context(|| format!("Invalid wake_at timestamp `{ts}`"))
-                        })
-                        .transpose()?;
-                    if wake_in_minutes.is_none()
-                        && wake_at.is_none()
-                        && let Some(sched) = parsed.get("schedule")
-                    {
-                        if let Some(m) = sched.as_u64() {
-                            wake_in_minutes = Some(u32::try_from(m).map_err(|_| {
-                                anyhow::anyhow!("`schedule` minutes out of range (max {})", u32::MAX)
-                            })?);
-                        } else if let Some(s) = sched.as_str().map(str::trim) {
-                            if let Ok(mins) = s.parse::<u32>() {
-                                wake_in_minutes = Some(mins);
-                            } else if let Ok(ts) = s.parse::<chrono::DateTime<chrono::Utc>>() {
-                                wake_at = Some(ts);
-                            } else {
-                                bail!(
-                                    "Unsupported `schedule` value `{s}`. Provide `wake_in_minutes` (u32) or an RFC3339 `wake_at` timestamp."
-                                );
-                            }
-                        }
+            let (
+                task,
+                title,
+                wake_in_minutes,
+                wake_at,
+                recurrence,
+                priority,
+                target_str,
+                explicit_working_dir,
+                permission_mode,
+                enabled,
+            ) = if rest.len() == 1 && rest[0].trim_start().starts_with('{') {
+                let parsed: Value = serde_json::from_str(&rest[0])
+                    .context("Invalid JSON payload for schedules create")?;
+                let task = parsed["task"]
+                    .as_str()
+                    .or_else(|| parsed["prompt"].as_str())
+                    .or_else(|| parsed["title"].as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("`task` (or `prompt`) is required"))?
+                    .to_string();
+                let title = parsed["title"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| task.clone());
+                let mut wake_in_minutes = match parsed.get("wake_in_minutes") {
+                    Some(Value::Null) | None => None,
+                    Some(v) => {
+                        let raw = v.as_u64().ok_or_else(|| {
+                            anyhow::anyhow!("`wake_in_minutes` must be a non-negative integer")
+                        })?;
+                        Some(u32::try_from(raw).map_err(|_| {
+                            anyhow::anyhow!(
+                                "`wake_in_minutes` out of range (max {})",
+                                u32::MAX
+                            )
+                        })?)
                     }
-                    let priority = match parsed["priority"].as_str() {
-                        Some("low") => Priority::Low,
-                        Some("high") => Priority::High,
-                        _ => Priority::Normal,
-                    };
-                    let target_str = parsed["target"].as_str().map(str::to_string);
-                    (task, title, wake_in_minutes, wake_at, priority, target_str)
-                } else {
-                    if rest.len() < 2 {
-                        bail!("Usage: schedules create <minutes|rfc3339> <task...>");
-                    }
-                    let when = &rest[0];
-                    let (wake_in_minutes, wake_at) = if let Ok(mins) = when.parse::<u32>() {
-                        (Some(mins), None)
-                    } else if let Ok(ts) = when.parse::<chrono::DateTime<chrono::Utc>>() {
-                        (None, Some(ts))
-                    } else {
-                        bail!("Expected wake delay in minutes or RFC3339 timestamp, got `{when}`");
-                    };
-                    let task = rest[1..].join(" ").trim().to_string();
-                    if task.is_empty() {
-                        bail!("Scheduled task description must not be empty");
-                    }
-                    let title = task.clone();
-                    (task, title, wake_in_minutes, wake_at, Priority::Normal, None)
                 };
-            if wake_in_minutes.is_none() && wake_at.is_none() {
-                bail!("Either wake_in_minutes or wake_at is required");
+                let mut wake_at = parsed["wake_at"]
+                    .as_str()
+                    .map(|ts| {
+                        ts.parse::<chrono::DateTime<chrono::Utc>>()
+                            .with_context(|| format!("Invalid wake_at timestamp `{ts}`"))
+                    })
+                    .transpose()?;
+                let mut recurrence: Option<ScheduleRecurrence> = None;
+                if let Some(cron_expr) = parsed["cron"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    crate::ambient::cron::CronSchedule::parse(cron_expr)?;
+                    recurrence = Some(ScheduleRecurrence::Cron {
+                        expr: cron_expr.to_string(),
+                    });
+                } else if let Some(every) = parsed.get("every_minutes").and_then(Value::as_u64) {
+                    let mins = u32::try_from(every).map_err(|_| {
+                        anyhow::anyhow!("`every_minutes` out of range (max {})", u32::MAX)
+                    })?;
+                    if mins == 0 {
+                        bail!("`every_minutes` must be at least 1");
+                    }
+                    recurrence = Some(ScheduleRecurrence::Interval {
+                        every_minutes: mins,
+                    });
+                }
+                if wake_in_minutes.is_none()
+                    && wake_at.is_none()
+                    && recurrence.is_none()
+                    && let Some(sched) = parsed.get("schedule")
+                {
+                    if let Some(m) = sched.as_u64() {
+                        wake_in_minutes = Some(u32::try_from(m).map_err(|_| {
+                            anyhow::anyhow!("`schedule` minutes out of range (max {})", u32::MAX)
+                        })?);
+                    } else if let Some(s) = sched.as_str().map(str::trim) {
+                        if let Ok(mins) = s.parse::<u32>() {
+                            wake_in_minutes = Some(mins);
+                        } else if let Ok(ts) = s.parse::<chrono::DateTime<chrono::Utc>>() {
+                            wake_at = Some(ts);
+                        } else if crate::ambient::cron::CronSchedule::parse(s).is_ok() {
+                            recurrence = Some(ScheduleRecurrence::Cron {
+                                expr: s.to_string(),
+                            });
+                        } else {
+                            bail!(
+                                "Unsupported `schedule` value `{s}`. Provide `wake_in_minutes` (u32), RFC3339 `wake_at`, or a 5-field `cron` expression."
+                            );
+                        }
+                    }
+                }
+                let priority = match parsed["priority"].as_str() {
+                    Some("low") => Priority::Low,
+                    Some("high") => Priority::High,
+                    _ => Priority::Normal,
+                };
+                let target_str = parsed["target"].as_str().map(str::to_string);
+                let explicit_working_dir = parsed["working_dir"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let permission_mode = parsed["permission_mode"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let enabled = parsed["enabled"].as_bool().unwrap_or(true);
+                (
+                    task,
+                    title,
+                    wake_in_minutes,
+                    wake_at,
+                    recurrence,
+                    priority,
+                    target_str,
+                    explicit_working_dir,
+                    permission_mode,
+                    enabled,
+                )
+            } else {
+                if rest.len() < 2 {
+                    bail!("Usage: schedules create <minutes|rfc3339> <task...>");
+                }
+                let when = &rest[0];
+                let (wake_in_minutes, wake_at) = if let Ok(mins) = when.parse::<u32>() {
+                    (Some(mins), None)
+                } else if let Ok(ts) = when.parse::<chrono::DateTime<chrono::Utc>>() {
+                    (None, Some(ts))
+                } else {
+                    bail!("Expected wake delay in minutes or RFC3339 timestamp, got `{when}`");
+                };
+                let task = rest[1..].join(" ").trim().to_string();
+                if task.is_empty() {
+                    bail!("Scheduled task description must not be empty");
+                }
+                let title = task.clone();
+                (
+                    task,
+                    title,
+                    wake_in_minutes,
+                    wake_at,
+                    None,
+                    Priority::Normal,
+                    None,
+                    None,
+                    None,
+                    true,
+                )
+            };
+            if wake_in_minutes.is_none() && wake_at.is_none() && recurrence.is_none() {
+                bail!("One of `wake_in_minutes`, `wake_at`, `cron`, or `every_minutes` is required");
             }
             let session_id = ctx.session_id.clone();
-            let working_dir = ctx.working_dir.as_ref().map(|p| p.display().to_string());
+            let working_dir = explicit_working_dir
+                .or_else(|| ctx.working_dir.as_ref().map(|p| p.display().to_string()));
             let target = match target_str.as_deref() {
                 Some("ambient") => ScheduleTarget::Ambient,
-                Some("spawn") => ScheduleTarget::Spawn {
+                Some("spawn") if !session_id.trim().is_empty() => ScheduleTarget::Spawn {
                     parent_session_id: session_id.clone(),
                 },
-                Some("resume") | None => ScheduleTarget::Session {
+                Some("spawn") => ScheduleTarget::Ambient,
+                Some("resume") if !session_id.trim().is_empty() => ScheduleTarget::Session {
                     session_id: session_id.clone(),
                 },
+                None if session_id.trim().is_empty() => ScheduleTarget::Ambient,
+                None => ScheduleTarget::Session {
+                    session_id: session_id.clone(),
+                },
+                Some("resume") => {
+                    bail!("`target: resume` requires an attached session; use `ambient` in global scope.")
+                }
                 Some(other) => {
                     bail!("Invalid schedule target `{other}`. Expected resume, spawn, or ambient.")
                 }
@@ -2069,8 +2420,11 @@ async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Val
                 relevant_files: Vec::new(),
                 git_branch: None,
                 additional_context: None,
+                enabled,
+                recurrence,
+                permission_mode,
             };
-            tokio::task::spawn_blocking(move || {
+            let res = tokio::task::spawn_blocking(move || -> Result<(Value, String)> {
                 let mut manager = AmbientManager::new()?;
                 let id = manager.schedule(request)?;
                 let created = manager
@@ -2086,7 +2440,148 @@ async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Val
                 });
                 Ok((data, format!("Scheduled task `{task}` (id: {id}).")))
             })
-            .await?
+            .await??;
+            nudge_ambient_scheduler();
+            Ok(res)
+        }
+        "toggle" => {
+            let id = args
+                .get(1)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Usage: schedules toggle <schedule_id> [on|off]"))?
+                .clone();
+            let explicit = match args.get(2).map(|s| s.to_ascii_lowercase()).as_deref() {
+                None => None,
+                Some("on" | "enable" | "enabled" | "true" | "1") => Some(true),
+                Some("off" | "disable" | "disabled" | "false" | "0") => Some(false),
+                Some(other) => bail!("Invalid toggle value `{other}`. Expected on or off."),
+            };
+            let res = tokio::task::spawn_blocking(move || -> Result<(Value, String)> {
+                let mut manager = AmbientManager::new()?;
+                let Some(item) = manager.toggle_schedule(&id, explicit)? else {
+                    bail!("No scheduled task found with id `{id}`");
+                };
+                let formatted = schedule_item_json(&item);
+                let data = json!({
+                    "toggled": true,
+                    "id": item.id,
+                    "enabled": item.enabled,
+                    "schedule": formatted,
+                });
+                let msg = format!(
+                    "Scheduled task `{}` {}.",
+                    item.id,
+                    if item.enabled { "enabled" } else { "paused" }
+                );
+                Ok((data, msg))
+            })
+            .await??;
+            nudge_ambient_scheduler();
+            Ok(res)
+        }
+        "run" => {
+            let id = args
+                .get(1)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Usage: schedules run <schedule_id>"))?
+                .clone();
+            let res = tokio::task::spawn_blocking(move || -> Result<(Value, String)> {
+                let mut manager = AmbientManager::new()?;
+                let Some(item) = manager.trigger_schedule_now(&id)? else {
+                    bail!("No scheduled task found with id `{id}`");
+                };
+                let formatted = schedule_item_json(&item);
+                let data = json!({
+                    "triggered": true,
+                    "id": item.id,
+                    "schedule": formatted,
+                });
+                Ok((data, format!("Queued scheduled task `{}` to run now.", item.id)))
+            })
+            .await??;
+            nudge_ambient_scheduler();
+            Ok(res)
+        }
+        "update" => {
+            let (Some(id), Some(payload_raw)) = (
+                args.get(1).filter(|s| !s.trim().is_empty()),
+                args.get(2),
+            ) else {
+                bail!("Usage: schedules update <schedule_id> '<json>'");
+            };
+            let parsed: Value = serde_json::from_str(payload_raw)
+                .context("Invalid JSON payload for schedules update")?;
+            let id = id.clone();
+            let res = tokio::task::spawn_blocking(move || -> Result<(Value, String)> {
+                let mut manager = AmbientManager::new()?;
+                let Some(item) = manager.update_schedule(&id, |item| {
+                    if let Some(title) = parsed["title"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        item.task_description = Some(title.to_string());
+                    }
+                    if let Some(prompt) = parsed["prompt"]
+                        .as_str()
+                        .or_else(|| parsed["task"].as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        item.context = prompt.to_string();
+                    }
+                    if let Some(wd) = parsed.get("working_dir") {
+                        item.working_dir = wd
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                    }
+                    if let Some(pm) = parsed.get("permission_mode") {
+                        item.permission_mode = pm
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string);
+                    }
+                    if let Some(enabled) = parsed["enabled"].as_bool() {
+                        item.enabled = enabled;
+                    }
+                    if let Some(cron_expr) = parsed["cron"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                        let parsed_cron = crate::ambient::cron::CronSchedule::parse(cron_expr)?;
+                        item.recurrence = Some(ScheduleRecurrence::Cron {
+                            expr: cron_expr.to_string(),
+                        });
+                        item.scheduled_for = parsed_cron.next_after(chrono::Utc::now())?;
+                    } else if let Some(every) = parsed.get("every_minutes").and_then(Value::as_u64) {
+                        let mins = u32::try_from(every).map_err(|_| {
+                            anyhow::anyhow!("`every_minutes` out of range (max {})", u32::MAX)
+                        })?;
+                        if mins == 0 {
+                            bail!("`every_minutes` must be at least 1");
+                        }
+                        item.recurrence = Some(ScheduleRecurrence::Interval {
+                            every_minutes: mins,
+                        });
+                        item.scheduled_for =
+                            chrono::Utc::now() + chrono::Duration::minutes(mins as i64);
+                    } else if let Some(ts) = parsed["wake_at"].as_str() {
+                        item.scheduled_for = ts
+                            .parse::<chrono::DateTime<chrono::Utc>>()
+                            .with_context(|| format!("Invalid wake_at timestamp `{ts}`"))?;
+                        item.recurrence = None;
+                    }
+                    Ok(())
+                })? else {
+                    bail!("No scheduled task found with id `{id}`");
+                };
+                let formatted = schedule_item_json(&item);
+                let data = json!({
+                    "updated": true,
+                    "id": item.id,
+                    "schedule": formatted,
+                });
+                Ok((data, format!("Updated scheduled task `{}`.", item.id)))
+            })
+            .await??;
+            nudge_ambient_scheduler();
+            Ok(res)
         }
         "cancel" => {
             let id = args
@@ -2094,7 +2589,7 @@ async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Val
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| anyhow::anyhow!("Usage: schedules cancel <schedule_id>"))?
                 .clone();
-            tokio::task::spawn_blocking(move || {
+            let res = tokio::task::spawn_blocking(move || -> Result<(Value, String)> {
                 let mut manager = AmbientManager::new()?;
                 let Some(item) = manager.cancel_schedule(&id)? else {
                     bail!("No scheduled task found with id `{id}`");
@@ -2107,10 +2602,12 @@ async fn schedules(ctx: &LockFreeCommandContext, args: &[String]) -> Result<(Val
                 });
                 Ok((data, format!("Cancelled scheduled task `{id}`.")))
             })
-            .await?
+            .await??;
+            nudge_ambient_scheduler();
+            Ok(res)
         }
         other => bail!(
-            "Unknown schedules subcommand `{other}`. Usage: schedules [list|create <...>|cancel <id>]"
+            "Unknown schedules subcommand `{other}`. Usage: schedules [list|create <...>|toggle <id> [on|off]|run <id>|update <id> '<json>'|cancel <id>]"
         ),
     }
 }
@@ -2306,6 +2803,7 @@ endpoint = \"https://example.invalid\"
             session_id: "sess-contract-test".into(),
             working_dir: Some(home.path().to_path_buf()),
             registry: None,
+            mcp_pool: None,
             provider_name: "test".into(),
             provider_model: "test-model".into(),
             provider_context_window: 128_000,
@@ -2344,6 +2842,45 @@ endpoint = \"https://example.invalid\"
         assert!(sched["scheduled_for"].as_str().is_some());
         assert_eq!(sched["permission_mode"], "default");
         assert_eq!(sched["enabled"], true);
+
+        // 2b. schedules create with cron in global scope defaults target to ambient + toggle/run/update/cancel work.
+        let global_ctx = LockFreeCommandContext {
+            session_id: String::new(),
+            working_dir: Some(home.path().to_path_buf()),
+            registry: None,
+            mcp_pool: None,
+            provider_name: "test".into(),
+            provider_model: "test-model".into(),
+            provider_context_window: 128_000,
+            provider_transport: None,
+            route_counts: None,
+        };
+        let cron_payload = json!({
+            "title": "Weekday standup",
+            "prompt": "Summarize open PRs",
+            "cron": "0 9 * * 1-5",
+            "permission_mode": "auto-edit",
+        })
+        .to_string();
+        let (cron_created, _) = schedules(&global_ctx, &["create".into(), cron_payload])
+            .await
+            .unwrap();
+        let cron_id = cron_created["id"].as_str().unwrap().to_string();
+        assert_eq!(cron_created["schedule"]["target"]["kind"], "ambient");
+        assert_eq!(cron_created["schedule"]["cron_summary"], "Weekdays at 09:00 UTC");
+        assert_eq!(cron_created["schedule"]["permission_mode"], "auto-edit");
+        let (toggled_off, _) = schedules(&global_ctx, &["toggle".into(), cron_id.clone(), "off".into()])
+            .await
+            .unwrap();
+        assert_eq!(toggled_off["enabled"], false);
+        let (triggered, _) = schedules(&global_ctx, &["run".into(), cron_id.clone()])
+            .await
+            .unwrap();
+        assert_eq!(triggered["triggered"], true);
+        assert_eq!(triggered["schedule"]["enabled"], true);
+        let (tg_status, _) = telegram(&["status".into()]).await.unwrap();
+        assert!(tg_status.get("bridge_running").is_some());
+        let _ = schedules(&global_ctx, &["cancel".into(), cron_id]).await.unwrap();
 
         // 3. mcp list includes explicit `status` ("disabled" vs "disconnected").
         let mcp_path = home.path().join("mcp.json");
@@ -2444,6 +2981,7 @@ endpoint = \"https://example.invalid\"
             session_id: "sess-rayu-logout".into(),
             working_dir: Some(temp.path().to_path_buf()),
             registry: None,
+            mcp_pool: None,
             provider_name: "rayu".into(),
             provider_model: "test-model".into(),
             provider_context_window: 128_000,

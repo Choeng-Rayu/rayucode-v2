@@ -232,6 +232,7 @@ export function activate(context: vscode.ExtensionContext): void {
       model: sessionHub.getActiveModel(),
       permissionMode: sessionHub.getActivePermissionMode(),
       backgroundTasks: sessionHub.getBackgroundTasks(),
+      activeSwarm: sessionHub.getActiveSwarm(),
       sessionCredits: sessionHub.getTotalSessionCredits(),
       isStreaming: sessionHub.getIsTurnStreaming(),
       signedIn: authManager.getAccountStatusSnapshot().signedIn,

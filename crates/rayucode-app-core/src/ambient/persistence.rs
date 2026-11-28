@@ -126,13 +126,81 @@ impl ScheduledQueue {
         })
     }
 
+    pub fn toggle_by_id(
+        &mut self,
+        id: &str,
+        explicit_enabled: Option<bool>,
+    ) -> Result<Option<ScheduledItem>> {
+        self.transact(|items| {
+            let Some(item) = items.iter_mut().find(|item| item.id == id) else {
+                return Ok(None);
+            };
+            let next = explicit_enabled.unwrap_or(!item.enabled);
+            item.enabled = next;
+            if next
+                && item.scheduled_for < Utc::now()
+                && let Some(ref rec) = item.recurrence
+                && let Ok(next_time) = rec.next_after(Utc::now())
+            {
+                item.scheduled_for = next_time;
+            }
+            Ok(Some(item.clone()))
+        })
+    }
+
+    pub fn trigger_now_by_id(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
+        self.transact(|items| {
+            let Some(item) = items.iter_mut().find(|item| item.id == id) else {
+                return Ok(None);
+            };
+            item.enabled = true;
+            item.scheduled_for = Utc::now();
+            Ok(Some(item.clone()))
+        })
+    }
+
+    pub fn update_by_id(
+        &mut self,
+        id: &str,
+        patch: impl FnOnce(&mut ScheduledItem) -> Result<()>,
+    ) -> Result<Option<ScheduledItem>> {
+        self.transact(|items| {
+            let Some(item) = items.iter_mut().find(|item| item.id == id) else {
+                return Ok(None);
+            };
+            patch(item)?;
+            Ok(Some(item.clone()))
+        })
+    }
+
     fn take_ready(&mut self, direct_only: bool) -> Result<Vec<ScheduledItem>> {
         self.transact(|items| {
             let now = Utc::now();
-            let (mut ready, remaining): (Vec<_>, Vec<_>) =
-                std::mem::take(items).into_iter().partition(|item| {
-                    item.scheduled_for <= now && (!direct_only || item.target.is_direct_delivery())
-                });
+            let mut ready = Vec::new();
+            let mut remaining = Vec::with_capacity(items.len());
+            for mut item in std::mem::take(items) {
+                let is_due = item.enabled
+                    && item.scheduled_for <= now
+                    && (!direct_only || item.target.is_direct_delivery());
+                if is_due {
+                    let dispatched = item.clone();
+                    if let Some(ref rec) = item.recurrence {
+                        item.last_run_at = Some(now);
+                        item.last_status = Some("dispatched".to_string());
+                        if let Ok(next_time) = rec.next_after(now) {
+                            item.scheduled_for = next_time;
+                            remaining.push(item);
+                        } else {
+                            // Keep disabled if recurrence can no longer compute a future time
+                            item.enabled = false;
+                            remaining.push(item);
+                        }
+                    }
+                    ready.push(dispatched);
+                } else {
+                    remaining.push(item);
+                }
+            }
             *items = remaining;
             ready.sort_by(|a, b| {
                 b.priority
@@ -160,7 +228,10 @@ impl ScheduledQueue {
     }
 
     pub fn peek_next(&self) -> Option<&ScheduledItem> {
-        self.items.iter().min_by_key(|i| i.scheduled_for)
+        self.items
+            .iter()
+            .filter(|i| i.enabled)
+            .min_by_key(|i| i.scheduled_for)
     }
 
     pub fn len(&self) -> usize {

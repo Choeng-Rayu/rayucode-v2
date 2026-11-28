@@ -183,12 +183,23 @@ pub(super) async fn session_swarm_model(
     if let Some(agent) = agent
         && let Ok(guard) = agent.try_lock()
     {
-        return guard
-            .session_for_split()
-            .effective_agent_model("swarm", global);
+        let session = guard.session_for_split();
+        let fallback = session
+            .subagent_model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .or(global);
+        return session.effective_agent_model("swarm", fallback);
     }
     Session::load_startup_stub(req_session_id)
-        .map(|session| session.effective_agent_model("swarm", global.clone()))
+        .map(|session| {
+            let fallback = session
+                .subagent_model
+                .clone()
+                .filter(|m| !m.trim().is_empty())
+                .or_else(|| global.clone());
+            session.effective_agent_model("swarm", fallback)
+        })
         .unwrap_or(global)
 }
 

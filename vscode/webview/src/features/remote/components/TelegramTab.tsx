@@ -222,6 +222,22 @@ export function TelegramTab({
         </div>
       )}
 
+      {!isDaemonOffline &&
+        telegram.bridgeRunning === false &&
+        telegram.bridgeWarning && (
+          <div
+            data-testid="tg-bridge-warning-banner"
+            role="alert"
+            className="flex items-start gap-2.5 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-xs text-warn"
+          >
+            <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">Telegram polling bridge inactive</div>
+              <div className="mt-0.5 text-body">{telegram.bridgeWarning}</div>
+            </div>
+          </div>
+        )}
+
       {/* Bridge Status Banner */}
       <div
         data-testid="tg-status-banner"

@@ -525,6 +525,7 @@ pub(super) fn recent_history_window(
         content: format!("{}{start} older historical messages hidden. Showing {} of {total} messages. Scroll to the top to load more. Hidden user prompts: {hidden_user_prompts}.", crate::protocol::RECENT_HISTORY_MARKER_PREFIX, info.visible_messages),
         tool_calls: None,
         tool_data: None,
+        is_engine_internal: false,
     });
     let visible_prompts = messages.iter().filter(is_prompt).count();
     let images = images
@@ -639,6 +640,7 @@ fn rendered_to_history_message(msg: crate::session::RenderedMessage) -> HistoryM
             Some(msg.tool_calls)
         },
         tool_data: msg.tool_data,
+        is_engine_internal: msg.is_engine_internal,
     }
 }
 

@@ -96,7 +96,7 @@ export function McpConnectorsTab() {
 
   const servers = data?.servers ?? [];
   const totalBudget = data?.totalTokenBudget ?? 8000;
-  const usedBudget = data?.usedTokenBudget ?? 2520;
+  const usedBudget = data?.usedTokenBudget ?? 0;
 
   const [searchQuery, setSearchQuery] = React.useState("");
   const [scopeFilter, setScopeFilter] = React.useState<ScopeFilterId>("all");
@@ -594,6 +594,15 @@ export function McpConnectorsTab() {
                             </span>
                           )}
                         </div>
+                        {srv.error && (
+                          <div
+                            data-testid={`mcp-error-${srv.id}`}
+                            className="mt-1 truncate text-[11px] text-danger"
+                            title={srv.error}
+                          >
+                            {srv.error}
+                          </div>
+                        )}
                       </div>
                     </button>
 

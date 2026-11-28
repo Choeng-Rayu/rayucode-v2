@@ -4,6 +4,7 @@ import {
   ExternalLink,
   FileDiff,
   GitBranch,
+  Send,
   X,
 } from "lucide-react";
 
@@ -60,6 +61,10 @@ export interface CoordinationLedgerProps {
     decision: "approve" | "reject",
   ) => Promise<{ ok: boolean; error?: string }>;
   isDecidingPlan?: boolean;
+  onSendBroadcast?: (
+    message: string,
+  ) => Promise<{ ok: boolean; error?: string; seq?: number }>;
+  isSendingBroadcast?: boolean;
   onOpenWorktreeWindow: (path: string) => void;
   onViewWorktreeDiff: (path: string) => void;
   className?: string;
@@ -103,6 +108,8 @@ export function CoordinationLedger({
   onWorkerFilterChange,
   onDecidePlan,
   isDecidingPlan = false,
+  onSendBroadcast,
+  isSendingBroadcast = false,
   onOpenWorktreeWindow,
   onViewWorktreeDiff,
   className,
@@ -110,6 +117,23 @@ export function CoordinationLedger({
   const [expandedMsgSeqs, setExpandedMsgSeqs] = React.useState<
     Record<number, boolean>
   >({});
+  const [broadcastText, setBroadcastText] = React.useState("");
+  const [broadcastError, setBroadcastError] = React.useState<string | null>(null);
+
+  const handleBroadcastSubmit = async (
+    event: React.FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+    const trimmed = broadcastText.trim();
+    if (!trimmed || !onSendBroadcast) return;
+    setBroadcastError(null);
+    const res = await onSendBroadcast(trimmed);
+    if (res.ok) {
+      setBroadcastText("");
+    } else {
+      setBroadcastError(res.error ?? "Failed to broadcast message.");
+    }
+  };
 
   const activePendingProposals = pendingProposals.filter(
     (p) => p.status === "pending",
@@ -266,6 +290,43 @@ export function CoordinationLedger({
                   </div>
                 );
               })
+            )}
+            {onSendBroadcast && (
+              <form
+                data-testid="ledger-broadcast-form"
+                onSubmit={(e) => void handleBroadcastSubmit(e)}
+                className="flex flex-col gap-1.5 bg-chrome px-3.5 py-2.5"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={broadcastText}
+                    onChange={(e) => {
+                      setBroadcastText(e.target.value);
+                      if (broadcastError) setBroadcastError(null);
+                    }}
+                    placeholder="Broadcast update to all active swarm workers..."
+                    aria-label="Broadcast message to swarm"
+                    data-testid="ledger-broadcast-input"
+                    className="h-8 min-w-0 flex-1 rounded-[9px] border border-premium bg-inset px-3 text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none"
+                  />
+                  <Button
+                    type="submit"
+                    variant="secondary"
+                    size="sm"
+                    disabled={!broadcastText.trim() || isSendingBroadcast}
+                    data-testid="ledger-broadcast-submit"
+                  >
+                    <Send className="size-3" aria-hidden="true" />
+                    <span>Broadcast</span>
+                  </Button>
+                </div>
+                {broadcastError && (
+                  <p role="alert" className="m-0 text-[11.5px] text-danger">
+                    {broadcastError}
+                  </p>
+                )}
+              </form>
             )}
           </div>
         </TabsContent>

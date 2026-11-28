@@ -85,10 +85,22 @@ impl AmbientManager {
     }
 
     pub(super) fn scheduled_item(request: ScheduleRequest) -> ScheduledItem {
+        let now = Utc::now();
         let id = format!("sched_{:032x}", rand::random::<u128>());
-        let scheduled_for = request.wake_at.unwrap_or_else(|| {
-            Utc::now() + chrono::Duration::minutes(request.wake_in_minutes.unwrap_or(30) as i64)
-        });
+        let scheduled_for = request
+            .wake_at
+            .or_else(|| {
+                request
+                    .wake_in_minutes
+                    .map(|mins| now + chrono::Duration::minutes(mins as i64))
+            })
+            .or_else(|| {
+                request
+                    .recurrence
+                    .as_ref()
+                    .and_then(|rec| rec.next_after(now).ok())
+            })
+            .unwrap_or_else(|| now + chrono::Duration::minutes(30));
 
         ScheduledItem {
             id: id.clone(),
@@ -97,18 +109,46 @@ impl AmbientManager {
             priority: request.priority,
             target: request.target,
             created_by_session: request.created_by_session,
-            created_at: Utc::now(),
+            created_at: now,
             working_dir: request.working_dir,
             task_description: request.task_description,
             relevant_files: request.relevant_files,
             git_branch: request.git_branch,
             additional_context: request.additional_context,
+            enabled: request.enabled,
+            recurrence: request.recurrence,
+            permission_mode: request.permission_mode,
+            last_run_at: None,
+            last_status: None,
         }
     }
 
     /// Cancel a queued scheduled item by ID.
     pub fn cancel_schedule(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
         self.queue.remove_by_id(id)
+    }
+
+    /// Enable or disable a scheduled item by ID.
+    pub fn toggle_schedule(
+        &mut self,
+        id: &str,
+        explicit_enabled: Option<bool>,
+    ) -> Result<Option<ScheduledItem>> {
+        self.queue.toggle_by_id(id, explicit_enabled)
+    }
+
+    /// Trigger a scheduled item to run immediately on the next runner tick.
+    pub fn trigger_schedule_now(&mut self, id: &str) -> Result<Option<ScheduledItem>> {
+        self.queue.trigger_now_by_id(id)
+    }
+
+    /// Update fields on an existing scheduled item atomically.
+    pub fn update_schedule(
+        &mut self,
+        id: &str,
+        patch: impl FnOnce(&mut ScheduledItem) -> Result<()>,
+    ) -> Result<Option<ScheduledItem>> {
+        self.queue.update_by_id(id, patch)
     }
 
     pub fn state(&self) -> &AmbientState {

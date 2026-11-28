@@ -350,4 +350,42 @@ describe("AutomationsView (Spec 05 — Overnight, Schedules, Ambient, Quality)",
       window.acquireVsCodeApi = prevAcquire;
     }
   });
+
+  it("unlocks schedule toggle and runNow in VS Code webview host mode when engine advertises schedules_cron_v1", async () => {
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg: unknown) => {
+        handleMockHostMessage(msg as never, __dispatchHostMessageForTest);
+      },
+      getState: () => undefined,
+      setState: () => {},
+    });
+    useAppStore.setState({ capabilities: ["schedules_cron_v1"] });
+
+    try {
+      renderWithQuery(<AutomationsView initialTab="schedules" />);
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("schedule-row-sched_morning_deps"),
+        ).toBeTruthy();
+      });
+      expect(
+        (
+          screen.getByTestId(
+            "run-schedule-now-sched_morning_deps",
+          ) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+      expect(
+        (
+          screen.getByTestId(
+            "schedule-switch-sched_morning_deps",
+          ) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false);
+    } finally {
+      useAppStore.setState({ capabilities: [] });
+      window.acquireVsCodeApi = prevAcquire;
+    }
+  });
 });

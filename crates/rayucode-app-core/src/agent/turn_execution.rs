@@ -1338,6 +1338,7 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                is_engine_internal: msg.is_engine_internal,
             })
             .collect()
     }
@@ -1370,6 +1371,7 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                is_engine_internal: msg.is_engine_internal,
             })
             .collect();
         (history, images)
@@ -1401,6 +1403,7 @@ impl Agent {
                     Some(msg.tool_calls)
                 },
                 tool_data: msg.tool_data,
+                is_engine_internal: msg.is_engine_internal,
             })
             .collect();
         (history, images, compacted_info)

@@ -64,8 +64,18 @@ export function SwarmTelemetryStrip({
             >
               {telemetry.conflictCount} conflicts
             </span>
-            <span className="text-muted-ink">·</span>
-            <span className="text-brand-text">{telemetry.creditsLabel}</span>
+            {telemetry.creditsLabel && (
+              <>
+                <span className="text-muted-ink">·</span>
+                <span className="text-brand-text">{telemetry.creditsLabel}</span>
+              </>
+            )}
+            {telemetry.overallPercent !== null && (
+              <>
+                <span className="text-muted-ink">·</span>
+                <span className="text-brand-text">{telemetry.overallPercent}%</span>
+              </>
+            )}
           </span>
         </div>
 
@@ -152,14 +162,39 @@ export function SwarmTelemetryStrip({
 
         <span className="flex-1" />
 
-        <span
-          data-testid="telemetry-cost-kv"
-          className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap text-brand-text tabular-nums"
-        >
-          <span>{telemetry.creditsLabel}</span>
-          <span aria-hidden="true">·</span>
-          <span>{telemetry.kvWarmPercent}% KV warm</span>
-        </span>
+        {telemetry.overallPercent !== null && (
+          <span className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap text-muted-ink tabular-nums">
+            <div
+              role="progressbar"
+              aria-label="Overall swarm progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={telemetry.overallPercent}
+              className="h-1.5 w-16 overflow-hidden rounded-full bg-inset"
+            >
+              <div
+                className="h-full rounded-full bg-brand transition-[width] duration-300"
+                style={{ width: `${telemetry.overallPercent}%` }}
+              />
+            </div>
+            <span>{telemetry.overallPercent}%</span>
+          </span>
+        )}
+
+        {(telemetry.creditsLabel || telemetry.kvWarmPercent !== undefined) && (
+          <span
+            data-testid="telemetry-cost-kv"
+            className="inline-flex items-center gap-1.5 font-mono text-xs whitespace-nowrap text-brand-text tabular-nums"
+          >
+            {telemetry.creditsLabel && <span>{telemetry.creditsLabel}</span>}
+            {telemetry.creditsLabel && telemetry.kvWarmPercent !== undefined && (
+              <span aria-hidden="true">·</span>
+            )}
+            {telemetry.kvWarmPercent !== undefined && (
+              <span>{telemetry.kvWarmPercent}% KV warm</span>
+            )}
+          </span>
+        )}
       </div>
 
       {conflictsOpen && conflicts.length > 0 && (

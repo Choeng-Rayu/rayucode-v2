@@ -5,7 +5,9 @@ export interface ReconcilableTurnLike {
   answerMarkdown?: string;
   workedDuration?: string;
   credits?: string;
+  creditsExact?: string;
   kvCachePct?: number;
+  kvCacheMissReason?: string;
   baseHistoryTurnCount?: number;
   isLive?: boolean;
   steps?: readonly unknown[];
@@ -218,14 +220,28 @@ function mergeSettledMetadata<TTurn extends ReconcilableTurnLike>(
     !historyEntry.workedDuration && Boolean(settled.workedDuration);
   const needsRefFiles =
     !historyEntry.userRefFiles && Boolean(settled.userRefFiles);
-  const needsCredits =
-    (!historyEntry.credits || historyEntry.credits === "0.00 cr") &&
-    Boolean(settled.credits && settled.credits !== "0.00 cr");
+  const historyHasRealCredits =
+    Boolean(historyEntry.credits) && historyEntry.credits !== "0.00 cr";
+  const settledHasRealCredits =
+    Boolean(settled.credits) &&
+    (settled.credits !== "0.00 cr" || !historyEntry.credits);
+  const needsCredits = !historyHasRealCredits && settledHasRealCredits;
+  const needsCreditsExact =
+    !historyEntry.creditsExact && Boolean(settled.creditsExact);
   const needsKvCache =
-    needsCredits &&
+    (!historyEntry.kvCachePct || historyEntry.kvCachePct <= 0) &&
     typeof settled.kvCachePct === "number" &&
     settled.kvCachePct > 0;
-  if (!needsDuration && !needsRefFiles && !needsCredits) {
+  const needsKvCacheMissReason =
+    !historyEntry.kvCacheMissReason && Boolean(settled.kvCacheMissReason);
+  if (
+    !needsDuration &&
+    !needsRefFiles &&
+    !needsCredits &&
+    !needsCreditsExact &&
+    !needsKvCache &&
+    !needsKvCacheMissReason
+  ) {
     return historyEntry;
   }
   return {
@@ -233,7 +249,11 @@ function mergeSettledMetadata<TTurn extends ReconcilableTurnLike>(
     ...(needsDuration ? { workedDuration: settled.workedDuration } : {}),
     ...(needsRefFiles ? { userRefFiles: settled.userRefFiles } : {}),
     ...(needsCredits ? { credits: settled.credits } : {}),
+    ...(needsCreditsExact ? { creditsExact: settled.creditsExact } : {}),
     ...(needsKvCache ? { kvCachePct: settled.kvCachePct } : {}),
+    ...(needsKvCacheMissReason
+      ? { kvCacheMissReason: settled.kvCacheMissReason }
+      : {}),
   };
 }
 

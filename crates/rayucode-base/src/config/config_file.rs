@@ -179,6 +179,37 @@ impl Config {
         cfg.save()
     }
 
+    /// Enable or disable a skill by name in `[skills] disabled = [...]`.
+    /// Returns the new `enabled` state (`true` = enabled, `false` = disabled).
+    pub fn set_skill_disabled(name: &str, disabled: bool) -> anyhow::Result<bool> {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            anyhow::bail!("Skill name cannot be empty");
+        }
+        let mut cfg = Self::load_for_update()?;
+        cfg.skills
+            .disabled
+            .retain(|entry| !entry.trim().eq_ignore_ascii_case(normalized));
+        if disabled {
+            cfg.skills.disabled.push(normalized.to_string());
+            cfg.skills.disabled.sort_by_key(|a| a.to_ascii_lowercase());
+            cfg.skills.disabled.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        }
+        cfg.save()?;
+        Ok(!disabled)
+    }
+
+    /// Toggle whether a skill is disabled in `[skills] disabled = [...]`.
+    /// Returns the new `enabled` state (`true` = enabled, `false` = disabled).
+    pub fn toggle_skill_disabled(name: &str) -> anyhow::Result<bool> {
+        let normalized = name.trim();
+        if normalized.is_empty() {
+            anyhow::bail!("Skill name cannot be empty");
+        }
+        let currently_disabled = Self::load().skills.is_disabled(normalized);
+        Self::set_skill_disabled(normalized, !currently_disabled)
+    }
+
     /// Persist the Anthropic cache duration for clients and the shared daemon.
     pub fn set_anthropic_cache_ttl_1h(enabled: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load_for_update()?;

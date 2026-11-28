@@ -215,6 +215,9 @@ impl Tool for EndAmbientCycleTool {
             relevant_files: Vec::new(),
             git_branch: None,
             additional_context: None,
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         });
 
         let now = Utc::now();
@@ -358,6 +361,9 @@ impl Tool for ScheduleAmbientTool {
             relevant_files: Vec::new(),
             git_branch: None,
             additional_context: None,
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         };
 
         let mut manager = AmbientManager::new()?;
@@ -893,6 +899,9 @@ impl ScheduleTool {
                 parts.push(format!("Scheduled by session: {}", ctx.session_id));
                 Some(parts.join("\n"))
             },
+            enabled: true,
+            recurrence: None,
+            permission_mode: None,
         };
 
         let mut manager = AmbientManager::new()?;
@@ -1016,7 +1025,7 @@ fn format_scheduled_item(item: &ScheduledItem) -> String {
     )
 }
 
-pub(super) fn nudge_schedule_runner() {
+pub(crate) fn nudge_schedule_runner() {
     let runner = SCHEDULE_RUNNER
         .get_or_init(|| Mutex::new(None))
         .lock()

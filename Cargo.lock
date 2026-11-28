@@ -6267,6 +6267,7 @@ dependencies = [
  "libc",
  "rayucode-background-types",
  "rayucode-base",
+ "rayucode-build-meta",
  "rayucode-harness-api",
  "rayucode-provider-core",
  "rayucode-session-types",

@@ -929,6 +929,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                     app.pending_split_model_override = None;
                     app.pending_split_provider_key_override = None;
                     app.pending_split_label = None;
+                    if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                        return Err(error);
+                    }
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to launch autoreview session: {}",
                         error
@@ -1000,6 +1003,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                     app.pending_split_model_override = None;
                     app.pending_split_provider_key_override = None;
                     app.pending_split_label = None;
+                    if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                        return Err(error);
+                    }
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to launch autojudge session: {}",
                         error
@@ -1035,6 +1041,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                     app.pending_split_model_override = None;
                     app.pending_split_provider_key_override = None;
                     app.pending_split_label = None;
+                    if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                        return Err(error);
+                    }
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to launch review session: {}",
                         error
@@ -1070,6 +1079,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                     app.pending_split_model_override = None;
                     app.pending_split_provider_key_override = None;
                     app.pending_split_label = None;
+                    if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                        return Err(error);
+                    }
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to launch judge session: {}",
                         error
@@ -1522,6 +1534,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_enter_input(
                 if let Err(error) = remote.transfer().await {
                     finish_remote_split_launch(app);
                     app.pending_split_label = None;
+                    if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+                        return Err(error);
+                    }
                     app.push_display_message(DisplayMessage::error(format!(
                         "Failed to launch transfer session: {}",
                         error

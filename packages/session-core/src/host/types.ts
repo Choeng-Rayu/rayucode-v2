@@ -74,6 +74,11 @@ export interface SessionSocketPoolOptions<TClient extends SessionClientLike> {
   maxIdleClients?: number;
   dialClient: () => Promise<TClient>;
   onFrame?: (frame: HarnessFrameLike, sessionId: string, client: TClient) => void;
+  /**
+   * Called for global sessionless broadcasts (`config_changed`, `credential_updated`,
+   * `models`, `runtime_info`) emitted on the designated primary control client.
+   */
+  onGlobalFrame?: (frame: HarnessFrameLike, client: TClient) => void;
   onSessionClosed?: (
     sessionId: string,
     client: TClient,

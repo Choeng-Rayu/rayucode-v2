@@ -106,10 +106,6 @@ export function OvernightRunRow({
     1,
     Math.floor(((run.updatedAtMs ?? Date.now()) - run.startedAtMs) / 1000),
   );
-  const estimatedCredits = (
-    run.agentCount * 1.4 +
-    run.taskCardCount * 2.1
-  ).toFixed(1);
 
   const handleInspectCoordinator = () => {
     if (run.coordinatorSessionId) {
@@ -177,10 +173,6 @@ export function OvernightRunRow({
             <span className="tabular-nums">
               {run.validationsGreen}{" "}
               {run.validationsGreen === 1 ? "validation" : "validations"} green
-            </span>
-            <span>·</span>
-            <span className="font-mono text-[11px] text-body tabular-nums">
-              {estimatedCredits} cr
             </span>
           </div>
         </div>
@@ -280,16 +272,14 @@ export function OvernightRunRow({
             <div className="font-mono text-[11.5px] text-muted-ink">
               Loading overnight event stream...
             </div>
-          ) : (
+          ) : logLines && logLines.length > 0 ? (
             <pre className="m-0 overflow-x-auto font-mono text-[11.5px] leading-[1.6] text-body tabular-nums">
-              {(logLines && logLines.length > 0
-                ? logLines
-                : [
-                    `02:14:03  spawned worker-1 (${run.repo ?? "rayucode-v2"})`,
-                    `02:18:41  validation green: cargo test --workspace (${run.validationsGreen} green)`,
-                  ]
-              ).join("\n")}
+              {logLines.join("\n")}
             </pre>
+          ) : (
+            <div className="font-mono text-[11.5px] text-muted-ink">
+              No overnight events recorded yet.
+            </div>
           )}
         </div>
       ) : null}
