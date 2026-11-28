@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.0.4
+
+### Added
+
+- **Unified Background Processes & Live Agent Swarm Progress UI:** Surfaced active background swarm agents alongside shell background tasks across the Background Dock Bar, Background Process Drawer (with a new `SwarmAgentProgressPane` showing live status, elapsed time, context usage, progress bar, real output tail/completion reports, todos, clickable touched files, stop/resume, and inline DM steering), Compact/Wide shell chrome, and VS Code Status Bar — with zero visual noise when idle.
+- **Live Host Swarm Snapshots & Global Scope Toggle:** Added real-time `rayucode.swarm.snapshot` host pushes with calm active-only polling triggered on swarm tool activity, plus a `Current session` / `All sessions` scope switch in the Background Process Drawer.
+- **Capability-Gated Rust Engine Parity:** Unlocked live Swarm mutations (`swarm_mutations_v1`: spawn headless workers, stop/resume, pause all, DM, inline Broadcast), Cron Schedule controls (`schedules_cron_v1`: toggle, Run Now, `working_dir`, natural intervals, and `lastStatus` badges), Overnight run orchestration (`overnight_v1`), Skill enable/disable switches with token counts, real clickable Memory instruction files (`AGENTS.md` / `RAYU.md`), MCP `live_tools` & `last_error` surfacing, granular `contextSnapshot` breakdowns, and Telegram `bridgeWarning` alerts.
+
+### Fixed
+
+- **Rust Protocol Wire Mismatches:** Fixed Rust 2-tuple `todo_progress` parsing, full `SwarmEventType` tagged board message formatting, `permission_mode` snake_case schedule creation, `memory list` graph/instruction loading, and `background_progress` batching dropping newly started tasks before reconciliation.
+- **Truthful Telemetry Across Swarm, Automations & Plugins:** Removed fabricated fallback proposals, synthetic token budgets, placeholder metrics/timings, fake owned files/todos/logs, and duplicate worktree opens; fixed Swarm query invalidation keys and wired real discovered models from `settings.models.get`.
+- **Session Credits & Primary Control Events:** Preserved credits/internal history and global primary-control event handling across session reconciliation.
+
 ## 3.0.3
 
 ### Added
