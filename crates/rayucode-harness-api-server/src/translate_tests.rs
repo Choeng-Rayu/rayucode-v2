@@ -3420,6 +3420,7 @@ fn history_response_stats_cross_real_render_protocol_and_sdk_boundary() {
             content: row.content,
             tool_calls: None,
             tool_data: row.tool_data,
+            is_engine_internal: false,
             tool_duration_ms: row.tool_duration_ms,
             response_stats: row.response_stats,
         })
@@ -3481,6 +3482,7 @@ fn rayu_credits_cross_live_event_and_history_sdk_boundary() {
             content: row.content,
             tool_calls: None,
             tool_data: row.tool_data,
+            is_engine_internal: false,
             tool_duration_ms: row.tool_duration_ms,
             response_stats: row.response_stats,
         })

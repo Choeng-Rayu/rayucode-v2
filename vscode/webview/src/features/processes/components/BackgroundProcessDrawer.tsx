@@ -2,11 +2,20 @@ import * as React from "react";
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
+  Clock,
+  ExternalLink,
+  Network,
+  Pause,
+  Play,
   RefreshCw,
   Search,
+  Square,
   Trash2,
   X,
+  XCircle,
 } from "lucide-react";
+import type { SwarmAgentView } from "@shared/vscodeProtocol";
 
 import {
   Badge,
@@ -18,7 +27,7 @@ import {
   TabsTrigger,
 } from "@/components/ui";
 import { useShellFormFactor } from "@/features/shell";
-import { cn } from "@/lib";
+import { cn, formatDurationSeconds, operationAvailable } from "@/lib";
 
 import {
   STALL_THRESHOLD_SECS,
@@ -27,6 +36,11 @@ import {
 } from "../hooks/useProcesses";
 import { ProcessOutputTail } from "./ProcessOutputTail";
 import { ProcessRow } from "./ProcessRow";
+import {
+  SwarmAgentProgressPane,
+  computeSwarmAgentPercent,
+  isSwarmAgentActive,
+} from "./SwarmAgentProgressPane";
 
 export interface BackgroundProcessDrawerProps {
   /** Optional controlled open state. Defaults to rendering open when mounted. */
@@ -49,6 +63,186 @@ const FILTER_TABS: ReadonlyArray<{
   { id: "failed", label: "Failed" },
 ];
 
+function SwarmAgentRow({
+  agent,
+  selected,
+  onSelect,
+  onStop,
+  onResume,
+}: {
+  agent: SwarmAgentView;
+  selected: boolean;
+  onSelect: (agentId: string) => void;
+  onStop: (agentId: string) => void;
+  onResume: (agentId: string) => void;
+}) {
+  const active = isSwarmAgentActive(agent.status);
+  const percent = computeSwarmAgentPercent(agent);
+  const canControl = operationAvailable("swarm.kill") && agent.role !== "coordinator";
+  const canResume =
+    agent.status === "stopped" ||
+    agent.status === "blocked" ||
+    agent.status === "ready";
+
+  const renderIcon = () => {
+    if (agent.status === "running" || agent.status === "spawned") {
+      return <RayuProcessingMark animated className="size-3.5 shrink-0" />;
+    }
+    if (agent.status === "blocked") {
+      return <AlertTriangle className="size-3.5 shrink-0 text-warn" />;
+    }
+    if (agent.status === "completed") {
+      return <Check className="size-3.5 shrink-0 text-brand-text" />;
+    }
+    if (agent.status === "failed" || agent.status === "crashed") {
+      return <XCircle className="size-3.5 shrink-0 text-danger" />;
+    }
+    if (agent.status === "stopped") {
+      return <Pause className="size-3.5 shrink-0 text-muted-ink" />;
+    }
+    return <Clock className="size-3.5 shrink-0 text-muted-ink" />;
+  };
+
+  return (
+    <div
+      role="option"
+      tabIndex={0}
+      aria-selected={selected}
+      data-slot="swarm-agent-row"
+      data-testid={`swarm-agent-row-${agent.agentId}`}
+      data-status={agent.status}
+      onClick={() => onSelect(agent.agentId)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(agent.agentId);
+        }
+      }}
+      className={cn(
+        "group relative flex w-full cursor-pointer flex-col gap-1.5 rounded-[9px] border px-2.5 py-2 text-left transition-colors outline-none",
+        selected
+          ? "border-premium bg-active text-ink shadow-bevel-surface"
+          : "border-transparent bg-transparent text-body hover:border-hairline hover:bg-hover hover:text-ink",
+      )}
+    >
+      {/* Line 1 */}
+      <div className="flex min-w-0 items-center gap-1.5">
+        {renderIcon()}
+        <span className="grid size-4 shrink-0 place-items-center rounded-[3.5px] bg-info-soft text-info">
+          <Network className="size-2.5" />
+        </span>
+
+        <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-ink">
+          {agent.label}
+        </span>
+
+        <Badge
+          variant={
+            agent.status === "blocked"
+              ? "warn"
+              : agent.status === "running" || agent.status === "spawned"
+                ? "brand"
+                : agent.status === "failed" || agent.status === "crashed"
+                  ? "danger"
+                  : agent.status === "completed"
+                    ? "secondary"
+                    : "outline"
+          }
+          className="h-4 shrink-0 px-1.5 text-[10px] font-medium capitalize"
+        >
+          {agent.status}
+        </Badge>
+
+        {typeof agent.elapsedSecs === "number" && (
+          <span className="shrink-0 font-mono text-[10.5px] text-muted-ink tabular-nums">
+            {formatDurationSeconds(agent.elapsedSecs)}
+          </span>
+        )}
+
+        {canControl && (active || canResume) && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            data-testid={`swarm-agent-toggle-${agent.agentId}`}
+            aria-label={active ? `Stop ${agent.label}` : `Resume ${agent.label}`}
+            title={active ? "Stop worker" : "Resume worker"}
+            onClick={(event) => {
+              event.stopPropagation();
+              const target = agent.sessionId || agent.agentId;
+              if (active) onStop(target);
+              else onResume(target);
+            }}
+            className={cn(
+              "size-5 shrink-0 text-muted-ink",
+              active
+                ? "hover:bg-danger-soft hover:text-danger"
+                : "hover:bg-brand-soft hover:text-brand-text",
+            )}
+          >
+            {active ? (
+              <Square className="size-2.5 fill-current" />
+            ) : (
+              <Play className="size-2.5 fill-current" />
+            )}
+          </Button>
+        )}
+      </div>
+
+      {/* Line 2: Live intent & todo ratio */}
+      <div className="flex min-w-0 items-center justify-between gap-2 text-[11px] text-muted-ink">
+        <span className="min-w-0 flex-1 truncate">
+          {agent.liveStatus ||
+            agent.currentIntent ||
+            agent.taskLabel ||
+            (agent.role === "coordinator" ? "Coordinating swarm" : "Background worker")}
+        </span>
+        {typeof agent.todoCompleted === "number" &&
+          typeof agent.todoTotal === "number" &&
+          agent.todoTotal > 0 && (
+            <span className="shrink-0 font-mono text-[10px] tabular-nums">
+              {agent.todoCompleted}/{agent.todoTotal}
+            </span>
+          )}
+      </div>
+
+      {/* Line 3: Hairline progress bar */}
+      {percent !== null ? (
+        <div
+          role="progressbar"
+          aria-label={`${agent.label} progress`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+          className="h-1 w-full overflow-hidden rounded-full bg-inset"
+        >
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width] duration-300",
+              agent.status === "blocked"
+                ? "bg-warn"
+                : agent.status === "failed" || agent.status === "crashed"
+                  ? "bg-danger"
+                  : "bg-brand",
+            )}
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      ) : active ? (
+        <div
+          role="progressbar"
+          aria-label={`${agent.label} active`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          className="h-1 w-full overflow-hidden rounded-full bg-inset"
+        >
+          <div className="h-full w-1/3 rounded-full bg-brand/70 motion-safe:animate-pulse" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function BackgroundProcessDrawer({
   open,
   onOpenChange,
@@ -63,6 +257,10 @@ export function BackgroundProcessDrawer({
   const isVisible = open !== undefined ? open : true;
 
   const {
+    activeSwarm,
+    swarmAgents,
+    filteredSwarmAgents,
+    swarmSummary,
     groupedTasks,
     filteredTasks,
     counts,
@@ -70,31 +268,42 @@ export function BackgroundProcessDrawer({
     stalledCount,
     finishedCount,
     selectedTask,
+    selectedSwarmAgent,
     selectedOutput,
+    scope,
     filter,
     searchQuery,
     followOutput,
     isLoadingList,
     isLoadingOutput,
+    isRefreshingSwarm,
     nowMs,
     selectTask,
+    selectSwarmAgent,
+    toggleScope,
     setFilter,
     setSearchQuery,
     setFollowOutput,
     setDrawerOpen,
     refreshProcesses,
+    refreshSwarm,
     fetchProcessOutput,
     cancelProcess,
     cleanupProcesses,
     openOutputFileInEditor,
     copyProcessOutput,
+    stopSwarmAgent,
+    resumeSwarmAgent,
+    sendSwarmAgentDm,
+    openSwarmView,
+    openSwarmAgentChat,
   } = useProcesses({
     drawerOpen: isVisible,
     initialSelectedTaskId,
     stallThresholdSecs,
   });
 
-  const [drawerHeightPx, setDrawerHeightPx] = React.useState<number>(340);
+  const [drawerHeightPx, setDrawerHeightPx] = React.useState<number>(360);
   const [compactViewMode, setCompactViewMode] = React.useState<"list" | "tail">(
     "list",
   );
@@ -130,6 +339,8 @@ export function BackgroundProcessDrawer({
   }
 
   const isCompact = formFactor === "compact";
+  const hasAnySelection = Boolean(selectedTask || selectedSwarmAgent);
+  const totalFilteredCount = filteredTasks.length + filteredSwarmAgents.length;
 
   return (
     <aside
@@ -160,23 +371,30 @@ export function BackgroundProcessDrawer({
 
       {/* Drawer Header */}
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          {runningCount > 0 ? (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          {runningCount > 0 || swarmSummary.running > 0 ? (
             <RayuProcessingMark animated className="size-3.5" />
-          ) : stalledCount > 0 ? (
+          ) : stalledCount > 0 || swarmSummary.blocked > 0 ? (
             <AlertTriangle className="size-3.5 text-warn" />
           ) : null}
           <h2 className="truncate text-xs font-semibold tracking-tight text-ink">
             Background Processes
           </h2>
 
-          <Badge
-            variant="outline"
-            data-testid="drawer-session-scope-badge"
-            className="h-5 shrink-0 px-1.5 text-[10px] font-normal text-muted-ink"
+          <button
+            type="button"
+            onClick={toggleScope}
+            title="Switch between current session and all background sessions"
+            className="cursor-pointer rounded-full"
           >
-            Current session
-          </Badge>
+            <Badge
+              variant="outline"
+              data-testid="drawer-session-scope-badge"
+              className="h-5 shrink-0 px-1.5 text-[10px] font-normal text-muted-ink hover:border-premium hover:text-ink"
+            >
+              {scope === "all" ? "All sessions" : "Current session"}
+            </Badge>
+          </button>
 
           {runningCount > 0 && (
             <Badge
@@ -198,9 +416,39 @@ export function BackgroundProcessDrawer({
               <span>{stalledCount} stalled</span>
             </Badge>
           )}
+
+          {swarmAgents.length > 0 && (
+            <Badge
+              variant="info"
+              data-testid="drawer-swarm-badge"
+              className="h-5 gap-1 px-2 text-[10px] tabular-nums"
+            >
+              <Network className="size-2.5" />
+              <span>
+                {swarmSummary.active > 0
+                  ? `${swarmSummary.active}/${swarmSummary.total} agents`
+                  : `${swarmSummary.total} ${swarmSummary.total === 1 ? "agent" : "agents"}`}
+                {swarmSummary.percent !== null ? ` · ${swarmSummary.percent}%` : ""}
+              </span>
+            </Badge>
+          )}
         </div>
 
         <div className="flex items-center gap-1.5">
+          {swarmAgents.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              data-testid="drawer-open-swarm-button"
+              onClick={openSwarmView}
+              title="Open Swarm Mission Control"
+            >
+              <ExternalLink className="size-3" />
+              <span className="hidden @min-[480px]/drawer:inline">Swarm</span>
+            </Button>
+          )}
+
           <Button
             type="button"
             variant="outline"
@@ -221,14 +469,18 @@ export function BackgroundProcessDrawer({
             variant="outline"
             size="xs"
             data-testid="drawer-refresh-button"
-            disabled={isLoadingList}
+            disabled={isLoadingList || isRefreshingSwarm}
             onClick={() => {
               void refreshProcesses();
+              void refreshSwarm();
             }}
-            title="Refresh background processes"
+            title="Refresh background processes and swarm agents"
           >
             <RefreshCw
-              className={cn("size-3", isLoadingList && "animate-spin")}
+              className={cn(
+                "size-3",
+                (isLoadingList || isRefreshingSwarm) && "motion-safe:animate-spin",
+              )}
             />
             <span>Refresh</span>
           </Button>
@@ -281,7 +533,7 @@ export function BackgroundProcessDrawer({
             type="search"
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Filter processes..."
+            placeholder="Filter processes & agents..."
             data-testid="process-search-input"
             className="h-7 pl-7 pr-7 text-xs"
           />
@@ -298,10 +550,10 @@ export function BackgroundProcessDrawer({
         </div>
       </div>
 
-      {/* Main Split Body: Grouped Process List + Live Output Tail */}
+      {/* Main Split Body: Grouped Process & Swarm List + Live Inspector */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden @min-[680px]/drawer:flex-row">
-        {/* Left Column: Grouped Process List */}
-        {(!isCompact || compactViewMode === "list" || !selectedTask) && (
+        {/* Left Column: Live Swarm Agents + Grouped Background Processes */}
+        {(!isCompact || compactViewMode === "list" || !hasAnySelection) && (
           <div
             data-testid="process-list-pane"
             className={cn(
@@ -309,21 +561,66 @@ export function BackgroundProcessDrawer({
               isCompact ? "flex-1" : "h-full",
             )}
           >
-            {filteredTasks.length === 0 ? (
+            {totalFilteredCount === 0 ? (
               <div
                 data-testid="process-list-empty"
                 className="flex flex-1 flex-col items-center justify-center p-6 text-center text-xs text-muted-ink"
               >
                 {counts.all === 0
-                  ? "No background processes in this session."
-                  : "No background processes match this filter."}
+                  ? scope === "all"
+                    ? "No background processes or swarm agents running."
+                    : "No background processes in this session."
+                  : "No background processes or agents match this filter."}
               </div>
             ) : (
               <div
                 role="listbox"
-                aria-label="Background process list"
+                aria-label="Background process and agent list"
                 className="flex flex-col gap-3"
               >
+                {/* Live Background Swarm Agents Section */}
+                {filteredSwarmAgents.length > 0 && (
+                  <section
+                    data-testid="process-group-swarm"
+                    className="flex flex-col gap-1"
+                  >
+                    <div className="flex items-center justify-between px-2 py-0.5">
+                      <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-info uppercase">
+                        <Network className="size-3" />
+                        <span>
+                          Swarm Agents
+                          {activeSwarm?.label ? ` · ${activeSwarm.label}` : ""}
+                        </span>
+                      </span>
+                      <span className="font-mono text-[10px] text-faint tabular-nums">
+                        {filteredSwarmAgents.length}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-0.5">
+                      {filteredSwarmAgents.map((agent) => (
+                        <SwarmAgentRow
+                          key={agent.agentId}
+                          agent={agent}
+                          selected={selectedSwarmAgent?.agentId === agent.agentId}
+                          onSelect={(agentId) => {
+                            selectSwarmAgent(agentId);
+                            if (isCompact) {
+                              setCompactViewMode("tail");
+                            }
+                          }}
+                          onStop={(agentId) => {
+                            void stopSwarmAgent(agentId);
+                          }}
+                          onResume={(agentId) => {
+                            void resumeSwarmAgent(agentId);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Grouped Background Shell / Tool / Runtime Processes */}
                 {groupedTasks.map((section) => (
                   <section
                     key={section.group}
@@ -371,13 +668,13 @@ export function BackgroundProcessDrawer({
           </div>
         )}
 
-        {/* Right Column: Live Output Tail */}
+        {/* Right Column: Live Swarm Agent Inspector OR Live Process Output Tail */}
         {(!isCompact || compactViewMode === "tail") && (
           <div
             data-testid="process-output-pane"
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2.5"
           >
-            {isCompact && compactViewMode === "tail" && selectedTask && (
+            {isCompact && compactViewMode === "tail" && hasAnySelection && (
               <div className="mb-1.5 flex items-center">
                 <Button
                   type="button"
@@ -387,30 +684,47 @@ export function BackgroundProcessDrawer({
                   onClick={() => setCompactViewMode("list")}
                 >
                   <ArrowLeft className="size-3" />
-                  <span>Back to process list</span>
+                  <span>Back to list</span>
                 </Button>
               </div>
             )}
 
-            <ProcessOutputTail
-              task={selectedTask}
-              output={selectedOutput}
-              follow={followOutput}
-              isLoading={isLoadingOutput}
-              nowMs={nowMs}
-              stallThresholdSecs={stallThresholdSecs}
-              onFollowChange={setFollowOutput}
-              onRefresh={() => {
-                if (selectedTask) {
-                  void fetchProcessOutput(selectedTask.taskId);
-                }
-              }}
-              onCopy={copyProcessOutput}
-              onOpenFile={openOutputFileInEditor}
-              onStop={(taskId) => {
-                void cancelProcess(taskId);
-              }}
-            />
+            {selectedSwarmAgent ? (
+              <SwarmAgentProgressPane
+                agent={selectedSwarmAgent}
+                swarmLabel={activeSwarm?.label}
+                isRefreshing={isRefreshingSwarm}
+                onRefresh={() => {
+                  void refreshSwarm();
+                }}
+                onOpenChat={openSwarmAgentChat}
+                onOpenSwarmView={openSwarmView}
+                onOpenFile={openOutputFileInEditor}
+                onStopAgent={stopSwarmAgent}
+                onResumeAgent={resumeSwarmAgent}
+                onSendDm={sendSwarmAgentDm}
+              />
+            ) : (
+              <ProcessOutputTail
+                task={selectedTask}
+                output={selectedOutput}
+                follow={followOutput}
+                isLoading={isLoadingOutput}
+                nowMs={nowMs}
+                stallThresholdSecs={stallThresholdSecs}
+                onFollowChange={setFollowOutput}
+                onRefresh={() => {
+                  if (selectedTask) {
+                    void fetchProcessOutput(selectedTask.taskId);
+                  }
+                }}
+                onCopy={copyProcessOutput}
+                onOpenFile={openOutputFileInEditor}
+                onStop={(taskId) => {
+                  void cancelProcess(taskId);
+                }}
+              />
+            )}
           </div>
         )}
       </div>

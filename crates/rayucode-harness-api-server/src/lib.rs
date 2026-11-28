@@ -413,11 +413,12 @@ where
     let session_tools_supported = daemon_caps.iter().any(|cap| cap == "session_tools");
     let user_questions_supported = daemon_caps.iter().any(|cap| cap == rayucode_harness_api::QUESTION_CAPABILITY);
     let soft_interrupt_ids_supported = daemon_caps.iter().any(|cap| cap == "soft_interrupt_ids");
+    let telegram_remote_supported = daemon_caps.iter().any(|cap| cap == "telegram_remote");
     let hello_ok = ServerFrame::reply(
         reply_to,
         ApiEvent::HelloOk {
             version: API_VERSION_MAJOR,
-            server: format!("rayu-harness-api-bridge/{}", env!("CARGO_PKG_VERSION")),
+            server: format!("rayu-harness-api-bridge/{}", rayucode_build_meta::semver()),
             capabilities: [
                 "sessions",
                 "streaming",
@@ -452,6 +453,9 @@ where
                     "runtime_commands",
                     "background_tasks",
                     "swarm_control",
+                    "swarm_mutations_v1",
+                    "overnight_v1",
+                    "schedules_cron_v1",
                     "mcp_control",
                     "telegram_control",
                     "config_features",
@@ -461,6 +465,7 @@ where
                 .filter(|_| runtime_commands_supported)
                 .map(str::to_string),
             )
+            .chain(telegram_remote_supported.then(|| "telegram_remote".to_string()))
             .chain(session_tools_supported.then(|| "session_tools".to_string()))
             .chain(user_questions_supported.then(|| rayucode_harness_api::QUESTION_CAPABILITY.to_string()))
             .chain(

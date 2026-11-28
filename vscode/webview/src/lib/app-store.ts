@@ -22,6 +22,7 @@ import type {
   ServiceTier,
   SessionSummaryView,
   SurfaceKind,
+  SwarmStatusView,
   ThemePreference,
   TodoItemView,
   WorkbenchPreferences,
@@ -151,6 +152,7 @@ export interface AppStoreState {
   mobileSidebarOpen: boolean;
   backgroundDrawerOpen: boolean;
   backgroundTasks: BackgroundProcessView[];
+  activeSwarm: SwarmStatusView | null;
   fileChangesBySession: Record<string, FileChangesSnapshotView>;
   todosBySession: Record<string, TodoItemView[]>;
   turnDurationsBySession: Record<string, Record<string, string>>;
@@ -260,6 +262,7 @@ export interface AppStoreState {
   setBackgroundDrawerOpen: (open: boolean) => void;
   toggleBackgroundDrawer: () => void;
   setBackgroundTasks: (tasks: BackgroundProcessView[]) => void;
+  setActiveSwarm: (swarm: SwarmStatusView | null) => void;
   setFileChangesSnapshot: (
     sessionId: string,
     snapshot: FileChangesSnapshotView,
@@ -529,6 +532,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   mobileSidebarOpen: false,
   backgroundDrawerOpen: false,
   backgroundTasks: [],
+  activeSwarm: null,
   fileChangesBySession: {},
   todosBySession: {},
   turnDurationsBySession: readInitialTurnDurations(),
@@ -1144,6 +1148,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setBackgroundTasks: (backgroundTasks) => set({ backgroundTasks }),
 
+  setActiveSwarm: (activeSwarm) => set({ activeSwarm }),
+
   setFileChangesSnapshot: (sessionId, snapshot) =>
     set((state) => ({
       fileChangesBySession: {
@@ -1538,6 +1544,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
                 ? msg.editorSelection
                 : state.editorSelection,
             backgroundTasks: scopedTasks,
+            ...(msg.activeSwarm !== undefined
+              ? { activeSwarm: msg.activeSwarm }
+              : {}),
             ...(msg.sessionId && msg.fileChanges
               ? {
                   fileChangesBySession: {
@@ -1692,6 +1701,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
               : [],
           };
         });
+        return;
+      case "rayucode.swarm.snapshot":
+        set({ activeSwarm: msg.swarm });
         return;
       case "rayucode.fileChanges.updated":
         set((state) => ({

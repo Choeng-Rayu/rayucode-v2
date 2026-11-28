@@ -29,6 +29,7 @@ fn recent_history_bootstrap_renders_latest_frame_without_older_transcript() {
             content: message.content,
             tool_calls: None,
             tool_data: None,
+            is_engine_internal: false,
             response_stats: None,
         })
         .collect();

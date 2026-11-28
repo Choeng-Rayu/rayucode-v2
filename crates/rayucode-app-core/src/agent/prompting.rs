@@ -3,24 +3,8 @@ use crate::logging;
 use crate::message::{Message, ToolDefinition};
 
 impl Agent {
-    pub(crate) fn runtime_skills_snapshot(&self) -> serde_json::Value {
-        let registry = self.current_skills_snapshot();
-        let mut loaded = registry.list();
-        loaded.sort_by(|a, b| a.name.cmp(&b.name));
-        let skills: Vec<_> = loaded
-            .iter()
-            .map(|skill| {
-                serde_json::json!({
-                    "name": skill.name, "description": skill.description,
-                    "path": skill.path, "allowed_tools": skill.allowed_tools,
-                })
-            })
-            .collect();
-        let endorsed: Vec<_> = crate::skill::endorsed_skills().iter().map(|skill| serde_json::json!({
-            "name": skill.name, "description": skill.description, "category": skill.category,
-            "source": skill.source, "install": skill.install, "installed": registry.contains(skill.name),
-        })).collect();
-        serde_json::json!({"skills": skills, "endorsed": endorsed, "active_skill": self.active_skill})
+    pub(crate) fn active_skill(&self) -> Option<&str> {
+        self.active_skill.as_deref()
     }
 
     pub(crate) fn runtime_agent_model_overrides(&self) -> serde_json::Value {
@@ -28,11 +12,29 @@ impl Agent {
     }
 
     pub(crate) async fn runtime_context_snapshot(&self) -> serde_json::Value {
-        let prompt = self.build_system_prompt_split(None);
+        let (prompt, context_info) = self.build_system_prompt_split_with_info(None);
         let current_tools = self.tool_definitions_for_debug().await;
         let effective_tools = self.locked_tools.as_ref().unwrap_or(&current_tools);
         let system_tokens = prompt.estimated_tokens();
+        let instruction_files_tokens =
+            (context_info.project_agents_md_chars + context_info.global_agents_md_chars) / 4;
+        let skills_tokens = context_info.skills_chars / 4;
+        let system_base_tokens = system_tokens
+            .saturating_sub(instruction_files_tokens)
+            .saturating_sub(skills_tokens);
+
         let tools_tokens = ToolDefinition::aggregate_prompt_token_estimate(effective_tools);
+        let mcp_defs: Vec<ToolDefinition> = effective_tools
+            .iter()
+            .filter(|def| def.name.starts_with("mcp__"))
+            .cloned()
+            .collect();
+        let mcp_tools_tokens = if mcp_defs.is_empty() {
+            0
+        } else {
+            ToolDefinition::aggregate_prompt_token_estimate(&mcp_defs)
+        };
+        let builtin_tools_tokens = tools_tokens.saturating_sub(mcp_tools_tokens);
 
         let mut memory_tokens: usize = 0;
         let mut files_tokens: usize = 0;
@@ -101,7 +103,12 @@ impl Agent {
         context["context_window"] = serde_json::json!(context_window);
         context["token_breakdown"] = serde_json::json!({
             "system": system_tokens,
+            "system_base": system_base_tokens,
+            "instruction_files": instruction_files_tokens,
+            "skills": skills_tokens,
             "tools": tools_tokens,
+            "builtin_tools": builtin_tools_tokens,
+            "mcp_tools": mcp_tools_tokens,
             "memory": memory_tokens,
             "files": files_tokens,
             "messages": messages_tokens,
@@ -212,11 +219,25 @@ impl Agent {
         &self,
         memory_prompt: Option<&str>,
     ) -> crate::prompt::SplitSystemPrompt {
+        self.build_system_prompt_split_with_info(memory_prompt).0
+    }
+
+    /// Build split system prompt along with its component `ContextInfo` metrics.
+    pub(super) fn build_system_prompt_split_with_info(
+        &self,
+        memory_prompt: Option<&str>,
+    ) -> (crate::prompt::SplitSystemPrompt, crate::prompt::ContextInfo) {
         if let Some(ref override_prompt) = self.session.system_prompt {
-            return crate::prompt::SplitSystemPrompt {
-                static_part: override_prompt.clone(),
-                dynamic_part: String::new(),
-            };
+            let mut info = crate::prompt::ContextInfo::default();
+            info.system_prompt_chars = override_prompt.len();
+            info.total_chars = override_prompt.len();
+            return (
+                crate::prompt::SplitSystemPrompt {
+                    static_part: override_prompt.clone(),
+                    dynamic_part: String::new(),
+                },
+                info,
+            );
         }
 
         // The active skill prompt is announced once in the transcript when the
@@ -234,16 +255,14 @@ impl Agent {
             .as_ref()
             .map(std::path::PathBuf::from);
 
-        let (split, _context_info) = crate::prompt::build_system_prompt_split_with_agents_md(
+        crate::prompt::build_system_prompt_split_with_agents_md(
             skill_prompt.as_deref(),
             available_skills,
             self.session.is_canary,
             memory_prompt,
             working_dir.as_deref(),
             self.agents_md_snapshot.clone(),
-        );
-
-        split
+        )
     }
 
     /// Non-blocking memory prompt - takes pending result and spawns check for next turn

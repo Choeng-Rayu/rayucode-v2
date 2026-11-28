@@ -4638,3 +4638,441 @@ test("settings.models.get exposes per-source status and stale flag; settings.mod
   );
   assert.deepEqual(catalogNotifications, [{ sessionId: "sess_catalog", credentialsChanged: undefined }]);
 });
+
+test("featureRouters wires Rust engine parity for swarm_mutations_v1, schedules_cron_v1, overnight_v1, memory list, skills toggle, mcp live_tools/last_error, context breakdown, and telegram bridge_warning", async () => {
+  const runtimeCalls: Array<{ command: RuntimeCommand; args: string[] }> = [];
+  let pushedSwarm: unknown = null;
+
+  const daemonStatus: DaemonStatusView = {
+    state: "connected",
+    version: "rayu-harness-api-bridge/3.0.4",
+    protocolVersion: "1.16",
+    socketPath: "/tmp/rayu-parity.sock",
+    latencyMs: 2,
+    capabilities: [
+      "permissions",
+      "background_tasks",
+      "swarm_control",
+      "swarm_mutations_v1",
+      "overnight_v1",
+      "schedules_cron_v1",
+      "telegram_remote",
+    ],
+    isRayuRepo: true,
+  };
+
+  const router = createFeatureRouter({
+    bridgeManager: {
+      getStatus: () => daemonStatus,
+      ping: async () => ({ ok: true, latencyMs: 2 }),
+      reconnect: async () => daemonStatus,
+      restart: async () => daemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => "sess_1",
+      getActiveModel: () => "claude-opus-4-6",
+      getActiveProvider: () => "rayu",
+      getActivePermissionMode: () => "default",
+      getClient: async () => ({} as never),
+      listSessions: async () => ({ sessions: [], activeSessionId: "sess_1" }),
+      createSession: async () => ({
+        sessionId: "sess_1",
+        title: "Main",
+        status: "idle",
+        updatedAtMs: Date.now(),
+      }),
+      attachSession: async (sessionId) => ({
+        sessionId,
+        title: "Main",
+        status: "idle",
+        updatedAtMs: Date.now(),
+      }),
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_s, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      setActiveSwarm: (swarm) => {
+        pushedSwarm = swarm;
+      },
+      runtimeCommand: async (command, args = [], sessionId) => {
+        runtimeCalls.push({ command, args });
+        if (command === "swarm") {
+          const snapshot = {
+            swarm_id: "sw_live",
+            members: [
+              {
+                session_id: "ses_worker_1",
+                friendly_name: "builder",
+                role: "agent",
+                status: "running",
+                detail: "Compiling protocol fixes",
+                todo_progress: [3, 5],
+                todo_items: [
+                  { content: "Update protocol", status: "completed" },
+                  { content: "Run tests", status: "in_progress" },
+                ],
+                files_touched: ["vscode/shared/vscodeProtocol.ts"],
+                output_tail: "Running vitest...",
+                elapsed_secs: 42,
+                context_tokens: 12000,
+                context_limit: 200000,
+                live_status: { tool: "bash", kind: "tool_use" },
+              },
+            ],
+            board: [
+              {
+                id: 7,
+                seq: 7,
+                session_name: "builder",
+                swarm_id: "sw_live",
+                event: {
+                  type: "file_touch",
+                  path: "vscode/shared/vscodeProtocol.ts",
+                  op: "edit",
+                  summary: "Added SwarmTodoItemViewSchema",
+                },
+                timestamp_ms: 1700000000000,
+              },
+              {
+                id: 8,
+                seq: 8,
+                session_name: "coordinator",
+                swarm_id: "sw_live",
+                event: {
+                  type: "notification",
+                  notification_type: "broadcast",
+                  message: "All workers run lint:design before finishing",
+                },
+                timestamp_ms: 1700000005000,
+              },
+            ],
+            swarms: [{ swarm_id: "sw_live", live: true }],
+          };
+          if (args[0] === "spawn") {
+            return {
+              session_id: sessionId ?? "sess_1",
+              command,
+              data: { ...snapshot, spawned_session_id: "ses_worker_1" },
+              message: "Spawned builder",
+            };
+          }
+          return { session_id: sessionId ?? "sess_1", command, data: snapshot, message: "ok" };
+        }
+        if (command === "schedules") {
+          if (args[0] === "list") {
+            return {
+              session_id: "sess_1",
+              command,
+              data: {
+                schedules: [
+                  {
+                    id: "sched_cron_1",
+                    title: "Morning audit",
+                    context: "cargo clippy",
+                    recurrence: { type: "cron", expr: "30 8 * * 1-5" },
+                    enabled: true,
+                    last_run_at: "2026-11-28T08:30:00Z",
+                    last_status: "succeeded",
+                    working_dir: "/workspace/rayucode-v2",
+                  },
+                ],
+              },
+              message: "ok",
+            };
+          }
+          if (args[0] === "create") {
+            return {
+              session_id: "sess_1",
+              command,
+              data: {
+                id: "sched_new",
+                schedule: { id: "sched_new", title: "Delay check", enabled: true },
+              },
+              message: "created",
+            };
+          }
+          if (args[0] === "toggle") {
+            return { session_id: "sess_1", command, data: { toggled: true }, message: "paused" };
+          }
+          if (args[0] === "run") {
+            return { session_id: "sess_1", command, data: { triggered: true }, message: "queued" };
+          }
+        }
+        if (command === "overnight") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: { run_id: "ovn_42", events: ["[01:00] ok"], tasks: [] },
+            message: "ok",
+          };
+        }
+        if (command === "memory") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              enabled: true,
+              pipeline_active: false,
+              jev_provider: true,
+              graph_count: 1,
+              instruction_files: [
+                {
+                  name: "AGENTS.md",
+                  path: "/workspace/rayucode-v2/AGENTS.md",
+                  scope: "project",
+                  bytes: 400,
+                  tokens: 100,
+                  preview: "# Rules",
+                },
+              ],
+              graph_entries: [
+                {
+                  id: "mem_real_1",
+                  scope: "project",
+                  category: "architecture",
+                  content: "Use semantic Tailwind tokens only.",
+                  tags: ["design"],
+                  confidence: 0.95,
+                  tokens: 12,
+                  updated_at: "2026-11-28T00:00:00Z",
+                },
+              ],
+            },
+            message: "ok",
+          };
+        }
+        if (command === "skills") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              skills: [
+                {
+                  name: "rust-audit",
+                  description: "Audit Rust crate",
+                  path: "/workspace/.agents/skills/rust-audit/SKILL.md",
+                  scope: "project",
+                  enabled: false,
+                  tokens: 240,
+                },
+              ],
+              endorsed: [],
+            },
+            message: "ok",
+          };
+        }
+        if (command === "mcp") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              servers: [
+                {
+                  id: "postgres",
+                  status: "error",
+                  enabled: true,
+                  transport: "stdio",
+                  live_tools: ["query_sql"],
+                  last_error: "Connection refused on port 5432",
+                },
+              ],
+            },
+            message: "ok",
+          };
+        }
+        if (command === "context") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              token_breakdown: {
+                system: 3000,
+                system_base: 1500,
+                instruction_files: 1000,
+                skills: 500,
+                tools: 2000,
+                builtin_tools: 1200,
+                mcp_tools: 800,
+                memory: 200,
+                files: 400,
+                messages: 1000,
+                total_used: 6600,
+                context_window: 200000,
+                free: 193400,
+              },
+            },
+            message: "ok",
+          };
+        }
+        if (command === "telegram") {
+          return {
+            session_id: "sess_1",
+            command,
+            data: {
+              linked: false,
+              configured: true,
+              status: "Waiting",
+              bridge_running: false,
+              bridge_warning: "Telegram polling bridge is inactive on this daemon socket.",
+            },
+            message: "ok",
+          };
+        }
+        return { session_id: "sess_1", command, data: {}, message: "ok" };
+      },
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: Date.now(),
+      }),
+    },
+    gitBridge: {
+      getStatus: async () => ({ branch: "main", totalAdditions: 0, totalDeletions: 0, files: [], stagedCount: 0 }),
+      getDiff: async ({ path: p }) => ({ path: p, originalContent: "", modifiedContent: "", unifiedDiff: "", additions: 0, deletions: 0 }),
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: () => ({ ok: true }),
+      undo: async () => ({ ok: true }),
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [
+      { name: "rayucode-v2", path: "/workspace/rayucode-v2", isPrimary: true },
+    ],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(_k: string, d: T) => d,
+    updateGlobalState: async () => {},
+    getRuntimeSettings: () => ({ socketPath: "/tmp/rayu.sock", binaryPath: "/bin/rayu", autoStart: true }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  });
+
+  // 1. Swarm status parses tuple todo_progress, files_touched, output_tail, elapsed_secs & SwarmEventType board entries
+  const swarmStatus = await router.call("swarm.status", undefined);
+  assert.equal(swarmStatus.swarm?.agents[0]?.todoCompleted, 3);
+  assert.equal(swarmStatus.swarm?.agents[0]?.todoTotal, 5);
+  assert.deepEqual(swarmStatus.swarm?.agents[0]?.filesTouched, ["vscode/shared/vscodeProtocol.ts"]);
+  assert.equal(swarmStatus.swarm?.agents[0]?.outputTail, "Running vitest...");
+  assert.equal(swarmStatus.swarm?.agents[0]?.elapsedSecs, 42);
+  assert.equal(swarmStatus.swarm?.agents[0]?.liveStatus, "tool_use: bash");
+  assert.equal(swarmStatus.swarm?.board[0]?.text, "edit vscode/shared/vscodeProtocol.ts — Added SwarmTodoItemViewSchema");
+  assert.equal(swarmStatus.swarm?.board[1]?.kind, "broadcast");
+  assert.ok(pushedSwarm);
+
+  // 2. Swarm live mutations (spawn, stop, resume, dm, broadcast, pauseAll) route cleanly with swarm_mutations_v1
+  const spawned = await router.call("swarm.spawn", {
+    label: "builder",
+    prompt: "Compile and test",
+    model: "claude-sonnet-4-5",
+  });
+  assert.equal(spawned.ok, true);
+  assert.equal(spawned.agent?.sessionId, "ses_worker_1");
+  const spawnCall = runtimeCalls.find((c) => c.command === "swarm" && c.args[0] === "spawn");
+  assert.ok(spawnCall);
+  const spawnPayload = JSON.parse(spawnCall.args[1]!);
+  assert.equal(spawnPayload.spawn_mode, "headless");
+  assert.equal(spawnPayload.working_dir, "/workspace/rayucode-v2");
+
+  const stopped = await router.call("swarm.kill", { agentId: "ses_worker_1" });
+  assert.equal(stopped.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["stop", "ses_worker_1"]);
+
+  const resumed = await router.call("swarm.kill", { agentId: "ses_worker_1", resume: true });
+  assert.equal(resumed.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["resume", "ses_worker_1"]);
+
+  const dmRes = await router.call("swarm.dm", { agentId: "ses_worker_1", message: "Check lint" });
+  assert.equal(dmRes.ok, true);
+  assert.equal(dmRes.seq, 8);
+
+  const bcastRes = await router.call("swarm.broadcast", { message: "Wrap up soon" });
+  assert.equal(bcastRes.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["broadcast", "Wrap up soon"]);
+
+  // 3. Schedules list/create/toggle/runNow with schedules_cron_v1
+  const scheds = await router.call("automations.schedules.list", undefined);
+  assert.equal(scheds.schedules[0]?.cronExpression, "30 8 * * 1-5");
+  assert.equal(scheds.schedules[0]?.lastRunAt, "2026-11-28T08:30:00Z");
+  assert.equal(scheds.schedules[0]?.lastStatus, "succeeded");
+
+  await router.call("automations.schedules.create", {
+    title: "Delay check",
+    prompt: "Check builds",
+    schedule: "in 2 hours",
+    permissionMode: "acceptEdits",
+  });
+  const createCall = runtimeCalls.find((c) => c.command === "schedules" && c.args[0] === "create");
+  const createPayload = JSON.parse(createCall!.args[1]!);
+  assert.equal(createPayload.wake_in_minutes, 120);
+  assert.equal(createPayload.permission_mode, "accept_edits");
+  assert.equal(createPayload.working_dir, "/workspace/rayucode-v2");
+
+  const toggled = await router.call("automations.schedules.toggle", { id: "sched_cron_1", enabled: false });
+  assert.equal(toggled.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["toggle", "sched_cron_1", "off"]);
+
+  const runNow = await router.call("automations.schedules.runNow", { id: "sched_cron_1" });
+  assert.equal(runNow.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["run", "sched_cron_1"]);
+
+  // 4. Overnight forwards working_dir, max_agents, and runId when overnight_v1 is present
+  await router.call("automations.overnight.start", {
+    duration: "4h",
+    mission: "Fix lint",
+    workingDir: "/workspace/rayucode-v2",
+    maxAgents: 3,
+  });
+  assert.equal(runtimeCalls.at(-1)?.args[0], "start");
+  await router.call("automations.overnight.log", { runId: "ovn_42" });
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["log", "ovn_42"]);
+
+  // 5. Memory uses `memory list`, surfacing real graph_entries + instruction_files
+  const mem = await router.call("plugins.memory.status", undefined);
+  assert.equal(mem.facts.length, 1);
+  assert.equal(mem.facts[0]?.id, "mem_real_1");
+  assert.equal(mem.instructionFiles?.[0]?.name, "AGENTS.md");
+  assert.equal(mem.jevProvider, true);
+
+  // 6. Skills maps enabled & tokens and supports plugins.skills.toggle
+  const skills = await router.call("plugins.skills.list", undefined);
+  assert.equal(skills.skills[0]?.enabled, false);
+  assert.equal(skills.skills[0]?.tokens, 240);
+  const toggleSkill = await router.call("plugins.skills.toggle", { name: "rust-audit", enabled: true });
+  assert.equal(toggleSkill.ok, true);
+  assert.deepEqual(runtimeCalls.at(-1)?.args, ["enable", "rust-audit"]);
+
+  // 7. MCP maps live_tools and last_error
+  const mcp = await router.call("plugins.mcp.list", undefined);
+  assert.equal(mcp.servers[0]?.tools?.[0]?.name, "query_sql");
+  assert.equal(mcp.servers[0]?.error, "Connection refused on port 5432");
+
+  // 8. Context breakdown populates granular system & tools sub-items
+  const ctxSnap = await router.call("workspace.contextSnapshot", { sessionId: "sess_1" });
+  assert.equal(ctxSnap.categories[0]?.items?.length, 3);
+  assert.equal(ctxSnap.categories[1]?.items?.length, 2);
+
+  // 9. Telegram surfaces bridgeRunning & bridgeWarning
+  const tg = await router.call("remote.telegram.status", undefined);
+  assert.equal(tg.bridgeRunning, false);
+  assert.match(tg.bridgeWarning ?? "", /polling bridge is inactive/);
+});

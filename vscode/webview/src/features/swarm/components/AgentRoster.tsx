@@ -13,7 +13,7 @@ import {
    type RunStatusTone,
   ScrollArea,
 } from "@/components/ui";
-import { cn } from "@/lib";
+import { cn, formatDurationSeconds } from "@/lib";
 
 import {
   DEFAULT_SWARM_MODELS,
@@ -196,8 +196,62 @@ export function AgentRoster({
                     onClick={() => onSelectAgent(agent.agentId)}
                     className="w-full cursor-pointer truncate text-left text-[12px] leading-[1.4] text-body focus-visible:outline-none"
                   >
-                    {agent.currentIntent ?? "Awaiting coordinator assignment"}
+                    {agent.liveStatus ||
+                      agent.currentIntent ||
+                      agent.taskLabel ||
+                      "Awaiting coordinator assignment"}
                   </button>
+
+                  {typeof agent.todoTotal === "number" && agent.todoTotal > 0 ? (
+                    <div
+                      role="progressbar"
+                      aria-label={`${agent.label} progress`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.max(
+                        0,
+                        Math.min(
+                          100,
+                          Math.round(
+                            ((agent.todoCompleted ?? 0) / agent.todoTotal) * 100,
+                          ),
+                        ),
+                      )}
+                      className="h-1 w-full overflow-hidden rounded-full bg-inset"
+                    >
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-[width] duration-300",
+                          agent.status === "blocked"
+                            ? "bg-warn"
+                            : agent.status === "failed" || agent.status === "crashed"
+                              ? "bg-danger"
+                              : "bg-brand",
+                        )}
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              Math.round(
+                                ((agent.todoCompleted ?? 0) / agent.todoTotal) * 100,
+                              ),
+                            ),
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  ) : isRunning ? (
+                    <div
+                      role="progressbar"
+                      aria-label={`${agent.label} running`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      className="h-1 w-full overflow-hidden rounded-full bg-inset"
+                    >
+                      <div className="h-full w-1/3 rounded-full bg-brand/70 motion-safe:animate-pulse" />
+                    </div>
+                  ) : null}
 
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 font-mono text-[11px] text-muted-ink tabular-nums">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -206,6 +260,12 @@ export function AgentRoster({
                       </span>
                       <span aria-hidden="true">·</span>
                       <span>{todoSummary}</span>
+                      {typeof agent.elapsedSecs === "number" && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatDurationSeconds(agent.elapsedSecs)}</span>
+                        </>
+                      )}
 
                       {(typeof agent.diffAdditions === "number" ||
                         typeof agent.diffDeletions === "number") && (

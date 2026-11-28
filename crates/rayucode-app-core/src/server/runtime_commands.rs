@@ -190,9 +190,44 @@ pub(super) async fn execute(
             bail!("Command must be routed through the server control handler")
         }
         RuntimeCommand::Skills => {
-            status_only(args)?;
+            let (working_dir, clean_args) =
+                strip_working_dir_arg(args, agent.working_dir().map(std::path::Path::new))?;
+            let sub = clean_args
+                .first()
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_else(|| "list".to_string());
+            match sub.as_str() {
+                "list" | "status" | "show" | "stats" => {
+                    if clean_args.len() > 1 {
+                        bail!("Usage: /skills [list|enable <name>|disable <name>|toggle <name>] [--working-dir <path>]");
+                    }
+                }
+                "enable" | "disable" | "toggle" => {
+                    let Some(name) = clean_args.get(1).filter(|s| !s.trim().is_empty()) else {
+                        bail!("Usage: /skills {sub} <skill_name>");
+                    };
+                    match sub.as_str() {
+                        "enable" => {
+                            crate::config::Config::set_skill_disabled(name, false)?;
+                        }
+                        "disable" => {
+                            crate::config::Config::set_skill_disabled(name, true)?;
+                        }
+                        _ => {
+                            crate::config::Config::toggle_skill_disabled(name)?;
+                        }
+                    }
+                }
+                _ => bail!(
+                    "Usage: /skills [list|enable <name>|disable <name>|toggle <name>] [--working-dir <path>]"
+                ),
+            }
             agent.registry().skills().write().await.reload_global()?;
-            let data = agent.runtime_skills_snapshot();
+            let active_skill = agent.active_skill().map(str::to_string);
+            let data = tokio::task::spawn_blocking(move || {
+                skills_snapshot_for_dir(working_dir.as_deref(), active_skill.as_deref())
+            })
+            .await??;
             return Ok((data.clone(), skills_report(&data)));
         }
         RuntimeCommand::Context => {
@@ -229,7 +264,21 @@ pub(super) async fn execute(
                 "expiry": null, "expiry_available": false})
         }
         RuntimeCommand::Memory => {
-            if args == ["extract"] {
+            let (working_dir, clean_args) =
+                strip_working_dir_arg(args, agent.working_dir().map(std::path::Path::new))?;
+            if clean_args
+                .first()
+                .is_some_and(|s| s.eq_ignore_ascii_case("list"))
+            {
+                let enabled = agent.memory_enabled();
+                let data = tokio::task::spawn_blocking(move || {
+                    memory_list_snapshot(working_dir.as_deref(), enabled, "session")
+                })
+                .await??;
+                let message = serde_json::to_string_pretty(&data)?;
+                return Ok((data, message));
+            }
+            if clean_args == ["extract"] {
                 if !agent.memory_enabled() {
                     bail!("Memory is disabled for this session");
                 }
@@ -247,7 +296,7 @@ pub(super) async fn execute(
                     "Memory extraction scheduled, not yet completed.".into(),
                 ));
             }
-            if let Some(enabled) = boolean_action(args, agent.memory_enabled(), true)? {
+            if let Some(enabled) = boolean_action(&clean_args, agent.memory_enabled(), true)? {
                 agent.set_memory_enabled(enabled);
                 if !enabled {
                     crate::memory::clear_pending_memory(agent.session_id());
@@ -360,22 +409,27 @@ pub(super) async fn execute(
             agents_snapshot_json(agent, global)
         }
         RuntimeCommand::SubagentModel => {
-            match args {
+            let (global, effective_args) = match args.split_first() {
+                Some((scope, rest)) if matches!(scope.as_str(), "global" | "default") => {
+                    (true, rest)
+                }
+                _ => (false, args),
+            };
+            match effective_args {
                 [] => {}
                 [arg] if matches!(arg.as_str(), "status" | "show") => {}
-                [scope, model] if matches!(scope.as_str(), "global" | "default") => {
-                    let next = if model == "default" {
+                [model] => {
+                    let next = if is_subagent_clear_sentinel(model) {
                         None
                     } else {
                         Some(model.as_str())
                     };
-                    crate::config::Config::set_agent_model_default("swarm", next)?;
+                    if global {
+                        crate::config::Config::set_agent_model_default("swarm", next)?;
+                    } else {
+                        agent.set_subagent_model(next.map(str::to_string))?;
+                    }
                 }
-                [model] => agent.set_subagent_model(if model == "default" {
-                    None
-                } else {
-                    Some(model.clone())
-                })?,
                 _ => bail!("Usage: /subagent-model [global] [show|inherit|default|model]"),
             }
             let refreshed_cfg = crate::config::Config::load();
@@ -383,6 +437,8 @@ pub(super) async fn execute(
                 "model": agent.subagent_model(),
                 "configured_default": refreshed_cfg.agents.swarm_model,
                 "inherit_model": agent.provider_model(),
+                "models": agent.available_models_for_switching(),
+                "routes": agent.model_routes(),
             })
         }
         RuntimeCommand::Autoreview => {
@@ -509,35 +565,894 @@ pub(super) async fn execute(
     Ok((data, message))
 }
 
-#[allow(clippy::too_many_arguments)]
+pub(super) struct SwarmControlContext<'a> {
+    pub(super) sessions: &'a super::SessionAgents,
+    pub(super) global_session_id: &'a Arc<tokio::sync::RwLock<String>>,
+    pub(super) provider_template: &'a Arc<dyn crate::provider::Provider>,
+    pub(super) mcp_pool: &'a Arc<crate::mcp::SharedMcpPool>,
+    pub(super) swarm_members:
+        &'a Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
+    pub(super) swarms_by_id: &'a Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    >,
+    pub(super) swarm_coordinators:
+        &'a Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    pub(super) swarm_plans:
+        &'a Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::VersionedPlan>>>,
+    pub(super) channel_subscriptions: &'a super::ChannelSubscriptions,
+    pub(super) channel_subscriptions_by_session: &'a super::ChannelSubscriptions,
+    pub(super) event_history:
+        &'a Arc<tokio::sync::RwLock<std::collections::VecDeque<super::SwarmEvent>>>,
+    pub(super) event_counter: &'a Arc<std::sync::atomic::AtomicU64>,
+    pub(super) swarm_event_tx: &'a tokio::sync::broadcast::Sender<super::SwarmEvent>,
+    pub(super) soft_interrupt_queues: &'a super::SessionInterruptQueues,
+    pub(super) client_connections:
+        &'a Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::ClientConnectionInfo>>>,
+    pub(super) swarm_mutation_runtime: &'a super::SwarmMutationRuntime,
+}
+
+fn is_subagent_clear_sentinel(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "default" | "inherit" | "reset" | "clear" | "none"
+    )
+}
+
+#[derive(Debug, Default)]
+struct ParsedSwarmSpawn {
+    name: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    working_dir: Option<String>,
+    spawn_mode: Option<crate::config::SwarmSpawnMode>,
+    task: Option<String>,
+}
+
+fn parse_swarm_spawn_args(args: &[String]) -> Result<ParsedSwarmSpawn> {
+    if args.len() == 1 && args[0].trim_start().starts_with('{') {
+        let parsed: Value = serde_json::from_str(&args[0])
+            .map_err(|e| anyhow::anyhow!("Invalid JSON payload for swarm spawn: {e}"))?;
+        let name = parsed["name"]
+            .as_str()
+            .or_else(|| parsed["label"].as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let profile = parsed["profile"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let mut model = parsed["model"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if model.is_none()
+            && let Some(profile_name) = profile
+        {
+            model = Some(if profile_name.starts_with("profile:") {
+                profile_name.to_string()
+            } else {
+                format!("profile:{profile_name}")
+            });
+        }
+        let effort = parsed["effort"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let working_dir = parsed["working_dir"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let spawn_mode = match parsed["spawn_mode"]
+            .as_str()
+            .or_else(|| parsed["mode"].as_str())
+        {
+            Some(raw) => Some(
+                crate::config::SwarmSpawnMode::parse(raw).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Invalid spawn mode `{raw}`. Expected headless, inline, visible, or auto."
+                    )
+                })?,
+            ),
+            None => None,
+        };
+        let task = parsed["task"]
+            .as_str()
+            .or_else(|| parsed["prompt"].as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        return Ok(ParsedSwarmSpawn {
+            name,
+            model,
+            effort,
+            working_dir,
+            spawn_mode,
+            task,
+        });
+    }
+
+    let mut out = ParsedSwarmSpawn::default();
+    let mut profile: Option<String> = None;
+    let mut trailing_task: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        match arg {
+            "--" => {
+                trailing_task.extend(args[i + 1..].iter().cloned());
+                break;
+            }
+            "--model" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for --model"))?;
+                if !val.trim().is_empty() {
+                    out.model = Some(val.trim().to_string());
+                }
+                i += 2;
+            }
+            "--profile" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for --profile"))?;
+                if !val.trim().is_empty() {
+                    profile = Some(val.trim().to_string());
+                }
+                i += 2;
+            }
+            "--effort" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for --effort"))?;
+                if !val.trim().is_empty() {
+                    out.effort = Some(val.trim().to_string());
+                }
+                i += 2;
+            }
+            "--working-dir" | "--cwd" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for {arg}"))?;
+                if !val.trim().is_empty() {
+                    out.working_dir = Some(val.trim().to_string());
+                }
+                i += 2;
+            }
+            "--mode" | "--spawn-mode" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for {arg}"))?;
+                out.spawn_mode = Some(
+                    crate::config::SwarmSpawnMode::parse(val).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid spawn mode `{val}`. Expected headless, inline, visible, or auto."
+                        )
+                    })?,
+                );
+                i += 2;
+            }
+            "--task" | "--prompt" => {
+                let val = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("Missing value for {arg}"))?;
+                if !val.trim().is_empty() {
+                    out.task = Some(val.trim().to_string());
+                }
+                i += 2;
+            }
+            flag if flag.starts_with("--") => {
+                bail!("Unknown swarm spawn option `{flag}`");
+            }
+            positional => {
+                if out.name.is_none() {
+                    out.name = Some(positional.trim().to_string());
+                } else {
+                    trailing_task.push(positional.to_string());
+                }
+                i += 1;
+            }
+        }
+    }
+    if out.model.is_none()
+        && let Some(profile_name) = profile
+    {
+        out.model = Some(if profile_name.starts_with("profile:") {
+            profile_name
+        } else {
+            format!("profile:{profile_name}")
+        });
+    }
+    if out.task.is_none() && !trailing_task.is_empty() {
+        let joined = trailing_task.join(" ").trim().to_string();
+        if !joined.is_empty() {
+            out.task = Some(joined);
+        }
+    }
+    Ok(out)
+}
+
+async fn resolve_swarm_member_target(
+    target: &str,
+    swarm_members: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
+) -> Result<(String, Option<String>, Option<String>)> {
+    let target = target.trim();
+    if target.is_empty() {
+        bail!("Target worker session ID or name is required.");
+    }
+    let members = swarm_members.read().await;
+    if let Some(m) = members.get(target) {
+        return Ok((
+            m.session_id.clone(),
+            m.swarm_id.clone(),
+            m.report_back_to_session_id.clone(),
+        ));
+    }
+    let lower = target.to_ascii_lowercase();
+    let mut matches: Vec<&super::SwarmMember> = members
+        .values()
+        .filter(|m| {
+            m.friendly_name
+                .as_deref()
+                .is_some_and(|n| n.eq_ignore_ascii_case(&lower))
+                || m.session_id.starts_with(target)
+                || m.session_id.ends_with(target)
+        })
+        .collect();
+    matches.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    match matches.len() {
+        0 => bail!("Unknown swarm member `{target}`."),
+        1 => {
+            let m = matches[0];
+            Ok((
+                m.session_id.clone(),
+                m.swarm_id.clone(),
+                m.report_back_to_session_id.clone(),
+            ))
+        }
+        _ => bail!(
+            "Ambiguous swarm member `{target}`. Provide an exact session ID."
+        ),
+    }
+}
+
+async fn resolve_swarm_driver_session(
+    ctx: &SwarmControlContext<'_>,
+    caller_session_id: Option<&str>,
+    target_swarm_id: Option<&str>,
+    owner_session_id: Option<&str>,
+    fallback_session_id: Option<&str>,
+) -> Option<String> {
+    let members = ctx.swarm_members.read().await;
+    if let Some(owner) = owner_session_id
+        && let Some(m) = members.get(owner)
+        && (target_swarm_id.is_none() || m.swarm_id.as_deref() == target_swarm_id)
+    {
+        return Some(owner.to_string());
+    }
+    if let Some(sid) = target_swarm_id {
+        let coords = ctx.swarm_coordinators.read().await;
+        if let Some(coord) = coords.get(sid)
+            && members.contains_key(coord)
+        {
+            return Some(coord.clone());
+        }
+    }
+    if let Some(caller) = caller_session_id
+        && !caller.is_empty()
+        && let Some(m) = members.get(caller)
+        && (target_swarm_id.is_none() || m.swarm_id.as_deref() == target_swarm_id)
+    {
+        return Some(caller.to_string());
+    }
+    if let Some(sid) = target_swarm_id
+        && let Some(any) = members
+            .values()
+            .find(|m| m.swarm_id.as_deref() == Some(sid) && m.role == "coordinator")
+            .or_else(|| members.values().find(|m| m.swarm_id.as_deref() == Some(sid)))
+    {
+        return Some(any.session_id.clone());
+    }
+    if let Some(fb) = fallback_session_id
+        && members.contains_key(fb)
+    {
+        return Some(fb.to_string());
+    }
+    members
+        .values()
+        .find(|m| m.role == "coordinator" && m.swarm_id.is_some())
+        .or_else(|| members.values().find(|m| m.swarm_id.is_some()))
+        .map(|m| m.session_id.clone())
+}
+
+async fn ensure_coordinator_for_swarm_spawn(
+    ctx: &SwarmControlContext<'_>,
+    caller_session_id: Option<&str>,
+    working_dir: Option<&str>,
+) -> Result<String> {
+    if let Some(caller) = caller_session_id
+        && !caller.is_empty()
+    {
+        let already_in_swarm = {
+            let members = ctx.swarm_members.read().await;
+            members
+                .get(caller)
+                .is_some_and(|m| m.swarm_id.is_some())
+        };
+        if already_in_swarm {
+            return Ok(caller.to_string());
+        }
+        // Attach the caller into a swarm if it's a registered member without swarm_id.
+        let mut members = ctx.swarm_members.write().await;
+        if let Some(member) = members.get_mut(caller) {
+            let sid = member
+                .swarm_id
+                .clone()
+                .or_else(|| super::swarm_id_for_session(caller))
+                .unwrap_or_else(|| format!("swarm-{caller}"));
+            member.swarm_id = Some(sid.clone());
+            member.swarm_enabled = true;
+            if member.role.is_empty() {
+                member.role = "coordinator".to_string();
+            }
+            drop(members);
+            ctx.swarms_by_id
+                .write()
+                .await
+                .entry(sid.clone())
+                .or_default()
+                .insert(caller.to_string());
+            ctx.swarm_coordinators
+                .write()
+                .await
+                .entry(sid)
+                .or_insert_with(|| caller.to_string());
+            return Ok(caller.to_string());
+        }
+    }
+
+    // Global scope (or unattached caller): prefer an existing live coordinator
+    // matching working_dir (if given), otherwise any live coordinator.
+    {
+        let members = ctx.swarm_members.read().await;
+        let coords = ctx.swarm_coordinators.read().await;
+        let desired_dir = working_dir.map(std::path::Path::new);
+        if let Some(dir) = desired_dir
+            && let Some(coord_id) = coords.values().find(|cid| {
+                members.get(*cid).is_some_and(|m| {
+                    m.swarm_id.is_some() && m.working_dir.as_deref() == Some(dir)
+                })
+            })
+        {
+            return Ok(coord_id.clone());
+        }
+        if let Some(coord_id) = coords
+            .values()
+            .find(|cid| members.get(*cid).is_some_and(|m| m.swarm_id.is_some()))
+        {
+            return Ok(coord_id.clone());
+        }
+        if let Some(member) = members
+            .values()
+            .find(|m| m.swarm_id.is_some() && m.report_back_to_session_id.is_none())
+        {
+            return Ok(member.session_id.clone());
+        }
+    }
+
+    // No coordinator exists yet: spin up a headless coordinator session cleanly.
+    let cmd = match working_dir {
+        Some(dir) if !dir.trim().is_empty() => format!("create_session:{}", dir.trim()),
+        _ => "create_session".to_string(),
+    };
+    let result_json = super::headless::create_headless_session(
+        ctx.sessions,
+        ctx.global_session_id,
+        ctx.provider_template,
+        &cmd,
+        ctx.swarm_members,
+        ctx.swarms_by_id,
+        ctx.swarm_coordinators,
+        ctx.swarm_plans,
+        ctx.soft_interrupt_queues,
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(Arc::clone(ctx.mcp_pool)),
+        None,
+        super::headless::HeadlessMemoryScope::RealProject,
+    )
+    .await?;
+    let coord_id = serde_json::from_str::<Value>(&result_json)
+        .ok()
+        .and_then(|v| v.get("session_id").and_then(Value::as_str).map(str::to_string))
+        .ok_or_else(|| anyhow::anyhow!("Failed to parse coordinator session id"))?;
+
+    let swarm_id = {
+        let mut members = ctx.swarm_members.write().await;
+        if let Some(member) = members.get_mut(&coord_id) {
+            let sid = member
+                .swarm_id
+                .clone()
+                .or_else(|| super::swarm_id_for_session(&coord_id))
+                .unwrap_or_else(|| format!("swarm-{coord_id}"));
+            member.swarm_id = Some(sid.clone());
+            member.swarm_enabled = true;
+            member.role = "coordinator".to_string();
+            member.friendly_name = Some("coordinator".to_string());
+            sid
+        } else {
+            format!("swarm-{coord_id}")
+        }
+    };
+    ctx.swarms_by_id
+        .write()
+        .await
+        .entry(swarm_id.clone())
+        .or_default()
+        .insert(coord_id.clone());
+    ctx.swarm_coordinators
+        .write()
+        .await
+        .insert(swarm_id, coord_id.clone());
+    Ok(coord_id)
+}
+
+pub(super) async fn execute_swarm_command(
+    ctx: &SwarmControlContext<'_>,
+    caller_session_id: Option<&str>,
+    swarm_enabled: bool,
+    args: &[String],
+) -> Result<(Value, String)> {
+    let sub = args
+        .first()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_else(|| "status".to_string());
+    match sub.as_str() {
+        "status" | "show" | "stats" | "list" | "board" => {
+            if args.len() > 1 {
+                bail!("Usage: /swarm [status|show|list|board|spawn|stop|resume|dm|broadcast]");
+            }
+            let data = super::client_lifecycle::build_live_swarm_snapshot(
+                &sub,
+                caller_session_id.unwrap_or(""),
+                swarm_enabled,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        "spawn" => {
+            let parsed = parse_swarm_spawn_args(&args[1..])?;
+            let coord_id = ensure_coordinator_for_swarm_spawn(
+                ctx,
+                caller_session_id,
+                parsed.working_dir.as_deref(),
+            )
+            .await?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let nonce = Some(crate::id::new_id("swarm_spawn"));
+            let label = parsed.name.clone().or_else(|| parsed.task.clone());
+            // Default API/Desktop spawns to headless so workers stream inside the daemon
+            // instead of popping external terminal windows unless `--mode` overrides it.
+            let spawn_mode = Some(
+                parsed
+                    .spawn_mode
+                    .unwrap_or(crate::config::SwarmSpawnMode::Headless),
+            );
+            super::comm_session::handle_comm_spawn(
+                0,
+                coord_id.clone(),
+                None,
+                parsed.working_dir.clone(),
+                parsed.task.clone(),
+                nonce,
+                spawn_mode,
+                parsed.model.clone(),
+                parsed.effort.clone(),
+                label,
+                &tx,
+                ctx.sessions,
+                ctx.global_session_id,
+                ctx.provider_template,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.channel_subscriptions,
+                ctx.channel_subscriptions_by_session,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
+                ctx.mcp_pool,
+                ctx.soft_interrupt_queues,
+                ctx.swarm_mutation_runtime,
+                ctx.client_connections,
+            )
+            .await;
+            let mut spawned_id: Option<String> = None;
+            while let Ok(event) = rx.try_recv() {
+                match event {
+                    crate::protocol::ServerEvent::CommSpawnResponse { new_session_id, .. } => {
+                        spawned_id = Some(new_session_id);
+                    }
+                    crate::protocol::ServerEvent::Error { message, .. } => {
+                        bail!("{message}");
+                    }
+                    _ => {}
+                }
+            }
+            let spawned_id = spawned_id
+                .ok_or_else(|| anyhow::anyhow!("Swarm spawn completed without returning a session id"))?;
+            if let Some(ref explicit_name) = parsed.name {
+                let mut members = ctx.swarm_members.write().await;
+                if let Some(member) = members.get_mut(&spawned_id) {
+                    member.friendly_name = Some(explicit_name.clone());
+                }
+            }
+            let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                "spawn",
+                caller_session_id.unwrap_or(&coord_id),
+                true,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("spawned_session_id".into(), json!(spawned_id));
+                obj.insert("coordinator_session_id".into(), json!(coord_id));
+            }
+            let message = format!("Spawned swarm worker `{spawned_id}`.");
+            Ok((data, message))
+        }
+        "stop" => {
+            let rest = &args[1..];
+            let Some(target_arg) = rest.first().map(String::as_str) else {
+                bail!("Usage: /swarm stop <session_id|name|all> [--force]");
+            };
+            let force = rest.iter().any(|a| a == "--force") || caller_session_id.is_none();
+            if target_arg.eq_ignore_ascii_case("all") {
+                let targets: Vec<(String, Option<String>, Option<String>)> = {
+                    let members = ctx.swarm_members.read().await;
+                    members
+                        .values()
+                        .filter(|m| m.role != "coordinator" && m.swarm_id.is_some())
+                        .map(|m| {
+                            (
+                                m.session_id.clone(),
+                                m.swarm_id.clone(),
+                                m.report_back_to_session_id.clone(),
+                            )
+                        })
+                        .collect()
+                };
+                let mut stopped = Vec::new();
+                for (target_sid, swarm_id, owner) in targets {
+                    let driver = resolve_swarm_driver_session(
+                        ctx,
+                        caller_session_id,
+                        swarm_id.as_deref(),
+                        owner.as_deref(),
+                        Some(&target_sid),
+                    )
+                    .await
+                    .unwrap_or_else(|| target_sid.clone());
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                    super::comm_session::handle_comm_stop(
+                        0,
+                        driver,
+                        target_sid.clone(),
+                        true,
+                        &tx,
+                        ctx.sessions,
+                        ctx.swarm_members,
+                        ctx.swarms_by_id,
+                        ctx.swarm_coordinators,
+                        ctx.swarm_plans,
+                        ctx.channel_subscriptions,
+                        ctx.channel_subscriptions_by_session,
+                        ctx.event_history,
+                        ctx.event_counter,
+                        ctx.swarm_event_tx,
+                        ctx.soft_interrupt_queues,
+                        ctx.swarm_mutation_runtime,
+                    )
+                    .await;
+                    let mut had_err = false;
+                    while let Ok(ev) = rx.try_recv() {
+                        if matches!(ev, crate::protocol::ServerEvent::Error { .. }) {
+                            had_err = true;
+                        }
+                    }
+                    if !had_err {
+                        stopped.push(target_sid);
+                    }
+                }
+                let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                    "stop",
+                    caller_session_id.unwrap_or(""),
+                    swarm_enabled,
+                    ctx.swarm_members,
+                    ctx.swarms_by_id,
+                    ctx.swarm_coordinators,
+                    ctx.swarm_plans,
+                    ctx.event_history,
+                )
+                .await;
+                if let Some(obj) = data.as_object_mut() {
+                    obj.insert("stopped_session_ids".into(), json!(stopped));
+                }
+                let message = format!("Stopped {} swarm worker(s).", stopped.len());
+                return Ok((data, message));
+            }
+            let (target_sid, swarm_id, owner) =
+                resolve_swarm_member_target(target_arg, ctx.swarm_members).await?;
+            let driver = resolve_swarm_driver_session(
+                ctx,
+                caller_session_id,
+                swarm_id.as_deref(),
+                owner.as_deref(),
+                Some(&target_sid),
+            )
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No active swarm found for `{target_arg}`."))?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            super::comm_session::handle_comm_stop(
+                0,
+                driver,
+                target_sid.clone(),
+                force,
+                &tx,
+                ctx.sessions,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.channel_subscriptions,
+                ctx.channel_subscriptions_by_session,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
+                ctx.soft_interrupt_queues,
+                ctx.swarm_mutation_runtime,
+            )
+            .await;
+            while let Ok(event) = rx.try_recv() {
+                if let crate::protocol::ServerEvent::Error { message, .. } = event {
+                    bail!("{message}");
+                }
+            }
+            let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                "stop",
+                caller_session_id.unwrap_or(""),
+                swarm_enabled,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("stopped_session_id".into(), json!(target_sid));
+            }
+            Ok((data, format!("Stopped swarm worker `{target_sid}`.")))
+        }
+        "resume" | "wake" => {
+            let rest = &args[1..];
+            let Some(target_arg) = rest.first().map(String::as_str) else {
+                bail!("Usage: /swarm resume <session_id|name> [message...]");
+            };
+            let note = if rest.len() > 1 {
+                let joined = rest[1..].join(" ").trim().to_string();
+                (!joined.is_empty()).then_some(joined)
+            } else {
+                None
+            };
+            let (target_sid, swarm_id, owner) =
+                resolve_swarm_member_target(target_arg, ctx.swarm_members).await?;
+            let driver = resolve_swarm_driver_session(
+                ctx,
+                caller_session_id,
+                swarm_id.as_deref(),
+                owner.as_deref(),
+                Some(&target_sid),
+            )
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No active swarm coordinator found for `{target_arg}`."))?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            super::comm_control::handle_comm_task_control(
+                0,
+                driver,
+                "resume".to_string(),
+                String::new(),
+                Some(target_sid.clone()),
+                note,
+                &tx,
+                ctx.sessions,
+                ctx.soft_interrupt_queues,
+                ctx.client_connections,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_plans,
+                ctx.swarm_coordinators,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
+                ctx.swarm_mutation_runtime,
+            )
+            .await;
+            while let Ok(event) = rx.try_recv() {
+                if let crate::protocol::ServerEvent::Error { message, .. } = event {
+                    bail!("{message}");
+                }
+            }
+            let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                "resume",
+                caller_session_id.unwrap_or(""),
+                swarm_enabled,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("resumed_session_id".into(), json!(target_sid));
+            }
+            Ok((data, format!("Resumed swarm worker `{target_sid}`.")))
+        }
+        "dm" => {
+            let rest = &args[1..];
+            if rest.len() < 2 {
+                bail!("Usage: /swarm dm <session_id|name> <message...>");
+            }
+            let target_arg = &rest[0];
+            let message_text = rest[1..].join(" ").trim().to_string();
+            if message_text.is_empty() {
+                bail!("DM message must not be empty.");
+            }
+            let (target_sid, swarm_id, owner) =
+                resolve_swarm_member_target(target_arg, ctx.swarm_members).await?;
+            let from_session = resolve_swarm_driver_session(
+                ctx,
+                caller_session_id,
+                swarm_id.as_deref(),
+                owner.as_deref(),
+                Some(&target_sid),
+            )
+            .await
+            .ok_or_else(|| anyhow::anyhow!("No active swarm found for `{target_arg}`."))?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            super::client_comm::handle_comm_message(
+                0,
+                from_session,
+                message_text,
+                Some(target_sid.clone()),
+                None,
+                None,
+                Some(true),
+                None,
+                None,
+                true,
+                &tx,
+                ctx.sessions,
+                ctx.soft_interrupt_queues,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.channel_subscriptions,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
+                ctx.client_connections,
+            )
+            .await;
+            while let Ok(event) = rx.try_recv() {
+                if let crate::protocol::ServerEvent::Error { message, .. } = event {
+                    bail!("{message}");
+                }
+            }
+            let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                "dm",
+                caller_session_id.unwrap_or(""),
+                swarm_enabled,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("target_session_id".into(), json!(target_sid));
+                obj.insert("delivered".into(), json!(true));
+            }
+            Ok((data, format!("Sent message to swarm worker `{target_sid}`.")))
+        }
+        "broadcast" => {
+            let message_text = args[1..].join(" ").trim().to_string();
+            if message_text.is_empty() {
+                bail!("Usage: /swarm broadcast <message...>");
+            }
+            let from_session =
+                resolve_swarm_driver_session(ctx, caller_session_id, None, None, None)
+                    .await
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("No active swarm is running. Spawn a worker first.")
+                    })?;
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            super::client_comm::handle_comm_message(
+                0,
+                from_session,
+                message_text,
+                None,
+                None,
+                None,
+                Some(true),
+                None,
+                None,
+                false,
+                &tx,
+                ctx.sessions,
+                ctx.soft_interrupt_queues,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.channel_subscriptions,
+                ctx.event_history,
+                ctx.event_counter,
+                ctx.swarm_event_tx,
+                ctx.client_connections,
+            )
+            .await;
+            while let Ok(event) = rx.try_recv() {
+                if let crate::protocol::ServerEvent::Error { message, .. } = event {
+                    bail!("{message}");
+                }
+            }
+            let mut data = super::client_lifecycle::build_live_swarm_snapshot(
+                "broadcast",
+                caller_session_id.unwrap_or(""),
+                swarm_enabled,
+                ctx.swarm_members,
+                ctx.swarms_by_id,
+                ctx.swarm_coordinators,
+                ctx.swarm_plans,
+                ctx.event_history,
+            )
+            .await;
+            if let Some(obj) = data.as_object_mut() {
+                obj.insert("broadcast".into(), json!(true));
+            }
+            Ok((data, "Broadcasted message to active swarm.".into()))
+        }
+        _ => bail!(
+            "Usage: /swarm [status|show|list|board|on|off|toggle|spawn|stop|resume|dm|broadcast]"
+        ),
+    }
+}
+
 pub(super) async fn handle_global_runtime_command(
     id: u64,
     command: &str,
     args: &[String],
-    provider_template: &Arc<dyn crate::provider::Provider>,
-    mcp_pool: Option<&Arc<crate::mcp::SharedMcpPool>>,
-    swarm_members: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
-    swarms_by_id: &Arc<
-        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
-    >,
-    swarm_coordinators: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
-    swarm_plans: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::VersionedPlan>>>,
-    event_history: &Arc<tokio::sync::RwLock<std::collections::VecDeque<super::SwarmEvent>>>,
+    ctx: &SwarmControlContext<'_>,
     client_event_tx: &tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>,
 ) {
-    match execute_global(
-        command,
-        args,
-        provider_template,
-        mcp_pool,
-        swarm_members,
-        swarms_by_id,
-        swarm_coordinators,
-        swarm_plans,
-        event_history,
-    )
-    .await
-    {
+    match execute_global(command, args, ctx).await {
         Ok((data, message)) => {
             let _ = client_event_tx.send(crate::protocol::ServerEvent::RuntimeCommandResult {
                 id,
@@ -556,20 +1471,13 @@ pub(super) async fn handle_global_runtime_command(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn execute_global(
     command: &str,
     args: &[String],
-    provider_template: &Arc<dyn crate::provider::Provider>,
-    mcp_pool: Option<&Arc<crate::mcp::SharedMcpPool>>,
-    swarm_members: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
-    swarms_by_id: &Arc<
-        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
-    >,
-    swarm_coordinators: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
-    swarm_plans: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::VersionedPlan>>>,
-    event_history: &Arc<tokio::sync::RwLock<std::collections::VecDeque<super::SwarmEvent>>>,
+    ctx: &SwarmControlContext<'_>,
 ) -> Result<(Value, String)> {
+    let provider_template = ctx.provider_template;
+    let mcp_pool = Some(ctx.mcp_pool);
     let parsed: RuntimeCommand = serde_json::from_value(json!(command))?;
     if !parsed.supports_global_scope() {
         bail!(
@@ -629,24 +1537,8 @@ pub(super) async fn execute_global(
             Ok((data, message))
         }
         RuntimeCommand::Swarm => {
-            let sub = args.first().map(String::as_str).unwrap_or("status");
-            if !matches!(sub, "status" | "show" | "stats" | "list" | "board") || args.len() > 1 {
-                bail!("Usage: /swarm [status|show|list|board]");
-            }
             let config = crate::config::Config::load();
-            let data = super::client_lifecycle::build_live_swarm_snapshot(
-                sub,
-                "",
-                config.features.swarm,
-                swarm_members,
-                swarms_by_id,
-                swarm_coordinators,
-                swarm_plans,
-                event_history,
-            )
-            .await;
-            let message = serde_json::to_string_pretty(&data)?;
-            Ok((data, message))
+            execute_swarm_command(ctx, None, config.features.swarm, args).await
         }
         RuntimeCommand::Agents => {
             let effective_args = match args.split_first() {
@@ -697,7 +1589,7 @@ pub(super) async fn execute_global(
                 [] => {}
                 [arg] if matches!(arg.as_str(), "status" | "show") => {}
                 [model] => {
-                    let next = if model == "default" {
+                    let next = if is_subagent_clear_sentinel(model) {
                         None
                     } else {
                         Some(model.as_str())
@@ -712,19 +1604,63 @@ pub(super) async fn execute_global(
                 "configured_default": cfg.agents.swarm_model,
                 "inherit_model": provider_template.model(),
                 "models": provider_template.available_models_for_switching(),
+                "routes": provider_template.model_routes(),
             });
             let message = serde_json::to_string_pretty(&data)?;
             Ok((data, message))
         }
-        RuntimeCommand::Mcp if args.first().map(String::as_str) == Some("reload") => {
+        RuntimeCommand::Mcp
+            if args
+                .first()
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref()
+                == Some("reload") =>
+        {
+            let (working_dir, _) = strip_working_dir_arg(args, None)?;
             let (connected_count, errors) = if let Some(pool) = mcp_pool {
                 pool.reload().await
             } else {
                 (0, Vec::new())
             };
-            let configured_count =
-                tokio::task::spawn_blocking(|| crate::mcp::McpConfig::load_for_dir(None).servers.len())
-                    .await?;
+            // Reconcile MCP tools on idle attached sessions without blocking active turns.
+            let active_agents: Vec<Arc<tokio::sync::Mutex<crate::agent::Agent>>> = {
+                let sessions = ctx.sessions.read().await;
+                sessions.values().cloned().collect()
+            };
+            let mut reconciled_sessions = 0usize;
+            for agent_arc in active_agents {
+                if let Ok(guard) = agent_arc.try_lock() {
+                    let reg = guard.registry();
+                    if reg.tool_names().await.iter().any(|n| n == "mcp") {
+                        let tool_ctx = crate::tool::ToolContext {
+                            session_id: guard.session_id().to_string(),
+                            message_id: crate::id::new_id("msg"),
+                            tool_call_id: crate::id::new_id("call"),
+                            working_dir: guard.working_dir().map(std::path::PathBuf::from),
+                            stdin_request_tx: None,
+                            graceful_shutdown_signal: None,
+                            execution_mode: crate::tool::ToolExecutionMode::Direct,
+                        };
+                        if reg
+                            .execute(
+                                "mcp",
+                                json!({"action": "reload", "intent": "Reconcile MCP servers after global reload"}),
+                                tool_ctx,
+                            )
+                            .await
+                            .is_ok()
+                        {
+                            reconciled_sessions += 1;
+                        }
+                    }
+                }
+            }
+            let configured_count = tokio::task::spawn_blocking(move || {
+                crate::mcp::McpConfig::load_for_dir(working_dir.as_deref())
+                    .servers
+                    .len()
+            })
+            .await?;
             let error_details: Vec<String> = errors
                 .iter()
                 .map(|(name, err)| format!("{name}: {err}"))
@@ -743,20 +1679,71 @@ pub(super) async fn execute_global(
                 "reloaded": true,
                 "configured_count": configured_count,
                 "connected_count": connected_count,
+                "reconciled_sessions": reconciled_sessions,
                 "errors": error_details,
                 "detail": detail,
             });
             Ok((data, detail))
         }
         RuntimeCommand::Skills => {
-            status_only(args)?;
-            let data = tokio::task::spawn_blocking(global_skills_snapshot).await??;
+            let (working_dir, clean_args) = strip_working_dir_arg(args, None)?;
+            let sub = clean_args
+                .first()
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_else(|| "list".to_string());
+            match sub.as_str() {
+                "list" | "status" | "show" | "stats" => {
+                    if clean_args.len() > 1 {
+                        bail!("Usage: /skills [list|enable <name>|disable <name>|toggle <name>] [--working-dir <path>]");
+                    }
+                }
+                "enable" | "disable" | "toggle" => {
+                    let Some(name) = clean_args.get(1).filter(|s| !s.trim().is_empty()) else {
+                        bail!("Usage: /skills {sub} <skill_name>");
+                    };
+                    match sub.as_str() {
+                        "enable" => {
+                            crate::config::Config::set_skill_disabled(name, false)?;
+                        }
+                        "disable" => {
+                            crate::config::Config::set_skill_disabled(name, true)?;
+                        }
+                        _ => {
+                            crate::config::Config::toggle_skill_disabled(name)?;
+                        }
+                    }
+                    let _ = crate::skill::SkillRegistry::shared_registry()
+                        .write()
+                        .await
+                        .reload_global();
+                }
+                _ => bail!(
+                    "Usage: /skills [list|enable <name>|disable <name>|toggle <name>] [--working-dir <path>]"
+                ),
+            }
+            let data = tokio::task::spawn_blocking(move || {
+                skills_snapshot_for_dir(working_dir.as_deref(), None)
+            })
+            .await??;
             let report = skills_report(&data);
             Ok((data, report))
         }
         RuntimeCommand::Memory => {
+            let (working_dir, clean_args) = strip_working_dir_arg(args, None)?;
+            if clean_args
+                .first()
+                .is_some_and(|s| s.eq_ignore_ascii_case("list"))
+            {
+                let enabled = crate::config::Config::load().features.memory;
+                let data = tokio::task::spawn_blocking(move || {
+                    memory_list_snapshot(working_dir.as_deref(), enabled, "global")
+                })
+                .await??;
+                let message = serde_json::to_string_pretty(&data)?;
+                return Ok((data, message));
+            }
             let cfg = crate::config::Config::load();
-            if let Some(enabled) = boolean_action(args, cfg.features.memory, false)? {
+            if let Some(enabled) = boolean_action(&clean_args, cfg.features.memory, false)? {
                 let mut patch = serde_json::Map::new();
                 patch.insert("features.memory".to_string(), json!(enabled));
                 crate::config::rpc_config::patch_curated_config(&patch)?;
@@ -769,6 +1756,11 @@ pub(super) async fn execute_global(
             });
             let message = serde_json::to_string_pretty(&data)?;
             Ok((data, message))
+        }
+        RuntimeCommand::Overnight
+            if !super::runtime_special_commands::is_lock_free(RuntimeCommand::Overnight, args) =>
+        {
+            super::runtime_special_commands::overnight_start_global(provider_template, args).await
         }
         RuntimeCommand::ProviderTestCoverage => {
             let report = if args.is_empty() {
@@ -793,10 +1785,11 @@ pub(super) async fn execute_global(
         }
         RuntimeCommand::ResumeAll => bail!("ResumeAll is dispatched via its dedicated handler."),
         other => {
-            let ctx = super::runtime_special_commands::LockFreeCommandContext {
+            let lock_ctx = super::runtime_special_commands::LockFreeCommandContext {
                 session_id: String::new(),
                 working_dir: None,
                 registry: None,
+                mcp_pool: mcp_pool.cloned(),
                 provider_name: provider_template.name().to_string(),
                 provider_model: provider_template.model(),
                 provider_context_window: provider_template.context_window(),
@@ -804,7 +1797,7 @@ pub(super) async fn execute_global(
                 route_counts: None,
             };
             if let Some(res) =
-                super::runtime_special_commands::try_execute_lock_free(&ctx, other, args).await
+                super::runtime_special_commands::try_execute_lock_free(&lock_ctx, other, args).await
             {
                 res
             } else {
@@ -817,18 +1810,59 @@ pub(super) async fn execute_global(
     }
 }
 
-fn global_skills_snapshot() -> Result<Value> {
-    let registry = crate::skill::SkillRegistry::load_global()?;
+fn strip_working_dir_arg(
+    args: &[String],
+    default_dir: Option<&std::path::Path>,
+) -> Result<(Option<std::path::PathBuf>, Vec<String>)> {
+    let mut working_dir = default_dir.map(|p| p.to_path_buf());
+    let mut clean = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        if matches!(args[i].as_str(), "--working-dir" | "--cwd") {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("Missing value for {}", args[i]))?;
+            if !val.trim().is_empty() {
+                working_dir = Some(std::path::PathBuf::from(val.trim()));
+            }
+            i += 2;
+        } else {
+            clean.push(args[i].clone());
+            i += 1;
+        }
+    }
+    Ok((working_dir, clean))
+}
+
+fn skills_snapshot_for_dir(
+    working_dir: Option<&std::path::Path>,
+    active_skill: Option<&str>,
+) -> Result<Value> {
+    let (registry, disabled) = crate::skill::SkillRegistry::load_all_for_working_dir(working_dir)?;
     let mut loaded = registry.list();
     loaded.sort_by(|a, b| a.name.cmp(&b.name));
     let skills: Vec<Value> = loaded
         .iter()
         .map(|skill| {
+            let is_disabled = disabled
+                .iter()
+                .any(|d| d.trim().eq_ignore_ascii_case(&skill.name));
+            let tokens = crate::util::estimate_tokens(&skill.content);
+            let scope = if working_dir
+                .is_some_and(|wd| skill.path.starts_with(wd))
+            {
+                "project"
+            } else {
+                "global"
+            };
             json!({
                 "name": skill.name,
                 "description": skill.description,
                 "path": skill.path,
                 "allowed_tools": skill.allowed_tools,
+                "enabled": !is_disabled,
+                "tokens": tokens,
+                "scope": scope,
             })
         })
         .collect();
@@ -847,9 +1881,234 @@ fn global_skills_snapshot() -> Result<Value> {
         .collect();
     Ok(json!({
         "skills": skills,
+        "disabled": disabled,
         "endorsed": endorsed,
-        "active_skill": Value::Null,
+        "active_skill": active_skill,
     }))
+}
+
+fn memory_list_snapshot(
+    working_dir: Option<&std::path::Path>,
+    enabled: bool,
+    scope_label: &str,
+) -> Result<Value> {
+    let mut instruction_files: Vec<Value> = Vec::new();
+    let mut push_instruction = |path: std::path::PathBuf, scope: &str, label: &str| {
+        if !path.is_file() {
+            return;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let bytes = content.len();
+        let tokens = crate::util::estimate_tokens(&content);
+        let modified_ms = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        let preview: String = content.chars().take(280).collect();
+        instruction_files.push(json!({
+            "name": label,
+            "path": path.display().to_string(),
+            "scope": scope,
+            "bytes": bytes,
+            "tokens": tokens,
+            "modified_ms": modified_ms,
+            "preview": preview,
+        }));
+    };
+
+    if let Some(dir) = working_dir {
+        for (rel, label) in [
+            ("AGENTS.md", "AGENTS.md"),
+            ("RAYU.md", "RAYU.md"),
+            (".rayu/RAYU.md", ".rayu/RAYU.md"),
+            ("RAYU.local.md", "RAYU.local.md"),
+        ] {
+            push_instruction(dir.join(rel), "project", label);
+        }
+    }
+    if let Ok(home_agents) = crate::storage::user_home_path("AGENTS.md") {
+        push_instruction(home_agents, "global", "~/AGENTS.md");
+    }
+    if let Ok(rayu_dir) = crate::storage::rayu_dir() {
+        push_instruction(rayu_dir.join("RAYU.md"), "global", "~/.rayu/RAYU.md");
+    }
+
+    let mut manager = crate::memory::MemoryManager::new();
+    if let Some(dir) = working_dir {
+        manager = manager.with_project_dir(dir);
+    }
+
+    let mut graph_entries: Vec<Value> = Vec::new();
+    let mut push_graph = |graph: crate::memory_graph::MemoryGraph, scope: &str| {
+        let mut entries: Vec<&crate::memory::MemoryEntry> = graph
+            .memories
+            .values()
+            .filter(|e| e.active)
+            .collect();
+        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        for entry in entries.into_iter().take(100) {
+            graph_entries.push(json!({
+                "id": entry.id,
+                "scope": scope,
+                "category": entry.category,
+                "content": entry.content,
+                "tags": entry.tags,
+                "confidence": entry.confidence,
+                "trust": entry.trust,
+                "source": entry.source,
+                "created_at": entry.created_at,
+                "updated_at": entry.updated_at,
+                "tokens": crate::util::estimate_tokens(&entry.content),
+            }));
+        }
+    };
+    if working_dir.is_some()
+        && let Ok(project_graph) = manager.load_project_graph()
+    {
+        push_graph(project_graph, "project");
+    }
+    if let Ok(global_graph) = manager.load_global_graph() {
+        push_graph(global_graph, "global");
+    }
+
+    let jev_provider = crate::memory::memory_sidecar_enabled();
+    Ok(json!({
+        "enabled": enabled,
+        "scope": scope_label,
+        "pipeline_active": crate::memory_agent::is_active(),
+        "jev_provider": jev_provider,
+        "instruction_files": instruction_files,
+        "graph_entries": graph_entries,
+        "instruction_count": instruction_files.len(),
+        "graph_count": graph_entries.len(),
+    }))
+}
+
+pub(super) fn execute_agents_lock_free(
+    session_id: &str,
+    provider: &Arc<dyn crate::provider::Provider>,
+    args: &[String],
+) -> Result<(Value, String)> {
+    let (global, effective_args) = match args.split_first() {
+        Some((scope, rest)) if matches!(scope.as_str(), "global" | "default") => (true, rest),
+        _ => (false, args),
+    };
+    let mut stub_session = crate::session::Session::create_with_id(session_id.to_string(), None, None);
+    let _ = stub_session.refresh_agent_model_overrides();
+    if let Some((first, rest)) = effective_args.split_first()
+        && matches!(first.as_str(), "profile" | "profiles")
+    {
+        let message = crate::agent_profiles::run(&stub_session, global, rest)?;
+        return Ok((
+            session_agents_snapshot_lock_free(&stub_session, provider, global),
+            message,
+        ));
+    }
+    match effective_args {
+        [] => {}
+        [arg]
+            if matches!(
+                arg.as_str(),
+                "show" | "status" | "swarm" | "review" | "judge" | "memory" | "ambient"
+            ) => {}
+        [target, model] => {
+            let model = if model == "default" {
+                None
+            } else {
+                Some(model.clone())
+            };
+            if global {
+                crate::config::Config::set_agent_model_default(target, model.as_deref())?;
+            } else {
+                stub_session.set_agent_model_override(target, model.clone())?;
+            }
+            let resolved = stub_session.effective_agent_model(target, None);
+            let message = format!(
+                "{target} agent model [{}] → {}{}",
+                if global { "global" } else { "session" },
+                model.as_deref().unwrap_or("default"),
+                match (&model, resolved.as_deref()) {
+                    (Some(raw), Some(res)) if raw != res && !global => format!(" ({res})"),
+                    _ => String::new(),
+                }
+            );
+            let mut snapshot = session_agents_snapshot_lock_free(&stub_session, provider, global);
+            if let Some(obj) = snapshot.as_object_mut() {
+                obj.insert("target".into(), json!(target));
+                obj.insert("model".into(), json!(model));
+            }
+            return Ok((snapshot, message));
+        }
+        _ => bail!(
+            "Usage: /agents [global] [swarm|review|judge|memory|ambient] [model|inherit]."
+        ),
+    }
+    let data = session_agents_snapshot_lock_free(&stub_session, provider, global);
+    let message = serde_json::to_string_pretty(&data)?;
+    Ok((data, message))
+}
+
+fn session_agents_snapshot_lock_free(
+    session: &crate::session::Session,
+    provider: &Arc<dyn crate::provider::Provider>,
+    global: bool,
+) -> Value {
+    let config = crate::config::Config::load();
+    let global_profiles = config.agents.profiles.clone();
+    let session_profiles = session.session_agent_profiles();
+    let effective_profiles = session.effective_agent_profiles();
+    let annotated_profiles: Vec<Value> = effective_profiles
+        .iter()
+        .map(|profile| {
+            let scope = if session_profiles
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(&profile.name))
+            {
+                "session"
+            } else {
+                "global"
+            };
+            json!({
+                "name": profile.name,
+                "model": profile.model,
+                "description": profile.description,
+                "effort": profile.effort,
+                "scope": scope,
+            })
+        })
+        .collect();
+    let overrides = crate::session::Session::read_agent_model_overrides(&session.id);
+    let effective = json!({
+        "swarm": session.effective_agent_model("swarm", config.agents.swarm_model.clone()),
+        "memory": session.effective_agent_model("memory", config.agents.memory_model.clone()),
+        "review": session.effective_agent_model("review", config.autoreview.model.clone()),
+        "judge": session.effective_agent_model("judge", config.autojudge.model.clone()),
+        "ambient": session.effective_agent_model("ambient", config.ambient.model.clone()),
+    });
+    json!({
+        "scope": if global { "global" } else { "session" },
+        "defaults": {
+            "swarm": config.agents.swarm_model,
+            "memory": config.agents.memory_model,
+            "review": config.autoreview.model,
+            "judge": config.autojudge.model,
+            "ambient": config.ambient.model,
+        },
+        "overrides": overrides,
+        "effective": effective,
+        "subagent_model": config.agents.swarm_model,
+        "inherit_model": provider.model(),
+        "profiles": annotated_profiles,
+        "global_profiles": global_profiles,
+        "session_profiles": session_profiles,
+        "swarm_allowlist": config.agents.swarm_model_allowlist,
+        "models": provider.available_models_for_switching(),
+        "routes": provider.model_routes(),
+        "config_path": crate::config::Config::path().map(|p| p.display().to_string()),
+    })
 }
 
 fn global_agents_snapshot_json(provider_template: &Arc<dyn crate::provider::Provider>) -> Value {
@@ -874,11 +2133,22 @@ fn global_agents_snapshot_json(provider_template: &Arc<dyn crate::provider::Prov
         "judge": config.autojudge.model,
         "ambient": config.ambient.model,
     });
+    let resolve_global = |raw: &Option<String>| {
+        raw.as_deref()
+            .map(|value| crate::session::resolve_profile_reference(&global_profiles, value))
+    };
+    let effective = json!({
+        "swarm": resolve_global(&config.agents.swarm_model),
+        "memory": resolve_global(&config.agents.memory_model),
+        "review": resolve_global(&config.autoreview.model),
+        "judge": resolve_global(&config.autojudge.model),
+        "ambient": resolve_global(&config.ambient.model),
+    });
     json!({
         "scope": "global",
-        "defaults": defaults.clone(),
+        "defaults": defaults,
         "overrides": json!({}),
-        "effective": defaults,
+        "effective": effective,
         "subagent_model": config.agents.swarm_model,
         "inherit_model": provider_template.model(),
         "profiles": annotated_profiles,
@@ -886,6 +2156,7 @@ fn global_agents_snapshot_json(provider_template: &Arc<dyn crate::provider::Prov
         "session_profiles": Vec::<Value>::new(),
         "swarm_allowlist": config.agents.swarm_model_allowlist,
         "models": provider_template.available_models_for_switching(),
+        "routes": provider_template.model_routes(),
         "config_path": crate::config::Config::path().map(|p| p.display().to_string()),
     })
 }
@@ -1071,6 +2342,7 @@ fn agents_snapshot_json(agent: &crate::agent::Agent, global: bool) -> Value {
         "session_profiles": session_profiles,
         "swarm_allowlist": config.agents.swarm_model_allowlist,
         "models": agent.available_models_for_switching(),
+        "routes": agent.model_routes(),
         "config_path": crate::config::Config::path().map(|p| p.display().to_string()),
     })
 }
@@ -1637,5 +2909,128 @@ mod tests {
         .unwrap();
         assert_eq!(after_rm["session_profiles"].as_array().unwrap().len(), 0);
         assert_eq!(after_rm["global_profiles"].as_array().unwrap().len(), 1);
+
+        // Regression: `/subagent-model global show` must NOT write `"show"` to config.toml.
+        let (sub_show, _) = execute(
+            &mut agent,
+            RuntimeCommand::SubagentModel,
+            &["global".into(), "show".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sub_show["configured_default"], "rayu:claude-sonnet-4-5");
+        assert!(sub_show.get("routes").is_some());
+
+        // Regression: `/subagent-model inherit` clears session subagent_model to None.
+        let (sub_cleared, _) = execute(
+            &mut agent,
+            RuntimeCommand::SubagentModel,
+            &["inherit".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert!(sub_cleared["model"].is_null());
+
+        // Regression: global agents snapshot resolves profile references in `effective` and includes `routes`.
+        let _ = crate::config::Config::set_agent_model_default("review", Some("architect"));
+        let global_snap = global_agents_snapshot_json(&agent.provider_handle());
+        assert_eq!(global_snap["effective"]["review"], "rayu:claude-opus-4-5");
+        assert!(global_snap.get("routes").is_some());
+
+        // Regression: skills disable/enable persists `[skills] disabled` and filters SkillRegistry::load_global.
+        let skill_dir = home.path().join("skills").join("demo-parity-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: demo-parity-skill\ndescription: Parity test skill\n---\nInstructions body.",
+        )
+        .unwrap();
+        let (skills_disabled, _) = execute(
+            &mut agent,
+            RuntimeCommand::Skills,
+            &["disable".into(), "demo-parity-skill".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let disabled_entry = skills_disabled["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "demo-parity-skill")
+            .expect("skill listed even when disabled");
+        assert_eq!(disabled_entry["enabled"], false);
+        assert!(
+            !crate::skill::SkillRegistry::load_global()
+                .unwrap()
+                .contains("demo-parity-skill"),
+            "disabled skill must be excluded from active SkillRegistry"
+        );
+        let (skills_enabled, _) = execute(
+            &mut agent,
+            RuntimeCommand::Skills,
+            &["enable".into(), "demo-parity-skill".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let enabled_entry = skills_enabled["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "demo-parity-skill")
+            .unwrap();
+        assert_eq!(enabled_entry["enabled"], true);
+        assert!(
+            crate::skill::SkillRegistry::load_global()
+                .unwrap()
+                .contains("demo-parity-skill")
+        );
+
+        // Regression: memory list returns instruction_files and graph_entries, and context returns granular breakdown.
+        std::fs::write(home.path().join("AGENTS.md"), "# Test repo instructions\n").unwrap();
+        let (mem_list, _) = execute(
+            &mut agent,
+            RuntimeCommand::Memory,
+            &[
+                "list".into(),
+                "--working-dir".into(),
+                home.path().display().to_string(),
+            ],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        assert!(
+            mem_list["instruction_files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["name"] == "AGENTS.md")
+        );
+        assert!(mem_list["graph_entries"].is_array());
+
+        let (ctx_data, _) = execute(
+            &mut agent,
+            RuntimeCommand::Context,
+            &["status".into()],
+            true,
+            Value::Null,
+        )
+        .await
+        .unwrap();
+        let tb = &ctx_data["token_breakdown"];
+        assert!(tb.get("system_base").is_some());
+        assert!(tb.get("instruction_files").is_some());
+        assert!(tb.get("skills").is_some());
+        assert!(tb.get("builtin_tools").is_some());
+        assert!(tb.get("mcp_tools").is_some());
     }
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.0.3
+
+### Added
+
+- **Container-Responsive Layout Across All VS Code Pane Widths (`240px`–`1440px`):** Rebuilt Chat, Shell, TopBar, Composer, Settings, Agents & Personas, Swarm Mission Control, Plugins/MCP/Skills/Memory, Automations, Remote Access, and Background Processes around local CSS container queries (`@container`), viewport-bounded popovers/drawers, and progressive compact controls so every view fits cleanly from narrow Sidebars to full Editor Panels with zero horizontal overflow.
+- **Unified File-Review Conflict Handling & Force Restore:** Shared mutation pipeline between inline diff cards and turn file summaries with per-file conflict detection, explicit confirmation for Force Restore, and automatic snapshot refresh after partial or uncertain results.
+
+### Changed
+
+- **AI Response Typography Parity:** Matched AI text responses (`agent-answer`, intermediate `work-note` prose, and Markdown paragraphs/lists/blockquotes/tables) to the user message font size (`14px`, `1.6` line height) while keeping thinking/reasoning and tool usage rows at their distinct compact sizes.
+- **Settings Navigation Density:** Collapsed the Settings side rail below `760px` container width to prevent double-sidebar crowding alongside the workspace rail, with automatic active-tab scroll alignment in the compact strip.
+
+### Fixed
+
+- **File & Config Safety:** Required a Rust `file_changes` snapshot for agent Keep/Undo/Redo (removing the unsafe Git `HEAD` fallback that could revert manual or untracked edits), merged MCP config edits atomically while preserving unrelated fields and secrets, rejected malformed MCP JSON, and created skill files exclusively without overwriting existing files.
+- **Strict Session Binding:** Bound queued messages, mid-turn drains, cancellations, permissions, citations, previews, and terminal actions to their originating session and workspace so switching focus never cross-routes actions.
+- **Truthful UI Receipts & Live Model Catalog Sync:** Standardized mutation receipts (`requireOperation`) across Swarm, Automations, Settings, and Feedback to eliminate false-success updates, surfaced negotiated protocol version and capabilities truthfully, verified Changes commands route to native VS Code Source Control, and synchronized open Composer, Settings, and Agents model pickers with live catalog invalidation and explicit cache-bypassing refresh.
+
 ## 3.0.2
 
 ### Added

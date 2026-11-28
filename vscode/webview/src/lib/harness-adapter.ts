@@ -1,3 +1,4 @@
+import { formatRayuCredits } from "@rayu-dev/rayucode-sdk/browser";
 import {
   extractActiveEditorSelectionFromPrompt,
   filterVisibleHistory,
@@ -807,11 +808,11 @@ export function mapHistoryMessagesToTurns(
     const kvCachePct =
       cacheTotal > 0 && lastCacheReadTokens
         ? Math.min(99, Math.round((lastCacheReadTokens / cacheTotal) * 100))
-        : 94;
+        : 0;
     const credits =
-      typeof lastRayuCredits === "number"
-        ? `${lastRayuCredits.toFixed(2)} cr`
-        : "0.00 cr";
+      typeof lastRayuCredits === "number" && Number.isFinite(lastRayuCredits)
+        ? `${formatRayuCredits(lastRayuCredits)} cr`
+        : "";
     const finalAttempt =
       attempts.length > 0 ? attempts[attempts.length - 1] : null;
     const finalAttemptId = finalAttempt ? finalAttempt.id : null;
@@ -1118,8 +1119,8 @@ export function createHarnessStreamTracker(): HarnessStreamTracker {
     phaseHasCommands: false,
     phaseHasSearches: false,
     phaseCommandCount: 0,
-    lastCredits: "0.00 cr",
-    lastKvCachePct: 94,
+    lastCredits: "",
+    lastKvCachePct: 0,
   };
 }
 
@@ -1422,6 +1423,8 @@ export function mapHarnessFrameToLiveEvents(
     tracker.hasBufferedText = false;
     tracker.textDonePendingTool = false;
     tracker.hasStreamedTextInPhase = false;
+    tracker.lastCredits = "";
+    tracker.lastKvCachePct = 0;
     resetTrackerPhase(tracker);
     tracker.toolInputs.clear();
     return [];
@@ -1896,9 +1899,14 @@ export function mapHarnessFrameToLiveEvents(
     }
     case "rayu_credits": {
       const turnCredits =
-        typeof frame.turn_credits === "number" ? frame.turn_credits : undefined;
+        typeof frame.turn_credits === "number" &&
+        Number.isFinite(frame.turn_credits)
+          ? frame.turn_credits
+          : typeof frame.credits === "number" && Number.isFinite(frame.credits)
+            ? frame.credits
+            : undefined;
       if (turnCredits !== undefined) {
-        tracker.lastCredits = `${turnCredits.toFixed(2)} cr`;
+        tracker.lastCredits = `${formatRayuCredits(turnCredits)} cr`;
       }
       return [];
     }

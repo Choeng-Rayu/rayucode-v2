@@ -136,6 +136,7 @@ fn recent_history_preserves_archive_prompt_offset_and_rebases_images() {
         response_stats: None, role: "system".to_owned(),
         content: "Earlier conversation compacted - 10 historical messages hidden from the UI. Scroll to the top to load older history. Hidden user prompts: 7.".to_owned(),
         tool_calls: None, tool_data: None,
+ is_engine_internal: false,
     });
     let image = |ordinal| crate::session::RenderedImage {
         media_type: "image/png".to_owned(),

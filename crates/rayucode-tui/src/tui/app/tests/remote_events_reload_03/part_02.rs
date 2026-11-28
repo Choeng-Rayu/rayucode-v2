@@ -37,6 +37,7 @@ fn compacted_prompt_marker_hydrates_remote_stub_and_composer_numbering() {
             content: message.content,
             tool_calls: None,
             tool_data: None,
+            is_engine_internal: false,
             response_stats: None,
         })
         .collect();
@@ -194,6 +195,7 @@ fn test_duplicate_history_for_same_session_is_ignored_after_fast_path_restore() 
                 content: "server history replay".to_string(),
                 tool_calls: None,
                 tool_data: None,
+                is_engine_internal: false,
             }],
             images: vec![],
             provider_name: Some("claude".to_string()),
@@ -396,6 +398,7 @@ fn test_compacted_history_event_applies_expanded_window() {
                     content: "Earlier conversation compacted - 64 older historical messages hidden. Showing 64 of 128 compacted messages. Scroll to the top to load more.".to_string(),
                     tool_calls: None,
                     tool_data: None,
+                    is_engine_internal: false,
                 },
                 crate::protocol::HistoryMessage {
                     tool_duration_ms: None,
@@ -404,6 +407,7 @@ fn test_compacted_history_event_applies_expanded_window() {
                     content: "older response".to_string(),
                     tool_calls: None,
                     tool_data: None,
+                    is_engine_internal: false,
                 },
                 crate::protocol::HistoryMessage {
                     tool_duration_ms: None,
@@ -412,6 +416,7 @@ fn test_compacted_history_event_applies_expanded_window() {
                     content: "current prompt".to_string(),
                     tool_calls: None,
                     tool_data: None,
+                    is_engine_internal: false,
                 },
             ],
             images: vec![],
@@ -791,6 +796,7 @@ fn test_delta_history_rebuilds_transcript_from_advertised_prefix() {
         content: "new since reload".to_string(),
         tool_calls: None,
         tool_data: None,
+        is_engine_internal: false,
     }];
     let mut event = delta_history_event("ses_delta", tail, Some(2));
     if let crate::protocol::ServerEvent::History {

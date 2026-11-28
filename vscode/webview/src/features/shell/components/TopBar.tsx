@@ -54,6 +54,7 @@ export function MoreOptionsMenu({
   const accent = useAppStore((s) => s.accent);
   const setKeepAwake = useAppStore((s) => s.setKeepAwake);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
+  const openSettingsSection = useAppStore((s) => s.openSettingsSection);
   const cycleTheme = useAppStore((s) => s.cycleTheme);
   const toggleAccent = useAppStore((s) => s.toggleAccent);
 
@@ -123,6 +124,14 @@ export function MoreOptionsMenu({
         <DropdownMenuItem onClick={toggleBackgroundDrawer}>
           <NavGlyph icon="processes" className="size-3.5" />
           <span>Background processes</span>
+        </DropdownMenuItem>
+
+        <DropdownMenuItem
+          data-testid="more-menu-swarm"
+          onClick={() => openSettingsSection("swarm")}
+        >
+          <NavGlyph icon="swarm" className="size-3.5" />
+          <span>Swarm mission control</span>
         </DropdownMenuItem>
 
         {surface === "sidebar" && (

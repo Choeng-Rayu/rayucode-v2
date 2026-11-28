@@ -338,6 +338,8 @@ pub(in crate::tui::app) fn handle_server_event(
     // disturbing any active scoped turn or falling into prompt-retry handlers.
     if terminal && identity.is_none() {
         if let ServerEvent::Done { id } = &event {
+            remote.finish_split_request(*id);
+            remote.finish_subagent_request(*id);
             remote.finish_control_request(*id);
         } else if let ServerEvent::Error { id, message, .. } = &event {
             if app.pending_agent_model_request_id == Some(*id) {
@@ -369,6 +371,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 remote.finish_control_request(*id);
                 super::input_dispatch::finish_remote_split_launch(app);
                 app.pending_split_request = false;
+                app.pending_transfer_request = false;
                 app.pending_split_started_at = None;
                 app.pending_split_startup_message = None;
                 app.pending_split_parent_session_id = None;
@@ -378,6 +381,13 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.pending_split_label = None;
                 app.push_display_message(DisplayMessage::error(message.clone()));
                 app.set_status_notice("Split failed");
+                return true;
+            }
+            if remote.finish_subagent_request(*id) {
+                remote.finish_control_request(*id);
+                app.subagent_status = None;
+                app.push_display_message(DisplayMessage::error(message.clone()));
+                app.set_status_notice("Subagent failed");
                 return true;
             }
             if remote.finish_control_request(*id) {
@@ -1974,6 +1984,7 @@ fn handle_server_event_inner(
                             content: msg.content,
                             tool_calls: (!msg.tool_calls.is_empty()).then_some(msg.tool_calls),
                             tool_data: msg.tool_data,
+                            is_engine_internal: false,
                         }),
                 );
                 messages.extend(tail);

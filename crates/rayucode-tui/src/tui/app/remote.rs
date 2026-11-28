@@ -1373,6 +1373,7 @@ pub(super) fn handle_disconnect(
     app.pending_remote_file_change_request_ids.clear();
     app.pending_remote_rewind_notice = None;
     app.pending_split_request = false;
+    app.pending_transfer_request = false;
     app.pending_split_started_at = None;
     app.pending_split_startup_message = None;
     app.pending_split_parent_session_id = None;

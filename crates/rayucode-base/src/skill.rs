@@ -262,14 +262,8 @@ impl SkillRegistry {
         Self::load_for_working_dir(None)
     }
 
-    /// Load only the shared global skill sources: Claude Code plugin installs,
-    /// `~/.rayu/skills/`, and `~/.agents/skills/`.
-    ///
-    /// This is what the process-wide shared registry holds. Project-local
-    /// skills are intentionally excluded: they are a per-session overlay
-    /// resolved from the active session's workspace root (issue #457), never
-    /// from the daemon's startup cwd, and never shared across sessions.
-    pub fn load_global() -> Result<Self> {
+    /// Load all global skills WITHOUT filtering out `config.skills.disabled`.
+    fn load_global_unfiltered() -> Result<Self> {
         // First-run import from Claude Code / Codex CLI
         Self::import_from_external();
 
@@ -311,6 +305,26 @@ impl SkillRegistry {
         Ok(registry)
     }
 
+    fn apply_disabled_filter(&mut self) {
+        let disabled = &crate::config::Config::load().skills;
+        if disabled.disabled.is_empty() {
+            return;
+        }
+        self.skills
+            .retain(|name, skill| !disabled.is_disabled(name) && !disabled.is_disabled(&skill.name));
+    }
+
+    /// Load only the shared global skill sources: Claude Code plugin installs,
+    /// `~/.rayu/skills/`, and `~/.agents/skills/`.
+    ///
+    /// Skills listed in `[skills] disabled` in `~/.rayu/config.toml` are filtered
+    /// out so disabled skills are excluded from prompts and tool routing.
+    pub fn load_global() -> Result<Self> {
+        let mut registry = Self::load_global_unfiltered()?;
+        registry.apply_disabled_filter();
+        Ok(registry)
+    }
+
     /// Load only the project-local skill overlay for a workspace root:
     /// `./.rayu/skills/`, `./.agents/skills/`, and `./.claude/skills/`.
     ///
@@ -321,7 +335,20 @@ impl SkillRegistry {
     pub fn load_project_overlay(working_dir: Option<&Path>) -> Result<Self> {
         let mut overlay = Self::default();
         overlay.load_project_local_dirs(working_dir)?;
+        overlay.apply_disabled_filter();
         Ok(overlay)
+    }
+
+    /// Load ALL global + optional project-local skills including those disabled
+    /// in `config.skills.disabled`, returning `(registry, disabled_names)` for
+    /// management UIs and CLI listings.
+    pub fn load_all_for_working_dir(working_dir: Option<&Path>) -> Result<(Self, Vec<String>)> {
+        let mut registry = Self::load_global_unfiltered()?;
+        if working_dir.is_some() {
+            registry.load_project_local_dirs(working_dir)?;
+        }
+        let disabled = crate::config::Config::load().skills.disabled;
+        Ok((registry, disabled))
     }
 
     /// Merge a project-local overlay into this registry. Overlay skills win

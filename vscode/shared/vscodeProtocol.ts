@@ -538,22 +538,44 @@ export const SwarmAgentStatusSchema = z.enum([
 ]);
 export type SwarmAgentStatus = z.infer<typeof SwarmAgentStatusSchema>;
 
+export const SwarmTodoItemViewSchema = z.object({
+  content: z.string(),
+  status: z.string(),
+});
+export type SwarmTodoItemView = z.infer<typeof SwarmTodoItemViewSchema>;
+
 export const SwarmAgentViewSchema = z.object({
   agentId: z.string(),
   sessionId: z.string(),
+  swarmId: z.string().optional(),
   label: z.string(),
+  taskLabel: z.string().optional(),
   role: z.enum(["coordinator", "worker"]),
   depth: z.number().int().nonnegative(),
   status: SwarmAgentStatusSchema,
+  liveStatus: z.string().optional(),
+  waitReason: z.string().optional(),
   model: z.string().optional(),
   provider: z.string().optional(),
+  effort: z.string().optional(),
   currentIntent: z.string().optional(),
+  outputTail: z.string().optional(),
+  latestCompletionReport: z.string().optional(),
+  filesTouched: z.array(z.string()).optional(),
+  todoItems: z.array(SwarmTodoItemViewSchema).optional(),
   worktreePath: z.string().optional(),
   branch: z.string().optional(),
   diffAdditions: z.number().int().nonnegative().optional(),
   diffDeletions: z.number().int().nonnegative().optional(),
   todoCompleted: z.number().int().nonnegative().optional(),
   todoTotal: z.number().int().nonnegative().optional(),
+  elapsedSecs: z.number().nonnegative().optional(),
+  activityAgeSecs: z.number().nonnegative().optional(),
+  contextTokens: z.number().nonnegative().optional(),
+  contextLimit: z.number().nonnegative().optional(),
+  outputTokens: z.number().nonnegative().optional(),
+  isHeadless: z.boolean().optional(),
+  reportBackToSessionId: z.string().optional(),
   updatedAtMs: z.number().optional(),
 });
 export type SwarmAgentView = z.infer<typeof SwarmAgentViewSchema>;
@@ -692,6 +714,7 @@ export const ScheduleItemViewSchema = z.object({
   queuedNow: z.boolean().optional(),
   nextRunAt: z.string().optional(),
   lastRunAt: z.string().optional(),
+  lastStatus: z.string().optional(),
 });
 export type ScheduleItemView = z.infer<typeof ScheduleItemViewSchema>;
 
@@ -794,14 +817,30 @@ export const SkillViewSchema = z.object({
   allowedTools: z.array(z.string()).optional(),
   activeInSession: z.boolean().optional(),
   installed: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  tokens: z.number().int().nonnegative().optional(),
   category: z.string().optional(),
 });
 export type SkillView = z.infer<typeof SkillViewSchema>;
+
+export const MemoryInstructionFileViewSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  scope: z.enum(["project", "global"]),
+  bytes: z.number().int().nonnegative(),
+  tokens: z.number().int().nonnegative(),
+  modifiedMs: z.number().optional(),
+  preview: z.string().optional(),
+});
+export type MemoryInstructionFileView = z.infer<typeof MemoryInstructionFileViewSchema>;
 
 export const MemoryFactViewSchema = z.object({
   id: z.string(),
   content: z.string(),
   scope: z.enum(["project", "global"]),
+  category: z.string().optional(),
+  source: z.string().optional(),
+  tokens: z.number().int().nonnegative().optional(),
   tags: z.array(z.string()),
   confidence: z.number().min(0).max(1).optional(),
   updatedAtMs: z.number(),
@@ -813,8 +852,10 @@ export const MemoryStatusViewSchema = z.object({
   enabled: z.boolean(),
   persistInjections: z.boolean(),
   pipelineActive: z.boolean(),
+  jevProvider: z.boolean().optional(),
   totalCount: z.number().int().nonnegative(),
   facts: z.array(MemoryFactViewSchema),
+  instructionFiles: z.array(MemoryInstructionFileViewSchema).optional(),
 });
 export type MemoryStatusView = z.infer<typeof MemoryStatusViewSchema>;
 
@@ -1018,6 +1059,8 @@ export const TelegramStatusViewSchema = z.object({
   qrSize: z.number().int().positive().nullable().optional(),
   qrPath: z.string().nullable().optional(),
   daemonError: z.string().nullable().optional(),
+  bridgeRunning: z.boolean().optional(),
+  bridgeWarning: z.string().nullable().optional(),
   approvals: z.array(TelegramApprovalViewSchema),
 });
 export type TelegramStatusView = z.infer<typeof TelegramStatusViewSchema>;
@@ -1729,7 +1772,12 @@ export const RpcContractSchemas = {
 
   // --- Background Tasks ---
   "background.list": {
-    params: z.object({ sessionId: z.string().optional() }).optional(),
+    params: z
+      .object({
+        sessionId: z.string().optional(),
+        scope: z.enum(["session", "all"]).optional(),
+      })
+      .optional(),
     result: z.object({ tasks: z.array(BackgroundProcessViewSchema) }),
   },
   "background.status": {
@@ -1774,6 +1822,8 @@ export const RpcContractSchemas = {
       swarmId: z.string().optional(),
       label: z.string().min(1).max(80),
       model: z.string().optional(),
+      effort: z.string().optional(),
+      workingDir: z.string().optional(),
       useWorktree: z.boolean().optional(),
       prompt: z.string().min(1),
     }),
@@ -1788,6 +1838,8 @@ export const RpcContractSchemas = {
       swarmId: z.string().optional(),
       agentId: z.string(),
       pauseOnly: z.boolean().optional(),
+      resume: z.boolean().optional(),
+      force: z.boolean().optional(),
     }),
     result: OkResultSchema,
   },
@@ -1798,6 +1850,17 @@ export const RpcContractSchemas = {
   "swarm.pauseAll": {
     params: z.object({ swarmId: z.string().optional() }).optional(),
     result: OkResultSchema,
+  },
+  "swarm.broadcast": {
+    params: z.object({
+      swarmId: z.string().optional(),
+      message: z.string().min(1),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      seq: z.number().int().optional(),
+      message: z.string().optional(),
+    }),
   },
   "swarm.board": {
     params: z
@@ -1893,6 +1956,7 @@ export const RpcContractSchemas = {
       prompt: z.string().min(1),
       schedule: z.string().min(1),
       permissionMode: PermissionModeIdSchema.optional(),
+      workingDir: z.string().optional(),
     }),
     result: z.object({ schedule: ScheduleItemViewSchema }),
   },
@@ -2089,6 +2153,17 @@ export const RpcContractSchemas = {
   "plugins.skills.reload": {
     params: EmptyParamsSchema,
     result: z.object({ ok: z.boolean(), skills: z.array(SkillViewSchema) }),
+  },
+  "plugins.skills.toggle": {
+    params: z.object({
+      name: z.string().min(1),
+      enabled: z.boolean(),
+    }),
+    result: z.object({
+      ok: z.boolean(),
+      enabled: z.boolean(),
+      message: z.string().optional(),
+    }),
   },
   "plugins.skills.run": {
     params: z.object({
@@ -2869,6 +2944,7 @@ export const HostToWebviewMessageSchema = z.union([
     workspaceLedger: WorkspaceLedgerViewSchema.optional(),
     editorSelection: EditorSelectionViewSchema.nullable().optional(),
     backgroundTasks: z.array(BackgroundProcessViewSchema).optional(),
+    activeSwarm: SwarmStatusViewSchema.nullable().optional(),
     accountStatus: AccountStatusViewSchema.optional(),
     fileChanges: FileChangesSnapshotViewSchema.nullable().optional(),
     todos: z.array(TodoItemViewSchema).optional(),
@@ -2936,6 +3012,10 @@ export const HostToWebviewMessageSchema = z.union([
     type: z.literal("rayucode.processes.snapshot"),
     sessionId: z.string().optional(),
     tasks: z.array(BackgroundProcessViewSchema),
+  }),
+  z.object({
+    type: z.literal("rayucode.swarm.snapshot"),
+    swarm: SwarmStatusViewSchema.nullable(),
   }),
   z.object({
     type: z.literal("rayucode.daemon.statusChanged"),

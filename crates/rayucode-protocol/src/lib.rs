@@ -316,7 +316,7 @@ impl<'de> Deserialize<'de> for BashProgressUpdate {
 }
 
 /// A message in conversation history (for sync)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HistoryMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_stats: Option<rayucode_session_types::ResponseStats>,
@@ -328,6 +328,8 @@ pub struct HistoryMessage {
     pub tool_calls: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_data: Option<ToolCall>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_engine_internal: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

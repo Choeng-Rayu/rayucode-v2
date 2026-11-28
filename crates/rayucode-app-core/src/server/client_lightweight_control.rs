@@ -1124,17 +1124,29 @@ pub(super) async fn handle_lightweight_control_request(
             handle_cancel_background_task(id, task_id, &client_event_tx).await;
         }
         Request::GlobalRuntimeCommand { id, command, args } => {
-            super::runtime_commands::handle_global_runtime_command(
-                id,
-                &command,
-                &args,
+            let swarm_ctx = super::runtime_commands::SwarmControlContext {
+                sessions,
+                global_session_id,
                 provider_template,
-                Some(mcp_pool),
+                mcp_pool,
                 swarm_members,
                 swarms_by_id,
                 swarm_coordinators,
                 swarm_plans,
+                channel_subscriptions,
+                channel_subscriptions_by_session,
                 event_history,
+                event_counter,
+                swarm_event_tx,
+                soft_interrupt_queues,
+                client_connections,
+                swarm_mutation_runtime,
+            };
+            super::runtime_commands::handle_global_runtime_command(
+                id,
+                &command,
+                &args,
+                &swarm_ctx,
                 &client_event_tx,
             )
             .await;

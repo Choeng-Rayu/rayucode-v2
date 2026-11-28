@@ -2,6 +2,7 @@ import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   Brain,
+  FileText,
   Link2,
   Plus,
   Search,
@@ -17,7 +18,7 @@ import {
   RayuProcessingMark,
   Switch,
 } from "@/components/ui";
-import { cn, formatRelativeTime } from "@/lib";
+import { cn, formatRelativeTime, postToHost } from "@/lib";
 
 import { useMemoryActions, useMemoryStatus } from "../hooks/usePlugins";
 
@@ -51,6 +52,7 @@ export function MemoryGraphTab() {
   >({});
 
   const facts = memory?.facts ?? [];
+  const instructionFiles = memory?.instructionFiles ?? [];
 
   const allTags = React.useMemo(() => {
     const set = new Set<string>();
@@ -336,6 +338,63 @@ export function MemoryGraphTab() {
           </div>
         )}
       </div>
+
+      {/* Instruction Files (AGENTS.md / RAYU.md) discovered by Rust engine */}
+      {instructionFiles.length > 0 && (
+        <section
+          aria-label="Instruction files"
+          data-testid="memory-instruction-files"
+          className="flex flex-col gap-2"
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="m-0 text-xs font-semibold tracking-tight text-ink">
+              Instruction Files ({instructionFiles.length})
+            </h2>
+            <span className="font-mono text-[10.5px] text-muted-ink tabular-nums">
+              {instructionFiles
+                .reduce((acc, f) => acc + f.tokens, 0)
+                .toLocaleString()}{" "}
+              tokens
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 @min-[520px]/plugins-stage:grid-cols-2">
+            {instructionFiles.map((file) => (
+              <button
+                key={file.path || file.name}
+                type="button"
+                onClick={() =>
+                  file.path &&
+                  postToHost({
+                    type: "rayucode.editor.openFile",
+                    path: file.path,
+                  })
+                }
+                className="rayu-card-bevel flex cursor-pointer flex-col gap-1 rounded-xl border border-hairline bg-pane p-3 text-left transition-colors hover:border-premium hover:bg-hover"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-xs font-medium text-ink">
+                    <FileText className="size-3.5 shrink-0 text-brand-text" aria-hidden="true" />
+                    <span className="truncate">{file.name}</span>
+                  </span>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Badge variant="outline" className="text-[10px] capitalize">
+                      {file.scope}
+                    </Badge>
+                    <span className="font-mono text-[10.5px] text-muted-ink tabular-nums">
+                      ~{file.tokens} tok
+                    </span>
+                  </div>
+                </div>
+                {file.preview && (
+                  <p className="m-0 line-clamp-2 text-[11px] text-muted-ink">
+                    {file.preview}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Memory Nodes Explorer */}
       <div

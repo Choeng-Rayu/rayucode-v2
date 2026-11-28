@@ -32,14 +32,14 @@ pub type GracefulShutdownSignal = Arc<std::sync::atomic::AtomicBool>;
 
 /// Async-aware interrupt signal that combines AtomicBool (sync read) with
 /// tokio::Notify (async wake). Eliminates spin-loops during tool execution.
-const REASON_NONE: u8 = 0;
-const REASON_RELOAD: u8 = 1;
-const REASON_USER_CANCEL: u8 = 2;
+const STATE_CLEAR: u8 = 0;
+const STATE_RELOAD: u8 = 1;
+const STATE_USER_CANCEL: u8 = 2;
 
 #[derive(Clone)]
 pub struct InterruptSignal {
     flag: Arc<std::sync::atomic::AtomicBool>,
-    reason: Arc<std::sync::atomic::AtomicU8>,
+    state: Arc<std::sync::atomic::AtomicU8>,
     /// Monotonic fire counter. Lets owners of a timed/deferred reset detect
     /// that a *newer* fire landed in the meantime and skip the reset instead
     /// of erasing a cancel the target has not observed yet (issue #428).
@@ -51,40 +51,41 @@ impl InterruptSignal {
     pub fn new() -> Self {
         Self {
             flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            reason: Arc::new(std::sync::atomic::AtomicU8::new(REASON_NONE)),
+            state: Arc::new(std::sync::atomic::AtomicU8::new(STATE_CLEAR)),
             epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             notify: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
     pub fn fire(&self) {
-        self.reason
-            .store(REASON_RELOAD, std::sync::atomic::Ordering::SeqCst);
         self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.state
+            .store(STATE_RELOAD, std::sync::atomic::Ordering::SeqCst);
         self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
     pub fn fire_user_cancel(&self) {
-        if !(self.flag.load(std::sync::atomic::Ordering::SeqCst)
-            && self.reason.load(std::sync::atomic::Ordering::SeqCst) == REASON_RELOAD)
-        {
-            self.reason
-                .store(REASON_USER_CANCEL, std::sync::atomic::Ordering::SeqCst);
-        }
         self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let _ = self.state.compare_exchange(
+            STATE_CLEAR,
+            STATE_USER_CANCEL,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
     pub fn is_set(&self) -> bool {
-        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+        self.state.load(std::sync::atomic::Ordering::SeqCst) != STATE_CLEAR
+            || self.flag.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn reset(&self) {
+        self.state
+            .store(STATE_CLEAR, std::sync::atomic::Ordering::SeqCst);
         self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.reason
-            .store(REASON_NONE, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Current fire epoch. Capture this right after a [`fire`](Self::fire) to
@@ -104,9 +105,78 @@ impl InterruptSignal {
         if self.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
             return false;
         }
+        let prev = self
+            .state
+            .swap(STATE_CLEAR, std::sync::atomic::Ordering::SeqCst);
         self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
         if self.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
             // A newer fire raced with the reset; restore it.
+            let restore = if prev == STATE_CLEAR {
+                STATE_USER_CANCEL
+            } else {
+                prev
+            };
+            let _ = self.state.compare_exchange(
+                STATE_CLEAR,
+                restore,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.notify.notify_waiters();
+            return false;
+        }
+        true
+    }
+
+    /// Reset an active user-cancel flag without clearing any active reload state.
+    pub fn reset_user_cancel(&self) -> bool {
+        if self
+            .state
+            .compare_exchange(
+                STATE_USER_CANCEL,
+                STATE_CLEAR,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        if self.state.load(std::sync::atomic::Ordering::SeqCst) != STATE_CLEAR {
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.notify.notify_waiters();
+        }
+        true
+    }
+
+    /// Epoch-guarded [`reset_user_cancel`](Self::reset_user_cancel) for deferred
+    /// cancel cleanup timers so an Esc reset never clears an active reload.
+    pub fn reset_user_cancel_if_epoch(&self, epoch: u64) -> bool {
+        if self.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+            return false;
+        }
+        if self
+            .state
+            .compare_exchange(
+                STATE_USER_CANCEL,
+                STATE_CLEAR,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            return false;
+        }
+        self.flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        if self.epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+            let _ = self.state.compare_exchange(
+                STATE_CLEAR,
+                STATE_USER_CANCEL,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
             self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
             self.notify.notify_waiters();
             return false;
@@ -115,12 +185,13 @@ impl InterruptSignal {
     }
 
     pub fn is_user_cancel(&self) -> bool {
-        self.is_set()
-            && self.reason.load(std::sync::atomic::Ordering::SeqCst) == REASON_USER_CANCEL
+        self.state.load(std::sync::atomic::Ordering::SeqCst) == STATE_USER_CANCEL
     }
 
     pub fn is_reload(&self) -> bool {
-        self.is_set() && self.reason.load(std::sync::atomic::Ordering::SeqCst) == REASON_RELOAD
+        let s = self.state.load(std::sync::atomic::Ordering::SeqCst);
+        s == STATE_RELOAD
+            || (s == STATE_CLEAR && self.flag.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     pub async fn notified(&self) {
@@ -362,5 +433,55 @@ mod tests {
         assert!(signal.is_set());
         assert!(signal.is_user_cancel());
         assert!(!signal.is_reload());
+    }
+
+    #[test]
+    fn reset_user_cancel_clears_user_cancel_and_never_clears_reload() {
+        let signal = InterruptSignal::new();
+        signal.fire_user_cancel();
+        let user_epoch = signal.epoch();
+        assert!(signal.reset_user_cancel_if_epoch(user_epoch));
+        assert!(!signal.is_set());
+        assert!(!signal.is_user_cancel());
+
+        // Reload must never be cleared by reset_user_cancel or reset_user_cancel_if_epoch.
+        signal.fire();
+        let reload_epoch = signal.epoch();
+        signal.fire_user_cancel();
+        let second_epoch = signal.epoch();
+        assert!(signal.is_reload());
+        assert!(!signal.is_user_cancel());
+        assert!(!signal.reset_user_cancel());
+        assert!(!signal.reset_user_cancel_if_epoch(reload_epoch));
+        assert!(!signal.reset_user_cancel_if_epoch(second_epoch));
+        assert!(signal.is_set());
+        assert!(signal.is_reload());
+
+        // Fresh user cancel clears cleanly with reset_user_cancel().
+        signal.reset();
+        signal.fire_user_cancel();
+        assert!(signal.reset_user_cancel());
+        assert!(!signal.is_set());
+        assert!(!signal.is_user_cancel());
+    }
+
+    #[test]
+    fn concurrent_fire_and_fire_user_cancel_never_downgrades_reload() {
+        for _ in 0..2000 {
+            let signal = InterruptSignal::new();
+            let reloader = {
+                let signal = signal.clone();
+                std::thread::spawn(move || signal.fire())
+            };
+            signal.fire_user_cancel();
+            reloader.join().expect("reloader thread");
+
+            assert!(signal.is_set());
+            assert!(
+                signal.is_reload(),
+                "reload must never be downgraded to user cancel under concurrency"
+            );
+            assert!(!signal.is_user_cancel());
+        }
     }
 }

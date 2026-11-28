@@ -24,7 +24,12 @@ const TERMINAL_TURN_EVENTS = new Set([
   "error",
 ]);
 
-const GLOBAL_SESSIONLESS_EVENTS = new Set(["config_changed"]);
+const GLOBAL_SESSIONLESS_EVENTS = new Set([
+  "config_changed",
+  "credential_updated",
+  "models",
+  "runtime_info",
+]);
 
 /**
  * Per-session daemon socket pool shared by Electron main and VS Code Extension Host.
@@ -49,6 +54,10 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     sessionId: string,
     client: TClient
   ) => void;
+  private readonly onGlobalFrame?: (
+    frame: HarnessFrameLike,
+    client: TClient
+  ) => void;
   private readonly onSessionClosed?: (
     sessionId: string,
     client: TClient,
@@ -63,6 +72,7 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
   private readonly activeTurnSessions = new Set<string>();
   private readonly pendingPermissionSessions = new Set<string>();
   private pinnedClients = new Set<TClient>();
+  private primaryControlClient: TClient | null = null;
   private focusedSessionId: string | null = null;
   private operationTail: Promise<unknown> = Promise.resolve();
 
@@ -70,10 +80,15 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     this.maxIdleClients = Math.max(1, options.maxIdleClients ?? 6);
     this.dialClient = options.dialClient;
     this.onFrame = options.onFrame;
+    this.onGlobalFrame = options.onGlobalFrame;
     this.onSessionClosed = options.onSessionClosed;
     this.onClientEvicted = options.onClientEvicted;
     this.disconnectMessage =
       options.disconnectMessage ?? "Connection to Rayu daemon lost.";
+  }
+
+  setPrimaryControlClient(client: TClient | null): void {
+    this.primaryControlClient = client;
   }
 
   runSerialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -168,10 +183,13 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
         typeof rawFrame.session_id === "string" ? rawFrame.session_id.trim() : "";
 
       // Never stamp a synthetic session_id onto global bridge-wide broadcasts
-      // (such as `config_changed`), which are already delivered to the primary
-      // control client; forwarding them from every pooled socket causes N+1
-      // duplicate broadcasts.
+      // (such as `config_changed`, `credential_updated`, `models`, `runtime_info`).
+      // Forward them once from the designated primary control client (if set)
+      // and suppress duplicates from pooled session sockets.
       if (!rawSid && GLOBAL_SESSIONLESS_EVENTS.has(evRaw)) {
+        if (this.primaryControlClient === client) {
+          this.onGlobalFrame?.(rawFrame, client);
+        }
         return;
       }
 
@@ -231,6 +249,9 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
       const boundSessions = this.getBoundSessionIds(client);
       this.clientToSessions.delete(client);
       this.pinnedClients.delete(client);
+      if (this.primaryControlClient === client) {
+        this.primaryControlClient = null;
+      }
 
       for (const sid of boundSessions) {
         if (this.sessionClients.get(sid) === client) {
@@ -418,6 +439,7 @@ export class SessionSocketPool<TClient extends SessionClientLike> {
     this.activeTurnSessions.clear();
     this.pendingPermissionSessions.clear();
     this.pinnedClients.clear();
+    this.primaryControlClient = null;
     this.focusedSessionId = null;
 
     for (const [sid, client] of entries) {
