@@ -1,6 +1,7 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -1804,5 +1805,105 @@ describe("RayuCode VS Code Home & Composer Feature (Wave 3A, Spec 01)", () => {
     expect(
       (screen.getByTestId("service-tier-auto") as HTMLButtonElement).disabled,
     ).toBe(false);
+  });
+
+  it("retains last-good models and displays stale notice without publishing success when catalog is stale or refresh fails", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "settings.models.get") {
+        return {
+          defaultModel: "rayu:future-zenith-last-good",
+          defaultEffort: "medium",
+          serviceTier: "auto",
+          cacheTtl: "5m",
+          transport: "auto",
+          roleOverrides: [],
+          stale: true,
+          message: "Showing last known models — refresh failed",
+          routes: [
+            {
+              id: "future-zenith-last-good",
+              model: "future-zenith-last-good",
+              modelSpec: "rayu:future-zenith-last-good",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Future Zenith Last Good",
+              available: true,
+            },
+          ],
+        };
+      }
+      if (method === "settings.models.refresh") {
+        return {
+          ok: false,
+          message: "Rayu Cloud catalog refresh failed (503)",
+          sources: { engine: "failed", hosted: "stale" },
+          routes: [
+            {
+              id: "future-zenith-last-good",
+              model: "future-zenith-last-good",
+              modelSpec: "rayu:future-zenith-last-good",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Future Zenith Last Good",
+              available: true,
+            },
+          ],
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      renderWithQuery(
+        <SessionComposer mode="workspace" sessionId="ses_stale_composer" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("model-effort-trigger").textContent).toContain(
+          "Future Zenith Last Good",
+        );
+      });
+
+      fireEvent.click(screen.getByTestId("model-effort-trigger"));
+      fireEvent.click(screen.getByTestId("open-model-list-btn"));
+
+      await waitFor(() => {
+        expect(screen.getByTestId("model-catalog-stale-notice").textContent).toContain(
+          "Showing last known models — refresh failed",
+        );
+        expect(
+          screen.getByRole("option", { name: /Future Zenith Last Good/i }),
+        ).toBeTruthy();
+      });
+
+      toastErrorSpy.mockClear();
+      toastSuccessSpy.mockClear();
+      fireEvent.click(screen.getByTestId("model-refresh-btn"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Rayu Cloud catalog refresh failed (503)",
+        );
+        expect(screen.getByTestId("model-catalog-stale-notice").textContent).toContain(
+          "Rayu Cloud catalog refresh failed (503)",
+        );
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("option", { name: /Future Zenith Last Good/i }),
+      ).toBeTruthy();
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+    }
   });
 });

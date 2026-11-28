@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   Bot,
   Check,
   ChevronDown,
@@ -385,15 +386,85 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
         sessionId: activeSessionId ?? undefined,
       })),
     onSuccess: (res) => {
-      invalidateAll();
-      void modelsQuery.refetch();
-      if (res.message) toast.warning(res.message);
-      else toast.success("Refreshed live model catalog.");
+      const isStaleResult = res.sources?.hosted === "stale";
+      const resultMessage =
+        res.message ??
+        (isStaleResult
+          ? "Showing last known models — refresh failed"
+          : undefined);
+      if (res.routes && res.routes.length > 0) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  routes: res.routes,
+                  stale: isStaleResult,
+                  message: isStaleResult ? resultMessage : undefined,
+                }
+              : prev,
+        );
+      } else if (isStaleResult) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  stale: true,
+                  message: resultMessage,
+                }
+              : prev,
+        );
+      } else {
+        invalidateAll();
+        void modelsQuery.refetch();
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ["composer", "model-settings"],
+      });
+      if (isStaleResult || resultMessage) {
+        toast.warning(
+          resultMessage ?? "Showing last known models — refresh failed",
+        );
+        if (resultMessage) {
+          setStatusIsError(true);
+          setStatusMessage(resultMessage);
+        }
+      } else {
+        setStatusMessage(null);
+        toast.success("Refreshed live model catalog.");
+      }
     },
-    onError: (err) => reportFailure(err, "Failed to refresh the model catalog."),
+    onError: (err) => {
+      const msg =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Failed to refresh the model catalog.";
+      queryClient.setQueryData(
+        ["settings", "models", activeSessionId ?? "global"],
+        (prev: Record<string, unknown> | undefined) =>
+          prev
+            ? {
+                ...prev,
+                stale: true,
+                message: msg,
+              }
+            : prev,
+      );
+      reportFailure(err, "Failed to refresh the model catalog.");
+    },
   });
 
-  const data = modelsQuery.data;
+  const data = modelsQuery.data as
+    | (NonNullable<typeof modelsQuery.data> & {
+        stale?: boolean;
+        message?: string;
+      })
+    | undefined;
+  const stale = Boolean(data?.stale);
+  const catalogMessage = data?.message;
   const profiles: AgentProfileView[] = React.useMemo(
     () => data?.profiles ?? [],
     [data],
@@ -542,7 +613,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
     return <SettingsSkeleton />;
   }
 
-  if (modelsQuery.isError || !data) {
+  if (!data) {
     return (
       <div className="mx-auto max-w-[900px] px-5 py-10">
         <ErrorState
@@ -680,6 +751,19 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
               )}
             >
               {statusMessage}
+            </div>
+          )}
+
+          {stale && (
+            <div
+              data-testid="agents-catalog-stale-notice"
+              role="status"
+              className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn-soft px-4 py-2 text-xs text-warn"
+            >
+              <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>
+                {catalogMessage || "Showing last known models — refresh failed"}
+              </span>
             </div>
           )}
 

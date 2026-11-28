@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AgentsPersonasView } from "@/features/agents";
 import { VoiceMicButton } from "@/features/composer";
 import {
   AccountProvidersSection,
@@ -874,5 +875,170 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
       screen.getByTestId("analytics-breakdown-card").textContent,
     ).not.toContain("0 cr total");
     unmountAcct();
+  });
+
+  it("retains last-good models and displays stale notices in Settings and Agents on stale catalog or failed explicit refresh", async () => {
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
+    Element.prototype.scrollIntoView = vi.fn();
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "config.get") {
+        const cfg = (await origCallRpc(method as never, params as never)) as {
+          supported: boolean;
+          config: {
+            path: string;
+            sections: string[];
+            values: Record<string, unknown>;
+            schema: unknown[];
+          } | null;
+        };
+        return {
+          ...cfg,
+          config: cfg.config
+            ? {
+                ...cfg.config,
+                values: {
+                  ...cfg.config.values,
+                  "provider.default_model": "rayu:last-known-zenith",
+                },
+              }
+            : null,
+        };
+      }
+      if (method === "settings.models.get") {
+        return {
+          defaultModel: "rayu:last-known-zenith",
+          defaultEffort: "medium",
+          serviceTier: "auto",
+          cacheTtl: "5m",
+          transport: "auto",
+          roleOverrides: [
+            {
+              role: "swarm",
+              label: "Swarm Workers",
+              model: "inherit",
+              scope: "global",
+            },
+          ],
+          stale: true,
+          message: "Showing last known models — refresh failed",
+          routes: [
+            {
+              id: "last-known-zenith",
+              model: "last-known-zenith",
+              modelSpec: "rayu:last-known-zenith",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Last Known Zenith",
+              available: true,
+            },
+          ],
+        };
+      }
+      if (method === "settings.models.refresh") {
+        return {
+          ok: false,
+          message: "Gateway catalog refresh failed (503)",
+          sources: { engine: "failed", hosted: "stale" },
+          routes: [
+            {
+              id: "last-known-zenith",
+              model: "last-known-zenith",
+              modelSpec: "rayu:last-known-zenith",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Last Known Zenith",
+              available: true,
+            },
+          ],
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      const { unmount } = renderWithQuery(
+        <SettingsView initialSection="models" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-models")).toBeTruthy();
+      });
+
+      expect(screen.getByTestId("models-stale-notice").textContent).toContain(
+        "Showing last known models — refresh failed",
+      );
+      expect(screen.getByTestId("default-model-select").textContent).toContain(
+        "Last Known Zenith (Rayu Cloud)",
+      );
+
+      toastErrorSpy.mockClear();
+      toastSuccessSpy.mockClear();
+      fireEvent.click(screen.getByTestId("models-refresh-btn"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Gateway catalog refresh failed (503)",
+        );
+        expect(screen.getByTestId("models-stale-notice").textContent).toContain(
+          "Gateway catalog refresh failed (503)",
+        );
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId("default-model-select").textContent).toContain(
+        "Last Known Zenith (Rayu Cloud)",
+      );
+
+      unmount();
+
+      // Agents & Personas view also displays stale notice, preserves last-good models, and surfaces refresh error
+      renderWithQuery(<AgentsPersonasView />);
+      await waitFor(() => {
+        expect(screen.getByTestId("agents-view")).toBeTruthy();
+      });
+
+      expect(
+        screen.getByTestId("agents-catalog-stale-notice").textContent,
+      ).toContain("Showing last known models — refresh failed");
+
+      toastErrorSpy.mockClear();
+      toastSuccessSpy.mockClear();
+      fireEvent.click(screen.getByTestId("agents-refresh-btn"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Gateway catalog refresh failed (503)",
+        );
+        expect(
+          screen.getByTestId("agents-catalog-stale-notice").textContent,
+        ).toContain("Gateway catalog refresh failed (503)");
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(screen.getByTestId("agents-subagent-model-select"), {
+        key: "ArrowDown",
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", { name: "Last Known Zenith (Rayu Cloud)" }),
+        ).toBeTruthy();
+      });
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+      HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
+    }
   });
 });

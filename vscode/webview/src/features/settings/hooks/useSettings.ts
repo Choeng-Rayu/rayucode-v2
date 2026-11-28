@@ -1003,6 +1003,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         const res = await callRpc("settings.models.get", {
           sessionId: activeSessionId ?? undefined,
         });
+        const rawRes = res as typeof res & { stale?: boolean; message?: string };
         const byRole = new Map(res.roleOverrides.map((r) => [r.role, r]));
         const roleOverrides = DEFAULT_5_ROLE_OVERRIDES.map(
           (def) => byRole.get(def.role) ?? def,
@@ -1011,6 +1012,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           res.routes?.find((r) => r.available !== false) ?? res.routes?.[0];
         return {
           ...res,
+          stale: Boolean(rawRes.stale),
+          catalogMessage: rawRes.message,
           defaultModel:
             res.defaultModel ??
             fallbackRoute?.modelSpec ??
@@ -1358,14 +1361,43 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         sessionId: activeSessionId ?? undefined,
       })),
     onSuccess: (res) => {
+      const isStaleResult = res.sources?.hosted === "stale";
+      const resultMessage =
+        res.message ??
+        (isStaleResult
+          ? "Showing last known models — refresh failed"
+          : undefined);
+      if (isStaleResult && resultMessage) {
+        toast.warning(resultMessage);
+      }
       if (res.routes && res.routes.length > 0) {
         queryClient.setQueryData(
           ["settings", "models", activeSessionId ?? "global"],
           (prev: Record<string, unknown> | undefined) =>
-            prev ? { ...prev, routes: res.routes } : prev,
+            prev
+              ? {
+                  ...prev,
+                  routes: res.routes,
+                  stale: isStaleResult,
+                  catalogMessage: isStaleResult ? resultMessage : undefined,
+                }
+              : prev,
         );
+      } else if (isStaleResult) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  stale: true,
+                  catalogMessage: resultMessage,
+                }
+              : prev,
+        );
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
       }
-      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
       void queryClient.invalidateQueries({
         queryKey: ["composer", "model-settings"],
       });
@@ -1374,13 +1406,26 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setStatusMessage(
-        res.message ?? `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
+        resultMessage ?? `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
       );
     },
     onError: (err) => {
-      setStatusMessage(
-        err instanceof Error ? err.message : "Failed to refresh model catalog.",
+      const msg =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Failed to refresh model catalog.";
+      queryClient.setQueryData(
+        ["settings", "models", activeSessionId ?? "global"],
+        (prev: Record<string, unknown> | undefined) =>
+          prev
+            ? {
+                ...prev,
+                stale: true,
+                catalogMessage: msg,
+              }
+            : prev,
       );
+      setStatusMessage(msg);
     },
   });
 
@@ -1994,6 +2039,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     setAnalyticsGroupBy,
     providers: providersQuery.data ?? ALL_57_DEFAULT_PROVIDERS,
     models: modelsQuery.data ?? null,
+    stale: Boolean(modelsQuery.data?.stale),
+    catalogMessage: modelsQuery.data?.catalogMessage,
     features: featuresQuery.data?.features ?? null,
     voice: featuresQuery.data?.voice ?? null,
     telemetry: featuresQuery.data?.telemetry ?? null,

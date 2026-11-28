@@ -1,6 +1,9 @@
 import { requireOperation } from "@/lib/operation-result";
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -40,6 +43,7 @@ import {
   formatHarnessModelSpec,
   formatProviderBadgeLabel,
 } from "../constants";
+import { modelSettingsQueryOptions } from "../hooks/useComposerData";
 import type { ModelOption } from "../types";
 
 export interface ModelEffortPopoverProps {
@@ -52,6 +56,8 @@ export interface ModelEffortPopoverProps {
   models?: readonly (ModelOption & { supportsFast?: boolean })[];
   defaultModelId?: string;
   supportsFast?: boolean;
+  stale?: boolean;
+  catalogMessage?: string | null;
   pendingModel?: boolean;
   pendingEffort?: boolean;
   pendingServiceTier?: boolean;
@@ -106,6 +112,8 @@ export function ModelEffortPopover({
   models = FALLBACK_MODELS,
   defaultModelId,
   supportsFast,
+  stale,
+  catalogMessage,
   pendingModel,
   pendingEffort,
   pendingServiceTier,
@@ -127,7 +135,26 @@ export function ModelEffortPopover({
   const [triggerTipOpen, setTriggerTipOpen] = React.useState(false);
   const [isDragging, setIsDragging] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [localRefreshStale, setLocalRefreshStale] = React.useState(false);
+  const [localRefreshMessage, setLocalRefreshMessage] = React.useState<
+    string | null
+  >(null);
   const sliderRef = React.useRef<HTMLDivElement>(null);
+
+  const cachedModelSettings = useQuery({
+    ...modelSettingsQueryOptions(sessionId),
+    enabled: false,
+  });
+  const cachedCatalogMeta = cachedModelSettings.data as
+    | { stale?: boolean; message?: string }
+    | undefined;
+  const isCatalogStale =
+    stale ?? Boolean(cachedCatalogMeta?.stale || localRefreshStale);
+  const resolvedCatalogMessage =
+    catalogMessage ??
+    cachedCatalogMeta?.message ??
+    localRefreshMessage ??
+    "Showing last known models — refresh failed";
 
   const storePendingPrefs = useAppStore((s) =>
     sessionId ? s.pendingSessionPrefsBySession[sessionId] : undefined,
@@ -578,11 +605,41 @@ export function ModelEffortPopover({
 
   const handleRefresh = () => {
     if (onRefreshModels) {
-      void Promise.resolve(onRefreshModels()).catch(() => {});
+      void Promise.resolve(onRefreshModels())
+        .then(() => {
+          setLocalRefreshStale(false);
+          setLocalRefreshMessage(null);
+        })
+        .catch((err) => {
+          setLocalRefreshStale(true);
+          setLocalRefreshMessage(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Showing last known models — refresh failed",
+          );
+        });
     } else {
       void requireOperation(callRpc("settings.models.refresh", {
         sessionId: sessionId ?? undefined,
-      })).catch(() => {});
+      }))
+        .then((res) => {
+          const isStaleRes = res.sources?.hosted === "stale";
+          setLocalRefreshStale(isStaleRes);
+          setLocalRefreshMessage(
+            isStaleRes
+              ? (res.message ?? "Showing last known models — refresh failed")
+              : null,
+          );
+          if (res.message) toast.warning(res.message);
+        })
+        .catch((err) => {
+          setLocalRefreshStale(true);
+          setLocalRefreshMessage(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Showing last known models — refresh failed",
+          );
+        });
     }
   };
 
@@ -1053,6 +1110,20 @@ export function ModelEffortPopover({
                 className="h-7 w-full rounded-lg border border-hairline bg-inset pr-2.5 pl-7 text-xs text-ink placeholder:text-muted-ink focus:border-premium-hi focus:outline-none"
               />
             </div>
+
+            {isCatalogStale ? (
+              <div
+                role="status"
+                data-testid="model-catalog-stale-notice"
+                className="mx-1 mb-2 flex items-start gap-1.5 rounded-lg border border-warn/30 bg-warn-soft px-2.5 py-1.5 text-[11px] leading-snug text-warn"
+              >
+                <AlertTriangle
+                  className="mt-0.5 size-3 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>{resolvedCatalogMessage}</span>
+              </div>
+            ) : null}
 
             <ScrollArea className="h-[280px]">
               <div

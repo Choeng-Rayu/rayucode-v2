@@ -24,6 +24,7 @@ import {
   type BackgroundProcessOutputView,
   type BackgroundProcessView,
   type CacheTtl,
+  type CatalogSourceStatus,
   type ChangedFileStatus,
   type ChangedFileView,
   type ChangesStatusView,
@@ -1095,6 +1096,7 @@ export interface FeatureRouterHub {
     archived?: boolean;
   }): SessionSummaryView;
   notifyDaemonAuthChanged?(provider?: string): Promise<void>;
+  notifyCatalogChanged?(sessionId?: string, credentialsChanged?: boolean): void;
   broadcastAccountChanged?(account: AccountStatusView): void;
   getFileChangesSnapshot?(sessionId: string): FileChangesSnapshotView | undefined;
   fetchFileChanges?(sessionId?: string): Promise<FileChangesSnapshotView | null>;
@@ -5008,7 +5010,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         rawData: undefined as unknown,
         message: "",
       };
-      const [agentsRes, subagentRes, runtimeInfo, rayuHostedModels] =
+      const [agentsRes, subagentRes, runtimeInfoResult, hostedCatalog] =
         await Promise.all([
           daemonConnected
             ? execRuntimeCmd("agents", ["status"], targetSessionId)
@@ -5018,17 +5020,57 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             : Promise.resolve(emptyCmd),
           targetSessionId && daemonConnected
             ? getSessionClient(targetSessionId)
-                .then((c) =>
-                  typeof c.getRuntimeInfo === "function"
-                    ? c.getRuntimeInfo(targetSessionId)
-                    : null,
-                )
-                .catch(() => null)
-            : Promise.resolve(null),
-          hostAccount?.signedIn && deps.authManager?.fetchHostedModels
-            ? deps.authManager.fetchHostedModels(false).catch(() => [])
-            : Promise.resolve([]),
+                .then(async (c) => {
+                  if (typeof c.getRuntimeInfo !== "function") {
+                    return {
+                      info: null,
+                      status: "unavailable" as CatalogSourceStatus,
+                    };
+                  }
+                  const info = await c.getRuntimeInfo(targetSessionId);
+                  return {
+                    info,
+                    status: (info ? "fresh" : "failed") as CatalogSourceStatus,
+                  };
+                })
+                .catch(() => ({
+                  info: null,
+                  status: "failed" as CatalogSourceStatus,
+                }))
+            : Promise.resolve({
+                info: null,
+                status: "unavailable" as CatalogSourceStatus,
+              }),
+          !hostAccount?.signedIn
+            ? Promise.resolve({
+                models: [] as RayuCloudModelEntry[],
+                status: "unavailable" as CatalogSourceStatus,
+              })
+            : deps.authManager?.getHostedModelCatalog
+              ? deps.authManager
+                  .getHostedModelCatalog(false)
+                  .catch(() => ({
+                    models: [] as RayuCloudModelEntry[],
+                    status: "failed" as CatalogSourceStatus,
+                  }))
+              : deps.authManager?.fetchHostedModels
+                ? deps.authManager
+                    .fetchHostedModels(false)
+                    .then((models) => ({
+                      models,
+                      status: "fresh" as CatalogSourceStatus,
+                    }))
+                    .catch(() => ({
+                      models: [] as RayuCloudModelEntry[],
+                      status: "failed" as CatalogSourceStatus,
+                    }))
+                : Promise.resolve({
+                    models: [] as RayuCloudModelEntry[],
+                    status: "unavailable" as CatalogSourceStatus,
+                  }),
         ]);
+      const runtimeInfo = runtimeInfoResult.info;
+      const rayuHostedModels = hostedCatalog.models;
       const data = agentsRes.data;
       const subagentData = subagentRes.data;
 
@@ -5160,6 +5202,24 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
               : defaultModel ?? null
           : undefined;
 
+      const sources = {
+        engine: runtimeInfoResult.status,
+        hosted: hostedCatalog.status,
+      };
+      const stale = hostedCatalog.status === "stale";
+      const catalogMessage =
+        hostedCatalog.status === "stale"
+          ? "Hosted model catalog could not refresh. Showing last known models."
+          : hostedCatalog.status === "failed" && runtimeInfoResult.status !== "fresh"
+            ? "Could not load live model catalogs."
+            : hostedCatalog.status === "failed"
+              ? "Hosted model catalog could not be loaded."
+              : runtimeInfoResult.status === "failed" &&
+                  hostedCatalog.status !== "fresh" &&
+                  hostedCatalog.status !== "cached"
+                ? "Engine model catalog could not be loaded."
+                : undefined;
+
       return {
         defaultModel,
         defaultEffort:
@@ -5201,6 +5261,9 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         ...(routes.length > 0 || runtimeInfo?.routes !== undefined
           ? { routes }
           : {}),
+        sources,
+        stale,
+        ...(catalogMessage ? { message: catalogMessage } : {}),
       };
     },
     "settings.models.refresh": async (params) => {
@@ -5208,9 +5271,30 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
 
       const [hostedRefresh, daemonRefresh] = await Promise.all([
-        hostAccount?.signedIn && deps.authManager?.getHostedModelCatalog
-          ? deps.authManager.getHostedModelCatalog(true).catch(() => ({ models: [], status: "failed" as const }))
-          : Promise.resolve({ models: [], status: "unavailable" as const }),
+        !hostAccount?.signedIn
+          ? Promise.resolve({
+              models: [] as RayuCloudModelEntry[],
+              status: "unavailable" as const,
+            })
+          : deps.authManager?.getHostedModelCatalog
+            ? deps.authManager
+                .getHostedModelCatalog(true)
+                .catch(() => ({
+                  models: [] as RayuCloudModelEntry[],
+                  status: "failed" as const,
+                }))
+            : deps.authManager?.fetchHostedModels
+              ? deps.authManager
+                  .fetchHostedModels(true)
+                  .then((models) => ({ models, status: "fresh" as const }))
+                  .catch(() => ({
+                    models: [] as RayuCloudModelEntry[],
+                    status: "failed" as const,
+                  }))
+              : Promise.resolve({
+                  models: [] as RayuCloudModelEntry[],
+                  status: "unavailable" as const,
+                }),
         daemonConnected
           ? execRuntimeCmd("refresh_model_list", [], params?.sessionId)
           : Promise.resolve({ ok: false, data: {} as Record<string, unknown>, message: "" }),
@@ -5229,6 +5313,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           : typeof daemonRefresh.data.route_count === "number"
             ? daemonRefresh.data.route_count
             : 0;
+      deps.sessionHub.notifyCatalogChanged?.(params?.sessionId);
       return {
         ok: daemonRefresh.ok || hostedRefresh.status === "fresh",
         message: hostedRefresh.status === "stale"

@@ -173,6 +173,7 @@ export class SessionHubCore extends EventEmitter {
   private readonly sessionWorkingDirs = new Map<string, string>();
   private readonly pendingCatalogSessions = new Set<string>();
   private catalogTimer?: ReturnType<typeof setTimeout>;
+  private catalogBroadcastAll = false;
   private catalogCredentialsChanged = false;
   private readonly sessionOperations = new Map<string, Promise<unknown>>();
   private readonly appliedTierBySession = new Map<string, ServiceTier>();
@@ -1233,13 +1234,15 @@ export class SessionHubCore extends EventEmitter {
       ? this.socketPool.get(this.activeSessionId)
       : undefined;
     const activeClient = attachedClient ?? this.bridgeManager.getActiveClient();
-    if (!activeClient) return;
-    await activeClient.notifyAuthChanged(provider).catch(() => {});
-    if (this.activeSessionId && attachedClient) {
-      await attachedClient
-        .runtimeCommand(this.activeSessionId, "refresh_model_list", [])
-        .catch(() => {});
+    if (activeClient) {
+      await activeClient.notifyAuthChanged(provider).catch(() => {});
+      if (this.activeSessionId && attachedClient) {
+        await attachedClient
+          .runtimeCommand(this.activeSessionId, "refresh_model_list", [])
+          .catch(() => {});
+      }
     }
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async setDaemonApiKey(provider: string, apiKey: string): Promise<void> {
@@ -1249,6 +1252,7 @@ export class SessionHubCore extends EventEmitter {
         : undefined) ?? this.bridgeManager.getActiveClient();
     if (!client) return;
     await client.setApiKey(provider, apiKey);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async clearDaemonApiKey(provider: string): Promise<void> {
@@ -1258,12 +1262,14 @@ export class SessionHubCore extends EventEmitter {
         : undefined) ?? this.bridgeManager.getActiveClient();
     if (!client) return;
     await client.clearApiKey(provider);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async logoutDaemonProvider(provider: string): Promise<void> {
     const sid = this.activeSessionId;
     if (!sid) return;
     await this.runtimeCommand("logout", [provider, "confirm"], sid);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   /**
@@ -1346,18 +1352,37 @@ export class SessionHubCore extends EventEmitter {
     });
   }
 
+  public notifyCatalogChanged(
+    sessionId?: string,
+    credentialsChanged = false,
+  ): void {
+    this.publishCatalogChange(sessionId, credentialsChanged);
+  }
+
   private publishCatalogChange(sessionId?: string, credentialsChanged = false): void {
-    if (sessionId) this.pendingCatalogSessions.add(sessionId);
+    const trimmed = sessionId?.trim();
+    if (!trimmed) {
+      this.catalogBroadcastAll = true;
+    } else {
+      this.pendingCatalogSessions.add(trimmed);
+      if (this.pendingCatalogSessions.size > 1) {
+        this.catalogBroadcastAll = true;
+      }
+    }
     this.catalogCredentialsChanged ||= credentialsChanged;
     if (this.catalogTimer) return;
     this.catalogTimer = setTimeout(() => {
       this.catalogTimer = undefined;
-      const sessionIds = [...this.pendingCatalogSessions];
+      const sessionIds = this.catalogBroadcastAll
+        ? []
+        : [...this.pendingCatalogSessions];
       this.pendingCatalogSessions.clear();
+      this.catalogBroadcastAll = false;
       const credentialsChanged = this.catalogCredentialsChanged;
       this.catalogCredentialsChanged = false;
       this.broadcast({ type: "rayucode.models.changed", sessionIds, credentialsChanged });
     }, 40);
+    this.catalogTimer.unref?.();
   }
 
   private ingestFrame(rawFrame: ServerFrame, boundSessionId?: string): void {
@@ -3042,7 +3067,13 @@ export class SessionHubCore extends EventEmitter {
   }
 
   dispose(): void {
-    if (this.catalogTimer) clearTimeout(this.catalogTimer);
+    if (this.catalogTimer) {
+      clearTimeout(this.catalogTimer);
+      this.catalogTimer = undefined;
+    }
+    this.pendingCatalogSessions.clear();
+    this.catalogBroadcastAll = false;
+    this.catalogCredentialsChanged = false;
     if (this.backgroundPollTimer) {
       clearInterval(this.backgroundPollTimer);
       this.backgroundPollTimer = null;

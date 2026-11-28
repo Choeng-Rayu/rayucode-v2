@@ -111,12 +111,28 @@ function dispatchHostMessage(msg: HostToWebviewMessage): void {
   }
 }
 
+export type CatalogChangedMessage = {
+  type: "rayucode.catalog.changed";
+  sessionId?: string;
+  sessionIds?: string[];
+  credentialsChanged?: boolean;
+};
+
 function ensureWindowListener(): void {
   if (listenerBound || typeof window === "undefined") return;
   listenerBound = true;
   window.addEventListener("message", (event: MessageEvent) => {
     const parsed = parseHostToWebviewMessage(event.data);
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        (event.data as { type?: unknown }).type === "rayucode.catalog.changed"
+      ) {
+        dispatchHostMessage(event.data as HostToWebviewMessage);
+      }
+      return;
+    }
     dispatchHostMessage(parsed.data);
   });
 }
@@ -176,7 +192,7 @@ export function sendHarnessRequest(frame: Record<string, unknown>): void {
   });
 }
 
-export async function submitHarnessMessage(frame: Record<string, unknown>): Promise<void> {
+export async function requestHarnessAck(frame: Record<string, unknown>): Promise<void> {
   if (!isVsCodeWebview()) {
     sendHarnessRequest(frame);
     return;
@@ -229,6 +245,8 @@ export function signalWebviewReady(surface: SurfaceKind): void {
 }
 
 /** Test utility to inject a synthetic host message into subscribers. */
-export function __dispatchHostMessageForTest(msg: HostToWebviewMessage): void {
-  dispatchHostMessage(msg);
+export function __dispatchHostMessageForTest(
+  msg: HostToWebviewMessage | CatalogChangedMessage,
+): void {
+  dispatchHostMessage(msg as HostToWebviewMessage);
 }

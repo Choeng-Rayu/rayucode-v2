@@ -16,7 +16,7 @@
  *   - Pacing mode:   `PUT ${apiBase}/billing/limit-mode`
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
@@ -747,8 +747,15 @@ export class RayuHostAuthManager extends EventEmitter {
   private loginTimer: ReturnType<typeof setTimeout> | null = null;
   private refreshInFlight: Promise<string | null> | null = null;
   private cachedCredits: RayuCloudCreditsSnapshot | null = null;
-  private cachedModels: RayuCloudModelEntry[] = [];
-  private modelsFetchedAt = 0;
+  private hostedCatalog: { key: string; models: RayuCloudModelEntry[]; fetchedAt: number; stale: boolean } | undefined;
+  private hostedCatalogRequest = 0;
+  private hostedCatalogInFlight = new Map<
+    string,
+    Promise<{
+      models: RayuCloudModelEntry[];
+      status: "fresh" | "cached" | "stale" | "failed" | "unavailable";
+    }>
+  >();
   private lastError: string | null = null;
   private watchers: fs.FSWatcher[] = [];
   private watchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -969,78 +976,134 @@ export class RayuHostAuthManager extends EventEmitter {
     token: string;
     isOAuth: boolean;
   }): Promise<RayuCloudModelEntry[] | null> {
-    const fetchAndParse = async (url: string): Promise<RayuCloudModelEntry[]> => {
+    const fetchAndParse = async (url: string): Promise<RayuCloudModelEntry[] | null> => {
       try {
         const res = await fetch(url, {
           headers: { Authorization: `Bearer ${cred.token}` },
           redirect: "manual",
         });
-        if (!res.ok) return [];
-        const raw = await res.json();
-        return parseHostedModelsPayload(raw);
+        if (!res.ok) return null;
+        const raw: unknown = await res.json();
+        const record = asRecord(raw);
+        const lists = [raw, record.hostedModels, record.allowedModels, record.models, record.data].filter(Array.isArray);
+        const models = parseHostedModelsPayload(raw);
+        return models.length > 0 || (lists.length > 0 && lists.every((list) => list.length === 0)) ? models : null;
       } catch {
-        return [];
+        return null;
       }
     };
-
     if (cred.isOAuth) {
-      const fromEntitlements = await fetchAndParse(
-        `${getRayuApiBase()}/me/entitlements`,
-      );
-      if (fromEntitlements.length > 0) {
-        return fromEntitlements;
-      }
-      const fromGateway = await fetchAndParse(
-        `${getRayuGatewayBase()}/v1/models`,
-      );
-      return fromGateway.length > 0 ? fromGateway : null;
+      const entitlements = await fetchAndParse(`${getRayuApiBase()}/me/entitlements`);
+      if (entitlements?.length) return entitlements;
     }
+    return fetchAndParse(`${getRayuGatewayBase()}/v1/models`);
+  }
 
-    const fromGateway = await fetchAndParse(`${getRayuGatewayBase()}/v1/models`);
-    return fromGateway.length > 0 ? fromGateway : null;
+  private hostedCatalogKey(): string | undefined {
+    const auth = this.resolveCurrentAuth();
+    if (auth.method === "none") return undefined;
+    const rawUserId = auth.session?.user?.id;
+    const validUserId =
+      rawUserId !== undefined &&
+      rawUserId !== null &&
+      String(rawUserId).trim() !== "" &&
+      String(rawUserId) !== "0"
+        ? String(rawUserId)
+        : undefined;
+    const identity =
+      auth.method === "oauth"
+        ? (validUserId ??
+          auth.session?.user?.email?.trim() ??
+          auth.session?.refreshToken ??
+          auth.session?.accessToken ??
+          "")
+        : (auth.apiKey ?? "");
+    const fingerprint = createHash("sha256").update(identity).digest("hex");
+    return JSON.stringify([getRayuApiBase(), getRayuGatewayBase(), auth.method, fingerprint]);
+  }
+
+  private resetHostedCatalogState(): void {
+    this.hostedCatalog = undefined;
+    this.hostedCatalogRequest += 1;
+    this.hostedCatalogInFlight.clear();
   }
 
   getCachedHostedModels(): RayuCloudModelEntry[] {
-    return [...this.cachedModels];
+    const cached = this.hostedCatalog;
+    return cached && cached.key === this.hostedCatalogKey() ? [...cached.models] : [];
+  }
+
+  async getHostedModelCatalog(forceRefresh = false): Promise<{
+    models: RayuCloudModelEntry[];
+    status: "fresh" | "cached" | "stale" | "failed" | "unavailable";
+  }> {
+    const key = this.hostedCatalogKey();
+    if (!key) return { models: [], status: "unavailable" };
+    const cached = this.hostedCatalog?.key === key ? this.hostedCatalog : undefined;
+    if (!forceRefresh && cached && !cached.stale && Date.now() - cached.fetchedAt < MODELS_STALE_MS) {
+      return { models: [...cached.models], status: "cached" };
+    }
+
+    const inFlightKey = `${key}::${forceRefresh}`;
+    const existing = this.hostedCatalogInFlight.get(inFlightKey);
+    if (existing) {
+      return existing.then((res) => ({ ...res, models: [...res.models] }));
+    }
+
+    const request = ++this.hostedCatalogRequest;
+    const run = (async (): Promise<{
+      models: RayuCloudModelEntry[];
+      status: "fresh" | "cached" | "stale" | "failed" | "unavailable";
+    }> => {
+      const auth = this.resolveCurrentAuth();
+      const credential = await this.getGatewayCredential();
+      const models =
+        credential && credential.isOAuth === (auth.method === "oauth")
+          ? await this.fetchHostedModelsWithCredential(credential)
+          : null;
+
+      if (key !== this.hostedCatalogKey()) {
+        return { models: [], status: "unavailable" };
+      }
+      if (request !== this.hostedCatalogRequest) {
+        const current = this.hostedCatalog?.key === key ? this.hostedCatalog : undefined;
+        if (current) {
+          return {
+            models: [...current.models],
+            status: current.stale ? "stale" : "cached",
+          };
+        }
+        return { models: [], status: "failed" };
+      }
+      if (models !== null) {
+        this.hostedCatalog = { key, models, fetchedAt: Date.now(), stale: false };
+        return { models: [...models], status: "fresh" };
+      }
+      const fallbackCached = this.hostedCatalog?.key === key ? this.hostedCatalog : cached;
+      if (fallbackCached) {
+        this.hostedCatalog = { ...fallbackCached, stale: true };
+        return { models: [...fallbackCached.models], status: "stale" };
+      }
+      return { models: [], status: "failed" };
+    })().finally(() => {
+      if (this.hostedCatalogInFlight.get(inFlightKey) === run) {
+        this.hostedCatalogInFlight.delete(inFlightKey);
+      }
+    });
+
+    this.hostedCatalogInFlight.set(inFlightKey, run);
+    return run.then((res) => ({ ...res, models: [...res.models] }));
   }
 
   async fetchHostedModels(forceRefresh = false): Promise<RayuCloudModelEntry[]> {
-    const { method } = this.resolveCurrentAuth();
-    if (method === "none") {
-      this.cachedModels = [];
-      this.modelsFetchedAt = 0;
-      return [];
-    }
-
-    if (
-      !forceRefresh &&
-      this.cachedModels.length > 0 &&
-      Date.now() - this.modelsFetchedAt < MODELS_STALE_MS
-    ) {
-      return [...this.cachedModels];
-    }
-
-    const cred = await this.getGatewayCredential();
-    if (!cred) {
-      this.cachedModels = [];
-      this.modelsFetchedAt = 0;
-      return [];
-    }
-
-    const entries = await this.fetchHostedModelsWithCredential(cred);
-    if (entries && entries.length > 0) {
-      this.cachedModels = entries;
-      this.modelsFetchedAt = Date.now();
-    }
-    return [...this.cachedModels];
+    return (await this.getHostedModelCatalog(forceRefresh)).models;
   }
 
   async getAccountStatus(forceRefresh = false): Promise<AccountStatusView> {
     const { method } = this.resolveCurrentAuth();
     if (method === "none") {
       this.cachedCredits = null;
-      this.cachedModels = [];
-      this.modelsFetchedAt = 0;
+      this.resetHostedCatalogState();
       return this.getAccountStatusSnapshot();
     }
 
@@ -1058,13 +1121,12 @@ export class RayuHostAuthManager extends EventEmitter {
     this.lastError = null;
     const cred = await this.getGatewayCredential();
     if (!cred) {
-      this.cachedCredits = null;
-      this.cachedModels = [];
-      this.modelsFetchedAt = 0;
+      if (this.resolveCurrentAuth().method === "none") this.cachedCredits = null;
+      await this.getHostedModelCatalog(true);
       return this.emitAuthChanged();
     }
 
-    const [meResult, creditsResult, modelsResult] = await Promise.allSettled([
+    const [meResult, creditsResult] = await Promise.allSettled([
       cred.isOAuth
         ? fetch(`${getRayuApiBase()}/me`, {
             headers: { Authorization: `Bearer ${cred.token}` },
@@ -1075,7 +1137,7 @@ export class RayuHostAuthManager extends EventEmitter {
         headers: { Authorization: `Bearer ${cred.token}` },
         redirect: "manual",
       }),
-      this.fetchHostedModelsWithCredential(cred),
+      this.getHostedModelCatalog(true),
     ]);
 
     if (meResult.status === "fulfilled" && meResult.value?.ok) {
@@ -1103,15 +1165,6 @@ export class RayuHostAuthManager extends EventEmitter {
       } catch {
         // retain last good credits
       }
-    }
-
-    if (
-      modelsResult.status === "fulfilled" &&
-      modelsResult.value &&
-      modelsResult.value.length > 0
-    ) {
-      this.cachedModels = modelsResult.value;
-      this.modelsFetchedAt = Date.now();
     }
 
     return this.emitAuthChanged();
@@ -1401,6 +1454,7 @@ export class RayuHostAuthManager extends EventEmitter {
     };
     this.markSelfWrite();
     writeStoredSession(session);
+    this.resetHostedCatalogState();
     return session;
   }
 
@@ -1444,7 +1498,7 @@ export class RayuHostAuthManager extends EventEmitter {
     this.markSelfWrite();
     saveApiKeyToEnvFile(key);
     process.env.RAYU_API_KEY = key;
-    this.modelsFetchedAt = 0;
+    this.resetHostedCatalogState();
 
     try {
       await this.daemonBridge?.setApiKey?.("rayu", key);
@@ -1517,8 +1571,7 @@ export class RayuHostAuthManager extends EventEmitter {
     await this.notifyDaemonAuthChangedBestEffort();
     if (this.resolveCurrentAuth().method === "none") {
       this.cachedCredits = null;
-      this.cachedModels = [];
-      this.modelsFetchedAt = 0;
+      this.resetHostedCatalogState();
     }
     return this.emitAuthChanged();
   }
@@ -1537,8 +1590,7 @@ export class RayuHostAuthManager extends EventEmitter {
     purgeRayuAccountCaches();
 
     this.cachedCredits = null;
-    this.cachedModels = [];
-    this.modelsFetchedAt = 0;
+    this.resetHostedCatalogState();
     this.lastError = null;
 
     // Best-effort daemon sync — sign-out MUST succeed even when daemon is offline!
@@ -1623,6 +1675,7 @@ export class RayuHostAuthManager extends EventEmitter {
     this.disposed = true;
     this.stopWatching();
     this.cleanupPendingSignIn();
+    this.resetHostedCatalogState();
     this.removeAllListeners();
   }
 }

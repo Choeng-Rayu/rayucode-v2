@@ -159,6 +159,15 @@ export type CacheTtl = z.infer<typeof CacheTtlSchema>;
 export const ProviderTransportSchema = z.enum(["auto", "https", "websocket"]);
 export type ProviderTransport = z.infer<typeof ProviderTransportSchema>;
 
+export const CatalogSourceStatusSchema = z.enum([
+  "fresh",
+  "cached",
+  "stale",
+  "failed",
+  "unavailable",
+]);
+export type CatalogSourceStatus = z.infer<typeof CatalogSourceStatusSchema>;
+
 export const UpdateChannelSchema = z.enum(["stable", "preview", "main"]);
 export type UpdateChannel = z.infer<typeof UpdateChannelSchema>;
 
@@ -2439,6 +2448,14 @@ export const RpcContractSchemas = {
       swarmAllowlist: z.array(z.string()).optional(),
       configPath: z.string().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
+      sources: z
+        .object({
+          engine: CatalogSourceStatusSchema,
+          hosted: CatalogSourceStatusSchema,
+        })
+        .optional(),
+      stale: z.boolean().optional(),
+      message: z.string().optional(),
     }),
   },
   "settings.models.refresh": {
@@ -2446,10 +2463,12 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       message: z.string().optional(),
-      sources: z.object({
-        engine: z.enum(["fresh", "failed", "unavailable"]),
-        hosted: z.enum(["fresh", "cached", "stale", "failed", "unavailable"]),
-      }).optional(),
+      sources: z
+        .object({
+          engine: z.enum(["fresh", "failed", "unavailable"]),
+          hosted: CatalogSourceStatusSchema,
+        })
+        .optional(),
       routeCount: z.number().int().nonnegative().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
     }),
