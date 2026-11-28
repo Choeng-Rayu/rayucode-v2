@@ -11,7 +11,7 @@ import {
   X,
 } from "lucide-react";
 
-import { Badge, Button } from "@/components/ui";
+import { Badge, Button, Switch } from "@/components/ui";
 import { cn, postToHost, useAppStore } from "@/lib";
 
 import { useSkillActions, useSkills } from "../hooks/usePlugins";
@@ -23,6 +23,7 @@ export function SkillsTab() {
     createSkillMutation,
     installSkillMutation,
     reloadSkillsMutation,
+    toggleSkillMutation,
     runSkillMutation,
   } = useSkillActions();
 
@@ -254,8 +255,21 @@ export function SkillsTab() {
                           {skill.allowedTools.length} allowed tools
                         </Badge>
                       )}
+                      {typeof skill.tokens === "number" && skill.tokens > 0 && (
+                        <Badge
+                          variant="outline"
+                          className="font-mono text-[10px] text-muted-ink tabular-nums"
+                        >
+                          ~{skill.tokens} tok
+                        </Badge>
+                      )}
                       {skill.activeInSession && (
                         <Badge variant="brand">Active in session</Badge>
+                      )}
+                      {skill.enabled === false && (
+                        <Badge variant="outline" className="text-muted-ink">
+                          Disabled
+                        </Badge>
                       )}
                     </div>
                     <p className="mt-1 truncate text-xs text-muted-ink">
@@ -265,6 +279,19 @@ export function SkillsTab() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <Switch
+                    checked={skill.enabled !== false}
+                    disabled={toggleSkillMutation.isPending}
+                    aria-label={`Enable skill ${skill.name}`}
+                    data-testid={`skill-toggle-${skill.name}`}
+                    onCheckedChange={(checked) => {
+                      toggleSkillMutation.mutate({
+                        name: skill.name,
+                        enabled: checked,
+                      });
+                    }}
+                  />
+
                   <Button
                     type="button"
                     variant="ghost"

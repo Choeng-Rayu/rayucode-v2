@@ -50,6 +50,15 @@ export function operationAvailable(
   return caps.includes(requiredCap);
 }
 
+/**
+ * Reactive React hook variant of `operationAvailable` that subscribes to live
+ * negotiated engine capabilities so buttons unlock immediately after host init.
+ */
+export function useOperationAvailable(method: RpcMethod): boolean {
+  const capabilities = useAppStore((s) => s.capabilities);
+  return operationAvailable(method, capabilities);
+}
+
 export async function requireOperation<T extends { ok: boolean; message?: string; error?: string }>(
   operation: Promise<T>,
 ): Promise<T> {

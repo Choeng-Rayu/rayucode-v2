@@ -675,7 +675,17 @@ const mockState: MockBridgeState = {
         status: "in_progress",
       },
     ],
-    pendingProposals: [],
+    pendingProposals: [
+      {
+        proposalId: "prop_wave3_ledger",
+        version: 4,
+        author: "ui-shell",
+        summary: "Add worktree window launcher and compact sidebar inspector handoff",
+        diffSummary: "+2 tasks in Wave 3D (CoordinationLedger worktrees & plan approval actions)",
+        status: "pending",
+        createdAtMs: NOW - 45_000,
+      },
+    ],
     worktrees: [
       {
         id: "wt_main",

@@ -903,25 +903,13 @@ export function mcpListQueryOptions() {
             (srv.configLayer === "workspace"
               ? ".mcp.json"
               : "~/.rayu/mcp.json"),
-          tools:
-            srv.tools && srv.tools.length > 0
-              ? srv.tools
-              : (tpl?.defaultTools ?? [
-                  {
-                    name: "status",
-                    fullName: `mcp__${srv.id}__status`,
-                    description: `Verify ${srv.name} MCP server readiness`,
-                    tokenEstimate: 120,
-                  },
-                ]),
+          tools: srv.tools ?? [],
         };
       });
       return {
         servers,
         totalTokenBudget: res.totalTokenBudget ?? 8000,
-        usedTokenBudget:
-          res.usedTokenBudget ??
-          servers.reduce((acc, s) => acc + (s.tokenBudgetUsed ?? 400), 0),
+        usedTokenBudget: res.usedTokenBudget ?? 0,
       };
     },
   });
@@ -956,13 +944,9 @@ export function memoryStatusQueryOptions() {
     queryKey: PLUGINS_KEYS.memory(),
     queryFn: async (): Promise<MemoryStatusView> => {
       const res = await callRpc("plugins.memory.status");
-      const facts = res.facts.map((fact, idx) => ({
+      const facts = res.facts.map((fact) => ({
         ...fact,
-        relatedIds:
-          fact.relatedIds ??
-          (res.facts.length > 1
-            ? [res.facts[(idx + 1) % res.facts.length]!.id]
-            : []),
+        relatedIds: fact.relatedIds ?? [],
       }));
       return {
         ...res,
@@ -1308,6 +1292,31 @@ export function useSkillActions() {
     },
   });
 
+  const toggleSkillMutation = useMutation({
+    mutationFn: async (params: { name: string; enabled: boolean }) => {
+      return requireOperation(callRpc("plugins.skills.toggle", params));
+    },
+    onSuccess: (_res, { name, enabled }) => {
+      queryClient.setQueryData(
+        PLUGINS_KEYS.skills(),
+        (
+          prev:
+            | { skills: SkillView[]; endorsed: SkillView[] }
+            | undefined,
+        ) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            skills: prev.skills.map((s) =>
+              s.name === name ? { ...s, enabled } : s,
+            ),
+          };
+        },
+      );
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.skills() });
+    },
+  });
+
   const runSkillMutation = useMutation({
     mutationFn: async (params: {
       sessionId: string;
@@ -1322,6 +1331,7 @@ export function useSkillActions() {
     createSkillMutation,
     installSkillMutation,
     reloadSkillsMutation,
+    toggleSkillMutation,
     runSkillMutation,
   };
 }

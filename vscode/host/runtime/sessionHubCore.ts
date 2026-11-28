@@ -55,6 +55,7 @@ import {
   type SessionSummaryView,
   type SidePanelPageView,
   type SurfaceKind,
+  type SwarmStatusView,
   type TodoItemView,
   type WorkspaceLedgerView,
 } from "../../shared/vscodeProtocol.js";
@@ -67,6 +68,7 @@ import {
   mapRawFileChangeDiff,
   mapRawFileChangesSnapshot,
   mapRawHistoryMessage,
+  mapRawSwarmStatus,
   normalizeHarnessRequestFrame,
   normalizeImageAttachments,
 } from "./featureRouters.js";
@@ -194,6 +196,9 @@ export class SessionHubCore extends EventEmitter {
   private activePermissionMode: PermissionModeId;
   private isTurnStreaming = false;
   private backgroundPollTimer: ReturnType<typeof setInterval> | null = null;
+  private activeSwarm: SwarmStatusView | null = null;
+  private activeSwarmDigest = "";
+  private swarmPollTimer: ReturnType<typeof setInterval> | null = null;
   private readonly pendingModelBySession = new Map<
     string,
     { modelSpec: string; provider?: string }
@@ -1424,6 +1429,20 @@ export class SessionHubCore extends EventEmitter {
       case "tool_call":
       case "soft_interrupt_injected": {
         this.setSessionTurnStreaming(resolvedSessionId, isFocusedSession, true);
+        const toolName =
+          typeof frame.tool_name === "string"
+            ? frame.tool_name
+            : typeof frame.name === "string"
+              ? frame.name
+              : "";
+        if (
+          toolName &&
+          /swarm|comm_spawn|spawn_agent|agent_spawn|comm_stop|comm_message/i.test(
+            toolName,
+          )
+        ) {
+          void this.refreshSwarmStatus().catch(() => {});
+        }
         break;
       }
       case "turn_done":
@@ -3037,6 +3056,70 @@ export class SessionHubCore extends EventEmitter {
     return removed;
   }
 
+  getActiveSwarm(): SwarmStatusView | null {
+    return this.activeSwarm;
+  }
+
+  setActiveSwarm(swarm: SwarmStatusView | null): void {
+    const next = swarm && swarm.agents.length > 0 ? swarm : null;
+    const digest = next ? JSON.stringify(next) : "";
+    const changed = digest !== this.activeSwarmDigest;
+    this.activeSwarm = next;
+    this.activeSwarmDigest = digest;
+    this.syncSwarmPollTimer();
+    if (changed) {
+      this.broadcast({
+        type: "rayucode.swarm.snapshot",
+        swarm: next,
+      });
+      this.emit("swarmChanged", next);
+      this.emit("stateChanged");
+    }
+  }
+
+  async refreshSwarmStatus(swarmId?: string): Promise<SwarmStatusView | null> {
+    if (this.bridgeManager.getStatus().state !== "connected") {
+      return this.activeSwarm;
+    }
+    try {
+      const out = await this.runtimeCommand("swarm", ["status"]);
+      const data =
+        typeof out.data === "object" && out.data !== null
+          ? (out.data as Record<string, unknown>)
+          : {};
+      const mapped = mapRawSwarmStatus(data, swarmId);
+      this.setActiveSwarm(mapped);
+      return this.activeSwarm;
+    } catch {
+      return this.activeSwarm;
+    }
+  }
+
+  private syncSwarmPollTimer(): void {
+    const hasActiveAgents = Boolean(
+      this.activeSwarm?.agents.some(
+        (a) =>
+          a.status === "running" ||
+          a.status === "spawned" ||
+          a.status === "blocked",
+      ),
+    );
+    const shouldPoll = hasActiveAgents && this.surfaces.size > 0;
+    if (shouldPoll && !this.swarmPollTimer) {
+      this.swarmPollTimer = setInterval(() => {
+        if (this.surfaces.size === 0) {
+          this.syncSwarmPollTimer();
+          return;
+        }
+        void this.refreshSwarmStatus();
+      }, 3_000);
+      this.swarmPollTimer.unref?.();
+    } else if (!shouldPoll && this.swarmPollTimer) {
+      clearInterval(this.swarmPollTimer);
+      this.swarmPollTimer = null;
+    }
+  }
+
   private broadcastProcessesSnapshot(): void {
     const sessionId = this.activeSessionId;
     const tasks = this.getBackgroundTasks(sessionId);
@@ -3077,6 +3160,10 @@ export class SessionHubCore extends EventEmitter {
     if (this.backgroundPollTimer) {
       clearInterval(this.backgroundPollTimer);
       this.backgroundPollTimer = null;
+    }
+    if (this.swarmPollTimer) {
+      clearInterval(this.swarmPollTimer);
+      this.swarmPollTimer = null;
     }
     this.streamingBySession.clear();
     this.pendingModelBySession.clear();

@@ -802,6 +802,7 @@ export class WorkspacePanelManager
         backgroundTasks: sessionId
           ? this.sessionHub.getBackgroundTasks(sessionId)
           : [],
+        activeSwarm: this.sessionHub.getActiveSwarm(),
         ...(accountStatus ? { accountStatus } : {}),
         fileChanges,
         todos: sessionId ? this.sessionHub.getCachedTodos(sessionId) : [],
@@ -823,6 +824,10 @@ export class WorkspacePanelManager
       const queuedMessages = this.surfaceQueue.markReady(surfaceId);
       for (const queued of queuedMessages) {
         postToSurface(queued);
+      }
+
+      if (daemonStatus.state === "connected") {
+        void this.sessionHub.refreshSwarmStatus().catch(() => {});
       }
     };
 

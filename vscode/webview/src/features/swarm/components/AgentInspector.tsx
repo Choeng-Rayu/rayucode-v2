@@ -24,7 +24,7 @@ import {
   SelectValue,
   TechFileBadge,
 } from "@/components/ui";
-import { basenameOf, cn } from "@/lib";
+import { basenameOf, cn, formatDurationSeconds } from "@/lib";
 
 import {
   DEFAULT_SWARM_MODELS,
@@ -62,71 +62,49 @@ interface AgentTraceCommand {
 }
 
 function getOwnedFilesForAgent(agent: SwarmAgentView): string[] {
-  if (agent.agentId === "coordinator") {
-    return [
-      "vscode/VSCODE_DESIGN.md",
-      "vscode/shared/vscodeProtocol.ts",
-    ];
-  }
-  if (agent.agentId === "ui-shell") {
-    return [
-      "vscode/webview/src/styles/globals.css",
-      "vscode/webview/src/features/shell/components/AppShell.tsx",
-      "vscode/webview/src/components/ui/rayu-symbols.tsx",
-    ];
-  }
-  return [
-    `vscode/webview/src/features/swarm/components/${agent.label}.tsx`,
-    "vscode/shared/vscodeProtocol.ts",
-  ];
+  return agent.filesTouched ?? [];
 }
 
-function getCommandsForAgent(
-  agent: SwarmAgentView,
-  traceEntries: unknown[],
-): AgentTraceCommand[] {
+function getCommandsForAgent(traceEntries: unknown[]): AgentTraceCommand[] {
   const parsed: AgentTraceCommand[] = [];
   for (let i = 0; i < traceEntries.length; i += 1) {
     const entry = traceEntries[i];
-    if (entry && typeof entry === "object") {
-      const rec = entry as Record<string, unknown>;
-      if (typeof rec.command === "string") {
-        parsed.push({
-          id: String(rec.id ?? `cmd_${i}`),
-          command: rec.command,
-          output: typeof rec.output === "string" ? rec.output : "exit 0",
-          exitCode: typeof rec.exitCode === "number" ? rec.exitCode : 0,
-        });
-      }
+    if (!entry || typeof entry !== "object") continue;
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.command === "string" && rec.command.trim()) {
+      parsed.push({
+        id: String(rec.id ?? `cmd_${i}`),
+        command: rec.command,
+        output: typeof rec.output === "string" ? rec.output : "",
+        exitCode: typeof rec.exitCode === "number" ? rec.exitCode : 0,
+      });
+      continue;
+    }
+    const toolName =
+      typeof rec.toolName === "string"
+        ? rec.toolName
+        : typeof rec.tool_name === "string"
+          ? rec.tool_name
+          : typeof rec.name === "string" && rec.role === "tool"
+            ? rec.name
+            : null;
+    if (toolName) {
+      const input = rec.toolInput ?? rec.tool_input ?? rec.input;
+      const inputSummary =
+        input && typeof input === "object" && typeof (input as Record<string, unknown>).command === "string"
+          ? String((input as Record<string, unknown>).command)
+          : input && typeof input === "object" && typeof (input as Record<string, unknown>).path === "string"
+            ? `${toolName} ${String((input as Record<string, unknown>).path)}`
+            : toolName;
+      parsed.push({
+        id: String(rec.id ?? `tool_${i}`),
+        command: inputSummary,
+        output: typeof rec.content === "string" ? rec.content.slice(0, 600) : "",
+        exitCode: typeof rec.exitCode === "number" ? rec.exitCode : 0,
+      });
     }
   }
-  if (parsed.length > 0) return parsed;
-
-  if (agent.agentId === "coordinator") {
-    return [
-      {
-        id: "cmd_coord_1",
-        command: "rayu swarm status --json",
-        output: "active_agents: 2 · plan_version: v3 · conflicts: 0",
-        exitCode: 0,
-      },
-    ];
-  }
-
-  return [
-    {
-      id: `cmd_${agent.agentId}_1`,
-      command: "npm run lint:design --workspace @rayu-dev/rayucode-vscode",
-      output: "lint:design passed (0 violations).",
-      exitCode: 0,
-    },
-    {
-      id: `cmd_${agent.agentId}_2`,
-      command: "npm run typecheck --workspace @rayu-dev/rayucode-vscode",
-      output: "tsc --noEmit completed with 0 errors.",
-      exitCode: 0,
-    },
-  ];
+  return parsed;
 }
 
 function getTodosForAgent(
@@ -134,20 +112,24 @@ function getTodosForAgent(
   todos: TodoItemView[],
 ): TodoItemView[] {
   if (todos.length > 0) return todos;
-  return [
-    {
-      content: "Read VSCODE_DESIGN.md and vscodeProtocol.ts contracts",
-      status: "completed",
-    },
-    {
-      content: agent.currentIntent || "Execute assigned worker slice",
-      status: agent.status === "completed" ? "completed" : "in_progress",
-    },
-    {
-      content: "Run lint:design and Vitest verification gates",
-      status: agent.status === "completed" ? "completed" : "pending",
-    },
-  ];
+  if (agent.todoItems && agent.todoItems.length > 0) {
+    return agent.todoItems.map((item) => {
+      const st = item.status.toLowerCase();
+      const normalizedStatus: TodoItemView["status"] =
+        st === "completed"
+          ? "completed"
+          : st === "in_progress"
+            ? "in_progress"
+            : st === "cancelled"
+              ? "cancelled"
+              : "pending";
+      return {
+        content: item.content,
+        status: normalizedStatus,
+      };
+    });
+  }
+  return [];
 }
 
 export function AgentInspector({
@@ -208,7 +190,14 @@ export function AgentInspector({
   const totalTodos = agent.todoTotal ?? resolvedTodos.length;
 
   const ownedFiles = getOwnedFilesForAgent(agent);
-  const commands = getCommandsForAgent(agent, traceEntries);
+  const commands = getCommandsForAgent(traceEntries);
+  const progressPercent =
+    totalTodos > 0
+      ? Math.max(0, Math.min(100, Math.round((completedTodos / totalTodos) * 100)))
+      : agent.status === "completed"
+        ? 100
+        : null;
+  const outputPreview = agent.outputTail || agent.latestCompletionReport;
 
   const handleDmSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -381,28 +370,34 @@ export function AgentInspector({
 
       {/* Inspector Body */}
       <div className="flex flex-col gap-3.5 px-4 py-3.5">
-        {/* Owned Files with clickable TechFileBadge */}
+        {/* Files Touched with clickable TechFileBadge */}
         <div
           data-slot="agent-owned-files"
           data-testid="agent-owned-files"
           className="flex flex-wrap items-center gap-1.5"
         >
           <span className="text-[11.5px] font-medium text-muted-ink">
-            Owned files:
+            Files touched:
           </span>
-          {ownedFiles.map((filePath) => (
-            <button
-              key={filePath}
-              type="button"
-              data-slot="owned-file-pill"
-              data-testid={`owned-file-${basenameOf(filePath)}`}
-              onClick={() => onOpenFile?.(filePath, 1)}
-              className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-ink transition-colors hover:border-brand/50 hover:bg-brand-softer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <TechFileBadge path={filePath} />
-              <span className="truncate">{basenameOf(filePath)}</span>
-            </button>
-          ))}
+          {ownedFiles.length === 0 ? (
+            <span className="text-[11.5px] text-faint">
+              No files modified yet
+            </span>
+          ) : (
+            ownedFiles.map((filePath) => (
+              <button
+                key={filePath}
+                type="button"
+                data-slot="owned-file-pill"
+                data-testid={`owned-file-${basenameOf(filePath)}`}
+                onClick={() => onOpenFile?.(filePath, 1)}
+                className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-ink transition-colors hover:border-brand/50 hover:bg-brand-softer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <TechFileBadge path={filePath} />
+                <span className="truncate">{basenameOf(filePath)}</span>
+              </button>
+            ))
+          )}
         </div>
 
         {/* Assigned Todo Lane */}
@@ -420,32 +415,74 @@ export function AgentInspector({
             </span>
           </div>
 
-          <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
-            {resolvedTodos.map((item, idx) => (
-              <li
-                key={`${item.content}_${idx}`}
-                data-status={item.status}
-                className={cn(
-                  "flex items-center gap-2 text-[12px] leading-snug",
-                  item.status === "completed" && "text-muted-ink line-through",
-                  item.status === "in_progress" && "font-medium text-ink",
-                  item.status === "pending" && "text-body",
-                )}
-              >
-                <span
-                  aria-hidden="true"
+          {progressPercent !== null && (
+            <div
+              role="progressbar"
+              aria-label={`${agent.label} todo progress`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={progressPercent}
+              className="mb-1 h-1.5 w-full overflow-hidden rounded-full bg-pane"
+            >
+              <div
+                className="h-full rounded-full bg-brand transition-[width] duration-300"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          )}
+
+          {resolvedTodos.length === 0 ? (
+            <div className="text-xs text-faint">
+              {agent.currentIntent || "No todos recorded for this agent yet."}
+            </div>
+          ) : (
+            <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
+              {resolvedTodos.map((item, idx) => (
+                <li
+                  key={`${item.content}_${idx}`}
+                  data-status={item.status}
                   className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    item.status === "completed" && "bg-brand",
-                    item.status === "in_progress" && "bg-brand-bright",
-                    item.status === "pending" && "bg-hairline-strong",
+                    "flex items-center gap-2 text-[12px] leading-snug",
+                    item.status === "completed" && "text-muted-ink line-through",
+                    item.status === "in_progress" && "font-medium text-ink",
+                    item.status === "pending" && "text-body",
                   )}
-                />
-                <span>{item.content}</span>
-              </li>
-            ))}
-          </ul>
+                >
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full",
+                      item.status === "completed" && "bg-brand",
+                      item.status === "in_progress" && "bg-brand-bright",
+                      item.status === "pending" && "bg-hairline-strong",
+                    )}
+                  />
+                  <span>{item.content}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
+
+        {/* Live Output Tail / Latest Completion Report */}
+        {outputPreview && (
+          <div
+            data-testid="agent-output-tail"
+            className="flex flex-col gap-1 rounded-[10px] border border-hairline bg-inset px-3 py-2.5"
+          >
+            <div className="flex items-center justify-between text-[11px] font-medium text-muted-ink">
+              <span>{agent.outputTail ? "Live output tail" : "Latest report"}</span>
+              {agent.liveStatus && (
+                <span className="font-mono text-[10.5px] text-brand-text">
+                  {agent.liveStatus}
+                </span>
+              )}
+            </div>
+            <pre className="m-0 max-h-[140px] overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-body">
+              {outputPreview}
+            </pre>
+          </div>
+        )}
 
         {/* Quiet 3-Depth Execution Trace & Live Shell Output */}
         <div
@@ -462,8 +499,11 @@ export function AgentInspector({
           >
             <BookOpen className="size-3.5 shrink-0" aria-hidden="true" />
             <span>
-              Worked for 38s · {ownedFiles.length} files · {commands.length}{" "}
-              {commands.length === 1 ? "cmd" : "cmds"}
+              {typeof agent.elapsedSecs === "number"
+                ? `Elapsed ${formatDurationSeconds(agent.elapsedSecs)} · `
+                : ""}
+              {ownedFiles.length} {ownedFiles.length === 1 ? "file" : "files"} ·{" "}
+              {commands.length} {commands.length === 1 ? "tool" : "tools"}
             </span>
             <ChevronRight
               className={cn(
@@ -476,63 +516,71 @@ export function AgentInspector({
 
           {traceExpanded && (
             <div className="ml-[7px] flex flex-col gap-2 border-l border-hairline pl-3.5">
-              {/* Coalesced File Reads */}
-              <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted-ink">
-                <BookOpen className="size-3.5 shrink-0" aria-hidden="true" />
-                <span>Read</span>
-                {ownedFiles.map((filePath) => (
-                  <button
-                    key={filePath}
-                    type="button"
-                    data-slot="read-file-pill"
-                    onClick={() => onOpenFile?.(filePath, 1)}
-                    className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text transition-colors hover:border-brand/50"
-                  >
-                    <TechFileBadge path={filePath} />
-                    <span className="truncate">{filePath}</span>
-                  </button>
-                ))}
-              </div>
+              {ownedFiles.length === 0 && commands.length === 0 ? (
+                <div className="text-xs text-faint">
+                  No tool calls or file edits captured yet.
+                </div>
+              ) : (
+                <>
+                  {ownedFiles.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted-ink">
+                      <BookOpen className="size-3.5 shrink-0" aria-hidden="true" />
+                      <span>Touched</span>
+                      {ownedFiles.map((filePath) => (
+                        <button
+                          key={filePath}
+                          type="button"
+                          data-slot="read-file-pill"
+                          onClick={() => onOpenFile?.(filePath, 1)}
+                          className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text transition-colors hover:border-brand/50"
+                        >
+                          <TechFileBadge path={filePath} />
+                          <span className="truncate">{filePath}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
-              {/* ShellCard Command Output Wells */}
-              {commands.map((cmd, idx) => {
-                const isExpanded =
-                  expandedCmdIds[cmd.id] ?? idx === commands.length - 1;
-                return (
-                  <div
-                    key={cmd.id}
-                    data-slot="shell-card"
-                    className="overflow-hidden rounded-[10px] border border-hairline bg-inset"
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setExpandedCmdIds((prev) => ({
-                          ...prev,
-                          [cmd.id]: !isExpanded,
-                        }))
-                      }
-                      className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left font-mono text-[11.5px] text-ink hover:bg-hover"
-                    >
-                      <span className="flex min-w-0 items-center gap-2 truncate">
-                        <Terminal
-                          className="size-3.5 shrink-0 text-muted-ink"
-                          aria-hidden="true"
-                        />
-                        <span className="truncate">{cmd.command}</span>
-                      </span>
-                      <span className="shrink-0 rounded-full border border-brand/35 bg-brand-softer px-2 py-px text-[10px] text-brand-text">
-                        exit {cmd.exitCode}
-                      </span>
-                    </button>
-                    {isExpanded && (
-                      <pre className="m-0 overflow-x-auto border-t border-hairline-soft px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-ink">
-                        {cmd.output}
-                      </pre>
-                    )}
-                  </div>
-                );
-              })}
+                  {commands.map((cmd, idx) => {
+                    const isExpanded =
+                      expandedCmdIds[cmd.id] ?? idx === commands.length - 1;
+                    return (
+                      <div
+                        key={cmd.id}
+                        data-slot="shell-card"
+                        className="overflow-hidden rounded-[10px] border border-hairline bg-inset"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedCmdIds((prev) => ({
+                              ...prev,
+                              [cmd.id]: !isExpanded,
+                            }))
+                          }
+                          className="flex w-full cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left font-mono text-[11.5px] text-ink hover:bg-hover"
+                        >
+                          <span className="flex min-w-0 items-center gap-2 truncate">
+                            <Terminal
+                              className="size-3.5 shrink-0 text-muted-ink"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate">{cmd.command}</span>
+                          </span>
+                          <span className="shrink-0 rounded-full border border-brand/35 bg-brand-softer px-2 py-px text-[10px] text-brand-text">
+                            exit {cmd.exitCode}
+                          </span>
+                        </button>
+                        {isExpanded && cmd.output && (
+                          <pre className="m-0 overflow-x-auto border-t border-hairline-soft px-3 py-2 font-mono text-[11px] leading-relaxed text-muted-ink">
+                            {cmd.output}
+                          </pre>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
           )}
         </div>

@@ -13,6 +13,7 @@ import {
   RpcContractSchemas,
   fromHarnessPermissionMode,
   parseRpcParams,
+  toHarnessPermissionMode,
   type AccountStatusView,
   type AgentProfileView,
   type AgentRoleId,
@@ -54,6 +55,7 @@ import {
   type McpServerView,
   type McpTransport,
   type MemoryFactView,
+  type MemoryInstructionFileView,
   type MemoryStatusView,
   type ModelRouteOptionView,
   type OvernightRunView,
@@ -80,6 +82,7 @@ import {
   type SwarmBoardMessageView,
   type SwarmStatusView,
   type SwarmSummaryView,
+  type SwarmTodoItemView,
   type TelegramApprovalView,
   type TelegramStatusView,
   type TelemetryConfigView,
@@ -746,6 +749,570 @@ export function mapRawBackgroundTask(
   };
 }
 
+function formatSwarmLiveStatus(raw: unknown): string | undefined {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed || undefined;
+  }
+  if (raw && typeof raw === "object") {
+    const rec = raw as Record<string, unknown>;
+    const kind =
+      typeof rec.type === "string"
+        ? rec.type
+        : typeof rec.kind === "string"
+          ? rec.kind
+          : typeof rec.state === "string"
+            ? rec.state
+            : undefined;
+    const tool =
+      typeof rec.tool === "string"
+        ? rec.tool
+        : typeof rec.tool_name === "string"
+          ? rec.tool_name
+          : undefined;
+    const detail =
+      typeof rec.detail === "string"
+        ? rec.detail
+        : typeof rec.label === "string"
+          ? rec.label
+          : undefined;
+    if (tool && kind) return `${kind}: ${tool}`;
+    if (tool) return tool;
+    if (detail) return detail;
+    if (kind) return kind;
+    const keys = Object.keys(rec);
+    if (keys.length === 1) {
+      const onlyKey = keys[0]!;
+      const inner = rec[onlyKey];
+      if (typeof inner === "string" && inner.trim()) {
+        return `${onlyKey}: ${inner.trim()}`;
+      }
+      if (inner && typeof inner === "object") {
+        const innerRec = inner as Record<string, unknown>;
+        const innerLabel =
+          typeof innerRec.tool === "string"
+            ? innerRec.tool
+            : typeof innerRec.name === "string"
+              ? innerRec.name
+              : typeof innerRec.detail === "string"
+                ? innerRec.detail
+                : undefined;
+        return innerLabel ? `${onlyKey}: ${innerLabel}` : onlyKey;
+      }
+      return onlyKey;
+    }
+  }
+  return undefined;
+}
+
+export function mapRawSwarmAgent(raw: unknown, idx: number): SwarmAgentView {
+  const a = asRecord(raw);
+  const runtime = asRecord(a.runtime);
+  const rawTodoProg = a.todo_progress;
+  let todoCompleted: number | undefined;
+  let todoTotal: number | undefined;
+  if (Array.isArray(rawTodoProg) && rawTodoProg.length >= 2) {
+    if (typeof rawTodoProg[0] === "number") todoCompleted = rawTodoProg[0];
+    if (typeof rawTodoProg[1] === "number") todoTotal = rawTodoProg[1];
+  } else {
+    const todoProg = asRecord(rawTodoProg);
+    if (typeof a.todo_completed === "number") {
+      todoCompleted = a.todo_completed;
+    } else if (typeof todoProg.completed === "number") {
+      todoCompleted = todoProg.completed;
+    }
+    if (typeof a.todo_total === "number") {
+      todoTotal = a.todo_total;
+    } else if (typeof todoProg.total === "number") {
+      todoTotal = todoProg.total;
+    }
+  }
+
+  const rawTodoItems = Array.isArray(a.todo_items) ? a.todo_items : [];
+  const todoItems: SwarmTodoItemView[] = rawTodoItems
+    .map((item) => {
+      const rec = asRecord(item);
+      const content =
+        typeof rec.content === "string"
+          ? rec.content
+          : typeof rec.title === "string"
+            ? rec.title
+            : "";
+      if (!content) return null;
+      return {
+        content,
+        status: typeof rec.status === "string" ? rec.status : "pending",
+      };
+    })
+    .filter((item): item is SwarmTodoItemView => item !== null);
+
+  if (todoTotal === undefined && todoItems.length > 0) {
+    todoTotal = todoItems.length;
+    todoCompleted = todoItems.filter(
+      (item) => item.status.toLowerCase() === "completed",
+    ).length;
+  }
+
+  const rawFilesTouched = Array.isArray(a.files_touched)
+    ? a.files_touched
+    : Array.isArray(runtime.files_touched)
+      ? runtime.files_touched
+      : [];
+  const filesTouched = rawFilesTouched
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+
+  const rawStatus = String(a.status ?? "running").toLowerCase();
+  const status: SwarmAgentView["status"] = (
+    [
+      "spawned",
+      "ready",
+      "running",
+      "blocked",
+      "completed",
+      "failed",
+      "crashed",
+      "stopped",
+    ].includes(rawStatus)
+      ? rawStatus
+      : rawStatus === "working" || rawStatus === "active"
+        ? "running"
+        : rawStatus === "waiting" || rawStatus === "idle"
+          ? "ready"
+          : rawStatus === "done"
+            ? "completed"
+            : "running"
+  ) as SwarmAgentView["status"];
+
+  const waitReason =
+    typeof a.wait_reason === "string" && a.wait_reason.trim()
+      ? a.wait_reason.trim()
+      : typeof runtime.wait_reason === "string" && runtime.wait_reason.trim()
+        ? runtime.wait_reason.trim()
+        : typeof runtime.todo_blocked_reason === "string" &&
+            runtime.todo_blocked_reason.trim()
+          ? runtime.todo_blocked_reason.trim()
+          : undefined;
+
+  const taskLabel =
+    typeof a.task_label === "string" && a.task_label.trim()
+      ? a.task_label.trim()
+      : undefined;
+
+  const currentIntent =
+    typeof a.detail === "string" && a.detail.trim()
+      ? a.detail.trim()
+      : taskLabel
+        ? taskLabel
+        : typeof a.current_intent === "string" && a.current_intent.trim()
+          ? a.current_intent.trim()
+          : typeof a.currentIntent === "string" && a.currentIntent.trim()
+            ? a.currentIntent.trim()
+            : waitReason;
+
+  const model =
+    typeof a.model === "string" && a.model.trim()
+      ? a.model.trim()
+      : typeof runtime.model === "string" && runtime.model.trim()
+        ? runtime.model.trim()
+        : undefined;
+  const provider =
+    typeof a.provider === "string" && a.provider.trim()
+      ? a.provider.trim()
+      : typeof runtime.provider === "string" && runtime.provider.trim()
+        ? runtime.provider.trim()
+        : undefined;
+  const effort =
+    typeof a.effort === "string" && a.effort.trim()
+      ? a.effort.trim()
+      : typeof runtime.effort === "string" && runtime.effort.trim()
+        ? runtime.effort.trim()
+        : undefined;
+  const liveStatus = formatSwarmLiveStatus(a.live_status ?? runtime.live_status);
+  const elapsedSecs =
+    typeof a.elapsed_secs === "number" && Number.isFinite(a.elapsed_secs)
+      ? Math.max(0, a.elapsed_secs)
+      : typeof runtime.elapsed_secs === "number" &&
+          Number.isFinite(runtime.elapsed_secs)
+        ? Math.max(0, runtime.elapsed_secs)
+        : undefined;
+  const activityAgeSecs =
+    typeof a.activity_age_secs === "number" &&
+    Number.isFinite(a.activity_age_secs)
+      ? Math.max(0, a.activity_age_secs)
+      : typeof runtime.activity_age_secs === "number" &&
+          Number.isFinite(runtime.activity_age_secs)
+        ? Math.max(0, runtime.activity_age_secs)
+        : undefined;
+  const contextTokens =
+    typeof a.context_tokens === "number" && Number.isFinite(a.context_tokens)
+      ? Math.max(0, a.context_tokens)
+      : typeof runtime.context_tokens === "number" &&
+          Number.isFinite(runtime.context_tokens)
+        ? Math.max(0, runtime.context_tokens)
+        : undefined;
+  const contextLimit =
+    typeof a.context_limit === "number" && Number.isFinite(a.context_limit)
+      ? Math.max(0, a.context_limit)
+      : typeof runtime.context_limit === "number" &&
+          Number.isFinite(runtime.context_limit)
+        ? Math.max(0, runtime.context_limit)
+        : undefined;
+  const outputTokens =
+    typeof a.output_tokens === "number" && Number.isFinite(a.output_tokens)
+      ? Math.max(0, a.output_tokens)
+      : typeof runtime.output_tokens === "number" &&
+          Number.isFinite(runtime.output_tokens)
+        ? Math.max(0, runtime.output_tokens)
+        : undefined;
+
+  return {
+    agentId: String(
+      a.agent_id ??
+        a.agentId ??
+        a.friendly_name ??
+        a.session_id ??
+        a.id ??
+        `worker-${idx + 1}`,
+    ),
+    sessionId: String(a.session_id ?? a.sessionId ?? ""),
+    swarmId:
+      typeof a.swarm_id === "string"
+        ? a.swarm_id
+        : typeof runtime.swarm_id === "string"
+          ? runtime.swarm_id
+          : undefined,
+    label: String(
+      a.friendly_name ??
+        a.label ??
+        taskLabel ??
+        a.name ??
+        a.session_id ??
+        `worker-${idx + 1}`,
+    ),
+    taskLabel,
+    role: a.role === "coordinator" ? "coordinator" : "worker",
+    depth:
+      typeof a.depth === "number" ? a.depth : a.role === "coordinator" ? 0 : 1,
+    status,
+    liveStatus,
+    waitReason,
+    model,
+    provider,
+    effort,
+    currentIntent,
+    outputTail:
+      typeof a.output_tail === "string" && a.output_tail.trim()
+        ? a.output_tail
+        : undefined,
+    latestCompletionReport:
+      typeof a.latest_completion_report === "string" &&
+      a.latest_completion_report.trim()
+        ? a.latest_completion_report
+        : undefined,
+    ...(filesTouched.length > 0 ? { filesTouched } : {}),
+    ...(todoItems.length > 0 ? { todoItems } : {}),
+    worktreePath:
+      typeof a.working_dir === "string"
+        ? a.working_dir
+        : typeof a.worktree_path === "string"
+          ? a.worktree_path
+          : typeof a.worktreePath === "string"
+            ? a.worktreePath
+            : undefined,
+    branch: typeof a.branch === "string" ? a.branch : undefined,
+    diffAdditions:
+      typeof a.diff_additions === "number" ? a.diff_additions : undefined,
+    diffDeletions:
+      typeof a.diff_deletions === "number" ? a.diff_deletions : undefined,
+    todoCompleted,
+    todoTotal,
+    elapsedSecs,
+    activityAgeSecs,
+    contextTokens,
+    contextLimit,
+    outputTokens,
+    isHeadless: typeof a.is_headless === "boolean" ? a.is_headless : undefined,
+    reportBackToSessionId:
+      typeof a.report_back_to_session_id === "string"
+        ? a.report_back_to_session_id
+        : undefined,
+    updatedAtMs:
+      typeof a.updated_at_ms === "number" ? a.updated_at_ms : undefined,
+  };
+}
+
+export function mapRawSwarmBoardMessage(
+  raw: unknown,
+  idx: number,
+): SwarmBoardMessageView {
+  const m = asRecord(raw);
+  const eventObj = asRecord(m.event);
+  const eventType =
+    typeof eventObj.type === "string" ? eventObj.type.toLowerCase() : "";
+
+  let kind: SwarmBoardMessageView["kind"] = "lifecycle";
+  let text = "";
+  let channel = typeof m.channel === "string" ? m.channel : undefined;
+
+  if (typeof m.text === "string" && m.text.length > 0) {
+    text = m.text;
+    const rawKind = String(m.kind ?? eventObj.kind ?? "lifecycle").toLowerCase();
+    kind = (
+      ["dm", "broadcast", "channel", "lifecycle", "completion"].includes(rawKind)
+        ? rawKind
+        : "lifecycle"
+    ) as SwarmBoardMessageView["kind"];
+  } else if (eventType === "notification") {
+    const notifType = String(eventObj.notification_type ?? "").toLowerCase();
+    kind =
+      notifType === "dm" || notifType === "direct"
+        ? "dm"
+        : notifType === "completion" || notifType === "completed"
+          ? "completion"
+          : notifType === "channel"
+            ? "channel"
+            : "broadcast";
+    text = String(eventObj.message ?? eventObj.text ?? "");
+  } else if (eventType === "file_touch") {
+    kind = "lifecycle";
+    const filePath = String(eventObj.path ?? "");
+    const op = String(eventObj.op ?? "touch");
+    const extra =
+      typeof eventObj.summary === "string" && eventObj.summary.trim()
+        ? eventObj.summary.trim()
+        : typeof eventObj.intent === "string" && eventObj.intent.trim()
+          ? eventObj.intent.trim()
+          : "";
+    text = extra
+      ? `${op} ${filePath} — ${extra}`
+      : `${op} ${filePath}`.trim();
+  } else if (eventType === "status_change") {
+    const oldStatus = String(eventObj.old_status ?? "");
+    const newStatus = String(eventObj.new_status ?? "");
+    kind = newStatus.toLowerCase() === "completed" ? "completion" : "lifecycle";
+    text = oldStatus
+      ? `Status changed: ${oldStatus} -> ${newStatus}`
+      : `Status: ${newStatus}`;
+  } else if (eventType === "member_change") {
+    kind = "lifecycle";
+    text = `Member ${String(eventObj.action ?? "updated")}`;
+  } else if (eventType === "plan_update") {
+    kind = "lifecycle";
+    const count =
+      typeof eventObj.item_count === "number" ? eventObj.item_count : 0;
+    text = `Shared plan updated (${count} item${count === 1 ? "" : "s"})`;
+  } else if (eventType === "plan_proposal") {
+    kind = "lifecycle";
+    const count =
+      typeof eventObj.item_count === "number" ? eventObj.item_count : 0;
+    text = `Plan proposal submitted (${count} item${count === 1 ? "" : "s"})`;
+  } else if (eventType === "context_update") {
+    kind = "channel";
+    channel = channel ?? "context";
+    text = `Updated shared context key "${String(eventObj.key ?? "")}"`;
+  } else {
+    const rawKind = String(m.kind ?? eventObj.kind ?? "lifecycle").toLowerCase();
+    kind = (
+      ["dm", "broadcast", "channel", "lifecycle", "completion"].includes(rawKind)
+        ? rawKind
+        : "lifecycle"
+    ) as SwarmBoardMessageView["kind"];
+    text =
+      typeof m.event === "string"
+        ? m.event
+        : typeof eventObj.message === "string"
+          ? eventObj.message
+          : typeof eventObj.text === "string"
+            ? eventObj.text
+            : Object.keys(eventObj).length > 0
+              ? JSON.stringify(eventObj)
+              : "";
+  }
+
+  return {
+    seq: typeof m.seq === "number" ? m.seq : typeof m.id === "number" ? m.id : idx + 1,
+    kind,
+    from: String(
+      m.from ?? m.session_name ?? m.agent ?? m.session_id ?? "coordinator",
+    ),
+    to: typeof m.to === "string" ? m.to : undefined,
+    channel,
+    text,
+    timestampMs: parseTimestampMs(m.timestamp_ms ?? m.timestampMs),
+  };
+}
+
+export function mapRawSwarmStatus(
+  data: Record<string, unknown>,
+  requestedSwarmId?: string,
+): SwarmStatusView | null {
+  const rawSwarms = asArray(data.swarms).map(asRecord);
+  const selectedSwarm = requestedSwarmId
+    ? rawSwarms.find(
+        (s) => String(s.swarm_id ?? s.swarmId ?? "") === requestedSwarmId,
+      )
+    : rawSwarms.find((s) => Boolean(s.live)) ?? rawSwarms[0];
+  const rawSwarm = asRecord(data.swarm ?? selectedSwarm ?? data);
+
+  const rawMembers = asArray(
+    selectedSwarm?.members ?? data.members ?? rawSwarm.members ?? rawSwarm.agents,
+  );
+  const resolvedSwarmId =
+    typeof rawSwarm.swarm_id === "string"
+      ? rawSwarm.swarm_id
+      : typeof rawSwarm.swarmId === "string"
+        ? rawSwarm.swarmId
+        : typeof data.swarm_id === "string"
+          ? data.swarm_id
+          : undefined;
+
+  if (!resolvedSwarmId && rawMembers.length === 0 && rawSwarms.length === 0) {
+    return null;
+  }
+
+  const agents = rawMembers.map((raw, idx) => mapRawSwarmAgent(raw, idx));
+
+  const rawBoard = asArray(data.board ?? rawSwarm.board ?? data.messages);
+  const board: SwarmBoardMessageView[] = rawBoard
+    .map(asRecord)
+    .filter((m) => {
+      if (!resolvedSwarmId || !m.swarm_id) return true;
+      return String(m.swarm_id) === resolvedSwarmId;
+    })
+    .map((m, idx) => mapRawSwarmBoardMessage(m, idx));
+
+  const rawPlans = asArray(data.plans).map(asRecord);
+  const matchedPlan =
+    (resolvedSwarmId
+      ? rawPlans.find((p) => String(p.swarm_id ?? "") === resolvedSwarmId)
+      : undefined) ??
+    (selectedSwarm?.plan ? asRecord(selectedSwarm.plan) : undefined) ??
+    rawPlans[0];
+  const rawPlanItems = asArray(
+    matchedPlan?.items ?? rawSwarm.plan_items ?? rawSwarm.planItems,
+  );
+
+  return {
+    swarmId: resolvedSwarmId ?? "default",
+    label: String(rawSwarm.label ?? resolvedSwarmId ?? "Active Swarm"),
+    planVersion:
+      typeof matchedPlan?.version === "number"
+        ? matchedPlan.version
+        : typeof rawSwarm.plan_version === "number"
+          ? rawSwarm.plan_version
+          : 1,
+    planLabel:
+      typeof rawSwarm.plan_label === "string" ? rawSwarm.plan_label : undefined,
+    creditsUsed:
+      typeof rawSwarm.credits_used === "number"
+        ? rawSwarm.credits_used
+        : undefined,
+    kvWarmPercent:
+      typeof rawSwarm.kv_warm_percent === "number"
+        ? rawSwarm.kv_warm_percent
+        : undefined,
+    agents,
+    board,
+    planItems: rawPlanItems.map((p, idx) => {
+      const item = asRecord(p);
+      return {
+        id: String(item.id ?? `plan_${idx}`),
+        phase: typeof item.phase === "string" ? item.phase : undefined,
+        title: String(item.title ?? item.description ?? ""),
+        assignee:
+          typeof item.assignee === "string"
+            ? item.assignee
+            : typeof item.owner === "string"
+              ? item.owner
+              : undefined,
+        status: (
+          ["pending", "in_progress", "completed", "blocked"].includes(
+            String(item.status),
+          )
+            ? String(item.status)
+            : "pending"
+        ) as SwarmStatusView["planItems"][number]["status"],
+      };
+    }),
+    pendingProposals: asArray(
+      rawSwarm.pending_proposals ?? rawSwarm.pendingProposals,
+    ).map((p, idx) => {
+      const prop = asRecord(p);
+      return {
+        proposalId: String(prop.proposal_id ?? prop.proposalId ?? `prop_${idx}`),
+        version: typeof prop.version === "number" ? prop.version : 1,
+        author: String(prop.author ?? "worker"),
+        summary: String(prop.summary ?? ""),
+        diffSummary:
+          typeof prop.diff_summary === "string" ? prop.diff_summary : undefined,
+        status: (
+          ["pending", "approved", "rejected"].includes(String(prop.status))
+            ? String(prop.status)
+            : "pending"
+        ) as SwarmStatusView["pendingProposals"][number]["status"],
+        createdAtMs: parseTimestampMs(prop.created_at_ms ?? prop.created_at),
+      };
+    }),
+    worktrees: asArray(rawSwarm.worktrees).map((w, idx) => {
+      const wt = asRecord(w);
+      return {
+        id: String(wt.id ?? `wt_${idx}`),
+        branch: String(wt.branch ?? "HEAD"),
+        path: String(wt.path ?? ""),
+        manager: typeof wt.manager === "string" ? wt.manager : undefined,
+        agents: asArray(wt.agents).map(String),
+        dirtyFiles: typeof wt.dirty_files === "number" ? wt.dirty_files : 0,
+      };
+    }),
+    conflicts: asArray(rawSwarm.conflicts).map((c) => {
+      const cf = asRecord(c);
+      return {
+        path: String(cf.path ?? ""),
+        agents: asArray(cf.agents).map(String),
+        detail: typeof cf.detail === "string" ? cf.detail : undefined,
+      };
+    }),
+    modelAllowlist: Array.isArray(rawSwarm.model_allowlist)
+      ? rawSwarm.model_allowlist.map(String)
+      : undefined,
+  };
+}
+
+export function parseScheduleExpression(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  const unitToMinutes = (num: number, unit: string): number => {
+    const u = unit.toLowerCase();
+    if (u.startsWith("d")) return num * 24 * 60;
+    if (u.startsWith("h")) return num * 60;
+    return num;
+  };
+  const everyMatch = /^every\s+(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)$/i.exec(
+    trimmed,
+  );
+  if (everyMatch) {
+    const mins = unitToMinutes(Number.parseInt(everyMatch[1]!, 10), everyMatch[2]!);
+    if (mins >= 1) return { every_minutes: mins };
+  }
+  const relMatch = /^(?:in\s+)?(\d+)\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)?$/i.exec(
+    trimmed,
+  );
+  if (relMatch) {
+    const mins = unitToMinutes(
+      Number.parseInt(relMatch[1]!, 10),
+      relMatch[2] ?? "m",
+    );
+    return { wake_in_minutes: mins };
+  }
+  if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(trimmed)) {
+    return { cron: trimmed };
+  }
+  if (/^\d{4}-\d{2}-\d{2}T/.test(trimmed) && Number.isFinite(Date.parse(trimmed))) {
+    return { wake_at: trimmed };
+  }
+  return { schedule: trimmed };
+}
+
 function inferFileLanguageId(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
   const map: Record<string, string> = {
@@ -1077,6 +1644,8 @@ export interface FeatureRouterHub {
   getBackgroundTasks(sessionId?: string): BackgroundProcessView[];
   refreshBackgroundProcesses(sessionId?: string): Promise<BackgroundProcessView[]>;
   removeCompletedBackgroundTasks(sessionId?: string): number;
+  getActiveSwarm?(): SwarmStatusView | null;
+  setActiveSwarm?(swarm: SwarmStatusView | null): void;
   getSidePanelState(sessionId: string): {
     pages: SidePanelPageView[];
     activePageId?: string;
@@ -1773,6 +2342,19 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     return mapped;
   };
 
+  const hasCapability = (cap: string): boolean =>
+    deps.bridgeManager.getStatus().capabilities.includes(cap);
+
+  const getPrimaryWorkspaceDir = async (): Promise<string | undefined> => {
+    try {
+      const folders = await deps.getWorkspaceFolders();
+      const primary = folders.find((f) => f.isPrimary) ?? folders[0];
+      return primary?.path;
+    } catch {
+      return undefined;
+    }
+  };
+
   /**
    * Mutation runtime command helper that propagates daemon errors cleanly instead of faking `{ ok: true }`.
    */
@@ -2286,7 +2868,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const { data } = await requireRuntimeCmd("context", [], params.sessionId);
       const breakdown = asRecord(data.token_breakdown ?? data);
       const system = Number(breakdown.system ?? 0);
+      const systemBase = Number(breakdown.system_base ?? 0);
+      const instructionFiles = Number(breakdown.instruction_files ?? 0);
+      const skillsTokens = Number(breakdown.skills ?? 0);
       const tools = Number(breakdown.tools ?? 0);
+      const builtinTools = Number(breakdown.builtin_tools ?? 0);
+      const mcpTools = Number(breakdown.mcp_tools ?? 0);
       const memory = Number(breakdown.memory ?? 0);
       const files = Number(breakdown.files ?? 0);
       const messages = Number(breakdown.messages ?? 0);
@@ -2298,9 +2885,33 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const usedPercent =
         maxTokens > 0 ? Math.min(100, Math.round((usedTokens / maxTokens) * 1000) / 10) : 0;
 
+      const systemItems = [
+        ...(systemBase > 0 ? [{ name: "Base System Prompt", tokens: systemBase }] : []),
+        ...(instructionFiles > 0
+          ? [{ name: "Instruction Files (AGENTS.md / RAYU.md)", tokens: instructionFiles }]
+          : []),
+        ...(skillsTokens > 0 ? [{ name: "Active Skills", tokens: skillsTokens }] : []),
+      ];
+      const toolItems = [
+        ...(builtinTools > 0 ? [{ name: "Built-in Tools", tokens: builtinTools }] : []),
+        ...(mcpTools > 0 ? [{ name: "MCP Tool Schemas", tokens: mcpTools }] : []),
+      ];
+
       const categories: ContextSnapshotView["categories"] = [
-        { id: "system", label: "System & Instructions", tokens: system, colorToken: "brand" },
-        { id: "tools", label: "Tools & MCP Schemas", tokens: tools, colorToken: "info" },
+        {
+          id: "system",
+          label: "System & Instructions",
+          tokens: system,
+          colorToken: "brand",
+          ...(systemItems.length > 0 ? { items: systemItems } : {}),
+        },
+        {
+          id: "tools",
+          label: "Tools & MCP Schemas",
+          tokens: tools,
+          colorToken: "info",
+          ...(toolItems.length > 0 ? { items: toolItems } : {}),
+        },
         { id: "memory", label: "Memory Graph", tokens: memory, colorToken: "type" },
         { id: "files", label: "Referenced Files", tokens: files, colorToken: "folder" },
         { id: "messages", label: "Conversation Transcript", tokens: messages, colorToken: "num" },
@@ -2583,6 +3194,29 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "background.list": async (params) => {
       const targetSessionId =
         params?.sessionId ?? deps.sessionHub.getActiveSessionId();
+      if (params?.scope === "all") {
+        try {
+          const { data } = await requireRuntimeCmd(
+            "background",
+            ["list", "all"],
+            targetSessionId,
+          );
+          const rawTasks = asArray(data.tasks);
+          const tasks = rawTasks
+            .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+            .map((rec) =>
+              mapRawBackgroundTask(
+                rec,
+                typeof rec.session_id === "string"
+                  ? rec.session_id
+                  : targetSessionId,
+              ),
+            );
+          return { tasks };
+        } catch {
+          if (!targetSessionId) return { tasks: [] };
+        }
+      }
       if (!targetSessionId) {
         return { tasks: [] };
       }
@@ -2687,251 +3321,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     "swarm.status": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`status` / `list` / `board`)
       const { data } = await requireRuntimeCmd("swarm", ["status"]);
-      const rawSwarms = asArray(data.swarms).map(asRecord);
-      const selectedSwarm = params?.swarmId
-        ? rawSwarms.find((s) => String(s.swarm_id ?? s.swarmId ?? "") === params.swarmId)
-        : rawSwarms.find((s) => Boolean(s.live)) ?? rawSwarms[0];
-      const rawSwarm = asRecord(data.swarm ?? selectedSwarm ?? data);
-
-      const rawMembers = asArray(
-        selectedSwarm?.members ??
-          data.members ??
-          rawSwarm.members ??
-          rawSwarm.agents,
-      );
-      const resolvedSwarmId =
-        typeof rawSwarm.swarm_id === "string"
-          ? rawSwarm.swarm_id
-          : typeof rawSwarm.swarmId === "string"
-            ? rawSwarm.swarmId
-            : typeof data.swarm_id === "string"
-              ? data.swarm_id
-              : undefined;
-
-      if (!resolvedSwarmId && rawMembers.length === 0 && rawSwarms.length === 0) {
-        return { swarm: null };
-      }
-
-      const agents: SwarmAgentView[] = rawMembers.map((raw, idx) => {
-        const a = asRecord(raw);
-        const todoProg = asRecord(a.todo_progress);
-        const rawStatus = String(a.status ?? "running").toLowerCase();
-        const status: SwarmAgentView["status"] = (
-          [
-            "spawned",
-            "ready",
-            "running",
-            "blocked",
-            "completed",
-            "failed",
-            "crashed",
-            "stopped",
-          ].includes(rawStatus)
-            ? rawStatus
-            : rawStatus === "working" || rawStatus === "active"
-              ? "running"
-              : rawStatus === "waiting" || rawStatus === "idle"
-                ? "ready"
-                : rawStatus === "done"
-                  ? "completed"
-                  : "running"
-        ) as SwarmAgentView["status"];
-
-        return {
-          agentId: String(
-            a.agent_id ??
-              a.agentId ??
-              a.friendly_name ??
-              a.session_id ??
-              a.id ??
-              `worker-${idx + 1}`,
-          ),
-          sessionId: String(a.session_id ?? a.sessionId ?? ""),
-          label: String(
-            a.friendly_name ??
-              a.label ??
-              a.task_label ??
-              a.name ??
-              `worker-${idx + 1}`,
-          ),
-          role: a.role === "coordinator" ? "coordinator" : "worker",
-          depth: typeof a.depth === "number" ? a.depth : a.role === "coordinator" ? 0 : 1,
-          status,
-          model: typeof a.model === "string" ? a.model : undefined,
-          provider: typeof a.provider === "string" ? a.provider : undefined,
-          currentIntent:
-            typeof a.detail === "string" && a.detail
-              ? a.detail
-              : typeof a.task_label === "string" && a.task_label
-                ? a.task_label
-                : typeof a.current_intent === "string"
-                  ? a.current_intent
-                  : typeof a.currentIntent === "string"
-                    ? a.currentIntent
-                    : undefined,
-          worktreePath:
-            typeof a.working_dir === "string"
-              ? a.working_dir
-              : typeof a.worktree_path === "string"
-                ? a.worktree_path
-                : typeof a.worktreePath === "string"
-                  ? a.worktreePath
-                  : undefined,
-          branch: typeof a.branch === "string" ? a.branch : undefined,
-          diffAdditions:
-            typeof a.diff_additions === "number" ? a.diff_additions : undefined,
-          diffDeletions:
-            typeof a.diff_deletions === "number" ? a.diff_deletions : undefined,
-          todoCompleted:
-            typeof a.todo_completed === "number"
-              ? a.todo_completed
-              : typeof todoProg.completed === "number"
-                ? todoProg.completed
-                : undefined,
-          todoTotal:
-            typeof a.todo_total === "number"
-              ? a.todo_total
-              : typeof todoProg.total === "number"
-                ? todoProg.total
-                : undefined,
-          updatedAtMs:
-            typeof a.updated_at_ms === "number" ? a.updated_at_ms : undefined,
-        };
-      });
-
-      const rawBoard = asArray(data.board ?? rawSwarm.board ?? data.messages);
-      const board: SwarmBoardMessageView[] = rawBoard
-        .map(asRecord)
-        .filter((m) => {
-          if (!resolvedSwarmId || !m.swarm_id) return true;
-          return String(m.swarm_id) === resolvedSwarmId;
-        })
-        .map((m, idx) => {
-          const eventObj = asRecord(m.event);
-          const rawKind = String(m.kind ?? eventObj.kind ?? "lifecycle").toLowerCase();
-          const kind: SwarmBoardMessageView["kind"] = (
-            ["dm", "broadcast", "channel", "lifecycle", "completion"].includes(rawKind)
-              ? rawKind
-              : "lifecycle"
-          ) as SwarmBoardMessageView["kind"];
-          const text =
-            typeof m.text === "string"
-              ? m.text
-              : typeof m.event === "string"
-                ? m.event
-                : typeof eventObj.message === "string"
-                  ? eventObj.message
-                  : typeof eventObj.text === "string"
-                    ? eventObj.text
-                    : Object.keys(eventObj).length > 0
-                      ? JSON.stringify(eventObj)
-                      : "";
-          return {
-            seq: typeof m.seq === "number" ? m.seq : idx + 1,
-            kind,
-            from: String(
-              m.from ?? m.session_name ?? m.agent ?? m.session_id ?? "coordinator",
-            ),
-            to: typeof m.to === "string" ? m.to : undefined,
-            channel: typeof m.channel === "string" ? m.channel : undefined,
-            text,
-            timestampMs: parseTimestampMs(m.timestamp_ms ?? m.timestampMs),
-          };
-        });
-
-      const rawPlans = asArray(data.plans).map(asRecord);
-      const matchedPlan =
-        (resolvedSwarmId
-          ? rawPlans.find((p) => String(p.swarm_id ?? "") === resolvedSwarmId)
-          : undefined) ??
-        (selectedSwarm?.plan ? asRecord(selectedSwarm.plan) : undefined) ??
-        rawPlans[0];
-      const rawPlanItems = asArray(
-        matchedPlan?.items ?? rawSwarm.plan_items ?? rawSwarm.planItems,
-      );
-
-      const swarm: SwarmStatusView = {
-        swarmId: resolvedSwarmId ?? "default",
-        label: String(rawSwarm.label ?? resolvedSwarmId ?? "Active Swarm"),
-        planVersion:
-          typeof matchedPlan?.version === "number"
-            ? matchedPlan.version
-            : typeof rawSwarm.plan_version === "number"
-              ? rawSwarm.plan_version
-              : 1,
-        planLabel:
-          typeof rawSwarm.plan_label === "string" ? rawSwarm.plan_label : undefined,
-        creditsUsed:
-          typeof rawSwarm.credits_used === "number" ? rawSwarm.credits_used : undefined,
-        kvWarmPercent:
-          typeof rawSwarm.kv_warm_percent === "number"
-            ? rawSwarm.kv_warm_percent
-            : undefined,
-        agents,
-        board,
-        planItems: rawPlanItems.map((p, idx) => {
-          const item = asRecord(p);
-          return {
-            id: String(item.id ?? `plan_${idx}`),
-            phase: typeof item.phase === "string" ? item.phase : undefined,
-            title: String(item.title ?? item.description ?? ""),
-            assignee:
-              typeof item.assignee === "string"
-                ? item.assignee
-                : typeof item.owner === "string"
-                  ? item.owner
-                  : undefined,
-            status: (
-              ["pending", "in_progress", "completed", "blocked"].includes(
-                String(item.status),
-              )
-                ? String(item.status)
-                : "pending"
-            ) as SwarmStatusView["planItems"][number]["status"],
-          };
-        }),
-        pendingProposals: asArray(
-          rawSwarm.pending_proposals ?? rawSwarm.pendingProposals,
-        ).map((p, idx) => {
-          const prop = asRecord(p);
-          return {
-            proposalId: String(prop.proposal_id ?? prop.proposalId ?? `prop_${idx}`),
-            version: typeof prop.version === "number" ? prop.version : 1,
-            author: String(prop.author ?? "worker"),
-            summary: String(prop.summary ?? ""),
-            diffSummary:
-              typeof prop.diff_summary === "string" ? prop.diff_summary : undefined,
-            status: (
-              ["pending", "approved", "rejected"].includes(String(prop.status))
-                ? String(prop.status)
-                : "pending"
-            ) as SwarmStatusView["pendingProposals"][number]["status"],
-            createdAtMs: parseTimestampMs(prop.created_at_ms ?? prop.created_at),
-          };
-        }),
-        worktrees: asArray(rawSwarm.worktrees).map((w, idx) => {
-          const wt = asRecord(w);
-          return {
-            id: String(wt.id ?? `wt_${idx}`),
-            branch: String(wt.branch ?? "HEAD"),
-            path: String(wt.path ?? ""),
-            manager: typeof wt.manager === "string" ? wt.manager : undefined,
-            agents: asArray(wt.agents).map(String),
-            dirtyFiles: typeof wt.dirty_files === "number" ? wt.dirty_files : 0,
-          };
-        }),
-        conflicts: asArray(rawSwarm.conflicts).map((c) => {
-          const cf = asRecord(c);
-          return {
-            path: String(cf.path ?? ""),
-            agents: asArray(cf.agents).map(String),
-            detail: typeof cf.detail === "string" ? cf.detail : undefined,
-          };
-        }),
-        modelAllowlist: Array.isArray(rawSwarm.model_allowlist)
-          ? rawSwarm.model_allowlist.map(String)
-          : undefined,
-      };
+      const swarm = mapRawSwarmStatus(data, params?.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
       return { swarm };
     },
     "swarm.list": async () => {
@@ -2977,24 +3368,119 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       ok: false,
       message: "Swarm title updates are not supported via runtime_command yet.",
     }),
-    "swarm.spawn": async () => ({
-      ok: false,
-      message:
-        "Live worker spawning via runtime_command is not supported yet; ask the coordinator agent in chat to spawn workers.",
-    }),
-    "swarm.kill": async () => ({
-      ok: false,
-      message:
-        "Stopping or killing swarm workers via runtime_command is not supported yet.",
-    }),
+    "swarm.spawn": async (params) => {
+      if (!hasCapability("swarm_mutations_v1")) {
+        return {
+          ok: false,
+          message:
+            "Live worker spawning requires a newer Rayu engine (swarm_mutations_v1); ask the coordinator agent in chat or update the engine.",
+        };
+      }
+      const workingDir =
+        params.workingDir?.trim() || (await getPrimaryWorkspaceDir());
+      const model =
+        params.model && params.model !== "inherit"
+          ? params.model.trim()
+          : undefined;
+      const payload: Record<string, unknown> = {
+        name: params.label.trim(),
+        label: params.label.trim(),
+        task: params.prompt.trim(),
+        spawn_mode: "headless",
+        ...(model ? { model } : {}),
+        ...(params.effort?.trim() ? { effort: params.effort.trim() } : {}),
+        ...(workingDir ? { working_dir: workingDir } : {}),
+      };
+      const { data, message } = await requireRuntimeCmd("swarm", [
+        "spawn",
+        JSON.stringify(payload),
+      ]);
+      const swarm = mapRawSwarmStatus(data, params.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
+      const spawnedId =
+        typeof data.spawned_session_id === "string"
+          ? data.spawned_session_id
+          : undefined;
+      const agent =
+        (spawnedId
+          ? swarm?.agents.find((a) => a.sessionId === spawnedId)
+          : undefined) ??
+        swarm?.agents.find((a) => a.label === params.label.trim()) ??
+        swarm?.agents[swarm.agents.length - 1];
+      return {
+        ok: true,
+        ...(agent ? { agent } : {}),
+        message: message || `Spawned worker ${params.label}.`,
+      };
+    },
+    "swarm.kill": async (params) => {
+      if (!hasCapability("swarm_mutations_v1")) {
+        return {
+          ok: false,
+          message:
+            "Stopping or resuming swarm workers requires a newer Rayu engine (swarm_mutations_v1).",
+        };
+      }
+      const args = params.resume
+        ? ["resume", params.agentId]
+        : [
+            "stop",
+            params.agentId,
+            ...(params.force ? ["--force"] : []),
+          ];
+      const { data, message } = await requireRuntimeCmd("swarm", args);
+      const swarm = mapRawSwarmStatus(data, params.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
+      return {
+        ok: true,
+        message:
+          message ||
+          (params.resume
+            ? `Resumed worker ${params.agentId}.`
+            : `Stopped worker ${params.agentId}.`),
+      };
+    },
     "swarm.salvage": async () => ({
       ok: false,
       message: "Swarm salvage via runtime_command is not supported yet.",
     }),
-    "swarm.pauseAll": async () => ({
-      ok: false,
-      message: "Pausing all swarm workers via runtime_command is not supported yet.",
-    }),
+    "swarm.pauseAll": async (params) => {
+      if (!hasCapability("swarm_mutations_v1")) {
+        return {
+          ok: false,
+          message:
+            "Stopping all swarm workers requires a newer Rayu engine (swarm_mutations_v1).",
+        };
+      }
+      const { data, message } = await requireRuntimeCmd("swarm", ["stop", "all"]);
+      const swarm = mapRawSwarmStatus(data, params?.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
+      return {
+        ok: true,
+        message: message || "Stopped active swarm workers.",
+      };
+    },
+    "swarm.broadcast": async (params) => {
+      if (!hasCapability("swarm_mutations_v1")) {
+        return {
+          ok: false,
+          message:
+            "Broadcasting to swarm workers requires a newer Rayu engine (swarm_mutations_v1).",
+        };
+      }
+      const { data, message } = await requireRuntimeCmd("swarm", [
+        "broadcast",
+        params.message,
+      ]);
+      const swarm = mapRawSwarmStatus(data, params.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
+      const lastSeq = swarm?.board[swarm.board.length - 1]?.seq;
+      return {
+        ok: true,
+        ...(typeof lastSeq === "number" ? { seq: lastSeq } : {}),
+        message: message || "Broadcasted message to swarm.",
+      };
+    },
     "swarm.board": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`board`)
       const { data } = await requireRuntimeCmd("swarm", ["board"]);
@@ -3006,38 +3492,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           }
           return true;
         })
-        .map((m, idx) => {
-          const eventObj = asRecord(m.event);
-          const rawKind = String(m.kind ?? eventObj.kind ?? "lifecycle").toLowerCase();
-          const kind: SwarmBoardMessageView["kind"] = (
-            ["dm", "broadcast", "channel", "lifecycle", "completion"].includes(rawKind)
-              ? rawKind
-              : "lifecycle"
-          ) as SwarmBoardMessageView["kind"];
-          const text =
-            typeof m.text === "string"
-              ? m.text
-              : typeof m.event === "string"
-                ? m.event
-                : typeof eventObj.message === "string"
-                  ? eventObj.message
-                  : typeof eventObj.text === "string"
-                    ? eventObj.text
-                    : Object.keys(eventObj).length > 0
-                      ? JSON.stringify(eventObj)
-                      : "";
-          return {
-            seq: typeof m.seq === "number" ? m.seq : idx + 1,
-            kind,
-            from: String(
-              m.from ?? m.session_name ?? m.agent ?? m.session_id ?? "coordinator",
-            ),
-            to: typeof m.to === "string" ? m.to : undefined,
-            channel: typeof m.channel === "string" ? m.channel : undefined,
-            text,
-            timestampMs: parseTimestampMs(m.timestamp_ms ?? m.timestampMs),
-          };
-        })
+        .map((m, idx) => mapRawSwarmBoardMessage(m, idx))
         .filter((msg) => {
           if (params?.filter && params.filter !== "all") {
             return msg.kind === params.filter;
@@ -3054,10 +3509,28 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       await deps.editorBridge.openWorktreeWindow(params.path);
       return { ok: true };
     },
-    "swarm.dm": async () => ({
-      ok: false,
-      message: "Direct-messaging swarm workers via runtime_command is not supported yet.",
-    }),
+    "swarm.dm": async (params) => {
+      if (!hasCapability("swarm_mutations_v1")) {
+        return {
+          ok: false,
+          message:
+            "Direct-messaging swarm workers requires a newer Rayu engine (swarm_mutations_v1).",
+        };
+      }
+      const { data, message } = await requireRuntimeCmd("swarm", [
+        "dm",
+        params.agentId,
+        params.message,
+      ]);
+      const swarm = mapRawSwarmStatus(data, params.swarmId);
+      deps.sessionHub.setActiveSwarm?.(swarm);
+      const lastSeq = swarm?.board[swarm.board.length - 1]?.seq;
+      return {
+        ok: true,
+        ...(typeof lastSeq === "number" ? { seq: lastSeq } : {}),
+        message: message || `Sent DM to ${params.agentId}.`,
+      };
+    },
     "swarm.peekSession": async (params) => {
       try {
         const client = await deps.sessionHub.getClient();
@@ -3156,11 +3629,23 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { runs };
     },
     "automations.overnight.start": async (params) => {
-      // Rust `parse_overnight_command` expects `[duration, mission]` directly (no leading `"start"` token).
-      const { data } = await requireRuntimeCmd("overnight", [
-        params.duration,
-        params.mission,
-      ]);
+      const useJsonStart =
+        hasCapability("overnight_v1") &&
+        (Boolean(params.workingDir) || typeof params.maxAgents === "number");
+      const startArgs = useJsonStart
+        ? [
+            "start",
+            JSON.stringify({
+              duration: params.duration,
+              mission: params.mission,
+              ...(params.workingDir ? { working_dir: params.workingDir } : {}),
+              ...(typeof params.maxAgents === "number"
+                ? { max_agents: params.maxAgents }
+                : {}),
+            }),
+          ]
+        : [params.duration, params.mission];
+      const { data } = await requireRuntimeCmd("overnight", startArgs);
       const r = asRecord(data.run ?? data);
       const run: OvernightRunView = {
         runId: String(r.run_id ?? r.runId ?? `ovn_${Date.now()}`),
@@ -3197,14 +3682,20 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       message:
         "Triggering an overnight run immediately via run_now is not supported; use Start instead.",
     }),
-    "automations.overnight.cancel": async () => {
-      // Rust parse_overnight_command accepts 1-arg `["cancel"]` (no runId arg)
-      const { message } = await requireRuntimeCmd("overnight", ["cancel"]);
+    "automations.overnight.cancel": async (params) => {
+      const args =
+        hasCapability("overnight_v1") && params.runId.trim()
+          ? ["cancel", params.runId.trim()]
+          : ["cancel"];
+      const { message } = await requireRuntimeCmd("overnight", args);
       return { ok: true, message: message || "Cancellation requested." };
     },
     "automations.overnight.log": async (params) => {
-      // Rust parse_overnight_command accepts 1-arg `["log"]` and returns `data.events`
-      const { data } = await requireRuntimeCmd("overnight", ["log"]);
+      const args =
+        hasCapability("overnight_v1") && params.runId.trim()
+          ? ["log", params.runId.trim()]
+          : ["log"];
+      const { data } = await requireRuntimeCmd("overnight", args);
       const rawEvents = asArray(data.events ?? data.lines);
       const formatted = rawEvents.map((ev) => {
         if (typeof ev === "string") return ev;
@@ -3233,8 +3724,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "automations.overnight.report": async (params) => {
-      // Rust parse_overnight_command accepts 1-arg `["review"]` and returns `{ run_id, html, path, tasks }` + markdown in `out.message`
-      const { data, message } = await requireRuntimeCmd("overnight", ["review"]);
+      const args =
+        hasCapability("overnight_v1") && params.runId.trim()
+          ? ["review", params.runId.trim()]
+          : ["review"];
+      const { data, message } = await requireRuntimeCmd("overnight", args);
       const r = asRecord(data.run ?? data);
       const rawTasks = asArray(data.tasks ?? r.tasks);
       const tasks = rawTasks.map((t, idx) => {
@@ -3295,6 +3789,29 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const schedules: ScheduleItemView[] = asArray(data.schedules).map(
         (raw, idx) => {
           const s = asRecord(raw);
+          const recurrence = asRecord(s.recurrence);
+          const recurrenceExpr =
+            typeof recurrence.expr === "string" ? recurrence.expr : undefined;
+          const recurrenceEvery =
+            typeof recurrence.every_minutes === "number"
+              ? recurrence.every_minutes
+              : undefined;
+          const cronExpression =
+            typeof s.cron_expression === "string"
+              ? s.cron_expression
+              : recurrenceExpr;
+          const cronSummary =
+            typeof s.cron_summary === "string"
+              ? s.cron_summary
+              : typeof s.cronSummary === "string"
+                ? s.cronSummary
+                : recurrenceExpr
+                  ? recurrenceExpr
+                  : recurrenceEvery !== undefined
+                    ? `Every ${recurrenceEvery}m`
+                    : typeof s.scheduled_for === "string"
+                      ? s.scheduled_for
+                      : "Scheduled";
           return {
             id: String(s.id ?? `sched_${idx}`),
             title: String(
@@ -3303,13 +3820,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             prompt: String(
               s.prompt ?? s.context ?? s.task_description ?? s.title ?? "",
             ),
-            cronSummary: String(
-              s.cron_summary ?? s.cronSummary ?? s.scheduled_for ?? "Scheduled",
-            ),
-            cronExpression:
-              typeof s.cron_expression === "string"
-                ? s.cron_expression
-                : undefined,
+            cronSummary,
+            cronExpression,
             repo:
               typeof s.repo === "string"
                 ? s.repo
@@ -3335,7 +3847,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
                   ? s.scheduled_for
                   : undefined,
             lastRunAt:
-              typeof s.last_run === "string" ? s.last_run : undefined,
+              typeof s.last_run_at === "string"
+                ? s.last_run_at
+                : typeof s.last_run === "string"
+                  ? s.last_run
+                  : undefined,
+            lastStatus:
+              typeof s.last_status === "string" ? s.last_status : undefined,
           };
         },
       );
@@ -3343,17 +3861,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.schedules.create": async (params) => {
       const trimmedSched = params.schedule.trim();
-      const minsMatch = /^(\d+)\s*m?$/i.exec(trimmedSched);
+      const parsedSched = parseScheduleExpression(trimmedSched);
+      const workingDir =
+        params.workingDir?.trim() || (await getPrimaryWorkspaceDir());
       const payload: Record<string, unknown> = {
         ...(params.title ? { title: params.title } : {}),
         prompt: params.prompt,
         task: params.prompt,
         schedule: trimmedSched,
-        ...(minsMatch
-          ? { wake_in_minutes: Number.parseInt(minsMatch[1]!, 10) }
-          : {}),
+        ...parsedSched,
+        ...(workingDir ? { working_dir: workingDir } : {}),
         ...(params.permissionMode
-          ? { permissionMode: params.permissionMode }
+          ? { permission_mode: toHarnessPermissionMode(params.permissionMode) }
           : {}),
       };
       const { data } = await requireRuntimeCmd("schedules", [
@@ -3361,13 +3880,24 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         JSON.stringify(payload),
       ]);
       const s = asRecord(data.schedule ?? data);
+      const recurrence = asRecord(s.recurrence);
+      const recurrenceExpr =
+        typeof recurrence.expr === "string" ? recurrence.expr : undefined;
       const schedule: ScheduleItemView = {
         id: String(s.id ?? data.id ?? `sched_${Date.now()}`),
         title: String(
           s.title ?? params.title ?? params.prompt.slice(0, 60),
         ),
         prompt: String(s.prompt ?? s.context ?? params.prompt),
-        cronSummary: String(s.cron_summary ?? s.scheduled_for ?? params.schedule),
+        cronSummary: String(
+          s.cron_summary ?? recurrenceExpr ?? s.scheduled_for ?? params.schedule,
+        ),
+        cronExpression:
+          typeof s.cron_expression === "string"
+            ? s.cron_expression
+            : recurrenceExpr,
+        repo:
+          typeof s.working_dir === "string" ? s.working_dir : workingDir,
         nextRunAt:
           typeof s.next_run === "string"
             ? s.next_run
@@ -3381,16 +3911,41 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
       return { schedule };
     },
-    "automations.schedules.toggle": async () => ({
-      ok: false,
-      message:
-        "Toggling scheduled tasks is not supported by the runtime daemon; cancel and recreate instead.",
-    }),
-    "automations.schedules.runNow": async () => ({
-      ok: false,
-      message:
-        "Triggering a scheduled task early via run_now is not supported by the runtime daemon.",
-    }),
+    "automations.schedules.toggle": async (params) => {
+      if (!hasCapability("schedules_cron_v1")) {
+        return {
+          ok: false,
+          message:
+            "Toggling scheduled tasks requires a newer Rayu engine (schedules_cron_v1); cancel and recreate or update the engine.",
+        };
+      }
+      const { data, message } = await requireRuntimeCmd("schedules", [
+        "toggle",
+        params.id,
+        params.enabled ? "on" : "off",
+      ]);
+      return {
+        ok: data.toggled !== false,
+        message: message || (params.enabled ? "Schedule enabled." : "Schedule paused."),
+      };
+    },
+    "automations.schedules.runNow": async (params) => {
+      if (!hasCapability("schedules_cron_v1")) {
+        return {
+          ok: false,
+          message:
+            "Triggering scheduled tasks immediately requires a newer Rayu engine (schedules_cron_v1).",
+        };
+      }
+      const { data, message } = await requireRuntimeCmd("schedules", [
+        "run",
+        params.id,
+      ]);
+      return {
+        ok: data.triggered !== false,
+        message: message || "Queued scheduled task to run now.",
+      };
+    },
     "automations.schedules.cancel": async (params) => {
       const { data, message } = await requireRuntimeCmd("schedules", [
         "cancel",
@@ -3536,7 +4091,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 7. Plugins, MCP, Skills, Memory & Workspace Integrations
     // -------------------------------------------------------------------------
     "plugins.mcp.list": async () => {
-      const { data } = await requireRuntimeCmd("mcp", ["list"]);
+      const mcpArgs = ["list"];
+      if (!deps.sessionHub.getActiveSessionId()) {
+        const wd = await getPrimaryWorkspaceDir();
+        if (wd) mcpArgs.push("--working-dir", wd);
+      }
+      const { data } = await requireRuntimeCmd("mcp", mcpArgs);
       const servers: McpServerView[] = asArray(data.servers).map((raw, idx) => {
         const s = asRecord(raw);
         const id = String(s.id ?? `mcp_${idx}`);
@@ -3552,9 +4112,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         const cachedToolCount =
           typeof s.cached_tool_count === "number"
             ? s.cached_tool_count
-            : typeof s.tool_count === "number"
-              ? s.tool_count
-              : undefined;
+            : typeof s.live_tool_count === "number"
+              ? s.live_tool_count
+              : typeof s.tool_count === "number"
+                ? s.tool_count
+                : undefined;
         let status: McpServerView["status"];
         if (!enabled || rawStatus === "disabled") {
           status = "disabled";
@@ -3578,31 +4140,40 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
               ? "streamable-http"
               : "stdio";
 
-        const tools = Array.isArray(s.tools)
-          ? s.tools.map((t) => {
-              if (typeof t === "string") {
-                return { name: t, fullName: `mcp__${id}__${t}` };
-              }
-              const tool = asRecord(t);
-              return {
-                name: String(tool.name ?? ""),
-                fullName: String(tool.full_name ?? tool.name ?? ""),
-                description:
-                  typeof tool.description === "string"
-                    ? tool.description
-                    : undefined,
-                tokenEstimate:
-                  typeof tool.token_estimate === "number"
-                    ? tool.token_estimate
-                    : undefined,
-              };
-            })
-          : Array.isArray(s.cached_tools)
-            ? s.cached_tools.map((name) => ({
-                name: String(name),
-                fullName: `mcp__${id}__${String(name)}`,
-              }))
-            : [];
+        const rawToolList = Array.isArray(s.tools)
+          ? s.tools
+          : Array.isArray(s.live_tools) && s.live_tools.length > 0
+            ? s.live_tools
+            : Array.isArray(s.cached_tools)
+              ? s.cached_tools
+              : [];
+
+        const tools = rawToolList.map((t) => {
+          if (typeof t === "string") {
+            return { name: t, fullName: `mcp__${id}__${t}` };
+          }
+          const tool = asRecord(t);
+          const name = String(tool.name ?? "");
+          return {
+            name,
+            fullName: String(tool.full_name ?? (name ? `mcp__${id}__${name}` : "")),
+            description:
+              typeof tool.description === "string"
+                ? tool.description
+                : undefined,
+            tokenEstimate:
+              typeof tool.token_estimate === "number"
+                ? tool.token_estimate
+                : undefined,
+          };
+        });
+
+        const errorText =
+          typeof s.last_error === "string" && s.last_error.trim()
+            ? s.last_error.trim()
+            : typeof s.error === "string" && s.error.trim()
+              ? s.error.trim()
+              : undefined;
 
         return {
           id,
@@ -3614,7 +4185,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           configLayer: String(s.layer ?? s.configLayer ?? "user"),
           configPath: typeof s.config_path === "string" ? s.config_path : undefined,
           shared: Boolean(s.shared ?? true),
-          cachedToolCount,
+          cachedToolCount: cachedToolCount ?? (tools.length > 0 ? tools.length : undefined),
           oauthRequired:
             typeof s.auth_required === "boolean" ? s.auth_required : undefined,
           oauthAuthenticated:
@@ -3628,7 +4199,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             typeof s.timeout_secs === "number" && s.timeout_secs > 0
               ? Math.round(s.timeout_secs)
               : undefined,
-          error: typeof s.error === "string" ? s.error : undefined,
+          error: errorText,
           tools,
         };
       });
@@ -3724,8 +4295,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "plugins.skills.list": async () => {
-      // Rust `skills` accepts `[] | ["status"]` (rejects `["list"]`)
-      const { data } = await requireRuntimeCmd("skills", []);
+      const skillsArgs: string[] = [];
+      if (!deps.sessionHub.getActiveSessionId()) {
+        const wd = await getPrimaryWorkspaceDir();
+        if (wd) skillsArgs.push("list", "--working-dir", wd);
+      }
+      const { data } = await requireRuntimeCmd("skills", skillsArgs);
       const mapSkill = (raw: unknown, defaultScope: SkillView["scope"]): SkillView => {
         const s = asRecord(raw);
         return {
@@ -3743,6 +4318,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           activeInSession:
             typeof s.active === "boolean" ? s.active : undefined,
           installed: Boolean(s.installed ?? true),
+          enabled: typeof s.enabled === "boolean" ? s.enabled : true,
+          tokens: typeof s.tokens === "number" ? Math.max(0, Math.round(s.tokens)) : undefined,
           category: typeof s.category === "string" ? s.category : undefined,
         };
       };
@@ -3815,19 +4392,44 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const listed = await handlers["plugins.skills.list"](undefined);
       return { ok: true, skills: listed.skills };
     },
+    "plugins.skills.toggle": async (params) => {
+      const { message } = await requireRuntimeCmd("skills", [
+        params.enabled ? "enable" : "disable",
+        params.name,
+      ]);
+      return {
+        ok: true,
+        enabled: params.enabled,
+        message: message || undefined,
+      };
+    },
     "plugins.skills.run": async () => ({
       ok: false,
       message:
         "Running skills via runtime_command is not supported yet; invoke the skill from chat.",
     }),
     "plugins.memory.status": async (): Promise<MemoryStatusView> => {
-      const { data } = await requireRuntimeCmd("memory", ["status"]);
-      const facts: MemoryFactView[] = asArray(data.facts).map((raw, idx) => {
+      const memoryArgs = ["list"];
+      if (!deps.sessionHub.getActiveSessionId()) {
+        const wd = await getPrimaryWorkspaceDir();
+        if (wd) memoryArgs.push("--working-dir", wd);
+      }
+      let data: Record<string, unknown>;
+      try {
+        ({ data } = await requireRuntimeCmd("memory", memoryArgs));
+      } catch {
+        ({ data } = await requireRuntimeCmd("memory", ["status"]));
+      }
+      const rawFacts = asArray(data.graph_entries ?? data.facts);
+      const facts: MemoryFactView[] = rawFacts.map((raw, idx) => {
         const f = asRecord(raw);
         return {
           id: String(f.id ?? `mem_${idx}`),
           content: String(f.content ?? ""),
           scope: f.scope === "global" ? "global" : "project",
+          category: typeof f.category === "string" ? f.category : undefined,
+          source: typeof f.source === "string" ? f.source : undefined,
+          tokens: typeof f.tokens === "number" ? Math.max(0, Math.round(f.tokens)) : undefined,
           tags: asArray(f.tags).map(String),
           confidence:
             typeof f.confidence === "number" ? f.confidence : undefined,
@@ -3837,13 +4439,35 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             : undefined,
         };
       });
+      const instructionFiles: MemoryInstructionFileView[] = asArray(
+        data.instruction_files,
+      ).map((raw, idx) => {
+        const f = asRecord(raw);
+        return {
+          name: String(f.name ?? `instructions_${idx}.md`),
+          path: String(f.path ?? ""),
+          scope: f.scope === "global" ? "global" : "project",
+          bytes: typeof f.bytes === "number" ? Math.max(0, Math.round(f.bytes)) : 0,
+          tokens: typeof f.tokens === "number" ? Math.max(0, Math.round(f.tokens)) : 0,
+          modifiedMs:
+            typeof f.modified_ms === "number" ? f.modified_ms : undefined,
+          preview: typeof f.preview === "string" ? f.preview : undefined,
+        };
+      });
       return {
         enabled: Boolean(data.enabled ?? true),
         persistInjections: Boolean(data.persist_injections ?? true),
         pipelineActive: Boolean(data.pipeline_active ?? false),
+        jevProvider:
+          typeof data.jev_provider === "boolean" ? data.jev_provider : undefined,
         totalCount:
-          typeof data.total_count === "number" ? data.total_count : facts.length,
+          typeof data.graph_count === "number"
+            ? data.graph_count
+            : typeof data.total_count === "number"
+              ? data.total_count
+              : facts.length,
         facts,
+        ...(instructionFiles.length > 0 ? { instructionFiles } : {}),
       };
     },
     "plugins.memory.toggle": async (params) => {
@@ -4256,6 +4880,14 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? data.qr_path
             : activePairing?.qrPath ?? null,
         daemonError: null,
+        bridgeRunning:
+          typeof data.bridge_running === "boolean"
+            ? data.bridge_running
+            : undefined,
+        bridgeWarning:
+          typeof data.bridge_warning === "string" && data.bridge_warning.trim()
+            ? data.bridge_warning.trim()
+            : null,
         approvals,
       };
     },

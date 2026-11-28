@@ -49,9 +49,11 @@ export function CompactTopBar({
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle);
   const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const backgroundTasks = useAppStore((s) => s.backgroundTasks);
+  const activeSwarm = useAppStore((s) => s.activeSwarm);
   const theme = useAppStore((s) => s.theme);
   const accent = useAppStore((s) => s.accent);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
+  const openSettingsSection = useAppStore((s) => s.openSettingsSection);
   const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
   const requestComposerFocus = useAppStore((s) => s.requestComposerFocus);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
@@ -76,6 +78,20 @@ export function CompactTopBar({
           ).length,
     [activeSessionId, backgroundTasks],
   );
+
+  const activeSwarmCount = React.useMemo(() => {
+    const agents = activeSwarm?.agents ?? [];
+    const workers = agents.filter((a) => a.role === "worker");
+    const pool = workers.length > 0 ? workers : agents;
+    return pool.filter(
+      (a) =>
+        a.status === "running" ||
+        a.status === "spawned" ||
+        a.status === "blocked",
+    ).length;
+  }, [activeSwarm]);
+
+  const totalBackgroundActive = activeBgCount + activeSwarmCount;
 
   const handlePopOutEditorPanel = () => {
     postToHost({
@@ -148,23 +164,35 @@ export function CompactTopBar({
           <TooltipContent side="bottom">New session</TooltipContent>
         </Tooltip>
 
-        {/* [Bg·N] Background Processes (badge shown ONLY when >= 1 task active/stalled) */}
-        {activeBgCount > 0 && (
+        {/* [Bg·N] Background Processes & Swarm (badge shown ONLY when >= 1 active) */}
+        {totalBackgroundActive > 0 && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
-                aria-label={`Background processes (${activeBgCount} active)`}
+                aria-label={`Background activity (${totalBackgroundActive} active)`}
                 data-testid="compact-bg-processes"
                 onClick={toggleBackgroundDrawer}
                 className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-[7px] border border-brand/30 bg-brand-soft px-1.5 font-mono text-[10.5px] font-semibold text-brand-text tabular-nums transition-colors hover:border-brand/50"
               >
-                <NavGlyph icon="processes" className="size-3" />
-                <span>{activeBgCount}</span>
+                <NavGlyph
+                  icon={activeSwarmCount > 0 && activeBgCount === 0 ? "swarm" : "processes"}
+                  className="size-3"
+                />
+                <span>{totalBackgroundActive}</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom">
-              Background processes ({activeBgCount})
+              {[
+                activeBgCount > 0
+                  ? `${activeBgCount} background ${activeBgCount === 1 ? "process" : "processes"}`
+                  : null,
+                activeSwarmCount > 0
+                  ? `${activeSwarmCount} swarm ${activeSwarmCount === 1 ? "agent" : "agents"}`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </TooltipContent>
           </Tooltip>
         )}
@@ -291,6 +319,13 @@ export function CompactTopBar({
             <DropdownMenuItem onClick={toggleBackgroundDrawer}>
               <NavGlyph icon="processes" className="size-3.5" />
               <span>Background Processes</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              data-testid="compact-menu-swarm"
+              onClick={() => openSettingsSection("swarm")}
+            >
+              <NavGlyph icon="swarm" className="size-3.5" />
+              <span>Swarm Mission Control</span>
             </DropdownMenuItem>
             {surface === "editorPanel" && (
               <DropdownMenuItem

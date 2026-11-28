@@ -4,6 +4,8 @@ import type {
   BackgroundProcessOutputView,
   BackgroundProcessStatus,
   BackgroundProcessView,
+  SwarmAgentView,
+  SwarmStatusView,
 } from "@shared/vscodeProtocol";
 
 import {
@@ -15,6 +17,8 @@ import {
   postToHost,
   useAppStore,
 } from "@/lib";
+
+export type ProcessScopeMode = "session" | "all";
 
 export type ProcessFilterTab =
   | "all"
@@ -161,20 +165,86 @@ export function useProcessSecondTick(active: boolean): number {
   return nowMs;
 }
 
-// Module-level shared state for selected task & output cache so DockBar and Drawer stay synchronized
+// Module-level shared state for selected task / swarm agent so DockBar and Drawer stay synchronized
 let sharedSelectedTaskId: string | null = null;
+let sharedSelectedSwarmAgentId: string | null = null;
 const selectedTaskListeners = new Set<(taskId: string | null) => void>();
+const selectedSwarmListeners = new Set<(agentId: string | null) => void>();
 
 function setSharedSelectedTaskId(next: string | null): void {
   sharedSelectedTaskId = next;
+  if (next !== null) {
+    sharedSelectedSwarmAgentId = null;
+    for (const listener of selectedSwarmListeners) {
+      listener(null);
+    }
+  }
   for (const listener of selectedTaskListeners) {
+    listener(next);
+  }
+}
+
+function setSharedSelectedSwarmAgentId(next: string | null): void {
+  sharedSelectedSwarmAgentId = next;
+  if (next !== null) {
+    sharedSelectedTaskId = null;
+    for (const listener of selectedTaskListeners) {
+      listener(null);
+    }
+  }
+  for (const listener of selectedSwarmListeners) {
     listener(next);
   }
 }
 
 export function __resetProcessesStateForTest(): void {
   sharedSelectedTaskId = null;
+  sharedSelectedSwarmAgentId = null;
   lastAltBHandledAtMs = 0;
+}
+
+export function isSwarmAgentRunning(agent: SwarmAgentView): boolean {
+  return (
+    agent.status === "running" ||
+    agent.status === "spawned" ||
+    agent.status === "blocked"
+  );
+}
+
+export function matchesSwarmAgentFilter(
+  agent: SwarmAgentView,
+  filter: ProcessFilterTab,
+): boolean {
+  switch (filter) {
+    case "all":
+      return true;
+    case "running":
+      return agent.status === "running" || agent.status === "spawned" || agent.status === "ready";
+    case "stalled":
+      return agent.status === "blocked";
+    case "completed":
+      return agent.status === "completed" || agent.status === "stopped";
+    case "failed":
+      return agent.status === "failed" || agent.status === "crashed";
+    default:
+      return true;
+  }
+}
+
+export function matchesSwarmAgentSearch(
+  agent: SwarmAgentView,
+  query: string,
+): boolean {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return true;
+  return (
+    agent.label.toLowerCase().includes(trimmed) ||
+    agent.agentId.toLowerCase().includes(trimmed) ||
+    (agent.currentIntent?.toLowerCase().includes(trimmed) ?? false) ||
+    (agent.taskLabel?.toLowerCase().includes(trimmed) ?? false) ||
+    (agent.model?.toLowerCase().includes(trimmed) ?? false) ||
+    (agent.liveStatus?.toLowerCase().includes(trimmed) ?? false)
+  );
 }
 
 let lastAltBHandledAtMs = 0;
@@ -242,6 +312,25 @@ function extractProgressPatchFromFrame(
   } else if (typeof frame.output_file === "string") {
     patch.outputFile = frame.output_file;
   }
+  if (typeof frame.displayName === "string" && frame.displayName.trim()) {
+    patch.displayName = frame.displayName.trim();
+  } else if (typeof frame.display_name === "string" && frame.display_name.trim()) {
+    patch.displayName = frame.display_name.trim();
+  } else if (typeof frame.command === "string" && frame.command.trim()) {
+    patch.displayName = frame.command.trim();
+  }
+  if (typeof frame.toolName === "string" && frame.toolName.trim()) {
+    patch.toolName = frame.toolName.trim();
+  } else if (typeof frame.tool_name === "string" && frame.tool_name.trim()) {
+    patch.toolName = frame.tool_name.trim();
+  }
+  if (
+    frame.group === "shells" ||
+    frame.group === "agents" ||
+    frame.group === "runtime"
+  ) {
+    patch.group = frame.group;
+  }
   if (typeof frame.stallQuietSecs === "number") {
     patch.stallQuietSecs = frame.stallQuietSecs;
   } else if (typeof frame.stall_quiet_secs === "number") {
@@ -274,22 +363,53 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   } = options;
 
   const rawTasks = useAppStore((s) => s.backgroundTasks);
+  const activeSwarm = useAppStore((s) => s.activeSwarm);
   const storeDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const setBackgroundTasks = useAppStore((s) => s.setBackgroundTasks);
+  const setActiveSwarm = useAppStore((s) => s.setActiveSwarm);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
   const toggleBackgroundDrawer = useAppStore((s) => s.toggleBackgroundDrawer);
+  const openSettingsSection = useAppStore((s) => s.openSettingsSection);
+  const setActiveSession = useAppStore((s) => s.setActiveSession);
 
-  const tasks = React.useMemo(
-    () =>
-      !activeSessionId
-        ? []
-        : rawTasks.filter((t) => t.sessionId === activeSessionId),
-    [activeSessionId, rawTasks],
-  );
+  const [scope, setScope] = React.useState<ProcessScopeMode>("session");
+  const [allScopeTasks, setAllScopeTasks] = React.useState<BackgroundProcessView[]>([]);
+  const [isRefreshingSwarm, setIsRefreshingSwarm] = React.useState(false);
+
+  const tasks = React.useMemo(() => {
+    if (scope === "all") {
+      return allScopeTasks.length > 0 ? allScopeTasks : rawTasks;
+    }
+    return !activeSessionId
+      ? []
+      : rawTasks.filter((t) => t.sessionId === activeSessionId);
+  }, [activeSessionId, allScopeTasks, rawTasks, scope]);
+
+  const swarmAgents = React.useMemo<SwarmAgentView[]>(() => {
+    const agents = activeSwarm?.agents ?? [];
+    if (agents.length === 0) return [];
+    // Sort workers with active/blocked first, coordinator last so real background work stands out
+    return [...agents].sort((a, b) => {
+      const aWorker = a.role === "worker" ? 1 : 0;
+      const bWorker = b.role === "worker" ? 1 : 0;
+      if (aWorker !== bWorker) return bWorker - aWorker;
+      const aBlocked = a.status === "blocked" ? 1 : 0;
+      const bBlocked = b.status === "blocked" ? 1 : 0;
+      if (aBlocked !== bBlocked) return bBlocked - aBlocked;
+      const aActive = isSwarmAgentRunning(a) ? 1 : 0;
+      const bActive = isSwarmAgentRunning(b) ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+      return (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0);
+    });
+  }, [activeSwarm]);
 
   const isDrawerOpen =
     drawerOpenProp !== undefined ? drawerOpenProp : storeDrawerOpen;
+
+  const [selectedSwarmAgentId, setSelectedSwarmAgentIdState] = React.useState<
+    string | null
+  >(() => sharedSelectedSwarmAgentId);
 
   const [selectedTaskId, setSelectedTaskIdState] = React.useState<string | null>(
     () => {
@@ -314,15 +434,31 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   const selectTask = React.useCallback((taskId: string | null) => {
     setSharedSelectedTaskId(taskId);
     setSelectedTaskIdState(taskId);
+    if (taskId !== null) {
+      setSelectedSwarmAgentIdState(null);
+    }
+  }, []);
+
+  const selectSwarmAgent = React.useCallback((agentId: string | null) => {
+    setSharedSelectedSwarmAgentId(agentId);
+    setSelectedSwarmAgentIdState(agentId);
+    if (agentId !== null) {
+      setSelectedTaskIdState(null);
+    }
   }, []);
 
   React.useEffect(() => {
-    const listener = (nextId: string | null) => {
+    const taskListener = (nextId: string | null) => {
       setSelectedTaskIdState(nextId);
     };
-    selectedTaskListeners.add(listener);
+    const swarmListener = (nextId: string | null) => {
+      setSelectedSwarmAgentIdState(nextId);
+    };
+    selectedTaskListeners.add(taskListener);
+    selectedSwarmListeners.add(swarmListener);
     return () => {
-      selectedTaskListeners.delete(listener);
+      selectedTaskListeners.delete(taskListener);
+      selectedSwarmListeners.delete(swarmListener);
     };
   }, []);
 
@@ -334,7 +470,7 @@ export function useProcesses(options: UseProcessesOptions = {}) {
       const state = useAppStore.getState();
       const current = state.backgroundTasks;
       const currentSessionId = state.activeSessionId;
-      if (current.length === 0 || !currentSessionId) return;
+      if (!currentSessionId) return;
       const patchMap = new Map<
         string,
         Partial<BackgroundProcessView> & { taskId: string }
@@ -344,15 +480,60 @@ export function useProcesses(options: UseProcessesOptions = {}) {
         patchMap.set(p.taskId, prev ? { ...prev, ...p } : p);
       }
       let changed = false;
+      const seen = new Set<string>();
       const next = current.map((task) => {
         if (task.sessionId !== currentSessionId) return task;
         const patch = patchMap.get(task.taskId);
         if (!patch) return task;
+        seen.add(task.taskId);
         changed = true;
         return { ...task, ...patch };
       });
+      // Upsert newly started tasks from live BackgroundProgress frames so they never get dropped!
+      let insertedNew = false;
+      for (const [taskId, patch] of patchMap.entries()) {
+        if (seen.has(taskId)) continue;
+        const now = patch.updatedAtMs ?? Date.now();
+        next.unshift({
+          taskId,
+          sessionId: currentSessionId,
+          group: patch.group ?? "shells",
+          toolName: patch.toolName ?? "run_command",
+          displayName: patch.displayName ?? patch.summary ?? taskId,
+          status: patch.status ?? "running",
+          progressKind:
+            patch.progressKind ??
+            (typeof patch.percent === "number" ? "determinate" : "indeterminate"),
+          percent: patch.percent,
+          current: patch.current,
+          total: patch.total,
+          unit: patch.unit,
+          summary: patch.summary ?? "Running in background",
+          etaSeconds: patch.etaSeconds,
+          exitCode: patch.exitCode,
+          outputFile: patch.outputFile,
+          startedAtMs: now,
+          updatedAtMs: now,
+          stallQuietSecs: patch.stallQuietSecs,
+        });
+        changed = true;
+        insertedNew = true;
+      }
       if (changed) {
         useAppStore.getState().setBackgroundTasks(next);
+      }
+      if (insertedNew && isVsCodeWebview()) {
+        void callRpc("background.list", { sessionId: currentSessionId })
+          .then((res) => {
+            if (useAppStore.getState().activeSessionId === currentSessionId) {
+              useAppStore
+                .getState()
+                .setBackgroundTasks(
+                  res.tasks.filter((t) => t.sessionId === currentSessionId),
+                );
+            }
+          })
+          .catch(() => {});
       }
     }, 16);
 
@@ -373,6 +554,8 @@ export function useProcesses(options: UseProcessesOptions = {}) {
               ? msg.tasks.filter((t) => t.sessionId === currentSessionId)
               : [],
           );
+      } else if (msg.type === "rayucode.swarm.snapshot") {
+        useAppStore.getState().setActiveSwarm(msg.swarm);
       } else if (
         msg.type === "rayucode.host.init" &&
         Array.isArray(msg.backgroundTasks)
@@ -388,6 +571,9 @@ export function useProcesses(options: UseProcessesOptions = {}) {
                 )
               : [],
           );
+        if (msg.activeSwarm !== undefined) {
+          useAppStore.getState().setActiveSwarm(msg.activeSwarm);
+        }
       } else if (
         msg.type === "rayucode.ui.navigate" &&
         msg.openProcessesDrawer !== undefined
@@ -422,8 +608,17 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     };
   }, []);
 
-  // Keep selectedTaskId valid when task list changes
+  // Keep selectedTaskId & selectedSwarmAgentId valid when lists change
   React.useEffect(() => {
+    if (selectedSwarmAgentId !== null) {
+      const stillExists = swarmAgents.some(
+        (a) => a.agentId === selectedSwarmAgentId || a.sessionId === selectedSwarmAgentId,
+      );
+      if (!stillExists) {
+        setSelectedSwarmAgentIdState(swarmAgents[0]?.agentId ?? null);
+      }
+      return;
+    }
     if (tasks.length === 0) {
       if (selectedTaskId !== null) {
         setSelectedTaskIdState(null);
@@ -442,9 +637,59 @@ export function useProcesses(options: UseProcessesOptions = {}) {
         setSelectedTaskIdState(preferred.taskId);
       }
     }
-  }, [selectedTaskId, stallThresholdSecs, tasks]);
+  }, [selectedSwarmAgentId, selectedTaskId, stallThresholdSecs, swarmAgents, tasks]);
 
-  // Derived counts
+  // Derived swarm counts & aggregate progress
+  const swarmSummary = React.useMemo(() => {
+    const workers = swarmAgents.filter((a) => a.role === "worker");
+    const pool = workers.length > 0 ? workers : swarmAgents;
+    let running = 0;
+    let blocked = 0;
+    let completed = 0;
+    let failed = 0;
+    let todoDone = 0;
+    let todoTotal = 0;
+    for (const agent of pool) {
+      if (agent.status === "blocked") blocked += 1;
+      else if (agent.status === "running" || agent.status === "spawned") running += 1;
+      else if (agent.status === "completed") completed += 1;
+      else if (agent.status === "failed" || agent.status === "crashed") failed += 1;
+
+      if (typeof agent.todoTotal === "number" && agent.todoTotal > 0) {
+        todoTotal += agent.todoTotal;
+        todoDone += Math.min(agent.todoTotal, agent.todoCompleted ?? 0);
+      }
+    }
+    const total = pool.length;
+    const active = running + blocked;
+    const percent =
+      todoTotal > 0
+        ? Math.max(0, Math.min(100, Math.round((todoDone / todoTotal) * 100)))
+        : total > 0 && completed > 0
+          ? Math.max(0, Math.min(100, Math.round((completed / total) * 100)))
+          : null;
+    const primaryAgent =
+      pool.find((a) => a.status === "blocked") ??
+      pool.find((a) => a.status === "running" || a.status === "spawned") ??
+      pool[0] ??
+      swarmAgents[0] ??
+      null;
+
+    return {
+      total,
+      running,
+      blocked,
+      completed,
+      failed,
+      active,
+      todoDone,
+      todoTotal,
+      percent,
+      primaryAgent,
+    };
+  }, [swarmAgents]);
+
+  // Derived counts (unified across background shell tasks and live swarm agents)
   const counts = React.useMemo(() => {
     let running = 0;
     let stalled = 0;
@@ -463,18 +708,41 @@ export function useProcesses(options: UseProcessesOptions = {}) {
       }
     }
 
+    let swarmRunning = 0;
+    let swarmBlocked = 0;
+    let swarmCompleted = 0;
+    let swarmFailed = 0;
+    for (const agent of swarmAgents) {
+      if (agent.status === "blocked") swarmBlocked += 1;
+      else if (
+        agent.status === "running" ||
+        agent.status === "spawned" ||
+        agent.status === "ready"
+      ) {
+        swarmRunning += 1;
+      } else if (agent.status === "completed" || agent.status === "stopped") {
+        swarmCompleted += 1;
+      } else if (agent.status === "failed" || agent.status === "crashed") {
+        swarmFailed += 1;
+      }
+    }
+
     return {
-      all: tasks.length,
-      running,
-      stalled,
-      completed,
-      failed,
+      all: tasks.length + swarmAgents.length,
+      running: running + swarmRunning,
+      stalled: stalled + swarmBlocked,
+      completed: completed + swarmCompleted,
+      failed: failed + swarmFailed,
       active: running + stalled,
       finished: completed + failed,
+      taskRunning: running,
+      taskStalled: stalled,
+      taskCompleted: completed,
+      taskFailed: failed,
     };
-  }, [stallThresholdSecs, tasks]);
+  }, [stallThresholdSecs, swarmAgents, tasks]);
 
-  const hasActiveTasks = counts.active > 0;
+  const hasActiveTasks = counts.active > 0 || swarmSummary.active > 0;
   const nowMs = useProcessSecondTick(hasActiveTasks);
 
   // Sorted and filtered tasks
@@ -498,18 +766,42 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     );
   }, [filter, searchQuery, sortedTasks, stallThresholdSecs]);
 
+  const filteredSwarmAgents = React.useMemo(() => {
+    return swarmAgents.filter(
+      (agent) =>
+        matchesSwarmAgentFilter(agent, filter) &&
+        matchesSwarmAgentSearch(agent, searchQuery),
+    );
+  }, [filter, searchQuery, swarmAgents]);
+
   const groupedTasks = React.useMemo(
     () => groupProcesses(filteredTasks),
     [filteredTasks],
   );
 
+  const selectedSwarmAgent = React.useMemo(() => {
+    if (selectedSwarmAgentId) {
+      const exact = swarmAgents.find(
+        (a) =>
+          a.agentId === selectedSwarmAgentId ||
+          a.sessionId === selectedSwarmAgentId,
+      );
+      if (exact) return exact;
+    }
+    if (tasks.length === 0 && filteredSwarmAgents.length > 0) {
+      return filteredSwarmAgents[0] ?? null;
+    }
+    return null;
+  }, [filteredSwarmAgents, selectedSwarmAgentId, swarmAgents, tasks.length]);
+
   const selectedTask = React.useMemo(() => {
+    if (selectedSwarmAgent) return null;
     if (selectedTaskId) {
       const exact = tasks.find((t) => t.taskId === selectedTaskId);
       if (exact) return exact;
     }
     return filteredTasks[0] ?? sortedTasks[0] ?? null;
-  }, [filteredTasks, selectedTaskId, sortedTasks, tasks]);
+  }, [filteredTasks, selectedSwarmAgent, selectedTaskId, sortedTasks, tasks]);
 
   const primaryTask = React.useMemo(() => {
     return (
@@ -521,19 +813,38 @@ export function useProcesses(options: UseProcessesOptions = {}) {
   }, [sortedTasks, stallThresholdSecs]);
 
   // RPC Actions
+  const refreshSwarm = React.useCallback(async (): Promise<SwarmStatusView | null> => {
+    setIsRefreshingSwarm(true);
+    try {
+      const res = await callRpc("swarm.status", undefined);
+      setActiveSwarm(res.swarm ?? null);
+      return res.swarm ?? null;
+    } catch {
+      return useAppStore.getState().activeSwarm;
+    } finally {
+      setIsRefreshingSwarm(false);
+    }
+  }, [setActiveSwarm]);
+
   const refreshProcesses = React.useCallback(
-    async (sessionId?: string) => {
+    async (sessionId?: string, nextScope?: ProcessScopeMode) => {
+      const effectiveScope = nextScope ?? scope;
       const targetSessionId =
-        sessionId ?? useAppStore.getState().activeSessionId;
-      if (!targetSessionId) {
+        sessionId ?? useAppStore.getState().activeSessionId ?? undefined;
+      if (effectiveScope === "session" && !targetSessionId) {
         setBackgroundTasks([]);
         return [];
       }
       setIsLoadingList(true);
       try {
         const res = await callRpc("background.list", {
-          sessionId: targetSessionId,
+          ...(targetSessionId ? { sessionId: targetSessionId } : {}),
+          ...(effectiveScope === "all" ? { scope: "all" as const } : {}),
         });
+        if (effectiveScope === "all") {
+          setAllScopeTasks(res.tasks);
+          return res.tasks;
+        }
         const scoped = res.tasks.filter((t) => t.sessionId === targetSessionId);
         if (useAppStore.getState().activeSessionId === targetSessionId) {
           setBackgroundTasks(scoped);
@@ -543,8 +854,14 @@ export function useProcesses(options: UseProcessesOptions = {}) {
         setIsLoadingList(false);
       }
     },
-    [setBackgroundTasks],
+    [scope, setBackgroundTasks],
   );
+
+  const toggleScope = React.useCallback(() => {
+    const nextScope: ProcessScopeMode = scope === "session" ? "all" : "session";
+    setScope(nextScope);
+    void refreshProcesses(undefined, nextScope).catch(() => {});
+  }, [refreshProcesses, scope]);
 
   // Re-fetch scoped background processes when activeSessionId changes inside VS Code webview
   React.useEffect(() => {
@@ -553,8 +870,63 @@ export function useProcesses(options: UseProcessesOptions = {}) {
       setBackgroundTasks([]);
       return;
     }
-    void refreshProcesses(activeSessionId).catch(() => {});
+    void refreshProcesses(activeSessionId, "session").catch(() => {});
   }, [activeSessionId, refreshProcesses, setBackgroundTasks]);
+
+  // Refresh live swarm status when drawer opens inside VS Code webview
+  React.useEffect(() => {
+    if (!isDrawerOpen || !isVsCodeWebview()) return;
+    void refreshSwarm();
+  }, [isDrawerOpen, refreshSwarm]);
+
+  // Poll swarm status while drawer is open and swarm agents are actively running
+  React.useEffect(() => {
+    if (!isDrawerOpen || !isVsCodeWebview() || swarmSummary.active === 0) {
+      return undefined;
+    }
+    const timer = setInterval(() => {
+      void refreshSwarm();
+    }, 3_000);
+    return () => clearInterval(timer);
+  }, [isDrawerOpen, refreshSwarm, swarmSummary.active]);
+
+  const stopSwarmAgent = React.useCallback(
+    async (agentId: string) => {
+      await callRpc("swarm.kill", { agentId });
+      await refreshSwarm();
+    },
+    [refreshSwarm],
+  );
+
+  const resumeSwarmAgent = React.useCallback(
+    async (agentId: string) => {
+      await callRpc("swarm.kill", { agentId, resume: true });
+      await refreshSwarm();
+    },
+    [refreshSwarm],
+  );
+
+  const sendSwarmAgentDm = React.useCallback(
+    async (agentId: string, message: string) => {
+      await callRpc("swarm.dm", { agentId, message });
+      await refreshSwarm();
+    },
+    [refreshSwarm],
+  );
+
+  const openSwarmView = React.useCallback(() => {
+    setBackgroundDrawerOpen(false);
+    openSettingsSection("swarm");
+  }, [openSettingsSection, setBackgroundDrawerOpen]);
+
+  const openSwarmAgentChat = React.useCallback(
+    (sessionId: string, label: string) => {
+      if (!sessionId) return;
+      setBackgroundDrawerOpen(false);
+      setActiveSession(sessionId, label);
+    },
+    [setActiveSession, setBackgroundDrawerOpen],
+  );
 
   const fetchProcessStatus = React.useCallback(async (taskId: string) => {
     const res = await callRpc("background.status", { taskId });
@@ -744,35 +1116,47 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     sortedTasks,
     filteredTasks,
     groupedTasks,
+    activeSwarm,
+    swarmAgents,
+    filteredSwarmAgents,
+    swarmSummary,
     counts,
-    runningCount: counts.running,
-    stalledCount: counts.stalled,
-    completedCount: counts.completed,
-    failedCount: counts.failed,
+    runningCount: counts.taskRunning,
+    stalledCount: counts.taskStalled,
+    completedCount: counts.taskCompleted,
+    failedCount: counts.taskFailed,
     activeCount: counts.active,
     finishedCount: counts.finished,
-    hasTasks: tasks.length > 0,
+    hasTasks: tasks.length > 0 || swarmAgents.length > 0,
     hasActiveTasks,
     primaryTask,
     selectedTask,
     selectedTaskId: selectedTask?.taskId ?? null,
+    selectedSwarmAgent,
+    selectedSwarmAgentId: selectedSwarmAgent?.agentId ?? null,
     selectedOutput,
     outputsByTaskId,
+    scope,
     filter,
     searchQuery,
     followOutput,
     isDrawerOpen,
     isLoadingList,
     isLoadingOutput,
+    isRefreshingSwarm,
     nowMs,
     activeSessionId,
     selectTask,
+    selectSwarmAgent,
+    setScope,
+    toggleScope,
     setFilter,
     setSearchQuery,
     setFollowOutput,
     setDrawerOpen: setBackgroundDrawerOpen,
     toggleDrawer: toggleBackgroundDrawer,
     refreshProcesses,
+    refreshSwarm,
     fetchProcessStatus,
     fetchProcessOutput,
     cancelProcess,
@@ -783,5 +1167,10 @@ export function useProcesses(options: UseProcessesOptions = {}) {
     backgroundActiveTool: handoffForegroundToBackground,
     openOutputFileInEditor,
     copyProcessOutput,
+    stopSwarmAgent,
+    resumeSwarmAgent,
+    sendSwarmAgentDm,
+    openSwarmView,
+    openSwarmAgentChat,
   };
 }

@@ -98,6 +98,7 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
       activeSessionId: "ses_vscode_shell",
       backgroundDrawerOpen: false,
       backgroundTasks: [],
+      activeSwarm: null,
       isStreamActive: false,
     });
   });
@@ -479,5 +480,89 @@ describe("RayuCode VS Code Background Process Viewer (Wave 3C, Spec 03)", () => 
       expect(task?.percent).toBe(88);
       expect(task?.summary).toBe("17/19 integration tests passed");
     });
+  });
+
+  it("upserts newly started background tasks from live background_progress frames and displays live background swarm agent progress in dock & drawer", async () => {
+    render(
+      <div>
+        <BackgroundDockBar />
+        <BackgroundProcessDrawer />
+      </div>,
+    );
+
+    // 1. Live background_progress frame for a brand-new task must upsert instead of being dropped
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          v: 1,
+          ev: "background_progress",
+          session_id: "ses_vscode_shell",
+          task_id: "bg_brand_new",
+          display_name: "cargo clippy --workspace",
+          percent: 35,
+          summary: "Checking crates (7/20)",
+          done: false,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("process-row-bg_brand_new")).toBeTruthy();
+    });
+
+    // 2. Live host-pushed Swarm snapshot displays swarm progress pill in DockBar and live Swarm Agents section in Drawer
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.swarm.snapshot",
+        swarm: {
+          swarmId: "sw_bg_1",
+          label: "Background Parity Swarm",
+          planVersion: 2,
+          agents: [
+            {
+              agentId: "worker-api",
+              sessionId: "ses_worker_api",
+              label: "worker-api",
+              role: "worker",
+              depth: 1,
+              status: "running",
+              model: "claude-sonnet-4-5",
+              currentIntent: "Implementing schedules cron parser",
+              todoCompleted: 2,
+              todoTotal: 4,
+              elapsedSecs: 31,
+              filesTouched: ["vscode/host/runtime/featureRouters.ts"],
+              todoItems: [
+                { content: "Parse cron presets", status: "completed" },
+                { content: "Wire toggle & runNow", status: "in_progress" },
+              ],
+              outputTail: "All 12 parser assertions green",
+            },
+          ],
+          board: [],
+          planItems: [],
+          pendingProposals: [],
+          worktrees: [],
+          conflicts: [],
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("dock-swarm-progress")).toBeTruthy();
+      expect(screen.getByTestId("process-group-swarm")).toBeTruthy();
+      expect(screen.getByTestId("swarm-agent-row-worker-api")).toBeTruthy();
+    });
+    expect(screen.getByTestId("dock-swarm-progress").textContent).toContain("50%");
+
+    // Clicking the swarm agent row opens the live SwarmAgentProgressPane inspector
+    fireEvent.click(screen.getByTestId("swarm-agent-row-worker-api"));
+    await waitFor(() => {
+      expect(screen.getByTestId("swarm-agent-progress-pane")).toBeTruthy();
+    });
+    expect(screen.getByTestId("swarm-pane-output-tail").textContent).toContain(
+      "All 12 parser assertions green",
+    );
   });
 });

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Network,
   Square,
 } from "lucide-react";
 
@@ -40,6 +41,8 @@ export function BackgroundDockBar({
 
   const {
     tasks,
+    swarmAgents,
+    swarmSummary,
     runningCount,
     stalledCount,
     failedCount,
@@ -48,14 +51,21 @@ export function BackgroundDockBar({
     isDrawerOpen,
     nowMs,
     toggleDrawer,
+    setDrawerOpen,
     selectTask,
+    selectSwarmAgent,
     cancelProcess,
+    openSwarmView,
   } = useProcesses({ stallThresholdSecs });
 
-  // Zero noise when idle: render null (0px height) when 0 background processes exist
-  if (tasks.length === 0) {
+  // Zero noise when idle: render null (0px height) when 0 background processes & 0 swarm agents exist
+  if (tasks.length === 0 && swarmAgents.length === 0) {
     return null;
   }
+
+  const hasShellTasks = tasks.length > 0;
+  const hasSwarm = swarmAgents.length > 0;
+  const primarySwarm = swarmSummary.primaryAgent;
 
   const primaryStalled = primaryTask
     ? isProcessStalled(primaryTask, stallThresholdSecs)
@@ -71,22 +81,41 @@ export function BackgroundDockBar({
   const handleToggleDrawer = () => {
     if (primaryTask) {
       selectTask(primaryTask.taskId);
+    } else if (primarySwarm) {
+      selectSwarmAgent(primarySwarm.agentId);
     }
     toggleDrawer();
     onInspect?.();
   };
 
+  const handleInspectSwarm = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (primarySwarm) {
+      selectSwarmAgent(primarySwarm.agentId);
+    }
+    setDrawerOpen(true);
+    onInspect?.();
+  };
+
   const countSummaryLabel = () => {
-    if (runningCount > 0) {
-      return `${runningCount} running`;
+    if (hasShellTasks) {
+      if (runningCount > 0) return `${runningCount} running`;
+      if (stalledCount > 0) return `${stalledCount} stalled`;
+      if (failedCount > 0) return `${failedCount} failed`;
+      return `${completedCount} done`;
     }
-    if (stalledCount > 0) {
-      return `${stalledCount} stalled`;
+    if (swarmSummary.running > 0) {
+      return `${swarmSummary.running}/${swarmSummary.total} ${
+        swarmSummary.total === 1 ? "agent" : "agents"
+      }`;
     }
-    if (failedCount > 0) {
-      return `${failedCount} failed`;
+    if (swarmSummary.blocked > 0) {
+      return `${swarmSummary.blocked} blocked`;
     }
-    return `${completedCount} done`;
+    if (swarmSummary.failed > 0) {
+      return `${swarmSummary.failed} failed`;
+    }
+    return `${swarmSummary.completed}/${swarmSummary.total} done`;
   };
 
   const primaryProgressLabel = () => {
@@ -117,24 +146,37 @@ export function BackgroundDockBar({
     return null;
   };
 
+  const swarmHeadline = () => {
+    if (!primarySwarm) return "";
+    const detail = primarySwarm.liveStatus || primarySwarm.currentIntent || primarySwarm.taskLabel;
+    return detail ? `${primarySwarm.label}: ${detail}` : primarySwarm.label;
+  };
+
   const renderLeadIndicator = () => {
-    if (runningCount > 0) {
+    if (runningCount > 0 || swarmSummary.running > 0) {
       return (
         <span className="inline-flex shrink-0 items-center gap-1.5">
           <RayuProcessingMark animated className="size-3.5" />
-          <RunStatusPulse status="running" label="Background tasks running" />
+          <RunStatusPulse
+            status="running"
+            label={
+              swarmSummary.running > 0
+                ? "Background swarm running"
+                : "Background tasks running"
+            }
+          />
         </span>
       );
     }
-    if (stalledCount > 0) {
+    if (stalledCount > 0 || swarmSummary.blocked > 0) {
       return (
         <span className="inline-flex shrink-0 items-center gap-1">
           <AlertTriangle className="size-3.5 text-warn" />
-          <RunStatusPulse status="warn" label="Background task stalled" />
+          <RunStatusPulse status="warn" label="Background activity needs attention" />
         </span>
       );
     }
-    if (failedCount > 0) {
+    if (failedCount > 0 || swarmSummary.failed > 0) {
       return <RunStatusPulse status="danger" label="Background task failed" />;
     }
     return (
@@ -153,6 +195,7 @@ export function BackgroundDockBar({
       data-form-factor={formFactor}
       data-running-count={runningCount}
       data-stalled-count={stalledCount}
+      data-swarm-active-count={swarmSummary.active}
       className={cn(
         "@container/dock w-full border-t border-hairline bg-pane px-2.5",
         className,
@@ -170,11 +213,11 @@ export function BackgroundDockBar({
             handleToggleDrawer();
           }
         }}
-        className="mx-auto flex h-[30px] w-full max-w-[732px] cursor-pointer items-center gap-2 text-xs text-body transition-colors select-none hover:text-ink"
+        className="mx-auto flex h-[32px] w-full max-w-[732px] cursor-pointer items-center gap-2 text-xs text-body transition-colors select-none hover:text-ink"
       >
         {renderLeadIndicator()}
 
-        {/* Active task count */}
+        {/* Active count */}
         <span
           data-testid="dock-active-count"
           className="shrink-0 font-medium text-ink tabular-nums"
@@ -182,8 +225,8 @@ export function BackgroundDockBar({
           {countSummaryLabel()}
         </span>
 
-        {/* Latest running/stalled process single-line summary */}
-        {primaryTask && (
+        {/* Primary process or swarm summary */}
+        {primaryTask ? (
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate tabular-nums">
             <span className="text-faint">·</span>
             <span
@@ -198,6 +241,71 @@ export function BackgroundDockBar({
               </span>
             )}
           </div>
+        ) : primarySwarm ? (
+          <div className="flex min-w-0 flex-1 items-center gap-2 truncate tabular-nums">
+            <span className="text-faint">·</span>
+            <span
+              data-testid="dock-latest-process"
+              className="truncate text-xs text-ink"
+            >
+              {swarmHeadline()}
+            </span>
+            {swarmSummary.percent !== null && (
+              <div className="hidden shrink-0 items-center gap-1.5 @min-[420px]/dock:inline-flex">
+                <div
+                  role="progressbar"
+                  aria-label="Swarm progress"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={swarmSummary.percent}
+                  className="h-1.5 w-14 overflow-hidden rounded-full bg-inset"
+                >
+                  <div
+                    className="h-full rounded-full bg-brand transition-[width] duration-300"
+                    style={{ width: `${swarmSummary.percent}%` }}
+                  />
+                </div>
+                <span className="font-mono text-[10.5px] text-muted-ink">
+                  {swarmSummary.percent}%
+                </span>
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {/* Companion Swarm Progress Pill when BOTH shell processes and swarm agents are present */}
+        {hasShellTasks && hasSwarm && (
+          <button
+            type="button"
+            data-testid="dock-swarm-progress"
+            onClick={handleInspectSwarm}
+            title="Inspect background swarm agents"
+            className="inline-flex h-5 shrink-0 cursor-pointer items-center gap-1 rounded-full border border-info/30 bg-info-soft px-2 text-[10.5px] font-medium text-info tabular-nums transition-colors hover:border-info/50"
+          >
+            <Network className="size-2.5 shrink-0" />
+            <span>
+              Swarm {swarmSummary.active > 0 ? `${swarmSummary.active}/${swarmSummary.total}` : `${swarmSummary.completed}/${swarmSummary.total}`}
+              {swarmSummary.percent !== null ? ` · ${swarmSummary.percent}%` : ""}
+            </span>
+          </button>
+        )}
+
+        {/* Quick Mission Control link when only swarm is showing */}
+        {!hasShellTasks && hasSwarm && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            data-testid="dock-open-swarm-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              openSwarmView();
+            }}
+            className="h-5 shrink-0 gap-1 rounded-sm px-1.5 text-[11px] text-info hover:bg-info-soft"
+          >
+            <Network className="size-3" />
+            <span className="hidden @min-[340px]/dock:inline">Swarm</span>
+          </Button>
         )}
 
         {/* Stall Watchdog Amber Badge */}

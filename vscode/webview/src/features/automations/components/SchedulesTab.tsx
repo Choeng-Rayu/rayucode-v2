@@ -1,4 +1,4 @@
-import { operationAvailable } from "@/lib/operation-result";
+import { useOperationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import { Clock, Play, Plus, Trash2 } from "lucide-react";
 import type { PermissionModeId, ScheduleItemView } from "@shared/vscodeProtocol";
@@ -58,6 +58,8 @@ function ScheduleRow({
   onCancel,
   isToggling = false,
 }: ScheduleRowProps) {
+  const canRunNow = useOperationAvailable("automations.schedules.runNow");
+  const canToggle = useOperationAvailable("automations.schedules.toggle");
   return (
     <div
       data-testid={`schedule-row-${schedule.id}`}
@@ -80,6 +82,11 @@ function ScheduleRow({
             >
               Next: {schedule.nextRunAt}
             </span>
+          ) : null}
+          {schedule.lastStatus ? (
+            <Badge variant="outline" className="text-[10px] capitalize">
+              Last: {schedule.lastStatus}
+            </Badge>
           ) : null}
         </div>
 
@@ -116,8 +123,12 @@ function ScheduleRow({
           variant="ghost"
           size="sm"
           data-testid={`run-schedule-now-${schedule.id}`}
-          disabled={!operationAvailable("automations.schedules.runNow")}
-          title="Run now requires runtime support"
+          disabled={!canRunNow}
+          title={
+            canRunNow
+              ? "Queue this schedule to run immediately"
+              : "Run now requires a newer Rayu engine (schedules_cron_v1)"
+          }
           onClick={onRunNow}
         >
           <Play className="size-3" aria-hidden="true" />
@@ -126,7 +137,7 @@ function ScheduleRow({
 
         <Switch
           checked={schedule.enabled}
-          disabled={isToggling || !operationAvailable("automations.schedules.toggle")}
+          disabled={isToggling || !canToggle}
           onCheckedChange={onToggle}
           aria-label={`Enable ${schedule.title}`}
           data-testid={`schedule-switch-${schedule.id}`}
@@ -154,7 +165,8 @@ export function SchedulesTab() {
   const { toggleMutation, runNowMutation, cancelMutation } =
     useScheduleActions();
   const workspaces = useAppStore((s) => s.workspaces);
-  const primaryRepo = workspaces[0]?.name ?? "rayucode-v2";
+  const primaryWorkspace = workspaces.find((w) => w.isPrimary) ?? workspaces[0];
+  const primaryRepo = primaryWorkspace?.name ?? "rayucode-v2";
 
   const [formOpen, setFormOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
@@ -177,6 +189,7 @@ export function SchedulesTab() {
         prompt: prompt.trim(),
         schedule: scheduleExpr.trim(),
         permissionMode,
+        workingDir: primaryWorkspace?.path,
         repo: primaryRepo,
       });
       setTitle("");
