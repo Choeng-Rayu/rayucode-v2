@@ -546,6 +546,12 @@ pub fn rpc_snapshot_to_api_event(snapshot: ConfigSnapshot) -> ApiEvent {
 /// so thin clients do not need regex error scraping.
 pub fn classify_daemon_error(message: &str, default: ErrorCode) -> ErrorCode {
     let lower = message.to_ascii_lowercase();
+    if lower.contains("authentication required")
+        || lower.contains("no configured ai provider is ready")
+        || lower.contains("rayu login")
+    {
+        return ErrorCode::AuthRequired;
+    }
     if lower.contains("busy")
         || lower.contains("turn in progress")
         || lower.contains("already processing")

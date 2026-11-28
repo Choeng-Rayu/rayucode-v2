@@ -122,13 +122,38 @@ const TOOL_IGNORED_DIRS = new Set([
   "venv",
 ])
 
+function resolveRealpathWithFallback(targetPath: string): string {
+  const abs = path.resolve(targetPath)
+  const missing: string[] = []
+  let probe = abs
+  while (true) {
+    try {
+      const real = fs.realpathSync(probe)
+      return missing.length > 0 ? path.join(real, ...missing) : real
+    } catch {
+      const parent = path.dirname(probe)
+      if (parent === probe) return abs
+      missing.unshift(path.basename(probe))
+      probe = parent
+    }
+  }
+}
+
 function resolveSafeWorkspacePath(rootDir: string, rawPath = "."): string {
   const root = path.resolve(rootDir)
   const candidate = path.resolve(root, rawPath || ".")
   if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
     throw new Error(`Path "${rawPath}" escapes workspace directory.`)
   }
-  return candidate
+  const realRoot = resolveRealpathWithFallback(root)
+  const realCandidate = resolveRealpathWithFallback(candidate)
+  if (
+    realCandidate !== realRoot &&
+    !realCandidate.startsWith(`${realRoot}${path.sep}`)
+  ) {
+    throw new Error(`Path "${rawPath}" escapes workspace directory via symlink.`)
+  }
+  return fs.existsSync(candidate) ? realCandidate : candidate
 }
 
 function executeListFilesTool(
@@ -257,12 +282,19 @@ async function executeRunCommandTool(
 ): Promise<string> {
   const command = typeof args.command === "string" ? args.command.trim() : ""
   if (!command) throw new Error("Missing required 'command' argument.")
+  const safeCwd = resolveSafeWorkspacePath(workspaceDir, ".")
   return new Promise((resolve) => {
+    const cmdBin =
+      process.platform === "win32"
+        ? process.env.COMSPEC ?? "cmd.exe"
+        : "/bin/sh"
+    const cmdArgs =
+      process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-lc", command]
     execFile(
-      "/bin/sh",
-      ["-lc", command],
+      cmdBin,
+      cmdArgs,
       {
-        cwd: path.resolve(workspaceDir),
+        cwd: safeCwd,
         timeout: 12_000,
         maxBuffer: 256 * 1024,
       },
@@ -1096,6 +1128,10 @@ export class RayuAuthManager extends EventEmitter {
 
   async signOut(): Promise<RayuAuthState> {
     this.cancelBrowserSignIn()
+    for (const [sessionId, controller] of Array.from(this.activeStreams.entries())) {
+      controller.abort()
+      this.activeStreams.delete(sessionId)
+    }
     try {
       fs.unlinkSync(sessionFilePath())
     } catch {

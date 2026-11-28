@@ -504,7 +504,9 @@ export interface SessionComposerProps {
   onModelChange?: (model: ModelOption) => void
   onEffortChange?: (effort: ReasoningEffort) => void
   onPermissionModeChange?: (mode: PermissionModeId) => void
-  onSubmit?: (payload: ComposerSubmitPayload) => void | Promise<void>
+  onSubmit?: (
+    payload: ComposerSubmitPayload
+  ) => void | boolean | Promise<void | boolean>
   onStop?: () => void
   placeholder?: string
   disabled?: boolean
@@ -1539,7 +1541,6 @@ export function SessionComposer({
     }
 
     if (
-      !isWorkspaceMidTurn &&
       attachments.length === 0 &&
       skillTokens.length === 0 &&
       (await executeSlashInput(rawCandidate))
@@ -1601,10 +1602,28 @@ export function SessionComposer({
       ...(effectiveMidTurnMode ? { midTurnMode: effectiveMidTurnMode } : {}),
     }
 
+    const prevText = textValue
+    const prevAttachments = attachments
+    const prevSkillTokens = skillTokens
+
     setTextValue("")
     setAttachments([])
     setSkillTokens([])
-    await onSubmit?.(payload)
+    try {
+      const outcome = await onSubmit?.(payload)
+      if (outcome === false) {
+        setTextValue(prevText)
+        onValueChange?.(prevText)
+        setAttachments(prevAttachments)
+        setSkillTokens(prevSkillTokens)
+      }
+    } catch (error) {
+      setTextValue(prevText)
+      onValueChange?.(prevText)
+      setAttachments(prevAttachments)
+      setSkillTokens(prevSkillTokens)
+      throw error
+    }
   }
 
   const handleSend = async (midTurnOverride?: "steer" | "queue") => {

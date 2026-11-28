@@ -83,6 +83,8 @@ export function parseFileLineTarget(raw: string): ParsedFileLineTarget {
   return { path: trimmed };
 }
 
+import { ChatSessionContext } from "./ChatSessionContext";
+
 export interface CiteLinkProps {
   citation: CitationItem;
   onNavigate?: (citation: CitationItem) => void;
@@ -94,6 +96,7 @@ export function CiteLink({
   onNavigate,
   className,
 }: CiteLinkProps) {
+  const sessionId = React.useContext(ChatSessionContext);
   const parsed = React.useMemo(
     () => parseFileLineTarget(citation.file),
     [citation.file],
@@ -112,6 +115,7 @@ export function CiteLink({
     } else {
       postToHost({
         type: "rayucode.editor.openFile",
+        ...(sessionId ? { sessionId } : {}),
         path: resolvedPath,
         line: resolvedLine,
         column: resolvedColumn,

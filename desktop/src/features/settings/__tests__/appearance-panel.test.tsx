@@ -307,7 +307,10 @@ describe("AppearancePanel & SettingsView", () => {
       within(shortcutsPanel).getByText("Cycle permission mode")
     ).toBeInTheDocument()
     expect(
-      within(shortcutsPanel).getByText("Command palette")
+      within(shortcutsPanel).getByText("Toggle Settings")
+    ).toBeInTheDocument()
+    expect(
+      within(shortcutsPanel).getByText("Toggle embedded terminal")
     ).toBeInTheDocument()
     expect(
       within(shortcutsPanel).getByText("Send prompt")

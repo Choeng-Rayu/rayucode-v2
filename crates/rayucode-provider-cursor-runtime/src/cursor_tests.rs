@@ -1138,3 +1138,86 @@ fn allowlist_prechecks_decode_and_reply_on_matching_field() {
         .unwrap();
     assert_eq!(allowed.varint, 1);
 }
+
+#[test]
+fn refresh_model_catalog_discovers_future_model_and_preserves_last_good_on_error() {
+    let _guard = rayucode_base::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let prev_home = std::env::var_os("RAYU_HOME");
+    let prev_key = std::env::var_os("CURSOR_API_KEY");
+    let prev_base = std::env::var_os("RAYU_CURSOR_API_BASE");
+    struct Restore(
+        Option<std::ffi::OsString>,
+        Option<std::ffi::OsString>,
+        Option<std::ffi::OsString>,
+    );
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => rayucode_base::env::set_var("RAYU_HOME", v),
+                None => rayucode_base::env::remove_var("RAYU_HOME"),
+            }
+            match self.1.take() {
+                Some(v) => rayucode_base::env::set_var("CURSOR_API_KEY", v),
+                None => rayucode_base::env::remove_var("CURSOR_API_KEY"),
+            }
+            match self.2.take() {
+                Some(v) => rayucode_base::env::set_var("RAYU_CURSOR_API_BASE", v),
+                None => rayucode_base::env::remove_var("RAYU_CURSOR_API_BASE"),
+            }
+        }
+    }
+    let _restore = Restore(prev_home, prev_key, prev_base);
+    rayucode_base::env::set_var("RAYU_HOME", home.path());
+    rayucode_base::env::set_var("CURSOR_API_KEY", "synthetic-cursor-key");
+
+    let future_model = "cursor-future-omega-99";
+    assert!(!AVAILABLE_MODELS.contains(&future_model));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ok_body = serde_json::json!({ "models": [future_model] }).to_string();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        for (status, body) in [
+            ("200 OK", ok_body),
+            ("502 Bad Gateway", "bad gateway".to_string()),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    rayucode_base::env::set_var("RAYU_CURSOR_API_BASE", format!("http://{addr}"));
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut provider = CursorCliProvider::new();
+        provider.client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let summary = provider.refresh_model_catalog().await.unwrap();
+        assert!(summary.models_added_names.contains(&future_model.to_string()));
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+
+        assert!(provider.refresh_model_catalog().await.is_err());
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+    });
+    server.join().unwrap();
+}

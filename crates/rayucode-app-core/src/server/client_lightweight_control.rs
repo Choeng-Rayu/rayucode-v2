@@ -1123,6 +1123,22 @@ pub(super) async fn handle_lightweight_control_request(
         Request::CancelBackgroundTask { id, task_id } => {
             handle_cancel_background_task(id, task_id, &client_event_tx).await;
         }
+        Request::GlobalRuntimeCommand { id, command, args } => {
+            super::runtime_commands::handle_global_runtime_command(
+                id,
+                &command,
+                &args,
+                provider_template,
+                Some(mcp_pool),
+                swarm_members,
+                swarms_by_id,
+                swarm_coordinators,
+                swarm_plans,
+                event_history,
+                &client_event_tx,
+            )
+            .await;
+        }
         other => {
             let _ = client_event_tx.send(ServerEvent::Error {
                 id: other.id(),

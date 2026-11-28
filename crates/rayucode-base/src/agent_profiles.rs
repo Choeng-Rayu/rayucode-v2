@@ -9,6 +9,12 @@ use anyhow::{Result, bail};
 
 pub const USAGE: &str = "Usage: /agents [global] profile [list | add <name> <model> [--effort <level>] <when to use> | rm <name>]";
 
+/// Run a profile subcommand in global scope without requiring a session on disk.
+pub fn run_global(args: &[String]) -> Result<String> {
+    let ephemeral = Session::create_with_id("global-agents-scope".to_string(), None, None);
+    run(&ephemeral, true, args)
+}
+
 /// Run a profile subcommand. `args` excludes the leading `profile` word.
 /// `global` writes `~/.rayu/config.toml`, otherwise the session sidecar.
 pub fn run(session: &Session, global: bool, args: &[String]) -> Result<String> {

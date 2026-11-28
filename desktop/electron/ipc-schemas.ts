@@ -10,6 +10,7 @@ export const OpenInExcelPayloadSchema = z.object({
 })
 
 export const OpenInPowerPointPayloadSchema = z.object({
+  filePath: z.string().trim().min(1).max(2048).optional(),
   fileName: z.string().max(160).optional(),
   title: z.string().min(1).max(240),
   slides: z
@@ -21,7 +22,17 @@ export const OpenInPowerPointPayloadSchema = z.object({
         subtitle: z.string().optional(),
         body: z.string(),
         bullets: z.array(z.string()).optional(),
+        metrics: z
+          .array(
+            z.object({
+              label: z.string(),
+              value: z.string(),
+              note: z.string().optional(),
+            })
+          )
+          .optional(),
         notes: z.string().optional(),
+        layout: z.enum(["cover", "scorecard", "bullets"]).optional(),
       })
     )
     .min(1)
@@ -133,6 +144,10 @@ export const GitDiscardFilePayloadSchema = z.object({
   filePath: z.string().min(1),
 })
 
+export const GitFileDiffPayloadSchema = z.object({
+  filePath: z.string().min(1).max(4096),
+})
+
 export const GitCommitPayloadSchema = z.object({
   message: z.string().trim().min(3).max(200),
 })
@@ -171,6 +186,27 @@ const ImageAttachmentTupleSchema = z.tuple([
   z.string().min(1),
 ])
 
+const MAX_COMBINED_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+function estimateDecodedAttachmentBytes(
+  images?: Array<[string, string]>
+): number {
+  if (!images || images.length === 0) return 0
+  let total = 0
+  for (const [, raw] of images) {
+    const commaIdx = raw.indexOf(",")
+    const base64 = commaIdx >= 0 ? raw.slice(commaIdx + 1) : raw
+    total += Math.floor((base64.length * 3) / 4)
+  }
+  return total
+}
+
+export const HarnessForkSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  upToMessageIndex: z.number().int().nonnegative().optional(),
+  upToMessageId: z.string().min(1).max(256).optional(),
+})
+
 export const HarnessSendMessageSchema = z
   .object({
     sessionId: z.string().min(1),
@@ -180,6 +216,10 @@ export const HarnessSendMessageSchema = z
   .refine(
     (v) => v.content.trim().length > 0 || (v.images?.length ?? 0) > 0,
     "Message content or at least one image is required"
+  )
+  .refine(
+    (v) => estimateDecodedAttachmentBytes(v.images) <= MAX_COMBINED_ATTACHMENT_BYTES,
+    "Combined image attachments exceed the 20 MB limit"
   )
 
 export const HarnessSoftInterruptSchema = z
@@ -194,6 +234,10 @@ export const HarnessSoftInterruptSchema = z
     (v) => v.content.trim().length > 0 || (v.images?.length ?? 0) > 0,
     "Steer content or at least one image is required"
   )
+  .refine(
+    (v) => estimateDecodedAttachmentBytes(v.images) <= MAX_COMBINED_ATTACHMENT_BYTES,
+    "Combined image attachments exceed the 20 MB limit"
+  )
 
 export const HarnessCancelSoftInterruptsSchema = z.object({
   sessionId: z.string().min(1),
@@ -204,6 +248,12 @@ export const HarnessPermissionResponseSchema = z.object({
   sessionId: z.string().min(1),
   requestId: z.string().min(1),
   decision: z.enum(["allow", "allow_always", "deny"]),
+})
+
+export const HarnessQuestionResponseSchema = z.object({
+  sessionId: z.string().min(1),
+  requestId: z.string().min(1),
+  response: z.record(z.string(), z.unknown()),
 })
 
 export const HarnessSetPermissionModeSchema = z.object({
@@ -229,6 +279,11 @@ export const HarnessSetEffortSchema = z.object({
 
 export const HarnessRuntimeCommandSchema = z.object({
   sessionId: z.string().min(1),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+})
+
+export const HarnessGlobalRuntimeCommandSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).optional(),
 })
@@ -377,10 +432,15 @@ export const StorageSidebarStateSchema = z.object({
 export const ExtensionUpsertMcpSchema = z.object({
   id: z.string().trim().min(1).max(80),
   scope: z.enum(["global", "workspace"]).optional(),
+  type: z.string().trim().max(32).optional(),
   command: z.string().trim().max(512).optional(),
   args: z.array(z.string().max(512)).max(32).optional(),
   url: z.string().trim().max(2048).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   env: z.record(z.string(), z.string()).optional(),
+  timeout: z.number().int().positive().max(600_000).optional(),
+  expectedRevision: z.string().trim().max(128).optional(),
+  clearFields: z.array(z.string().trim().min(1).max(64)).max(16).optional(),
 })
 
 export const ExtensionRemoveMcpSchema = z.object({

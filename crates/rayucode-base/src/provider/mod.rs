@@ -2613,6 +2613,26 @@ impl Provider for MultiProvider {
             > 0
     }
 
+    fn turn_readiness_error(&self) -> Option<String> {
+        if crate::rayu::auth_gate_active() {
+            return Some(crate::rayu::auth_gate_error_message().to_string());
+        }
+        if self.has_any_initialized_provider() {
+            return None;
+        }
+        if !self.auth_model_refresh_pending() {
+            self.on_auth_changed();
+        }
+        if self.has_any_initialized_provider() {
+            None
+        } else {
+            Some(
+                "No configured AI provider is ready. Sign in or configure a provider API key before sending messages."
+                    .to_string(),
+            )
+        }
+    }
+
     async fn invalidate_credentials(&self) {
         if let Some(anthropic) = self.anthropic_provider() {
             anthropic.invalidate_credentials().await;

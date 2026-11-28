@@ -45,7 +45,7 @@ export interface AgentInspectorProps {
   onKillAgent?: (agentId: string, pauseOnly?: boolean) => Promise<{ ok: boolean; error?: string }>;
   onSalvageAgent?: (agentId: string) => Promise<{ ok: boolean; error?: string }>;
   onSwitchModel?: (agentId: string, model: string) => Promise<{ ok: boolean; error?: string }>;
-  onSendDm: (
+  onSendDm?: (
     agentId: string,
     message: string,
   ) => Promise<{ ok: boolean; error?: string; seq?: number }>;
@@ -220,6 +220,7 @@ export function AgentInspector({
     }
 
     setDmError(null);
+    if (!onSendDm) return;
     const result = await onSendDm(agent.agentId, trimmed);
     if (result.ok) {
       setDmTextByAgent((prev) => ({ ...prev, [agent.agentId]: "" }));
@@ -568,7 +569,7 @@ export function AgentInspector({
             type="submit"
             variant="primary"
             size="sm"
-            disabled={isSendingDm}
+            disabled={!onSendDm || isSendingDm}
             data-testid="agent-dm-submit"
           >
             <Send className="size-3" aria-hidden="true" />

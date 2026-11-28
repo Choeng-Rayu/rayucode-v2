@@ -56,6 +56,8 @@ const CAPABILITIES: &[Capability] = &[
     cap("list_models", "listModels"),
     cap("get_runtime_info", "getRuntimeInfo"),
     cap("runtime_command", "runtimeCommand"),
+    cap("global_runtime_command", "globalRuntimeCommand"),
+    cap("respond_to_question", "respondToQuestion"),
     cap("set_api_key", "setApiKey"),
     cap("clear_api_key", "clearApiKey"),
     cap("notify_auth_changed", "notifyAuthChanged"),
@@ -210,9 +212,8 @@ const RUST_ONLY: &[&str] = &[
     "disconnect_reason",
     // TS reads `client.socketPath` as a field; Rust exposes it as an accessor.
     "socket_path",
-    // The questionnaire is opt-in and only exposed by the Rust SDK (see
-    // `rust_sdk_only_frame` in `rayucode-harness-api`'s schema snapshot tests).
-    "respond_to_question",
+    // TS accepts `{ upToMessageIndex, upToMessageId }` as optional options on `forkSession`.
+    "fork_session_with_boundary",
 ];
 
 /// Public TypeScript methods not yet represented by an equivalent Rust method.

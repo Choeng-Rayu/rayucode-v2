@@ -76,6 +76,7 @@ impl ErrorKind {
                 rayucode_harness_api::ErrorCode::InvalidRequest => "invalid_request",
                 rayucode_harness_api::ErrorCode::Busy => "busy",
                 rayucode_harness_api::ErrorCode::Unsupported => "unsupported",
+                rayucode_harness_api::ErrorCode::AuthRequired => "auth_required",
                 rayucode_harness_api::ErrorCode::Internal => "internal",
             },
         }

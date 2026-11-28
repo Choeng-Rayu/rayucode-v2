@@ -570,6 +570,7 @@ pub enum ErrorCode {
     InvalidRequest,
     Busy,
     Unsupported,
+    AuthRequired,
     Internal,
 }
 

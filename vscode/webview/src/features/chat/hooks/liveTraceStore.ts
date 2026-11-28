@@ -607,8 +607,8 @@ function getOrCreateBatcher(
         });
       }
       useAppStore.getState().clearPendingPermission(sessionId);
-      clearSessionLiveTurn(sessionId);
       settleSessionTurnQueue(sessionId, wasAbnormalStop);
+      clearSessionLiveTurn(sessionId);
       return;
     }
 
@@ -667,9 +667,13 @@ export function processHarnessFrame(
 
   if (frame.ev === "permission_mode_changed") {
     if (typeof frame.mode === "string") {
+      const mode = fromHarnessPermissionMode(frame.mode);
       useAppStore.getState().setSessionPrefs(targetSessionId, {
-        permissionMode: fromHarnessPermissionMode(frame.mode),
+        permissionMode: mode,
       });
+      useAppStore
+        .getState()
+        .clearPendingSessionPrefs(targetSessionId, "permissionMode");
     }
     return;
   }
@@ -860,16 +864,27 @@ export function processHarnessFrame(
     return;
   }
 
-  if (
-    frame.ev === "error" &&
-    (frame.non_turn === true ||
+  if (frame.ev === "error") {
+    const existingLive =
+      useLiveTraceStore.getState().liveTurnsBySession[targetSessionId];
+    const isUnstartedPreSendReply =
+      typeof frame.reply_to === "number" &&
+      (!existingLive ||
+        (!existingLive.answerIntro.trim() &&
+          existingLive.groups.length === 0 &&
+          existingLive.notes.length === 0 &&
+          (existingLive.timeline?.length ?? 0) === 0));
+    if (
+      frame.non_turn === true ||
+      isUnstartedPreSendReply ||
       frame.req === "set_model" ||
       frame.req === "set_reasoning_effort" ||
-      frame.req === "set_permission_mode")
-  ) {
-    // Non-turn control requests (e.g. changing model/effort) must never
-    // abort or inject an error into an active AI response stream.
-    return;
+      frame.req === "set_permission_mode"
+    ) {
+      // Non-turn control requests and pre-send rejections must never
+      // abort an active stream or leave a phantom error turn in Chat.
+      return;
+    }
   }
 
   const isTerminalFrame =

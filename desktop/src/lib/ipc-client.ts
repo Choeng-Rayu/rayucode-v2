@@ -410,6 +410,8 @@ export interface ExecutionTurn {
   attempts?: TurnAttempt[]
   finalAttemptId?: string | null
   hiddenInternalMessages?: HiddenInternalMessage[]
+  sourceEndMessageIndex?: number
+  sourceEndMessageId?: string
 }
 
 export interface ContextDetailBreakdown {
@@ -631,6 +633,8 @@ export interface SwarmState {
   messages: SwarmBoardMessage[]
   planScopes: SwarmPlanScope[]
   worktrees: SwarmWorktree[]
+  available?: boolean
+  unavailableReason?: string
 }
 
 export interface OvernightRun {
@@ -673,6 +677,8 @@ export interface AutomationsState {
   running: OvernightRun[]
   schedules: AutomationSchedule[]
   reports: MorningHandoffReport[]
+  available?: boolean
+  unavailableReason?: string
 }
 
 export interface PluginCatalogItem {
@@ -689,10 +695,15 @@ export interface PluginCatalogItem {
   sourcePath?: string
   scope?: "global" | "workspace"
   transport?: "stdio" | "url"
+  type?: string
   command?: string
   args?: string[]
   url?: string
+  headers?: Record<string, string>
+  headerKeys?: string[]
   envKeys?: string[]
+  timeout?: number
+  revision?: string
   isCustomMcp?: boolean
 }
 
@@ -718,11 +729,23 @@ export interface PluginsState {
   plugins: PluginCatalogItem[]
   skills: SkillItem[]
   memories: MemoryFileItem[]
+  mcpConfigErrors?: Array<{
+    filePath: string
+    scope: "global" | "workspace"
+    message: string
+  }>
+  revisions?: Record<string, string>
+  lastWriteStatus?: {
+    diskSaved: boolean
+    daemonReloaded: boolean
+    reloadError?: string
+  }
 }
 
 export interface ChangedFileDiff {
   id: string
   path: string
+  previousPath?: string
   additions: number
   deletions: number
   deleted?: boolean
@@ -731,11 +754,14 @@ export interface ChangedFileDiff {
   accepted?: boolean
   rejected?: boolean
   staged?: boolean
+  diffLoaded?: boolean
   lines: InlineDiffHunkLine[]
 }
 
 export interface ChangesState {
   branch: string
+  totalChangedFiles?: number
+  truncatedDiffCount?: number
   totalAdditions: number
   totalDeletions: number
   files: ChangedFileDiff[]
@@ -3090,6 +3116,41 @@ export interface PersistedComposerTemplate {
   createdAt: number
 }
 
+export interface ExtensionMcpServerBridgeEntry {
+  id: string
+  name: string
+  description: string
+  sourcePath: string
+  scope: "global" | "workspace"
+  transport: "stdio" | "url"
+  type?: string
+  command?: string
+  args?: string[]
+  url?: string
+  headers?: Record<string, string>
+  headerKeys?: string[]
+  envKeys?: string[]
+  timeout?: number
+  revision?: string
+  installed: boolean
+}
+
+export interface ExtensionSnapshotBridgePayload {
+  mcpConfigPath: string
+  mcpServers: ExtensionMcpServerBridgeEntry[]
+  mcpConfigErrors?: Array<{
+    filePath: string
+    scope: "global" | "workspace"
+    message: string
+  }>
+  revisions?: Record<string, string>
+  skills: SkillItem[]
+  memories: MemoryFileItem[]
+  diskSaved?: boolean
+  daemonReloaded?: boolean
+  reloadError?: string
+}
+
 export interface RayuBridgeApi {
   daemon?: {
     getStatus?: () => Promise<DaemonStatus & { mode?: "live" | "demo" }>
@@ -3138,7 +3199,10 @@ export interface RayuBridgeApi {
     archiveSession?: (sessionId: string) => Promise<{ ok: boolean }>
     restoreSession?: (sessionId: string) => Promise<{ ok: boolean }>
     attachSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
-    forkSession?: (sessionId: string) => Promise<HarnessSessionInfoLike>
+    forkSession?: (
+      sessionId: string,
+      options?: { upToMessageIndex?: number; upToMessageId?: string }
+    ) => Promise<HarnessSessionInfoLike>
     getHistory?: (sessionId: string) => Promise<{
       messages: HarnessHistoryMessageLike[]
       images?: unknown[]
@@ -3166,6 +3230,11 @@ export interface RayuBridgeApi {
       sessionId: string,
       requestId: string,
       decision: "allow" | "allow_always" | "deny"
+    ) => Promise<{ ok: boolean }>
+    respondToQuestion?: (
+      sessionId: string,
+      requestId: string,
+      response: Record<string, unknown>
     ) => Promise<{ ok: boolean }>
     setPermissionMode?: (
       sessionId: string,
@@ -3199,6 +3268,10 @@ export interface RayuBridgeApi {
     }>
     runtimeCommand?: (
       sessionId: string,
+      command: string,
+      args?: string[]
+    ) => Promise<{ command: string; data: unknown; message: string }>
+    globalRuntimeCommand?: (
       command: string,
       args?: string[]
     ) => Promise<{ command: string; data: unknown; message: string }>
@@ -3304,113 +3377,34 @@ export interface RayuBridgeApi {
     onSidebarStateChange?: (cb: (state: SidebarState) => void) => () => void
   }
   extensions?: {
-    list?: () => Promise<{
-      mcpConfigPath: string
-      mcpServers: Array<{
-        id: string
-        name: string
-        description: string
-        sourcePath: string
-        scope: "global" | "workspace"
-        transport: "stdio" | "url"
-        command?: string
-        args?: string[]
-        url?: string
-        envKeys?: string[]
-        installed: boolean
-      }>
-      skills: SkillItem[]
-      memories: MemoryFileItem[]
-    }>
+    list?: () => Promise<ExtensionSnapshotBridgePayload>
     upsertMcp?: (input: {
       id: string
       scope?: "global" | "workspace"
+      type?: string
       command?: string
       args?: string[]
       url?: string
+      headers?: Record<string, string>
       env?: Record<string, string>
-    }) => Promise<{
-      mcpConfigPath: string
-      mcpServers: Array<{
-        id: string
-        name: string
-        description: string
-        sourcePath: string
-        scope: "global" | "workspace"
-        transport: "stdio" | "url"
-        command?: string
-        args?: string[]
-        url?: string
-        envKeys?: string[]
-        installed: boolean
-      }>
-      skills: SkillItem[]
-      memories: MemoryFileItem[]
-    }>
+      timeout?: number
+      expectedRevision?: string
+      clearFields?: string[]
+    }) => Promise<ExtensionSnapshotBridgePayload>
     removeMcp?: (
       id: string,
       scope?: "global" | "workspace"
-    ) => Promise<{
-      mcpConfigPath: string
-      mcpServers: Array<{
-        id: string
-        name: string
-        description: string
-        sourcePath: string
-        scope: "global" | "workspace"
-        transport: "stdio" | "url"
-        command?: string
-        args?: string[]
-        url?: string
-        envKeys?: string[]
-        installed: boolean
-      }>
-      skills: SkillItem[]
-      memories: MemoryFileItem[]
-    }>
+    ) => Promise<ExtensionSnapshotBridgePayload>
     createSkill?: (input: {
       name: string
       description: string
       instructions?: string
-    }) => Promise<{
-      mcpConfigPath: string
-      mcpServers: Array<{
-        id: string
-        name: string
-        description: string
-        sourcePath: string
-        scope: "global" | "workspace"
-        transport: "stdio" | "url"
-        command?: string
-        args?: string[]
-        url?: string
-        envKeys?: string[]
-        installed: boolean
-      }>
-      skills: SkillItem[]
-      memories: MemoryFileItem[]
-    }>
-    toggleSkill?: (skillId: string) => Promise<{
-      mcpConfigPath: string
-      mcpServers: Array<{
-        id: string
-        name: string
-        description: string
-        sourcePath: string
-        scope: "global" | "workspace"
-        transport: "stdio" | "url"
-        command?: string
-        args?: string[]
-        url?: string
-        envKeys?: string[]
-        installed: boolean
-      }>
-      skills: SkillItem[]
-      memories: MemoryFileItem[]
-    }>
+    }) => Promise<ExtensionSnapshotBridgePayload>
+    toggleSkill?: (skillId: string) => Promise<ExtensionSnapshotBridgePayload>
   }
   git?: {
     getChanges?: () => Promise<ChangesState | null>
+    getFileDiff?: (filePath: string) => Promise<InlineDiffHunkLine[]>
     getCommits?: () => Promise<GitCommitSummary[]>
     listBranches?: () => Promise<{ current: string; branches: string[] }>
     checkoutBranch?: (
@@ -3495,6 +3489,7 @@ export interface RayuBridgeApi {
   native?: {
     openInExcel?: (filePath: string) => Promise<{ ok: boolean }>
     openInPowerPoint?: (input: {
+      filePath?: string
       fileName?: string
       title: string
       slides: Array<{
@@ -3504,7 +3499,9 @@ export interface RayuBridgeApi {
         subtitle?: string
         body: string
         bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
         notes?: string
+        layout?: "cover" | "scorecard" | "two-col" | "decisions" | "bullets"
       }>
     }) => Promise<{ ok: boolean; filePath: string }>
     openInVSCode?: (targetPath: string, line?: number) => Promise<{ ok: boolean }>
@@ -3831,7 +3828,7 @@ let runtimeTurns: ExecutionTurn[] = []
 let runtimeSessionsHydrated = false
 let runtimeHydrationPromise: Promise<void> | null = null
 const newlyCreatedEmptySessions = new Set<string>()
-let runtimeSwarm: SwarmState = {
+const runtimeSwarm: SwarmState = {
   swarmId: "idle",
   title: "No active swarm",
   planVersion: "v1",
@@ -3842,7 +3839,7 @@ let runtimeSwarm: SwarmState = {
   planScopes: [],
   worktrees: [],
 }
-let runtimeAutomations: AutomationsState = {
+const runtimeAutomations: AutomationsState = {
   running: [],
   schedules: [],
   reports: [],
@@ -4752,11 +4749,18 @@ export const ipcClient = {
             lastSyncedEffortBySession.set(input.sessionId, normalizedEffort)
           }
         }
-        await bridge.harness.sendMessage(
+        const sendResult = (await bridge.harness.sendMessage(
           input.sessionId,
           effectivePrompt,
           imageTuples.length > 0 ? imageTuples : undefined
-        )
+        )) as { ok?: boolean; error?: string; code?: string } | void
+        if (sendResult && sendResult.ok === false) {
+          const err = new Error(
+            sendResult.error || "Rayu daemon rejected message"
+          ) as Error & { code?: string }
+          if (sendResult.code) err.code = sendResult.code
+          throw err
+        }
         lastKnownDaemonLive = true
         return {
           id: `live_turn_${Date.now()}`,
@@ -4921,21 +4925,35 @@ export const ipcClient = {
       )
       return mockTurns.find((t) => t.id === turnId)
     },
-    async forkTurn(turnId: string): Promise<SessionSummary> {
+    async forkTurn(
+      turnId: string,
+      options?: {
+        sessionId?: string
+        upToMessageIndex?: number
+        upToMessageId?: string
+      }
+    ): Promise<SessionSummary> {
       const bridge = getBridge()
+      const targetSessionId = options?.sessionId ?? lastActiveHarnessSessionId
       if (
         bridge?.harness?.forkSession &&
-        lastActiveHarnessSessionId &&
+        targetSessionId &&
+        !targetSessionId.startsWith("ses_") &&
         (await isHarnessLive())
       ) {
-        try {
-          const forked = await bridge.harness.forkSession(
-            lastActiveHarnessSessionId
-          )
-          return mapSessionInfoToSummary(forked)
-        } catch {
-          // Fall back to mock fork
+        const forkOpts = {
+          ...(options?.upToMessageIndex !== undefined
+            ? { upToMessageIndex: options.upToMessageIndex }
+            : {}),
+          ...(options?.upToMessageId
+            ? { upToMessageId: options.upToMessageId }
+            : {}),
         }
+        const forked = await bridge.harness.forkSession(
+          targetSessionId,
+          Object.keys(forkOpts).length > 0 ? forkOpts : undefined
+        )
+        return mapSessionInfoToSummary(forked)
       }
       const source = mockTurns.find((t) => t.id === turnId) ?? mockTurns[0]
       return ipcClient.sessions.createSession({
@@ -5409,28 +5427,70 @@ export const ipcClient = {
         )
         return structuredClone(mockPreviews)
       }
-      mockPreviews.browser.chatMessages.push({
+      const userEntry = {
         id: `u_${Date.now()}`,
-        sender: "user",
+        sender: "user" as const,
         text: question,
-      })
+      }
+      mockPreviews.browser.chatMessages.push(userEntry)
+      const activeSessionId = useAppStore.getState().activeSessionId
+      if (activeSessionId && !activeSessionId.startsWith("ses_")) {
+        const modelInfo =
+          useAppStore.getState().sessionModelInfoBySession[activeSessionId]
+        await ipcClient.trace.sendPrompt({
+          sessionId: activeSessionId,
+          prompt: `[Preview context question]\n${question}`,
+          modelLabel: modelInfo?.model || "Default",
+        })
+        mockPreviews.browser.chatMessages.push({
+          id: `a_${Date.now() + 1}`,
+          sender: "agent",
+          text: "Sent to the active RayuCode session — follow the streamed response in the chat trace.",
+        })
+      } else {
+        mockPreviews.browser.chatMessages.push({
+          id: `a_${Date.now() + 1}`,
+          sender: "agent",
+          text: "Start or select a live session first so RayuCode can run this preview question against your workspace.",
+        })
+      }
       return structuredClone(mockPreviews)
     },
   },
 
   swarm: {
     async getState(): Promise<SwarmState> {
-      const bridge = getBridge()
-      if (
-        bridge?.harness?.runtimeCommand &&
-        lastActiveHarnessSessionId &&
-        (await isHarnessLive())
-      ) {
-        await bridge.harness
-          .runtimeCommand(lastActiveHarnessSessionId, "swarm", ["status"])
-          .catch(() => {})
+      if (IS_TEST_ENV) {
+        return structuredClone(mockSwarm)
       }
-      return structuredClone(IS_TEST_ENV ? mockSwarm : runtimeSwarm)
+      const bridge = getBridge()
+      if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+        try {
+          const res = await bridge.harness.globalRuntimeCommand("swarm", [
+            "status",
+          ])
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "agents" in res.data &&
+            Array.isArray((res.data as { agents?: unknown }).agents)
+          ) {
+            return {
+              ...runtimeSwarm,
+              ...(res.data as Partial<SwarmState>),
+              available: true,
+            }
+          }
+        } catch {
+          // Capability unavailable in current daemon build
+        }
+      }
+      return {
+        ...structuredClone(runtimeSwarm),
+        available: false,
+        unavailableReason:
+          "Swarm multi-agent orchestration is not enabled in this daemon build yet.",
+      }
     },
     async spawnWorker(input: {
       name: string
@@ -5438,19 +5498,29 @@ export const ipcClient = {
       worktree: string
       task: string
     }): Promise<SwarmState> {
-      const bridge = getBridge()
-      if (
-        bridge?.harness?.runtimeCommand &&
-        lastActiveHarnessSessionId &&
-        (await isHarnessLive())
-      ) {
-        await bridge.harness
-          .runtimeCommand(lastActiveHarnessSessionId, "swarm", [
+      if (!IS_TEST_ENV) {
+        const bridge = getBridge()
+        if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+          const res = await bridge.harness.globalRuntimeCommand("swarm", [
             "spawn",
             input.name,
             input.task,
           ])
-          .catch(() => {})
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "agents" in res.data
+          ) {
+            return {
+              ...runtimeSwarm,
+              ...(res.data as Partial<SwarmState>),
+              available: true,
+            }
+          }
+        }
+        throw new Error(
+          "Swarm worker spawning is unavailable in the connected daemon."
+        )
       }
       const worker: SwarmAgent = {
         id: input.name,
@@ -5473,7 +5543,7 @@ export const ipcClient = {
         ],
         commands: [],
       }
-      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      const target = mockSwarm
       const wasIdle = target.agents.length === 0
       const derivedTitle =
         input.task.length > 56 ? `${input.task.slice(0, 53)}...` : input.task
@@ -5517,28 +5587,71 @@ export const ipcClient = {
           ...target.messages,
         ],
       }
-      if (IS_TEST_ENV) mockSwarm = updated
-      else runtimeSwarm = updated
+      mockSwarm = updated
       return structuredClone(updated)
     },
     async toggleAgentState(agentId: string): Promise<SwarmState> {
-      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      if (!IS_TEST_ENV) {
+        const bridge = getBridge()
+        if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+          const res = await bridge.harness.globalRuntimeCommand("swarm", [
+            "toggle",
+            agentId,
+          ])
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "agents" in res.data
+          ) {
+            return {
+              ...runtimeSwarm,
+              ...(res.data as Partial<SwarmState>),
+              available: true,
+            }
+          }
+        }
+        throw new Error(
+          "Swarm agent control is unavailable in the connected daemon."
+        )
+      }
       const updated: SwarmState = {
-        ...target,
-        agents: target.agents.map((a) => {
+        ...mockSwarm,
+        agents: mockSwarm.agents.map((a) => {
           if (a.id !== agentId) return a
           const nextState = a.state === "stopped" ? "running" : "stopped"
           return { ...a, state: nextState }
         }),
       }
-      if (IS_TEST_ENV) mockSwarm = updated
-      else runtimeSwarm = updated
+      mockSwarm = updated
       return structuredClone(updated)
     },
     async sendDm(input: { agentId: string; message: string }): Promise<SwarmState> {
-      const target = IS_TEST_ENV ? mockSwarm : runtimeSwarm
+      if (!IS_TEST_ENV) {
+        const bridge = getBridge()
+        if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+          const res = await bridge.harness.globalRuntimeCommand("swarm", [
+            "dm",
+            input.agentId,
+            input.message,
+          ])
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "agents" in res.data
+          ) {
+            return {
+              ...runtimeSwarm,
+              ...(res.data as Partial<SwarmState>),
+              available: true,
+            }
+          }
+        }
+        throw new Error(
+          "Swarm steering messages are unavailable in the connected daemon."
+        )
+      }
       const updated: SwarmState = {
-        ...target,
+        ...mockSwarm,
         messages: [
           {
             id: `dm_${Date.now()}`,
@@ -5549,18 +5662,46 @@ export const ipcClient = {
             tag: "steering-dm",
             isOk: true,
           },
-          ...target.messages,
+          ...mockSwarm.messages,
         ],
       }
-      if (IS_TEST_ENV) mockSwarm = updated
-      else runtimeSwarm = updated
+      mockSwarm = updated
       return structuredClone(updated)
     },
   },
 
   automations: {
     async getState(): Promise<AutomationsState> {
-      return structuredClone(IS_TEST_ENV ? mockAutomations : runtimeAutomations)
+      if (IS_TEST_ENV) {
+        return structuredClone(mockAutomations)
+      }
+      const bridge = getBridge()
+      if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+        try {
+          const res = await bridge.harness.globalRuntimeCommand("overnight", [
+            "status",
+          ])
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            ("running" in res.data || "schedules" in res.data)
+          ) {
+            return {
+              ...runtimeAutomations,
+              ...(res.data as Partial<AutomationsState>),
+              available: true,
+            }
+          }
+        } catch {
+          // Capability unavailable in current daemon build
+        }
+      }
+      return {
+        ...structuredClone(runtimeAutomations),
+        available: false,
+        unavailableReason:
+          "Overnight missions and recurring schedules are not enabled in this daemon build yet.",
+      }
     },
     async launchOvernight(input: {
       mission: string
@@ -5568,18 +5709,28 @@ export const ipcClient = {
       maxAgents: string
       permissionMode: string
     }): Promise<AutomationsState> {
-      const bridge = getBridge()
-      if (
-        bridge?.harness?.runtimeCommand &&
-        lastActiveHarnessSessionId &&
-        (await isHarnessLive())
-      ) {
-        await bridge.harness
-          .runtimeCommand(lastActiveHarnessSessionId, "overnight", [
+      if (!IS_TEST_ENV) {
+        const bridge = getBridge()
+        if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+          const res = await bridge.harness.globalRuntimeCommand("overnight", [
             "start",
             input.mission,
           ])
-          .catch(() => {})
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "running" in res.data
+          ) {
+            return {
+              ...runtimeAutomations,
+              ...(res.data as Partial<AutomationsState>),
+              available: true,
+            }
+          }
+        }
+        throw new Error(
+          "Overnight automation launching is unavailable in the connected daemon."
+        )
       }
       const run: OvernightRun = {
         id: `ovn_${Math.random().toString(36).slice(2, 6)}`,
@@ -5596,49 +5747,53 @@ export const ipcClient = {
           `Just now  preflight   launched ${input.duration} (${input.permissionMode})`,
         ],
       }
-      const target = IS_TEST_ENV ? mockAutomations : runtimeAutomations
       const updated: AutomationsState = {
-        ...target,
-        running: [run, ...target.running],
+        ...mockAutomations,
+        running: [run, ...mockAutomations.running],
       }
-      if (IS_TEST_ENV) mockAutomations = updated
-      else runtimeAutomations = updated
+      mockAutomations = updated
       return structuredClone(updated)
     },
     async toggleSchedule(scheduleId: string): Promise<AutomationsState> {
-      const target = IS_TEST_ENV ? mockAutomations : runtimeAutomations
+      if (!IS_TEST_ENV) {
+        const bridge = getBridge()
+        if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+          const res = await bridge.harness.globalRuntimeCommand("schedules", [
+            "toggle",
+            scheduleId,
+          ])
+          if (
+            res?.data &&
+            typeof res.data === "object" &&
+            "schedules" in res.data
+          ) {
+            return {
+              ...runtimeAutomations,
+              ...(res.data as Partial<AutomationsState>),
+              available: true,
+            }
+          }
+        }
+        throw new Error(
+          "Recurring schedule toggling is unavailable in the connected daemon."
+        )
+      }
       const updated: AutomationsState = {
-        ...target,
-        schedules: target.schedules.map((s) =>
+        ...mockAutomations,
+        schedules: mockAutomations.schedules.map((s) =>
           s.id === scheduleId ? { ...s, enabled: !s.enabled } : s
         ),
       }
-      if (IS_TEST_ENV) mockAutomations = updated
-      else runtimeAutomations = updated
+      mockAutomations = updated
       return structuredClone(updated)
     },
   },
 
   plugins: {
     async getState(): Promise<PluginsState> {
-      const mapExtensionsSnapshot = (ext: {
-        mcpConfigPath: string
-        mcpServers: Array<{
-          id: string
-          name: string
-          description: string
-          sourcePath: string
-          scope: "global" | "workspace"
-          transport: "stdio" | "url"
-          command?: string
-          args?: string[]
-          url?: string
-          envKeys?: string[]
-          installed: boolean
-        }>
-        skills: SkillItem[]
-        memories: MemoryFileItem[]
-      }): PluginsState => {
+      const mapExtensionsSnapshot = (
+        ext: ExtensionSnapshotBridgePayload
+      ): PluginsState => {
         const installedById = new Map(
           ext.mcpServers.map((s) => [s.id.toLowerCase(), s])
         )
@@ -5658,10 +5813,17 @@ export const ipcClient = {
               sourcePath: live?.sourcePath,
               scope: live?.scope ?? "global",
               transport: live?.transport ?? bp.transport,
+              ...(live?.type ? { type: live.type } : {}),
               command: live?.command ?? bp.command,
               args: live?.args ?? bp.args,
               url: live?.url ?? bp.url,
+              ...(live?.headers ? { headers: live.headers } : {}),
+              ...(live?.headerKeys ? { headerKeys: live.headerKeys } : {}),
               envKeys: live?.envKeys,
+              ...(typeof live?.timeout === "number"
+                ? { timeout: live.timeout }
+                : {}),
+              ...(live?.revision ? { revision: live.revision } : {}),
               searchKeywords: `${bp.searchKeywords} ${bp.mcpServerId}`.toLowerCase(),
             }
           }
@@ -5685,10 +5847,15 @@ export const ipcClient = {
             sourcePath: s.sourcePath,
             scope: s.scope,
             transport: s.transport,
+            ...(s.type ? { type: s.type } : {}),
             command: s.command,
             args: s.args,
             url: s.url,
+            ...(s.headers ? { headers: s.headers } : {}),
+            ...(s.headerKeys ? { headerKeys: s.headerKeys } : {}),
             envKeys: s.envKeys,
+            ...(typeof s.timeout === "number" ? { timeout: s.timeout } : {}),
+            ...(s.revision ? { revision: s.revision } : {}),
             isCustomMcp: true,
             searchKeywords: `${s.name} mcp custom ${s.description}`.toLowerCase(),
           }))
@@ -5699,6 +5866,19 @@ export const ipcClient = {
           plugins: allPlugins,
           skills: ext.skills,
           memories: ext.memories,
+          ...(ext.mcpConfigErrors && ext.mcpConfigErrors.length > 0
+            ? { mcpConfigErrors: ext.mcpConfigErrors }
+            : {}),
+          ...(ext.revisions ? { revisions: ext.revisions } : {}),
+          ...(ext.diskSaved !== undefined
+            ? {
+                lastWriteStatus: {
+                  diskSaved: Boolean(ext.diskSaved),
+                  daemonReloaded: Boolean(ext.daemonReloaded),
+                  ...(ext.reloadError ? { reloadError: ext.reloadError } : {}),
+                },
+              }
+            : {}),
         }
       }
 
@@ -5737,19 +5917,50 @@ export const ipcClient = {
         )
         const serverId = target?.mcpServerId ?? pluginId
         if (target?.installed) {
-          await bridge.extensions.removeMcp(serverId, target.scope)
-          return this.getState()
+          const writeRes = await bridge.extensions.removeMcp(
+            serverId,
+            target.scope
+          )
+          const next = await this.getState()
+          return {
+            ...next,
+            ...(writeRes?.diskSaved !== undefined
+              ? {
+                  lastWriteStatus: {
+                    diskSaved: Boolean(writeRes.diskSaved),
+                    daemonReloaded: Boolean(writeRes.daemonReloaded),
+                    ...(writeRes.reloadError
+                      ? { reloadError: writeRes.reloadError }
+                      : {}),
+                  },
+                }
+              : {}),
+          }
         }
         const bp = findMcpBlueprint(pluginId)
         if (bp) {
-          await bridge.extensions.upsertMcp({
+          const writeRes = await bridge.extensions.upsertMcp({
             id: bp.mcpServerId,
             scope: "global",
             command: bp.command,
             args: bp.args,
             url: bp.url,
           })
-          return this.getState()
+          const next = await this.getState()
+          return {
+            ...next,
+            ...(writeRes?.diskSaved !== undefined
+              ? {
+                  lastWriteStatus: {
+                    diskSaved: Boolean(writeRes.diskSaved),
+                    daemonReloaded: Boolean(writeRes.daemonReloaded),
+                    ...(writeRes.reloadError
+                      ? { reloadError: writeRes.reloadError }
+                      : {}),
+                  },
+                }
+              : {}),
+          }
         }
       }
       mockPlugins = {
@@ -5765,26 +5976,61 @@ export const ipcClient = {
     async upsertMcp(input: {
       id: string
       scope?: "global" | "workspace"
+      type?: string
       command?: string
       args?: string[]
       url?: string
+      headers?: Record<string, string>
       env?: Record<string, string>
+      timeout?: number
+      expectedRevision?: string
+      clearFields?: string[]
     }): Promise<PluginsState> {
       const bridge = getBridge()
+      let writeRes: ExtensionSnapshotBridgePayload | undefined
       if (bridge?.extensions?.upsertMcp) {
-        await bridge.extensions.upsertMcp(input)
+        writeRes = await bridge.extensions.upsertMcp(input)
       }
-      return this.getState()
+      const next = await this.getState()
+      return {
+        ...next,
+        ...(writeRes?.diskSaved !== undefined
+          ? {
+              lastWriteStatus: {
+                diskSaved: Boolean(writeRes.diskSaved),
+                daemonReloaded: Boolean(writeRes.daemonReloaded),
+                ...(writeRes.reloadError
+                  ? { reloadError: writeRes.reloadError }
+                  : {}),
+              },
+            }
+          : {}),
+      }
     },
     async removeMcp(
       id: string,
       scope?: "global" | "workspace"
     ): Promise<PluginsState> {
       const bridge = getBridge()
+      let writeRes: ExtensionSnapshotBridgePayload | undefined
       if (bridge?.extensions?.removeMcp) {
-        await bridge.extensions.removeMcp(id, scope)
+        writeRes = await bridge.extensions.removeMcp(id, scope)
       }
-      return this.getState()
+      const next = await this.getState()
+      return {
+        ...next,
+        ...(writeRes?.diskSaved !== undefined
+          ? {
+              lastWriteStatus: {
+                diskSaved: Boolean(writeRes.diskSaved),
+                daemonReloaded: Boolean(writeRes.daemonReloaded),
+                ...(writeRes.reloadError
+                  ? { reloadError: writeRes.reloadError }
+                  : {}),
+              },
+            }
+          : {}),
+      }
     },
     async createSkill(input: {
       name: string
@@ -5934,6 +6180,13 @@ export const ipcClient = {
         return bridge.git.createPr(input)
       }
       return null
+    },
+    async getFileDiff(filePath: string): Promise<InlineDiffHunkLine[]> {
+      const bridge = getBridge()
+      if (bridge?.git?.getFileDiff) {
+        return bridge.git.getFileDiff(filePath)
+      }
+      return []
     },
     async getCommits(): Promise<GitCommitSummary[]> {
       const bridge = getBridge()
@@ -6391,6 +6644,30 @@ export const ipcClient = {
       }
       return { command, data: null, message: `Ran /${command}` }
     },
+    async globalRuntimeCommand(
+      command: string,
+      args: string[] = []
+    ): Promise<{ command: string; data: unknown; message: string }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.globalRuntimeCommand && (await isHarnessLive())) {
+        return bridge.harness.globalRuntimeCommand(command, args)
+      }
+      if (IS_TEST_ENV) {
+        return { command, data: null, message: `Ran /${command}` }
+      }
+      throw new Error("Rayu daemon is not connected.")
+    },
+    async respondToQuestion(
+      sessionId: string,
+      requestId: string,
+      response: Record<string, unknown>
+    ): Promise<{ ok: boolean }> {
+      const bridge = getBridge()
+      if (bridge?.harness?.respondToQuestion && (await isHarnessLive())) {
+        return bridge.harness.respondToQuestion(sessionId, requestId, response)
+      }
+      return { ok: true }
+    },
     async getCapabilities(
       sessionId?: string
     ): Promise<CapabilitiesPayload | null> {
@@ -6721,6 +6998,7 @@ export const ipcClient = {
       return { ok: true }
     },
     async openInPowerPoint(input: {
+      filePath?: string
       fileName?: string
       title: string
       slides: Array<{
@@ -6730,7 +7008,9 @@ export const ipcClient = {
         subtitle?: string
         body: string
         bullets?: string[]
+        metrics?: Array<{ label: string; value: string; note?: string }>
         notes?: string
+        layout?: "cover" | "scorecard" | "two-col" | "decisions" | "bullets"
       }>
     }): Promise<{ ok: boolean; filePath: string }> {
       const bridge = getBridge()
@@ -6739,9 +7019,11 @@ export const ipcClient = {
       }
       return {
         ok: true,
-        filePath: `~/.rayu/presentations/${(input.fileName ?? input.title)
-          .toLowerCase()
-          .replace(/[^a-z0-9-_]+/g, "-")}.html`,
+        filePath:
+          input.filePath ||
+          `~/.rayu/presentations/${(input.fileName ?? input.title)
+            .toLowerCase()
+            .replace(/[^a-z0-9-_]+/g, "-")}.html`,
       }
     },
     async openInVSCode(

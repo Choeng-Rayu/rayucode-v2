@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import {
   ArrowLeftRight,
   Cloud,
@@ -289,7 +290,7 @@ export function CloudGatewayTab({
               type="button"
               variant="default"
               size="sm"
-              disabled={isSyncingCloud}
+              disabled={!operationAvailable("remote.cloud.syncEnv") || isSyncingCloud}
               onClick={() => void onSyncCloudEnv()}
               data-testid="cloud-sync-env-btn"
             >
@@ -301,7 +302,7 @@ export function CloudGatewayTab({
               type="button"
               variant="primary"
               size="sm"
-              disabled={isSyncingCloud}
+              disabled={!operationAvailable("remote.cloud.moveToCloud") || isSyncingCloud}
               onClick={() => void onMoveToCloud(activeSessionId)}
               data-testid="cloud-move-session-btn"
             >
@@ -399,7 +400,7 @@ export function CloudGatewayTab({
                     type="button"
                     variant="default"
                     size="xs"
-                    disabled={isSyncingCloud}
+                    disabled={!operationAvailable("remote.cloud.attach") || isSyncingCloud}
                     onClick={() => void onAttachRemote(session.id)}
                     data-testid={`remote-attach-${session.id}`}
                   >
@@ -409,7 +410,7 @@ export function CloudGatewayTab({
                     type="button"
                     variant="outline"
                     size="xs"
-                    disabled={isSyncingCloud}
+                    disabled={!operationAvailable("remote.cloud.returnLocal") || isSyncingCloud}
                     onClick={() => void onReturnLocal(session.id)}
                     data-testid={`remote-return-${session.id}`}
                   >

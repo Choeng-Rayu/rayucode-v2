@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import type { HostToWebviewMessage } from "@shared/vscodeProtocol";
 
@@ -11,15 +12,12 @@ import {
 import {
   ChatWorkspaceView,
   LiveTraceController,
-  chatHistoryQueryKey,
-  startSessionLiveTurn,
   useLiveTraceStore,
-  type ChatTurnView,
 } from "@/features/chat";
 import {
   HomePage,
   SessionComposer,
-  normalizeEffortLevel,
+  useSubmitComposer,
   type ComposerSubmitPayload,
 } from "@/features/composer";
 import {
@@ -31,7 +29,7 @@ import {
   callRpc,
   isVsCodeWebview,
   onHostMessage,
-  sendHarnessRequest,
+  requestHarnessAck,
   useAppStore,
   type MidTurnMessageItem,
 } from "@/lib";
@@ -71,6 +69,12 @@ export function App() {
   const authDialogOpen = useAppStore((s) => s.authDialogOpen);
   const backgroundDrawerOpen = useAppStore((s) => s.backgroundDrawerOpen);
   const isStreamActive = useAppStore((s) => s.isStreamActive);
+  const midTurnMessagesBySession = useAppStore(
+    (s) => s.midTurnMessagesBySession,
+  );
+  const pausedQueueSessions = useAppStore((s) => s.pausedQueueSessions);
+  const pendingUserTurn = useAppStore((s) => s.pendingUserTurn);
+  const liveTurnsBySession = useLiveTraceStore((s) => s.liveTurnsBySession);
 
   const setActiveSession = useAppStore((s) => s.setActiveSession);
   const openNewChatDraft = useAppStore((s) => s.openNewChatDraft);
@@ -80,7 +84,6 @@ export function App() {
   const setAuthBypassed = useAppStore((s) => s.setAuthBypassed);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setBackgroundDrawerOpen = useAppStore((s) => s.setBackgroundDrawerOpen);
-  const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
   const requestSessionSearchFocus = useAppStore(
     (s) => s.requestSessionSearchFocus,
   );
@@ -177,6 +180,23 @@ export function App() {
         }
         return;
       }
+      if (msg.type === "rayucode.models.changed") {
+        if (msg.credentialsChanged || msg.sessionIds.length === 0) {
+          invalidateModelAndProviderQueries();
+        } else {
+          for (const prefix of [["composer", "model-settings"], ["settings", "models"], ["models"]]) {
+            void queryClient.invalidateQueries({
+              queryKey: prefix,
+              predicate: (query) => {
+                const session = query.queryKey.at(-1);
+                return session === "global" || session === prefix.at(-1) ||
+                  (typeof session === "string" && msg.sessionIds.includes(session));
+              },
+            });
+          }
+        }
+        return;
+      }
       if (msg.type === "rayucode.config.changed") {
         invalidateModelAndProviderQueries();
         void queryClient.invalidateQueries({ queryKey: ["settings", "features"] });
@@ -202,6 +222,13 @@ export function App() {
       if (msg.type === "rayucode.workspaces.ledgerChanged") {
         queryClient.setQueryData(["workspace", "ledger"], msg.ledger);
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        return;
+      }
+      if (
+        msg.type === "rayucode.session.prefsSync" ||
+        msg.type === "rayucode.permission.modeSync"
+      ) {
+        useAppStore.getState().applyHostMessage(msg);
         return;
       }
       if (msg.type === "rayucode.host.command") {
@@ -234,197 +261,118 @@ export function App() {
     setBackgroundDrawerOpen,
   ]);
 
+  const submitComposer = useSubmitComposer();
   const handleWorkspaceSubmit = React.useCallback(
     async (
       payload: ComposerSubmitPayload,
-      explicitTarget?: { sessionId?: string },
+      targetSessionId?: string | null,
     ) => {
-      const storeState = useAppStore.getState();
-      const draft = storeState.activeDraft;
-      let targetSessionId =
-        explicitTarget?.sessionId ?? storeState.activeSessionId;
-      let isNewSession = false;
-      const existingPrefs = targetSessionId
-        ? storeState.sessionPrefsBySession[targetSessionId]
-        : storeState.sessionPrefsBySession.__draft__;
-      const effectiveWorkingDir =
-        payload.workingDir ??
-        draft?.workingDir ??
-        storeState.activeProjectPath ??
-        undefined;
-      const effectiveModel =
-        payload.modelSpec ||
-        payload.modelId ||
-        draft?.model ||
-        existingPrefs?.modelId ||
-        undefined;
-      const effectiveEffort = normalizeEffortLevel(
-        payload.effort ?? draft?.reasoningEffort ?? existingPrefs?.effort,
+      await submitComposer(
+        payload,
+        targetSessionId ? { sessionId: targetSessionId } : undefined,
       );
-      const effectivePermissionMode =
-        payload.permissionMode ??
-        (draft?.permissionMode as
-          | ComposerSubmitPayload["permissionMode"]
-          | undefined) ??
-        existingPrefs?.permissionMode;
-      const effectiveServiceTier =
-        payload.serviceTier ?? existingPrefs?.serviceTier;
-      const effectiveCacheTtl = payload.cacheTtl ?? existingPrefs?.cacheTtl;
-
-      if (!targetSessionId) {
-        try {
-          const created = await callRpc("sessions.create", {
-            workingDir: effectiveWorkingDir,
-            permissionMode: effectivePermissionMode,
-            model: effectiveModel,
-            ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
-            effort: effectiveEffort,
-            ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
-            ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
-          });
-          targetSessionId = created.session.sessionId;
-          isNewSession = true;
-          useAppStore.getState().setSessionPrefs(targetSessionId, {
-            ...(effectiveModel ? { modelId: effectiveModel } : {}),
-            ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
-            ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
-            effort: effectiveEffort,
-            ...(effectivePermissionMode
-              ? { permissionMode: effectivePermissionMode }
-              : {}),
-            ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
-            ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
-          });
-          setActiveSession(created.session.sessionId, created.session.title);
-          void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-          void queryClient.invalidateQueries({
-            queryKey: ["workspace", "ledger"],
-          });
-        } catch {
-          // Restore user's prompt so it is never lost when session creation fails
-          if (payload.prompt.trim()) {
-            useAppStore.getState().setComposerDraft("__home__", payload.prompt);
-          }
-          return;
-        }
-      } else {
-        useAppStore.getState().setSessionPrefs(targetSessionId, {
-          ...(effectiveModel ? { modelId: effectiveModel } : {}),
-          ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
-          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
-          effort: effectiveEffort,
-          ...(effectivePermissionMode
-            ? { permissionMode: effectivePermissionMode }
-            : {}),
-          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
-          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
-        });
-      }
-
-      const cachedHistory = isNewSession
-        ? []
-        : (queryClient.getQueryData<ChatTurnView[]>(
-            chatHistoryQueryKey(targetSessionId),
-          ) ?? []);
-      const completedForSession = isNewSession
-        ? []
-        : (useLiveTraceStore.getState().completedTurnsBySession[
-            targetSessionId
-          ] ?? []);
-      const settledNextSlot = completedForSession.reduce(
-        (maxSlot, turn) =>
-          Math.max(
-            maxSlot,
-            typeof turn.baseHistoryTurnCount === "number" &&
-              turn.baseHistoryTurnCount >= 0
-              ? turn.baseHistoryTurnCount + 1
-              : 0,
-          ),
-        completedForSession.length,
-      );
-
-      const selectionContext = payload.editorSelection
-        ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
-        : "";
-
-      const refFiles = payload.editorSelection
-        ? `${payload.editorSelection.relativePath}:${payload.editorSelection.lineStart}-${payload.editorSelection.lineEnd}`
-        : undefined;
-
-      // Start live turn synchronously BEFORE dispatching send_message so early
-      // streaming frames cannot race ahead of a React useEffect.
-      startSessionLiveTurn({
-        sessionId: targetSessionId,
-        userPrompt: payload.prompt,
-        userRefFiles: refFiles,
-        userImages: payload.images?.map((img) => ({
-          name: img.name ?? "Attachment",
-          dataUrl: img.data,
-        })),
-        startedAtMs: Date.now(),
-        baseHistoryTurnCount: Math.max(cachedHistory.length, settledNextSlot),
-      });
-
-      if (useAppStore.getState().activeSessionId === targetSessionId) {
-        setIsStreamActive(true);
-      }
-      sendHarnessRequest({
-        req: "send_message",
-        session_id: targetSessionId,
-        content: `${payload.prompt}${selectionContext}`,
-        ...(effectiveModel ? { model: effectiveModel } : {}),
-        ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
-        effort: effectiveEffort,
-        images: payload.images,
-        ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
-      });
     },
-    [queryClient, setActiveSession, setIsStreamActive],
+    [submitComposer],
   );
+
+  const drainingSessionsRef = React.useRef(new Set<string>());
 
   const handleDrainQueuedMessage = React.useCallback(
     async (item: MidTurnMessageItem) => {
       const state = useAppStore.getState();
-      const activeWs =
-        state.workspaces.find((w) => w.path === state.activeProjectPath) ??
-        state.workspaces[0];
-      const sessionPrefs = state.sessionPrefsBySession[item.sessionId];
-      const resolvedModelSpec = sessionPrefs?.modelId ?? item.modelSpec;
-      await handleWorkspaceSubmit(
-        {
-          prompt: item.text,
-          images: item.images,
-          project: activeWs?.name ?? "workspace",
-          workingDir: state.activeProjectPath ?? activeWs?.path ?? undefined,
-          checkout: activeWs?.branch ?? "main",
-          modelId: resolvedModelSpec ?? "",
-          modelSpec: resolvedModelSpec,
-          modelLabel: sessionPrefs?.modelLabel ?? resolvedModelSpec ?? "",
-          apiMethod: sessionPrefs?.apiMethod ?? item.apiMethod,
-          effort: sessionPrefs?.effort ?? item.effort ?? "medium",
-          serviceTier: sessionPrefs?.serviceTier ?? item.serviceTier ?? "auto",
-          cacheTtl: sessionPrefs?.cacheTtl ?? item.cacheTtl ?? "5m",
-          permissionMode:
-            sessionPrefs?.permissionMode ?? item.permissionMode ?? "default",
-          editorSelection: item.editorSelection ?? null,
-          selectionIncluded: Boolean(item.editorSelection),
-        },
-        { sessionId: item.sessionId },
+      const sessionPrefs = {
+        ...state.sessionPrefsBySession[item.sessionId],
+        ...state.pendingSessionPrefsBySession[item.sessionId],
+      };
+      const project = state.workspaces.find(
+        (workspace) => workspace.path === item.workingDir,
       );
+      const modelSpec = item.modelSpec ?? sessionPrefs.modelId;
+      const apiMethod = item.apiMethod ?? sessionPrefs.apiMethod;
+      const effort = item.effort ?? sessionPrefs.effort;
+      const serviceTier = item.serviceTier ?? sessionPrefs.serviceTier;
+      const permissionMode =
+        item.permissionMode ??
+        sessionPrefs.permissionMode ??
+        state.defaultPermissionMode ??
+        "default";
+      drainingSessionsRef.current.add(item.sessionId);
+      try {
+        await submitComposer(
+          {
+            prompt: item.text,
+            images: item.images,
+            project: project?.name ?? "workspace",
+            workingDir: item.workingDir,
+            checkout: project?.branch ?? "",
+            modelId: modelSpec ?? "",
+            modelSpec,
+            modelLabel: sessionPrefs.modelLabel ?? modelSpec ?? "",
+            apiMethod,
+            effort,
+            serviceTier,
+            cacheTtl: item.cacheTtl,
+            permissionMode,
+            editorSelection: item.editorSelection ?? null,
+            selectionIncluded: Boolean(item.editorSelection),
+          },
+          { sessionId: item.sessionId },
+        );
+      } catch (error) {
+        state.setQueuePausedForSession(item.sessionId, true);
+        state.addMidTurnMessage(item, true);
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not send the queued message.",
+        );
+      } finally {
+        drainingSessionsRef.current.delete(item.sessionId);
+      }
     },
-    [handleWorkspaceSubmit],
+    [submitComposer],
   );
 
-  const handleWorkspaceStop = React.useCallback(() => {
-    const sid = useAppStore.getState().activeSessionId;
-    if (!sid) return;
-    useAppStore.getState().setQueuePausedForSession(sid, true);
-    setIsStreamActive(false);
-    sendHarnessRequest({
-      req: "cancel",
-      session_id: sid,
-    });
-  }, [setIsStreamActive]);
+  // Focus-switch-proof mid-turn queue drainer across ALL sessions in the store.
+  React.useEffect(() => {
+    for (const [sid, messages] of Object.entries(midTurnMessagesBySession)) {
+      if (!sid || !messages || messages.length === 0) continue;
+      if (pausedQueueSessions[sid]) continue;
+      if (liveTurnsBySession[sid]?.isLive) continue;
+      if (pendingUserTurn?.sessionId === sid) continue;
+      if (drainingSessionsRef.current.has(sid)) continue;
+      if (!messages.some((m) => m.mode === "queue")) continue;
+      const nextQueued = useAppStore.getState().shiftNextQueuedMessage(sid);
+      if (nextQueued) {
+        void handleDrainQueuedMessage(nextQueued);
+      }
+    }
+  }, [
+    handleDrainQueuedMessage,
+    liveTurnsBySession,
+    midTurnMessagesBySession,
+    pausedQueueSessions,
+    pendingUserTurn,
+  ]);
+
+  const handleWorkspaceStop = React.useCallback(
+    (targetSessionId?: string | null) => {
+      const state = useAppStore.getState();
+      const sessionId = targetSessionId ?? state.activeSessionId;
+      if (!sessionId) return;
+      state.setQueuePausedForSession(sessionId, true);
+      void requestHarnessAck({ req: "cancel", session_id: sessionId }).catch(
+        (error) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Rayu could not stop the turn.",
+          );
+        },
+      );
+    },
+    [],
+  );
 
   const isDaemonOffline =
     (daemonStatus.state === "disconnected" || daemonStatus.state === "error") &&
@@ -457,15 +405,16 @@ export function App() {
           >
             <ChatWorkspaceView
               sessionId={activeSessionId}
-              onDrainQueuedMessage={handleDrainQueuedMessage}
               backgroundDockSlot={<BackgroundDockBar />}
               composerSlot={
                 <SessionComposer
                   mode="workspace"
                   sessionId={activeSessionId}
                   isSubmitting={isStreamActive}
-                  onSubmit={handleWorkspaceSubmit}
-                  onStop={handleWorkspaceStop}
+                  onSubmit={(payload) =>
+                    handleWorkspaceSubmit(payload, activeSessionId)
+                  }
+                  onStop={() => handleWorkspaceStop(activeSessionId)}
                 />
               }
             />
@@ -505,15 +454,16 @@ export function App() {
           >
             <ChatWorkspaceView
               sessionId={activeSessionId}
-              onDrainQueuedMessage={handleDrainQueuedMessage}
               backgroundDockSlot={<BackgroundDockBar />}
               composerSlot={
                 <SessionComposer
                   mode="workspace"
                   sessionId={activeSessionId}
                   isSubmitting={isStreamActive}
-                  onSubmit={handleWorkspaceSubmit}
-                  onStop={handleWorkspaceStop}
+                  onSubmit={(payload) =>
+                    handleWorkspaceSubmit(payload, activeSessionId)
+                  }
+                  onStop={() => handleWorkspaceStop(activeSessionId)}
                 />
               }
             />

@@ -1197,7 +1197,7 @@ async fn request_split_returns_forked_session_id() {
         let mut sr = BufReader::new(sr);
         let mut line = String::new();
         sr.read_line(&mut line).await.unwrap();
-        let Request::Split { id } = serde_json::from_str(&line).unwrap() else {
+        let Request::Split { id, .. } = serde_json::from_str(&line).unwrap() else {
             panic!("expected Split request");
         };
         let resp = ServerEvent::SplitResponse {

@@ -1,6 +1,7 @@
 import * as React from "react"
 import { extractTodosFromHarnessFrame } from "@rayu-dev/rayucode-session-core/client"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { toast } from "sonner"
 
 import { AppProviders } from "@/components/providers/app-providers"
 import { AppShell } from "@/components/shell/AppShell"
@@ -30,7 +31,11 @@ import {
   SessionComposer,
   type ComposerSubmitPayload,
 } from "@/features/sessions"
-import { applyUrlQueryParamsToStore, useAppStore } from "@/lib/app-store"
+import {
+  applyUrlQueryParamsToStore,
+  useAppStore,
+  type PendingQuestionItem,
+} from "@/lib/app-store"
 import { normalizeFileChangesSnapshot } from "@/lib/harness-adapter"
 import { ipcClient } from "@/lib/ipc-client"
 
@@ -86,7 +91,7 @@ function ActiveWorkspaceStage() {
     loadedTurnsCount === 0
 
   const handleWorkspaceSubmit = React.useCallback(
-    async (payload: ComposerSubmitPayload) => {
+    async (payload: ComposerSubmitPayload): Promise<boolean> => {
       if (activeSessionId && isSubmitting && payload.midTurnMode) {
         setComposerDraft(activeSessionId, "")
         await sendMidTurnMessage(
@@ -102,7 +107,7 @@ function ActiveWorkspaceStage() {
           },
           queryClient
         )
-        return
+        return true
       }
 
       let targetSessionId = activeSessionId
@@ -112,18 +117,27 @@ function ActiveWorkspaceStage() {
           (payload.images?.length
             ? `Image: ${payload.images[0]?.name ?? "attachment"}`
             : "")
-        const created = await ipcClient.sessions.createSession({
-          prompt: sessionTitlePrompt,
-          workingDir: useAppStore.getState().activeWorkspacePath ?? undefined,
-          modelId: payload.modelId,
-          modelLabel: payload.modelLabel,
-          effort: payload.effort,
-          permissionMode: payload.permissionMode,
-        })
-        targetSessionId = created.id
-        useAppStore.getState().setActiveSession(created.id, created.title)
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] })
-        void queryClient.invalidateQueries({ queryKey: ["models"] })
+        try {
+          const created = await ipcClient.sessions.createSession({
+            prompt: sessionTitlePrompt,
+            workingDir: useAppStore.getState().activeWorkspacePath ?? undefined,
+            modelId: payload.modelId,
+            modelLabel: payload.modelLabel,
+            effort: payload.effort,
+            permissionMode: payload.permissionMode,
+          })
+          targetSessionId = created.id
+          useAppStore.getState().setActiveSession(created.id, created.title)
+          void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+          void queryClient.invalidateQueries({ queryKey: ["models"] })
+        } catch (error) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Failed to create session in Rayu daemon"
+          )
+          return false
+        }
       }
       setComposerDraft(targetSessionId, "")
       ipcClient.harness.stagePromptEffort(targetSessionId, payload.effort)
@@ -136,6 +150,7 @@ function ActiveWorkspaceStage() {
         effort: payload.effort,
         startedAtMs: Date.now(),
       })
+      return true
     },
     [activeSessionId, isSubmitting, queryClient, setComposerDraft]
   )
@@ -259,6 +274,10 @@ function AuthQuerySync() {
     void queryClient.invalidateQueries({ queryKey: ["settings"] })
     void queryClient.invalidateQueries({ queryKey: ["models"] })
     void queryClient.invalidateQueries({ queryKey: ["sessions"] })
+    void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+    void queryClient.invalidateQueries({ queryKey: ["agents"] })
+    void queryClient.invalidateQueries({ queryKey: ["telegram"] })
+    void queryClient.invalidateQueries({ queryKey: ["capabilities"] })
   }, [
     queryClient,
     signedIn,
@@ -269,11 +288,64 @@ function AuthQuerySync() {
   ])
 
   React.useEffect(() => {
+    return ipcClient.harness.onEvent((frame) => {
+      if (frame.ev !== "config_changed") return
+      void queryClient.invalidateQueries({ queryKey: ["settings"] })
+      void queryClient.invalidateQueries({ queryKey: ["models"] })
+      void queryClient.invalidateQueries({ queryKey: ["plugins"] })
+      void queryClient.invalidateQueries({ queryKey: ["agents"] })
+      void queryClient.invalidateQueries({ queryKey: ["telegram"] })
+      void queryClient.invalidateQueries({ queryKey: ["capabilities"] })
+    })
+  }, [queryClient])
+
+  React.useEffect(() => {
     if (!activeSessionId || activeSessionId.startsWith("ses_")) return
     void queryClient.invalidateQueries({ queryKey: ["models"] })
   }, [queryClient, activeSessionId, daemonMode])
 
   return null
+}
+
+function normalizeQuestionItems(rawQuestions: unknown): PendingQuestionItem[] {
+  if (!Array.isArray(rawQuestions)) return []
+  const items: PendingQuestionItem[] = []
+  for (const rawItem of rawQuestions) {
+    if (!rawItem || typeof rawItem !== "object") continue
+    const q = rawItem as Record<string, unknown>
+    const questionText = typeof q.question === "string" ? q.question.trim() : ""
+    if (!questionText) continue
+    const header =
+      typeof q.header === "string" && q.header.trim()
+        ? q.header.trim()
+        : "Question"
+    const options = Array.isArray(q.options)
+      ? q.options
+          .map((opt) => {
+            if (!opt || typeof opt !== "object") return null
+            const o = opt as Record<string, unknown>
+            const label = typeof o.label === "string" ? o.label : ""
+            const description =
+              typeof o.description === "string" ? o.description : ""
+            if (!label) return null
+            return {
+              label,
+              description,
+              ...(typeof o.preview === "string" ? { preview: o.preview } : {}),
+            }
+          })
+          .filter((o): o is NonNullable<typeof o> => o !== null)
+      : []
+    items.push({
+      question: questionText,
+      header,
+      options,
+      ...(q.multiSelect === true || q.multi_select === true
+        ? { multiSelect: true }
+        : {}),
+    })
+  }
+  return items
 }
 
 export function App() {
@@ -396,11 +468,39 @@ export function App() {
             .getState()
             .clearPendingPermission(sid, reqId || undefined)
         }
-      } else if (frame.ev === "turn_done" || frame.ev === "turn_stopped") {
+      } else if (frame.ev === "question_request") {
+        const sid =
+          typeof frame.session_id === "string"
+            ? frame.session_id.trim()
+            : (useAppStore.getState().activeSessionId ?? "")
+        const reqId =
+          typeof frame.request_id === "string" ? frame.request_id.trim() : ""
+        const questions = normalizeQuestionItems(frame.questions)
+        if (sid && reqId && questions.length > 0) {
+          useAppStore.getState().setPendingQuestion({
+            sessionId: sid,
+            requestId: reqId,
+            questions,
+          })
+        }
+      } else if (frame.ev === "question_closed") {
+        const sid =
+          typeof frame.session_id === "string" ? frame.session_id.trim() : ""
+        const reqId =
+          typeof frame.request_id === "string" ? frame.request_id.trim() : ""
+        if (sid) {
+          useAppStore.getState().clearPendingQuestion(sid, reqId || undefined)
+        }
+      } else if (
+        frame.ev === "turn_done" ||
+        frame.ev === "turn_stopped" ||
+        frame.ev === "error"
+      ) {
         const sid =
           typeof frame.session_id === "string" ? frame.session_id.trim() : ""
         if (sid) {
           useAppStore.getState().clearPendingPermission(sid)
+          useAppStore.getState().clearPendingQuestion(sid)
         }
       }
     })

@@ -4,10 +4,8 @@ import os from "node:os"
 import path from "node:path"
 import { shell } from "electron"
 
-import { getRayuConfigDir } from "./auth-bridge.js"
 import {
   createRealPowerPointDeck,
-  writeRealExcelWorkbook,
   type OfficePowerPointSlideSpec,
 } from "./office-bridge.js"
 
@@ -32,86 +30,26 @@ function openFileWithAppOrDefault(
 export async function openInExcel(
   filePath: string,
   workspaceDir = process.cwd()
-): Promise<{ ok: boolean; filePath?: string }> {
+): Promise<{ ok: boolean; filePath?: string; error?: string }> {
   try {
     const trimmed = filePath.trim()
-    const expanded = trimmed.startsWith("~/")
+    const target = trimmed.startsWith("~/")
       ? path.join(os.homedir(), trimmed.slice(2))
       : path.isAbsolute(trimmed)
         ? trimmed
         : path.resolve(workspaceDir, trimmed)
 
-    let target = expanded
     if (!fs.existsSync(target)) {
-      // Materialize a real .xlsx workbook in ~/.rayu/workbooks when opening a template/demo path
-      const outDir = path.join(getRayuConfigDir(), "workbooks")
-      const base = path.basename(target).endsWith(".xlsx")
-        ? path.basename(target)
-        : `${path.basename(target) || "RayuCode-Workbook"}.xlsx`
-      const generated = await writeRealExcelWorkbook(workspaceDir, {
-        filePath: path.join(outDir, base),
-        sheets: [
-          {
-            name: "Q4 Cost Model",
-            columns: ["A", "B", "C", "D", "E"],
-            headers: {
-              A: "Workflow",
-              B: "Primary Model",
-              C: "Tokens (M)",
-              D: "KV Warm %",
-              E: "Est. Cost ($)",
-            },
-            rows: [
-              {
-                rowNumber: 2,
-                cells: {
-                  A: "Codebase refactor",
-                  B: "Claude Opus 5.5",
-                  C: 210,
-                  D: 94.5,
-                  E: 420,
-                },
-                formats: { C: "number", D: "percent", E: "currency" },
-              },
-              {
-                rowNumber: 3,
-                cells: {
-                  A: "Parallel swarm QA",
-                  B: "GPT-6.1 Sol",
-                  C: 164,
-                  D: 93.0,
-                  E: 295,
-                },
-                formats: { C: "number", D: "percent", E: "currency" },
-              },
-              {
-                rowNumber: 4,
-                cells: {
-                  A: "Total / Average",
-                  B: "Blended",
-                  C: 374,
-                  D: 93.8,
-                  E: 715,
-                },
-                formulas: {
-                  C: "=SUM(C2:C3)",
-                  D: "=AVERAGE(D2:D3)",
-                  E: "=SUM(E2:E3)",
-                },
-                formats: { C: "number", D: "percent", E: "currency" },
-                isTotal: true,
-              },
-            ],
-          },
-        ],
-      })
-      target = generated.filePath
+      return { ok: false, error: `Excel file not found: ${target}` }
     }
 
     const ok = await openFileWithAppOrDefault(target, "Microsoft Excel")
     return { ok, filePath: target }
-  } catch {
-    return { ok: false }
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    }
   }
 }
 
@@ -147,11 +85,19 @@ export async function openInPowerPoint(
 
 export async function openInVSCode(
   targetPath: string,
-  line?: number
+  line?: number,
+  workspaceDir = process.cwd()
 ): Promise<{ ok: boolean }> {
-  const target = line ? `${targetPath}:${line}` : targetPath
+  const trimmed = targetPath.trim()
+  const expanded = trimmed.startsWith("~/")
+    ? path.join(os.homedir(), trimmed.slice(2))
+    : path.isAbsolute(trimmed)
+      ? trimmed
+      : path.resolve(workspaceDir, trimmed)
+  const target = line ? `${expanded}:${line}` : expanded
+  const codeCmd = process.platform === "win32" ? "code.cmd" : "code"
   return new Promise((resolve) => {
-    execFile("code", ["--goto", target], (err) => {
+    execFile(codeCmd, ["--goto", target], (err) => {
       if (err) {
         resolve({ ok: false })
         return
@@ -163,7 +109,11 @@ export async function openInVSCode(
 
 export async function openExternal(url: string): Promise<{ ok: boolean }> {
   try {
-    await shell.openExternal(url)
+    const parsed = new URL(url.trim())
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { ok: false }
+    }
+    await shell.openExternal(parsed.toString())
     return { ok: true }
   } catch {
     return { ok: false }

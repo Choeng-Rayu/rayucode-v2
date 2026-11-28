@@ -54,6 +54,8 @@ export const automationsStateSchema = z.object({
   running: z.array(overnightRunSchema),
   schedules: z.array(automationScheduleSchema),
   reports: z.array(morningHandoffReportSchema),
+  available: z.boolean().optional(),
+  unavailableReason: z.string().optional(),
 })
 
 export const OVERNIGHT_REPO_OPTIONS = [

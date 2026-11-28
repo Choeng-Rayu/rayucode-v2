@@ -34,6 +34,7 @@ export type DesktopArtifactEvent =
 
 export interface DesktopToolDeps {
   getWorkspaceDir: () => string
+  getWorkspaceDirForSession?: (sessionId?: string) => string
   browserCdp?: BrowserCdpController
   onArtifact?: (artifact: DesktopArtifactEvent) => void
 }
@@ -78,6 +79,16 @@ export const DESKTOP_TOOL_DEFINITIONS: SessionToolDefinition[] = [
               name: { type: "string" },
               columns: { type: "array", items: { type: "string" } },
               headers: {
+                anyOf: [
+                  {
+                    type: "object",
+                    additionalProperties: { type: "string" },
+                  },
+                  {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                ],
                 description:
                   "Column headers as an object keyed by column letter (e.g. { A: 'Item', B: 'Cost' }) or an ordered array of header strings.",
               },
@@ -85,6 +96,9 @@ export const DESKTOP_TOOL_DEFINITIONS: SessionToolDefinition[] = [
                 type: "array",
                 description:
                   "Rows as objects ({ rowNumber, cells, formulas, formats, isTotal }), header-keyed objects, or value arrays.",
+                items: {
+                  anyOf: [{ type: "object" }, { type: "array" }],
+                },
               },
             },
             required: ["name", "headers", "rows"],
@@ -194,7 +208,7 @@ export const DESKTOP_TOOL_DEFINITIONS: SessionToolDefinition[] = [
           description: "Optional visual accent tag.",
         },
       },
-      required: ["kind", "name"],
+      required: ["kind", "name", "prompt_spec"],
     },
   },
   {
@@ -353,10 +367,19 @@ function normalizeExcelSheets(
         const rowObj = rawRow as Record<string, unknown>
         if (rowObj.cells && typeof rowObj.cells === "object") {
           const cells: Record<string, string | number> = {}
+          const formulas: Record<string, string> =
+            rowObj.formulas && typeof rowObj.formulas === "object"
+              ? { ...(rowObj.formulas as Record<string, string>) }
+              : {}
           for (const [k, v] of Object.entries(
             rowObj.cells as Record<string, unknown>
           )) {
-            if (typeof v === "number" || typeof v === "string") {
+            if (typeof v === "string" && v.trim().startsWith("=")) {
+              if (!formulas[k]) {
+                formulas[k] = v.trim()
+              }
+              cells[k] = ""
+            } else if (typeof v === "number" || typeof v === "string") {
               cells[k] = v
             } else if (v !== null && v !== undefined) {
               cells[k] = String(v)
@@ -368,10 +391,7 @@ function normalizeExcelSheets(
                 ? rowObj.rowNumber
                 : rIdx + 2,
             cells,
-            formulas:
-              rowObj.formulas && typeof rowObj.formulas === "object"
-                ? (rowObj.formulas as Record<string, string>)
-                : undefined,
+            formulas: Object.keys(formulas).length > 0 ? formulas : undefined,
             formats:
               rowObj.formats && typeof rowObj.formats === "object"
                 ? (rowObj.formats as Record<
@@ -426,13 +446,18 @@ export async function executeDesktopTool(
   deps: DesktopToolDeps,
   name: string,
   args: Record<string, unknown>,
-  sessionId?: string
+  sessionId?: string,
+  signal?: AbortSignal
 ): Promise<ToolResult | null> {
   if (!DESKTOP_TOOL_NAMES.has(name)) {
     return null
   }
+  if (signal?.aborted) {
+    return { output: "", error: `Tool "${name}" was aborted.` }
+  }
 
-  const workspaceDir = deps.getWorkspaceDir()
+  const workspaceDir =
+    deps.getWorkspaceDirForSession?.(sessionId) ?? deps.getWorkspaceDir()
 
   try {
     switch (name) {
@@ -648,7 +673,8 @@ export function buildDesktopSdkTools(deps: DesktopToolDeps): SdkTool[] {
         deps,
         def.name,
         input,
-        context.sessionId
+        context.sessionId,
+        context.signal
       )
       return result ?? { output: "", error: `Unhandled desktop tool: ${def.name}` }
     },

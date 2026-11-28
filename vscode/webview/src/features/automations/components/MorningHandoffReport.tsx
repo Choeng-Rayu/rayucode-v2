@@ -150,8 +150,13 @@ export function MorningHandoffReport({
   );
 
   const handleOpenMarkdownPreview = () => {
+    const sessionId =
+      useAppStore.getState().activeSessionId ??
+      run.coordinatorSessionId ??
+      undefined;
     postToHost({
       type: "rayucode.editor.openMarkdownPreview",
+      sessionId,
       path: reviewPath,
     });
   };

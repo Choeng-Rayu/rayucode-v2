@@ -37,6 +37,8 @@ const SEMANTIC_ROLES = new Set([
 
 export class BrowserCdpController {
   private refToBackendNodeId = new Map<string, number>()
+  private attachedWebContents = new Set<WebContents>()
+  private detachTimers = new WeakMap<WebContents, ReturnType<typeof setTimeout>>()
   private ensureBrowserOpen?: (url?: string) => Promise<void> | void
   private readonly ensureOpenTimeoutMs: number
   private readonly pollIntervalMs: number
@@ -44,6 +46,39 @@ export class BrowserCdpController {
   constructor(options?: { ensureOpenTimeoutMs?: number; pollIntervalMs?: number }) {
     this.ensureOpenTimeoutMs = options?.ensureOpenTimeoutMs ?? 2500
     this.pollIntervalMs = options?.pollIntervalMs ?? 100
+  }
+
+  private scheduleIdleDetach(wc: WebContents): void {
+    const prev = this.detachTimers.get(wc)
+    if (prev) clearTimeout(prev)
+    const timer = setTimeout(() => {
+      this.detachTimers.delete(wc)
+      this.detachWebContents(wc)
+    }, 30_000)
+    this.detachTimers.set(wc, timer)
+  }
+
+  private detachWebContents(wc: WebContents): void {
+    const timer = this.detachTimers.get(wc)
+    if (timer) {
+      clearTimeout(timer)
+      this.detachTimers.delete(wc)
+    }
+    this.attachedWebContents.delete(wc)
+    try {
+      if (!wc.isDestroyed() && wc.debugger.isAttached()) {
+        wc.debugger.detach()
+      }
+    } catch {
+      // ignore detach errors during shutdown
+    }
+  }
+
+  detachAll(): void {
+    for (const wc of Array.from(this.attachedWebContents)) {
+      this.detachWebContents(wc)
+    }
+    this.refToBackendNodeId.clear()
   }
 
   setEnsureBrowserOpen(
@@ -98,6 +133,14 @@ export class BrowserCdpController {
         }
       }
     }
+    if (!this.attachedWebContents.has(wc)) {
+      this.attachedWebContents.add(wc)
+      wc.once("destroyed", () => {
+        this.detachTimers.delete(wc)
+        this.attachedWebContents.delete(wc)
+      })
+    }
+    this.scheduleIdleDetach(wc)
     try {
       await wc.debugger.sendCommand("DOM.enable")
       await wc.debugger.sendCommand("Accessibility.enable")
@@ -109,9 +152,14 @@ export class BrowserCdpController {
   async navigate(
     rawUrl: string
   ): Promise<{ ok: boolean; url: string; title: string; error?: string }> {
-    const target = /^https?:\/\//i.test(rawUrl.trim())
-      ? rawUrl.trim()
-      : `https://${rawUrl.trim()}`
+    const trimmed = rawUrl.trim()
+    const target = /^https?:\/\//i.test(trimmed)
+      ? trimmed
+      : /^(localhost|127\.0\.0\.1|\[::1\]|[^/]+\.local)(:\d+)?(\/|$)/i.test(
+            trimmed
+          )
+        ? `http://${trimmed}`
+        : `https://${trimmed}`
     const wc = await this.requireBrowserWebContents(target)
     if (!wc) {
       return {
@@ -196,7 +244,10 @@ export class BrowserCdpController {
           lines.push(`  ${role}: ${name.slice(0, 140)}`)
         }
 
-        if (lines.length >= 160) break
+        if (lines.length >= 160) {
+          lines.push("... [accessibility tree truncated at 160 items]")
+          break
+        }
       }
 
       return {
@@ -288,9 +339,18 @@ export class BrowserCdpController {
 
       return { ok: false, message: `Could not resolve [${cleanRef}] in DOM.` }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/no node with given id|could not find node|stale/i.test(msg)) {
+        this.refToBackendNodeId.delete(cleanRef)
+        await this.snapshot().catch(() => null)
+        return {
+          ok: false,
+          message: `Element [${cleanRef}] became stale after DOM change. Refs refreshed; run browser_snapshot and retry.`,
+        }
+      }
       return {
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: msg,
       }
     }
   }
@@ -309,7 +369,7 @@ export class BrowserCdpController {
     if (!backendNodeId) {
       return {
         ok: false,
-        message: `Unknown element ref "${ref}". Run browser_snapshot first.`,
+        message: `Unknown element ref "${ref}". Run browser_snapshot first to get fresh refs.`,
       }
     }
 
@@ -338,9 +398,18 @@ export class BrowserCdpController {
         message: `Typed "${text}" into [${cleanRef}]${submit ? " and submitted" : ""}`,
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/no node with given id|could not find node|stale/i.test(msg)) {
+        this.refToBackendNodeId.delete(cleanRef)
+        await this.snapshot().catch(() => null)
+        return {
+          ok: false,
+          message: `Element [${cleanRef}] became stale after DOM change. Refs refreshed; run browser_snapshot and retry.`,
+        }
+      }
       return {
         ok: false,
-        message: err instanceof Error ? err.message : String(err),
+        message: msg,
       }
     }
   }

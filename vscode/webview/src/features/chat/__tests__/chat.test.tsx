@@ -3,20 +3,25 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { App } from "@/App";
 import {
   ALL_45_RUST_TOOLS,
   ApprovalCard,
+  ChatSessionContext,
   ChatStream,
   ChatWorkspaceView,
   CiteLink,
   ClarifyingQuestionCard,
   classifyRustTool,
+  clearSessionLiveTurn,
   coalesceTraceGroups,
   EditorialMarkdown,
   InlineDiffCard,
   resetAllLiveTraces,
   ShellCard,
+  startSessionLiveTurn,
   ToolStepCard,
+  useChatStream,
   WorkTrace,
   type ChatTurnView,
   type ExtendedWorkStepGroup,
@@ -52,6 +57,8 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
       midTurnMessagesBySession: {},
       pausedQueueSessions: {},
       composerDrafts: {},
+      sessionPrefsBySession: {},
+      pendingSessionPrefsBySession: {},
       todosBySession: {},
       turnDurationsBySession: {},
     });
@@ -2022,6 +2029,236 @@ describe("RayuCode VS Code Active Chat & Quiet 3-Depth Trace (Wave 3B, Spec 02)"
 
     await waitFor(() => {
       expect(screen.queryByTestId("approval-card")).toBeNull();
+    });
+  });
+
+  it("drains Session A's queued message to Session A (not Session B) after switching focus from Session A to Session B in App", async () => {
+    const ackSpy = vi
+      .spyOn(rpcClient, "requestHarnessAck")
+      .mockResolvedValue(undefined);
+
+    useAppStore.setState({
+      route: "workspace",
+      activeRoute: "workspace",
+      activeSessionId: "ses_a",
+      activeSessionTitle: "Session A",
+      authLoaded: true,
+      authBypassed: true,
+      daemonStatus: { state: "connected", capabilities: ["sessions"] },
+      workspaces: [
+        { name: "worktree-a", path: "/repo/worktree-a", branch: "feat/a" },
+        { name: "worktree-b", path: "/repo/worktree-b", branch: "feat/b" },
+      ],
+      midTurnMessagesBySession: {
+        ses_a: [
+          {
+            id: "q_focus_a",
+            sessionId: "ses_a",
+            mode: "queue",
+            text: "Queued follow-up strictly for Session A",
+            createdAtMs: Date.now(),
+            workingDir: "/repo/worktree-a",
+            modelSpec: "rayu:claude-opus-5-5",
+            apiMethod: "rayu",
+            effort: "high",
+            permissionMode: "acceptEdits",
+            serviceTier: "priority",
+            editorSelection: {
+              filePath: "/repo/worktree-a/src/shared.ts",
+              relativePath: "src/shared.ts",
+              lineStart: 5,
+              lineEnd: 10,
+              lineCount: 6,
+            },
+          },
+        ],
+      },
+      pausedQueueSessions: {},
+    });
+
+    // Session A has an active live turn while mounted
+    startSessionLiveTurn({
+      sessionId: "ses_a",
+      userPrompt: "Initial prompt in Session A",
+    });
+
+    renderWithQuery(<App />);
+
+    // User switches focus from Session A to Session B while Session A is still streaming
+    act(() => {
+      useAppStore.getState().setActiveSession("ses_b", "Session B");
+      useAppStore.getState().setActiveProjectPath("/repo/worktree-b");
+    });
+    expect(useAppStore.getState().activeSessionId).toBe("ses_b");
+    expect(ackSpy).not.toHaveBeenCalled();
+
+    // Session A finishes its turn while Session B is focused
+    act(() => {
+      __dispatchHostMessageForTest({
+        type: "rayucode.harness.frame",
+        frame: {
+          ev: "turn_done",
+          session_id: "ses_a",
+          duration_secs: 3,
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(ackSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req: "send_message",
+          session_id: "ses_a",
+          content: expect.stringContaining(
+            "Queued follow-up strictly for Session A",
+          ),
+          model: "rayu:claude-opus-5-5",
+          api_method: "rayu",
+          effort: "high",
+          permission_mode: "acceptEdits",
+          service_tier: "priority",
+        }),
+      );
+    });
+
+    // Verify it never leaked to Session B and included Session A's captured editor selection
+    expect(ackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: "ses_a",
+        content: expect.stringContaining("src/shared.ts#L5-L10"),
+      }),
+    );
+    expect(
+      ackSpy.mock.calls.some(
+        (call) =>
+          (call[0] as { session_id?: string }).session_id === "ses_b",
+      ),
+    ).toBe(false);
+  });
+
+  it("submits retryTurn through requestHarnessAck bound to its originating sessionId and clears live turn on error", async () => {
+    const ackSpy = vi
+      .spyOn(rpcClient, "requestHarnessAck")
+      .mockRejectedValueOnce(new Error("Transient network failure"));
+
+    useAppStore.setState({
+      activeSessionId: "ses_other_focused",
+      sessionPrefsBySession: {
+        ses_retry_origin: {
+          modelId: "rayu:claude-sonnet-4-5",
+          apiMethod: "rayu",
+          effort: "high",
+          permissionMode: "plan",
+          serviceTier: "priority",
+        },
+      },
+    });
+
+    let capturedRetry: ((turnId: string) => void) | null = null;
+    const RetryProbe = () => {
+      const stream = useChatStream({
+        sessionId: "ses_retry_origin",
+        initialTurns: [
+          {
+            id: "turn_retry_1",
+            sessionId: "ses_retry_origin",
+            userPrompt: "Re-run integration suite",
+            workedDuration: "4s",
+            notes: [],
+            groups: [],
+            answerIntro: "Previous output",
+            answerBullets: [],
+            diffCard: {
+              id: "d0",
+              file: "",
+              additions: 0,
+              deletions: 0,
+              hint: "",
+              lines: [],
+            },
+            timestamp: "1m ago",
+            credits: "0.10 cr",
+            kvCachePct: 90,
+            pinned: false,
+          },
+        ],
+      });
+      capturedRetry = stream.retryTurn;
+      return <div data-testid="retry-probe">{stream.turns.length}</div>;
+    };
+
+    renderWithQuery(<RetryProbe />);
+    expect(capturedRetry).toBeTypeOf("function");
+
+    // 1. Failing retryTurn calls requestHarnessAck with ses_retry_origin and clears the live turn on rejection
+    act(() => {
+      capturedRetry!("turn_retry_1");
+    });
+
+    await waitFor(() => {
+      expect(ackSpy).toHaveBeenCalledWith({
+        req: "send_message",
+        session_id: "ses_retry_origin",
+        content: "Re-run integration suite",
+        model: "rayu:claude-sonnet-4-5",
+        api_method: "rayu",
+        effort: "high",
+        permission_mode: "plan",
+        service_tier: "priority",
+      });
+    });
+
+    // Live turn is rolled back cleanly after rejection
+    await waitFor(() => {
+      expect(screen.getByTestId("retry-probe").textContent).toBe("1");
+    });
+
+    // 2. Successful retryTurn keeps live turn active for ses_retry_origin
+    ackSpy.mockResolvedValueOnce(undefined);
+    act(() => {
+      capturedRetry!("turn_retry_1");
+    });
+
+    await waitFor(() => {
+      expect(ackSpy).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId("retry-probe").textContent).toBe("2");
+    });
+    clearSessionLiveTurn("ses_retry_origin");
+  });
+
+  it("passes explicit originating sessionId from ChatSessionContext when opening terminal in ShellCard", () => {
+    const postSpy = vi
+      .spyOn(rpcClient, "postToHost")
+      .mockImplementation(() => {});
+
+    useAppStore.setState({
+      activeSessionId: "ses_focused_b",
+      activeProjectPath: "/repo/worktree-b",
+    });
+
+    renderWithQuery(
+      <ChatSessionContext.Provider value="ses_turn_owner_a">
+        <ShellCard
+          standalone
+          step={{
+            id: "sh_ctx_a",
+            kind: "command",
+            command: "cargo test",
+            displayCommand: "cargo test",
+            output: "ok",
+            exitCode: 0,
+            statusLabel: "Success",
+            isMono: true,
+          }}
+        />
+      </ChatSessionContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByTestId("shell-open-terminal-sh_ctx_a"));
+    expect(postSpy).toHaveBeenCalledWith({
+      type: "rayucode.editor.openTerminal",
+      sessionId: "ses_turn_owner_a",
+      cwd: undefined,
     });
   });
 });

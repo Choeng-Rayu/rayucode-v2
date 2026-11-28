@@ -43,13 +43,16 @@ function AutomationsViewContent({
   const [activeTab, setActiveTab] = React.useState<AutomationsTabId>(initialTab);
   const setActiveRoute = useAppStore((s) => s.setActiveRoute);
 
-  const { data: runs = [], isLoading: runsLoading } = useOvernightRuns();
-  const { data: schedules = [] } = useSchedules();
-  const { data: ambient } = useAmbientStatus();
-
-  if (runsLoading && runs.length === 0) {
-    return <AutomationsSkeleton />;
-  }
+  const overnightQuery = useOvernightRuns();
+  const schedulesQuery = useSchedules();
+  const ambientQuery = useAmbientStatus();
+  const { data: runs = [], isLoading: runsLoading } = overnightQuery;
+  const { data: schedules = [] } = schedulesQuery;
+  const { data: ambient } = ambientQuery;
+  const activeQuery = activeTab === "overnight" ? overnightQuery
+    : activeTab === "schedules" ? schedulesQuery
+    : activeTab === "ambient" ? ambientQuery : undefined;
+  if (runsLoading && runs.length === 0) return <AutomationsSkeleton />;
 
   const runningCount = runs.filter((r) => r.status === "running").length;
   const enabledSchedulesCount = schedules.filter((s) => s.enabled).length;
@@ -92,6 +95,13 @@ function AutomationsViewContent({
             </Button>
           </div>
         </header>
+
+        {activeQuery?.isError && (
+          <div role="alert" className="flex items-center gap-2 text-sm text-muted-ink">
+            {activeQuery.data ? "Showing last known automation state." : "Could not load automation state."}
+            <Button type="button" variant="ghost" size="sm" onClick={() => void activeQuery.refetch()}>Retry</Button>
+          </div>
+        )}
 
         {/* 4-Tab Radix Strip (horizontal scroll-safe in Compact Sidebar <560px) */}
         <Tabs

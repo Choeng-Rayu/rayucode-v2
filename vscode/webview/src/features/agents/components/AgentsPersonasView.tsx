@@ -1,3 +1,4 @@
+import { requireOperation } from "@/lib/operation-result";
 import * as React from "react";
 import {
   useMutation,
@@ -249,6 +250,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
 
   const [scope, setScope] = React.useState<AgentScope>("global");
   const [statusMessage, setStatusMessage] = React.useState<string | null>(null);
+  const [statusIsError, setStatusIsError] = React.useState(false);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<PersonaDraft>({
     editingExisting: false,
@@ -281,52 +283,58 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
     });
   };
 
+  const reportFailure = (err: unknown, fallback: string) => {
+    // requireOperation already raised the visible toast.error for this failure.
+    setStatusIsError(true);
+    setStatusMessage(
+      err instanceof Error && err.message.trim() ? err.message : fallback,
+    );
+  };
+
+  const reportSuccess = (msg: string) => {
+    setStatusIsError(false);
+    setStatusMessage(msg);
+  };
+
   const setRoleMutation = useMutation({
     mutationFn: (input: {
       role: AgentRoleId;
       model: string;
       scope: AgentScope;
     }) =>
-      callRpc("settings.models.setRoleOverride", {
-        ...input,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.models.setRoleOverride", {
+          ...input,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, input) => {
       invalidateAll();
       const label =
         ROLE_DEFS.find((r) => r.id === input.role)?.label ?? input.role;
       const msg = `Updated ${label} [${input.scope}] to ${input.model}.`;
-      setStatusMessage(msg);
+      reportSuccess(msg);
       toast.success(msg);
     },
-    onError: (err) => {
-      const msg =
-        err instanceof Error ? err.message : "Failed to update role override.";
-      setStatusMessage(msg);
-      toast.error(msg);
-    },
+    onError: (err) => reportFailure(err, "Failed to update role override."),
   });
 
   const setSubagentMutation = useMutation({
     mutationFn: (input: { model: string; scope: AgentScope }) =>
-      callRpc("settings.agents.setSubagentModel", {
-        ...input,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.agents.setSubagentModel", {
+          ...input,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, input) => {
       invalidateAll();
       const msg = `Default subagent model [${input.scope}] set to ${input.model}.`;
-      setStatusMessage(msg);
+      reportSuccess(msg);
       toast.success(msg);
     },
-    onError: (err) => {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : "Failed to update subagent default model.";
-      setStatusMessage(msg);
-      toast.error(msg);
-    },
+    onError: (err) =>
+      reportFailure(err, "Failed to update subagent default model."),
   });
 
   const upsertProfileMutation = useMutation({
@@ -337,55 +345,52 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
       description: string;
       scope: AgentScope;
     }) =>
-      callRpc("settings.agents.upsertProfile", {
-        ...input,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.agents.upsertProfile", {
+          ...input,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, input) => {
       invalidateAll();
       setDialogOpen(false);
       const msg = `Saved ${input.scope} persona "${input.name}" (${input.model}).`;
-      setStatusMessage(msg);
+      reportSuccess(msg);
       toast.success(msg);
     },
-    onError: (err) => {
-      const msg =
-        err instanceof Error ? err.message : "Failed to save agent persona.";
-      setStatusMessage(msg);
-      toast.error(msg);
-    },
+    // Dialog stays open and `draft` is untouched so the user keeps their inputs.
+    onError: (err) => reportFailure(err, "Failed to save agent persona."),
   });
 
   const deleteProfileMutation = useMutation({
     mutationFn: (input: { name: string; scope: AgentScope }) =>
-      callRpc("settings.agents.deleteProfile", {
-        ...input,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.agents.deleteProfile", {
+          ...input,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, input) => {
       invalidateAll();
       const msg = `Removed ${input.scope} persona "${input.name}".`;
-      setStatusMessage(msg);
+      reportSuccess(msg);
       toast.info(msg);
     },
-    onError: (err) => {
-      const msg =
-        err instanceof Error ? err.message : "Failed to delete agent persona.";
-      setStatusMessage(msg);
-      toast.error(msg);
-    },
+    onError: (err) => reportFailure(err, "Failed to delete agent persona."),
   });
 
   const refreshModelsMutation = useMutation({
     mutationFn: () =>
-      callRpc("settings.models.refresh", {
+      requireOperation(callRpc("settings.models.refresh", {
         sessionId: activeSessionId ?? undefined,
-      }),
-    onSuccess: () => {
+      })),
+    onSuccess: (res) => {
       invalidateAll();
       void modelsQuery.refetch();
-      toast.success("Refreshed live model catalog.");
+      if (res.message) toast.warning(res.message);
+      else toast.success("Refreshed live model catalog.");
     },
+    onError: (err) => reportFailure(err, "Failed to refresh the model catalog."),
   });
 
   const data = modelsQuery.data;
@@ -666,7 +671,13 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
           {statusMessage && (
             <div
               data-testid="agents-status-banner"
-              className="rounded-xl border border-brand/30 bg-brand-soft px-4 py-2 text-xs text-ink"
+              role={statusIsError ? "alert" : "status"}
+              className={cn(
+                "rounded-xl border px-4 py-2 text-xs",
+                statusIsError
+                  ? "border-danger/30 bg-danger-soft text-danger"
+                  : "border-brand/30 bg-brand-soft text-ink",
+              )}
             >
               {statusMessage}
             </div>

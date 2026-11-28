@@ -16,6 +16,8 @@ import type { SessionSummary } from "../types"
 export interface TurnActionsProps {
   sessionId: string
   turnId: string
+  upToMessageIndex?: number
+  upToMessageId?: string
   responseMarkdown: string
   timestamp: string
   credits: string
@@ -30,6 +32,8 @@ export interface TurnActionsProps {
 export function TurnActions({
   sessionId,
   turnId,
+  upToMessageIndex,
+  upToMessageId,
   responseMarkdown,
   timestamp,
   pinned: initialPinned = false,
@@ -81,7 +85,11 @@ export function TurnActions({
     if (isForking) return
     setIsForking(true)
     try {
-      const result = await forkTurnFromHere(sessionId, turnId)
+      const boundary =
+        upToMessageIndex !== undefined || upToMessageId !== undefined
+          ? { upToMessageIndex, upToMessageId }
+          : undefined
+      const result = await forkTurnFromHere(sessionId, turnId, boundary)
       if (result.ok) {
         onForked?.(result.data)
         toast("Forked new session from this point · original kept as is")

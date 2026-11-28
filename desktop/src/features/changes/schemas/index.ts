@@ -12,6 +12,7 @@ export const diffHunkLineSchema = z.object({
 export const changedFileDiffSchema = z.object({
   id: z.string().min(1),
   path: z.string().min(1),
+  previousPath: z.string().optional(),
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
   deleted: z.boolean().optional(),
@@ -20,11 +21,14 @@ export const changedFileDiffSchema = z.object({
   accepted: z.boolean().optional(),
   rejected: z.boolean().optional(),
   staged: z.boolean().optional(),
+  diffLoaded: z.boolean().optional(),
   lines: z.array(diffHunkLineSchema),
 })
 
 export const changesStateSchema = z.object({
   branch: z.string().min(1),
+  totalChangedFiles: z.number().int().nonnegative().optional(),
+  truncatedDiffCount: z.number().int().nonnegative().optional(),
   totalAdditions: z.number().int().nonnegative(),
   totalDeletions: z.number().int().nonnegative(),
   files: z.array(changedFileDiffSchema),

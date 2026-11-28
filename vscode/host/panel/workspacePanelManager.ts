@@ -1,3 +1,4 @@
+import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type * as vscode from "vscode";
 import {
@@ -154,6 +155,61 @@ export class SurfaceCommandQueue<TMessage = HostToWebviewMessage> {
     }
     return valid;
   }
+}
+
+export interface SessionWorkingDirLookup {
+  getSessionWorkingDir(sessionId?: string): string | undefined;
+  getSessionWorkingDirForSession?(sessionId: string): string | undefined;
+}
+
+export function resolveTerminalCwdForMessage(
+  sessionHub: SessionWorkingDirLookup,
+  message: { sessionId?: string; cwd?: string },
+): { ok: true; cwd?: string } | { ok: false; warning: string } {
+  const explicitCwd = message.cwd?.trim() || undefined;
+  if (message.sessionId) {
+    if (explicitCwd && path.isAbsolute(explicitCwd)) {
+      return { ok: true, cwd: explicitCwd };
+    }
+    const sessionDir =
+      typeof sessionHub.getSessionWorkingDirForSession === "function"
+        ? sessionHub.getSessionWorkingDirForSession(message.sessionId)
+        : sessionHub.getSessionWorkingDir(message.sessionId);
+    if (!sessionDir) {
+      return {
+        ok: false,
+        warning: `Unable to open terminal: could not resolve the worktree for session "${message.sessionId}".`,
+      };
+    }
+    return {
+      ok: true,
+      cwd: explicitCwd ? path.resolve(sessionDir, explicitCwd) : sessionDir,
+    };
+  }
+  return {
+    ok: true,
+    cwd: explicitCwd ?? sessionHub.getSessionWorkingDir(),
+  };
+}
+
+export function resolveMarkdownPreviewBaseDirForMessage(
+  sessionHub: SessionWorkingDirLookup,
+  message: { sessionId?: string; path: string },
+): { ok: true; baseDir?: string } | { ok: false; warning: string } {
+  if (!message.sessionId) {
+    return { ok: true, baseDir: undefined };
+  }
+  const baseDir =
+    typeof sessionHub.getSessionWorkingDirForSession === "function"
+      ? sessionHub.getSessionWorkingDirForSession(message.sessionId)
+      : sessionHub.getSessionWorkingDir(message.sessionId);
+  if (!baseDir && !path.isAbsolute(message.path)) {
+    return {
+      ok: false,
+      warning: `Unable to open markdown preview "${message.path}": could not resolve the worktree for session "${message.sessionId}".`,
+    };
+  }
+  return { ok: true, baseDir };
 }
 
 export class WorkspacePanelManager
@@ -839,6 +895,15 @@ export class WorkspacePanelManager
     return new vscodeApi.Disposable(cleanup);
   }
 
+  private resolveStrictSessionWorkingDir(sessionId: string): string | undefined {
+    const hub = this.sessionHub as SessionHub & {
+      getSessionWorkingDirForSession?: (sid: string) => string | undefined;
+    };
+    return typeof hub.getSessionWorkingDirForSession === "function"
+      ? hub.getSessionWorkingDirForSession(sessionId)
+      : this.sessionHub.getSessionWorkingDir(sessionId);
+  }
+
   private async handleWebviewMessage(
     raw: unknown,
     postToSurface: (message: HostToWebviewMessage) => void,
@@ -927,12 +992,19 @@ export class WorkspacePanelManager
       }
       case "rayucode.editor.openFile": {
         try {
+          const baseDir = message.sessionId
+            ? this.resolveStrictSessionWorkingDir(message.sessionId)
+            : undefined;
+          if (message.sessionId && !baseDir && !path.isAbsolute(message.path)) {
+            throw new Error("Could not resolve the session worktree.");
+          }
           await this.editorBridge.openFile({
             path: message.path,
             line: message.line,
             column: message.column,
             preview: message.preview,
-            baseDir: this.sessionHub.getSessionWorkingDir(),
+            baseDir,
+            strictBase: Boolean(message.sessionId),
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -943,8 +1015,10 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openDiff": {
-        const resolvedSessionId =
-          message.sessionId ?? this.sessionHub.getActiveSessionId();
+        const resolvedSessionId = message.sessionId;
+        const baseDir = resolvedSessionId
+          ? this.resolveStrictSessionWorkingDir(resolvedSessionId)
+          : undefined;
         const diff = await this.featureRouter.call("changes.diff", {
           path: message.path,
           sessionId: resolvedSessionId,
@@ -952,6 +1026,7 @@ export class WorkspacePanelManager
         });
         await this.editorBridge.openDiff({
           path: diff.path || message.path,
+          baseDir,
           originalContent: diff.originalContent,
           modifiedContent: diff.modifiedContent,
           sessionId: resolvedSessionId,
@@ -970,8 +1045,13 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openTerminal": {
+        const resolved = resolveTerminalCwdForMessage(this.sessionHub, message);
+        if (!resolved.ok) {
+          void vscodeApi.window.showWarningMessage(resolved.warning);
+          break;
+        }
         this.editorBridge.openTerminal({
-          cwd: message.cwd ?? this.sessionHub.getSessionWorkingDir(),
+          cwd: resolved.cwd,
           name: message.name,
         });
         break;
@@ -981,7 +1061,18 @@ export class WorkspacePanelManager
         break;
       }
       case "rayucode.editor.openMarkdownPreview": {
-        await this.editorBridge.openMarkdownPreview(message.path);
+        const resolved = resolveMarkdownPreviewBaseDirForMessage(
+          this.sessionHub,
+          message,
+        );
+        if (!resolved.ok) {
+          void vscodeApi.window.showWarningMessage(resolved.warning);
+          break;
+        }
+        await this.editorBridge.openMarkdownPreview(
+          message.path,
+          resolved.baseDir,
+        );
         break;
       }
       case "rayucode.editor.openSimpleBrowser": {

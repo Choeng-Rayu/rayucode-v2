@@ -9,6 +9,7 @@ import { TaskChecklistCard } from "@rayu-dev/rayucode-ui/tasks"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowDown,
+  Check,
   ChevronDown,
   ExternalLink,
   FileSpreadsheet,
@@ -31,7 +32,11 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { ChatSkeleton } from "@/components/ui/page-skeletons"
 import { sessionsQueryOptions } from "@/features/sessions"
-import { useAppStore, type MidTurnMessageItem } from "@/lib/app-store"
+import {
+  useAppStore,
+  type MidTurnMessageItem,
+  type PendingQuestion,
+} from "@/lib/app-store"
 import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
@@ -360,6 +365,7 @@ function TurnView({
                       }
                       void ipcClient.native
                         .openInPowerPoint({
+                          filePath: deck.filePath,
                           title: deck.title,
                           slides: deck.slides,
                         })
@@ -383,6 +389,8 @@ function TurnView({
           <TurnActions
             sessionId={turn.sessionId}
             turnId={turn.id}
+            upToMessageIndex={turn.sourceEndMessageIndex}
+            upToMessageId={turn.sourceEndMessageId}
             responseMarkdown={responseMarkdown}
             timestamp={turn.timestamp}
             credits={turn.credits}
@@ -395,6 +403,261 @@ function TurnView({
         )}
       </div>
     </article>
+  )
+}
+
+interface LiveQuestionDraftAnswer {
+  selected: number[]
+  customText: string
+}
+
+function LiveQuestionPromptCard({
+  pendingQuestion,
+  onSubmitAnswers,
+  onDecline,
+}: {
+  pendingQuestion: PendingQuestion
+  onSubmitAnswers: (
+    answers: Record<string, { selected?: number[]; custom?: string[] }>
+  ) => Promise<void>
+  onDecline: () => Promise<void>
+}) {
+  const [drafts, setDrafts] = React.useState<
+    Record<string, LiveQuestionDraftAnswer>
+  >({})
+  const [activeIndex, setActiveIndex] = React.useState(0)
+  const [submitting, setSubmitting] = React.useState(false)
+
+  const questions = pendingQuestion.questions
+  const clampedIdx = Math.min(activeIndex, Math.max(0, questions.length - 1))
+  const current = questions[clampedIdx]
+  if (!current) return null
+
+  const draft = drafts[current.question] ?? { selected: [], customText: "" }
+  const isComplete = questions.every((q) => {
+    const entry = drafts[q.question]
+    if (!entry) return false
+    return entry.selected.length > 0 || entry.customText.trim().length > 0
+  })
+
+  const toggleOption = (optionIdx: number) => {
+    setDrafts((prev) => {
+      const existing = prev[current.question] ?? {
+        selected: [],
+        customText: "",
+      }
+      if (current.multiSelect) {
+        const already = existing.selected.includes(optionIdx)
+        return {
+          ...prev,
+          [current.question]: {
+            ...existing,
+            selected: already
+              ? existing.selected.filter((i) => i !== optionIdx)
+              : [...existing.selected, optionIdx].sort((a, b) => a - b),
+          },
+        }
+      }
+      return {
+        ...prev,
+        [current.question]: {
+          ...existing,
+          selected: [optionIdx],
+        },
+      }
+    })
+  }
+
+  const updateCustomText = (val: string) => {
+    setDrafts((prev) => {
+      const existing = prev[current.question] ?? {
+        selected: [],
+        customText: "",
+      }
+      return {
+        ...prev,
+        [current.question]: {
+          ...existing,
+          customText: val,
+        },
+      }
+    })
+  }
+
+  const handleConfirmSubmit = async () => {
+    if (submitting || !isComplete) return
+    setSubmitting(true)
+    try {
+      const answers: Record<
+        string,
+        { selected?: number[]; custom?: string[] }
+      > = {}
+      for (const q of questions) {
+        const entry = drafts[q.question] ?? { selected: [], customText: "" }
+        const customTrimmed = entry.customText.trim()
+        answers[q.question] = {
+          ...(entry.selected.length > 0 ? { selected: entry.selected } : {}),
+          ...(customTrimmed ? { custom: [customTrimmed] } : {}),
+        }
+      }
+      await onSubmitAnswers(answers)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleDeclineClick = async () => {
+    if (submitting) return
+    setSubmitting(true)
+    try {
+      await onDecline()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div
+      data-testid="live-question-card"
+      className="mx-auto mb-3 w-full max-w-[732px] px-6"
+    >
+      <div className="rayu-card-bevel flex flex-col gap-3 rounded-[20px] border border-premium-hi bg-popover-solid p-5 shadow-rayu-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <span className="inline-flex items-center rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-medium text-brand-text">
+              {current.header}
+            </span>
+            <h3 className="mt-1.5 text-[15px] leading-snug font-medium text-ink">
+              {current.question}
+            </h3>
+          </div>
+          <button
+            type="button"
+            aria-label="Decline question"
+            disabled={submitting}
+            data-testid="live-question-decline-x-btn"
+            onClick={() => void handleDeclineClick()}
+            className="grid size-7 shrink-0 cursor-pointer place-items-center rounded-full text-muted-ink transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        {questions.length > 1 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {questions.map((q, idx) => {
+              const answered = Boolean(
+                drafts[q.question]?.selected.length ||
+                  drafts[q.question]?.customText.trim()
+              )
+              return (
+                <button
+                  key={`${q.header}_${idx}`}
+                  type="button"
+                  onClick={() => setActiveIndex(idx)}
+                  className={cn(
+                    "cursor-pointer rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors",
+                    idx === clampedIdx
+                      ? "border-brand bg-brand-soft text-brand-text"
+                      : answered
+                        ? "border-hairline-hi bg-active text-ink"
+                        : "border-hairline bg-inset text-muted-ink hover:text-ink"
+                  )}
+                >
+                  {q.header}
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {current.options.length > 0 && (
+          <div className="space-y-1">
+            {current.options.map((opt, optIdx) => {
+              const selected = draft.selected.includes(optIdx)
+              return (
+                <button
+                  key={`${opt.label}_${optIdx}`}
+                  type="button"
+                  aria-pressed={selected}
+                  data-testid={`live-question-option-${optIdx}`}
+                  onClick={() => toggleOption(optIdx)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-start justify-between gap-3 rounded-[12px] border px-3 py-2.5 text-left transition-colors",
+                    selected
+                      ? "border-brand bg-brand-soft/60 text-ink"
+                      : "border-transparent hover:border-hairline hover:bg-hover/70"
+                  )}
+                >
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <span
+                      className={cn(
+                        "mt-0.5 grid size-5 shrink-0 place-items-center rounded-[5px] border font-mono text-[11px] font-medium",
+                        selected
+                          ? "border-brand bg-brand text-brand-ink"
+                          : "border-hairline-hi bg-inset text-muted-ink"
+                      )}
+                    >
+                      {selected ? (
+                        <Check className="size-3" aria-hidden="true" />
+                      ) : (
+                        optIdx + 1
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[13.5px] font-medium text-ink">
+                        {opt.label}
+                      </div>
+                      {opt.description ? (
+                        <p className="mt-0.5 text-[12px] leading-snug text-muted-ink">
+                          {opt.description}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 rounded-[12px] border border-hairline bg-inset/80 px-3 py-2">
+          <Pencil
+            className="size-3.5 shrink-0 text-muted-ink"
+            aria-hidden="true"
+          />
+          <input
+            type="text"
+            data-testid="live-question-custom-input"
+            value={draft.customText}
+            onChange={(e) => updateCustomText(e.target.value)}
+            placeholder="Add a custom answer or clarification..."
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-ink placeholder:text-muted-ink focus:outline-none"
+          />
+        </div>
+
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <button
+            type="button"
+            disabled={submitting}
+            data-testid="live-question-decline-btn"
+            onClick={() => void handleDeclineClick()}
+            className="cursor-pointer rounded-full border border-hairline-hi bg-inset px-4 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:bg-hover disabled:opacity-50"
+          >
+            Skip / Decline
+          </button>
+          <button
+            type="button"
+            disabled={submitting || !isComplete}
+            data-testid="live-question-submit-btn"
+            onClick={() => void handleConfirmSubmit()}
+            className="cursor-pointer rounded-full bg-brand px-4 py-1.5 text-[12.5px] font-semibold text-brand-ink transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Submit answer
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -470,6 +733,12 @@ export function ChatStream({
       : s.pendingPermission
   )
   const clearPendingPermission = useAppStore((s) => s.clearPendingPermission)
+  const pendingQuestion = useAppStore((s) =>
+    effectiveSessionId
+      ? (s.pendingQuestionsBySession[effectiveSessionId]?.[0] ?? null)
+      : s.pendingQuestion
+  )
+  const clearPendingQuestion = useAppStore((s) => s.clearPendingQuestion)
   const midTurnMessages = useAppStore((s) =>
     effectiveSessionId
       ? (s.midTurnMessagesBySession[effectiveSessionId] ?? EMPTY_MID_TURN_MESSAGES)
@@ -616,6 +885,41 @@ export function ChatStream({
     [clearPendingPermission, pendingPermission]
   )
 
+  const handleSubmitQuestionAnswers = React.useCallback(
+    async (
+      answers: Record<string, { selected?: number[]; custom?: string[] }>
+    ) => {
+      if (!pendingQuestion) return
+      const req = pendingQuestion
+      try {
+        await ipcClient.harness.respondToQuestion(
+          req.sessionId,
+          req.requestId,
+          { kind: "answered", answers }
+        )
+        clearPendingQuestion(req.sessionId, req.requestId)
+      } catch {
+        toast.error("Failed to send question response to daemon")
+      }
+    },
+    [clearPendingQuestion, pendingQuestion]
+  )
+
+  const handleDeclineQuestion = React.useCallback(async () => {
+    if (!pendingQuestion) return
+    const req = pendingQuestion
+    try {
+      await ipcClient.harness.respondToQuestion(
+        req.sessionId,
+        req.requestId,
+        { kind: "declined" }
+      )
+      clearPendingQuestion(req.sessionId, req.requestId)
+    } catch {
+      toast.error("Failed to dismiss question in daemon")
+    }
+  }, [clearPendingQuestion, pendingQuestion])
+
   React.useEffect(() => {
     if (!effectiveSessionId || !liveTurn?.isLive) return
     if (daemonSessionStatus?.status === "running") return
@@ -703,14 +1007,54 @@ export function ChatStream({
     const sessionCompletedTurns =
       controlledTurns === undefined ? (completedLiveTurns ?? []) : []
 
+    let effectiveLiveTurn = activeLiveTurn
+    let effectiveBaseCount =
+      liveTurn && liveTurn.sessionId === effectiveSessionId
+        ? baseHistoryTurnCount
+        : baseTurns.length
+
+    if (
+      effectiveLiveTurn &&
+      !effectiveLiveTurn.userPrompt.trim() &&
+      baseTurns.length > 0
+    ) {
+      const trailing = baseTurns[baseTurns.length - 1]
+      const trailingHasUserInput =
+        trailing &&
+        (trailing.userPrompt.trim().length > 0 ||
+          (trailing.userImages?.length ?? 0) > 0)
+      const trailingHasAssistantOrWork = Boolean(
+        trailing &&
+          (trailing.answerIntro.trim().length > 0 ||
+            trailing.answerBullets.length > 0 ||
+            trailing.groups.length > 0 ||
+            trailing.notes.length > 0 ||
+            (trailing.timeline?.length ?? 0) > 0 ||
+            trailing.diffCard.lines.length > 0 ||
+            trailing.outputArtifact)
+      )
+      if (trailing && trailingHasUserInput && !trailingHasAssistantOrWork) {
+        effectiveLiveTurn = {
+          ...effectiveLiveTurn,
+          userPrompt: trailing.userPrompt,
+          ...(effectiveLiveTurn.userImages &&
+          effectiveLiveTurn.userImages.length > 0
+            ? {}
+            : trailing.userImages && trailing.userImages.length > 0
+              ? { userImages: trailing.userImages }
+              : {}),
+          userRefFiles:
+            effectiveLiveTurn.userRefFiles ?? trailing.userRefFiles,
+        }
+        effectiveBaseCount = baseTurns.length - 1
+      }
+    }
+
     return reconcileChatTurns({
       historyTurns: baseTurns.map(toReconcilableTurn),
-      liveTurn: activeLiveTurn ? toReconcilableTurn(activeLiveTurn) : null,
+      liveTurn: effectiveLiveTurn ? toReconcilableTurn(effectiveLiveTurn) : null,
       completedLiveTurns: sessionCompletedTurns.map(toReconcilableTurn),
-      baseHistoryTurnCount:
-        liveTurn && liveTurn.sessionId === effectiveSessionId
-          ? baseHistoryTurnCount
-          : baseTurns.length,
+      baseHistoryTurnCount: effectiveBaseCount,
     })
   }, [
     baseHistoryTurnCount,
@@ -831,6 +1175,17 @@ export function ChatStream({
           </button>
         </div>
       ) : null}
+
+      {pendingQuestion &&
+        (!pendingQuestion.sessionId ||
+          pendingQuestion.sessionId === effectiveSessionId) && (
+          <LiveQuestionPromptCard
+            key={pendingQuestion.requestId}
+            pendingQuestion={pendingQuestion}
+            onSubmitAnswers={handleSubmitQuestionAnswers}
+            onDecline={handleDeclineQuestion}
+          />
+        )}
 
       {pendingPermission &&
         (!pendingPermission.sessionId ||

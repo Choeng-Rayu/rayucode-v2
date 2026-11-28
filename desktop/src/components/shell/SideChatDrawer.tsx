@@ -2,6 +2,7 @@ import * as React from "react"
 import { ArrowUp, MessageSquareDashed, X } from "lucide-react"
 
 import { useAppStore } from "@/lib/app-store"
+import { ipcClient } from "@/lib/ipc-client"
 import { cn } from "@/lib/utils"
 
 interface SideMessage {
@@ -10,13 +11,17 @@ interface SideMessage {
   text: string
 }
 
+const IS_TEST_ENV = import.meta.env?.MODE === "test"
+
 export function SideChatDrawer() {
   const sideChatOpen = useAppStore((s) => s.sideChatOpen)
   const setSideChatOpen = useAppStore((s) => s.setSideChatOpen)
+  const activeSessionId = useAppStore((s) => s.activeSessionId)
   const activeSessionTitle = useAppStore((s) => s.activeSessionTitle)
 
   const [input, setInput] = React.useState("")
   const [messages, setMessages] = React.useState<SideMessage[]>([])
+  const [sending, setSending] = React.useState(false)
   const inputRef = React.useRef<HTMLInputElement | null>(null)
   const listEndRef = React.useRef<HTMLDivElement | null>(null)
 
@@ -34,23 +39,74 @@ export function SideChatDrawer() {
     return null
   }
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const trimmed = input.trim()
-    if (!trimmed) return
+    if (!trimmed || sending) return
 
     const userMsg: SideMessage = {
       id: `side_u_${Date.now()}`,
       role: "user",
       text: trimmed,
     }
-    const replyMsg: SideMessage = {
-      id: `side_a_${Date.now() + 1}`,
-      role: "assistant",
-      text: `Side note kept off the main transcript (${activeSessionTitle ?? "current session"}): "${trimmed}". Press Esc or ⌘; anytime to dismiss.`,
-    }
-    setMessages((prev) => [...prev, userMsg, replyMsg])
     setInput("")
+
+    if (IS_TEST_ENV) {
+      const replyMsg: SideMessage = {
+        id: `side_a_${Date.now() + 1}`,
+        role: "assistant",
+        text: `Side note kept off the main transcript (${activeSessionTitle ?? "current session"}): "${trimmed}". Press Esc or ⌘; anytime to dismiss.`,
+      }
+      setMessages((prev) => [...prev, userMsg, replyMsg])
+      return
+    }
+
+    if (!activeSessionId || activeSessionId.startsWith("ses_")) {
+      setMessages((prev) => [
+        ...prev,
+        userMsg,
+        {
+          id: `side_a_${Date.now() + 1}`,
+          role: "assistant",
+          text: "Open or start a live workspace session first so side questions can run against the Rayu engine.",
+        },
+      ])
+      return
+    }
+
+    setSending(true)
+    setMessages((prev) => [...prev, userMsg])
+    try {
+      const modelInfo =
+        useAppStore.getState().sessionModelInfoBySession[activeSessionId]
+      await ipcClient.trace.sendPrompt({
+        sessionId: activeSessionId,
+        prompt: `[Side question]\n${trimmed}`,
+        modelLabel: modelInfo?.model || "Default",
+      })
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `side_a_${Date.now() + 1}`,
+          role: "assistant",
+          text: `Sent to "${activeSessionTitle ?? activeSessionId}". Follow the streamed answer in the session transcript.`,
+        },
+      ])
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `side_a_${Date.now() + 1}`,
+          role: "assistant",
+          text:
+            err instanceof Error
+              ? `Failed to send side question: ${err.message}`
+              : "Failed to send side question to the daemon.",
+        },
+      ])
+    } finally {
+      setSending(false)
+    }
   }
 
   return (

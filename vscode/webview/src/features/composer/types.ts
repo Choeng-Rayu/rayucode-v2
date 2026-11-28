@@ -100,7 +100,7 @@ export const ComposerSubmitPayloadSchema = z.object({
   modelSpec: z.string().optional(),
   modelLabel: z.string(),
   apiMethod: z.string().optional(),
-  effort: EffortLevelSchema,
+  effort: EffortLevelSchema.optional(),
   serviceTier: ServiceTierSchema.optional(),
   cacheTtl: CacheTtlSchema.optional(),
   permissionMode: PermissionModeIdSchema,

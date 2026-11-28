@@ -1010,6 +1010,20 @@ impl Provider for OpenAIProvider {
         Ok(())
     }
 
+    async fn refresh_model_catalog(&self) -> Result<rayucode_provider_core::ModelCatalogRefreshSummary> {
+        let before_models = self.available_models_display();
+        let before_routes = self.model_routes();
+        // OpenAI prefetch hits the live endpoint directly and only overwrites the
+        // scoped cache on success, preserving last-good models on any error.
+        self.prefetch_models().await?;
+        Ok(rayucode_provider_core::summarize_model_catalog_refresh(
+            before_models,
+            self.available_models_display(),
+            before_routes,
+            self.model_routes(),
+        ))
+    }
+
     fn reasoning_effort(&self) -> Option<String> {
         self.reasoning_effort
             .read()

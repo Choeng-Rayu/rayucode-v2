@@ -55,7 +55,7 @@ export interface CoordinationLedgerProps {
   onBoardFilterChange: (filter: SwarmBoardFilter) => void;
   workerFilter: string;
   onWorkerFilterChange: (worker: string) => void;
-  onDecidePlan: (
+  onDecidePlan?: (
     proposalId: string,
     decision: "approve" | "reject",
   ) => Promise<{ ok: boolean; error?: string }>;
@@ -322,10 +322,10 @@ export function CoordinationLedger({
                             type="button"
                             variant="primary"
                             size="sm"
-                            disabled={isDecidingPlan}
+                            disabled={isDecidingPlan || !onDecidePlan}
                             data-testid={`approve-proposal-${proposal.proposalId}`}
                             onClick={() =>
-                              void onDecidePlan(proposal.proposalId, "approve")
+                              void onDecidePlan?.(proposal.proposalId, "approve")
                             }
                           >
                             <Check className="size-3.5" aria-hidden="true" />
@@ -335,10 +335,10 @@ export function CoordinationLedger({
                             type="button"
                             variant="outline"
                             size="sm"
-                            disabled={isDecidingPlan}
+                            disabled={isDecidingPlan || !onDecidePlan}
                             data-testid={`reject-proposal-${proposal.proposalId}`}
                             onClick={() =>
-                              void onDecidePlan(proposal.proposalId, "reject")
+                              void onDecidePlan?.(proposal.proposalId, "reject")
                             }
                           >
                             <X className="size-3.5" aria-hidden="true" />

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -40,7 +41,13 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui";
-import { callRpc, cn, useAppStore, type MidTurnSendMode } from "@/lib";
+import {
+  callRpc,
+  cn,
+  onHostMessage,
+  useAppStore,
+  type MidTurnSendMode,
+} from "@/lib";
 
 import {
   DEFAULT_CHECKOUT,
@@ -51,6 +58,7 @@ import {
   normalizeEffortLevel,
 } from "../constants";
 import {
+  modelSettingsQueryOptions,
   useComposerModelCatalog,
   useSlashCommandsCatalog,
   useWorkspaceFilesSearch,
@@ -219,6 +227,8 @@ export interface SessionComposerProps {
   isSubmitting?: boolean;
   value?: string;
   onValueChange?: (value: string) => void;
+  images?: ImageAttachmentView[];
+  onImagesChange?: (images: ImageAttachmentView[]) => void;
   enablePermissionShortcut?: boolean;
   className?: string;
 }
@@ -251,6 +261,8 @@ export function SessionComposer({
   isSubmitting: controlledIsSubmitting,
   value: controlledValue,
   onValueChange,
+  images: controlledImages,
+  onImagesChange,
   enablePermissionShortcut = true,
   className,
 }: SessionComposerProps) {
@@ -291,7 +303,14 @@ export function SessionComposer({
   const sessionPrefs = useAppStore(
     (s) => s.sessionPrefsBySession[sessionOverrideKey],
   );
+  const pendingSessionPrefs = useAppStore((s) =>
+    effectiveSessionId ? s.pendingSessionPrefsBySession[effectiveSessionId] : undefined,
+  );
   const setSessionPrefs = useAppStore((s) => s.setSessionPrefs);
+  const setPendingSessionPrefs = useAppStore((s) => s.setPendingSessionPrefs);
+  const clearPendingSessionPrefs = useAppStore(
+    (s) => s.clearPendingSessionPrefs,
+  );
   const clearSessionPrefField = useAppStore((s) => s.clearSessionPrefField);
   const seedSessionPrefsFromSummary = useAppStore(
     (s) => s.seedSessionPrefsFromSummary,
@@ -302,7 +321,39 @@ export function SessionComposer({
       : storeIsStreamActive;
 
   const catalog = useComposerModelCatalog(effectiveSessionId);
+  const modelSettingsQuery = useQuery(
+    modelSettingsQueryOptions(effectiveSessionId),
+  );
   const foldersQuery = useQuery(workspaceFoldersQueryOptions());
+
+  React.useEffect(() => {
+    return onHostMessage((msg) => {
+      if (
+        msg.type === "rayucode.session.prefsSync" ||
+        msg.type === "rayucode.permission.modeSync"
+      ) {
+        useAppStore.getState().applyHostMessage(msg);
+      }
+    });
+  }, []);
+
+  const modelsWithCapabilities = React.useMemo(() => {
+    const routes = modelSettingsQuery.data?.routes;
+    if (!routes || routes.length === 0) return catalog.models;
+    return catalog.models.map((m) => {
+      const matchedRoute =
+        routes.find(
+          (r) =>
+            (r.modelSpec && r.modelSpec === m.modelSpec) ||
+            r.model === m.id ||
+            r.id === m.id,
+        );
+      if (matchedRoute && matchedRoute.supportsFast !== undefined) {
+        return { ...m, supportsFast: matchedRoute.supportsFast };
+      }
+      return m;
+    });
+  }, [catalog.models, modelSettingsQuery.data?.routes]);
 
   const workspaces = React.useMemo(() => {
     if (storeWorkspaces.length > 0) return storeWorkspaces;
@@ -319,7 +370,27 @@ export function SessionComposer({
     return workspaces[0] ?? null;
   }, [activeDraft?.workingDir, effectiveSessionId, storeProjectPath, workspaces]);
 
-  const [images, setImages] = React.useState<ImageAttachmentView[]>([]);
+  const [uncontrolledImages, setUncontrolledImages] = React.useState<
+    ImageAttachmentView[]
+  >([]);
+  const imagesRef = React.useRef<ImageAttachmentView[]>(
+    controlledImages ?? uncontrolledImages,
+  );
+  const images =
+    controlledImages !== undefined ? controlledImages : uncontrolledImages;
+  imagesRef.current = images;
+  const setImages = React.useCallback(
+    (updater: React.SetStateAction<ImageAttachmentView[]>) => {
+      const next =
+        typeof updater === "function" ? updater(imagesRef.current) : updater;
+      imagesRef.current = next;
+      if (controlledImages === undefined) {
+        setUncontrolledImages(next);
+      }
+      onImagesChange?.(next);
+    },
+    [controlledImages, onImagesChange],
+  );
   const [selectionIncluded, setSelectionIncluded] = React.useState(true);
   const [plusMenuOpen, setPlusMenuOpen] = React.useState(false);
   const [mentionIndex, setMentionIndex] = React.useState(0);
@@ -441,48 +512,76 @@ export function SessionComposer({
   const activeModelId =
     controlledModelId !== undefined
       ? controlledModelId
-      : (sessionPrefs?.modelId ?? catalog.defaultModelId);
+      : (pendingSessionPrefs?.modelId ??
+        sessionPrefs?.modelId ??
+        catalog.defaultModelId);
   const matchedActiveModel = React.useMemo(() => {
     if (!activeModelId) return undefined;
     return (
-      catalog.models.find(
+      modelsWithCapabilities.find(
         (m) =>
           (m.modelSpec === activeModelId || m.id === activeModelId) &&
           m.available !== false,
       ) ??
-      catalog.models.find(
+      modelsWithCapabilities.find(
         (m) => m.modelSpec === activeModelId || m.id === activeModelId,
       )
     );
-  }, [activeModelId, catalog.models]);
+  }, [activeModelId, modelsWithCapabilities]);
   const activeModelLabel =
     controlledModelLabel !== undefined
       ? controlledModelLabel
       : (matchedActiveModel?.label ??
+        pendingSessionPrefs?.modelLabel ??
         sessionPrefs?.modelLabel ??
         catalog.defaultModelLabel);
   const activeEffort = normalizeEffortLevel(
     controlledEffort !== undefined
       ? controlledEffort
-      : (sessionPrefs?.effort ?? catalog.defaultEffort),
+      : (pendingSessionPrefs?.effort ??
+        sessionPrefs?.effort ??
+        catalog.defaultEffort),
   );
   const activeServiceTier =
     controlledServiceTier !== undefined
       ? controlledServiceTier
-      : (sessionPrefs?.serviceTier ?? catalog.serviceTier);
+      : (pendingSessionPrefs?.serviceTier ??
+        sessionPrefs?.serviceTier ??
+        catalog.serviceTier);
   const activeCacheTtl =
     controlledCacheTtl !== undefined
       ? controlledCacheTtl
-      : (sessionPrefs?.cacheTtl ?? catalog.cacheTtl);
+      : catalog.cacheTtl;
   const storeDefaultPermissionMode = useAppStore(
     (s) => s.defaultPermissionMode,
   );
   const activePermissionMode =
     controlledPermissionMode !== undefined
       ? controlledPermissionMode
-      : (sessionPrefs?.permissionMode ??
+      : (pendingSessionPrefs?.permissionMode ??
+        sessionPrefs?.permissionMode ??
         storeDefaultPermissionMode ??
         DEFAULT_PERMISSION_MODE_ID);
+  const activeModelSupportsFast =
+    (matchedActiveModel as { supportsFast?: boolean } | undefined)
+      ?.supportsFast !== false;
+
+  const isModelPending = Boolean(
+    pendingSessionPrefs?.modelId &&
+      pendingSessionPrefs.modelId !== sessionPrefs?.modelId,
+  );
+  const isEffortPending = Boolean(
+    pendingSessionPrefs?.effort &&
+      pendingSessionPrefs.effort !== sessionPrefs?.effort,
+  );
+  const isServiceTierPending = Boolean(
+    pendingSessionPrefs?.serviceTier &&
+      pendingSessionPrefs.serviceTier !== sessionPrefs?.serviceTier,
+  );
+  const isPermissionPending = Boolean(
+    pendingSessionPrefs?.permissionMode &&
+      pendingSessionPrefs.permissionMode !== sessionPrefs?.permissionMode,
+  );
   const activeSelection =
     controlledEditorSelection !== undefined
       ? controlledEditorSelection
@@ -672,7 +771,7 @@ export function SessionComposer({
                   model: targetModel,
                 });
                 if (res.deferred || (!res.ok && res.code === "busy")) {
-                  setSessionPrefs(sessionOverrideKey, {
+                  setPendingSessionPrefs(effectiveSessionId, {
                     modelId: targetModel,
                     modelLabel: targetModel,
                   });
@@ -727,7 +826,9 @@ export function SessionComposer({
                   effort: targetEffort,
                 });
                 if (res.deferred || (!res.ok && res.code === "busy")) {
-                  setSessionPrefs(sessionOverrideKey, { effort: normalizedEffort });
+                  setPendingSessionPrefs(effectiveSessionId, {
+                    effort: normalizedEffort,
+                  });
                   setDeferredNotice("Applies on next turn");
                   setCommandBanner({
                     tone: "busy",
@@ -970,11 +1071,19 @@ export function SessionComposer({
         model.modelSpec ||
         formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
         model.id;
-      setSessionPrefs(sessionOverrideKey, {
-        modelId: spec,
-        modelLabel: model.label,
-        apiMethod: model.apiMethod,
-      });
+      if (effectiveSessionId && isSubmitting) {
+        setPendingSessionPrefs(effectiveSessionId, {
+          modelId: spec,
+          modelLabel: model.label,
+          apiMethod: model.apiMethod,
+        });
+      } else {
+        setSessionPrefs(sessionOverrideKey, {
+          modelId: spec,
+          modelLabel: model.label,
+          apiMethod: model.apiMethod,
+        });
+      }
       if (!effectiveSessionId) {
         updateActiveDraft({ model: spec });
       }
@@ -982,8 +1091,10 @@ export function SessionComposer({
     },
     [
       effectiveSessionId,
+      isSubmitting,
       onModelChange,
       sessionOverrideKey,
+      setPendingSessionPrefs,
       setSessionPrefs,
       updateActiveDraft,
     ],
@@ -991,7 +1102,11 @@ export function SessionComposer({
 
   const handleEffortSelect = React.useCallback(
     (nextEffort: EffortLevel) => {
-      setSessionPrefs(sessionOverrideKey, { effort: nextEffort });
+      if (effectiveSessionId && isSubmitting) {
+        setPendingSessionPrefs(effectiveSessionId, { effort: nextEffort });
+      } else {
+        setSessionPrefs(sessionOverrideKey, { effort: nextEffort });
+      }
       if (!effectiveSessionId) {
         updateActiveDraft({ reasoningEffort: nextEffort });
       }
@@ -999,8 +1114,10 @@ export function SessionComposer({
     },
     [
       effectiveSessionId,
+      isSubmitting,
       onEffortChange,
       sessionOverrideKey,
+      setPendingSessionPrefs,
       setSessionPrefs,
       updateActiveDraft,
     ],
@@ -1008,32 +1125,60 @@ export function SessionComposer({
 
   const handleServiceTierSelect = React.useCallback(
     (nextTier: ServiceTier) => {
-      setSessionPrefs(sessionOverrideKey, { serviceTier: nextTier });
+      if (effectiveSessionId && isSubmitting) {
+        setPendingSessionPrefs(effectiveSessionId, { serviceTier: nextTier });
+      } else {
+        setSessionPrefs(sessionOverrideKey, { serviceTier: nextTier });
+      }
       onServiceTierChange?.(nextTier);
     },
-    [onServiceTierChange, sessionOverrideKey, setSessionPrefs],
+    [
+      effectiveSessionId,
+      isSubmitting,
+      onServiceTierChange,
+      sessionOverrideKey,
+      setPendingSessionPrefs,
+      setSessionPrefs,
+    ],
   );
 
   const handleCacheTtlSelect = React.useCallback(
     (nextTtl: CacheTtl) => {
-      setSessionPrefs(sessionOverrideKey, { cacheTtl: nextTtl });
+      void catalog.setCacheTtl(nextTtl).catch(() => {});
       onCacheTtlChange?.(nextTtl);
     },
-    [onCacheTtlChange, sessionOverrideKey, setSessionPrefs],
+    [catalog, onCacheTtlChange],
   );
 
   const handlePermissionSelect = React.useCallback(
     (nextMode: PermissionModeId) => {
-      setSessionPrefs(sessionOverrideKey, { permissionMode: nextMode });
+      if (effectiveSessionId && isSubmitting) {
+        if (nextMode === sessionPrefs?.permissionMode) {
+          clearPendingSessionPrefs(effectiveSessionId, "permissionMode");
+        } else {
+          setPendingSessionPrefs(effectiveSessionId, {
+            permissionMode: nextMode,
+          });
+        }
+      } else {
+        setSessionPrefs(sessionOverrideKey, { permissionMode: nextMode });
+        if (effectiveSessionId) {
+          clearPendingSessionPrefs(effectiveSessionId, "permissionMode");
+        }
+      }
       if (!effectiveSessionId) {
         updateActiveDraft({ permissionMode: nextMode });
       }
       onPermissionModeChange?.(nextMode);
     },
     [
+      clearPendingSessionPrefs,
       effectiveSessionId,
+      isSubmitting,
       onPermissionModeChange,
       sessionOverrideKey,
+      sessionPrefs?.permissionMode,
+      setPendingSessionPrefs,
       setSessionPrefs,
       updateActiveDraft,
     ],
@@ -1134,6 +1279,7 @@ export function SessionComposer({
           id,
           sessionId: effectiveSessionId,
           mode: "queue",
+          workingDir: storeProjectPath ?? activeWorkspace?.path ?? undefined,
           text: trimmed,
           createdAtMs: Date.now(),
           images: attachedImages,
@@ -1143,7 +1289,7 @@ export function SessionComposer({
               : null,
           modelSpec: resolvedModelSpec,
           apiMethod: activeModelOption?.apiMethod,
-          effort: activeEffort,
+          effort: activeModelOption?.supportedEfforts?.length === 0 ? undefined : activeEffort,
           permissionMode: activePermissionMode,
           serviceTier: activeServiceTier,
           cacheTtl: activeCacheTtl,
@@ -1176,7 +1322,7 @@ export function SessionComposer({
         modelSpec: resolvedModelSpec,
         modelLabel: activeModelLabel,
         apiMethod: activeModelOption?.apiMethod,
-        effort: activeEffort,
+        effort: activeModelOption?.supportedEfforts?.length === 0 ? undefined : activeEffort,
         serviceTier: activeServiceTier,
         cacheTtl: activeCacheTtl,
         permissionMode: activePermissionMode,
@@ -1191,7 +1337,16 @@ export function SessionComposer({
 
       setTextValue("");
       setImages([]);
-      void onSubmit?.(payload);
+      void Promise.resolve(onSubmit?.(payload)).catch((error) => {
+        const state = useAppStore.getState();
+        const draftKey = effectiveSessionId ?? "__home__";
+        if (!state.composerDrafts[draftKey]) {
+          state.setComposerDraft(draftKey, rawText);
+          setTextValue(rawText);
+        }
+        setImages((current) => current.length ? current : payload.images ?? []);
+        toast.error(error instanceof Error ? error.message : "Rayu could not submit the prompt.");
+      });
     },
     [
       activeCacheTtl,
@@ -1799,8 +1954,12 @@ export function SessionComposer({
                 serviceTier={activeServiceTier}
                 cacheTtl={activeCacheTtl}
                 sessionId={effectiveSessionId}
-                models={catalog.models}
+                models={modelsWithCapabilities}
                 defaultModelId={catalog.defaultModelId}
+                supportsFast={activeModelSupportsFast}
+                pendingModel={isModelPending}
+                pendingEffort={isEffortPending}
+                pendingServiceTier={isServiceTierPending}
                 deferredNotice={deferredNotice}
                 onDeferredChange={setDeferredNotice}
                 onSelectModel={handleModelSelect}
@@ -1825,6 +1984,15 @@ export function SessionComposer({
               ) : null}
 
               <span className="flex-1" />
+
+              {isPermissionPending ? (
+                <span
+                  data-testid="permission-pending-badge"
+                  className="shrink-0 rounded-full border border-hairline bg-inset px-1.5 py-px text-[10px] font-medium text-muted-ink"
+                >
+                  Pending
+                </span>
+              ) : null}
 
               <PermissionPopover
                 value={activePermissionMode}

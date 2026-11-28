@@ -88,6 +88,7 @@ export function SlidePane({ className }: SlidePaneProps) {
   const handleOpenInPowerPoint = async () => {
     if (!slideDeck) return
     const res = await ipcClient.native.openInPowerPoint({
+      filePath: slideDeck.filePath,
       title: slideDeck.title,
       slides: slideDeck.slides,
     })

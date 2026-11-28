@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import {
   Activity,
   AlertCircle,
@@ -196,6 +197,7 @@ export function SettingsView({
     linear: false,
   })
 
+  const queryClient = useQueryClient()
   const settingsQuery = useSettingsState()
   const daemonQuery = useDaemonStatus()
   const engineConfig = useEngineConfig()
@@ -203,6 +205,7 @@ export function SettingsView({
   const updatePreferencesMutation = useUpdatePreferences()
   const toggleUseAllCreditsMutation = useToggleUseAllCredits()
   const pingDaemonMutation = usePingDaemon()
+  const [reloadingDaemon, setReloadingDaemon] = React.useState(false)
   const [draftConfigValues, setDraftConfigValues] = React.useState<
     Record<string, string>
   >({})
@@ -1319,17 +1322,53 @@ export function SettingsView({
                     <Button
                       variant="outline"
                       size="xs"
+                      disabled={reloadingDaemon || pingDaemonMutation.isPending}
                       data-testid="settings-reload-daemon-btn"
                       onClick={() => {
-                        pingDaemonMutation.mutate(undefined, {
-                          onSuccess: () => {
+                        if (reloadingDaemon) return
+                        setReloadingDaemon(true)
+                        void ipcClient.harness
+                          .globalRuntimeCommand("server_reload", [])
+                          .then(async (res) => {
+                            await Promise.all([
+                              pingDaemonMutation.mutateAsync().catch(() => null),
+                              queryClient.invalidateQueries({
+                                queryKey: ["settings"],
+                              }),
+                              queryClient.invalidateQueries({
+                                queryKey: ["models"],
+                              }),
+                              queryClient.invalidateQueries({
+                                queryKey: ["plugins"],
+                              }),
+                              queryClient.invalidateQueries({
+                                queryKey: ["agents"],
+                              }),
+                              queryClient.invalidateQueries({
+                                queryKey: ["telegram"],
+                              }),
+                              queryClient.invalidateQueries({
+                                queryKey: ["sessions"],
+                              }),
+                            ])
                             engineConfig.clearRequiresRestart()
-                            toast("Reconnected to Rayu daemon")
-                          },
-                        })
+                            toast.success(
+                              res?.message?.trim() || "Reloaded Rayu daemon"
+                            )
+                          })
+                          .catch((err: unknown) => {
+                            toast.error(
+                              err instanceof Error
+                                ? `Failed to reload Rayu daemon: ${err.message}`
+                                : "Failed to reload Rayu daemon"
+                            )
+                          })
+                          .finally(() => {
+                            setReloadingDaemon(false)
+                          })
                       }}
                     >
-                      Reload daemon
+                      {reloadingDaemon ? "Reloading..." : "Reload daemon"}
                     </Button>
                   </div>
                 ) : null}

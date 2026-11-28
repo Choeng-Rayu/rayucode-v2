@@ -20,6 +20,9 @@ export interface OfficeExcelSheet {
   columns: string[]
   headers: Record<string, string>
   rows: OfficeExcelRow[]
+  truncated?: boolean
+  totalRows?: number
+  totalColumns?: number
 }
 
 export interface OfficeExcelWorkbookPayload {
@@ -95,13 +98,30 @@ function extractPrimitiveCellValue(raw: ExcelJS.CellValue): {
     return { value: raw.toISOString().slice(0, 10) }
   }
   if (typeof raw === "object") {
+    if ("error" in raw && raw.error !== undefined) {
+      return { value: String(raw.error) }
+    }
     if ("formula" in raw && typeof raw.formula === "string") {
+      const formulaStr = raw.formula.startsWith("=")
+        ? raw.formula
+        : `=${raw.formula}`
       const result = "result" in raw ? raw.result : undefined
-      const resolved =
-        typeof result === "number" || typeof result === "string" ? result : 0
+      let resolved: string | number = ""
+      if (typeof result === "number" || typeof result === "string") {
+        resolved = result
+      } else if (typeof result === "boolean") {
+        resolved = result ? "TRUE" : "FALSE"
+      } else if (
+        result &&
+        typeof result === "object" &&
+        "error" in result &&
+        (result as { error?: unknown }).error !== undefined
+      ) {
+        resolved = String((result as { error?: unknown }).error)
+      }
       return {
         value: resolved,
-        formula: raw.formula.startsWith("=") ? raw.formula : `=${raw.formula}`,
+        formula: formulaStr,
       }
     }
     if ("richText" in raw && Array.isArray(raw.richText)) {
@@ -110,6 +130,10 @@ function extractPrimitiveCellValue(raw: ExcelJS.CellValue): {
     if ("text" in raw && typeof raw.text === "string") {
       return { value: raw.text }
     }
+    if ("hyperlink" in raw && typeof raw.hyperlink === "string") {
+      return { value: raw.hyperlink }
+    }
+    return { value: "" }
   }
   return { value: String(raw) }
 }
@@ -129,7 +153,9 @@ export async function readRealExcelWorkbook(
   const sheets: OfficeExcelSheet[] = []
 
   workbook.eachSheet((ws, idx) => {
-    const colCount = Math.max(1, Math.min(26, ws.columnCount || 6))
+    const rawColCount = ws.columnCount || 0
+    const rawRowCount = ws.rowCount || 0
+    const colCount = Math.max(1, Math.min(26, rawColCount || 6))
     const columns: string[] = []
     for (let c = 1; c <= colCount; c += 1) {
       columns.push(colIndexToLetter(c))
@@ -137,7 +163,8 @@ export async function readRealExcelWorkbook(
 
     const headers: Record<string, string> = {}
     const rows: OfficeExcelRow[] = []
-    const maxRow = Math.min(250, ws.rowCount || 1)
+    const maxRow = Math.min(250, rawRowCount || 1)
+    const truncated = rawRowCount > 250 || rawColCount > 26
 
     for (let r = 1; r <= maxRow; r += 1) {
       const excelRow = ws.getRow(r)
@@ -177,8 +204,7 @@ export async function readRealExcelWorkbook(
       const firstLabel = String(cells.A ?? "").toLowerCase()
       const isTotal =
         firstLabel.startsWith("total") ||
-        firstLabel.startsWith("summary") ||
-        Object.keys(formulas).length > 0
+        firstLabel.startsWith("summary")
 
       rows.push({
         rowNumber: r,
@@ -195,6 +221,13 @@ export async function readRealExcelWorkbook(
       columns,
       headers,
       rows,
+      ...(truncated
+        ? {
+            truncated: true,
+            totalRows: rawRowCount,
+            totalColumns: rawColCount,
+          }
+        : {}),
     })
   })
 
@@ -236,35 +269,48 @@ export async function writeRealExcelWorkbook(
   fs.mkdirSync(path.dirname(finalPath), { recursive: true })
 
   const workbook = new ExcelJS.Workbook()
-  workbook.creator = "RayuCode Desktop"
-  workbook.created = new Date()
+  const existsOnDisk = fs.existsSync(finalPath)
+  if (existsOnDisk) {
+    await workbook.xlsx.readFile(finalPath)
+  } else {
+    workbook.creator = "RayuCode Desktop"
+    workbook.created = new Date()
+  }
 
   let totalRows = 0
 
   for (const sheetSpec of input.sheets) {
-    const ws = workbook.addWorksheet(sheetSpec.name.slice(0, 31) || "Sheet1", {
-      views: [{ state: "frozen", ySplit: 1 }],
-    })
+    const safeName = sheetSpec.name.slice(0, 31) || "Sheet1"
+    const existingWs = workbook.getWorksheet(safeName)
+    const ws =
+      existingWs ??
+      workbook.addWorksheet(safeName, {
+        views: [{ state: "frozen", ySplit: 1 }],
+      })
 
     const cols =
       sheetSpec.columns && sheetSpec.columns.length > 0
         ? sheetSpec.columns
         : Object.keys(sheetSpec.headers)
 
-    // Styled Header Row (Row 1)
+    // Styled Header Row (Row 1) — preserve custom fills/fonts when patching existing workbook
     const headerRow = ws.getRow(1)
     cols.forEach((colLetter, idx) => {
       const cell = headerRow.getCell(idx + 1)
       cell.value = sheetSpec.headers[colLetter] ?? colLetter
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 }
-      cell.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF1F2937" },
+      if (!existingWs) {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 }
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF1F2937" },
+        }
+        cell.alignment = { vertical: "middle", horizontal: "left" }
       }
-      cell.alignment = { vertical: "middle", horizontal: "left" }
     })
-    headerRow.height = 24
+    if (!existingWs) {
+      headerRow.height = 24
+    }
 
     // Data & Formula Rows
     sheetSpec.rows.forEach((rowSpec, rIdx) => {
@@ -292,14 +338,21 @@ export async function writeRealExcelWorkbook(
           cell.numFmt = "$#,##0.00"
         } else if (fmt === "percent") {
           cell.numFmt = "0.0%"
-          if (typeof rawVal === "number" && rawVal > 1 && !formulaRaw) {
-            cell.value = rawVal / 100
+          if (!formulaRaw) {
+            if (typeof rawVal === "string" && rawVal.trim().endsWith("%")) {
+              const parsed = Number.parseFloat(rawVal.trim().slice(0, -1))
+              if (Number.isFinite(parsed)) {
+                cell.value = parsed / 100
+              }
+            } else if (typeof rawVal === "number" && Math.abs(rawVal) > 1) {
+              cell.value = rawVal / 100
+            }
           }
         } else if (fmt === "number") {
           cell.numFmt = "#,##0.##"
         }
 
-        if (rowSpec.isTotal) {
+        if (rowSpec.isTotal && !existingWs) {
           cell.font = { bold: true, size: 11 }
           cell.border = {
             top: { style: "thin", color: { argb: "FF94A3B8" } },
@@ -309,14 +362,18 @@ export async function writeRealExcelWorkbook(
       })
     })
 
-    // Auto-size columns comfortably
+    // Auto-size columns comfortably only on new sheets or narrower columns
     cols.forEach((colLetter, idx) => {
       let maxLen = String(sheetSpec.headers[colLetter] ?? colLetter).length
       for (const rowSpec of sheetSpec.rows) {
         const v = String(rowSpec.cells[colLetter] ?? "")
         if (v.length > maxLen) maxLen = v.length
       }
-      ws.getColumn(idx + 1).width = Math.min(44, Math.max(12, maxLen + 4))
+      const targetWidth = Math.min(44, Math.max(12, maxLen + 4))
+      const col = ws.getColumn(idx + 1)
+      if (!existingWs || !col.width || col.width < targetWidth) {
+        col.width = targetWidth
+      }
     })
   }
 

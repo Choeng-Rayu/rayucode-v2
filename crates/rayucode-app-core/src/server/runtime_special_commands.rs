@@ -58,7 +58,9 @@ fn session_manifest(session_id: &str) -> Result<Option<crate::overnight::Overnig
         else {
             continue;
         };
-        if manifest.parent_session_id != session_id && manifest.coordinator_session_id != session_id
+        if !session_id.is_empty()
+            && manifest.parent_session_id != session_id
+            && manifest.coordinator_session_id != session_id
         {
             continue;
         }

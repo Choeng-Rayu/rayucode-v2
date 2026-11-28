@@ -18,9 +18,11 @@ import {
   DaemonBanner,
   EMOJI_PRESETS,
   ProjectIconPicker,
+  SidebarProjectsPane,
   StatusBarPill,
   resolveFormFactorFromWidth,
 } from "@/features/shell";
+import { TurnActions } from "@/features/chat";
 import {
   __setMockAccountStateForTest,
   callRpc,
@@ -562,6 +564,86 @@ describe("RayuCode VS Code UI Shell & Design System (Wave 2B)", () => {
       expect(savedStates.length).toBe(countBeforeSidebar);
     } finally {
       window.acquireVsCodeApi = prevAcquire;
+    }
+  });
+
+  it("labels archive/restore explicitly as a local sidebar preference in SidebarProjectsPane and confirms whole-session Fork is present while bounded Fork-from-turn is absent", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "sessions.list") {
+        const base = await origCallRpc(method as never, params as never);
+        const sessions = (
+          base as { sessions: Array<Record<string, unknown>> }
+        ).sessions;
+        return {
+          sessions: [
+            ...sessions,
+            {
+              sessionId: "ses_archived_local",
+              title: "Locally Archived Session",
+              workingDir: "/workspace/rayucode-v2",
+              status: "idle",
+              updatedAtMs: Date.now() - 120_000,
+              archived: true,
+            },
+          ],
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      renderWithQuery(
+        <div>
+          <SidebarProjectsPane />
+          <TurnActions
+            sessionId="ses_1"
+            turnId="turn_1"
+            responseMarkdown="Completed verification"
+            timestamp="just now"
+          />
+        </div>,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("sidebar-new-session-btn")).toBeTruthy();
+      });
+
+      // Archived section header explicitly indicates local sidebar archive
+      const archivedToggle = await screen.findByText(
+        /Archived \(Local Sidebar\)/i,
+      );
+      expect(archivedToggle).toBeTruthy();
+
+      // Open active session row menu and verify whole-session Fork + Archive in Sidebar are present while bounded Fork-from-turn is absent
+      const menuButtons = screen.getAllByLabelText(/Session options for/i);
+      expect(menuButtons.length).toBeGreaterThan(0);
+      fireEvent.keyDown(menuButtons[0]!, { key: "Enter" });
+
+      await waitFor(() => {
+        expect(screen.getByText(/^Fork session$/i)).toBeTruthy();
+        expect(screen.getByText(/^Archive in Sidebar$/i)).toBeTruthy();
+      });
+      expect(screen.queryByText(/Fork from this turn/i)).toBeNull();
+      expect(screen.queryByTestId("turn-fork-turn_1")).toBeNull();
+
+      // Close active menu, expand Archived (Local Sidebar), and verify Restore to Sidebar label
+      fireEvent.keyDown(menuButtons[0]!, { key: "Escape" });
+      fireEvent.click(archivedToggle);
+
+      const archivedRowMenu = await screen.findByLabelText(
+        "Session options for Locally Archived Session",
+      );
+      fireEvent.keyDown(archivedRowMenu, { key: "Enter" });
+      await waitFor(() => {
+        expect(screen.getByText(/^Restore to Sidebar$/i)).toBeTruthy();
+      });
+    } finally {
+      rpcSpy.mockRestore();
     }
   });
 });

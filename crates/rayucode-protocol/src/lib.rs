@@ -944,7 +944,7 @@ pub struct AwaitedMemberStatus {
 impl Request {
     pub fn id(&self) -> u64 {
         match self {
-            Request::RuntimeCommand { id, .. } => *id,
+            Request::RuntimeCommand { id, .. } | Request::GlobalRuntimeCommand { id, .. } => *id,
             Request::ConfigureTools { id, .. }
             | Request::ListTools { id }
             | Request::ToolResult { id, .. } => *id,
@@ -996,7 +996,7 @@ impl Request {
             Request::SetSessionEnv { id, .. } => *id,
             Request::SetSessionSaved { id, .. } => *id,
             Request::PersistSession { id } => *id,
-            Request::Split { id } => *id,
+            Request::Split { id, .. } => *id,
             Request::Transfer { id } => *id,
             Request::Compact { id } => *id,
             Request::TriggerMemoryExtraction { id } => *id,
@@ -1053,6 +1053,7 @@ impl Request {
             self,
             Request::Ping { .. }
                 | Request::UpgradeRuntime { .. }
+                | Request::GlobalRuntimeCommand { .. }
                 // Usage invalidation only touches process-wide caches, so a
                 // one-shot client can send it without subscribing to a session.
                 | Request::AccountUsage { .. }

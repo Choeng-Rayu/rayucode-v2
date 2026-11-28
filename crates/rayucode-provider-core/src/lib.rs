@@ -337,6 +337,12 @@ pub trait Provider: Send + Sync {
         self.on_auth_changed();
     }
 
+    /// Non-blocking readiness check before accepting an interactive turn.
+    /// Returns `Some(reason)` when the provider has no ready runtime/credentials.
+    fn turn_readiness_error(&self) -> Option<String> {
+        None
+    }
+
     /// Whether asynchronous model-catalog work started by [`Provider::on_auth_changed`]
     /// is still running. Providers that only reload credentials synchronously can
     /// keep the default `false`; orchestrators should override this so callers can

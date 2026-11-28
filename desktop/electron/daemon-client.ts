@@ -232,21 +232,26 @@ function pickNewestExisting(paths: string[]): string | undefined {
 }
 
 function resolveLocalRayuBinary(): string | undefined {
+  if (process.env.RAYU_BINARY !== undefined) {
+    const overridden = process.env.RAYU_BINARY.trim()
+    return overridden && fs.existsSync(overridden) ? overridden : undefined
+  }
   const binName = process.platform === "win32" ? "rayu.exe" : "rayu"
   const repoRoot = path.resolve(__dirname, "..", "..")
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string })
     .resourcesPath
   const localDevBinary = pickNewestExisting([
+    path.join(repoRoot, "target", "selfdev", binName),
     path.join(repoRoot, "target", "release", binName),
     path.join(repoRoot, "target", "debug", binName),
   ])
   const candidates = [
-    process.env.RAYU_BINARY,
     // Packaged desktop app: bundled inside RayuCode.app/Contents/Resources/bin/rayu
     resourcesPath ? path.join(resourcesPath, "bin", binName) : undefined,
-    // Newest local developer build inside rayucode-v2 (debug or release)
+    // Newest local developer build inside rayucode-v2 (selfdev, debug, or release)
     localDevBinary,
     // User-installed CLI on PATH / Cargo / Homebrew
+    path.join(os.homedir(), ".local", "bin", binName),
     path.join(os.homedir(), ".cargo", "bin", binName),
     `/opt/homebrew/bin/${binName}`,
     `/usr/local/bin/${binName}`,
@@ -323,10 +328,25 @@ function isUnsupportedFileChangesError(err: unknown): boolean {
   return code === "unsupported" || code === "unknown_request"
 }
 
+const GLOBAL_RUNTIME_COMMANDS = new Set<string>([
+  "telegram",
+  "agents",
+  "subagent_model",
+  "swarm",
+  "overnight",
+  "schedules",
+  "mcp",
+  "skills",
+  "memory",
+  "refresh_model_list",
+  "server_reload",
+])
+
 export class RayuDaemonClient extends EventEmitter {
   private socketPath: string
   private client: RayucodeClient | null = null
   private launchedClient: RayucodeClient | null = null
+  private ownsLaunchedDaemon = false
   private attachedSessionId: string | null = null
   private connecting: Promise<RayucodeClient> | null = null
   private launching: Promise<DaemonConnectionStatus> | null = null
@@ -335,6 +355,7 @@ export class RayuDaemonClient extends EventEmitter {
   private hasProbedOnce = false
   private desktopRuntime: DesktopToolDeps | null = null
   private activeWorkingDir: string | null = null
+  private readonly sessionWorkingDirs = new Map<string, string>()
   private desiredPermissionMode: PermissionModeId | null = null
   private syncedPermissionModeBySession = new Map<string, PermissionModeId>()
   private pendingPermissionSync = new Map<string, PermissionModeId>()
@@ -347,11 +368,27 @@ export class RayuDaemonClient extends EventEmitter {
   private historyRequestSeq = 0
   private latestHistorySessionId: string | null = null
   private status: DaemonConnectionStatus
+  private readonly resolveBinary: () => string | undefined
 
   private readonly todoRefreshSeqBySession = new Map<string, number>()
 
-  constructor(customSocketPath?: string) {
+  constructor(
+    customSocketPathOrOptions?:
+      | string
+      | { socketPath?: string; resolveBinary?: () => string | undefined },
+    options?: { resolveBinary?: () => string | undefined }
+  ) {
     super()
+    const customSocketPath =
+      typeof customSocketPathOrOptions === "string"
+        ? customSocketPathOrOptions
+        : customSocketPathOrOptions?.socketPath
+    this.resolveBinary =
+      options?.resolveBinary ??
+      (typeof customSocketPathOrOptions === "object"
+        ? customSocketPathOrOptions?.resolveBinary
+        : undefined) ??
+      resolveLocalRayuBinary
     this.socketPath = customSocketPath ?? apiSocketPath()
     this.status = {
       connected: false,
@@ -415,10 +452,27 @@ export class RayuDaemonClient extends EventEmitter {
     this.desktopRuntime = deps
   }
 
+  setWorkingDir(workingDir: string, sessionId?: string): void {
+    this.activeWorkingDir = workingDir
+    if (sessionId) {
+      this.sessionWorkingDirs.set(sessionId, workingDir)
+    }
+  }
+
+  getWorkingDirForSession(sessionId?: string): string {
+    if (sessionId) {
+      const mapped = this.sessionWorkingDirs.get(sessionId)
+      if (mapped) return mapped
+    }
+    return this.activeWorkingDir ?? process.cwd()
+  }
+
   private getDesktopToolDeps(): DesktopToolDeps {
     return (
       this.desktopRuntime ?? {
         getWorkspaceDir: () => this.activeWorkingDir ?? process.cwd(),
+        getWorkspaceDirForSession: (sessionId?: string) =>
+          this.getWorkingDirForSession(sessionId),
       }
     )
   }
@@ -542,7 +596,9 @@ export class RayuDaemonClient extends EventEmitter {
 
   private async connectRawSocket(targetSocket: string): Promise<RayucodeClient> {
     let transport: Transport | undefined
-    if (isUnixSocketPath(targetSocket)) {
+    const isPipeTarget =
+      process.platform === "win32" || targetSocket.startsWith("\\\\.\\pipe\\")
+    if (isUnixSocketPath(targetSocket) || isPipeTarget) {
       try {
         const rawTransport = await unixSocketTransport(targetSocket)
         transport = wrapTransportWithSupportsPermissions(rawTransport)
@@ -555,6 +611,7 @@ export class RayuDaemonClient extends EventEmitter {
       ...(transport ? { transport } : {}),
       clientName: "rayucode-desktop/0.1.0",
       supportsUserResponse: true,
+      supportsUserQuestions: true,
       supportsPermissions: true,
       requestTimeoutMs: 15_000,
     } as ConnectOptions & { supportsPermissions?: boolean }
@@ -615,14 +672,16 @@ export class RayuDaemonClient extends EventEmitter {
       try {
         return await this.dialSocket(this.socketPath)
       } catch (firstErr) {
-        if (this.socketPath !== instanceSocket && fs.existsSync(instanceSocket)) {
+        const instanceCanExist =
+          process.platform === "win32" || fs.existsSync(instanceSocket)
+        if (this.socketPath !== instanceSocket && instanceCanExist) {
           try {
             return await this.dialSocket(instanceSocket)
           } catch {
             // Fall through to launch
           }
         }
-        if (allowAutoLaunch && resolveLocalRayuBinary()) {
+        if (allowAutoLaunch && this.resolveBinary()) {
           const launchedStatus = await this.launchAndConnect(workingDir)
           if (this.client) return this.client
           if (launchedStatus.lastError) {
@@ -673,7 +732,10 @@ export class RayuDaemonClient extends EventEmitter {
 
     this.launching = (async () => {
       try {
-        const binary = resolveLocalRayuBinary()
+        const binary = this.resolveBinary()
+        if (!binary) {
+          throw new Error("Local rayu binary not found.")
+        }
         syncRayuCredentialsToInstanceHome(instanceHome)
 
         const launched = await RayucodeClient.launch({
@@ -681,21 +743,25 @@ export class RayuDaemonClient extends EventEmitter {
           workingDir,
           rayuHome: instanceHome,
           // Keep the private runtime socket in desktop-instance/run while
-          // sharing the canonical ~/.rayu home so CLI, VS Code, and Desktop
-          // all read and write the exact same ~/.rayu/sessions store.
+          // sharing the canonical ~/.rayu home + RAYU_AUTH_CONFIG_DIR so CLI,
+          // VS Code, and Desktop share the same sessions and credentials.
           env: {
             RAYU_HOME: canonicalHome,
+            RAYU_AUTH_CONFIG_DIR: canonicalHome,
             RAYU_ENABLE_MERMAID: process.env.RAYU_ENABLE_MERMAID ?? "false",
           },
           inheritLogins: true,
+          allowSignedOut: true,
           clientName: "rayucode-desktop/0.1.0",
           supportsUserResponse: true,
+          supportsUserQuestions: true,
           supportsPermissions: true,
           requestTimeoutMs: 25_000,
         } as Parameters<typeof RayucodeClient.launch>[0] & {
           supportsPermissions?: boolean
         })
         this.launchedClient = launched
+        this.ownsLaunchedDaemon = true
         this.pool.pinClient(launched)
         const latencyMs = Math.max(1, Date.now() - startedAt)
         this.attachClient(launched, latencyMs, instanceSocket)
@@ -746,8 +812,9 @@ export class RayuDaemonClient extends EventEmitter {
           })
         }
 
+        const canAutoLaunch = Boolean(this.resolveBinary())
         const client = await this.connect(workingDir, {
-          autoLaunch: hasLocalRayuCredentials(),
+          autoLaunch: canAutoLaunch,
         })
         await client.ping()
         return this.updateStatus({
@@ -760,15 +827,17 @@ export class RayuDaemonClient extends EventEmitter {
           lastError: null,
         })
       } catch (connectErr) {
-        // Auto-launch the local rayu binary once credentials exist
-        if (resolveLocalRayuBinary() && hasLocalRayuCredentials()) {
+        // Auto-launch a private local rayu engine even before sign-in so
+        // signed-out inspection routes work against real Rust metadata.
+        if (this.resolveBinary()) {
           return this.launchAndConnect(workingDir)
         }
-        const reason = !hasLocalRayuCredentials()
-          ? "Sign in to Rayu Cloud to start the local Rust daemon."
-          : connectErr instanceof Error
+        const reason =
+          connectErr instanceof Error
             ? connectErr.message
-            : String(connectErr)
+            : !hasLocalRayuCredentials()
+              ? "Sign in to Rayu Cloud or install the local rayu binary."
+              : String(connectErr)
         return this.updateStatus({
           connected: false,
           reconnecting: false,
@@ -934,6 +1003,9 @@ export class RayuDaemonClient extends EventEmitter {
     }
     this.client = targetClient
     this.attachedSessionId = info.session_id
+    if (info.working_dir) {
+      this.sessionWorkingDirs.set(info.session_id, info.working_dir)
+    }
     this.registerSessionClient(info.session_id, targetClient)
     if (info.status === "running" || info.status === "processing") {
       this.pool.markTurnActive(info.session_id)
@@ -1029,6 +1101,10 @@ export class RayuDaemonClient extends EventEmitter {
       const info = await client.createSession({ workingDir })
       this.client = client
       this.attachedSessionId = info.session_id
+      this.sessionWorkingDirs.set(
+        info.session_id,
+        info.working_dir || workingDir
+      )
       this.registerSessionClient(info.session_id, client)
       const normalizedTitle = title?.trim()
       let renamed = false
@@ -1159,11 +1235,18 @@ export class RayuDaemonClient extends EventEmitter {
     })
   }
 
-  async forkSession(sessionId: string): Promise<SessionInfo> {
+  async forkSession(
+    sessionId: string,
+    options?: { upToMessageIndex?: number; upToMessageId?: string }
+  ): Promise<SessionInfo> {
     return this.runSerialized(async () => {
       let client = await this.connect()
       client = await this.ensureAttached(client, sessionId)
-      return client.forkSession(sessionId)
+      const forked = await client.forkSession(sessionId, options)
+      if (forked.working_dir) {
+        this.sessionWorkingDirs.set(forked.session_id, forked.working_dir)
+      }
+      return forked
     })
   }
 
@@ -1235,6 +1318,24 @@ export class RayuDaemonClient extends EventEmitter {
     })
   }
 
+  private async resolveSessionTarget(
+    sessionId: string
+  ): Promise<RayucodeClient> {
+    const pooled = this.pool.get(sessionId)
+    if (pooled) {
+      return pooled
+    }
+    if (this.client && this.attachedSessionId === sessionId) {
+      return this.client
+    }
+    return this.runSerialized(async () => {
+      const base = await this.connect()
+      return this.ensureAttached(base, sessionId, {
+        deferPostAttachSync: true,
+      })
+    })
+  }
+
   async softInterrupt(
     sessionId: string,
     content: string,
@@ -1262,14 +1363,7 @@ export class RayuDaemonClient extends EventEmitter {
     const clientId = options?.clientId
 
     try {
-      const target =
-        this.pool.get(sessionId) ??
-        (await this.runSerialized(async () => {
-          const base = await this.connect()
-          return this.ensureAttached(base, sessionId, {
-            deferPostAttachSync: true,
-          })
-        }))
+      const target = await this.resolveSessionTarget(sessionId)
       this.pool.markTurnActive(sessionId)
       if (typeof target.softInterruptWithId === "function") {
         await target.softInterruptWithId(sessionId, finalContent, {
@@ -1309,7 +1403,7 @@ export class RayuDaemonClient extends EventEmitter {
       return { ok: true, cancelled: true }
     }
     try {
-      const target = this.pool.get(sessionId) ?? (await this.connect())
+      const target = await this.resolveSessionTarget(sessionId)
       if (
         interruptId &&
         typeof target.cancelSoftInterrupt === "function" &&
@@ -1336,7 +1430,7 @@ export class RayuDaemonClient extends EventEmitter {
   }
 
   async cancel(sessionId: string): Promise<void> {
-    const target = this.pool.get(sessionId) ?? (await this.connect())
+    const target = await this.resolveSessionTarget(sessionId)
     this.pool.markTurnSettled(sessionId)
     await target.cancel(sessionId)
   }
@@ -1346,9 +1440,18 @@ export class RayuDaemonClient extends EventEmitter {
     requestId: string,
     decision: PermissionDecision
   ): Promise<void> {
-    const target = this.pool.get(sessionId) ?? (await this.connect())
+    const target = await this.resolveSessionTarget(sessionId)
     this.pool.markPermissionPending(sessionId, false)
     await target.respondToPermission(sessionId, requestId, decision)
+  }
+
+  async respondToQuestion(
+    sessionId: string,
+    requestId: string,
+    response: Record<string, unknown>
+  ): Promise<void> {
+    const target = await this.resolveSessionTarget(sessionId)
+    await target.respondToQuestion(sessionId, requestId, response)
   }
 
   async setPermissionMode(
@@ -1539,11 +1642,49 @@ export class RayuDaemonClient extends EventEmitter {
     })
   }
 
+  async runGlobalRuntimeCommand(
+    command: RuntimeCommand,
+    args: string[] = [],
+    workingDir?: string
+  ): Promise<{ command: RuntimeCommand; data: unknown; message: string }> {
+    const client = await this.connect(workingDir)
+    const supportsGlobal =
+      typeof client.globalRuntimeCommand === "function" &&
+      (typeof client.supports !== "function" ||
+        !Array.isArray(client.capabilities) ||
+        client.capabilities.length === 0 ||
+        client.supports("global_runtime_commands"))
+    if (supportsGlobal) {
+      return client.globalRuntimeCommand(command, args)
+    }
+
+    // Legacy fallback: reuse an existing session only; NEVER create a phantom session.
+    let sessionId = this.attachedSessionId
+    if (!sessionId) {
+      const list = await client.listSessions({
+        includeArchived: false,
+        limit: 1,
+      })
+      if (list.length > 0 && list[0]?.session_id) {
+        sessionId = list[0].session_id
+      }
+    }
+    if (!sessionId) {
+      throw new Error(
+        `Daemon does not support global_runtime_commands and has no active session for "${command}".`
+      )
+    }
+    return this.runtimeCommand(sessionId, command, args)
+  }
+
   async runRuntimeCommandOnAnySession(
     command: RuntimeCommand,
     args: string[] = [],
     workingDir?: string
   ): Promise<{ command: RuntimeCommand; data: unknown; message: string }> {
+    if (GLOBAL_RUNTIME_COMMANDS.has(command)) {
+      return this.runGlobalRuntimeCommand(command, args, workingDir)
+    }
     const client = await this.connect(workingDir)
     let sessionId = this.attachedSessionId
     if (!sessionId) {
@@ -1553,13 +1694,12 @@ export class RayuDaemonClient extends EventEmitter {
       })
       if (list.length > 0 && list[0]?.session_id) {
         sessionId = list[0].session_id
-      } else {
-        const created = await this.createSession(
-          workingDir ?? this.activeWorkingDir ?? process.cwd(),
-          "Telegram Remote"
-        )
-        sessionId = created.session_id
       }
+    }
+    if (!sessionId) {
+      throw new Error(
+        `No existing session available to run session-scoped command "${command}".`
+      )
     }
     return this.runtimeCommand(sessionId, command, args)
   }
@@ -1767,19 +1907,30 @@ export class RayuDaemonClient extends EventEmitter {
   async notifyAuthChanged(provider = "rayu"): Promise<void> {
     syncRayuCredentialsToInstanceHome(getDesktopInstanceHome())
     if (!this.client) return
-    await this.client.notifyAuthChanged(provider).catch(() => {})
+    await Promise.allSettled([
+      this.client.notifyAuthChanged(provider),
+      typeof this.client.invalidateUsage === "function"
+        ? this.client.invalidateUsage(provider)
+        : Promise.resolve(),
+    ])
   }
 
   async setApiKey(provider: string, apiKey: string): Promise<void> {
     syncRayuCredentialsToInstanceHome(getDesktopInstanceHome())
     if (!this.client) return
-    await this.client.setApiKey(provider, apiKey).catch(() => {})
+    await this.client.setApiKey(provider, apiKey)
+    if (typeof this.client.invalidateUsage === "function") {
+      await this.client.invalidateUsage(provider).catch(() => {})
+    }
   }
 
   async clearApiKey(provider: string): Promise<void> {
     syncRayuCredentialsToInstanceHome(getDesktopInstanceHome())
     if (!this.client) return
-    await this.client.clearApiKey(provider).catch(() => {})
+    await this.client.clearApiKey(provider)
+    if (typeof this.client.invalidateUsage === "function") {
+      await this.client.invalidateUsage(provider).catch(() => {})
+    }
   }
 
   async invoke<T = unknown>(method: string, params?: unknown): Promise<T> {
@@ -1792,7 +1943,14 @@ export class RayuDaemonClient extends EventEmitter {
       case "sessions.attach":
         return (await this.attachSession(String(p.sessionId))) as T
       case "sessions.fork":
-        return (await this.forkSession(String(p.sessionId))) as T
+        return (await this.forkSession(String(p.sessionId), {
+          upToMessageIndex:
+            typeof p.upToMessageIndex === "number"
+              ? p.upToMessageIndex
+              : undefined,
+          upToMessageId:
+            typeof p.upToMessageId === "string" ? p.upToMessageId : undefined,
+        })) as T
       case "sessions.history":
         return (await this.getHistory(String(p.sessionId))) as T
       case "sessions.send":
@@ -1821,6 +1979,13 @@ export class RayuDaemonClient extends EventEmitter {
           String(p.sessionId),
           String(p.requestId),
           p.decision as PermissionDecision
+        )
+        return { ok: true } as T
+      case "sessions.questionResponse":
+        await this.respondToQuestion(
+          String(p.sessionId),
+          String(p.requestId),
+          (p.response ?? {}) as Record<string, unknown>
         )
         return { ok: true } as T
       case "sessions.setPermissionMode":
@@ -1859,6 +2024,11 @@ export class RayuDaemonClient extends EventEmitter {
           p.command as RuntimeCommand,
           Array.isArray(p.args) ? p.args.map(String) : []
         )) as T
+      case "runtime.globalCommand":
+        return (await this.runGlobalRuntimeCommand(
+          p.command as RuntimeCommand,
+          Array.isArray(p.args) ? p.args.map(String) : []
+        )) as T
       case "fileChanges.get":
         return (await this.getFileChanges(String(p.sessionId))) as T
       case "fileChanges.diff":
@@ -1884,22 +2054,53 @@ export class RayuDaemonClient extends EventEmitter {
     }
   }
 
-  dispose(): void {
+  async shutdown(): Promise<void> {
     const extraClients = new Set<RayucodeClient>()
     if (this.client && !this.pool.isClientBound(this.client)) {
       extraClients.add(this.client)
     }
-    if (this.launchedClient && !this.pool.isClientBound(this.launchedClient)) {
+    const ownedLauncher = this.ownsLaunchedDaemon ? this.launchedClient : null
+    if (
+      this.launchedClient &&
+      !this.pool.isClientBound(this.launchedClient) &&
+      this.launchedClient !== ownedLauncher
+    ) {
       extraClients.add(this.launchedClient)
     }
     this.client = null
     this.launchedClient = null
+    this.ownsLaunchedDaemon = false
     this.attachedSessionId = null
     this.knownSessionIds.clear()
     this.configuredToolSessions.clear()
+    this.sessionWorkingDirs.clear()
     this.pool.closeAll()
     for (const c of extraClients) {
-      void c.close()
+      try {
+        await c.close()
+      } catch {
+        // ignore client close errors during shutdown
+      }
     }
+    if (ownedLauncher) {
+      try {
+        await ownedLauncher.close()
+      } catch {
+        // ignore owned launcher close errors during shutdown
+      }
+    }
+    this.updateStatus({
+      connected: false,
+      reconnecting: false,
+      socketPath: this.socketPath,
+      version: "offline",
+      latencyMs: 0,
+      mode: "demo",
+      lastError: null,
+    })
+  }
+
+  dispose(): void {
+    void this.shutdown()
   }
 }

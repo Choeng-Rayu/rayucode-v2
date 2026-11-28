@@ -1,3 +1,4 @@
+import crypto from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -53,20 +54,30 @@ export interface LocalMcpServerEntry {
   sourcePath: string
   scope: "global" | "workspace"
   transport: "stdio" | "url"
+  type?: string
   command?: string
   args?: string[]
   url?: string
+  headers?: Record<string, string>
+  headerKeys?: string[]
   envKeys?: string[]
+  timeout?: number
+  revision?: string
   installed: boolean
 }
 
 export interface UpsertMcpServerInput {
   id: string
   scope?: "global" | "workspace"
+  type?: string
   command?: string
   args?: string[]
   url?: string
+  headers?: Record<string, string>
   env?: Record<string, string>
+  timeout?: number
+  expectedRevision?: string
+  clearFields?: string[]
 }
 
 export interface LocalSkillEntry {
@@ -87,9 +98,17 @@ export interface LocalMemoryEntry {
   preview: string
 }
 
+export interface McpConfigErrorEntry {
+  filePath: string
+  scope: "global" | "workspace"
+  message: string
+}
+
 export interface LocalExtensionsSnapshot {
   mcpConfigPath: string
   mcpServers: LocalMcpServerEntry[]
+  mcpConfigErrors?: McpConfigErrorEntry[]
+  revisions?: Record<string, string>
   skills: LocalSkillEntry[]
   memories: LocalMemoryEntry[]
 }
@@ -167,6 +186,56 @@ const IGNORED_DIRS = new Set([
   "venv",
 ])
 
+export class MalformedJsonConfigError extends Error {
+  readonly filePath: string
+
+  constructor(filePath: string, causeMessage: string) {
+    super(`Malformed JSON config in ${filePath}: ${causeMessage}`)
+    this.name = "MalformedJsonConfigError"
+    this.filePath = filePath
+  }
+}
+
+function computeFileRevision(raw: string): string {
+  return crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 16)
+}
+
+function readJsonFileStrict<T>(
+  filePath: string,
+  fallback: T
+): { value: T; exists: boolean; revision?: string } {
+  let raw: string
+  try {
+    raw = fs.readFileSync(filePath, "utf8")
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    if (code === "ENOENT") {
+      return { value: fallback, exists: false }
+    }
+    throw err
+  }
+  const revision = computeFileRevision(raw)
+  if (!raw.trim()) {
+    return { value: fallback, exists: true, revision }
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new MalformedJsonConfigError(
+        filePath,
+        "Top-level JSON value must be an object."
+      )
+    }
+    return { value: parsed as T, exists: true, revision }
+  } catch (err) {
+    if (err instanceof MalformedJsonConfigError) throw err
+    throw new MalformedJsonConfigError(
+      filePath,
+      err instanceof Error ? err.message : String(err)
+    )
+  }
+}
+
 function readJsonFile<T>(filePath: string, fallback: T): T {
   try {
     const raw = fs.readFileSync(filePath, "utf8")
@@ -177,16 +246,30 @@ function readJsonFile<T>(filePath: string, fallback: T): T {
 }
 
 function writeJsonFile(filePath: string, payload: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, {
-    mode: 0o600,
-  })
-  if (process.platform !== "win32") {
-    try {
-      fs.chmodSync(filePath, 0o600)
-    } catch {
-      // ignore chmod errors
+  const dir = path.dirname(filePath)
+  fs.mkdirSync(dir, { recursive: true })
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`
+  )
+  const content = `${JSON.stringify(payload, null, 2)}\n`
+  try {
+    fs.writeFileSync(tmpPath, content, { mode: 0o600 })
+    if (process.platform !== "win32") {
+      try {
+        fs.chmodSync(tmpPath, 0o600)
+      } catch {
+        // ignore chmod errors
+      }
     }
+    fs.renameSync(tmpPath, filePath)
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath)
+    } catch {
+      // ignore cleanup failure
+    }
+    throw err
   }
 }
 
@@ -423,8 +506,8 @@ export function recordRecentWorkspace(targetPath: string): RecentWorkspaceEntry[
 
 export function listWorkspaceFiles(
   rootDir: string,
-  maxFiles = 250,
-  maxDepth = 4
+  maxFiles = 2000,
+  maxDepth = 6
 ): LocalWorkspaceFileEntry[] {
   const resolvedRoot = path.resolve(rootDir)
   const results: LocalWorkspaceFileEntry[] = []
@@ -510,12 +593,16 @@ export function listLocalExtensions(
   workspaceDir: string
 ): LocalExtensionsSnapshot {
   const mcpConfigPath = path.join(getRayuConfigDir(), "mcp.json")
+  const userHomeMcpPath = path.join(os.homedir(), ".mcp.json")
   const workspaceRayuMcpPath = path.join(workspaceDir, ".rayu", "mcp.json")
   const workspaceMcpPath = path.join(workspaceDir, ".mcp.json")
   const claudeMcpPath = path.join(workspaceDir, ".claude", "mcp.json")
   const mcpServers: LocalMcpServerEntry[] = []
+  const mcpConfigErrors: McpConfigErrorEntry[] = []
+  const revisions: Record<string, string> = {}
 
   const sources: Array<{ cfgPath: string; scope: "global" | "workspace" }> = [
+    { cfgPath: userHomeMcpPath, scope: "global" },
     { cfgPath: mcpConfigPath, scope: "global" },
     { cfgPath: workspaceRayuMcpPath, scope: "workspace" },
     { cfgPath: workspaceMcpPath, scope: "workspace" },
@@ -524,27 +611,32 @@ export function listLocalExtensions(
 
   for (const { cfgPath, scope } of sources) {
     try {
-      const raw = JSON.parse(fs.readFileSync(cfgPath, "utf8")) as {
+      const readRes = readJsonFileStrict<{
         mcpServers?: Record<
           string,
           {
+            type?: string
             command?: string
             args?: string[]
             url?: string
+            headers?: Record<string, string>
             env?: Record<string, string>
+            timeout?: number
             enabled?: boolean
             disabled?: boolean
           }
         >
+      }>(cfgPath, {})
+      if (readRes.revision) {
+        revisions[cfgPath] = readRes.revision
       }
+      const raw = readRes.value
       if (raw.mcpServers && typeof raw.mcpServers === "object") {
         for (const [key, cfg] of Object.entries(raw.mcpServers)) {
           const isEnabled =
             cfg?.disabled === true ? false : cfg?.enabled !== false
           const existingIdx = mcpServers.findIndex((m) => m.id === key)
           if (!isEnabled) {
-            // Respect Rust McpServerConfig::is_enabled() precedence: a disabled
-            // entry overrides any earlier enabled definition and is not active.
             if (existingIdx >= 0) {
               mcpServers.splice(existingIdx, 1)
             }
@@ -564,25 +656,41 @@ export function listLocalExtensions(
             sourcePath: cfgPath,
             scope,
             transport: cfg?.url ? "url" : "stdio",
+            ...(typeof cfg?.type === "string" ? { type: cfg.type } : {}),
             command: cfg?.command,
             args: Array.isArray(cfg?.args) ? cfg.args : undefined,
             url: cfg?.url,
+            headers:
+              cfg?.headers && typeof cfg.headers === "object"
+                ? { ...cfg.headers }
+                : undefined,
+            headerKeys:
+              cfg?.headers && typeof cfg.headers === "object"
+                ? Object.keys(cfg.headers)
+                : undefined,
             envKeys:
               cfg?.env && typeof cfg.env === "object"
                 ? Object.keys(cfg.env)
                 : undefined,
+            ...(typeof cfg?.timeout === "number" ? { timeout: cfg.timeout } : {}),
+            revision: readRes.revision,
             installed: true,
           }
           if (existingIdx >= 0) {
-            // Project .mcp.json overrides global ~/.rayu/mcp.json (mirrors Rust loader)
             mcpServers[existingIdx] = entry
           } else {
             mcpServers.push(entry)
           }
         }
       }
-    } catch {
-      // absent or invalid JSON
+    } catch (err) {
+      if (err instanceof MalformedJsonConfigError) {
+        mcpConfigErrors.push({
+          filePath: err.filePath,
+          scope,
+          message: err.message,
+        })
+      }
     }
   }
 
@@ -668,6 +776,8 @@ export function listLocalExtensions(
   return {
     mcpConfigPath,
     mcpServers,
+    ...(mcpConfigErrors.length > 0 ? { mcpConfigErrors } : {}),
+    ...(Object.keys(revisions).length > 0 ? { revisions } : {}),
     skills,
     memories,
   }
@@ -692,14 +802,22 @@ export function upsertLocalMcpServer(
       "MCP server ID must contain only letters, numbers, dots, hyphens, or underscores."
     )
   }
-  const hasUrl = Boolean(input.url?.trim())
-  const hasCmd = Boolean(input.command?.trim())
-  if (!hasUrl && !hasCmd) {
-    throw new Error("Provide either a remote MCP URL or a local stdio command.")
-  }
 
   const filePath = targetMcpConfigPath(workspaceDir, input.scope ?? "global")
-  const existing = readJsonFile<Record<string, unknown>>(filePath, {})
+  const { value: existing, revision } = readJsonFileStrict<
+    Record<string, unknown>
+  >(filePath, {})
+
+  if (
+    input.expectedRevision !== undefined &&
+    revision !== undefined &&
+    input.expectedRevision !== revision
+  ) {
+    throw new Error(
+      `MCP config ${filePath} changed on disk since it was loaded (expected ${input.expectedRevision}, found ${revision}). Reload before saving.`
+    )
+  }
+
   const mcpServers =
     existing.mcpServers &&
     typeof existing.mcpServers === "object" &&
@@ -707,17 +825,77 @@ export function upsertLocalMcpServer(
       ? { ...(existing.mcpServers as Record<string, Record<string, unknown>>) }
       : {}
 
-  const serverEntry: Record<string, unknown> = {}
-  if (hasUrl && input.url) {
-    serverEntry.url = input.url.trim()
-  } else if (input.command) {
-    serverEntry.command = input.command.trim()
-    if (input.args && input.args.length > 0) {
-      serverEntry.args = input.args.filter((a) => a.length > 0)
-    }
+  const priorEntry =
+    mcpServers[id] &&
+    typeof mcpServers[id] === "object" &&
+    !Array.isArray(mcpServers[id])
+      ? { ...mcpServers[id] }
+      : {}
+
+  const hasUrl =
+    input.url !== undefined ? Boolean(input.url.trim()) : Boolean(priorEntry.url)
+  const hasCmd =
+    input.command !== undefined
+      ? Boolean(input.command.trim())
+      : Boolean(priorEntry.command)
+  if (!hasUrl && !hasCmd) {
+    throw new Error("Provide either a remote MCP URL or a local stdio command.")
   }
 
-  if (input.env) {
+  const serverEntry: Record<string, unknown> = { ...priorEntry }
+  if (input.type !== undefined) {
+    if (input.type.trim()) {
+      serverEntry.type = input.type.trim()
+    } else {
+      delete serverEntry.type
+    }
+  }
+  if (input.url !== undefined) {
+    const trimmedUrl = input.url.trim()
+    if (trimmedUrl) {
+      serverEntry.url = trimmedUrl
+      if (input.command === undefined) {
+        delete serverEntry.command
+        delete serverEntry.args
+      }
+    } else {
+      delete serverEntry.url
+    }
+  }
+  if (input.command !== undefined) {
+    const trimmedCmd = input.command.trim()
+    if (trimmedCmd) {
+      serverEntry.command = trimmedCmd
+      if (input.url === undefined) {
+        delete serverEntry.url
+      }
+    } else {
+      delete serverEntry.command
+    }
+  }
+  if (input.args !== undefined) {
+    const cleanArgs = input.args.filter((a) => a.length > 0)
+    if (cleanArgs.length > 0) {
+      serverEntry.args = cleanArgs
+    } else {
+      delete serverEntry.args
+    }
+  }
+  if (input.headers !== undefined) {
+    const cleanHeaders: Record<string, string> = {}
+    for (const [k, v] of Object.entries(input.headers)) {
+      const key = k.trim()
+      if (key && v.trim()) {
+        cleanHeaders[key] = v.trim()
+      }
+    }
+    if (Object.keys(cleanHeaders).length > 0) {
+      serverEntry.headers = cleanHeaders
+    } else {
+      delete serverEntry.headers
+    }
+  }
+  if (input.env !== undefined) {
     const cleanEnv: Record<string, string> = {}
     for (const [k, v] of Object.entries(input.env)) {
       const key = k.trim()
@@ -727,6 +905,18 @@ export function upsertLocalMcpServer(
     }
     if (Object.keys(cleanEnv).length > 0) {
       serverEntry.env = cleanEnv
+    } else {
+      delete serverEntry.env
+    }
+  }
+  if (input.timeout !== undefined) {
+    serverEntry.timeout = input.timeout
+  }
+  if (input.clearFields && input.clearFields.length > 0) {
+    for (const field of input.clearFields) {
+      if (field === "headers" || field === "env" || field === "timeout" || field === "args" || field === "type") {
+        delete serverEntry[field]
+      }
     }
   }
 
@@ -741,16 +931,32 @@ export function removeLocalMcpServer(
   scope?: "global" | "workspace"
 ): LocalExtensionsSnapshot {
   const id = serverId.trim()
-  const targets = scope
-    ? [targetMcpConfigPath(workspaceDir, scope)]
-    : [
-        targetMcpConfigPath(workspaceDir, "global"),
-        targetMcpConfigPath(workspaceDir, "workspace"),
-      ]
+  const targets =
+    scope === "workspace"
+      ? [
+          path.join(workspaceDir, ".mcp.json"),
+          path.join(workspaceDir, ".rayu", "mcp.json"),
+          path.join(workspaceDir, ".claude", "mcp.json"),
+        ]
+      : scope === "global"
+        ? [
+            path.join(getRayuConfigDir(), "mcp.json"),
+            path.join(os.homedir(), ".mcp.json"),
+          ]
+        : [
+            path.join(getRayuConfigDir(), "mcp.json"),
+            path.join(os.homedir(), ".mcp.json"),
+            path.join(workspaceDir, ".mcp.json"),
+            path.join(workspaceDir, ".rayu", "mcp.json"),
+            path.join(workspaceDir, ".claude", "mcp.json"),
+          ]
 
   for (const filePath of targets) {
     if (!fs.existsSync(filePath)) continue
-    const existing = readJsonFile<Record<string, unknown>>(filePath, {})
+    const { value: existing } = readJsonFileStrict<Record<string, unknown>>(
+      filePath,
+      {}
+    )
     if (
       existing.mcpServers &&
       typeof existing.mcpServers === "object" &&

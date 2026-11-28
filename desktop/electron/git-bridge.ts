@@ -39,6 +39,7 @@ export interface GitDiffHunkLine {
 export interface GitChangedFile {
   id: string
   path: string
+  previousPath?: string
   additions: number
   deletions: number
   deleted?: boolean
@@ -47,11 +48,14 @@ export interface GitChangedFile {
   accepted?: boolean
   rejected?: boolean
   staged: boolean
+  diffLoaded?: boolean
   lines: GitDiffHunkLine[]
 }
 
 export interface GitChangesPayload {
   branch: string
+  totalChangedFiles: number
+  truncatedDiffCount?: number
   totalAdditions: number
   totalDeletions: number
   files: GitChangedFile[]
@@ -160,15 +164,65 @@ export function parseUnifiedDiff(diffText: string): GitDiffHunkLine[] {
   return result
 }
 
-function parseNumstat(output: string): Map<string, { add: number; del: number }> {
+export interface ParsedPorcelainEntry {
+  path: string
+  previousPath?: string
+  indexStatus: string
+  workTreeStatus: string
+}
+
+export function parsePorcelainZStatus(raw: string): ParsedPorcelainEntry[] {
+  if (!raw) return []
+  const tokens = raw.split("\0")
+  const entries: ParsedPorcelainEntry[] = []
+  for (let i = 0; i < tokens.length; i += 1) {
+    const rec = tokens[i]
+    if (!rec || rec.length < 4) continue
+    const indexStatus = rec[0]
+    const workTreeStatus = rec[1]
+    const filePath = rec.slice(3)
+    if (!filePath) continue
+    let previousPath: string | undefined
+    if (
+      indexStatus === "R" ||
+      indexStatus === "C" ||
+      workTreeStatus === "R" ||
+      workTreeStatus === "C"
+    ) {
+      const next = tokens[i + 1]
+      if (next !== undefined && next.length > 0) {
+        previousPath = next
+        i += 1
+      }
+    }
+    entries.push({
+      path: filePath,
+      ...(previousPath ? { previousPath } : {}),
+      indexStatus,
+      workTreeStatus,
+    })
+  }
+  return entries
+}
+
+function parseNumstatZ(output: string): Map<string, { add: number; del: number }> {
   const map = new Map<string, { add: number; del: number }>()
-  for (const line of output.split("\n")) {
-    if (!line.trim()) continue
-    const parts = line.split("\t")
+  if (!output) return map
+  const tokens = output.split("\0")
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]
+    if (!token) continue
+    const parts = token.split("\t")
     if (parts.length < 3) continue
     const add = parts[0] === "-" ? 0 : Number.parseInt(parts[0], 10) || 0
     const del = parts[1] === "-" ? 0 : Number.parseInt(parts[1], 10) || 0
-    const filePath = parts.slice(2).join("\t")
+    let filePath = parts.slice(2).join("\t")
+    if (!filePath && tokens[i + 1] !== undefined && tokens[i + 2] !== undefined) {
+      // Rename format under `--numstat -z`: "<add>\t<del>\t\0<old>\0<new>\0"
+      filePath = tokens[i + 2]
+      i += 2
+    }
+    if (!filePath) continue
     const prev = map.get(filePath) ?? { add: 0, del: 0 }
     map.set(filePath, { add: prev.add + add, del: prev.del + del })
   }
@@ -263,20 +317,6 @@ export async function checkoutGitBranch(
     const current = (await getGitBranch(cwd)) ?? target
     return { ok: true, branch: current }
   } catch (err) {
-    const raw = err instanceof Error ? err.message : String(err)
-    // When the working tree has uncommitted changes that would be overwritten by
-    // an in-place checkout, keep the user's selected target branch for the session
-    // without clobbering uncommitted files or throwing a multi-line file dump.
-    if (
-      raw.includes("would be overwritten by checkout") ||
-      raw.includes("Please commit your changes or stash them")
-    ) {
-      return {
-        ok: true,
-        branch: target,
-        keptWorkingTree: true,
-      }
-    }
     const current = (await getGitBranch(cwd)) ?? target
     return {
       ok: false,
@@ -339,6 +379,56 @@ export async function createGitWorktree(
   }
 }
 
+const MAX_EAGER_DIFF_FILES = 40
+
+async function loadUnifiedDiffLines(
+  cwd: string,
+  entry: { path: string; indexStatus: string; workTreeStatus: string }
+): Promise<GitDiffHunkLine[]> {
+  const staged = entry.indexStatus !== " " && entry.indexStatus !== "?"
+  const untracked = entry.indexStatus === "?" && entry.workTreeStatus === "?"
+  try {
+    let diffText: string
+    if (untracked) {
+      diffText = await runGit(cwd, [
+        "diff",
+        "--no-index",
+        "--",
+        "/dev/null",
+        entry.path,
+      ]).catch((err: { stdout?: string }) => err.stdout ?? "")
+    } else if (staged && entry.workTreeStatus === " ") {
+      diffText = await runGit(cwd, ["diff", "--cached", "--", entry.path])
+    } else {
+      diffText = await runGit(cwd, ["diff", "HEAD", "--", entry.path]).catch(
+        () => runGit(cwd, ["diff", "--", entry.path])
+      )
+    }
+    return parseUnifiedDiff(diffText)
+  } catch {
+    return []
+  }
+}
+
+export async function getGitFileDiff(
+  cwd: string,
+  filePath: string
+): Promise<GitDiffHunkLine[]> {
+  const statusOut = await runGit(cwd, [
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--",
+    filePath,
+  ]).catch(() => "")
+  const parsed = parsePorcelainZStatus(statusOut)[0] ?? {
+    path: filePath,
+    indexStatus: " ",
+    workTreeStatus: "M",
+  }
+  return loadUnifiedDiffLines(cwd, parsed)
+}
+
 export async function getGitChanges(
   cwd: string
 ): Promise<GitChangesPayload | null> {
@@ -346,39 +436,17 @@ export async function getGitChanges(
   if (!branch) return null
 
   const [statusOut, unstagedStatOut, stagedStatOut] = await Promise.all([
-    runGit(cwd, ["status", "--porcelain=v1", "-uall"]),
-    runGit(cwd, ["diff", "--numstat"]),
-    runGit(cwd, ["diff", "--cached", "--numstat"]),
+    runGit(cwd, ["status", "--porcelain=v1", "-uall", "-z"]),
+    runGit(cwd, ["diff", "--numstat", "-z"]),
+    runGit(cwd, ["diff", "--cached", "--numstat", "-z"]),
   ])
 
-  const unstagedStats = parseNumstat(unstagedStatOut)
-  const stagedStats = parseNumstat(stagedStatOut)
+  const unstagedStats = parseNumstatZ(unstagedStatOut)
+  const stagedStats = parseNumstatZ(stagedStatOut)
+  const entries = parsePorcelainZStatus(statusOut)
 
-  const entries: Array<{
-    path: string
-    indexStatus: string
-    workTreeStatus: string
-  }> = []
-
-  for (const line of statusOut.split("\n")) {
-    if (line.length < 4) continue
-    const indexStatus = line[0]
-    const workTreeStatus = line[1]
-    let filePath = line.slice(3).trim()
-    if (filePath.includes(" -> ")) {
-      filePath = filePath.split(" -> ").pop()?.trim() ?? filePath
-    }
-    if (filePath.startsWith('"') && filePath.endsWith('"')) {
-      filePath = filePath.slice(1, -1)
-    }
-    if (!filePath) continue
-    entries.push({ path: filePath, indexStatus, workTreeStatus })
-  }
-
-  // Cap per-refresh diff reads at 40 files with bounded concurrency (6 forks max)
-  const limited = entries.slice(0, 40)
   const files: GitChangedFile[] = await mapWithConcurrency(
-    limited,
+    entries,
     MAX_DIFF_CONCURRENCY,
     async (entry, idx) => {
       const staged =
@@ -392,30 +460,11 @@ export async function getGitChanges(
       let additions = uStat.add + sStat.add
       let deletions = uStat.del + sStat.del
 
-      let diffText: string
-      try {
-        if (untracked) {
-          // Synthesize unified preview for untracked file
-          const rawDiff = await runGit(cwd, [
-            "diff",
-            "--no-index",
-            "--",
-            "/dev/null",
-            entry.path,
-          ]).catch((err: { stdout?: string }) => err.stdout ?? "")
-          diffText = rawDiff
-        } else if (staged && entry.workTreeStatus === " ") {
-          diffText = await runGit(cwd, ["diff", "--cached", "--", entry.path])
-        } else {
-          diffText = await runGit(cwd, ["diff", "HEAD", "--", entry.path]).catch(
-            () => runGit(cwd, ["diff", "--", entry.path])
-          )
-        }
-      } catch {
-        diffText = ""
-      }
+      const shouldLoadDiffEagerly = idx < MAX_EAGER_DIFF_FILES
+      const lines = shouldLoadDiffEagerly
+        ? await loadUnifiedDiffLines(cwd, entry)
+        : []
 
-      const lines = parseUnifiedDiff(diffText)
       if (additions === 0 && deletions === 0 && lines.length > 0) {
         additions = lines.filter((l) => l.type === "add").length
         deletions = lines.filter((l) => l.type === "del").length
@@ -432,12 +481,14 @@ export async function getGitChanges(
       return {
         id: `git_${idx}_${entry.path}`,
         path: entry.path,
+        ...(entry.previousPath ? { previousPath: entry.previousPath } : {}),
         additions,
         deletions,
         deleted: deleted || undefined,
         ownerBadge: staged ? "staged" : untracked ? "new" : "workspace",
         hint: statusHint,
         staged,
+        diffLoaded: shouldLoadDiffEagerly,
         lines:
           lines.length > 0
             ? lines
@@ -446,7 +497,9 @@ export async function getGitChanges(
                   lineNumber: null,
                   type: "hunk" as const,
                   mark: "@@",
-                  content: `@@ ${statusHint}: ${entry.path} @@`,
+                  content: shouldLoadDiffEagerly
+                    ? `@@ ${statusHint}: ${entry.path} @@`
+                    : `@@ Diff deferred (${entries.length} total files) — select to load ${entry.path} @@`,
                 },
               ],
       }
@@ -458,6 +511,10 @@ export async function getGitChanges(
 
   return {
     branch,
+    totalChangedFiles: entries.length,
+    ...(entries.length > MAX_EAGER_DIFF_FILES
+      ? { truncatedDiffCount: entries.length - MAX_EAGER_DIFF_FILES }
+      : {}),
     totalAdditions,
     totalDeletions,
     files,
@@ -496,17 +553,37 @@ export async function discardGitFile(
   const statusOut = await runGit(cwd, [
     "status",
     "--porcelain=v1",
+    "-z",
     "--",
     filePath,
   ]).catch(() => "")
-  const trimmed = statusOut.trim()
-  if (trimmed.startsWith("?? ")) {
+  const parsed = parsePorcelainZStatus(statusOut)[0]
+  if (parsed && parsed.indexStatus === "?" && parsed.workTreeStatus === "?") {
     const safeAbs = resolveSafeWorkspacePath(cwd, filePath)
     await fs.unlink(safeAbs)
     return getGitChanges(cwd)
   }
 
-  await runGit(cwd, ["checkout", "HEAD", "--", filePath]).catch(async () => {
+  // Preserve staged index hunks when the file has unstaged working tree changes.
+  if (parsed && parsed.workTreeStatus !== " " && parsed.indexStatus !== " ") {
+    await runGit(cwd, ["restore", "--worktree", "--", filePath]).catch(async () => {
+      await runGit(cwd, ["checkout", "--", filePath])
+    })
+    return getGitChanges(cwd)
+  }
+
+  // Only staged-only or clean-index files reset against HEAD / worktree
+  if (parsed && parsed.workTreeStatus === " " && parsed.indexStatus !== " ") {
+    await runGit(cwd, ["restore", "--staged", "--worktree", "--", filePath]).catch(
+      async () => {
+        await runGit(cwd, ["reset", "HEAD", "--", filePath])
+        await runGit(cwd, ["checkout", "--", filePath])
+      }
+    )
+    return getGitChanges(cwd)
+  }
+
+  await runGit(cwd, ["restore", "--worktree", "--", filePath]).catch(async () => {
     await runGit(cwd, ["checkout", "--", filePath])
   })
   return getGitChanges(cwd)

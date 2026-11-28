@@ -129,8 +129,7 @@ impl MultiProvider {
         self.provider_slot_available(provider)
     }
 
-    #[cfg(test)]
-    pub(crate) fn has_any_initialized_provider(&self) -> bool {
+    pub fn has_any_initialized_provider(&self) -> bool {
         [
             ActiveProvider::Claude,
             ActiveProvider::OpenAI,

@@ -1697,6 +1697,239 @@ fn soft_interrupt_dispatch_starts_idle_session_and_queues_busy_session() {
     assert!(!should_start_idle_soft_interrupt(false, false, true));
 }
 
+#[tokio::test]
+async fn global_runtime_command_executes_with_zero_sessions() {
+    let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("RAYU_HOME");
+    crate::env::set_var("RAYU_HOME", home.path());
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => crate::env::set_var("RAYU_HOME", v),
+                None => crate::env::remove_var("RAYU_HOME"),
+            }
+        }
+    }
+    let _restore = Restore(prev_home);
+
+    let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+    let forked = Arc::new(AtomicBool::new(false));
+    let provider_template: Arc<dyn Provider> = Arc::new(PanicOnForkProvider {
+        forked: Arc::clone(&forked),
+    });
+    let sessions: SessionAgents =
+        Arc::new(crate::server::SessionManager::from_agents(HashMap::new()));
+    let global_session_id = Arc::new(RwLock::new(String::new()));
+    let client_count = Arc::new(RwLock::new(0usize));
+    let client_connections = Arc::new(RwLock::new(HashMap::new()));
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+    let swarms_by_id = Arc::new(RwLock::new(HashMap::new()));
+    let shared_context = Arc::new(RwLock::new(HashMap::new()));
+    let swarm_plans = Arc::new(RwLock::new(HashMap::new()));
+    let swarm_coordinators = Arc::new(RwLock::new(HashMap::new()));
+    let file_touch = FileTouchService::new();
+    let channel_subscriptions = Arc::new(RwLock::new(HashMap::new()));
+    let channel_subscriptions_by_session = Arc::new(RwLock::new(HashMap::new()));
+    let client_debug_state = Arc::new(RwLock::new(ClientDebugState::default()));
+    let (_debug_response_tx, _) = broadcast::channel(8);
+    let event_history = Arc::new(RwLock::new(std::collections::VecDeque::new()));
+    let event_counter = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (swarm_event_tx, _) = broadcast::channel(8);
+    let (_global_event_tx, _) = broadcast::channel(8);
+    let global_is_processing = Arc::new(RwLock::new(false));
+    let shutdown_signals = Arc::new(RwLock::new(HashMap::new()));
+    let soft_interrupt_queues: SessionInterruptQueues = Arc::new(RwLock::new(HashMap::new()));
+    let mcp_pool = Arc::new(crate::mcp::SharedMcpPool::from_default_config());
+
+    let server_task = tokio::spawn(handle_client(
+        server_stream,
+        Arc::clone(&sessions),
+        _global_event_tx,
+        provider_template,
+        global_is_processing,
+        global_session_id,
+        client_count,
+        Arc::clone(&client_connections),
+        swarm_members,
+        swarms_by_id,
+        shared_context,
+        swarm_plans,
+        swarm_coordinators,
+        file_touch,
+        channel_subscriptions,
+        channel_subscriptions_by_session,
+        client_debug_state,
+        _debug_response_tx,
+        event_history,
+        event_counter,
+        swarm_event_tx,
+        "rayu-test".to_string(),
+        "test".to_string(),
+        mcp_pool,
+        shutdown_signals,
+        soft_interrupt_queues,
+        AwaitMembersRuntime::default(),
+        SwarmMutationRuntime::default(),
+    ));
+
+    let (client_reader, mut client_writer) = client_stream.into_split();
+    let mut client_reader = BufReader::new(client_reader);
+    let request = Request::GlobalRuntimeCommand {
+        id: 17,
+        command: "telegram".to_string(),
+        args: vec!["status".to_string()],
+    };
+    let payload = serde_json::to_string(&request).expect("serialize request") + "\n";
+    client_writer.write_all(payload.as_bytes()).await.expect("write");
+
+    let mut line = String::new();
+    client_reader.read_line(&mut line).await.expect("read ack");
+    assert!(matches!(decode_request_or_event(&line), ServerEvent::Ack { id: 17 }));
+
+    line.clear();
+    client_reader.read_line(&mut line).await.expect("read result");
+    match decode_request_or_event(&line) {
+        ServerEvent::RuntimeCommandResult { id, command, .. } => {
+            assert_eq!(id, 17);
+            assert_eq!(command, "telegram");
+        }
+        other => panic!("expected RuntimeCommandResult, got {other:?}"),
+    }
+
+    drop(client_writer);
+    server_task.await.expect("join").expect("server ok");
+    assert!(!forked.load(Ordering::SeqCst));
+    assert!(client_connections.read().await.is_empty());
+    assert!(sessions.read().await.is_empty());
+    let sessions_dir = home.path().join("sessions");
+    let count = std::fs::read_dir(&sessions_dir).map_or(0, |rd| rd.count());
+    assert_eq!(count, 0, "global runtime command must create 0 session files");
+}
+
+#[tokio::test]
+async fn signed_out_deferred_auth_rejects_turn_before_ack_with_auth_error() {
+    let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("RAYU_HOME");
+    let prev_oauth = std::env::var_os("USE_RAYU_OAUTH");
+    let prev_api_key = std::env::var_os("RAYU_API_KEY");
+    struct Restore {
+        home: Option<std::ffi::OsString>,
+        oauth: Option<std::ffi::OsString>,
+        key: Option<std::ffi::OsString>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.home.take() {
+                Some(v) => crate::env::set_var("RAYU_HOME", v),
+                None => crate::env::remove_var("RAYU_HOME"),
+            }
+            match self.oauth.take() {
+                Some(v) => crate::env::set_var("USE_RAYU_OAUTH", v),
+                None => crate::env::remove_var("USE_RAYU_OAUTH"),
+            }
+            match self.key.take() {
+                Some(v) => crate::env::set_var("RAYU_API_KEY", v),
+                None => crate::env::remove_var("RAYU_API_KEY"),
+            }
+        }
+    }
+    let _restore = Restore {
+        home: prev_home,
+        oauth: prev_oauth,
+        key: prev_api_key,
+    };
+    crate::env::set_var("RAYU_HOME", home.path());
+    crate::env::set_var("USE_RAYU_OAUTH", "true");
+    crate::env::remove_var("RAYU_API_KEY");
+
+    let (server_stream, client_stream) = crate::transport::Stream::pair().expect("socket pair");
+    let provider_template: Arc<dyn Provider> = Arc::new(CompleteImmediatelyProvider);
+    let sessions: SessionAgents =
+        Arc::new(crate::server::SessionManager::from_agents(HashMap::new()));
+    let server_task = tokio::spawn(handle_client(
+        server_stream,
+        Arc::clone(&sessions),
+        broadcast::channel(8).0,
+        provider_template,
+        Arc::new(RwLock::new(false)),
+        Arc::new(RwLock::new(String::new())),
+        Arc::new(RwLock::new(0usize)),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        FileTouchService::new(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(ClientDebugState::default())),
+        broadcast::channel(8).0,
+        Arc::new(RwLock::new(std::collections::VecDeque::new())),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        broadcast::channel(8).0,
+        "rayu-test".to_string(),
+        "test".to_string(),
+        Arc::new(crate::mcp::SharedMcpPool::from_default_config()),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::new(RwLock::new(HashMap::new())),
+        AwaitMembersRuntime::default(),
+        SwarmMutationRuntime::default(),
+    ));
+
+    let (client_reader, mut client_writer) = client_stream.into_split();
+    let mut client_reader = BufReader::new(client_reader);
+    let sub = subscribe_request(Some(home.path().to_str().unwrap()));
+    client_writer
+        .write_all((serde_json::to_string(&sub).unwrap() + "\n").as_bytes())
+        .await
+        .unwrap();
+
+    // Drain initial subscribe frames until Done { id: 1 } (or State/SessionId if timeout)
+    let mut line = String::new();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            line.clear();
+            let n = client_reader.read_line(&mut line).await.unwrap();
+            assert!(n > 0);
+            if matches!(decode_request_or_event(&line), ServerEvent::Done { id: 1 }) {
+                break;
+            }
+        }
+    })
+    .await;
+
+    let msg = Request::Message {
+        id: 2,
+        content: "hello signed out".to_string(),
+        images: Vec::new(),
+        system_reminder: None,
+        active_skill: None,
+        no_reply: false,
+    };
+    client_writer
+        .write_all((serde_json::to_string(&msg).unwrap() + "\n").as_bytes())
+        .await
+        .unwrap();
+
+    line.clear();
+    client_reader.read_line(&mut line).await.unwrap();
+    let ev = decode_request_or_event(&line);
+    match ev {
+        ServerEvent::Error { id, message, .. } => {
+            assert_eq!(id, 2);
+            assert!(message.contains("authentication required"), "unexpected error: {message}");
+        }
+        other => panic!("signed-out turn must emit Error directly before Ack, got {other:?}"),
+    }
+
+    drop(client_writer);
+    let _ = server_task.await;
+}
+
 #[path = "client_lifecycle_socket_tests.rs"]
 mod socket_workflows;
 

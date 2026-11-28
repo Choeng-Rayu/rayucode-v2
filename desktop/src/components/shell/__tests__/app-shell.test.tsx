@@ -25,7 +25,7 @@ describe("AppShell & IconRail", () => {
     })
   })
 
-  it("renders the 5 primary RayuCode navigation items without Swarm in the sidebar rail", () => {
+  it("renders the 6 primary RayuCode navigation items including Swarm at slot #2 in the sidebar rail", () => {
     render(
       <AppProviders>
         <IconRail />
@@ -34,6 +34,7 @@ describe("AppShell & IconRail", () => {
 
     for (const label of [
       "Home",
+      "Swarm",
       "Automations",
       "Plugins",
       "Changes",
@@ -41,10 +42,6 @@ describe("AppShell & IconRail", () => {
     ]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument()
     }
-
-    expect(
-      screen.queryByRole("button", { name: "Swarm" })
-    ).not.toBeInTheDocument()
 
     expect(
       screen.getByRole("button", { name: "Plan & usage limits" })

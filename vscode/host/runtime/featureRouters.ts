@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +51,7 @@ import {
   type HookEventId,
   type HostToWebviewMessage,
   type McpServerView,
+  type McpTransport,
   type MemoryFactView,
   type MemoryStatusView,
   type ModelRouteOptionView,
@@ -977,6 +979,8 @@ export interface FeatureRouterBridge {
 }
 
 export interface FeatureRouterHub {
+  getSessionWorkingDir?(sessionId?: string): string | undefined;
+  getSessionWorkingDirForSession?(sessionId: string): string | undefined;
   getActiveSessionId(): string | undefined;
   getActiveModel(): string | undefined;
   getActiveProvider(): string | undefined;
@@ -1035,7 +1039,6 @@ export interface FeatureRouterHub {
     effort?: EffortLevel;
     permissionMode?: PermissionModeId;
     serviceTier?: ServiceTier;
-    cacheTtl?: CacheTtl;
   } | undefined;
   saveSessionPrefs?(
     sessionId: string,
@@ -1045,7 +1048,6 @@ export interface FeatureRouterHub {
       effort?: EffortLevel;
       permissionMode?: PermissionModeId;
       serviceTier?: ServiceTier;
-      cacheTtl?: CacheTtl;
     },
   ): Promise<void>;
   attachSession(sessionId: string): Promise<SessionSummaryView>;
@@ -1154,6 +1156,10 @@ export interface FeatureRouterAuthManager {
   setBypassPacing(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }>;
   getCachedHostedModels?(): RayuCloudModelEntry[];
   fetchHostedModels?(forceRefresh?: boolean): Promise<RayuCloudModelEntry[]>;
+  getHostedModelCatalog?(forceRefresh?: boolean): Promise<{
+    models: RayuCloudModelEntry[];
+    status: "fresh" | "cached" | "stale" | "failed" | "unavailable";
+  }>;
 }
 
 export interface FeatureRouterGit {
@@ -1163,6 +1169,7 @@ export interface FeatureRouterGit {
   }): Promise<ChangesStatusView>;
   getDiff(options: {
     path: string;
+    workingDir?: string;
     sessionId?: string;
     scope?: "session" | "git";
   }): Promise<FileDiffView>;
@@ -1547,6 +1554,48 @@ const HOOK_EVENTS: Array<{ event: HookEventId; label: string; mode: "sync" | "as
   { event: "session_end", label: "Session End Hook", mode: "async" },
 ];
 
+function readMcpConfig(target: string): Record<string, unknown> {
+  try {
+    if (!fs.lstatSync(target).isFile()) {
+      throw new HarnessError("invalid_request", "MCP config must be a regular file.");
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch {
+    throw new HarnessError(
+      "invalid_request",
+      "Existing MCP config contains malformed JSON. Repair it before editing.",
+    );
+  }
+  if (
+    !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+    ("mcpServers" in parsed &&
+      (!parsed.mcpServers || typeof parsed.mcpServers !== "object" || Array.isArray(parsed.mcpServers)))
+  ) {
+    throw new HarnessError("invalid_request", "Repair the existing MCP config before editing it.");
+  }
+  return asRecord(parsed);
+}
+
+function writeMcpConfig(target: string, config: Record<string, unknown>): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", {
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporary, target);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
 export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
   let pendingTelegramPairing: {
     generation: string | null;
@@ -1586,16 +1635,6 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     }
   };
-
-  /**
-   * Read-only runtime command helper that degrades to `{}` when offline or idle-locked.
-   * NEVER use for mutations — use `requireRuntimeCmd` so daemon errors propagate honestly.
-   */
-  const safeRuntimeCmd = async (
-    command: RuntimeCommand,
-    args: string[] = [],
-    sessionId?: string,
-  ): Promise<Record<string, unknown>> => (await execRuntimeCmd(command, args, sessionId)).data;
 
   const clientSupportsFileChanges = (client: RayucodeClient): boolean => {
     if (typeof client.supports === "function") {
@@ -1668,35 +1707,66 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     return null;
   };
 
-  const tryEngineFileChangeAction = async (
-    sessionId: string,
+  const runReviewAction = async (
+    sessionId: string | undefined,
     action: FileChangeActionKind,
     opts?: { path?: string; force?: boolean },
-  ): Promise<FileChangeActionResultView | null> => {
-    const targetPath =
-      opts?.path !== undefined
-        ? resolveTrackedSessionPath(sessionId, opts.path)
-        : undefined;
-    if (typeof deps.sessionHub.runFileChangeAction === "function") {
-      return deps.sessionHub.runFileChangeAction(sessionId, action, {
-        ...(targetPath !== undefined ? { path: targetPath } : {}),
-        ...(opts?.force !== undefined ? { force: opts.force } : {}),
-      });
+  ): Promise<FileChangeActionResultView> => {
+    if (!sessionId) {
+      return { ok: false, message: "Select the session that made these edits." };
+    }
+    if (opts?.force && (action === "undo_all" || action === "redo_all")) {
+      return { ok: false, message: "Force Restore requires an explicitly confirmed file." };
+    }
+    const unavailable = {
+      ok: false,
+      message: "Agent file actions require an engine with session file tracking.",
+    };
+    if (deps.sessionHub.runFileChangeAction) {
+      return (await deps.sessionHub.runFileChangeAction(sessionId, action, opts)) ?? unavailable;
     }
     const client = await getSessionClient(sessionId);
-    if (
-      !clientSupportsFileChanges(client) ||
-      typeof client.fileChangeAction !== "function"
-    ) {
-      return null;
+    if (!clientSupportsFileChanges(client) || !client.fileChangeAction || !client.getFileChanges) {
+      return unavailable;
     }
-    const raw = await client.fileChangeAction(sessionId, action, {
-      ...(targetPath !== undefined ? { path: targetPath } : {}),
-      ...(opts?.force !== undefined ? { force: opts.force } : {}),
-    });
+    const snapshot = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+    const target = opts?.path === undefined
+      ? undefined
+      : snapshot.files.find((file) => file.path === opts.path || file.displayPath === opts.path);
+    if (snapshot.sessionId !== sessionId || (opts?.path !== undefined && !target)) {
+      return { ok: false, message: "This file has no review snapshot in the selected session." };
+    }
+    const raw = await (async () => {
+      try {
+        return await client.fileChangeAction(sessionId, action, {
+          ...(target ? { path: target.path } : {}),
+          ...(opts?.force ? { force: true } : {}),
+        });
+      } catch (error) {
+        try {
+          const fresh = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+          if (fresh.sessionId === sessionId) {
+            deps.sessionHub.broadcastFileChanges?.(sessionId, fresh);
+          }
+        } catch {
+          // Best-effort snapshot recovery after uncertain error.
+        }
+        throw error;
+      }
+    })();
     const mapped = mapRawFileChangeActionResponse(raw, sessionId);
-    if (mapped.snapshot) {
+    if (mapped.snapshot?.sessionId === sessionId) {
       deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
+    } else if (!mapped.ok || !mapped.snapshot) {
+      try {
+        const fresh = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+        if (fresh.sessionId === sessionId) {
+          deps.sessionHub.broadcastFileChanges?.(sessionId, fresh);
+          mapped.snapshot = fresh;
+        }
+      } catch {
+        // Leave original response intact when snapshot readback fails.
+      }
     }
     return mapped;
   };
@@ -1834,6 +1904,214 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
 
   type HandlerMap = {
     [M in RpcMethod]: (params: RpcParams<M>) => Promise<RpcResult<M>>;
+  };
+
+  const workspaceRootFor = async (requestedPath?: string): Promise<string> => {
+    const [folders, ledger] = await Promise.all([
+      deps.getWorkspaceFolders(),
+      deps.sessionHub.loadWorkspaceLedger?.() ?? deps.sessionHub.getWorkspaceLedger?.(),
+    ]);
+    const roots = new Set<string>();
+    for (const folder of [...folders, ...(ledger?.workspaces ?? [])]) {
+      try {
+        roots.add(fs.realpathSync(folder.path));
+      } catch {
+        // An unavailable workspace cannot be a configuration target.
+      }
+    }
+    if (requestedPath && path.isAbsolute(requestedPath)) {
+      try {
+        const resolved = fs.realpathSync(requestedPath);
+        if (roots.has(resolved)) return resolved;
+      } catch {
+        throw new HarnessError("invalid_request", "Selected workspace directory does not exist on disk.");
+      }
+    } else if (!requestedPath && roots.size === 1) {
+      return [...roots][0]!;
+    }
+    throw new HarnessError("invalid_request", "Select an available workspace for this change.");
+  };
+
+  const canonicalizeWorkspacePath = (rawPath: string): string => {
+    const trimmed = rawPath.trim();
+    try {
+      return fs.realpathSync(trimmed);
+    } catch {
+      return path.resolve(trimmed);
+    }
+  };
+
+  const resolveSessionCreateRoot = async (
+    requestedPath?: string,
+  ): Promise<string | undefined> => {
+    const [folders, ledger] = await Promise.all([
+      deps.getWorkspaceFolders(),
+      deps.sessionHub.loadWorkspaceLedger?.() ??
+        deps.sessionHub.getWorkspaceLedger?.(),
+    ]);
+    const roots = new Set<string>();
+    const addRoot = (rawPath?: string) => {
+      const trimmed = rawPath?.trim();
+      if (!trimmed) return;
+      roots.add(canonicalizeWorkspacePath(trimmed));
+    };
+    for (const folder of folders) {
+      addRoot(folder.canonicalPath || folder.path);
+    }
+    for (const ws of ledger?.workspaces ?? []) {
+      if (!ws.hidden && !ws.missingOnDisk) {
+        addRoot(ws.canonicalPath || ws.path);
+      }
+    }
+
+    const trimmedReq = requestedPath?.trim();
+    if (trimmedReq) {
+      if (!path.isAbsolute(trimmedReq)) {
+        throw new HarnessError(
+          "invalid_request",
+          "Select a project workspace before starting a session.",
+        );
+      }
+      let existsOnDisk = false;
+      let canonicalReq = path.resolve(trimmedReq);
+      try {
+        canonicalReq = fs.realpathSync(trimmedReq);
+        existsOnDisk = true;
+      } catch {
+        existsOnDisk = false;
+      }
+      if (roots.size > 0) {
+        if (roots.has(canonicalReq)) {
+          return canonicalReq;
+        }
+        if (existsOnDisk) {
+          try {
+            if (fs.statSync(canonicalReq).isDirectory()) {
+              return canonicalReq;
+            }
+          } catch {
+            // fall through
+          }
+        }
+        throw new HarnessError(
+          "invalid_request",
+          "Selected workspace directory is not an available project workspace.",
+        );
+      }
+      return existsOnDisk ? canonicalReq : trimmedReq;
+    }
+
+    if (roots.size > 1) {
+      throw new HarnessError(
+        "invalid_request",
+        "Select a project workspace before starting a session.",
+      );
+    }
+    if (roots.size === 1) {
+      return [...roots][0];
+    }
+    return undefined;
+  };
+
+  const mcpConfigPath = async (
+    scope: "global" | "workspace" | undefined,
+    workspacePath?: string,
+  ): Promise<string> => {
+    if (scope === "workspace") return path.join(await workspaceRootFor(workspacePath), ".mcp.json");
+    if (scope === "global") {
+      return path.join(process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu"), "mcp.json");
+    }
+    throw new HarnessError("invalid_request", "Select the scope of the existing MCP connector.");
+  };
+
+  const saveMcpServer = async (
+    params: RpcParams<"plugins.mcp.edit">,
+    editing: boolean,
+  ): Promise<RpcResult<"plugins.mcp.edit">> => {
+    const id = params.id.trim();
+    if (!/^[a-zA-Z0-9._-]+$/.test(id) || Object.hasOwn(Object.prototype, id)) {
+      return { ok: false, saved: false, message: "Enter a valid MCP server ID." };
+    }
+    const configPath = await mcpConfigPath(params.scope, params.workspacePath);
+    const config = readMcpConfig(configPath);
+    const servers = asRecord(config.mcpServers);
+    const exists = Object.hasOwn(servers, id);
+    if (editing !== exists) {
+      return { ok: false, saved: false, message: editing ? "Connector does not exist in this config." : "This connector ID already exists in this scope." };
+    }
+
+    const existingEntry = asRecord(servers[id]);
+    const entry = { ...existingEntry };
+    const existingTransport: McpTransport = existingEntry.command
+      ? "stdio"
+      : existingEntry.type === "sse"
+        ? "sse"
+        : "streamable-http";
+    const transport = params.transport ?? existingTransport;
+    const transportChanged = !editing || (params.transport !== undefined && params.transport !== existingTransport);
+
+    if (transport === "stdio") {
+      const command = params.command ?? entry.command;
+      if (typeof command !== "string" || !command.trim()) {
+        return { ok: false, saved: false, message: "Provide an executable command for stdio MCP servers." };
+      }
+      entry.command = command.trim();
+      if (params.args !== undefined) entry.args = params.args;
+      if (transportChanged) {
+        delete entry.type;
+        delete entry.url;
+      }
+    } else {
+      const url = params.url ?? entry.url;
+      if (typeof url !== "string" || !url.trim()) {
+        return { ok: false, saved: false, message: "Provide a remote URL for HTTP/SSE MCP servers." };
+      }
+      entry.url = url.trim();
+      if (transportChanged) {
+        entry.type = transport === "sse" ? "sse" : "http";
+        delete entry.command;
+        delete entry.args;
+      } else if (params.transport && entry.type === undefined) {
+        entry.type = transport === "sse" ? "sse" : "http";
+      }
+    }
+    if (params.env) {
+      const mergedEnv = { ...asRecord(entry.env) };
+      for (const [k, v] of Object.entries(params.env)) {
+        if (v !== "" || !(k in mergedEnv)) {
+          mergedEnv[k] = v;
+        }
+      }
+      entry.env = mergedEnv;
+    }
+    if (params.shared !== undefined) entry.shared = params.shared;
+    if (params.timeoutSecs !== undefined) entry.timeout_secs = params.timeoutSecs;
+    writeMcpConfig(configPath, { ...config, mcpServers: { ...servers, [id]: entry } });
+
+    const reload = await execRuntimeCmd("mcp", ["reload"]);
+    const reloadError = reload.ok ? undefined : (reload.message || "Engine MCP reload failed.");
+    return {
+      ok: true,
+      saved: true,
+      reloaded: reload.ok,
+      ...(reloadError ? { reloadError } : {}),
+      message: reload.ok ? "Connector saved and engine reloaded." : `Connector saved to disk. Engine reload failed: ${reloadError}`,
+      server: {
+        id,
+        name: id,
+        status: "cached",
+        enabled: entry.enabled !== false,
+        transport,
+        configLayer: params.scope ?? "global",
+        configPath,
+        shared: entry.shared !== false,
+        command: typeof entry.command === "string" ? entry.command : undefined,
+        args: Array.isArray(entry.args) ? entry.args.map(String) : undefined,
+        url: typeof entry.url === "string" ? entry.url : undefined,
+        envKeys: entry.env ? Object.keys(asRecord(entry.env)) : undefined,
+        timeoutSecs: typeof entry.timeout_secs === "number" ? entry.timeout_secs : undefined,
+      },
+    };
   };
 
   const handlers: HandlerMap = {
@@ -2003,7 +2281,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { files };
     },
     "workspace.contextSnapshot": async (params) => {
-      const data = await safeRuntimeCmd("context", [], params.sessionId);
+      const { data } = await requireRuntimeCmd("context", [], params.sessionId);
       const breakdown = asRecord(data.token_breakdown ?? data);
       const system = Number(breakdown.system ?? 0);
       const tools = Number(breakdown.tools ?? 0);
@@ -2083,22 +2361,10 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     // 3. Sessions
     // -------------------------------------------------------------------------
-    "sessions.list": async (params) => {
-      try {
-        return await deps.sessionHub.listSessions(
-          params?.includeArchived ?? false,
-          {
-            includeExternal: params?.includeExternal ?? true,
-            sources: params?.sources,
-          },
-        );
-      } catch {
-        return {
-          sessions: [],
-          activeSessionId: deps.sessionHub.getActiveSessionId(),
-        };
-      }
-    },
+    "sessions.list": async (params) => deps.sessionHub.listSessions(
+      params?.includeArchived ?? false,
+      { includeExternal: params?.includeExternal ?? true, sources: params?.sources },
+    ),
     "sessions.listExternalProjects": async (params) => {
       try {
         if (typeof deps.sessionHub.listExternalProjects === "function") {
@@ -2124,7 +2390,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       if (params.scope && params.scope !== "all") {
         args.push("--scope", params.scope);
       }
-      const data = await safeRuntimeCmd("session_search", args);
+      const { data } = await requireRuntimeCmd("session_search", args);
       const rawMatches = asArray(data.results ?? data.matches ?? data.hits);
       const validSources = new Set([
         "rayu",
@@ -2162,7 +2428,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { hits };
     },
     "sessions.create": async (params) => {
-      const session = await deps.sessionHub.createSession(params);
+      const workingDir = await resolveSessionCreateRoot(params?.workingDir);
+      const session = await deps.sessionHub.createSession({ ...params, workingDir });
       return { session };
     },
     "sessions.attach": async (params) => {
@@ -2176,6 +2443,9 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, title: params.title };
     },
     "sessions.fork": async (params) => {
+      if (params.atTurnId) {
+        throw new HarnessError("unsupported", "The engine can fork a whole session. Forking at a particular turn is unavailable.");
+      }
       const client = await getSessionClient(params.sessionId);
       const info = await client.forkSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
@@ -2318,7 +2588,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { tasks: tasks.filter((t) => t.sessionId === targetSessionId) };
     },
     "background.status": async (params) => {
-      const data = await safeRuntimeCmd("background", ["status", params.taskId]);
+      const { data } = await requireRuntimeCmd("background", ["status", params.taskId]);
       if (data.task && typeof data.task === "object") {
         return {
           task: mapRawBackgroundTask(
@@ -2335,7 +2605,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "background.output": async (params): Promise<BackgroundProcessOutputView> => {
       const maxBytes = params.maxBytes ?? 131_072;
-      const data = await safeRuntimeCmd("background", [
+      const { data } = await requireRuntimeCmd("background", [
         "output",
         params.taskId,
         String(maxBytes),
@@ -2414,7 +2684,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     "swarm.status": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`status` / `list` / `board`)
-      const data = await safeRuntimeCmd("swarm", ["status"]);
+      const { data } = await requireRuntimeCmd("swarm", ["status"]);
       const rawSwarms = asArray(data.swarms).map(asRecord);
       const selectedSwarm = params?.swarmId
         ? rawSwarms.find((s) => String(s.swarm_id ?? s.swarmId ?? "") === params.swarmId)
@@ -2663,7 +2933,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { swarm };
     },
     "swarm.list": async () => {
-      const data = await safeRuntimeCmd("swarm", ["list"]);
+      const { data } = await requireRuntimeCmd("swarm", ["list"]);
       const swarms: SwarmSummaryView[] = asArray(data.swarms).map((raw, idx) => {
         const s = asRecord(raw);
         const members = asArray(s.members).map(asRecord);
@@ -2725,7 +2995,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     }),
     "swarm.board": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`board`)
-      const data = await safeRuntimeCmd("swarm", ["board"]);
+      const { data } = await requireRuntimeCmd("swarm", ["board"]);
       const messages: SwarmBoardMessageView[] = asArray(data.board ?? data.messages)
         .map(asRecord)
         .filter((m) => {
@@ -2809,7 +3079,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 6. Automations
     // -------------------------------------------------------------------------
     "automations.overnight.list": async () => {
-      const data = await safeRuntimeCmd("overnight", ["list"]);
+      const { data } = await requireRuntimeCmd("overnight", ["list"]);
       const runs: OvernightRunView[] = asArray(data.runs).map((raw, idx) => {
         const r = asRecord(raw);
         const taskSummary = asRecord(r.task_summary);
@@ -2932,7 +3202,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.overnight.log": async (params) => {
       // Rust parse_overnight_command accepts 1-arg `["log"]` and returns `data.events`
-      const data = await safeRuntimeCmd("overnight", ["log"]);
+      const { data } = await requireRuntimeCmd("overnight", ["log"]);
       const rawEvents = asArray(data.events ?? data.lines);
       const formatted = rawEvents.map((ev) => {
         if (typeof ev === "string") return ev;
@@ -2962,8 +3232,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.overnight.report": async (params) => {
       // Rust parse_overnight_command accepts 1-arg `["review"]` and returns `{ run_id, html, path, tasks }` + markdown in `out.message`
-      const out = await execRuntimeCmd("overnight", ["review"]);
-      const data = out.data;
+      const { data, message } = await requireRuntimeCmd("overnight", ["review"]);
       const r = asRecord(data.run ?? data);
       const rawTasks = asArray(data.tasks ?? r.tasks);
       const tasks = rawTasks.map((t, idx) => {
@@ -3015,12 +3284,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         markdown:
           typeof data.markdown === "string"
             ? data.markdown
-            : out.message || undefined,
+            : message || undefined,
         html: typeof data.html === "string" ? data.html : undefined,
       };
     },
     "automations.schedules.list": async () => {
-      const data = await safeRuntimeCmd("schedules", ["list"]);
+      const { data } = await requireRuntimeCmd("schedules", ["list"]);
       const schedules: ScheduleItemView[] = asArray(data.schedules).map(
         (raw, idx) => {
           const s = asRecord(raw);
@@ -3128,7 +3397,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: data.cancelled !== false, message: message || undefined };
     },
     "automations.ambient.status": async (): Promise<AmbientStatusView> => {
-      const data = await safeRuntimeCmd("ambient", ["status"]);
+      const { data } = await requireRuntimeCmd("ambient", ["status"]);
       const stateObj = asRecord(data.state);
       const rawCycle = String(
         data.active_cycle ?? stateObj.status ?? stateObj.phase ?? "idle",
@@ -3164,7 +3433,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "automations.ambient.approvals": async () => {
-      const data = await safeRuntimeCmd("ambient", ["approvals"]);
+      const { data } = await requireRuntimeCmd("ambient", ["approvals"]);
       return {
         approvals: mapAmbientApprovals(data.approvals ?? data.pending_approvals),
       };
@@ -3178,10 +3447,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "automations.quality.status": async (): Promise<QualityStatusView> => {
-      const [ar, aj] = await Promise.all([
-        safeRuntimeCmd("autoreview", ["status"]),
-        safeRuntimeCmd("autojudge", ["status"]),
+      const [arRes, ajRes] = await Promise.all([
+        requireRuntimeCmd("autoreview", ["status"]),
+        requireRuntimeCmd("autojudge", ["status"]),
       ]);
+      const ar = arRes.data;
+      const aj = ajRes.data;
       return {
         autoReviewEnabled: Boolean(ar.enabled ?? false),
         autoReviewModel: typeof ar.model === "string" ? ar.model : undefined,
@@ -3231,12 +3502,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "automations.quality.productivity": async (): Promise<ProductivityReportView> => {
       // Rust `productivity` accepts `[] | ["status"|"show"]` (no range arg!)
-      const out = await execRuntimeCmd("productivity", []);
-      const data = out.data;
+      const { data, message } = await requireRuntimeCmd("productivity", []);
       const imageObj = asRecord(data.image);
       const markdown =
-        out.ok && out.message
-          ? out.message
+        message
+          ? message
           : typeof data.markdown === "string"
             ? data.markdown
             : typeof data.report === "string"
@@ -3264,7 +3534,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 7. Plugins, MCP, Skills, Memory & Workspace Integrations
     // -------------------------------------------------------------------------
     "plugins.mcp.list": async () => {
-      const data = await safeRuntimeCmd("mcp", ["list"]);
+      const { data } = await requireRuntimeCmd("mcp", ["list"]);
       const servers: McpServerView[] = asArray(data.servers).map((raw, idx) => {
         const s = asRecord(raw);
         const id = String(s.id ?? `mcp_${idx}`);
@@ -3405,175 +3675,26 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const listed = await handlers["plugins.mcp.list"](undefined);
       return { ok: true, servers: listed.servers };
     },
-    "plugins.mcp.add": async (params) => {
-      const id = params.id.trim();
-      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
-        return {
-          ok: false,
-          message:
-            "MCP server ID must contain only letters, numbers, dots, hyphens, or underscores.",
-        };
+    "plugins.mcp.add": async (params) => saveMcpServer(params, false),
+    "plugins.mcp.edit": async (params) => saveMcpServer(params, true),
+    "plugins.mcp.remove": async (params) => {
+      const target = await mcpConfigPath(params.scope, params.workspacePath);
+      const config = readMcpConfig(target);
+      const servers = { ...asRecord(config.mcpServers) };
+      if (!Object.hasOwn(servers, params.id)) {
+        return { ok: false, saved: false, message: "Connector does not exist in this config." };
       }
-      if (params.transport === "stdio" && !params.command?.trim()) {
-        return {
-          ok: false,
-          message: "Provide an executable command for stdio MCP servers.",
-        };
-      }
-      if (params.transport !== "stdio" && !params.url?.trim()) {
-        return {
-          ok: false,
-          message: "Provide a remote URL for HTTP/SSE MCP servers.",
-        };
-      }
-
-      const rayuHome =
-        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
-      const targetPath =
-        params.scope === "workspace"
-          ? path.join(workspaceRoot, ".mcp.json")
-          : path.join(rayuHome, "mcp.json");
-
-      let existing: Record<string, unknown> = {};
-      try {
-        if (fs.existsSync(targetPath)) {
-          const parsed = JSON.parse(fs.readFileSync(targetPath, "utf8"));
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            existing = parsed as Record<string, unknown>;
-          }
-        }
-      } catch {
-        existing = {};
-      }
-
-      const existingMap =
-        existing.mcpServers &&
-        typeof existing.mcpServers === "object" &&
-        !Array.isArray(existing.mcpServers)
-          ? { ...(existing.mcpServers as Record<string, unknown>) }
-          : {};
-
-      const entry: Record<string, unknown> = {};
-      if (params.transport === "stdio") {
-        entry.command = params.command!.trim();
-        if (params.args && params.args.length > 0) {
-          entry.args = params.args.filter((a) => a.length > 0);
-        }
-      } else {
-        entry.type = params.transport === "sse" ? "sse" : "http";
-        entry.url = params.url!.trim();
-      }
-      if (params.env && Object.keys(params.env).length > 0) {
-        const cleanEnv: Record<string, string> = {};
-        for (const [k, v] of Object.entries(params.env)) {
-          const key = k.trim();
-          if (key && v.trim()) cleanEnv[key] = v.trim();
-        }
-        if (Object.keys(cleanEnv).length > 0) entry.env = cleanEnv;
-      }
-      if (typeof params.shared === "boolean") {
-        entry.shared = params.shared;
-      }
-      if (typeof params.timeoutSecs === "number" && params.timeoutSecs > 0) {
-        entry.timeout_secs = Math.round(params.timeoutSecs);
-      }
-
-      existingMap[id] = entry;
-      fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(
-        targetPath,
-        `${JSON.stringify({ ...existing, mcpServers: existingMap }, null, 2)}\n`,
-        { encoding: "utf8", mode: 0o600 },
-      );
-
-      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
-      const listed = await handlers["plugins.mcp.list"](undefined);
-      const server: McpServerView = listed.servers.find((s) => s.id === id) ?? {
-        id,
-        name: id,
-        status: "cached",
-        enabled: true,
-        transport: params.transport,
-        configLayer: params.scope,
-        configPath: targetPath,
-        shared: params.shared ?? true,
-        command: params.command,
-        args: params.args,
-        url: params.url,
-        timeoutSecs: params.timeoutSecs,
-      };
+      delete servers[params.id];
+      writeMcpConfig(target, { ...config, mcpServers: servers });
+      const reload = await execRuntimeCmd("mcp", ["reload"]);
+      const reloadError = reload.ok ? undefined : (reload.message || "Engine MCP reload failed.");
       return {
         ok: true,
-        server,
-        message: `Saved MCP server '${id}' to ${targetPath}.`,
+        saved: true,
+        reloaded: reload.ok,
+        ...(reloadError ? { reloadError } : {}),
+        message: reload.ok ? "Connector removed and engine reloaded." : `Connector removed from config. Engine reload failed: ${reloadError}`,
       };
-    },
-    "plugins.mcp.edit": async (params) =>
-      handlers["plugins.mcp.add"]({
-        ...params,
-        scope: params.scope ?? "global",
-        transport:
-          params.transport ?? (params.url ? "streamable-http" : "stdio"),
-      }),
-    "plugins.mcp.remove": async (params) => {
-      const id = params.id.trim();
-      if (!id) {
-        return { ok: false, message: "MCP server ID is required." };
-      }
-      const rayuHome =
-        process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
-      const targets =
-        params.scope === "workspace"
-          ? [path.join(workspaceRoot, ".mcp.json")]
-          : params.scope === "global"
-            ? [path.join(rayuHome, "mcp.json")]
-            : [
-                path.join(workspaceRoot, ".mcp.json"),
-                path.join(rayuHome, "mcp.json"),
-              ];
-
-      let removed = false;
-      for (const filePath of targets) {
-        if (!fs.existsSync(filePath)) continue;
-        try {
-          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<
-            string,
-            unknown
-          >;
-          if (
-            parsed.mcpServers &&
-            typeof parsed.mcpServers === "object" &&
-            !Array.isArray(parsed.mcpServers) &&
-            id in (parsed.mcpServers as Record<string, unknown>)
-          ) {
-            const nextServers = {
-              ...(parsed.mcpServers as Record<string, unknown>),
-            };
-            delete nextServers[id];
-            fs.writeFileSync(
-              filePath,
-              `${JSON.stringify({ ...parsed, mcpServers: nextServers }, null, 2)}\n`,
-              { encoding: "utf8", mode: 0o600 },
-            );
-            removed = true;
-          }
-        } catch {
-          // ignore malformed file
-        }
-      }
-
-      if (!removed) {
-        return {
-          ok: false,
-          message: `MCP server '${id}' was not found in ~/.rayu/mcp.json or .mcp.json.`,
-        };
-      }
-      await execRuntimeCmd("mcp", ["reload"]).catch(() => {});
-      return { ok: true, message: `Removed MCP server '${id}'.` };
     },
     "plugins.mcp.login": async () => ({
       ok: false,
@@ -3602,7 +3723,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "plugins.skills.list": async () => {
       // Rust `skills` accepts `[] | ["status"]` (rejects `["list"]`)
-      const data = await safeRuntimeCmd("skills", []);
+      const { data } = await requireRuntimeCmd("skills", []);
       const mapSkill = (raw: unknown, defaultScope: SkillView["scope"]): SkillView => {
         const s = asRecord(raw);
         return {
@@ -3629,12 +3750,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "plugins.skills.create": async (params) => {
-      const slug = params.name
-        .trim()
+      const rawName = params.name.trim();
+      if (/[/\\]/.test(rawName) || rawName.includes("..")) {
+        throw new HarnessError(
+          "invalid_request",
+          "Skill name cannot contain path separators or '..'.",
+        );
+      }
+      const slug = rawName
         .toLowerCase()
         .replace(/[^a-z0-9-_]+/g, "-")
         .replace(/^-+|-+$/g, "");
-      if (!slug) {
+      if (!slug || !/[a-z0-9]/.test(slug)) {
         throw new HarnessError(
           "invalid_request",
           "Skill name must contain letters or numbers.",
@@ -3643,25 +3770,36 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const scope = params.scope === "global" ? "global" : "project";
       const rayuHome =
         process.env.RAYU_HOME?.trim() || path.join(os.homedir(), ".rayu");
-      const folders = await deps.getWorkspaceFolders().catch(() => []);
-      const workspaceRoot = folders[0]?.path || process.cwd();
       const baseDir =
         scope === "global"
           ? path.join(rayuHome, "skills")
-          : path.join(workspaceRoot, ".agents", "skills");
+          : path.join(await workspaceRootFor(params.workspacePath), ".agents", "skills");
       const skillDir = path.join(baseDir, slug);
       const skillFile = path.join(skillDir, "SKILL.md");
+      const cleanDescription = params.description.trim();
       const body =
         params.content?.trim() ||
-        `# ${params.name.trim()}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
-      const markdown = `---\nname: ${slug}\ndescription: ${params.description.trim()}\n---\n\n${body}\n`;
+        `# ${rawName}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
+      const markdown = `---\nname: ${slug}\ndescription: ${JSON.stringify(cleanDescription)}\n---\n\n${body}\n`;
       fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(skillFile, markdown, "utf8");
+      try {
+        fs.writeFileSync(skillFile, markdown, { encoding: "utf8", flag: "wx" });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new HarnessError("invalid_request", "A skill with this name already exists in this scope.");
+        }
+        throw error;
+      }
+      const reload = await execRuntimeCmd("skills", []);
+      const reloadError = reload.ok ? undefined : (reload.message || "Could not refresh engine skills list.");
       return {
         ok: true,
+        saved: true,
+        reloaded: reload.ok,
+        ...(reloadError ? { reloadError } : {}),
         skill: {
           name: slug,
-          description: params.description.trim(),
+          description: cleanDescription,
           path: skillFile,
           scope,
           installed: true,
@@ -3681,7 +3819,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         "Running skills via runtime_command is not supported yet; invoke the skill from chat.",
     }),
     "plugins.memory.status": async (): Promise<MemoryStatusView> => {
-      const data = await safeRuntimeCmd("memory", ["status"]);
+      const { data } = await requireRuntimeCmd("memory", ["status"]);
       const facts: MemoryFactView[] = asArray(data.facts).map((raw, idx) => {
         const f = asRecord(raw);
         return {
@@ -3758,6 +3896,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       message: "Linking memory facts via runtime_command is not supported yet.",
     }),
     "plugins.workspace.status": async (): Promise<WorkspaceIntegrationsView> => ({
+      available: false,
       gmail: {
         connected: false,
         actionCount: 0,
@@ -3924,7 +4063,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         turnId: 1,
         editCount: 1,
         isBinary: false,
-        undoable: true,
+        undoable: false,
         canRedo: false,
         previewHunks: [],
         previewTruncated: false,
@@ -3941,7 +4080,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "changes.diff": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      const sessionId = params.sessionId;
       if (params.scope === "session" && sessionId) {
         const engineDiff = await tryEngineFileChangeDiff(sessionId, params.path);
         if (engineDiff) {
@@ -3949,8 +4088,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         }
       }
       try {
+        const workingDir = sessionId
+          ? (deps.sessionHub.getSessionWorkingDirForSession?.(sessionId) ??
+            deps.sessionHub.getSessionWorkingDir?.(sessionId))
+          : undefined;
+        if (
+          sessionId &&
+          (deps.sessionHub.getSessionWorkingDirForSession ||
+            deps.sessionHub.getSessionWorkingDir) &&
+          !workingDir
+        ) {
+          throw new HarnessError("invalid_request", "Could not resolve the session worktree for this diff.");
+        }
         const gitDiff = await deps.gitBridge.getDiff({
           path: params.path,
+          workingDir: workingDir || undefined,
           sessionId,
           scope: params.scope,
         });
@@ -3978,138 +4130,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "changes.stage": async (params) => deps.gitBridge.stage(params.paths),
     "changes.unstage": async (params) => deps.gitBridge.unstage(params.paths),
-    "changes.keep": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "keep", {
-          path: params.path,
-        });
-        if (engineRes) return engineRes;
-      }
-      return deps.gitBridge.keep({
-        path: params.path,
-        sessionId,
-      });
-    },
-    "changes.undo": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "undo", {
-          path: params.path,
-          force: params.force,
-        });
-        if (engineRes) return engineRes;
-      }
-      const res = await deps.gitBridge.undo({
-        path: params.path,
-        sessionId,
-      });
-      return {
-        ...res,
-        ...(res.conflict
-          ? {
-              conflicts: [
-                {
-                  path: params.path,
-                  displayPath: params.path,
-                  reason:
-                    res.message ??
-                    "File changed on disk since the session snapshot.",
-                },
-              ],
-            }
-          : {}),
-      };
-    },
-    "changes.redo": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(sessionId, "redo", {
-          path: params.path,
-          force: params.force,
-        });
-        if (engineRes) return engineRes;
-      }
-      return {
-        ok: false,
-        message: "Redo requires a RayuCode bridge supporting file_changes.",
-      };
-    },
-    "changes.keepAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "keep_all",
-        );
-        if (engineRes) return engineRes;
-      }
-      const status = await deps.gitBridge.getStatus({
-        sessionId,
-        scope: "session",
-      });
-      const targets = status.files.filter((f) => f.fromSession);
-      for (const file of targets) {
-        deps.gitBridge.keep({ path: file.path, sessionId });
-      }
-      return {
-        ok: true,
-        message: `Kept ${targets.length} file(s).`,
-        conflicts: [],
-      };
-    },
-    "changes.undoAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "undo_all",
-          { force: params?.force },
-        );
-        if (engineRes) return engineRes;
-      }
-      const status = await deps.gitBridge.getStatus({
-        sessionId,
-        scope: "session",
-      });
-      const targets = status.files.filter((f) => f.fromSession);
-      const conflicts: FileChangeConflictView[] = [];
-      for (const file of targets) {
-        const res = await deps.gitBridge.undo({ path: file.path, sessionId });
-        if (!res.ok || res.conflict) {
-          conflicts.push({
-            path: file.path,
-            displayPath: file.path,
-            reason:
-              res.message ?? "File changed on disk since the session snapshot.",
-          });
-        }
-      }
-      return {
-        ok: conflicts.length === 0,
-        conflict: conflicts.length > 0,
-        conflicts,
-        message:
-          conflicts.length > 0
-            ? `${conflicts.length} file(s) had conflicts during undo.`
-            : `Reverted ${targets.length} file(s).`,
-      };
-    },
-    "changes.redoAll": async (params) => {
-      const sessionId = params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (sessionId) {
-        const engineRes = await tryEngineFileChangeAction(
-          sessionId,
-          "redo_all",
-          { force: params?.force },
-        );
-        if (engineRes) return engineRes;
-      }
-      return {
-        ok: false,
-        message: "Redo all requires a RayuCode bridge supporting file_changes.",
-      };
-    },
+    "changes.keep": async (params) =>
+      runReviewAction(params.sessionId, "keep", { path: params.path }),
+    "changes.undo": async (params) =>
+      runReviewAction(params.sessionId, "undo", params),
+    "changes.redo": async (params) =>
+      runReviewAction(params.sessionId, "redo", params),
+    "changes.keepAll": async (params) =>
+      runReviewAction(params?.sessionId, "keep_all"),
+    "changes.undoAll": async (params) =>
+      runReviewAction(params?.sessionId, "undo_all", params),
+    "changes.redoAll": async (params) =>
+      runReviewAction(params?.sessionId, "redo_all", params),
     "changes.commit": async (params) => deps.gitBridge.commit(params.message),
     "changes.createPr": async (params) => deps.gitBridge.createPr(params),
 
@@ -4120,37 +4152,17 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const daemonOnline = deps.bridgeManager.getStatus().state === "connected";
       if (!daemonOnline) {
         pendingTelegramPairing = null;
-        return {
-          linked: false,
-          configured: false,
-          statusLabel: "Daemon offline",
-          daemonOnline: false,
-          remoteUninstallEnabled: false,
-          authPath: "~/.rayu/telegram-remote.json",
-          daemonError: "Start the local Rayu daemon to manage Telegram remote.",
-          approvals: [],
-        };
+        throw new HarnessError(
+          "disconnected",
+          "Start the local Rayu daemon to manage Telegram remote.",
+        );
       }
       const [statusRes, approvalsRes] = await Promise.all([
-        execRuntimeCmd("telegram", ["status"]),
-        execRuntimeCmd("telegram", ["approvals"]),
+        requireRuntimeCmd("telegram", ["status"]),
+        requireRuntimeCmd("telegram", ["approvals"]),
       ]);
       const data = statusRes.data;
       const approvalsData = approvalsRes.data;
-      if (!statusRes.ok) {
-        return {
-          linked: false,
-          configured: false,
-          statusLabel: "Unavailable",
-          daemonOnline,
-          remoteUninstallEnabled: false,
-          authPath: "~/.rayu/telegram-remote.json",
-          daemonError:
-            statusRes.message ||
-            "Could not query Telegram remote status from the Rust daemon.",
-          approvals: [],
-        };
-      }
       const approvals = mapTelegramApprovals(
         approvalsData.approvals ?? data.approvals,
       );
@@ -4382,7 +4394,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "remote.telegram.approvals": async () => {
-      const data = await safeRuntimeCmd("telegram", ["approvals"]);
+      const { data } = await requireRuntimeCmd("telegram", ["approvals"]);
       return { approvals: mapTelegramApprovals(data.approvals) };
     },
     "remote.telegram.decide": async (params) => {
@@ -4394,7 +4406,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "remote.infra.status": async (): Promise<RemoteInfraStatusView> => {
-      const data = await safeRuntimeCmd("remote", ["status"]);
+      const { data } = await requireRuntimeCmd("remote", ["status"]);
       const gw = asRecord(data.gateway ?? data);
       const gateway: GatewayStatusView = {
         enabled: Boolean(gw.enabled ?? false),
@@ -4516,7 +4528,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         return deps.authManager.getAccountStatus(false);
       }
 
-      const data = await safeRuntimeCmd("subscription", ["status"]);
+      const { data } = await requireRuntimeCmd("subscription", ["status"]);
       const credits = asRecord(data.credits);
       const user = asRecord(data.user);
       const signedIn = Boolean(
@@ -4756,6 +4768,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, enabled: params.enabled };
     },
     "settings.analytics.get": async (params): Promise<AnalyticsSummaryView> => ({
+      available: false,
       range: params.range,
       groupBy: params.groupBy,
       totalCredits: 0,
@@ -4763,7 +4776,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       topSessions: [],
     }),
     "settings.providers.list": async () => {
-      const data = await safeRuntimeCmd("auth", ["status"]);
+      const { data } = await requireRuntimeCmd("auth", ["status"]);
       // Rust `auth status` returns `data.providers` as an ARRAY of `{ id, display_name, state, readiness, credential_source, refresh_support }`
       const remoteById = new Map<string, Record<string, unknown>>();
       if (Array.isArray(data.providers)) {
@@ -4930,8 +4943,13 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, message: message || undefined };
     },
     "settings.doctor.run": async (params) => {
-      const data = await safeRuntimeCmd("doctor", [params.scope]);
+      const { data } = await requireRuntimeCmd("doctor", [params.scope]);
       const rawChecks = asArray(data.checks);
+      const bridgeStatus = deps.bridgeManager.getStatus();
+      const proto = bridgeStatus.protocolVersion;
+      const socketMsg = proto
+        ? `Connected to Harness API ${proto.startsWith("v") ? proto : `v${proto}`} socket.`
+        : "Connected to Harness API socket.";
       const checks: DoctorCheckView[] =
         rawChecks.length > 0
           ? rawChecks.map((raw, idx) => {
@@ -4956,21 +4974,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
                 scope: params.scope,
                 label: "Harness API Bridge Connectivity",
                 status:
-                  deps.bridgeManager.getStatus().state === "connected"
+                  bridgeStatus.state === "connected"
                     ? "pass"
                     : "warn",
                 detail:
-                  deps.bridgeManager.getStatus().state === "connected"
-                    ? "Connected to Harness API v1.14 socket."
+                  bridgeStatus.state === "connected"
+                    ? socketMsg
                     : "Bridge is currently offline.",
               },
             ];
       return { checks, ranAtMs: Date.now() };
     },
     "settings.models.get": async (params) => {
+      const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
       let targetSessionId =
         params?.sessionId ?? deps.sessionHub.getActiveSessionId();
-      if (!targetSessionId) {
+      if (!targetSessionId && daemonConnected) {
         targetSessionId = await deps.sessionHub
           .getClient()
           .then((c) =>
@@ -4983,11 +5002,21 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
 
       const hostAccount = deps.authManager?.getAccountStatusSnapshot();
-      const [data, subagentData, runtimeInfo, rayuHostedModels] =
+      const emptyCmd = {
+        ok: false,
+        data: {} as Record<string, unknown>,
+        rawData: undefined as unknown,
+        message: "",
+      };
+      const [agentsRes, subagentRes, runtimeInfo, rayuHostedModels] =
         await Promise.all([
-          safeRuntimeCmd("agents", ["status"], targetSessionId),
-          safeRuntimeCmd("subagent_model", ["status"], targetSessionId),
-          targetSessionId
+          daemonConnected
+            ? execRuntimeCmd("agents", ["status"], targetSessionId)
+            : Promise.resolve(emptyCmd),
+          daemonConnected
+            ? execRuntimeCmd("subagent_model", ["status"], targetSessionId)
+            : Promise.resolve(emptyCmd),
+          targetSessionId && daemonConnected
             ? getSessionClient(targetSessionId)
                 .then((c) =>
                   typeof c.getRuntimeInfo === "function"
@@ -5000,6 +5029,8 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? deps.authManager.fetchHostedModels(false).catch(() => [])
             : Promise.resolve([]),
         ]);
+      const data = agentsRes.data;
+      const subagentData = subagentRes.data;
 
       const roles: Array<{ role: AgentRoleId; label: string }> = [
         { role: "swarm", label: "Swarm Workers" },
@@ -5011,33 +5042,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const overridesObj = asRecord(data.overrides);
       const defaultsObj = asRecord(data.defaults);
       const effectiveObj = asRecord(data.effective);
-      const roleOverrides: AgentRoleOverrideView[] = roles.map((r) => {
-        const sessionOverride = overridesObj[r.role];
-        const globalDefault = defaultsObj[r.role];
-        if (typeof sessionOverride === "string" && sessionOverride.trim()) {
-          return {
-            role: r.role,
-            label: r.label,
-            model: sessionOverride,
-            scope: "session",
-          };
-        }
-        return {
-          role: r.role,
-          label: r.label,
-          model:
-            typeof globalDefault === "string" && globalDefault.trim()
-              ? globalDefault
-              : "inherit",
-          scope: "global",
-        };
-      });
+      const roleOverrides: AgentRoleOverrideView[] = agentsRes.ok
+        ? roles.map((r) => {
+            const sessionOverride = overridesObj[r.role];
+            const globalDefault = defaultsObj[r.role];
+            if (typeof sessionOverride === "string" && sessionOverride.trim()) {
+              return {
+                role: r.role,
+                label: r.label,
+                model: sessionOverride,
+                scope: "session",
+              };
+            }
+            return {
+              role: r.role,
+              label: r.label,
+              model:
+                typeof globalDefault === "string" && globalDefault.trim()
+                  ? globalDefault
+                  : "inherit",
+              scope: "global",
+            };
+          })
+        : [];
 
-      const effectiveRoleModels: Record<string, string | null> = {};
-      for (const r of roles) {
-        const eff = effectiveObj[r.role];
-        effectiveRoleModels[r.role] =
-          typeof eff === "string" && eff.trim() ? eff.trim() : null;
+      const effectiveRoleModels: Record<string, string | null> | undefined =
+        agentsRes.ok ? {} : undefined;
+      if (effectiveRoleModels) {
+        for (const r of roles) {
+          const eff = effectiveObj[r.role];
+          effectiveRoleModels[r.role] =
+            typeof eff === "string" && eff.trim() ? eff.trim() : null;
+        }
       }
 
       const mapProfileList = (
@@ -5069,21 +5105,28 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         return out;
       };
 
-      const globalProfiles = mapProfileList(data.global_profiles, "global");
-      const sessionProfiles = mapProfileList(data.session_profiles, "session");
-      const mergedProfiles = mapProfileList(data.profiles, "global");
-      const profiles =
-        mergedProfiles.length > 0
+      const globalProfiles = agentsRes.ok
+        ? mapProfileList(data.global_profiles, "global")
+        : undefined;
+      const sessionProfiles = agentsRes.ok
+        ? mapProfileList(data.session_profiles, "session")
+        : undefined;
+      const mergedProfiles = agentsRes.ok
+        ? mapProfileList(data.profiles, "global")
+        : [];
+      const profiles = agentsRes.ok
+        ? mergedProfiles.length > 0
           ? mergedProfiles
           : [
-              ...globalProfiles.filter(
+              ...(globalProfiles ?? []).filter(
                 (gp) =>
-                  !sessionProfiles.some(
+                  !(sessionProfiles ?? []).some(
                     (sp) => sp.name.toLowerCase() === gp.name.toLowerCase(),
                   ),
               ),
-              ...sessionProfiles,
-            ];
+              ...(sessionProfiles ?? []),
+            ]
+        : undefined;
 
       const sessionScopedPrefs = params?.sessionId
         ? deps.sessionHub.getSessionPrefs?.(params.sessionId)
@@ -5100,18 +5143,22 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       });
 
       const subagentModel =
-        typeof subagentData.model === "string" && subagentData.model.trim()
-          ? subagentData.model.trim()
-          : typeof data.subagent_model === "string" && data.subagent_model.trim()
-            ? data.subagent_model.trim()
-            : null;
+        subagentRes.ok || agentsRes.ok
+          ? typeof subagentData.model === "string" && subagentData.model.trim()
+            ? subagentData.model.trim()
+            : typeof data.subagent_model === "string" && data.subagent_model.trim()
+              ? data.subagent_model.trim()
+              : null
+          : undefined;
       const inheritModel =
-        typeof subagentData.inherit_model === "string" &&
-        subagentData.inherit_model.trim()
-          ? subagentData.inherit_model.trim()
-          : typeof data.inherit_model === "string" && data.inherit_model.trim()
-            ? data.inherit_model.trim()
-            : defaultModel ?? null;
+        subagentRes.ok || agentsRes.ok
+          ? typeof subagentData.inherit_model === "string" &&
+            subagentData.inherit_model.trim()
+            ? subagentData.inherit_model.trim()
+            : typeof data.inherit_model === "string" && data.inherit_model.trim()
+              ? data.inherit_model.trim()
+              : defaultModel ?? null
+          : undefined;
 
       return {
         defaultModel,
@@ -5127,27 +5174,30 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             "rayucode.settings.serviceTier",
             "auto",
           ),
-        cacheTtl:
-          sessionScopedPrefs?.cacheTtl ??
-          deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
+        cacheTtl: deps.getGlobalState<CacheTtl>("rayucode.settings.cacheTtl", "5m"),
         transport: deps.getGlobalState<ProviderTransport>(
           "rayucode.settings.transport",
           "auto",
         ),
-        subagentModel,
-        inheritModel,
+        ...(subagentModel !== undefined ? { subagentModel } : {}),
+        ...(inheritModel !== undefined ? { inheritModel } : {}),
         roleOverrides,
-        effectiveRoleModels,
-        profiles,
-        globalProfiles,
-        sessionProfiles,
-        swarmAllowlist: Array.isArray(data.swarm_allowlist)
-          ? data.swarm_allowlist.map(String)
-          : undefined,
-        configPath:
-          typeof data.config_path === "string" && data.config_path.trim()
-            ? data.config_path.trim()
-            : "~/.rayu/config.toml",
+        ...(effectiveRoleModels !== undefined ? { effectiveRoleModels } : {}),
+        ...(profiles !== undefined ? { profiles } : {}),
+        ...(globalProfiles !== undefined ? { globalProfiles } : {}),
+        ...(sessionProfiles !== undefined ? { sessionProfiles } : {}),
+        swarmAllowlist:
+          agentsRes.ok && Array.isArray(data.swarm_allowlist)
+            ? data.swarm_allowlist.map(String)
+            : undefined,
+        ...(agentsRes.ok
+          ? {
+              configPath:
+                typeof data.config_path === "string" && data.config_path.trim()
+                  ? data.config_path.trim()
+                  : "~/.rayu/config.toml",
+            }
+          : {}),
         ...(routes.length > 0 || runtimeInfo?.routes !== undefined
           ? { routes }
           : {}),
@@ -5157,25 +5207,16 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const hostAccount = deps.authManager?.getAccountStatusSnapshot();
       const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
 
-      const [rayuHostedModels, daemonRefresh] = await Promise.all([
-        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
-          ? deps.authManager.fetchHostedModels(true).catch(() => [])
-          : Promise.resolve([]),
+      const [hostedRefresh, daemonRefresh] = await Promise.all([
+        hostAccount?.signedIn && deps.authManager?.getHostedModelCatalog
+          ? deps.authManager.getHostedModelCatalog(true).catch(() => ({ models: [], status: "failed" as const }))
+          : Promise.resolve({ models: [], status: "unavailable" as const }),
         daemonConnected
-          ? (async () => {
-              await deps.sessionHub
-                .notifyDaemonAuthChanged?.("rayu")
-                .catch(() => {});
-              return execRuntimeCmd("refresh_model_list", [], params?.sessionId);
-            })()
-          : Promise.resolve({
-              ok: false,
-              data: {} as Record<string, unknown>,
-              rawData: undefined,
-              message: "",
-            }),
+          ? execRuntimeCmd("refresh_model_list", [], params?.sessionId)
+          : Promise.resolve({ ok: false, data: {} as Record<string, unknown>, message: "" }),
       ]);
 
+      const rayuHostedModels = hostedRefresh.models;
       const rawRoutes = asArray(daemonRefresh.data.routes);
       const { routes } = reconcileAuthConsistentRoutes({
         rawRoutes,
@@ -5189,27 +5230,30 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? daemonRefresh.data.route_count
             : 0;
       return {
-        ok: daemonRefresh.ok || rayuHostedModels.length > 0,
+        ok: daemonRefresh.ok || hostedRefresh.status === "fresh",
+        message: hostedRefresh.status === "stale"
+          ? "Hosted catalogs could not refresh. Keeping last known models."
+          : !daemonRefresh.ok && hostedRefresh.status !== "fresh"
+            ? daemonRefresh.message || "Model catalogs could not refresh."
+            : undefined,
+        sources: {
+          engine: daemonConnected ? (daemonRefresh.ok ? "fresh" : "failed") : "unavailable",
+          hosted: hostedRefresh.status,
+        },
         routeCount,
         routes,
       };
     },
     "settings.models.setFast": async (params) => {
+      const wireArg = params.tier === "auto" ? "off" : params.tier;
+      await requireRuntimeCmd("fast", [wireArg], params.sessionId);
       if (params.sessionId) {
-        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
-          serviceTier: params.tier,
-        });
+        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, { serviceTier: params.tier });
       }
-      await requireRuntimeCmd("fast", [params.tier], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.serviceTier", params.tier);
       return { ok: true, tier: params.tier };
     },
     "settings.models.setCacheTtl": async (params) => {
-      if (params.sessionId) {
-        await deps.sessionHub.saveSessionPrefs?.(params.sessionId, {
-          cacheTtl: params.ttl,
-        });
-      }
       await requireRuntimeCmd("cache", [params.ttl], params.sessionId);
       await deps.updateGlobalState("rayucode.settings.cacheTtl", params.ttl);
       return { ok: true, ttl: params.ttl };
@@ -5328,7 +5372,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, profiles, message: message || undefined };
     },
     "settings.features.get": async () => {
-      const data = await safeRuntimeCmd("features", ["status"]);
+      const { data } = await requireRuntimeCmd("features", ["status"]);
       const features = extractFeatureFlags(data);
       const voice = deps.getGlobalState<VoiceStatusView>(
         "rayucode.settings.voice",
@@ -5416,7 +5460,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "settings.hooks.list": async () => {
       const configPath = path.join(os.homedir(), ".rayu", "config.toml");
-      const doctorData = await safeRuntimeCmd("doctor", ["status"]);
+      const { data: doctorData } = await requireRuntimeCmd("doctor", ["status"]);
       const remoteHooks = asArray(doctorData.hooks).map(asRecord);
       const configuredMap = new Map<string, boolean>();
       for (const h of remoteHooks) {

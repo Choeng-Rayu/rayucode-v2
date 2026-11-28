@@ -240,3 +240,101 @@ fn developer_catalog_paginates_and_preserves_cache_on_failure() {
     });
     server.join().unwrap();
 }
+
+#[test]
+fn refresh_model_catalog_discovers_future_model_and_preserves_last_good_on_error() {
+    let _guard = rayucode_base::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let _home_guard = EnvVarGuard::set_path("RAYU_HOME", home.path());
+    let _endpoint_prev = std::env::var_os("GEMINI_API_ENDPOINT");
+    let _version_prev = std::env::var_os("GEMINI_API_VERSION");
+    let _key_prev = std::env::var_os("GEMINI_API_KEY");
+    struct RestoreEnv {
+        endpoint: Option<std::ffi::OsString>,
+        version: Option<std::ffi::OsString>,
+        key: Option<std::ffi::OsString>,
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.endpoint.take() {
+                Some(v) => rayucode_base::env::set_var("GEMINI_API_ENDPOINT", v),
+                None => rayucode_base::env::remove_var("GEMINI_API_ENDPOINT"),
+            }
+            match self.version.take() {
+                Some(v) => rayucode_base::env::set_var("GEMINI_API_VERSION", v),
+                None => rayucode_base::env::remove_var("GEMINI_API_VERSION"),
+            }
+            match self.key.take() {
+                Some(v) => rayucode_base::env::set_var("GEMINI_API_KEY", v),
+                None => rayucode_base::env::remove_var("GEMINI_API_KEY"),
+            }
+        }
+    }
+    let _restore = RestoreEnv {
+        endpoint: _endpoint_prev,
+        version: _version_prev,
+        key: _key_prev,
+    };
+
+    let future_model = "gemini-99-future-experimental";
+    assert!(!AVAILABLE_MODELS.contains(&future_model));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ok_body = serde_json::json!({
+        "models": [
+            {
+                "name": format!("models/{future_model}"),
+                "supportedGenerationMethods": ["generateContent"]
+            }
+        ]
+    })
+    .to_string();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        for (status, body) in [
+            ("200 OK", ok_body),
+            ("500 Internal Server Error", "{}".to_string()),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+
+    rayucode_base::env::set_var("GEMINI_API_ENDPOINT", format!("http://{addr}"));
+    rayucode_base::env::set_var("GEMINI_API_VERSION", "v1beta");
+    rayucode_base::env::set_var("GEMINI_API_KEY", "synthetic-gemini-key");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut provider = GeminiProvider::new();
+        provider.client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let summary = provider.refresh_model_catalog().await.unwrap();
+        assert!(summary.models_added_names.contains(&future_model.to_string()));
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+
+        // Transient error must preserve the previously discovered future model
+        assert!(provider.refresh_model_catalog().await.is_err());
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+    });
+    server.join().unwrap();
+}

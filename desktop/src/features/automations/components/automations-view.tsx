@@ -485,6 +485,7 @@ export function AutomationsView({ className }: AutomationsViewProps) {
               type="button"
               variant="primary"
               size="sm"
+              disabled={data?.available === false}
               aria-expanded={launcherOpen}
               aria-controls="overnight-launcher"
               data-testid="new-overnight-run-btn"
@@ -495,6 +496,29 @@ export function AutomationsView({ className }: AutomationsViewProps) {
             </Button>
           </div>
         </header>
+
+        {data?.available === false ? (
+          <div
+            data-testid="automations-unavailable-card"
+            role="status"
+            className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-[14px] border border-hairline-hi bg-pane px-4 py-3 text-xs text-muted-ink"
+          >
+            <span>
+              {data.unavailableReason ??
+                "Overnight missions and recurring schedules are not enabled in this daemon build."}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                void refetch()
+              }}
+            >
+              Check again
+            </Button>
+          </div>
+        ) : null}
 
         {/* Inline Overnight Launcher */}
         <OvernightLauncher

@@ -192,6 +192,8 @@ export const executionTurnSchema = z.object({
       })
     )
     .optional(),
+  sourceEndMessageIndex: z.number().int().nonnegative().optional(),
+  sourceEndMessageId: z.string().optional(),
 })
 
 export const executionTurnListSchema = z.array(executionTurnSchema)
@@ -205,6 +207,8 @@ export const sendPromptInputSchema = z.object({
 export const forkTurnInputSchema = z.object({
   sessionId: z.string().min(1),
   turnId: z.string().min(1),
+  upToMessageIndex: z.number().int().nonnegative().optional(),
+  upToMessageId: z.string().optional(),
 })
 
 export const togglePinInputSchema = z.object({

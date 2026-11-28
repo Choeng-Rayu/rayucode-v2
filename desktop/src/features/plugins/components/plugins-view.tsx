@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import {
+  AlertTriangle,
   Box,
   Brain,
   Check,
@@ -93,10 +94,14 @@ interface McpDraftState {
   displayName: string
   scope: "global" | "workspace"
   transport: "stdio" | "url"
+  type?: string
   command: string
   argsText: string
   url: string
   envText: string
+  expectedRevision?: string
+  initialTimeoutText: string
+  timeoutText: string
   isInstalled: boolean
   docsUrl?: string
 }
@@ -143,6 +148,8 @@ export function PluginsView({
     argsText: "",
     url: "",
     envText: "",
+    initialTimeoutText: "",
+    timeoutText: "",
     isInstalled: false,
   })
   const [savingMcp, setSavingMcp] = React.useState(false)
@@ -177,6 +184,8 @@ export function PluginsView({
       argsText: "-y @modelcontextprotocol/server-filesystem .",
       url: "",
       envText: "",
+      initialTimeoutText: "",
+      timeoutText: "",
       isInstalled: false,
     })
     setMcpModalOpen(true)
@@ -189,22 +198,31 @@ export function PluginsView({
         plugin.envKeys && plugin.envKeys.length > 0
           ? plugin.envKeys
           : (bp?.requiredEnv?.map((e) => e.key) ?? [])
+      const rev =
+        plugin.revision ??
+        (plugin.sourcePath ? data?.revisions?.[plugin.sourcePath] : undefined)
+      const timeoutStr =
+        typeof plugin.timeout === "number" ? String(plugin.timeout) : ""
       setMcpError(null)
       setMcpDraft({
         id: plugin.mcpServerId ?? bp?.mcpServerId ?? plugin.id.toLowerCase(),
         displayName: plugin.name,
         scope: plugin.scope ?? "global",
         transport: plugin.transport ?? bp?.transport ?? "stdio",
+        ...(plugin.type ? { type: plugin.type } : {}),
         command: plugin.command ?? bp?.command ?? "npx",
         argsText: (plugin.args ?? bp?.args ?? []).join(" "),
         url: plugin.url ?? bp?.url ?? "",
         envText: envKeys.map((k) => `${k}=`).join("\n"),
+        ...(rev ? { expectedRevision: rev } : {}),
+        initialTimeoutText: timeoutStr,
+        timeoutText: timeoutStr,
         isInstalled: plugin.installed,
         docsUrl: bp?.docsUrl,
       })
       setMcpModalOpen(true)
     },
-    []
+    [data?.revisions]
   )
 
   const handleInstallOrConfigure = React.useCallback(
@@ -251,20 +269,41 @@ export function PluginsView({
         .split(/\s+/)
         .filter(Boolean)
       const env = parseEnvLines(mcpDraft.envText)
-      await ipcClient.plugins.upsertMcp({
+      const trimmedTimeout = mcpDraft.timeoutText.trim()
+      const parsedTimeout = trimmedTimeout ? Number(trimmedTimeout) : undefined
+      const timeoutEdited =
+        trimmedTimeout !== mcpDraft.initialTimeoutText.trim() &&
+        parsedTimeout !== undefined &&
+        Number.isFinite(parsedTimeout) &&
+        parsedTimeout > 0
+      const savedState = await ipcClient.plugins.upsertMcp({
         id,
         scope: mcpDraft.scope,
+        ...(mcpDraft.type ? { type: mcpDraft.type } : {}),
+        ...(mcpDraft.expectedRevision
+          ? { expectedRevision: mcpDraft.expectedRevision }
+          : {}),
         ...(mcpDraft.transport === "url"
           ? { url: mcpDraft.url.trim() }
           : { command: mcpDraft.command.trim(), args }),
+        ...(timeoutEdited ? { timeout: parsedTimeout } : {}),
         ...(Object.keys(env).length > 0 ? { env } : {}),
       })
       await queryClient.invalidateQueries({ queryKey: ["plugins"] })
       await queryClient.invalidateQueries({ queryKey: ["inspector"] })
       setMcpModalOpen(false)
-      toast.success(
-        `Saved "${id}" to ${mcpDraft.scope === "workspace" ? ".mcp.json" : "~/.rayu/mcp.json"}`
-      )
+      if (
+        savedState?.lastWriteStatus?.diskSaved &&
+        !savedState.lastWriteStatus.daemonReloaded
+      ) {
+        toast.warning(
+          `Saved "${id}" to disk, but daemon reload failed: ${savedState.lastWriteStatus.reloadError ?? "daemon unavailable"}`
+        )
+      } else {
+        toast.success(
+          `Saved "${id}" to ${mcpDraft.scope === "workspace" ? ".mcp.json" : "~/.rayu/mcp.json"}`
+        )
+      }
     } catch (err) {
       setMcpError(
         err instanceof Error ? err.message : "Failed to write MCP config."
@@ -279,11 +318,20 @@ export function PluginsView({
     if (!id) return
     setSavingMcp(true)
     try {
-      await ipcClient.plugins.removeMcp(id, mcpDraft.scope)
+      const removedState = await ipcClient.plugins.removeMcp(id, mcpDraft.scope)
       await queryClient.invalidateQueries({ queryKey: ["plugins"] })
       await queryClient.invalidateQueries({ queryKey: ["inspector"] })
       setMcpModalOpen(false)
-      toast(`Removed "${id}" from MCP configuration`)
+      if (
+        removedState?.lastWriteStatus?.diskSaved &&
+        !removedState.lastWriteStatus.daemonReloaded
+      ) {
+        toast.warning(
+          `Removed "${id}" from disk, but daemon reload failed: ${removedState.lastWriteStatus.reloadError ?? "daemon unavailable"}`
+        )
+      } else {
+        toast(`Removed "${id}" from MCP configuration`)
+      }
     } catch (err) {
       setMcpError(
         err instanceof Error ? err.message : "Failed to remove MCP server."
@@ -668,6 +716,46 @@ export function PluginsView({
                 )}
               </label>
             </header>
+
+            {data.mcpConfigErrors && data.mcpConfigErrors.length > 0 ? (
+              <div
+                role="alert"
+                data-testid="mcp-config-error-banner"
+                className="mt-5 flex flex-col gap-2 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-xs text-ink"
+              >
+                <div className="flex items-center gap-2 font-medium text-warn">
+                  <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+                  <span>
+                    Malformed MCP configuration detected — existing file preserved on disk
+                  </span>
+                </div>
+                {data.mcpConfigErrors.map((cfgErr) => (
+                  <div
+                    key={cfgErr.filePath}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-inset/70 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono text-[11px] font-medium text-ink">
+                        {cfgErr.filePath}
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-muted-ink">
+                        {cfgErr.message}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      onClick={() =>
+                        void ipcClient.native.openInVSCode(cfgErr.filePath)
+                      }
+                    >
+                      Repair in VS Code
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
 
             {showShowcase && (
               <FeaturedShowcase
