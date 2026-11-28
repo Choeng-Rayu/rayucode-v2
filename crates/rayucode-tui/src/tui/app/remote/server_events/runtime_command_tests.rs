@@ -503,4 +503,80 @@ fn disconnect_clears_stale_per_connection_request_state_and_busy_clear_is_blocke
     assert!(app.pending_remote_rewind_notice.is_none());
     assert!(app.deferred_stream_done_id.is_none());
     assert!(app.deferred_stream_done_identity.is_none());
+    assert!(!app.pending_transfer_request);
+}
+
+#[test]
+fn transfer_and_subagent_errors_reset_launch_and_status_state() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut remote = RemoteConnection::dummy();
+
+    // 1. Unscoped Transfer error finishes split launch state even before any turn starts.
+    crate::tui::app::remote::input_dispatch::begin_remote_split_launch(&mut app, "Transfer");
+    app.pending_transfer_request = true;
+    app.pending_split_label = Some("Transfer".into());
+    let transfer_id = runtime.block_on(remote.transfer()).unwrap();
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: transfer_id,
+            message: "Cannot transfer while session is busy".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(!app.is_processing);
+    assert!(matches!(app.status, ProcessingStatus::Idle));
+    assert!(!app.pending_transfer_request);
+    assert!(app.pending_split_label.is_none());
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Cannot transfer")
+    );
+
+    // 2. Unscoped RunSubagent error clears app.subagent_status without disrupting active turn.
+    handle_server_event(
+        &mut app,
+        ServerEvent::TurnStarted {
+            identity: crate::protocol::TurnIdentity {
+                runtime_generation: "gen-1".into(),
+                turn_id: 3,
+            },
+        },
+        &mut remote,
+    );
+    app.current_message_id = Some(101);
+    app.subagent_status = Some("starting subagent".into());
+    let subagent_id = transfer_id + 1;
+    runtime
+        .block_on(remote.run_subagent("inspect".into(), "explore".into(), None, None))
+        .unwrap();
+    assert!(handle_server_event(
+        &mut app,
+        ServerEvent::Error {
+            id: subagent_id,
+            message: "Already processing a message".into(),
+            retry_after_secs: None,
+        },
+        &mut remote,
+    ));
+    assert!(app.subagent_status.is_none());
+    assert!(app.is_processing);
+    assert_eq!(app.current_message_id, Some(101));
+    assert_eq!(
+        app.display_messages.last().unwrap().content,
+        "Already processing a message"
+    );
+
+    // 3. handle_disconnect clears pending_transfer_request as well.
+    app.pending_transfer_request = true;
+    let mut run_state = super::super::RemoteRunState::default();
+    super::super::handle_disconnect(&mut app, &mut run_state, None);
+    assert!(!app.pending_transfer_request);
 }

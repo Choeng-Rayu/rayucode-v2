@@ -906,7 +906,9 @@ impl SessionControlHandle {
     /// an unconditional deferred reset can erase a newer, not-yet-observed
     /// cancel, making repeated Esc presses appear to be ignored (issue #428).
     pub fn reset_cancel_if_epoch(&self, epoch: u64) -> bool {
-        let reset = self.stop_current_turn_signal.reset_if_epoch(epoch);
+        let reset = self
+            .stop_current_turn_signal
+            .reset_user_cancel_if_epoch(epoch);
         crate::logging::info(&format!(
             "SESSION_CANCEL_SIGNAL_RESET session={} epoch={} applied={}",
             self.session_id, epoch, reset

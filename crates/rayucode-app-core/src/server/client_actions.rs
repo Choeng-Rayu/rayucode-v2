@@ -391,6 +391,7 @@ pub(super) fn handle_run_subagent(
         // subagent so disconnecting during execution does not pin the retired Agent.
         drop(agent);
 
+        shutdown_signal.reset_user_cancel();
         let _turn_cancel_guard =
             crate::turn_cancel_registry::register_active_turn(&session_id, shutdown_signal.clone());
         let events = super::state::TurnEventChannel::new(
