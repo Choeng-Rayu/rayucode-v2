@@ -2,20 +2,20 @@
 
 ## Repository Scope
 
-- The Rust CLI/daemon (`crates/`, `src/`) is the single coding engine shared across CLI/TUI, VS Code (`vscode/`), and the standalone RayuCode Desktop repository (`Choeng-Rayu/rayucode-app`).
-- `sdk/typescript` and `packages/*` (`session-core`, `ui`) are the shared TypeScript packages consumed by both `vscode/` (in-repo) and `Choeng-Rayu/rayucode-app` (pinned via `engine.json` and `scripts/sync-engine.mjs`).
+- The Rust CLI/daemon (`crates/`, `src/`) is the single coding engine shared across CLI/TUI and the standalone RayuCode client repository (`Choeng-Rayu/rayucode-app`, which houses both RayuCode Desktop and RayuCode for VS Code).
+- `sdk/typescript` and `packages/*` (`session-core`, `ui`) are the shared TypeScript packages consumed by `Choeng-Rayu/rayucode-app` (pinned via `engine.json` and `scripts/sync-engine.mjs`).
 - `prototype/` is the frozen HTML/CSS visual golden baseline shared by RayuCode Desktop and VS Code, codified in root `DESIGN.md`.
-- **RayuCode Desktop (`desktop/`) has moved permanently to `Choeng-Rayu/rayucode-app`.** Do not add or duplicate Electron/Desktop UI code inside `rayucode-v2`; release engine/SDK updates here and bump `engine.json` in `Choeng-Rayu/rayucode-app`.
+- **Both RayuCode Desktop (`desktop/`) and RayuCode for VS Code (`vscode/`) have moved permanently to `Choeng-Rayu/rayucode-app`.** Do not add or duplicate Electron/Desktop or VS Code extension UI code inside `rayucode-v2`; release engine/SDK updates here and bump `engine.json` in `Choeng-Rayu/rayucode-app`.
 
-## Shared UI & Design Token Rules (`DESIGN.md`, `packages/ui/`, `vscode/`)
+## Shared UI & Design Token Rules (`DESIGN.md`, `packages/ui/`)
 
-Every coordinator, sub-agent, and swarm worker touching shared UI (`packages/ui/` or `vscode/webview/`) MUST follow these binding rules:
+Every coordinator, sub-agent, and swarm worker touching shared UI (`packages/ui/`) MUST follow these binding rules:
 
-1. **Read Authority Files First:** Before writing any UI code, read `DESIGN.md`, `vscode/VSCODE_DESIGN.md` (for VS Code), and the matching `prototype/*.html` reference file.
+1. **Read Authority Files First:** Before writing any UI code, read `DESIGN.md` and the matching `prototype/*.html` reference file.
 2. **Single-Source Semantic Token Styling:**
    - All theme/accent colors, borders, specular bevels, and surfaces MUST come from semantic CSS tokens (`bg-chrome`, `bg-canvas`, `bg-pane`, `bg-raised`, `bg-inset`, `bg-active`, `text-ink`, `text-body`, `text-muted`, `text-accent`, `border-hairline`, `border-premium`).
-   - Raw hex literals (`#...`), arbitrary Tailwind color classes (`bg-[#...]`), default shadcn zinc/slate classes, and UI emojis in TSX are forbidden and fail `lint:design`.
-3. **Desktop Repo Sync Contract (`Choeng-Rayu/rayucode-app`):**
+   - Raw hex literals (`#...`), arbitrary Tailwind color classes (`bg-[#...]`), default shadcn zinc/slate classes, and UI emojis in TSX are forbidden.
+3. **Client Repo Sync Contract (`Choeng-Rayu/rayucode-app`):**
    - `release.yml` compiles the unified `rayu` binary (CLI + TUI + Daemon + `api-bridge`) once for all 6 OS/arch targets with `SHA256SUMS` and notifies `Choeng-Rayu/rayucode-app` (`engine-released` dispatch when `RAYUCODE_APP_DISPATCH_TOKEN` is configured).
    - Keep `ApiRequest`, `ApiEvent`, `RuntimeCommand`, and `Capabilities` backwards-compatible across mixed client/daemon versions.
 

@@ -34,7 +34,7 @@ Copy the updated script(s) to `rayu-web/public/` and deploy `rayu-web`.
 
 ### VS Code extension
 
-The Marketplace extension ships on its own version line from `vscode/extension.manifest.json`; see [how-to-release-vscode.md](how-to-release-vscode.md).
+RayuCode for VS Code lives in [`Choeng-Rayu/rayucode-app`](https://github.com/Choeng-Rayu/rayucode-app) (`vscode/`) alongside RayuCode Desktop. It ships on its own version line from `vscode/extension.manifest.json` and automatically downloads and updates the Rust `rayu` engine binary from `Choeng-Rayu/rayucode-v2` GitHub Releases; see `how-to-release-vscode.md` in `Choeng-Rayu/rayucode-app`.
 
 
 
