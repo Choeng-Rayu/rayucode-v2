@@ -253,6 +253,8 @@ pub struct RemoteConnection {
     /// Queued writes not yet flushed. When a backlog exists, senders do not
     /// wait for their own write result at all.
     outbound_pending: Arc<std::sync::atomic::AtomicUsize>,
+    /// True once the socket writer has encountered an unrecoverable write error.
+    writer_broken: Arc<std::sync::atomic::AtomicBool>,
     _dummy_peer: Option<Stream>,
     session_id: Option<String>,
     cloud_authority: Option<std::sync::Weak<std::sync::atomic::AtomicBool>>,
@@ -260,6 +262,10 @@ pub struct RemoteConnection {
     client_instance_id: Option<String>,
     next_request_id: u64,
     pending_runtime_commands: std::collections::HashSet<u64>,
+    // Control request IDs whose failures arrive as unscoped `ServerEvent::Error`
+    // and must surface even while a scoped turn is active.
+    pending_control_requests: std::sync::Mutex<std::collections::VecDeque<u64>>,
+    pending_split_request_ids: std::sync::Mutex<std::collections::HashSet<u64>>,
     // Bootstrap Done is not turn completion. Retain ids for duplicate acks.
     control_done_ids: std::sync::Mutex<std::collections::VecDeque<u64>>,
     request_timings: super::cloud_latency::RequestTimings,
@@ -320,9 +326,44 @@ fn remote_protocol_frame_exceeds_limit(buffered: usize, incoming: usize) -> bool
         .is_none_or(|total| total > MAX_REMOTE_PROTOCOL_FRAME_BYTES)
 }
 
+pub(crate) fn is_remote_write_disconnect_error(
+    remote: &RemoteConnection,
+    error: &anyhow::Error,
+) -> bool {
+    if remote.is_writer_broken() {
+        return true;
+    }
+    if error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io_err| {
+            matches!(
+                io_err.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        })
+    }) {
+        return true;
+    }
+    let text = error.to_string();
+    text.contains("remote connection writer closed")
+        || text.contains("Broken pipe")
+        || text.contains("Connection reset by peer")
+}
+
 pub(crate) trait RemoteEventState {
     /// Replay has no outstanding control requests. Live connections track IDs.
     fn finish_runtime_command(&mut self, _id: u64) -> bool {
+        false
+    }
+
+    fn finish_control_request(&mut self, _id: u64) -> bool {
+        false
+    }
+
+    fn finish_split_request(&mut self, _id: u64) -> bool {
         false
     }
 
@@ -440,6 +481,7 @@ impl RemoteConnection {
             writer: Arc::new(Mutex::new(writer)),
             outbound: std::sync::Mutex::new(None),
             outbound_pending: Default::default(),
+            writer_broken: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             _dummy_peer: None,
             session_id: None,
             cloud_authority: None,
@@ -448,6 +490,8 @@ impl RemoteConnection {
             // Keep reattached turn Done distinct from bootstrap acknowledgments.
             next_request_id: (rand::random::<u64>() & ((1_u64 << 62) - 1)) | (1_u64 << 62),
             pending_runtime_commands: Default::default(),
+            pending_control_requests: Default::default(),
+            pending_split_request_ids: Default::default(),
             control_done_ids: Default::default(),
             request_timings: Default::default(),
             tool_diff: RemoteDiffTracker::default(),
@@ -475,9 +519,8 @@ impl RemoteConnection {
         let subscribe_start = Instant::now();
         let (working_dir, selfdev) = super::subscribe_metadata(remote_working_dir);
         let resume_target = resume_session
-            .filter(|session_id| {
-                super::is_ssh_remote() || crate::session::session_exists(session_id)
-            })
+            .map(str::trim)
+            .filter(|session_id| !session_id.is_empty())
             .map(|session_id| session_id.to_string());
         conn.send_request(Request::Subscribe {
             system_prompt: None,
@@ -630,6 +673,52 @@ impl RemoteConnection {
             }
             ids.push_back(id);
         }
+        let error_control_id = match &request {
+            Request::Clear { id }
+            | Request::Rewind { id, .. }
+            | Request::RewindUndo { id }
+            | Request::Split { id, .. }
+            | Request::Transfer { id }
+            | Request::ResumeSession { id, .. }
+            | Request::RenameSession { id, .. }
+            | Request::SetSessionSaved { id, .. }
+            | Request::SetFeature { id, .. }
+            | Request::SetSubagentModel { id, .. }
+            | Request::SetContextCap { id, .. }
+            | Request::Compact { id }
+            | Request::ResumeAllSessions { id }
+            | Request::PersistSession { id }
+            | Request::RefreshModels { id }
+            | Request::CycleModel { id, .. }
+            | Request::SetReasoningEffort { id, .. }
+            | Request::SetServiceTier { id, .. }
+            | Request::SetTransport { id, .. }
+            | Request::SetCompactionMode { id, .. }
+            | Request::SetPremiumMode { id, .. }
+            | Request::NotifySession { id, .. }
+            | Request::RunSubagent { id, .. } => Some(*id),
+            _ => None,
+        };
+        if let Some(id) = error_control_id {
+            let mut ids = self
+                .pending_control_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if ids.len() >= 256 {
+                ids.pop_front();
+            }
+            ids.push_back(id);
+        }
+        if let Request::Split { id, .. } = &request {
+            let mut split_ids = self
+                .pending_split_request_ids
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if split_ids.len() >= 256 {
+                split_ids.clear();
+            }
+            split_ids.insert(*id);
+        }
         let json = serde_json::to_string(&request)? + "\n";
         let interrupt_log = self.interrupt_request_log_fields(&request, interrupt_trigger);
         if let Some(fields) = &interrupt_log {
@@ -653,8 +742,16 @@ impl RemoteConnection {
             // never wait longer than a short bound: a full socket must not
             // stall the loop that drains server events.
             Ok(done) => match tokio::time::timeout(OUTBOUND_RESULT_WAIT, done).await {
-                Ok(Ok(Err(error))) => Err(anyhow::anyhow!(error)),
-                Ok(Err(_)) => Err(anyhow::anyhow!("remote connection writer closed")),
+                Ok(Ok(Err(error))) => {
+                    self.writer_broken
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    Err(anyhow::anyhow!(error))
+                }
+                Ok(Err(_)) => {
+                    self.writer_broken
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    Err(anyhow::anyhow!("remote connection writer closed"))
+                }
                 Ok(Ok(Ok(()))) | Err(_) => Ok(()),
             },
         };
@@ -688,10 +785,14 @@ impl RemoteConnection {
         &self,
         bytes: Vec<u8>,
     ) -> Result<tokio::sync::oneshot::Receiver<std::result::Result<(), String>>> {
+        if self.is_writer_broken() {
+            anyhow::bail!("remote connection writer closed");
+        }
         let mut slot = self.outbound.lock().unwrap_or_else(|e| e.into_inner());
         if slot.as_ref().is_none_or(|tx| tx.is_closed()) {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<OutboundWrite>();
             let writer = Arc::clone(&self.writer);
+            let writer_broken = Arc::clone(&self.writer_broken);
             // Writes dropped with a dead writer task never flushed.
             self.outbound_pending
                 .store(0, std::sync::atomic::Ordering::Release);
@@ -703,6 +804,9 @@ impl RemoteConnection {
                     drop(w);
                     pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                     let failed = result.is_err();
+                    if failed {
+                        writer_broken.store(true, std::sync::atomic::Ordering::Release);
+                    }
                     if done
                         .send(result.map_err(|error| error.to_string()))
                         .is_err()
@@ -726,6 +830,8 @@ impl RemoteConnection {
         sender.send((bytes, done_tx)).map_err(|_| {
             self.outbound_pending
                 .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            self.writer_broken
+                .store(true, std::sync::atomic::Ordering::Release);
             anyhow::anyhow!("remote connection writer closed")
         })?;
         Ok(done_rx)
@@ -798,6 +904,34 @@ impl RemoteConnection {
     /// request ownership so the client can render them without ending a turn.
     pub fn finish_runtime_command(&mut self, id: u64) -> bool {
         self.pending_runtime_commands.remove(&id)
+    }
+
+    /// Consume a tracked non-runtime control request ID on completion or failure.
+    pub fn finish_control_request(&mut self, id: u64) -> bool {
+        let mut ids = self
+            .pending_control_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(pos) = ids.iter().position(|existing| *existing == id) {
+            ids.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consume a tracked `Request::Split` ID on failure or `SplitResponse`.
+    pub fn finish_split_request(&mut self, id: u64) -> bool {
+        self.pending_split_request_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id)
+    }
+
+    /// True once the socket writer has encountered an unrecoverable write error.
+    pub fn is_writer_broken(&self) -> bool {
+        self.writer_broken
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Clear the server-side conversation and replace it with a fresh session.
@@ -1786,6 +1920,7 @@ impl RemoteConnection {
             writer: Arc::new(Mutex::new(writer)),
             outbound: std::sync::Mutex::new(None),
             outbound_pending: Default::default(),
+            writer_broken: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             _dummy_peer: Some(b),
             session_id: None,
             cloud_authority: None,
@@ -1793,6 +1928,8 @@ impl RemoteConnection {
             client_instance_id: None,
             next_request_id: 1,
             pending_runtime_commands: Default::default(),
+            pending_control_requests: Default::default(),
+            pending_split_request_ids: Default::default(),
             control_done_ids: Default::default(),
             request_timings: Default::default(),
             tool_diff: RemoteDiffTracker::default(),
