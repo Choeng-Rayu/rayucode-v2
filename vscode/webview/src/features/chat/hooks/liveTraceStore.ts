@@ -341,6 +341,8 @@ export function startSessionLiveTurn(
   tracker.phaseHasCommands = false;
   tracker.phaseHasSearches = false;
   tracker.phaseCommandCount = 0;
+  tracker.lastCredits = "";
+  tracker.lastKvCachePct = 0;
   tracker.toolInputs.clear();
 
   const turn: ChatTurnView = {
@@ -365,8 +367,8 @@ export function startSessionLiveTurn(
     answerBullets: [],
     diffCard: EMPTY_DIFF,
     timestamp: "Just now",
-    credits: "0.00 cr",
-    kvCachePct: 94,
+    credits: "",
+    kvCachePct: 0,
     pinned: false,
   };
 

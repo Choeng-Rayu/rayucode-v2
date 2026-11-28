@@ -141,6 +141,7 @@ fn history_restore_renders_swarm_deliveries_as_one_row() {
                 content,
                 tool_calls: None,
                 tool_data: None,
+                is_engine_internal: false,
             });
         }
     }

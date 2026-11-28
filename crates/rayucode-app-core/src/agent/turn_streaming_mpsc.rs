@@ -60,6 +60,8 @@ impl Agent {
         let mut fable_guardrail_reconsiderations = 0u32;
         let mut consecutive_malformed_tool_rounds = 0u32;
         let mut turn_rayu_credits = rayucode_message_types::RayuCreditsAccumulator::new();
+        let mut pending_unpersisted_rayu_credits =
+            rayucode_message_types::RayuCreditsAccumulator::new();
         self.last_turn_rayu_credits = None;
 
         'turn_loop: loop {
@@ -1308,6 +1310,11 @@ impl Agent {
 
             let assistant_message_id = if !content_blocks.is_empty() {
                 crate::telemetry::record_assistant_response();
+                if let Some(charge) = call_rayu_charge {
+                    pending_unpersisted_rayu_credits.record_charge(charge);
+                }
+                let persisted_rayu_credits = pending_unpersisted_rayu_credits.total_credits();
+                pending_unpersisted_rayu_credits.reset();
                 let token_usage = crate::session::StoredTokenUsage::from_report(
                     self.effective_context_tokens_from_usage(
                         self.last_usage.input_tokens,
@@ -1318,7 +1325,7 @@ impl Agent {
                     usage_output,
                     usage_cache_read,
                     usage_cache_creation,
-                    call_rayu_charge.map(|charge| charge.credits),
+                    persisted_rayu_credits,
                 );
                 let message_id =
                     self.add_message_ext(Role::Assistant, content_blocks, None, token_usage);
@@ -1327,6 +1334,9 @@ impl Agent {
                 self.record_model_turn_usage(&usage_turn_id);
                 Some(message_id)
             } else {
+                if let Some(charge) = call_rayu_charge {
+                    pending_unpersisted_rayu_credits.record_charge(charge);
+                }
                 None
             };
 
@@ -1449,6 +1459,14 @@ impl Agent {
                     }
                     NoToolCallOutcome::ContinueWithoutEvent => continue,
                     NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
+                        if injected
+                            .iter()
+                            .any(|item| item.source == rayucode_agent_runtime::SoftInterruptSource::User)
+                        {
+                            turn_rayu_credits.reset();
+                            pending_unpersisted_rayu_credits.reset();
+                            self.last_turn_rayu_credits = None;
+                        }
                         for event in Self::build_soft_interrupt_events(injected, point, None) {
                             let _ = event_tx.send(event);
                         }
@@ -1515,6 +1533,14 @@ impl Agent {
                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
                     let injected = self.inject_soft_interrupts();
                     if !injected.is_empty() {
+                        if injected
+                            .iter()
+                            .any(|item| item.source == rayucode_agent_runtime::SoftInterruptSource::User)
+                        {
+                            turn_rayu_credits.reset();
+                            pending_unpersisted_rayu_credits.reset();
+                            self.last_turn_rayu_credits = None;
+                        }
                         for event in Self::build_soft_interrupt_events(injected, "D", None) {
                             let _ = event_tx.send(event);
                         }
@@ -1548,6 +1574,14 @@ impl Agent {
                     let tools_remaining = tool_count - tool_index;
                     let injected = self.inject_soft_interrupts();
                     if !injected.is_empty() {
+                        if injected
+                            .iter()
+                            .any(|item| item.source == rayucode_agent_runtime::SoftInterruptSource::User)
+                        {
+                            turn_rayu_credits.reset();
+                            pending_unpersisted_rayu_credits.reset();
+                            self.last_turn_rayu_credits = None;
+                        }
                         for event in
                             Self::build_soft_interrupt_events(injected, "C", Some(tools_remaining))
                         {
@@ -2079,6 +2113,14 @@ impl Agent {
             if let PostToolInterruptOutcome::SoftInterrupt { injected, point } =
                 self.take_post_tool_soft_interrupt()
             {
+                if injected
+                    .iter()
+                    .any(|item| item.source == rayucode_agent_runtime::SoftInterruptSource::User)
+                {
+                    turn_rayu_credits.reset();
+                    pending_unpersisted_rayu_credits.reset();
+                    self.last_turn_rayu_credits = None;
+                }
                 for event in Self::build_soft_interrupt_events(injected, point, None) {
                     let _ = event_tx.send(event);
                 }

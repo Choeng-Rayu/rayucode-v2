@@ -346,13 +346,17 @@ const mockState: MockBridgeState = {
       "sessions",
       "background",
       "swarm",
+      "swarm_mutations_v1",
       "overnight",
+      "overnight_v1",
       "schedules",
+      "schedules_cron_v1",
       "ambient",
       "mcp",
       "skills",
       "memory",
       "telegram",
+      "telegram_remote",
       "gateway",
       "voice",
       "codemode",
@@ -631,6 +635,18 @@ const mockState: MockBridgeState = {
         diffDeletions: 34,
         todoCompleted: 3,
         todoTotal: 4,
+        elapsedSecs: 94,
+        filesTouched: [
+          "vscode/VSCODE_DESIGN.md",
+          "vscode/webview/src/features/shell/components/AppShell.tsx",
+        ],
+        todoItems: [
+          { content: "Read design tokens & theme vars", status: "completed" },
+          { content: "Wire dual-form-factor AppShell", status: "completed" },
+          { content: "Unify background & swarm progress drawer", status: "in_progress" },
+          { content: "Run design lint & unit tests", status: "pending" },
+        ],
+        outputTail: "Updating BackgroundDockBar and BackgroundProcessDrawer with live swarm progress...",
         updatedAtMs: NOW - 2_000,
       },
     ],
@@ -1937,12 +1953,37 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       mockState.swarm.agents = [...mockState.swarm.agents, agent];
       return { ok: true, agent } as RpcResult<M>;
     }
-    case "swarm.kill":
+    case "swarm.kill": {
+      const targetId = String(params.agentId ?? "");
+      const resume = Boolean(params.resume);
+      mockState.swarm.agents = mockState.swarm.agents.map((a) =>
+        a.agentId === targetId || a.sessionId === targetId || a.label === targetId
+          ? { ...a, status: resume ? "running" : "stopped" }
+          : a,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
     case "swarm.salvage":
-    case "swarm.pauseAll":
     case "swarm.planDecide":
     case "swarm.worktreeOpen":
       return { ok: true } as RpcResult<M>;
+    case "swarm.pauseAll": {
+      mockState.swarm.agents = mockState.swarm.agents.map((a) =>
+        a.role === "worker" ? { ...a, status: "stopped" } : a,
+      );
+      return { ok: true } as RpcResult<M>;
+    }
+    case "swarm.broadcast": {
+      const seq = mockState.swarm.board.length + 1;
+      mockState.swarm.board.push({
+        seq,
+        kind: "broadcast",
+        from: "user",
+        text: String(params.message ?? ""),
+        timestampMs: Date.now(),
+      });
+      return { ok: true, seq } as RpcResult<M>;
+    }
     case "swarm.board":
       return { messages: mockState.swarm.board.map((m) => ({ ...m })) } as RpcResult<M>;
     case "swarm.dm": {
@@ -2100,6 +2141,14 @@ export async function handleMockRpcCall<M extends RpcMethod>(
       return { ok: true } as RpcResult<M>;
     case "plugins.skills.reload":
       return { ok: true, skills: mockState.skills.map((s) => ({ ...s })) } as RpcResult<M>;
+    case "plugins.skills.toggle": {
+      const targetName = String(params.name ?? "");
+      const enabled = Boolean(params.enabled);
+      mockState.skills = mockState.skills.map((s) =>
+        s.name === targetName ? { ...s, enabled } : s,
+      );
+      return { ok: true, enabled } as RpcResult<M>;
+    }
     case "plugins.memory.status":
       return { ...mockState.memory } as RpcResult<M>;
     case "plugins.memory.toggle":
