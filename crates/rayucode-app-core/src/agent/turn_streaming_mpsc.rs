@@ -644,6 +644,12 @@ impl Agent {
                             }
                         }
                         let _ = event_tx.send(ServerEvent::TextDelta { text: text.clone() });
+                        if self.is_user_cancel() {
+                            logging::info(
+                                "User cancel during streaming - stopping partial response",
+                            );
+                            break;
+                        }
                         if self.is_graceful_shutdown() {
                             logging::info(
                                 "Graceful shutdown during streaming - checkpointing partial response",
@@ -1454,6 +1460,31 @@ impl Agent {
             // If graceful shutdown was signaled during streaming and we have tool calls,
             // we need to provide tool results for them (API requires tool_use -> tool_result)
             // then exit cleanly
+            if self.is_user_cancel() {
+                logging::info(&format!(
+                    "User cancel - skipping {} tool call(s)",
+                    tool_calls.len()
+                ));
+                for tc in &tool_calls {
+                    let _ = event_tx.send(ServerEvent::ToolDone {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: "[Skipped - interrupted by user]".to_string(),
+                        error: Some("interrupted by user".to_string()),
+                        tool_duration_ms: Some(0),
+                    });
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: "[Skipped - interrupted by user]".to_string(),
+                            is_error: Some(true),
+                        }],
+                    );
+                }
+                self.session.save()?;
+                break;
+            }
             if self.is_graceful_shutdown() {
                 logging::info(&format!(
                     "Graceful shutdown - skipping {} tool call(s)",
@@ -1756,7 +1787,7 @@ impl Agent {
                         res = &mut handle => Some(res.unwrap_or_else(|err| Err(anyhow::anyhow!("Tool task panicked: {err}")))),
                         automatic = wait_for_tool_handoff(&self.background_tool_signal, &shutdown_signal, auto_background_allowed(&tc.name, &tc.input), foreground_budget) => {
                             automatic_background = automatic;
-                            if self.is_graceful_shutdown() && tc.name == "bash" {
+                            if self.is_graceful_shutdown() && !self.is_user_cancel() && tc.name == "bash" {
                                 tokio::time::timeout(Duration::from_millis(750), &mut handle)
                                     .await.ok()
                                     .map(|res| res.unwrap_or_else(|err| Err(anyhow::anyhow!("Tool task panicked: {err}"))))
@@ -1845,6 +1876,58 @@ impl Agent {
                             tool_results_dirty = true;
                         }
                     }
+                } else if self.is_user_cancel() {
+                    logging::info(&format!(
+                        "Tool '{}' interrupted by user after {:.1}s",
+                        tc.name,
+                        tool_elapsed.as_secs_f64()
+                    ));
+                    background_handle.expect("interrupted spawned tool").abort();
+
+                    let interrupted_msg = format!(
+                        "Tool '{}' interrupted by user after {:.1}s",
+                        tc.name,
+                        tool_elapsed.as_secs_f64()
+                    );
+
+                    let _ = event_tx.send(ServerEvent::ToolDone {
+                        tool_duration_ms: Some(tool_start.elapsed().as_millis() as u64),
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        output: interrupted_msg.clone(),
+                        error: Some("interrupted by user".to_string()),
+                    });
+
+                    self.add_message_with_duration(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id.clone(),
+                            content: interrupted_msg,
+                            is_error: Some(true),
+                        }],
+                        Some(tool_elapsed.as_millis() as u64),
+                    );
+                    self.session.save()?;
+
+                    for remaining_tc in &tool_calls[(tool_index + 1)..] {
+                        let _ = event_tx.send(ServerEvent::ToolDone {
+                            tool_duration_ms: Some(0),
+                            id: remaining_tc.id.clone(),
+                            name: remaining_tc.name.clone(),
+                            output: "[Skipped - interrupted by user]".to_string(),
+                            error: Some("interrupted by user".to_string()),
+                        });
+                        self.add_message(
+                            Role::User,
+                            vec![ContentBlock::ToolResult {
+                                tool_use_id: remaining_tc.id.clone(),
+                                content: "[Skipped - interrupted by user]".to_string(),
+                                is_error: Some(true),
+                            }],
+                        );
+                    }
+                    self.session.save()?;
+                    return Ok(());
                 } else if self.is_graceful_shutdown() {
                     // Server reload - abort tool and save interrupted result
                     logging::info(&format!(

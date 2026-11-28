@@ -493,3 +493,37 @@ async fn rename_shutdown_signal_moves_registration_to_restored_session() -> Resu
     assert!(signal.is_set());
     Ok(())
 }
+
+#[test]
+fn does_not_treat_user_cancel_markers_as_reload_interruption() {
+    let agent = test_agent(vec![
+        crate::session::StoredMessage {
+            id: "msg_user_cancel_1".to_string(),
+            role: crate::message::Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool_u1".to_string(),
+                content: "[Skipped - interrupted by user]".to_string(),
+                is_error: Some(true),
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        },
+        crate::session::StoredMessage {
+            id: "msg_user_cancel_2".to_string(),
+            role: crate::message::Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tool_u2".to_string(),
+                content: "Tool 'bash' interrupted by user after 1.2s".to_string(),
+                is_error: Some(true),
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        },
+    ]);
+
+    assert!(!session_was_interrupted_by_reload(&agent));
+}

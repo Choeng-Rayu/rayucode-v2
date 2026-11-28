@@ -869,7 +869,7 @@ impl SessionControlHandle {
             "SESSION_CANCEL_SIGNAL_FIRE session={}",
             self.session_id
         ));
-        self.stop_current_turn_signal.fire();
+        self.stop_current_turn_signal.fire_user_cancel();
         let active_turn_signals =
             crate::turn_cancel_registry::active_turn_signals(&self.session_id);
         let mut fired_active = 0usize;
@@ -877,7 +877,7 @@ impl SessionControlHandle {
             if signal.same_instance(&self.stop_current_turn_signal) {
                 continue;
             }
-            signal.fire();
+            signal.fire_user_cancel();
             fired_active += 1;
         }
         if fired_active > 0 {
