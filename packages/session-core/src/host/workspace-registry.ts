@@ -226,6 +226,7 @@ export class WorkspaceRegistry {
   private lastWrittenHash: string | null = null;
   private listeners = new Set<(event: WorkspaceChangeEvent) => void>();
   private watcher: fs.FSWatcher | null = null;
+  private watchFileListener: ((curr: fs.Stats, prev: fs.Stats) => void) | null = null;
   private watchTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -387,23 +388,56 @@ export class WorkspaceRegistry {
   }
 
   private startWatcherIfNeeded(): void {
-    if (!this.enableWatch || this.watcher || this.disposed) return;
+    if (!this.enableWatch || this.watcher || this.watchFileListener || this.disposed) return;
     this.ensureParentDir();
     const targetName = path.basename(this.filePath);
+    const scheduleCheck = () => {
+      if (this.watchTimer) clearTimeout(this.watchTimer);
+      this.watchTimer = setTimeout(() => {
+        this.watchTimer = null;
+        void this.handleExternalChange();
+      }, this.watchDebounceMs);
+    };
     try {
       this.watcher = fs.watch(path.dirname(this.filePath), (_event, filename) => {
         if (filename && filename.toString() !== targetName) return;
-        if (this.watchTimer) clearTimeout(this.watchTimer);
-        this.watchTimer = setTimeout(() => {
-          this.watchTimer = null;
-          void this.handleExternalChange();
-        }, this.watchDebounceMs);
+        scheduleCheck();
       });
       this.watcher.on("error", () => {
-        // non-fatal watch error
+        if (this.watcher) {
+          try {
+            this.watcher.close();
+          } catch {
+            // ignore close errors
+          }
+          this.watcher = null;
+        }
+        this.startStatPollingWatcher(scheduleCheck);
       });
     } catch {
-      // platform/fs does not support watch; callers still read fresh on mutations
+      // Fallback to stat polling when inotify/platform watch limits (e.g., ENOSPC) are exhausted
+      this.startStatPollingWatcher(scheduleCheck);
+    }
+  }
+
+  private startStatPollingWatcher(onChange: () => void): void {
+    if (this.watchFileListener || this.disposed) return;
+    const interval = Math.max(this.watchDebounceMs, 100);
+    const listener = (curr: fs.Stats, prev: fs.Stats) => {
+      if (
+        curr.mtimeMs !== prev.mtimeMs ||
+        curr.ctimeMs !== prev.ctimeMs ||
+        curr.size !== prev.size ||
+        curr.ino !== prev.ino
+      ) {
+        onChange();
+      }
+    };
+    this.watchFileListener = listener;
+    try {
+      fs.watchFile(this.filePath, { persistent: false, interval }, listener);
+    } catch {
+      this.watchFileListener = null;
     }
   }
 
@@ -918,6 +952,10 @@ export class WorkspaceRegistry {
     if (this.watcher) {
       this.watcher.close();
       this.watcher = null;
+    }
+    if (this.watchFileListener) {
+      fs.unwatchFile(this.filePath, this.watchFileListener);
+      this.watchFileListener = null;
     }
     this.listeners.clear();
   }
