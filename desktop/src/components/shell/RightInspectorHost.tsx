@@ -87,7 +87,7 @@ export function RightInspectorHost({
 
       const stageEl = asideRef.current?.parentElement
       const stageRect = stageEl?.getBoundingClientRect()
-      const stageLeft = stageRect ? stageRect.left : leftCollapsed ? 52 : 316
+      const stageLeft = stageRect ? stageRect.left : leftCollapsed ? 52 : 296
       const stageWidth = stageRect
         ? stageRect.width
         : Math.max(600, window.innerWidth - stageLeft)

@@ -256,6 +256,7 @@ export interface DiffPanelProps {
   mode: DiffViewMode
   isReviewing?: boolean
   isTogglingStage?: boolean
+  isLoadingDiff?: boolean
   onReview: (fileId: string, decision: FileReviewDecision) => void
   onToggleStage: (fileId: string) => void
   onOpenInVSCode: (filePath: string, line?: number) => void
@@ -267,6 +268,7 @@ export function DiffPanel({
   mode,
   isReviewing = false,
   isTogglingStage = false,
+  isLoadingDiff = false,
   onReview,
   onToggleStage,
   onOpenInVSCode,
@@ -359,6 +361,15 @@ export function DiffPanel({
           {file.path}
         </span>
 
+        {file.previousPath ? (
+          <span
+            data-testid="diff-panel-previous-path"
+            className="font-mono text-[11px] text-muted-ink"
+          >
+            (from {file.previousPath})
+          </span>
+        ) : null}
+
         <span className="font-mono text-[11px] tabular-nums">
           {file.deleted ? (
             <span className="text-danger">−{file.deletions} (deleted)</span>
@@ -445,7 +456,16 @@ export function DiffPanel({
       </div>
 
       {/* Diff Viewport: Unified or Split */}
-      {mode === "unified" ? (
+      {isLoadingDiff ? (
+        <div
+          data-testid="diff-loading-skeleton"
+          className="flex flex-col gap-2 bg-inset p-4"
+        >
+          <div className="h-3.5 w-2/3 animate-pulse rounded bg-active" />
+          <div className="h-3.5 w-full animate-pulse rounded bg-active" />
+          <div className="h-3.5 w-5/6 animate-pulse rounded bg-active" />
+        </div>
+      ) : mode === "unified" ? (
         <div
           data-testid="diff-body-unified"
           className="overflow-x-auto bg-inset p-1.5 font-mono text-xs leading-[1.6] tabular-nums"

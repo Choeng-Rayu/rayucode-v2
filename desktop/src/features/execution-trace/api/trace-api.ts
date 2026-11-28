@@ -78,14 +78,39 @@ export async function toggleTurnPin(
 
 export async function forkTurnFromHere(
   sessionId: string,
-  turnId: string
+  turnId: string,
+  options?: { upToMessageIndex?: number; upToMessageId?: string }
 ): Promise<ActionResult<SessionSummary>> {
-  const parsed = forkTurnInputSchema.safeParse({ sessionId, turnId })
+  const parsed = forkTurnInputSchema.safeParse({
+    sessionId,
+    turnId,
+    ...(options?.upToMessageIndex !== undefined
+      ? { upToMessageIndex: options.upToMessageIndex }
+      : {}),
+    ...(options?.upToMessageId
+      ? { upToMessageId: options.upToMessageId }
+      : {}),
+  })
   if (!parsed.success) {
     return err("Validation failed for fork turn")
   }
   try {
-    const forked = await ipcClient.trace.forkTurn(parsed.data.turnId)
+    const hasExplicitBoundary =
+      parsed.data.upToMessageIndex !== undefined ||
+      Boolean(parsed.data.upToMessageId)
+    const isLiveSession = !parsed.data.sessionId.startsWith("ses_")
+    const forked =
+      hasExplicitBoundary || isLiveSession
+        ? await ipcClient.trace.forkTurn(parsed.data.turnId, {
+            sessionId: parsed.data.sessionId,
+            ...(parsed.data.upToMessageIndex !== undefined
+              ? { upToMessageIndex: parsed.data.upToMessageIndex }
+              : {}),
+            ...(parsed.data.upToMessageId
+              ? { upToMessageId: parsed.data.upToMessageId }
+              : {}),
+          })
+        : await ipcClient.trace.forkTurn(parsed.data.turnId)
     return ok(forked)
   } catch (error) {
     return err(

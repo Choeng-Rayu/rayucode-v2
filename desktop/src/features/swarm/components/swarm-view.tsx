@@ -74,6 +74,47 @@ export function SwarmView({ className }: SwarmViewProps) {
     )
   }
 
+  if (swarm.available === false) {
+    return (
+      <div
+        data-slot="swarm-view"
+        className={cn(
+          "mx-auto flex w-full max-w-[780px] flex-col px-[26px] py-10",
+          className
+        )}
+      >
+        <div
+          data-testid="swarm-unavailable-card"
+          className="rayu-card-bevel flex flex-col gap-3 rounded-[16px] border border-premium bg-pane p-6"
+        >
+          <div className="flex items-center gap-2 text-ink">
+            <Network
+              className="size-4 shrink-0 text-muted-ink"
+              aria-hidden="true"
+            />
+            <h1 className="m-0 text-[16px] font-semibold tracking-tight text-ink">
+              Swarm orchestration unavailable
+            </h1>
+          </div>
+          <p className="m-0 text-[13px] leading-relaxed text-muted-ink">
+            {swarm.unavailableReason ??
+              "Swarm worker coordination is not enabled in the connected Rayu daemon."}
+          </p>
+          <div className="pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+            >
+              Retry connection
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const existingAgentNames = swarm.agents.map((a) => a.name)
   const isIdle = swarm.agents.length === 0
 

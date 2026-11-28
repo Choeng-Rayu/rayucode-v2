@@ -9,7 +9,7 @@ export interface PrimaryNavItem {
 
 export const PRIMARY_NAV_ITEMS: PrimaryNavItem[] = [
   { id: "home", label: "Home", icon: "home" },
-  { id: "agents", label: "Agents & Personas", icon: "agents" },
+  { id: "swarm", label: "Swarm", icon: "swarm" },
   { id: "automations", label: "Automations", icon: "clock" },
   { id: "plugins", label: "Plugins", icon: "plug" },
   { id: "changes", label: "Changes", icon: "branch" },

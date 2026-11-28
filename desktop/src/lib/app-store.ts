@@ -93,6 +93,25 @@ export interface PendingPermission {
   description: string
 }
 
+export interface PendingQuestionOption {
+  label: string
+  description: string
+  preview?: string
+}
+
+export interface PendingQuestionItem {
+  question: string
+  header: string
+  options: PendingQuestionOption[]
+  multiSelect?: boolean
+}
+
+export interface PendingQuestion {
+  sessionId: string
+  requestId: string
+  questions: PendingQuestionItem[]
+}
+
 export type MidTurnSendMode = "steer" | "queue"
 
 export interface MidTurnMessageItem {
@@ -149,6 +168,8 @@ export interface AppStoreState {
   authDialogOpen: boolean
   pendingPermission: PendingPermission | null
   pendingPermissionsBySession: Record<string, PendingPermission[]>
+  pendingQuestion: PendingQuestion | null
+  pendingQuestionsBySession: Record<string, PendingQuestion[]>
   pendingStreamPrompt: PendingStreamPrompt | null
   isStreamActive: boolean
   midTurnSendMode: MidTurnSendMode
@@ -205,6 +226,8 @@ export interface AppStoreState {
   setAuthDialogOpen: (open: boolean) => void
   setPendingPermission: (permission: PendingPermission | null) => void
   clearPendingPermission: (sessionId: string, requestId?: string) => void
+  setPendingQuestion: (question: PendingQuestion | null) => void
+  clearPendingQuestion: (sessionId: string, requestId?: string) => void
   setPendingStreamPrompt: (prompt: PendingStreamPrompt | null) => void
   setIsStreamActive: (active: boolean) => void
   setMidTurnSendMode: (mode: MidTurnSendMode) => void
@@ -452,6 +475,8 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   authDialogOpen: false,
   pendingPermission: null,
   pendingPermissionsBySession: {},
+  pendingQuestion: null,
+  pendingQuestionsBySession: {},
   pendingStreamPrompt: null,
   isStreamActive: false,
   midTurnSendMode: "steer",
@@ -569,6 +594,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
           (activeSessionId
             ? state.pendingPermissionsBySession[activeSessionId]?.[0]
             : null) ?? null,
+        pendingQuestion:
+          (activeSessionId
+            ? state.pendingQuestionsBySession[activeSessionId]?.[0]
+            : null) ?? null,
         rightCollapsed: !activeSessionId,
         rightMode: "context",
         activeRightTab: "overview",
@@ -601,15 +630,21 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       const nextIndex = state.navHistoryIndex - 1
       const target = state.navHistory[nextIndex]
       if (!target) return state
+      const nextPendingPerm =
+        (target.sessionId
+          ? state.pendingPermissionsBySession[target.sessionId]?.[0]
+          : null) ?? null
+      const nextPendingQ =
+        (target.sessionId
+          ? state.pendingQuestionsBySession[target.sessionId]?.[0]
+          : null) ?? null
       return {
         navHistoryIndex: nextIndex,
         activeRoute: target.route,
         activeSessionId: target.sessionId,
         activeSessionTitle: target.sessionTitle,
-        pendingPermission:
-          (target.sessionId
-            ? state.pendingPermissionsBySession[target.sessionId]?.[0]
-            : null) ?? null,
+        pendingPermission: nextPendingPerm,
+        pendingQuestion: nextPendingQ,
         rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
         chatCollapsedByRight: false,
       }
@@ -630,6 +665,10 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         pendingPermission:
           (target.sessionId
             ? state.pendingPermissionsBySession[target.sessionId]?.[0]
+            : null) ?? null,
+        pendingQuestion:
+          (target.sessionId
+            ? state.pendingQuestionsBySession[target.sessionId]?.[0]
             : null) ?? null,
         rightCollapsed: target.route === "home" ? true : state.rightCollapsed,
         chatCollapsedByRight: false,
@@ -733,6 +772,82 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       return {
         pendingPermissionsBySession: nextMap,
         pendingPermission: nextActive,
+      }
+    })
+  },
+
+  setPendingQuestion: (pendingQuestion) => {
+    set((state) => {
+      if (!pendingQuestion) {
+        const sid = state.activeSessionId
+        if (!sid) {
+          return { pendingQuestion: null }
+        }
+        const existing = state.pendingQuestionsBySession[sid] ?? []
+        const remaining = existing.slice(1)
+        const nextMap = { ...state.pendingQuestionsBySession }
+        if (remaining.length > 0) {
+          nextMap[sid] = remaining
+        } else {
+          delete nextMap[sid]
+        }
+        return {
+          pendingQuestionsBySession: nextMap,
+          pendingQuestion: remaining[0] ?? null,
+        }
+      }
+      const targetSid =
+        pendingQuestion.sessionId || state.activeSessionId || "__global__"
+      const normalized = {
+        ...pendingQuestion,
+        sessionId: targetSid,
+      }
+      const existing = state.pendingQuestionsBySession[targetSid] ?? []
+      const filtered = existing.filter(
+        (item) => item.requestId !== normalized.requestId
+      )
+      const nextList = [...filtered, normalized]
+      const nextMap = {
+        ...state.pendingQuestionsBySession,
+        [targetSid]: nextList,
+      }
+      const activeKey = state.activeSessionId || "__global__"
+      const nextActiveQ =
+        nextMap[activeKey]?.[0] ??
+        (targetSid === "__global__" ? normalized : state.pendingQuestion)
+      return {
+        pendingQuestionsBySession: nextMap,
+        pendingQuestion: nextActiveQ,
+      }
+    })
+  },
+
+  clearPendingQuestion: (sessionId, requestId) => {
+    if (!sessionId) return
+    set((state) => {
+      const existing = state.pendingQuestionsBySession[sessionId]
+      if (!existing || existing.length === 0) {
+        if (state.pendingQuestion?.sessionId === sessionId) {
+          return { pendingQuestion: null }
+        }
+        return state
+      }
+      const remaining = requestId
+        ? existing.filter((item) => item.requestId !== requestId)
+        : []
+      const nextMap = { ...state.pendingQuestionsBySession }
+      if (remaining.length > 0) {
+        nextMap[sessionId] = remaining
+      } else {
+        delete nextMap[sessionId]
+      }
+      const nextActive =
+        (state.activeSessionId
+          ? nextMap[state.activeSessionId]?.[0]
+          : null) ?? null
+      return {
+        pendingQuestionsBySession: nextMap,
+        pendingQuestion: nextActive,
       }
     })
   },

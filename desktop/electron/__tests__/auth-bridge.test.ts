@@ -492,6 +492,16 @@ describe("auth-bridge Wave 1 guarantees", () => {
     expect(capturedPayloads[2]?.thinking).toBeUndefined()
     expect(capturedPayloads[2]?.output_config).toBeUndefined()
 
+    // signOut must abort any in-flight cloud streams cleanly
+    const abortSpy = vi.fn()
+    ;(manager as unknown as {
+      activeStreams: Map<string, AbortController>
+    }).activeStreams.set("ses_abort_on_signout", {
+      abort: abortSpy,
+    } as unknown as AbortController)
+    await manager.signOut()
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+
     fs.rmSync(tmpHome, { recursive: true, force: true })
   })
 })

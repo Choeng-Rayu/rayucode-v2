@@ -16,10 +16,15 @@ export interface PluginCatalogItem {
   sourcePath?: string
   scope?: "global" | "workspace"
   transport?: "stdio" | "url"
+  type?: string
   command?: string
   args?: string[]
   url?: string
+  headers?: Record<string, string>
+  headerKeys?: string[]
   envKeys?: string[]
+  timeout?: number
+  revision?: string
   isCustomMcp?: boolean
 }
 
@@ -45,4 +50,15 @@ export interface PluginsState {
   plugins: PluginCatalogItem[]
   skills: SkillItem[]
   memories: MemoryFileItem[]
+  mcpConfigErrors?: Array<{
+    filePath: string
+    scope: "global" | "workspace"
+    message: string
+  }>
+  revisions?: Record<string, string>
+  lastWriteStatus?: {
+    diskSaved: boolean
+    daemonReloaded: boolean
+    reloadError?: string
+  }
 }

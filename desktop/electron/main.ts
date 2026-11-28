@@ -18,6 +18,10 @@ import { BrowserCdpController } from "./browser-cdp.js"
 import { RayuDaemonClient } from "./daemon-client.js"
 import type { DesktopArtifactEvent } from "./desktop-tools.js"
 import {
+  assertTrustedSender,
+  isAllowedWebviewUrl,
+} from "./ipc-security.js"
+import {
   checkoutGitBranch,
   commitGitStaged,
   createGitPullRequest,
@@ -25,6 +29,7 @@ import {
   discardGitFile,
   getGitChanges,
   getGitCommits,
+  getGitFileDiff,
   listGitBranches,
   setAllGitStaged,
   toggleGitStage,
@@ -51,16 +56,20 @@ import {
   GitCreatePrPayloadSchema,
   GitCreateWorktreePayloadSchema,
   GitDiscardFilePayloadSchema,
+  GitFileDiffPayloadSchema,
   GitStageAllPayloadSchema,
   GitToggleStagePayloadSchema,
   HarnessCreateSessionSchema,
+  HarnessForkSessionSchema,
   HarnessGetCapabilitiesSchema,
   HarnessGetConfigSchema,
+  HarnessGlobalRuntimeCommandSchema,
   HarnessImportExternalSessionsPayloadSchema,
   HarnessListExternalProjectsPayloadSchema,
   HarnessListSessionsPayloadSchema,
   HarnessPatchConfigSchema,
   HarnessPermissionResponseSchema,
+  HarnessQuestionResponseSchema,
   HarnessRenameSessionSchema,
   HarnessRuntimeCommandSchema,
   HarnessSendMessageSchema,
@@ -196,29 +205,43 @@ browserCdp.setEnsureBrowserOpen(async (url?: string) => {
   }
 })
 
+daemonClient.setWorkingDir(activeWorkspaceDir)
 daemonClient.configureDesktopRuntime({
   getWorkspaceDir: () => activeWorkspaceDir,
+  getWorkspaceDirForSession: (sessionId?: string) =>
+    daemonClient.getWorkingDirForSession(sessionId),
   browserCdp,
   onArtifact: emitDesktopArtifact,
 })
 
+const trustedOriginOptions = {
+  devServerUrl: process.env.VITE_DEV_SERVER_URL,
+  distDir: path.join(__dirname, "..", "dist"),
+}
+
 function registerIpcHandlers(): void {
+  const handleTrusted: typeof ipcMain.handle = (channel, listener) =>
+    ipcMain.handle(channel, (event, ...args) => {
+      assertTrustedSender(event, trustedOriginOptions)
+      return listener(event, ...args)
+    })
+
   // Daemon lifecycle
-  ipcMain.handle("rayu:daemon:status", async () => {
+  handleTrusted("rayu:daemon:status", async () => {
     return daemonClient.getOrProbeStatus(activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:daemon:launch", async () => {
+  handleTrusted("rayu:daemon:launch", async () => {
     return daemonClient.launchAndConnect(activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:daemon:invoke", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:daemon:invoke", async (_event, rawPayload: unknown) => {
     const parsed = DaemonInvokePayloadSchema.parse(rawPayload)
     return daemonClient.invoke(parsed.method, parsed.params)
   })
 
   // Real RayuCode Harness API (@rayu-dev/rayucode-sdk)
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:list-sessions",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessListSessionsPayloadSchema.parse(rawPayload)
@@ -226,18 +249,14 @@ function registerIpcHandlers(): void {
       if (!status.connected) {
         return []
       }
-      try {
-        return await daemonClient.listSessions(parsed?.includeArchived ?? false, {
-          includeExternal: parsed?.includeExternal ?? true,
-          sources: parsed?.sources,
-        })
-      } catch {
-        return []
-      }
+      return await daemonClient.listSessions(parsed?.includeArchived ?? false, {
+        includeExternal: parsed?.includeExternal ?? true,
+        sources: parsed?.sources,
+      })
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:list-external-projects",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessListExternalProjectsPayloadSchema.parse(rawPayload)
@@ -245,15 +264,11 @@ function registerIpcHandlers(): void {
       if (!status.connected) {
         return []
       }
-      try {
-        return await daemonClient.listExternalProjects(parsed?.source)
-      } catch {
-        return []
-      }
+      return await daemonClient.listExternalProjects(parsed?.source)
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:import-external-sessions",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessImportExternalSessionsPayloadSchema.parse(rawPayload)
@@ -268,7 +283,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:create-session",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessCreateSessionSchema.parse(rawPayload ?? {})
@@ -279,7 +294,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:rename-session",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessRenameSessionSchema.parse(rawPayload)
@@ -288,7 +303,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:archive-session",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
@@ -298,7 +313,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:restore-session",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
@@ -310,7 +325,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:attach-session",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
@@ -318,27 +333,37 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:fork-session",
     async (_event, rawPayload: unknown) => {
-      const parsed = HarnessSessionIdSchema.parse(rawPayload)
-      return daemonClient.forkSession(parsed.sessionId)
+      const parsed = HarnessForkSessionSchema.parse(rawPayload)
+      return daemonClient.forkSession(parsed.sessionId, {
+        ...(parsed.upToMessageIndex !== undefined
+          ? { upToMessageIndex: parsed.upToMessageIndex }
+          : {}),
+        ...(parsed.upToMessageId !== undefined
+          ? { upToMessageId: parsed.upToMessageId }
+          : {}),
+      })
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:get-history",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
-      try {
-        return await daemonClient.getHistory(parsed.sessionId)
-      } catch {
+      if (!parsed.sessionId || parsed.sessionId.startsWith("ses_")) {
         return { messages: [], images: [] }
       }
+      const status = await daemonClient.getOrProbeStatus(activeWorkspaceDir)
+      if (!status.connected) {
+        return { messages: [], images: [] }
+      }
+      return await daemonClient.getHistory(parsed.sessionId)
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:send-message",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSendMessageSchema.parse(rawPayload)
@@ -351,7 +376,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:soft-interrupt",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSoftInterruptSchema.parse(rawPayload)
@@ -363,7 +388,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:cancel-soft-interrupts",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessCancelSoftInterruptsSchema.parse(rawPayload)
@@ -374,13 +399,13 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:harness:cancel", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:harness:cancel", async (_event, rawPayload: unknown) => {
     const parsed = HarnessSessionIdSchema.parse(rawPayload)
     await daemonClient.cancel(parsed.sessionId)
     return { ok: true }
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:permission-response",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessPermissionResponseSchema.parse(rawPayload)
@@ -393,7 +418,20 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
+    "rayu:harness:question-response",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessQuestionResponseSchema.parse(rawPayload)
+      await daemonClient.respondToQuestion(
+        parsed.sessionId,
+        parsed.requestId,
+        parsed.response
+      )
+      return { ok: true }
+    }
+  )
+
+  handleTrusted(
     "rayu:harness:set-permission-mode",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetPermissionModeSchema.parse(rawPayload)
@@ -401,7 +439,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:runtime-info",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
@@ -409,7 +447,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:set-model",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetModelSchema.parse(rawPayload)
@@ -424,7 +462,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:set-effort",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSetEffortSchema.parse(rawPayload)
@@ -442,7 +480,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:compact",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessSessionIdSchema.parse(rawPayload)
@@ -450,7 +488,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:get-capabilities",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessGetCapabilitiesSchema.parse(rawPayload)
@@ -458,7 +496,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:get-config",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessGetConfigSchema.parse(rawPayload)
@@ -466,7 +504,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:patch-config",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessPatchConfigSchema.parse(rawPayload)
@@ -474,7 +512,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:harness:runtime-command",
     async (_event, rawPayload: unknown) => {
       const parsed = HarnessRuntimeCommandSchema.parse(rawPayload)
@@ -486,8 +524,20 @@ function registerIpcHandlers(): void {
     }
   )
 
+  handleTrusted(
+    "rayu:harness:global-runtime-command",
+    async (_event, rawPayload: unknown) => {
+      const parsed = HarnessGlobalRuntimeCommandSchema.parse(rawPayload)
+      return daemonClient.runGlobalRuntimeCommand(
+        parsed.command as RuntimeCommand,
+        parsed.args ?? [],
+        activeWorkspaceDir
+      )
+    }
+  )
+
   // Session-scoped File Change Summary & Review Engine
-  ipcMain.handle(
+  handleTrusted(
     "rayu:file-changes:get",
     async (_event, rawPayload: unknown) => {
       const parsed = FileChangesGetPayloadSchema.parse(rawPayload)
@@ -495,7 +545,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:file-changes:diff",
     async (_event, rawPayload: unknown) => {
       const parsed = FileChangesDiffPayloadSchema.parse(rawPayload)
@@ -503,7 +553,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:file-changes:action",
     async (_event, rawPayload: unknown) => {
       const parsed = FileChangesActionPayloadSchema.parse(rawPayload)
@@ -514,26 +564,27 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:todos:get", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:todos:get", async (_event, rawPayload: unknown) => {
     const parsed = TodosGetPayloadSchema.parse(rawPayload)
     return daemonClient.getTodos(parsed.sessionId)
   })
 
   // Real local Workspace & File Reader
-  ipcMain.handle("rayu:workspace:info", async () => {
+  handleTrusted("rayu:workspace:info", async () => {
     recordRecentWorkspace(activeWorkspaceDir)
     return getWorkspaceInfo(activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:workspace:set", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:workspace:set", async (_event, rawPayload: unknown) => {
     const parsed = WorkspaceSetPayloadSchema.parse(rawPayload)
     activeWorkspaceDir = path.resolve(parsed.path)
+    daemonClient.setWorkingDir(activeWorkspaceDir)
     recordRecentWorkspace(activeWorkspaceDir)
     void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:workspace:ensure",
     async (_event, rawPayload: unknown) => {
       const parsed = WorkspaceEnsurePayloadSchema.parse(rawPayload)
@@ -544,7 +595,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:workspace:import-project-group",
     async (_event, rawPayload: unknown) => {
       const parsed = WorkspaceImportProjectGroupPayloadSchema.parse(rawPayload)
@@ -555,20 +606,21 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:workspace:pick-folder", async () => {
+  handleTrusted("rayu:workspace:pick-folder", async () => {
     const chosen = await pickWorkspaceFolder(mainWindow)
     if (!chosen) return null
     activeWorkspaceDir = path.resolve(chosen)
+    daemonClient.setWorkingDir(activeWorkspaceDir)
     recordRecentWorkspace(activeWorkspaceDir)
     void ensureRegisteredWorkspace(activeWorkspaceDir).catch(() => {})
     return getWorkspaceInfo(activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:workspace:pick-files", async () => {
+  handleTrusted("rayu:workspace:pick-files", async () => {
     return pickWorkspaceFiles(mainWindow, activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:workspace:capture-appshot", async () => {
+  handleTrusted("rayu:workspace:capture-appshot", async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return null
     const image = await mainWindow.webContents.capturePage()
     const resized = image.resize({ width: 960 })
@@ -578,7 +630,7 @@ function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:workspace:read-file",
     async (_event, rawPayload: unknown) => {
       const parsed = WorkspaceReadFilePayloadSchema.parse(rawPayload)
@@ -586,20 +638,20 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:workspace:list-files", async () => {
+  handleTrusted("rayu:workspace:list-files", async () => {
     return listWorkspaceFiles(activeWorkspaceDir)
   })
 
-  ipcMain.handle("rayu:workspace:list-recent", async () => {
+  handleTrusted("rayu:workspace:list-recent", async () => {
     return readRecentWorkspaces()
   })
 
   // Persistent Desktop Settings & Local Sessions
-  ipcMain.handle("rayu:storage:get-preferences", async () => {
+  handleTrusted("rayu:storage:get-preferences", async () => {
     return readDesktopPreferences()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:storage:update-preferences",
     async (_event, rawPayload: unknown) => {
       const parsed = StoragePreferencesPatchSchema.parse(rawPayload)
@@ -607,11 +659,11 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:storage:get-sessions", async () => {
+  handleTrusted("rayu:storage:get-sessions", async () => {
     return readDesktopSessionStore()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:storage:save-sessions",
     async (_event, rawPayload: unknown) => {
       const parsed = StorageSessionStoreSchema.parse(rawPayload)
@@ -619,11 +671,11 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:storage:get-templates", async () => {
+  handleTrusted("rayu:storage:get-templates", async () => {
     return readCustomTemplates()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:storage:save-template",
     async (_event, rawPayload: unknown) => {
       const parsed = StorageSaveTemplateSchema.parse(rawPayload)
@@ -631,7 +683,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:storage:delete-template",
     async (_event, rawPayload: unknown) => {
       const parsed = StorageDeleteTemplateSchema.parse(rawPayload)
@@ -639,11 +691,11 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:storage:get-sidebar-state", async () => {
+  handleTrusted("rayu:storage:get-sidebar-state", async () => {
     return readSidebarState()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:storage:save-sidebar-state",
     async (_event, rawPayload: unknown) => {
       const parsed = StorageSidebarStateSchema.parse(rawPayload)
@@ -652,24 +704,38 @@ function registerIpcHandlers(): void {
   )
 
   // Real Local Extensions (MCP servers, Skills, Memory files)
-  ipcMain.handle("rayu:extensions:list", async () => {
+  handleTrusted("rayu:extensions:list", async () => {
     return listLocalExtensions(activeWorkspaceDir)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:extensions:upsert-mcp",
     async (_event, rawPayload: unknown) => {
       const parsed = ExtensionUpsertMcpSchema.parse(rawPayload)
       const snapshot = upsertLocalMcpServer(activeWorkspaceDir, parsed)
-      await daemonClient.notifyAuthChanged("rayu")
-      await daemonClient
-        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
-        .catch(() => {})
-      return snapshot
+      await daemonClient.notifyAuthChanged("rayu").catch(() => {})
+      let daemonReloaded = false
+      let reloadError: string | undefined
+      try {
+        await daemonClient.runGlobalRuntimeCommand(
+          "mcp",
+          ["reload"],
+          activeWorkspaceDir
+        )
+        daemonReloaded = true
+      } catch (err) {
+        reloadError = err instanceof Error ? err.message : String(err)
+      }
+      return {
+        ...snapshot,
+        diskSaved: true,
+        daemonReloaded,
+        ...(reloadError ? { reloadError } : {}),
+      }
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:extensions:remove-mcp",
     async (_event, rawPayload: unknown) => {
       const parsed = ExtensionRemoveMcpSchema.parse(rawPayload)
@@ -678,15 +744,29 @@ function registerIpcHandlers(): void {
         parsed.id,
         parsed.scope
       )
-      await daemonClient.notifyAuthChanged("rayu")
-      await daemonClient
-        .runRuntimeCommandOnAnySession("mcp", ["reload"], activeWorkspaceDir)
-        .catch(() => {})
-      return snapshot
+      await daemonClient.notifyAuthChanged("rayu").catch(() => {})
+      let daemonReloaded = false
+      let reloadError: string | undefined
+      try {
+        await daemonClient.runGlobalRuntimeCommand(
+          "mcp",
+          ["reload"],
+          activeWorkspaceDir
+        )
+        daemonReloaded = true
+      } catch (err) {
+        reloadError = err instanceof Error ? err.message : String(err)
+      }
+      return {
+        ...snapshot,
+        diskSaved: true,
+        daemonReloaded,
+        ...(reloadError ? { reloadError } : {}),
+      }
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:extensions:create-skill",
     async (_event, rawPayload: unknown) => {
       const parsed = ExtensionCreateSkillSchema.parse(rawPayload)
@@ -694,7 +774,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:extensions:toggle-skill",
     async (_event, rawPayload: unknown) => {
       const parsed = ExtensionToggleSkillSchema.parse(rawPayload)
@@ -703,11 +783,19 @@ function registerIpcHandlers(): void {
   )
 
   // Real Git Changes & Diff Engine
-  ipcMain.handle("rayu:git:changes", async () => {
+  handleTrusted("rayu:git:changes", async () => {
     return getGitChanges(activeWorkspaceDir)
   })
 
-  ipcMain.handle(
+  handleTrusted(
+    "rayu:git:file-diff",
+    async (_event, rawPayload: unknown) => {
+      const parsed = GitFileDiffPayloadSchema.parse(rawPayload)
+      return getGitFileDiff(activeWorkspaceDir, parsed.filePath)
+    }
+  )
+
+  handleTrusted(
     "rayu:git:toggle-stage",
     async (_event, rawPayload: unknown) => {
       const parsed = GitToggleStagePayloadSchema.parse(rawPayload)
@@ -715,12 +803,12 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:git:stage-all", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:git:stage-all", async (_event, rawPayload: unknown) => {
     const parsed = GitStageAllPayloadSchema.parse(rawPayload)
     return setAllGitStaged(activeWorkspaceDir, parsed.staged)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:git:discard-file",
     async (_event, rawPayload: unknown) => {
       const parsed = GitDiscardFilePayloadSchema.parse(rawPayload)
@@ -728,25 +816,25 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:git:commit", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:git:commit", async (_event, rawPayload: unknown) => {
     const parsed = GitCommitPayloadSchema.parse(rawPayload)
     return commitGitStaged(activeWorkspaceDir, parsed.message)
   })
 
-  ipcMain.handle("rayu:git:create-pr", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:git:create-pr", async (_event, rawPayload: unknown) => {
     const parsed = GitCreatePrPayloadSchema.parse(rawPayload)
     return createGitPullRequest(activeWorkspaceDir, parsed)
   })
 
-  ipcMain.handle("rayu:git:commits", async () => {
+  handleTrusted("rayu:git:commits", async () => {
     return getGitCommits(activeWorkspaceDir, 30)
   })
 
-  ipcMain.handle("rayu:git:branches", async () => {
+  handleTrusted("rayu:git:branches", async () => {
     return listGitBranches(activeWorkspaceDir)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:git:checkout",
     async (_event, rawPayload: unknown) => {
       const parsed = GitCheckoutBranchPayloadSchema.parse(rawPayload)
@@ -754,7 +842,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:git:create-worktree",
     async (_event, rawPayload: unknown) => {
       const parsed = GitCreateWorktreePayloadSchema.parse(rawPayload ?? {})
@@ -764,6 +852,7 @@ function registerIpcHandlers(): void {
       )
       if (created.ok && created.path) {
         activeWorkspaceDir = path.resolve(created.path)
+        daemonClient.setWorkingDir(activeWorkspaceDir)
         recordRecentWorkspace(activeWorkspaceDir)
       }
       return created
@@ -771,12 +860,12 @@ function registerIpcHandlers(): void {
   )
 
   // Real Local Shell Terminal Runner & Interactive OS PTY Sessions
-  ipcMain.handle("rayu:terminal:run", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:terminal:run", async (_event, rawPayload: unknown) => {
     const parsed = TerminalRunPayloadSchema.parse(rawPayload)
     return runTerminalCommand(activeWorkspaceDir, parsed.command)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:terminal:pty-create",
     async (_event, rawPayload: unknown) => {
       const parsed = TerminalPtyCreatePayloadSchema.parse(rawPayload)
@@ -806,7 +895,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:terminal:pty-write",
     async (_event, rawPayload: unknown) => {
       const parsed = TerminalPtyWritePayloadSchema.parse(rawPayload)
@@ -814,7 +903,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:terminal:pty-resize",
     async (_event, rawPayload: unknown) => {
       const parsed = TerminalPtyResizePayloadSchema.parse(rawPayload)
@@ -822,7 +911,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:terminal:pty-kill",
     async (_event, rawPayload: unknown) => {
       const parsed = TerminalPtyKillPayloadSchema.parse(rawPayload)
@@ -831,25 +920,25 @@ function registerIpcHandlers(): void {
   )
 
   // Real Rayu Cloud Authentication (OAuth loopback + API key + live credits/models)
-  ipcMain.handle("rayu:auth:state", async () => {
+  handleTrusted("rayu:auth:state", async () => {
     return authManager.getState()
   })
 
-  ipcMain.handle("rayu:auth:refresh", async () => {
+  handleTrusted("rayu:auth:refresh", async () => {
     return authManager.refreshAccountDetails()
   })
 
-  ipcMain.handle("rayu:auth:sign-in-browser", async () => {
+  handleTrusted("rayu:auth:sign-in-browser", async () => {
     const state = await authManager.signInWithBrowser()
     await daemonClient.notifyAuthChanged("rayu")
     return state
   })
 
-  ipcMain.handle("rayu:auth:cancel-sign-in", async () => {
+  handleTrusted("rayu:auth:cancel-sign-in", async () => {
     return authManager.cancelBrowserSignIn()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:auth:sign-in-apikey",
     async (_event, rawPayload: unknown) => {
       const parsed = AuthApiKeyPayloadSchema.parse(rawPayload)
@@ -860,7 +949,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:auth:complete-callback",
     async (_event, rawPayload: unknown) => {
       const parsed = AuthCallbackUrlPayloadSchema.parse(rawPayload)
@@ -870,7 +959,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:auth:sign-out", async () => {
+  handleTrusted("rayu:auth:sign-out", async () => {
     const state = await authManager.signOut()
     await daemonClient.clearApiKey("rayu")
     await daemonClient.notifyAuthChanged("rayu")
@@ -878,7 +967,7 @@ function registerIpcHandlers(): void {
   })
 
   // Direct Rayu Cloud Gateway Streaming (works immediately after sign-in even before Rust daemon starts)
-  ipcMain.handle(
+  handleTrusted(
     "rayu:cloud:stream-chat",
     async (_event, rawPayload: unknown) => {
       const parsed = CloudStreamChatPayloadSchema.parse(rawPayload)
@@ -912,7 +1001,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:cloud:cancel-stream",
     async (_event, rawPayload: unknown) => {
       const parsed = CloudCancelStreamPayloadSchema.parse(rawPayload)
@@ -922,7 +1011,7 @@ function registerIpcHandlers(): void {
   )
 
   // Native OS Actions
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:open-excel",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenInExcelPayloadSchema.parse(rawPayload)
@@ -930,7 +1019,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:open-powerpoint",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenInPowerPointPayloadSchema.parse(rawPayload)
@@ -938,15 +1027,15 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:open-vscode",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenInVSCodePayloadSchema.parse(rawPayload)
-      return openInVSCode(parsed.targetPath, parsed.line)
+      return openInVSCode(parsed.targetPath, parsed.line, activeWorkspaceDir)
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:open-external",
     async (_event, rawPayload: unknown) => {
       const parsed = OpenExternalPayloadSchema.parse(rawPayload)
@@ -954,7 +1043,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:reveal-in-finder",
     async (_event, rawPayload: unknown) => {
       const parsed = RevealInFinderPayloadSchema.parse(rawPayload)
@@ -962,7 +1051,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:native:keep-awake",
     async (_event, rawPayload: unknown) => {
       const parsed = KeepAwakePayloadSchema.parse(rawPayload)
@@ -987,7 +1076,7 @@ function registerIpcHandlers(): void {
   )
 
   // Real Microsoft Office (.xlsx / .pptx) Engine
-  ipcMain.handle("rayu:office:pick-excel", async () => {
+  handleTrusted("rayu:office:pick-excel", async () => {
     const win = mainWindow ?? undefined
     const result = win
       ? await dialog.showOpenDialog(win, {
@@ -1006,7 +1095,7 @@ function registerIpcHandlers(): void {
     return readRealExcelWorkbook(activeWorkspaceDir, result.filePaths[0])
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:office:read-excel",
     async (_event, rawPayload: unknown) => {
       const parsed = OfficeReadExcelPayloadSchema.parse(rawPayload)
@@ -1014,7 +1103,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:office:write-excel",
     async (_event, rawPayload: unknown) => {
       const parsed = OfficeWriteExcelPayloadSchema.parse(rawPayload)
@@ -1022,7 +1111,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:office:create-pptx",
     async (_event, rawPayload: unknown) => {
       const parsed = OfficeCreatePptxPayloadSchema.parse(rawPayload)
@@ -1031,7 +1120,7 @@ function registerIpcHandlers(): void {
   )
 
   // Native Electron CDP Browser Automation (controls the live right-sidebar <webview>)
-  ipcMain.handle(
+  handleTrusted(
     "rayu:browser:cdp-navigate",
     async (_event, rawPayload: unknown) => {
       const parsed = BrowserCdpNavigateSchema.parse(rawPayload)
@@ -1039,11 +1128,11 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:browser:cdp-snapshot", async () => {
+  handleTrusted("rayu:browser:cdp-snapshot", async () => {
     return browserCdp.snapshot()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:browser:cdp-click",
     async (_event, rawPayload: unknown) => {
       const parsed = BrowserCdpClickSchema.parse(rawPayload)
@@ -1051,7 +1140,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:browser:cdp-type",
     async (_event, rawPayload: unknown) => {
       const parsed = BrowserCdpTypeSchema.parse(rawPayload)
@@ -1059,16 +1148,16 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:browser:cdp-screenshot", async () => {
+  handleTrusted("rayu:browser:cdp-screenshot", async () => {
     return browserCdp.screenshot()
   })
 
   // Real Telegram Remote (backed by Rust rayu daemon telegram_remote & telegram_bridge)
-  ipcMain.handle("rayu:telegram:state", async () => {
+  handleTrusted("rayu:telegram:state", async () => {
     return telegramManager.getState()
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:start-hosted",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramStartHostedSchema.parse(rawPayload ?? {})
@@ -1076,7 +1165,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:connect-bot-token",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramConnectBotTokenSchema.parse(rawPayload)
@@ -1084,7 +1173,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:disconnect",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramDisconnectSchema.parse(rawPayload ?? {})
@@ -1092,7 +1181,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:resolve-approval",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramResolveApprovalSchema.parse(rawPayload)
@@ -1100,7 +1189,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:set-remote-uninstall",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramSetRemoteUninstallSchema.parse(rawPayload)
@@ -1108,7 +1197,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:telegram:select-session",
     async (_event, rawPayload: unknown) => {
       const parsed = TelegramSelectSessionSchema.parse(rawPayload)
@@ -1116,17 +1205,17 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle("rayu:telegram:ping", async () => {
+  handleTrusted("rayu:telegram:ping", async () => {
     return telegramManager.sendTestPing()
   })
 
   // Real Subagent Models & Agent Personas (backed by Rust daemon `agents` + `subagent_model`)
-  ipcMain.handle("rayu:agents:state", async (_event, rawPayload: unknown) => {
+  handleTrusted("rayu:agents:state", async (_event, rawPayload: unknown) => {
     const parsed = AgentsGetStateSchema.parse(rawPayload ?? undefined)
     return agentsManager.getState(parsed?.sessionId)
   })
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:agents:set-role-model",
     async (_event, rawPayload: unknown) => {
       const parsed = AgentsSetRoleModelSchema.parse(rawPayload)
@@ -1134,7 +1223,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:agents:set-subagent-model",
     async (_event, rawPayload: unknown) => {
       const parsed = AgentsSetSubagentModelSchema.parse(rawPayload)
@@ -1142,7 +1231,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:agents:upsert-profile",
     async (_event, rawPayload: unknown) => {
       const parsed = AgentsUpsertProfileSchema.parse(rawPayload)
@@ -1150,7 +1239,7 @@ function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(
+  handleTrusted(
     "rayu:agents:delete-profile",
     async (_event, rawPayload: unknown) => {
       const parsed = AgentsDeleteProfileSchema.parse(rawPayload)
@@ -1353,6 +1442,24 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(template))
   }
 
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("will-attach-webview", (attachEvent, webPreferences, params) => {
+      delete webPreferences.preload
+      webPreferences.nodeIntegration = false
+      webPreferences.contextIsolation = true
+      webPreferences.sandbox = true
+      if (!isAllowedWebviewUrl(params.src)) {
+        attachEvent.preventDefault()
+      }
+    })
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isAllowedWebviewUrl(url) && /^https?:\/\//i.test(url)) {
+        void openExternal(url)
+      }
+      return { action: "deny" }
+    })
+  })
+
   registerIpcHandlers()
   await createMainWindow()
   // Probe local rayu api-bridge and refresh existing Rayu Cloud session in background
@@ -1366,11 +1473,26 @@ app.whenReady().then(async () => {
   })
 })
 
-app.on("before-quit", () => {
+let quitCleanupDone = false
+
+app.on("before-quit", (event) => {
+  if (quitCleanupDone) {
+    return
+  }
+  event.preventDefault()
   terminalPty.killAll()
   authManager.dispose()
-  daemonClient.dispose()
-  disposeWorkspaceRegistry()
+  browserCdp.detachAll()
+  void Promise.race([
+    daemonClient.shutdown(),
+    new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+  ])
+    .catch(() => {})
+    .finally(() => {
+      disposeWorkspaceRegistry()
+      quitCleanupDone = true
+      app.quit()
+    })
 })
 
 app.on("window-all-closed", () => {

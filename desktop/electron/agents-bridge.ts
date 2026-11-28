@@ -43,6 +43,11 @@ export interface AgentsDaemonAdapter {
     command: RuntimeCommand,
     args?: string[]
   ): Promise<{ command: RuntimeCommand; data: unknown; message: string }>
+  runGlobalRuntimeCommand?(
+    command: RuntimeCommand,
+    args?: string[],
+    workingDir?: string
+  ): Promise<{ command: RuntimeCommand; data: unknown; message: string }>
   runRuntimeCommandOnAnySession(
     command: RuntimeCommand,
     args?: string[],
@@ -169,8 +174,16 @@ export class RayuAgentsManager {
     args: string[],
     sessionId?: string | null
   ): Promise<{ command: RuntimeCommand; data: unknown; message: string }> {
-    if (isLiveDaemonSessionId(sessionId)) {
+    const isGlobalCommand = args[0] === "global"
+    if (!isGlobalCommand && isLiveDaemonSessionId(sessionId)) {
       return this.daemonClient.runtimeCommand(sessionId.trim(), command, args)
+    }
+    if (typeof this.daemonClient.runGlobalRuntimeCommand === "function") {
+      return this.daemonClient.runGlobalRuntimeCommand(
+        command,
+        args,
+        this.getWorkingDir()
+      )
     }
     return this.daemonClient.runRuntimeCommandOnAnySession(
       command,
@@ -392,6 +405,9 @@ export class RayuAgentsManager {
     }
     const description = input.description?.trim()
     if (description) {
+      if (description.startsWith("-")) {
+        args.push("--")
+      }
       args.push(description)
     }
     await this.runCommand("agents", args, input.sessionId)

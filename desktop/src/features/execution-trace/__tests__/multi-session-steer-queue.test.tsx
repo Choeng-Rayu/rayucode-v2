@@ -19,8 +19,14 @@ import {
   type ExecutionTurn,
   type SessionSummary,
 } from "@/lib/ipc-client"
+import { queryClient as sharedQueryClient } from "@/lib/query-client"
 
-import { resetAllLiveTraces, useLiveTraceStore } from "../index"
+import {
+  dispatchPendingStreamPrompt,
+  resetAllLiveTraces,
+  stopActiveSessionTurn,
+  useLiveTraceStore,
+} from "../index"
 
 beforeAll(() => {
   if (typeof globalThis.ResizeObserver === "undefined") {
@@ -121,6 +127,7 @@ const BASE_SESSIONS: SessionSummary[] = [
 describe("Multi-session background persistence, mid-turn Steer/Queue, and phantom turn guard", () => {
   beforeEach(() => {
     window.localStorage.clear()
+    sharedQueryClient.clear()
     vi.spyOn(ipcClient.daemon, "getStatus").mockResolvedValue({
       connected: true,
       reconnecting: false,
@@ -171,6 +178,7 @@ describe("Multi-session background persistence, mid-turn Steer/Queue, and phanto
 
   afterEach(() => {
     cleanup()
+    sharedQueryClient.clear()
     resetAllLiveTraces()
     vi.restoreAllMocks()
   })
@@ -558,5 +566,429 @@ describe("Multi-session background persistence, mid-turn Steer/Queue, and phanto
     expect(
       screen.getByTestId("sidebar-chat-queued-real_sess_a")
     ).toHaveTextContent("1")
+  })
+
+  it("recovers undelivered steers when turn_done reports pending_soft_interrupts > 0 by cancelling server queue and auto-dispatching next turn", async () => {
+    const bus = createHarnessBus()
+    const sendSpy = vi
+      .spyOn(ipcClient.trace, "sendPrompt")
+      .mockImplementation(async (input) =>
+        makeTurn({
+          id: `live_${input.sessionId}`,
+          sessionId: input.sessionId,
+          userPrompt: input.prompt,
+          isLive: true,
+        })
+      )
+    const softInterruptSpy = vi
+      .spyOn(ipcClient.trace, "softInterrupt")
+      .mockResolvedValue({ ok: true })
+    const cancelSoftSpy = vi
+      .spyOn(ipcClient.trace, "cancelSoftInterrupts")
+      .mockResolvedValue({ ok: true, cancelled: true })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_a",
+        prompt: "First turn",
+        modelLabel: "Claude Sonnet 4.6",
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-midturn-bar")).toBeInTheDocument()
+    })
+
+    const textarea = screen.getByLabelText("Reply to RayuCode") as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: "Missed steer prompt" } })
+    fireEvent.keyDown(textarea, { key: "Enter" })
+    await waitFor(() => {
+      expect(softInterruptSpy).toHaveBeenCalledTimes(1)
+    })
+
+    // Turn finishes BEFORE seeing the steer (Rust TurnDone { pending_soft_interrupts: 1 })
+    act(() => {
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_a",
+        text: "First answer.",
+      })
+      bus.emit({
+        ev: "turn_done",
+        session_id: "real_sess_a",
+        pending_soft_interrupts: 1,
+      })
+    })
+
+    await waitFor(() => {
+      expect(cancelSoftSpy).toHaveBeenCalledWith("real_sess_a")
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "real_sess_a",
+          prompt: "Missed steer prompt",
+        })
+      )
+    })
+  })
+
+  it("ignores background_task/system soft_interrupt_injected events so user steers remain intact, and starts a real user turn on point: 'turn_start'", async () => {
+    const bus = createHarnessBus()
+    vi.spyOn(ipcClient.trace, "sendPrompt").mockImplementation(async (input) =>
+      makeTurn({
+        id: `live_${input.sessionId}`,
+        sessionId: input.sessionId,
+        userPrompt: input.prompt,
+        isLive: true,
+      })
+    )
+    const softInterruptSpy = vi
+      .spyOn(ipcClient.trace, "softInterrupt")
+      .mockResolvedValue({ ok: true })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_a",
+        prompt: "Run build",
+        modelLabel: "Claude Sonnet 4.6",
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-midturn-bar")).toBeInTheDocument()
+    })
+
+    const textarea = screen.getByLabelText("Reply to RayuCode") as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: "Check lint too" } })
+    fireEvent.keyDown(textarea, { key: "Enter" })
+    await waitFor(() => {
+      expect(softInterruptSpy).toHaveBeenCalledTimes(1)
+    })
+    const clientId = softInterruptSpy.mock.calls[0]![0].clientId!
+
+    // Daemon injects a background task completion with empty client_ids -> MUST NOT delete user steer
+    act(() => {
+      bus.emit({
+        ev: "soft_interrupt_injected",
+        session_id: "real_sess_a",
+        client_ids: [],
+        point: "D",
+        display_role: "background_task",
+      })
+    })
+    expect(
+      screen.getByTestId(`midturn-item-${clientId}`)
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Steered:/)).not.toBeInTheDocument()
+
+    // Previous turn finishes right before daemon promotes steer to a new turn at point: "turn_start"
+    act(() => {
+      bus.emit({ ev: "text_delta", session_id: "real_sess_a", text: "Done." })
+      bus.emit({ ev: "turn_done", session_id: "real_sess_a" })
+      bus.emit({
+        ev: "soft_interrupt_injected",
+        session_id: "real_sess_a",
+        client_ids: [clientId],
+        point: "turn_start",
+      })
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_a",
+        text: "Lint is clean.",
+      })
+    })
+
+    await waitFor(() => {
+      const liveTurn =
+        useLiveTraceStore.getState().liveTurnsBySession["real_sess_a"]
+      expect(liveTurn?.userPrompt).toBe("Check lint too")
+      expect(liveTurn?.notes).not.toContain("Steered: Check lint too")
+      expect(screen.getByText("Lint is clean.")).toBeInTheDocument()
+    })
+  })
+
+  it("handles session_status: 'cancelled' by transitioning daemon status to idle and clearing empty placeholder turns", async () => {
+    const bus = createHarnessBus()
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "session_status",
+        session_id: "real_sess_a",
+        status: "running",
+      })
+    })
+    await waitFor(() => {
+      expect(
+        useLiveTraceStore.getState().liveTurnsBySession["real_sess_a"]
+      ).toBeDefined()
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "session_status",
+        session_id: "real_sess_a",
+        status: "cancelled",
+      })
+    })
+    await waitFor(() => {
+      expect(
+        useLiveTraceStore.getState().daemonSessionStatusBySession["real_sess_a"]
+          ?.status
+      ).toBe("idle")
+      expect(
+        useLiveTraceStore.getState().liveTurnsBySession["real_sess_a"]
+      ).toBeUndefined()
+    })
+  })
+
+  it("reconciles background-attached running session with an unanswered trailing history turn and short reply without duplication in both load orders", async () => {
+    const bus = createHarnessBus()
+
+    // Order A: history loaded first, then session_status: running
+    vi.spyOn(ipcClient.trace, "listTurns").mockResolvedValue([
+      makeTurn({
+        id: "hist_unanswered_1",
+        sessionId: "real_sess_a",
+        userPrompt: "Say hi",
+        answerIntro: "",
+      }),
+    ])
+
+    await act(async () => {
+      render(<App />)
+    })
+    await waitFor(() => {
+      expect(screen.getByText("Say hi")).toBeInTheDocument()
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "session_status",
+        session_id: "real_sess_a",
+        status: "running",
+      })
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_a",
+        text: "Ok",
+      })
+      bus.emit({
+        ev: "turn_done",
+        session_id: "real_sess_a",
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Ok")).toBeInTheDocument()
+    })
+    expect(screen.getAllByText("Say hi")).toHaveLength(1)
+    expect(screen.getAllByText("Ok")).toHaveLength(1)
+    cleanup()
+    sharedQueryClient.clear()
+    resetAllLiveTraces()
+
+    // Order B: session_status: running arrives BEFORE getHistory resolves
+    let resolveHistory!: (turns: ExecutionTurn[]) => void
+    vi.spyOn(ipcClient.trace, "listTurns").mockImplementation(
+      () =>
+        new Promise<ExecutionTurn[]>((resolve) => {
+          resolveHistory = resolve
+        })
+    )
+    useAppStore.setState({
+      activeRoute: "workspace",
+      activeSessionId: "real_sess_a",
+      activeSessionTitle: "Session Alpha",
+    })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "session_status",
+        session_id: "real_sess_a",
+        status: "running",
+      })
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_a",
+        text: "Ok",
+      })
+    })
+
+    await act(async () => {
+      resolveHistory([
+        makeTurn({
+          id: "hist_unanswered_2",
+          sessionId: "real_sess_a",
+          userPrompt: "Say hi",
+          answerIntro: "",
+        }),
+      ])
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText("Say hi")).toBeInTheDocument()
+      expect(screen.getByText("Ok")).toBeInTheDocument()
+    })
+    // No premature completed TurnActions below hist_unanswered_2 while live
+    expect(document.querySelectorAll('[data-slot="turn-actions"]')).toHaveLength(0)
+
+    act(() => {
+      bus.emit({ ev: "turn_done", session_id: "real_sess_a" })
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Say hi")).toHaveLength(1)
+      expect(screen.getAllByText("Ok")).toHaveLength(1)
+    })
+  })
+
+  it("preserves partial streamed content when stopping an active turn and resets running status when sendPrompt rejects", async () => {
+    const bus = createHarnessBus()
+    const cancelSpy = vi
+      .spyOn(ipcClient.trace, "cancel")
+      .mockResolvedValue({ ok: true })
+    const sendSpy = vi
+      .spyOn(ipcClient.trace, "sendPrompt")
+      .mockImplementationOnce(async (input) =>
+        makeTurn({
+          id: `live_${input.sessionId}`,
+          sessionId: input.sessionId,
+          userPrompt: input.prompt,
+          isLive: true,
+        })
+      )
+      .mockRejectedValueOnce(new Error("Daemon offline"))
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_a",
+        prompt: "Write a long guide",
+        modelLabel: "Claude Sonnet 4.6",
+      })
+    })
+    await waitFor(() => {
+      expect(
+        useLiveTraceStore.getState().liveTurnsBySession["real_sess_a"]?.isLive
+      ).toBe(true)
+    })
+
+    act(() => {
+      bus.emit({
+        ev: "text_delta",
+        session_id: "real_sess_a",
+        text: "Partial streamed paragraph kept on stop.",
+      })
+    })
+    await waitFor(() => {
+      expect(
+        screen.getByText("Partial streamed paragraph kept on stop.")
+      ).toBeInTheDocument()
+    })
+
+    act(() => {
+      stopActiveSessionTurn("real_sess_a")
+    })
+    expect(cancelSpy).toHaveBeenCalledWith("real_sess_a")
+    expect(
+      screen.getByText("Partial streamed paragraph kept on stop.")
+    ).toBeInTheDocument()
+
+    // Rejection in dispatchPendingStreamPrompt must reset daemonSessionStatusBySession to idle
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    act(() => {
+      dispatchPendingStreamPrompt(
+        {
+          sessionId: "real_sess_b",
+          prompt: "Fail send",
+          modelLabel: "Claude Sonnet 4.6",
+        },
+        qc
+      )
+    })
+    expect(sendSpy).toHaveBeenCalledTimes(2)
+    await waitFor(() => {
+      expect(
+        useLiveTraceStore.getState().daemonSessionStatusBySession["real_sess_b"]
+          ?.status
+      ).toBe("idle")
+      expect(
+        useLiveTraceStore.getState().liveTurnsBySession["real_sess_b"]
+      ).toBeUndefined()
+    })
+  })
+
+  it("executes engine slash commands like /compact during active turns instead of sending them as Steer text", async () => {
+    createHarnessBus()
+    vi.spyOn(ipcClient.trace, "sendPrompt").mockImplementation(async (input) =>
+      makeTurn({
+        id: `live_${input.sessionId}`,
+        sessionId: input.sessionId,
+        userPrompt: input.prompt,
+        isLive: true,
+      })
+    )
+    vi.spyOn(ipcClient.harness, "getCapabilities").mockResolvedValue({
+      commands: [
+        {
+          name: "compact",
+          description: "Compact session history",
+          category: "session",
+          requires_session: true,
+          dispatch: { kind: "api_request", req: "compact" },
+        },
+      ],
+      permission_modes: [],
+      features: [],
+    })
+    const compactSpy = vi
+      .spyOn(ipcClient.harness, "compact")
+      .mockResolvedValue({ ok: false, code: "busy" })
+    const softInterruptSpy = vi
+      .spyOn(ipcClient.trace, "softInterrupt")
+      .mockResolvedValue({ ok: true })
+
+    await act(async () => {
+      render(<App />)
+    })
+
+    act(() => {
+      useAppStore.getState().setPendingStreamPrompt({
+        sessionId: "real_sess_a",
+        prompt: "Long task",
+        modelLabel: "Claude Sonnet 4.6",
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId("composer-midturn-bar")).toBeInTheDocument()
+    })
+
+    const textarea = screen.getByLabelText("Reply to RayuCode") as HTMLTextAreaElement
+    fireEvent.change(textarea, { target: { value: "/compact" } })
+    fireEvent.keyDown(textarea, { key: "Enter" })
+
+    await waitFor(() => {
+      expect(compactSpy).toHaveBeenCalledWith("real_sess_a")
+    })
+    expect(softInterruptSpy).not.toHaveBeenCalled()
+    expect(
+      screen.getByText(/\/compact is queued until the active turn finishes/i)
+    ).toBeInTheDocument()
   })
 })

@@ -10,6 +10,7 @@ import {
   ensureRegisteredWorkspace,
   listLocalExtensions,
   listWorkspaceFiles,
+  MalformedJsonConfigError,
   migrateLegacyEngineSettingsOnce,
   readCustomTemplates,
   readDesktopPreferences,
@@ -330,5 +331,81 @@ describe("storage-bridge persistence & local workspace scanning", () => {
     expect(res).toEqual({ migrated: false, patchedKeys: [] })
     expect(patchConfig).not.toHaveBeenCalled()
     expect(readDesktopPreferences().engineConfigMigratedV1).toBeUndefined()
+  })
+
+  it("preserves existing headers/timeout/env when patching MCP server, rejects stale revisions, and fails closed on malformed .mcp.json", () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-mcp-ws-"))
+    try {
+      const wsMcp = path.join(ws, ".mcp.json")
+      fs.writeFileSync(
+        wsMcp,
+        JSON.stringify(
+          {
+            mcpServers: {
+              linear: {
+                type: "http",
+                url: "https://old.example/mcp",
+                headers: { Authorization: "Bearer secret-tok" },
+                timeout: 12000,
+                customFlag: true,
+              },
+            },
+          },
+          null,
+          2
+        )
+      )
+
+      const initial = listLocalExtensions(ws)
+      const rev = initial.revisions?.[wsMcp]
+      expect(rev).toBeTruthy()
+
+      // Editing only URL must preserve headers, timeout, type, customFlag
+      const updated = upsertLocalMcpServer(ws, {
+        id: "linear",
+        scope: "workspace",
+        url: "https://new.example/mcp",
+        expectedRevision: rev,
+      })
+      expect(updated.mcpServers.find((s) => s.id === "linear")).toMatchObject({
+        url: "https://new.example/mcp",
+        timeout: 12000,
+        headerKeys: ["Authorization"],
+      })
+      const diskAfter = JSON.parse(fs.readFileSync(wsMcp, "utf8")) as {
+        mcpServers: Record<string, Record<string, unknown>>
+      }
+      expect(diskAfter.mcpServers.linear.headers).toEqual({
+        Authorization: "Bearer secret-tok",
+      })
+      expect(diskAfter.mcpServers.linear.timeout).toBe(12000)
+      expect(diskAfter.mcpServers.linear.customFlag).toBe(true)
+
+      // Stale revision must fail closed
+      expect(() =>
+        upsertLocalMcpServer(ws, {
+          id: "linear",
+          scope: "workspace",
+          url: "https://stale.example/mcp",
+          expectedRevision: rev,
+        })
+      ).toThrow(/changed on disk|stale revision/i)
+
+      // Malformed .mcp.json must preserve original bytes and surface error
+      const malformedBytes = "{ broken json: true,,,"
+      fs.writeFileSync(wsMcp, malformedBytes, "utf8")
+      const listed = listLocalExtensions(ws)
+      expect(listed.mcpConfigErrors?.[0]?.filePath).toBe(wsMcp)
+      expect(() =>
+        upsertLocalMcpServer(ws, {
+          id: "newone",
+          scope: "workspace",
+          url: "https://ok.example/mcp",
+        })
+      ).toThrow(MalformedJsonConfigError)
+      expect(fs.readFileSync(wsMcp, "utf8")).toBe(malformedBytes)
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true })
+    }
   })
 })

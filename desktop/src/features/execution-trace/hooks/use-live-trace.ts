@@ -140,6 +140,10 @@ export function applyTraceEvents(
         next.answerIntro = `${next.answerIntro}${event.delta}`
         break
       }
+      case "answer-replace": {
+        next.answerIntro = event.text
+        break
+      }
       case "summary-title": {
         next.answerSummaryTitle = event.title
         break

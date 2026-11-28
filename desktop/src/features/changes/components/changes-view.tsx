@@ -153,6 +153,7 @@ export function ChangesView({ className }: ChangesViewProps) {
     summary,
     selectedFileId,
     selectedFile,
+    isLoadingDiff,
     selectFile,
     diffMode,
     setDiffMode,
@@ -500,6 +501,7 @@ export function ChangesView({ className }: ChangesViewProps) {
                   mode={diffMode}
                   isReviewing={isReviewing}
                   isTogglingStage={isTogglingStage}
+                  isLoadingDiff={isLoadingDiff}
                   onReview={(fileId, decision) =>
                     void reviewFile(fileId, decision)
                   }
