@@ -72,6 +72,8 @@ export const swarmStateSchema = z.object({
   messages: z.array(swarmBoardMessageSchema),
   planScopes: z.array(swarmPlanScopeSchema),
   worktrees: z.array(swarmWorktreeSchema),
+  available: z.boolean().optional(),
+  unavailableReason: z.string().optional(),
 })
 
 export const spawnWorkerInputSchema = z.object({

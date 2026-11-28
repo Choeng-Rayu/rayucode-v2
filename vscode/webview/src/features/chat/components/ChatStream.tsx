@@ -34,6 +34,7 @@ import type {
   SoftInterruptQueueItem,
 } from "../hooks/useChatStream";
 import { ApprovalCard, type ApprovalCardRequest } from "./ApprovalCard";
+import { ChatSessionContext } from "./ChatSessionContext";
 import { CiteLink, parseFileLineTarget } from "./CiteLink";
 import {
   ClarifyingQuestionCard,
@@ -147,6 +148,7 @@ function TurnView({
   };
 
   return (
+    <ChatSessionContext.Provider value={turn.sessionId || undefined}>
     <article
       data-slot="execution-turn"
       data-testid={`execution-turn-${turn.id}`}
@@ -177,6 +179,7 @@ function TurnView({
               onClick={() => {
                 postToHost({
                   type: "rayucode.editor.openFile",
+                  sessionId: turn.sessionId,
                   path: parsedRef.path,
                   ...(parsedRef.line ? { line: parsedRef.line } : {}),
                   ...(parsedRef.column ? { column: parsedRef.column } : {}),
@@ -334,6 +337,7 @@ function TurnView({
                     if (!artifact.filePath) return;
                     postToHost({
                       type: "rayucode.editor.openFile",
+                      sessionId: turn.sessionId,
                       path: artifact.filePath,
                     });
                   }}
@@ -365,6 +369,7 @@ function TurnView({
                     onClick={() =>
                       postToHost({
                         type: "rayucode.editor.openFile",
+                        sessionId: turn.sessionId,
                         path: artifact.filePath!,
                       })
                     }
@@ -461,6 +466,7 @@ function TurnView({
         )}
       </div>
     </article>
+    </ChatSessionContext.Provider>
   );
 }
 

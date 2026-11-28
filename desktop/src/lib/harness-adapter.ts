@@ -107,6 +107,7 @@ export interface HarnessModelRouteLike {
 }
 
 export interface HarnessHistoryMessageLike {
+  id?: string
   role: string
   content: string
   origin?: MessageOrigin
@@ -153,6 +154,7 @@ export type MappedLiveTraceEvent =
     }
   | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
+  | { type: "answer-replace"; text: string }
   | { type: "text-done"; stopReason?: string }
   | {
       type: "model-info"
@@ -829,6 +831,18 @@ export function mapHistoryMessagesToTurns(
   let attemptIndexById = new Map<string, number>()
   let hasExplicitAttemptMeta = false
   let hiddenInternalMessages: HiddenInternalMessage[] = []
+  let currentTurnEndMessageIndex: number | undefined
+  let currentTurnEndMessageId: string | undefined
+
+  const recordTurnMessageBoundary = (
+    msgIdx: number,
+    msg: HarnessHistoryMessageLike
+  ) => {
+    currentTurnEndMessageIndex = msgIdx
+    if (typeof msg.id === "string" && msg.id.trim().length > 0) {
+      currentTurnEndMessageId = msg.id
+    }
+  }
 
   const appendTimelineReasoning = (text: string) => {
     const clean = text.trim()
@@ -946,6 +960,12 @@ export function mapHistoryMessagesToTurns(
       ...(hiddenInternalMessages.length > 0
         ? { hiddenInternalMessages }
         : {}),
+      ...(currentTurnEndMessageIndex !== undefined
+        ? { sourceEndMessageIndex: currentTurnEndMessageIndex }
+        : {}),
+      ...(currentTurnEndMessageId
+        ? { sourceEndMessageId: currentTurnEndMessageId }
+        : {}),
     })
     currentUserPrompt = null
     assistantChunks = []
@@ -957,11 +977,14 @@ export function mapHistoryMessagesToTurns(
     attemptIndexById = new Map()
     hasExplicitAttemptMeta = false
     hiddenInternalMessages = []
+    currentTurnEndMessageIndex = undefined
+    currentTurnEndMessageId = undefined
   }
 
   const visibleMessages = new Set(filterVisibleHistory(messages))
 
-  for (const msg of messages) {
+  for (let msgIdx = 0; msgIdx < messages.length; msgIdx += 1) {
+    const msg = messages[msgIdx]
     if (!visibleMessages.has(msg)) {
       if (msg.role === "user") {
         hiddenInternalMessages.push({
@@ -969,6 +992,9 @@ export function mapHistoryMessagesToTurns(
           visibility: msg.visibility ?? "hidden",
           content: msg.content,
         })
+      }
+      if (currentUserPrompt !== null) {
+        recordTurnMessageBoundary(msgIdx, msg)
       }
       continue
     }
@@ -979,6 +1005,9 @@ export function mapHistoryMessagesToTurns(
           visibility: "hidden",
           content: msg.content,
         })
+        if (currentUserPrompt !== null) {
+          recordTurnMessageBoundary(msgIdx, msg)
+        }
         continue
       }
       const synthetic = classifySyntheticUserMessage(msg.content)
@@ -995,8 +1024,13 @@ export function mapHistoryMessagesToTurns(
         }
         if (currentUserPrompt !== null) {
           appendTimelineToolStep(step, synthetic.groupTitle)
+          recordTurnMessageBoundary(msgIdx, msg)
         } else if (turns.length > 0) {
           const prevTurn = turns[turns.length - 1]
+          prevTurn.sourceEndMessageIndex = msgIdx
+          if (typeof msg.id === "string" && msg.id.trim().length > 0) {
+            prevTurn.sourceEndMessageId = msg.id
+          }
           if (prevTurn.groups.length > 0) {
             prevTurn.groups[0].steps.push(step)
           } else {
@@ -1031,13 +1065,18 @@ export function mapHistoryMessagesToTurns(
           }
         } else {
           currentUserPrompt = synthetic.groupTitle
+          recordTurnMessageBoundary(msgIdx, msg)
           appendTimelineToolStep(step, synthetic.groupTitle)
         }
         continue
       }
       flushTurn()
       currentUserPrompt = msg.content
+      recordTurnMessageBoundary(msgIdx, msg)
     } else if (msg.role === "tool") {
+      if (currentUserPrompt !== null) {
+        recordTurnMessageBoundary(msgIdx, msg)
+      }
       if (assistantChunks.length > 0 && !hasExplicitAttemptMeta) {
         for (const chunk of assistantChunks) {
           const clean = chunk.trim()
@@ -1060,6 +1099,9 @@ export function mapHistoryMessagesToTurns(
       }
       appendTimelineToolStep(step)
     } else if (msg.role === "assistant") {
+      if (currentUserPrompt !== null) {
+        recordTurnMessageBoundary(msgIdx, msg)
+      }
       const { reasoningNotes, answerText } = splitReasoningFromAssistantContent(
         msg.content
       )
@@ -1553,6 +1595,7 @@ export function mapHarnessFrameToLiveEvents(
   if (
     !tracker.turnActive &&
     (ev === "text_delta" ||
+      ev === "text_replace" ||
       ev === "reasoning_delta" ||
       ev === "thinking_delta" ||
       ev === "tool_start" ||
@@ -1572,6 +1615,12 @@ export function mapHarnessFrameToLiveEvents(
         return [{ type: "answer-delta", delta: text }]
       }
       return []
+    }
+    case "text_replace": {
+      tracker.turnCompleted = false
+      const text = typeof frame.text === "string" ? frame.text : ""
+      tracker.hasStreamedTextInPhase = Boolean(text.trim())
+      return [{ type: "answer-replace", text }]
     }
     case "text_done": {
       const stopReason =
@@ -2084,14 +2133,30 @@ export function mapHarnessFrameToLiveEvents(
       const events: MappedLiveTraceEvent[] = [{ type: "tool-status", label: null }]
       if (
         ev === "turn_stopped" &&
-        frame.reason === "failure" &&
         typeof frame.message === "string" &&
         frame.message.trim()
       ) {
-        events.push({
-          type: "answer-delta",
-          delta: `\n\n**Error:** ${frame.message.trim()}`,
-        })
+        const stopMsg = frame.message.trim()
+        const stopReason =
+          typeof frame.reason === "string"
+            ? frame.reason.trim().toLowerCase()
+            : ""
+        if (stopReason === "failure" || stopReason === "crash") {
+          events.push({
+            type: "answer-delta",
+            delta: `\n\n**Error:** ${stopMsg}`,
+          })
+        } else if (
+          stopReason !== "interrupted" &&
+          stopReason !== "user_cancel" &&
+          stopReason !== "cancelled" &&
+          stopReason !== "completed"
+        ) {
+          events.push({
+            type: "answer-delta",
+            delta: `\n\n${stopMsg}`,
+          })
+        }
       }
       events.push({
         type: "complete",
@@ -2103,6 +2168,7 @@ export function mapHarnessFrameToLiveEvents(
       tracker.batchEpoch = 1
       tracker.turnActive = false
       tracker.hasStreamedTextInPhase = false
+      tracker.toolInputs.clear()
       resetTrackerPhase(tracker)
       return events
     }

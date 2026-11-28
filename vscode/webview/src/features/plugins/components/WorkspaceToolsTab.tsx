@@ -16,7 +16,7 @@ import {
 } from "../hooks/usePlugins";
 
 export function WorkspaceToolsTab() {
-  const { data: integrations } = useWorkspaceIntegrations();
+  const { data: integrations, isError } = useWorkspaceIntegrations();
   const triggerMutation = useTriggerWorkspaceIntegration();
 
   const [lastActionBanner, setLastActionBanner] = React.useState<{
@@ -45,6 +45,13 @@ export function WorkspaceToolsTab() {
       });
     }
   };
+
+  if (integrations?.available === false) {
+    return <p className="p-4 text-sm text-muted-ink">Workspace integration status is unavailable in this runtime.</p>;
+  }
+  if (!integrations) {
+    return <p className="p-4 text-sm text-muted-ink">{isError ? "Could not load workspace integrations." : "Loading workspace integrations…"}</p>;
+  }
 
   const gmail = integrations?.gmail;
   const calendar = integrations?.calendar;

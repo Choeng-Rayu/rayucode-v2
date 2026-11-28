@@ -1,4 +1,5 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { reconcileChatTurns } from "@rayu-dev/rayucode-session-core/client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -8,7 +9,7 @@ import {
   makeTurnDurationKey,
   mapHistoryMessagesToTurns,
   onHostMessage,
-  sendHarnessRequest,
+  requestHarnessAck,
   useAppStore,
   type ExecutionTurn,
   type HarnessHistoryMessageLike,
@@ -384,12 +385,14 @@ export function useChatStream(
   const setFileChangesSnapshot = React.useCallback(
     (snapshot: FileChangesSnapshotView) => {
       const targetSid = snapshot.sessionId || sessionId;
-      setLocalFileChanges(snapshot);
+      if (options.initialFileChanges !== undefined) {
+        setLocalFileChanges(snapshot);
+      }
       if (targetSid) {
         setStoreFileChangesSnapshot(targetSid, snapshot);
       }
     },
-    [sessionId, setStoreFileChangesSnapshot],
+    [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot],
   );
 
   React.useEffect(() => {
@@ -407,7 +410,9 @@ export function useChatStream(
         msg.type === "rayucode.fileChanges.updated" &&
         msg.sessionId === sessionId
       ) {
-        setLocalFileChanges(msg.snapshot);
+        if (options.initialFileChanges !== undefined) {
+          setLocalFileChanges(msg.snapshot);
+        }
         setStoreFileChangesSnapshot(msg.sessionId, msg.snapshot);
       } else if (
         msg.type === "rayucode.permission.resolved" &&
@@ -416,7 +421,7 @@ export function useChatStream(
         clearStorePermission(msg.sessionId, msg.requestId);
       }
     });
-  }, [clearStorePermission, sessionId, setStoreFileChangesSnapshot]);
+  }, [clearStorePermission, options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
 
   React.useEffect(() => {
     if (options.initialFileChanges !== undefined) return;
@@ -425,7 +430,6 @@ export function useChatStream(
     void callRpc("changes.getSessionSummary", { sessionId })
       .then((snapshot) => {
         if (cancelled) return;
-        setLocalFileChanges(snapshot);
         setStoreFileChangesSnapshot(sessionId, snapshot);
       })
       .catch(() => {
@@ -436,7 +440,10 @@ export function useChatStream(
     };
   }, [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
 
-  const fileChangesSnapshot = localFileChanges ?? storeFileChanges;
+  const fileChangesSnapshot =
+    options.initialFileChanges !== undefined
+      ? (localFileChanges ?? options.initialFileChanges)
+      : storeFileChanges;
 
   const todos = useAppStore((s) =>
     sessionId ? (s.todosBySession[sessionId] ?? EMPTY_TODOS) : EMPTY_TODOS,
@@ -613,8 +620,8 @@ export function useChatStream(
             },
           };
         });
-        clearSessionLiveTurn(sessionId);
         settleSessionTurnQueue(sessionId, wasAbnormalStop);
+        clearSessionLiveTurn(sessionId);
         return;
       }
       useLiveTraceStore.setState((state) => ({
@@ -636,31 +643,39 @@ export function useChatStream(
       },
     ) => {
       const trimmed = prompt.trim();
-      if (!trimmed || !sessionId) return;
+      const targetSessionId = sessionId;
+      if (!trimmed || !targetSessionId) return;
 
       if (isStreaming) {
         const clientId = `si_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
         useAppStore.getState().addMidTurnMessage({
           id: clientId,
-          sessionId,
+          sessionId: targetSessionId,
           mode: "steer",
           text: trimmed,
           createdAtMs: Date.now(),
         });
         void callRpc("sessions.softInterrupt", {
-          sessionId,
+          sessionId: targetSessionId,
           text: trimmed,
           urgent: false,
           clientId,
         }).catch(() => {
-          useAppStore.getState().removeMidTurnMessage(sessionId, clientId);
+          useAppStore
+            .getState()
+            .removeMidTurnMessage(targetSessionId, clientId);
         });
         return;
       }
 
-      const prefs = useAppStore.getState().sessionPrefsBySession[sessionId];
+      const state = useAppStore.getState();
+      const ackPrefs = state.sessionPrefsBySession[targetSessionId];
+      const pendingPrefs = state.pendingSessionPrefsBySession[targetSessionId];
+      const prefs = { ...ackPrefs, ...pendingPrefs };
+      const permissionMode =
+        prefs.permissionMode ?? state.defaultPermissionMode;
       startSessionLiveTurn({
-        sessionId,
+        sessionId: targetSessionId,
         userPrompt: trimmed,
         userRefFiles: opts?.refFiles,
         userImages: opts?.images,
@@ -669,15 +684,43 @@ export function useChatStream(
           turnsRef.current.length,
         ),
       });
+      if (useAppStore.getState().activeSessionId === targetSessionId) {
+        state.setIsStreamActive(true);
+      }
 
-      sendHarnessRequest({
+      void requestHarnessAck({
         req: "send_message",
-        session_id: sessionId,
+        session_id: targetSessionId,
         content: trimmed,
-        ...(prefs?.modelId ? { model: prefs.modelId } : {}),
-        ...(prefs?.apiMethod ? { api_method: prefs.apiMethod } : {}),
-        ...(prefs?.effort ? { effort: prefs.effort } : {}),
-      });
+        ...(prefs.modelId ? { model: prefs.modelId } : {}),
+        ...(prefs.apiMethod ? { api_method: prefs.apiMethod } : {}),
+        ...(prefs.effort ? { effort: prefs.effort } : {}),
+        ...(permissionMode ? { permission_mode: permissionMode } : {}),
+        ...(prefs.serviceTier ? { service_tier: prefs.serviceTier } : {}),
+      })
+        .then(() => {
+          const current = useAppStore.getState();
+          current.setSessionPrefs(targetSessionId, {
+            ...(prefs.modelId ? { modelId: prefs.modelId } : {}),
+            ...(prefs.modelLabel ? { modelLabel: prefs.modelLabel } : {}),
+            ...(prefs.apiMethod ? { apiMethod: prefs.apiMethod } : {}),
+            ...(prefs.effort ? { effort: prefs.effort } : {}),
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(prefs.serviceTier ? { serviceTier: prefs.serviceTier } : {}),
+          });
+          current.clearPendingSessionPrefs(targetSessionId);
+        })
+        .catch((error) => {
+          clearSessionLiveTurn(targetSessionId);
+          if (useAppStore.getState().activeSessionId === targetSessionId) {
+            useAppStore.getState().setIsStreamActive(false);
+          }
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Rayu could not submit the prompt.",
+          );
+        });
     },
     [isStreaming, sessionId, visibleHistoryTurns.length],
   );
@@ -689,7 +732,7 @@ export function useChatStream(
     ) => {
       const target = req ?? storePermission;
       if (!target) return;
-      const targetSid = target.sessionId || sessionId;
+      const targetSid = req?.sessionId ?? target.sessionId ?? sessionId;
       setIsPermissionSubmitting(true);
       clearStorePermission(targetSid, target.requestId);
       try {
@@ -716,16 +759,20 @@ export function useChatStream(
     ) => {
       if (!pendingQuestion) return;
       const q = pendingQuestion;
+      const targetSid = q.sessionId || sessionId;
       try {
         await callRpc("sessions.respondQuestion", {
-          sessionId: q.sessionId || sessionId,
+          sessionId: targetSid,
           requestId: q.requestId,
           answers,
           ...(notes ? { notes } : {}),
           ...(meta?.selected ? { selected: meta.selected } : {}),
           ...(meta?.declined ? { declined: meta.declined } : {}),
         });
-        setSessionPendingQuestion(sessionId, null);
+        setSessionPendingQuestion(targetSid, null);
+        if (targetSid !== sessionId) {
+          setSessionPendingQuestion(sessionId, null);
+        }
       } catch {
         // Keep question visible so user can retry on transient transport errors
       }
@@ -738,10 +785,14 @@ export function useChatStream(
       ? (useLiveTraceStore.getState().pendingQuestionsBySession[sessionId] ??
         null)
       : null;
-    setSessionPendingQuestion(sessionId, null);
+    const targetSid = current?.sessionId || sessionId;
+    setSessionPendingQuestion(targetSid, null);
+    if (targetSid !== sessionId) {
+      setSessionPendingQuestion(sessionId, null);
+    }
     if (current) {
       void callRpc("sessions.respondQuestion", {
-        sessionId: current.sessionId || sessionId,
+        sessionId: targetSid,
         requestId: current.requestId,
         answers: {},
         declined: true,

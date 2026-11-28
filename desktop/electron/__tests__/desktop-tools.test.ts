@@ -361,4 +361,45 @@ describe("desktop-tools unified SdkTool registry", () => {
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/No active embedded browser tab/i)
   })
+
+  it("extracts '=' formulas from cell objects, respects AbortSignal, and uses per-session workspace dir", async () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-dt-a-"))
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-dt-b-"))
+    tempDirs.push(dirA, dirB)
+
+    const tools = buildDesktopSdkTools({
+      getWorkspaceDir: () => dirA,
+      getWorkspaceDirForSession: (sid) => (sid === "sess_b" ? dirB : dirA),
+    })
+    const writeExcel = tools.find((t) => t.name === "write_excel")!
+
+    // Aborted signal short-circuits
+    const ac = new AbortController()
+    ac.abort()
+    const abortedRes = await writeExcel.execute(
+      { file_path: "aborted.xlsx", sheets: [] },
+      { sessionId: "sess_b", callId: "c_abort", signal: ac.signal }
+    )
+    expect(typeof abortedRes === "object" && abortedRes.error).toMatch(/aborted/i)
+
+    // Formula inside rowObj.cells + routed to session B workspace
+    const okRes = await writeExcel.execute(
+      {
+        file_path: "calc.xlsx",
+        sheets: [
+          {
+            name: "Calc",
+            headers: { A: "X", B: "Sum" },
+            rows: [
+              { rowNumber: 2, cells: { A: 5, B: "=SUM(A2)" } },
+            ],
+          },
+        ],
+      },
+      { sessionId: "sess_b", callId: "c_ok", signal: new AbortController().signal }
+    )
+    expect(typeof okRes === "object" && !okRes.error).toBe(true)
+    expect(fs.existsSync(path.join(dirB, "calc.xlsx"))).toBe(true)
+    expect(fs.existsSync(path.join(dirA, "calc.xlsx"))).toBe(false)
+  })
 })

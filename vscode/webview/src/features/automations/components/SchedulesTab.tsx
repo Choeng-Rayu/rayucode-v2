@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import { Clock, Play, Plus, Trash2 } from "lucide-react";
 import type { PermissionModeId, ScheduleItemView } from "@shared/vscodeProtocol";
@@ -115,6 +116,8 @@ function ScheduleRow({
           variant="ghost"
           size="sm"
           data-testid={`run-schedule-now-${schedule.id}`}
+          disabled={!operationAvailable("automations.schedules.runNow")}
+          title="Run now requires runtime support"
           onClick={onRunNow}
         >
           <Play className="size-3" aria-hidden="true" />
@@ -123,7 +126,7 @@ function ScheduleRow({
 
         <Switch
           checked={schedule.enabled}
-          disabled={isToggling}
+          disabled={isToggling || !operationAvailable("automations.schedules.toggle")}
           onCheckedChange={onToggle}
           aria-label={`Enable ${schedule.title}`}
           data-testid={`schedule-switch-${schedule.id}`}
@@ -168,16 +171,22 @@ export function SchedulesTab() {
       return;
     }
     setFormError(null);
-    await createMutation.mutateAsync({
-      title: title.trim() || prompt.trim().slice(0, 48),
-      prompt: prompt.trim(),
-      schedule: scheduleExpr.trim(),
-      permissionMode,
-      repo: primaryRepo,
-    });
-    setTitle("");
-    setPrompt("");
-    setFormOpen(false);
+    try {
+      await createMutation.mutateAsync({
+        title: title.trim() || prompt.trim().slice(0, 48),
+        prompt: prompt.trim(),
+        schedule: scheduleExpr.trim(),
+        permissionMode,
+        repo: primaryRepo,
+      });
+      setTitle("");
+      setPrompt("");
+      setFormOpen(false);
+    } catch (err) {
+      setFormError(
+        err instanceof Error ? err.message : "Failed to create schedule.",
+      );
+    }
   };
 
   return (

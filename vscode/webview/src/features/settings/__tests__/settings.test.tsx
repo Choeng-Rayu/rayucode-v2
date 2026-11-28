@@ -1,14 +1,19 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AgentsPersonasView } from "@/features/agents";
+import { VoiceMicButton } from "@/features/composer";
 import {
+  AccountProvidersSection,
   ALL_57_DEFAULT_PROVIDERS,
   ALL_7_DEFAULT_HOOKS,
   ModelsAgentsSection,
   NATIVE_10_PROVIDERS,
   OPENAI_COMPAT_45_PROVIDERS,
+  RuntimeDoctorSection,
   SETTINGS_SECTIONS,
   SettingsView,
 } from "@/features/settings";
@@ -17,15 +22,18 @@ import {
   __dispatchHostMessageForTest,
   __setMockAccountStateForTest,
   createQueryClient,
+  handleMockHostMessage,
   onHostMessage,
   useAppStore,
 } from "@/lib";
 
-function renderWithQuery(ui: React.ReactElement) {
-  const client = createQueryClient();
-  return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
-  );
+function renderWithQuery(ui: React.ReactElement, client = createQueryClient()) {
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+    ),
+  };
 }
 
 describe("Settings Feature (Wave 3F — Spec 09)", () => {
@@ -65,6 +73,7 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
       surface: "editorPanel",
       route: "settings",
       activeRoute: "settings",
+      activeSettingsSection: "account",
       activeSessionId: null,
       theme: "auto",
       accent: "green",
@@ -466,7 +475,7 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
     }
   });
 
-  it("wires SettingsView default model selection to set_model harness request and invalidates composer model-settings", async () => {
+  it("wires SettingsView default model selection to canonical config and invalidates composer model-settings", async () => {
     const prevScrollIntoView = Element.prototype.scrollIntoView;
     const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
     Element.prototype.scrollIntoView = vi.fn();
@@ -475,6 +484,7 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
     const client = createQueryClient();
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const harnessSpy = vi.spyOn(rpcClient, "sendHarnessRequest");
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
 
     try {
       render(
@@ -505,18 +515,17 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
       );
 
       await waitFor(() => {
-        expect(harnessSpy).toHaveBeenCalledWith(
-          expect.objectContaining({
-            req: "set_model",
-            model: "rayu:claude-opus-4-5",
-          }),
-        );
+        expect(rpcSpy).toHaveBeenCalledWith("config.patch", {
+          patch: { "provider.default_model": "rayu:claude-opus-4-5" },
+        });
+        expect(harnessSpy).not.toHaveBeenCalled();
         expect(invalidateSpy).toHaveBeenCalledWith(
           expect.objectContaining({ queryKey: ["composer", "model-settings"] }),
         );
       });
     } finally {
       harnessSpy.mockRestore();
+      rpcSpy.mockRestore();
       invalidateSpy.mockRestore();
       Element.prototype.scrollIntoView = prevScrollIntoView;
       HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
@@ -591,5 +600,445 @@ describe("Settings Feature (Wave 3F — Spec 09)", () => {
     });
 
     rpcSpy.mockRestore();
+  });
+
+  it("surfaces visible errors on { ok: false } and rejected Settings and Voice mutations without publishing success, mutating cache, or clearing provider key input", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "settings.providers.setApiKey") {
+        return {
+          ok: false,
+          message: "Daemon rejected provider API key",
+        };
+      }
+      if (method === "settings.account.setBypassPacing") {
+        return {
+          ok: false,
+          enabled: false,
+          message: "Pacing bypass denied by org policy",
+        };
+      }
+      if (method === "settings.features.set") {
+        return {
+          ok: false,
+          features: {},
+          message: "Feature flag update rejected by runtime",
+        };
+      }
+      if (method === "settings.voice.update") {
+        throw new Error("Voice capture pipeline unavailable on host");
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      const { client, unmount } = renderWithQuery(
+        <SettingsView initialSection="account" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-account")).toBeTruthy();
+      });
+
+      // 1. Provider setApiKey returning { ok: false } retains input and leaves status unchanged (not Ready)
+      const statusBefore =
+        screen.getByTestId("provider-status-anthropic").textContent;
+      fireEvent.click(screen.getByTestId("provider-connect-btn-anthropic"));
+      const keyInput = (await screen.findByTestId(
+        "provider-key-input-anthropic",
+      )) as HTMLInputElement;
+      fireEvent.change(keyInput, {
+        target: { value: "sk-ant-api03-retained-on-error" },
+      });
+      fireEvent.click(screen.getByTestId("provider-key-save-anthropic"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Daemon rejected provider API key",
+        );
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+      expect(
+        (screen.getByTestId("provider-key-input-anthropic") as HTMLInputElement)
+          .value,
+      ).toBe("sk-ant-api03-retained-on-error");
+      expect(
+        screen.getByTestId("provider-status-anthropic").textContent,
+      ).toBe(statusBefore);
+      expect(
+        screen.getByTestId("provider-status-anthropic").textContent,
+      ).not.toBe("Ready");
+
+      // 2. Account setBypassPacing returning { ok: false } shows toast.error and does not mutate account cache
+      toastErrorSpy.mockClear();
+      fireEvent.click(screen.getByTestId("use-all-credits-switch"));
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Pacing bypass denied by org policy",
+        );
+      });
+      const cachedAccount = client.getQueryData<{ bypassPacing?: boolean }>([
+        "settings",
+        "account",
+      ]);
+      expect(Boolean(cachedAccount?.bypassPacing)).toBe(false);
+
+      // 3. Features setFeatureFlag returning { ok: false } shows toast.error and does not mutate features cache
+      toastErrorSpy.mockClear();
+      fireEvent.click(screen.getByTestId("settings-nav-features"));
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-features")).toBeTruthy();
+      });
+      const beforeFeatures = client.getQueryData<{
+        features?: { codemode?: boolean };
+      }>(["settings", "features"]);
+      const codemodeBefore = Boolean(beforeFeatures?.features?.codemode);
+      fireEvent.click(screen.getByTestId("feature-switch-codemode"));
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Feature flag update rejected by runtime",
+        );
+      });
+      const afterFeatures = client.getQueryData<{
+        features?: { codemode?: boolean };
+      }>(["settings", "features"]);
+      expect(Boolean(afterFeatures?.features?.codemode)).toBe(codemodeBefore);
+      unmount();
+
+      // 4. VoiceMicButton rolls back recording state, shows visible error when settings.voice.update fails, and gates unsupported voice capture
+      toastErrorSpy.mockClear();
+      const { unmount: unmountMic } = renderWithQuery(
+        <VoiceMicButton supported={true} enabled={false} />,
+      );
+      const micBtn = screen.getByTestId("voice-mic-btn");
+      expect(micBtn.getAttribute("data-recording")).toBe("false");
+
+      fireEvent.click(micBtn);
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Voice capture pipeline unavailable on host",
+        );
+        expect(micBtn.getAttribute("data-recording")).toBe("false");
+      });
+      unmountMic();
+
+      renderWithQuery(<VoiceMicButton supported={false} enabled={false} />);
+      expect(
+        screen.getByTestId("voice-mic-btn").getAttribute("data-supported"),
+      ).toBe("false");
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+    }
+  });
+
+  it("renders negotiated protocol v1 (or v1.<minor> when supplied) and capabilities in RuntimeDoctorSection without v1.14 fallback, gates unsupported controls, and shows truthful unavailable states", () => {
+    const baseRuntimeProps = {
+      runtime: {
+        socketPath: "/tmp/rayu.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+        transport: "auto" as const,
+      },
+      telemetry: {
+        lockedByEnv: false,
+        content: false,
+        usage: true,
+        crashes: true,
+        features: true,
+        cost: true,
+        accounts: false,
+      },
+      doctorResults: [],
+      selfDevOutput: null,
+      onPingDaemon: vi.fn(async () => {}),
+      isPingingDaemon: false,
+      onReloadDaemonAndBridge: vi.fn(async () => {}),
+      isReloadingDaemon: false,
+      onReconnectDaemon: vi.fn(async () => {}),
+      onOpenOutputLog: vi.fn(async () => {}),
+      onUpdateRuntime: vi.fn(async () => {}),
+      onRunDoctor: vi.fn(async () => {}),
+      isRunningDoctor: false,
+      onRunSelfDev: vi.fn(async () => {}),
+      isRunningSelfDev: false,
+      onSetTelemetry: vi.fn(async () => {}),
+      onSubmitFeedback: vi.fn(async () => {}),
+    };
+
+    // 1. Connected without server-supplied minor -> renders negotiated "v1" + advertised capabilities (never "v1.14")
+    const { unmount: unmountV1 } = renderWithQuery(
+      <RuntimeDoctorSection
+        {...baseRuntimeProps}
+        daemonStatus={{
+          state: "connected",
+          capabilities: ["permissions", "runtime_commands", "session_tools"],
+        }}
+      />,
+    );
+    const cardV1Text =
+      screen.getByTestId("runtime-daemon-card").textContent ?? "";
+    expect(cardV1Text).toContain("v1");
+    expect(cardV1Text).not.toContain("v1.14");
+    expect(screen.getByText("permissions")).toBeTruthy();
+    expect(screen.getByText("runtime_commands")).toBeTruthy();
+    expect(screen.getByText("session_tools")).toBeTruthy();
+    expect(
+      (screen.getByTestId("selfdev-build-btn") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("selfdev-reload-btn") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    unmountV1();
+
+    // 2. Connected with server-supplied minor ("1.16") -> renders "v1.16"
+    const { unmount: unmountMinor } = renderWithQuery(
+      <RuntimeDoctorSection
+        {...baseRuntimeProps}
+        daemonStatus={{
+          state: "connected",
+          protocolVersion: "1.16",
+          capabilities: ["config_sync"],
+        }}
+      />,
+    );
+    expect(
+      screen.getByTestId("runtime-daemon-card").textContent,
+    ).toContain("v1.16");
+    expect(screen.getByText("config_sync")).toBeTruthy();
+    unmountMinor();
+
+    // 3. Offline daemon -> renders truthful "Offline" protocol state (never "v1.14")
+    const { unmount: unmountOffline } = renderWithQuery(
+      <RuntimeDoctorSection
+        {...baseRuntimeProps}
+        daemonStatus={{
+          state: "disconnected",
+          capabilities: [],
+        }}
+      />,
+    );
+    const offlineText =
+      screen.getByTestId("runtime-daemon-card").textContent ?? "";
+    expect(offlineText).toContain("Offline");
+    expect(offlineText).not.toContain("v1.14");
+    unmountOffline();
+
+    // 4. Unavailable analytics read displays "Usage unavailable" instead of live-empty "0 cr total"
+    const signedIn = useAppStore.getState().accountStatus!;
+    const { unmount: unmountAcct } = renderWithQuery(
+      <AccountProvidersSection
+        account={signedIn}
+        analytics={{
+          available: false,
+          range: "7d",
+          groupBy: "feature",
+          totalCredits: 0,
+          breakdown: [],
+          topSessions: [],
+        }}
+        analyticsRange="7d"
+        onAnalyticsRangeChange={vi.fn()}
+        analyticsGroupBy="feature"
+        onAnalyticsGroupByChange={vi.fn()}
+        providers={NATIVE_10_PROVIDERS}
+        onRefreshAccount={vi.fn(async () => {})}
+        isRefreshingAccount={false}
+        onSignInBrowser={vi.fn(async () => {})}
+        onCancelSignIn={vi.fn(async () => {})}
+        onSignInApiKey={vi.fn(async () => {})}
+        onCompleteCallback={vi.fn(async () => {})}
+        onSignOut={vi.fn(async () => {})}
+        onSetBypassPacing={vi.fn(async () => {})}
+        onSetProviderApiKey={vi.fn(async () => {})}
+        onClearProviderApiKey={vi.fn(async () => {})}
+        onLogoutProvider={vi.fn(async () => {})}
+        onRefreshModels={vi.fn(async () => {})}
+        isRefreshingModels={false}
+      />,
+    );
+    const analyticsTab = screen.getByTestId("account-tab-analytics");
+    fireEvent.mouseDown(analyticsTab);
+    fireEvent.click(analyticsTab);
+    expect(
+      screen.getByTestId("analytics-breakdown-card").textContent,
+    ).toContain("Usage unavailable");
+    expect(
+      screen.getByTestId("analytics-breakdown-card").textContent,
+    ).not.toContain("0 cr total");
+    unmountAcct();
+  });
+
+  it("retains last-good models and displays stale notices in Settings and Agents on stale catalog or failed explicit refresh", async () => {
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
+    Element.prototype.scrollIntoView = vi.fn();
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "config.get") {
+        const cfg = (await origCallRpc(method as never, params as never)) as {
+          supported: boolean;
+          config: {
+            path: string;
+            sections: string[];
+            values: Record<string, unknown>;
+            schema: unknown[];
+          } | null;
+        };
+        return {
+          ...cfg,
+          config: cfg.config
+            ? {
+                ...cfg.config,
+                values: {
+                  ...cfg.config.values,
+                  "provider.default_model": "rayu:last-known-zenith",
+                },
+              }
+            : null,
+        };
+      }
+      if (method === "settings.models.get") {
+        return {
+          defaultModel: "rayu:last-known-zenith",
+          defaultEffort: "medium",
+          serviceTier: "auto",
+          cacheTtl: "5m",
+          transport: "auto",
+          roleOverrides: [
+            {
+              role: "swarm",
+              label: "Swarm Workers",
+              model: "inherit",
+              scope: "global",
+            },
+          ],
+          stale: true,
+          message: "Showing last known models — refresh failed",
+          routes: [
+            {
+              id: "last-known-zenith",
+              model: "last-known-zenith",
+              modelSpec: "rayu:last-known-zenith",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Last Known Zenith",
+              available: true,
+            },
+          ],
+        };
+      }
+      if (method === "settings.models.refresh") {
+        return {
+          ok: false,
+          message: "Gateway catalog refresh failed (503)",
+          sources: { engine: "failed", hosted: "stale" },
+          routes: [
+            {
+              id: "last-known-zenith",
+              model: "last-known-zenith",
+              modelSpec: "rayu:last-known-zenith",
+              provider: "rayu",
+              apiMethod: "rayu",
+              label: "Last Known Zenith",
+              available: true,
+            },
+          ],
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      const { unmount } = renderWithQuery(
+        <SettingsView initialSection="models" />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-models")).toBeTruthy();
+      });
+
+      expect(screen.getByTestId("models-stale-notice").textContent).toContain(
+        "Showing last known models — refresh failed",
+      );
+      expect(screen.getByTestId("default-model-select").textContent).toContain(
+        "Last Known Zenith (Rayu Cloud)",
+      );
+
+      toastErrorSpy.mockClear();
+      toastSuccessSpy.mockClear();
+      fireEvent.click(screen.getByTestId("models-refresh-btn"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Gateway catalog refresh failed (503)",
+        );
+        expect(screen.getByTestId("models-stale-notice").textContent).toContain(
+          "Gateway catalog refresh failed (503)",
+        );
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId("default-model-select").textContent).toContain(
+        "Last Known Zenith (Rayu Cloud)",
+      );
+
+      unmount();
+
+      // Agents & Personas view also displays stale notice, preserves last-good models, and surfaces refresh error
+      renderWithQuery(<AgentsPersonasView />);
+      await waitFor(() => {
+        expect(screen.getByTestId("agents-view")).toBeTruthy();
+      });
+
+      expect(
+        screen.getByTestId("agents-catalog-stale-notice").textContent,
+      ).toContain("Showing last known models — refresh failed");
+
+      toastErrorSpy.mockClear();
+      toastSuccessSpy.mockClear();
+      fireEvent.click(screen.getByTestId("agents-refresh-btn"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Gateway catalog refresh failed (503)",
+        );
+        expect(
+          screen.getByTestId("agents-catalog-stale-notice").textContent,
+        ).toContain("Gateway catalog refresh failed (503)");
+      });
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(screen.getByTestId("agents-subagent-model-select"), {
+        key: "ArrowDown",
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", { name: "Last Known Zenith (Rayu Cloud)" }),
+        ).toBeTruthy();
+      });
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+      HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
+    }
   });
 });

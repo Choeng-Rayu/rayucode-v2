@@ -116,7 +116,15 @@ pub enum ApiRequest {
     AttachSession { session_id: String },
 
     /// Clone an attached session's transcript into a new, idle session.
-    ForkSession { session_id: String },
+    /// When `up_to_message_index` (0-based inclusive end index) or
+    /// `up_to_message_id` is set, only messages through that boundary are kept.
+    ForkSession {
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to_message_index: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to_message_id: Option<String>,
+    },
 
     /// Create a fresh session containing a runtime-compacted handoff.
     /// The parent remains unchanged. Replies with `SessionForked`.
@@ -238,6 +246,14 @@ pub enum ApiRequest {
     /// `runtime_commands`. Invalid or unavailable actions return an error.
     RuntimeCommand {
         session_id: String,
+        command: crate::RuntimeCommand,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+    },
+
+    /// Execute a session-less runtime command against the daemon without
+    /// attaching or implicitly creating any session. Requires `global_runtime_commands`.
+    GlobalRuntimeCommand {
         command: crate::RuntimeCommand,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,

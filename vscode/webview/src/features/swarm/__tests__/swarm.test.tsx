@@ -1,6 +1,7 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -9,13 +10,20 @@ import {
   SwarmView,
 } from "@/features/swarm";
 import * as rpcClient from "@/lib/rpc-client";
-import { createQueryClient, useAppStore } from "@/lib";
+import {
+  __dispatchHostMessageForTest,
+  createQueryClient,
+  handleMockHostMessage,
+  useAppStore,
+} from "@/lib";
 
-function renderWithQuery(ui: React.ReactElement) {
-  const client = createQueryClient();
-  return render(
-    <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
-  );
+function renderWithQuery(ui: React.ReactElement, client = createQueryClient()) {
+  return {
+    client,
+    ...render(
+      <QueryClientProvider client={client}>{ui}</QueryClientProvider>,
+    ),
+  };
 }
 
 describe("Swarm Mission Control (Wave 3D, Spec 04)", () => {
@@ -230,5 +238,133 @@ describe("Swarm Mission Control (Wave 3D, Spec 04)", () => {
         route: "swarm",
       }),
     );
+  });
+
+  it("shows visible errors on { ok: false } and rejected Swarm RPC mutations without publishing success, mutating cache, or clearing DM input", async () => {
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    const toastErrorSpy = vi.spyOn(toast, "error");
+    const toastSuccessSpy = vi.spyOn(toast, "success");
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "swarm.dm") {
+        return { ok: false, message: "Worker steering mailbox rejected DM" };
+      }
+      if (method === "swarm.planDecide") {
+        return { ok: false, message: "Plan proposal decision failed" };
+      }
+      if (method === "swarm.kill") {
+        return { ok: false, message: "Worker cannot be stopped right now" };
+      }
+      if (method === "swarm.worktreeOpen") {
+        return { ok: false, message: "Worktree directory not found on disk" };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    try {
+      renderWithQuery(<SwarmView />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("agent-roster")).toBeTruthy();
+      });
+
+      // 1. Failed DM shows alert + toast.error, does not show ack, and retains DM input text
+      fireEvent.click(screen.getByTestId("select-agent-ui-shell"));
+      const dmInput = screen.getByTestId("agent-dm-input") as HTMLInputElement;
+      fireEvent.change(dmInput, {
+        target: { value: "Hold off on merging until tests pass" },
+      });
+      fireEvent.click(screen.getByTestId("agent-dm-submit"));
+
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Worker steering mailbox rejected DM",
+        );
+        expect(screen.getByTestId("agent-dm-error").textContent).toContain(
+          "Worker steering mailbox rejected DM",
+        );
+      });
+      expect(screen.queryByTestId("agent-dm-ack")).toBeNull();
+      expect(dmInput.value).toBe("Hold off on merging until tests pass");
+      expect(toastSuccessSpy).not.toHaveBeenCalled();
+
+      // 2. Failed planDecide leaves proposal in pending state
+      toastErrorSpy.mockClear();
+      fireEvent.click(screen.getByTestId("telemetry-pending-proposals-btn"));
+      await waitFor(() => {
+        expect(screen.getByTestId("ledger-plan-proposals")).toBeTruthy();
+      });
+      fireEvent.click(
+        screen.getByTestId("approve-proposal-prop_wave3_ledger"),
+      );
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Plan proposal decision failed",
+        );
+      });
+      expect(
+        screen.getByTestId("proposal-status-prop_wave3_ledger").textContent,
+      ).toBe("pending");
+
+      // 3. Failed worktreeOpen surfaces toast.error
+      toastErrorSpy.mockClear();
+      const worktreesTab = screen.getByTestId("ledger-tab-worktrees");
+      fireEvent.mouseDown(worktreesTab);
+      fireEvent.click(worktreesTab);
+      await waitFor(() => {
+        expect(screen.getByTestId("open-worktree-window-wt_main")).toBeTruthy();
+      });
+      fireEvent.click(screen.getByTestId("open-worktree-window-wt_main"));
+      await waitFor(() => {
+        expect(toastErrorSpy).toHaveBeenCalledWith(
+          "Worktree directory not found on disk",
+        );
+      });
+    } finally {
+      rpcSpy.mockRestore();
+      toastErrorSpy.mockRestore();
+      toastSuccessSpy.mockRestore();
+    }
+  });
+
+  it("gates unsupported swarm mutation controls in VS Code webview host mode", async () => {
+    const prevAcquire = window.acquireVsCodeApi;
+    window.acquireVsCodeApi = () => ({
+      postMessage: (msg: unknown) => {
+        handleMockHostMessage(msg as never, __dispatchHostMessageForTest);
+      },
+      getState: () => undefined,
+      setState: () => {},
+    });
+
+    try {
+      renderWithQuery(<SwarmView />);
+
+      await waitFor(() => {
+        expect(screen.getByTestId("swarm-header")).toBeTruthy();
+      });
+
+      expect(
+        (screen.getByTestId("swarm-toggle-spawn-btn") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByTestId("swarm-pause-all-btn") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByTestId("swarm-stop-btn") as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByTestId("agent-dm-submit") as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(screen.queryByTestId("inspector-kill-btn")).toBeNull();
+    } finally {
+      window.acquireVsCodeApi = prevAcquire;
+    }
   });
 });

@@ -151,6 +151,14 @@ export function AppShell({
         }
         return
       }
+      if (mod && !event.shiftKey && !event.altKey && event.key === ",") {
+        event.preventDefault()
+        const state = useAppStore.getState()
+        state.setActiveRoute(
+          state.activeRoute === "settings" ? "home" : "settings"
+        )
+        return
+      }
       if (mod && !event.shiftKey && !event.altKey && event.key === ";") {
         event.preventDefault()
         toggleSideChat()

@@ -959,7 +959,7 @@ export function SessionPane() {
     const worktrees = swarm?.worktrees ?? []
 
     return (
-      <div className="flex w-[264px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
+      <div className="flex min-w-0 flex-1 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
         <div className="flex h-[46px] shrink-0 items-center justify-end gap-1 pr-0.5">
           <button
             type="button"
@@ -1140,7 +1140,7 @@ export function SessionPane() {
   }
 
   return (
-    <div className="flex w-[264px] shrink-0 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
+    <div className="flex min-w-0 flex-1 flex-col bg-chrome pr-2.5 pb-2.5 pl-1 select-none">
       {/* Top 46px Back / Forward row */}
       <div className="flex h-[46px] shrink-0 items-center justify-end gap-1 pr-0.5">
         <button
@@ -1309,7 +1309,7 @@ export function LeftSidebar() {
       className={cn(
         "flex h-full shrink-0 overflow-hidden transition-[width] duration-150",
         showSessionPane
-          ? "w-[316px] bg-chrome"
+          ? "w-[var(--sidebar-w)] bg-chrome"
           : leftCollapsed
             ? "w-[52px] bg-canvas"
             : "w-[52px] bg-chrome"

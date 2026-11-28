@@ -67,6 +67,8 @@ nsis:
   shortcutName: RayuCode
 
 linux:
+  executableName: rayucode
+  syncDesktopName: true
   icon: build/icon.png
   category: Development
   maintainer: Rayu <hello@rayu.dev>
@@ -79,3 +81,9 @@ linux:
       arch:
         - x64
         - arm64
+
+deb:
+  packageName: rayucode
+
+rpm:
+  packageName: rayucode

@@ -484,6 +484,15 @@ pub enum Request {
         args: Vec<String>,
     },
 
+    /// Session-less non-presentation command executed globally on the daemon.
+    #[serde(rename = "global_runtime_command")]
+    GlobalRuntimeCommand {
+        id: u64,
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+
     /// Set Copilot premium request conservation mode (0=normal, 1=one-per-session, 2=zero)
     #[serde(rename = "set_premium_mode")]
     SetPremiumMode { id: u64, mode: u8 },
@@ -537,7 +546,13 @@ pub enum Request {
 
     /// Split the current session — clone conversation into a new session
     #[serde(rename = "split")]
-    Split { id: u64 },
+    Split {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to_message_index: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        up_to_message_id: Option<String>,
+    },
 
     /// Transfer the current session into a compacted handoff session
     #[serde(rename = "transfer")]

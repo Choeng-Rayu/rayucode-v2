@@ -26,9 +26,16 @@ export {
 } from "./components/turn-file-summary-card"
 export { WorkTrace, type WorkTraceProps } from "./components/work-trace"
 export {
+  cancelMidTurnMessage,
   clearSessionLiveTurn,
+  dispatchPendingStreamPrompt,
+  editMidTurnMessage,
   LiveTraceController,
+  promoteQueuedMessageToSteer,
   resetAllLiveTraces,
+  sendMidTurnMessage,
+  sendQueuedMessageNow,
+  stopActiveSessionTurn,
   useLiveTraceStore,
 } from "./hooks/live-trace-store"
 export {

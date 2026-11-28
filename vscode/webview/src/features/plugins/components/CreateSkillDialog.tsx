@@ -38,11 +38,19 @@ export function CreateSkillDialog({
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const cleanName = name
-      .trim()
+    const rawName = name.trim();
+    if (
+      rawName.includes("/") ||
+      rawName.includes("\\") ||
+      rawName.includes("..")
+    ) {
+      setErrorMessage("Skill name cannot contain path separators or '..'.");
+      return;
+    }
+    const cleanName = rawName
       .toLowerCase()
       .replace(/[^a-z0-9-_]+/g, "-");
-    if (!cleanName || !description.trim()) {
+    if (!cleanName || !/[a-z0-9]/.test(cleanName) || !description.trim()) {
       setErrorMessage("Provide both a skill name and description.");
       return;
     }

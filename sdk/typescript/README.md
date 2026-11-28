@@ -597,6 +597,7 @@ try {
 | `invalid_request` | Arguments or current state violate the operation's contract (for example an invalid model, retry count, path, or compaction request). | Correct the caller input. The message contains the rejected constraint; do not blindly retry. |
 | `invalid_option` | A client-only option is outside its allowed range. | Correct the named option, such as `discoveryIntervalMs` or `maxBufferedEvents`. |
 | `unsupported` | The runtime does not advertise `session_tools`. | Update both the rayu daemon and API bridge before using tool controls. |
+| `auth_required` | Authentication or an initialized AI provider is required before running an inference turn. | Prompt the user to sign in or configure a provider API key before retrying, preserving any user draft. |
 | `busy` | Another tool configuration request is in flight for this session. | Await the previous configuration before submitting another. |
 | `internal` | The bridge or daemon failed unexpectedly while handling a valid request. | Preserve the message and rayu logs, retry once if safe, then report it if reproducible. |
 

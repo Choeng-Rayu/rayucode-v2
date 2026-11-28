@@ -804,9 +804,43 @@ pub(super) async fn handle_trigger_memory_extraction(
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
 
+#[cfg(test)]
 fn clone_split_session(
     parent_session_id: &str,
     live_parent: Option<&Session>,
+) -> anyhow::Result<(String, String)> {
+    clone_split_session_with_boundary(parent_session_id, live_parent, None, None)
+}
+
+pub(super) fn truncate_split_messages(
+    messages: &[crate::session::StoredMessage],
+    up_to_message_index: Option<usize>,
+    up_to_message_id: Option<&str>,
+) -> anyhow::Result<Vec<crate::session::StoredMessage>> {
+    if let Some(target_id) = up_to_message_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let pos = messages
+            .iter()
+            .position(|msg| msg.id == target_id)
+            .ok_or_else(|| anyhow::anyhow!("Fork boundary message `{target_id}` was not found"))?;
+        return Ok(messages[..=pos].to_vec());
+    }
+    if let Some(idx) = up_to_message_index {
+        if idx >= messages.len() {
+            anyhow::bail!(
+                "Fork boundary index {idx} out of range for session with {} message(s)",
+                messages.len()
+            );
+        }
+        return Ok(messages[..=idx].to_vec());
+    }
+    Ok(messages.to_vec())
+}
+
+fn clone_split_session_with_boundary(
+    parent_session_id: &str,
+    live_parent: Option<&Session>,
+    up_to_message_index: Option<usize>,
+    up_to_message_id: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
     // Keep the persisted snapshot authoritative, including while the parent is
     // busy. A brand-new Agent may not have saved anything yet, however. Only a
@@ -822,9 +856,19 @@ fn clone_split_session(
         }
     })?;
 
+    let sliced_messages =
+        truncate_split_messages(&parent.messages, up_to_message_index, up_to_message_id)?;
     let mut child = Session::create(Some(parent_session_id.to_string()), None);
-    child.replace_messages(parent.messages.clone());
-    child.compaction = parent.compaction.clone();
+    child.replace_messages(sliced_messages);
+    child.compaction = if up_to_message_index.is_some() || up_to_message_id.is_some() {
+        parent
+            .compaction
+            .as_ref()
+            .filter(|state| state.compacted_count <= child.messages.len())
+            .cloned()
+    } else {
+        parent.compaction.clone()
+    };
     child.system_prompt = parent.system_prompt.clone();
     child.working_dir = parent.working_dir.clone();
     child.model = parent.model.clone();
@@ -890,9 +934,21 @@ fn create_transfer_child_session(
     Ok((child.id.clone(), child.display_name().to_string()))
 }
 
+#[cfg(test)]
 pub(super) async fn handle_split(
     id: u64,
     client_session_id: &str,
+    agent: &Arc<Mutex<Agent>>,
+    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
+) {
+    handle_split_with_boundary(id, client_session_id, None, None, agent, client_event_tx).await;
+}
+
+pub(super) async fn handle_split_with_boundary(
+    id: u64,
+    client_session_id: &str,
+    up_to_message_index: Option<usize>,
+    up_to_message_id: Option<String>,
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
 ) {
@@ -909,9 +965,11 @@ pub(super) async fn handle_split(
     // Agent lock: busy sessions can still fork their last persisted snapshot.
     let result = {
         let idle_agent = agent.try_lock().ok();
-        clone_split_session(
+        clone_split_session_with_boundary(
             client_session_id,
             idle_agent.as_ref().map(|agent| agent.session_for_split()),
+            up_to_message_index,
+            up_to_message_id.as_deref(),
         )
     };
     let (new_session_id, new_session_name) = match result {

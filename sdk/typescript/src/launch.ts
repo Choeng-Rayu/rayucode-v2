@@ -14,10 +14,12 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { HarnessError } from "./errors.js";
 import { bundledRayuBinary, platformBinaryPackage } from "./binary.js";
+import { transportEndpoint } from "./sockets.js";
 
 /**
  * Files inherited from the user's rayu home when logins are inherited.
@@ -146,7 +148,17 @@ function linkCredentialFile(source: string, root: string, relative: string): boo
   } catch {
     // Absent, which is the common case.
   }
-  fs.symlinkSync(source, destination);
+  try {
+    fs.symlinkSync(source, destination);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (process.platform === "win32" && (code === "EPERM" || code === "ENOTSUP" || code === "EACCES")) {
+      fs.copyFileSync(source, destination);
+      fs.chmodSync(destination, 0o600);
+    } else {
+      throw error;
+    }
+  }
   return true;
 }
 
@@ -175,6 +187,11 @@ export interface LaunchOptions {
   binary?: string;
   /** Extra environment variables for the instance. */
   env?: Record<string, string>;
+  /**
+   * Permit launching with no configured credentials for signed-out inspection
+   * (sets `RAYU_DEFERRED_AUTH_BOOTSTRAP=1`). Defaults to `false`.
+   */
+  allowSignedOut?: boolean;
   /**
    * Default model for spawned swarm workers, unless overridden per spawn.
    * Use `inherit` to default to the coordinator's model and auth route. This setting takes
@@ -554,6 +571,27 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
     inheritCredentials(userRayuHome(), rayuHome);
   }
 
+  const spawnedEnv: Record<string, string | undefined> = {
+    ...process.env,
+    RAYU_HOME: rayuHome,
+    RAYU_RUNTIME_DIR: runtimeDir,
+    RAYU_API_SOCKET: socketPath,
+    RAYU_SOCKET: path.join(runtimeDir, "rayu.sock"),
+    // An empty private home always looks out of date, so the release updater
+    // would replace and restart the runtime mid-session: the client's turn fails
+    // and the restarted server is orphaned. The variable is inherited by every
+    // rayu process the instance spawns (argv is not), so it keeps the release
+    // auto-installer off in those too. The shared runtime still updates.
+    RAYU_NO_AUTO_UPDATE: "1",
+    ...(options.allowSignedOut ? { RAYU_DEFERRED_AUTH_BOOTSTRAP: "1" } : {}),
+    ...options.env,
+    ...(options.swarmModel === undefined
+      ? {}
+      : { RAYU_SWARM_MODEL: options.swarmModel }),
+    ...(options.wakeMode === undefined ? {} : { RAYU_WAKE_MODE: options.wakeMode }),
+  };
+  const effectiveRayuHome = spawnedEnv.RAYU_HOME ?? rayuHome;
+
   const child = spawn(
     binary,
     // `--no-update` turns off the bridge's own update check, which also runs for
@@ -561,24 +599,7 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
     ["--no-update", "api-bridge", "--api-socket", socketPath],
     {
       cwd: options.workingDir ?? process.cwd(),
-      env: {
-        ...process.env,
-        RAYU_HOME: rayuHome,
-        RAYU_RUNTIME_DIR: runtimeDir,
-        RAYU_API_SOCKET: socketPath,
-        RAYU_SOCKET: path.join(runtimeDir, "rayu.sock"),
-        // An empty private home always looks out of date, so the release updater
-        // would replace and restart the runtime mid-session: the client's turn fails
-        // and the restarted server is orphaned. The variable is inherited by every
-        // rayu process the instance spawns (argv is not), so it keeps the release
-        // auto-installer off in those too. The shared runtime still updates.
-        RAYU_NO_AUTO_UPDATE: "1",
-        ...options.env,
-        ...(options.swarmModel === undefined
-          ? {}
-          : { RAYU_SWARM_MODEL: options.swarmModel }),
-        ...(options.wakeMode === undefined ? {} : { RAYU_WAKE_MODE: options.wakeMode }),
-      },
+      env: spawnedEnv,
       stdio: ["ignore", "ignore", options.inheritStderr ? "inherit" : "pipe"],
       detached: false,
     },
@@ -627,7 +648,7 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
     // daemon starts shutting down, so doing this after the bridge dies races
     // a window where `server stop` reports "no running server found" and the
     // daemon is simply leaked.
-    await stopInstanceDaemon(binary, rayuHome, runtimeDir);
+    await stopInstanceDaemon(binary, effectiveRayuHome, runtimeDir);
 
     if (exited === undefined) {
       child.kill("SIGTERM");
@@ -685,12 +706,12 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
     // The daemon calls setsid(), so it leads its own session and no signal
     // aimed at the bridge can reach it. Killing the bridge alone is exactly
     // the leak this handler exists to prevent.
-    const pid = readDaemonPidSync(rayuHome, runtimeDir);
-    if (pid !== undefined) {
+    const pid = readDaemonPidSync(effectiveRayuHome, runtimeDir);
+    if (pid !== undefined && !hasActiveOvernightRun(effectiveRayuHome)) {
       // SIGKILL, not SIGTERM: an exit handler cannot await, so there is no
       // chance to wait for a graceful shutdown, and a SIGTERM'd daemon would
       // still be flushing when this process is gone, recreating the very
-      // directory being removed below.
+      // directory being removed below. Skip hard-kill when overnight jobs exist.
       try {
         // Negative pid: the daemon leads a group, so its helpers go with it.
         process.kill(-pid, "SIGKILL");
@@ -743,10 +764,10 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
           (stderr ? `:\n${stderr.trim()}` : ""),
       );
     }
-    if (fs.existsSync(socketPath)) {
+    if (await isEndpointReady(socketPath)) {
       return {
         socketPath,
-        rayuHome,
+        rayuHome: effectiveRayuHome,
         process: child,
         shutdown: async () => {
           process.removeListener("exit", reapOnExit);
@@ -764,4 +785,42 @@ export async function launchInstance(options: LaunchOptions = {}): Promise<Launc
     `rayu did not create its API socket at ${socketPath} within the startup timeout` +
       (stderr ? `:\n${stderr.trim()}` : ""),
   );
+}
+
+function hasActiveOvernightRun(rayuHome: string): boolean {
+  const runsDir = path.join(rayuHome, "overnight");
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(runsDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      const raw = fs.readFileSync(path.join(runsDir, entry.name, "manifest.json"), "utf8");
+      const parsed = JSON.parse(raw) as { status?: string };
+      if (parsed.status === "running" || parsed.status === "pending") return true;
+    } catch {
+      // Ignore unreadable or non-JSON manifests.
+    }
+  }
+  return false;
+}
+
+async function isEndpointReady(socketPath: string): Promise<boolean> {
+  if (process.platform !== "win32") {
+    return fs.existsSync(socketPath);
+  }
+  const endpoint = transportEndpoint(socketPath);
+  return await new Promise<boolean>((resolve) => {
+    const sock = net.createConnection(endpoint);
+    const done = (ready: boolean) => {
+      sock.destroy();
+      resolve(ready);
+    };
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+    sock.setTimeout(150, () => done(false));
+  });
 }

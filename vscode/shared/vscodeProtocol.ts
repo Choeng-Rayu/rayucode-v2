@@ -159,6 +159,15 @@ export type CacheTtl = z.infer<typeof CacheTtlSchema>;
 export const ProviderTransportSchema = z.enum(["auto", "https", "websocket"]);
 export type ProviderTransport = z.infer<typeof ProviderTransportSchema>;
 
+export const CatalogSourceStatusSchema = z.enum([
+  "fresh",
+  "cached",
+  "stale",
+  "failed",
+  "unavailable",
+]);
+export type CatalogSourceStatus = z.infer<typeof CatalogSourceStatusSchema>;
+
 export const UpdateChannelSchema = z.enum(["stable", "preview", "main"]);
 export type UpdateChannel = z.infer<typeof UpdateChannelSchema>;
 
@@ -340,6 +349,15 @@ export const SessionSummaryViewSchema = z.object({
   syncStale: z.boolean().optional(),
 });
 export type SessionSummaryView = z.infer<typeof SessionSummaryViewSchema>;
+
+export const SessionPrefsPatchSchema = z.object({
+  model: z.string().optional(),
+  provider: z.string().optional(),
+  effort: EffortLevelSchema.optional(),
+  permissionMode: PermissionModeIdSchema.optional(),
+  serviceTier: ServiceTierSchema.optional(),
+});
+export type SessionPrefsPatch = z.infer<typeof SessionPrefsPatchSchema>;
 
 export const ExternalProjectViewSchema = z.object({
   id: z.string(),
@@ -801,6 +819,7 @@ export const MemoryStatusViewSchema = z.object({
 export type MemoryStatusView = z.infer<typeof MemoryStatusViewSchema>;
 
 export const WorkspaceIntegrationsViewSchema = z.object({
+  available: z.boolean().optional(),
   gmail: z.object({
     connected: z.boolean(),
     account: z.string().optional(),
@@ -1108,6 +1127,7 @@ export const AccountStatusViewSchema = z.object({
 export type AccountStatusView = z.infer<typeof AccountStatusViewSchema>;
 
 export const AnalyticsSummaryViewSchema = z.object({
+  available: z.boolean().optional(),
   range: z.enum(["7d", "30d"]),
   groupBy: z.enum(["feature", "model"]),
   totalCredits: z.number(),
@@ -1594,6 +1614,7 @@ export const RpcContractSchemas = {
   "sessions.create": {
     params: z
       .object({
+        deferSettings: z.boolean().optional(),
         workingDir: z.string().optional(),
         permissionMode: PermissionModeIdSchema.optional(),
         model: z.string().optional(),
@@ -1961,6 +1982,7 @@ export const RpcContractSchemas = {
   "plugins.mcp.add": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]),
       transport: McpTransportSchema,
       command: z.string().optional(),
@@ -1973,12 +1995,16 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
       message: z.string().optional(),
     }),
   },
   "plugins.mcp.edit": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]).optional(),
       transport: McpTransportSchema.optional(),
       command: z.string().optional(),
@@ -1991,15 +2017,23 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
       message: z.string().optional(),
     }),
   },
   "plugins.mcp.remove": {
     params: z.object({
       id: z.string().min(1),
+      workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]).optional(),
     }),
-    result: OkResultSchema,
+    result: OkResultSchema.extend({
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
+    }),
   },
   "plugins.mcp.login": {
     params: z.object({ id: z.string() }),
@@ -2038,8 +2072,15 @@ export const RpcContractSchemas = {
       description: z.string().min(1),
       content: z.string().optional(),
       scope: z.enum(["project", "global"]).optional(),
+      workspacePath: z.string().optional(),
     }),
-    result: z.object({ ok: z.boolean(), skill: SkillViewSchema }),
+    result: z.object({
+      ok: z.boolean(),
+      skill: SkillViewSchema,
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
+    }),
   },
   "plugins.skills.install": {
     params: z.object({ name: z.string().min(1) }),
@@ -2407,12 +2448,27 @@ export const RpcContractSchemas = {
       swarmAllowlist: z.array(z.string()).optional(),
       configPath: z.string().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
+      sources: z
+        .object({
+          engine: CatalogSourceStatusSchema,
+          hosted: CatalogSourceStatusSchema,
+        })
+        .optional(),
+      stale: z.boolean().optional(),
+      message: z.string().optional(),
     }),
   },
   "settings.models.refresh": {
     params: z.object({ sessionId: z.string().optional() }).optional(),
     result: z.object({
       ok: z.boolean(),
+      message: z.string().optional(),
+      sources: z
+        .object({
+          engine: z.enum(["fresh", "failed", "unavailable"]),
+          hosted: CatalogSourceStatusSchema,
+        })
+        .optional(),
       routeCount: z.number().int().nonnegative().optional(),
       routes: z.array(ModelRouteOptionViewSchema).optional(),
     }),
@@ -2719,6 +2775,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openFile"),
+    sessionId: z.string().optional(),
     path: z.string().min(1),
     line: z.number().int().positive().optional(),
     column: z.number().int().positive().optional(),
@@ -2738,6 +2795,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openTerminal"),
+    sessionId: z.string().optional(),
     cwd: z.string().optional(),
     name: z.string().optional(),
   }),
@@ -2747,6 +2805,7 @@ export const WebviewToHostMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("rayucode.editor.openMarkdownPreview"),
+    sessionId: z.string().optional(),
     path: z.string().min(1),
   }),
   z.object({
@@ -2837,6 +2896,11 @@ export const HostToWebviewMessageSchema = z.union([
     todos: z.array(TodoItemViewSchema),
   }),
   z.object({
+    type: z.literal("rayucode.models.changed"),
+    sessionIds: z.array(z.string()),
+    credentialsChanged: z.boolean(),
+  }),
+  z.object({
     type: z.literal("rayucode.config.changed"),
     changedKeys: z.array(z.string()),
     requiresRestart: z.boolean().optional(),
@@ -2857,6 +2921,12 @@ export const HostToWebviewMessageSchema = z.union([
     sessionId: z.string().optional(),
     mode: PermissionModeIdSchema,
     isDefault: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("rayucode.session.prefsSync"),
+    sessionId: z.string(),
+    acknowledged: SessionPrefsPatchSchema,
+    pending: SessionPrefsPatchSchema,
   }),
   z.object({
     type: z.literal("rayucode.editor.selectionChanged"),

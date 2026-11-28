@@ -814,3 +814,109 @@ fn set_model_stores_bare_id_for_prefixed_session_restore_spec() {
     );
     assert!(provider.set_model("   ").is_err());
 }
+
+#[test]
+fn refresh_model_catalog_discovers_future_model_and_preserves_last_good_on_error() {
+    let _guard = rayucode_base::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let prev_home = std::env::var_os("RAYU_HOME");
+    let prev_endpoint = std::env::var_os(rayucode_provider_antigravity::ENDPOINT_ENV);
+    struct Restore(Option<std::ffi::OsString>, Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => rayucode_base::env::set_var("RAYU_HOME", v),
+                None => rayucode_base::env::remove_var("RAYU_HOME"),
+            }
+            match self.1.take() {
+                Some(v) => rayucode_base::env::set_var(rayucode_provider_antigravity::ENDPOINT_ENV, v),
+                None => rayucode_base::env::remove_var(rayucode_provider_antigravity::ENDPOINT_ENV),
+            }
+        }
+    }
+    let _restore = Restore(prev_home, prev_endpoint);
+    rayucode_base::env::set_var("RAYU_HOME", home.path());
+    rayucode_base::auth::antigravity::save_tokens(&rayucode_base::auth::antigravity::AntigravityTokens {
+        access_token: "synthetic-antigravity-token".to_string(),
+        refresh_token: "synthetic-refresh-token".to_string(),
+        expires_at: Utc::now().timestamp_millis() + 3_600_000,
+        email: None,
+        project_id: Some("test-project".to_string()),
+    })
+    .unwrap();
+
+    let future_model = "antigravity-future-99";
+    assert!(!AVAILABLE_MODELS.contains(&future_model));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ok_body = serde_json::json!({
+        "models": {
+            future_model: {
+                "displayName": "Future 99",
+                "maxTokens": 512000,
+                "maxOutputTokens": 16384,
+                "recommended": true
+            }
+        },
+        "defaultAgentModelId": future_model
+    })
+    .to_string();
+    let server = std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader, Write};
+        for (status, body) in [
+            ("200 OK", ok_body),
+            ("503 Service Unavailable", "unavailable".to_string()),
+        ] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((k, v)) = line.split_once(':')
+                    && k.trim().eq_ignore_ascii_case("content-length")
+                {
+                    content_length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            if content_length > 0 {
+                use std::io::Read;
+                let mut buf = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut buf);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+    });
+    rayucode_base::env::set_var(
+        rayucode_provider_antigravity::ENDPOINT_ENV,
+        format!("http://{addr}"),
+    );
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut provider = AntigravityProvider::new();
+        provider.client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let summary = provider.refresh_model_catalog().await.unwrap();
+        assert!(summary.models_added_names.contains(&future_model.to_string()));
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+
+        assert!(provider.refresh_model_catalog().await.is_err());
+        assert!(provider.available_models_display().contains(&future_model.to_string()));
+    });
+    server.join().unwrap();
+}

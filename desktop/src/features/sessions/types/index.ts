@@ -62,4 +62,5 @@ export interface ComposerSubmitPayload {
   modelLabel: string
   effort: ReasoningEffort
   permissionMode: PermissionModeId
+  midTurnMode?: "steer" | "queue"
 }

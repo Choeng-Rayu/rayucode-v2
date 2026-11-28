@@ -299,4 +299,37 @@ describe("RayuTelegramManager", () => {
     expect(state.daemonError).toContain("Start the local Rust daemon")
     expect(state.qrPath).toBeNull()
   })
+
+  it("prefers runGlobalRuntimeCommand over session commands so reading Telegram status creates 0 chats", async () => {
+    const runGlobalSpy = vi.fn().mockResolvedValue({
+      command: "telegram",
+      message: "ok",
+      data: { linked: false, configured: false, approvals: [] },
+    })
+    const anySessionSpy = vi.fn()
+    const adapter: TelegramDaemonAdapter = {
+      runGlobalRuntimeCommand: runGlobalSpy,
+      runRuntimeCommandOnAnySession: anySessionSpy,
+      getOrProbeStatus: vi.fn().mockResolvedValue({
+        connected: true,
+        reconnecting: false,
+        socketPath: "/tmp/rayu.sock",
+        version: "rayu-test",
+        latencyMs: 2,
+      }),
+      getStatus: vi.fn().mockReturnValue({
+        connected: true,
+        reconnecting: false,
+        socketPath: "/tmp/rayu.sock",
+        version: "rayu-test",
+        latencyMs: 2,
+      }),
+    }
+
+    const manager = new RayuTelegramManager(adapter, () => "/tmp/repo")
+    const state = await manager.getState()
+    expect(state.daemonConnected).toBe(true)
+    expect(runGlobalSpy).toHaveBeenCalledTimes(2)
+    expect(anySessionSpy).not.toHaveBeenCalled()
+  })
 })

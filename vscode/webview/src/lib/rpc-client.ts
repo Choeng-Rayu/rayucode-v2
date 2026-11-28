@@ -111,12 +111,28 @@ function dispatchHostMessage(msg: HostToWebviewMessage): void {
   }
 }
 
+export type CatalogChangedMessage = {
+  type: "rayucode.catalog.changed";
+  sessionId?: string;
+  sessionIds?: string[];
+  credentialsChanged?: boolean;
+};
+
 function ensureWindowListener(): void {
   if (listenerBound || typeof window === "undefined") return;
   listenerBound = true;
   window.addEventListener("message", (event: MessageEvent) => {
     const parsed = parseHostToWebviewMessage(event.data);
-    if (!parsed.success) return;
+    if (!parsed.success) {
+      if (
+        event.data &&
+        typeof event.data === "object" &&
+        (event.data as { type?: unknown }).type === "rayucode.catalog.changed"
+      ) {
+        dispatchHostMessage(event.data as HostToWebviewMessage);
+      }
+      return;
+    }
     dispatchHostMessage(parsed.data);
   });
 }
@@ -176,6 +192,31 @@ export function sendHarnessRequest(frame: Record<string, unknown>): void {
   });
 }
 
+export async function requestHarnessAck(frame: Record<string, unknown>): Promise<void> {
+  if (!isVsCodeWebview()) {
+    sendHarnessRequest(frame);
+    return;
+  }
+  const id = nextRequestId++;
+  return new Promise((resolve, reject) => {
+    const stop = onHarnessFrame((reply) => {
+      if (reply.reply_to !== id || (reply.ev !== "ok" && reply.ev !== "error")) return;
+      clearTimeout(timer);
+      stop();
+      if (reply.ev === "error") {
+        reject(new Error(typeof reply.message === "string" ? reply.message : "Rayu could not submit the prompt."));
+      } else {
+        resolve();
+      }
+    });
+    const timer = setTimeout(() => {
+      stop();
+      reject(new Error("Rayu could not confirm this prompt. Review session history before retrying."));
+    }, 90_000);
+    sendHarnessRequest({ ...frame, id });
+  });
+}
+
 export function onHostMessage(
   listener: (msg: HostToWebviewMessage) => void,
 ): () => void {
@@ -204,6 +245,8 @@ export function signalWebviewReady(surface: SurfaceKind): void {
 }
 
 /** Test utility to inject a synthetic host message into subscribers. */
-export function __dispatchHostMessageForTest(msg: HostToWebviewMessage): void {
-  dispatchHostMessage(msg);
+export function __dispatchHostMessageForTest(
+  msg: HostToWebviewMessage | CatalogChangedMessage,
+): void {
+  dispatchHostMessage(msg as HostToWebviewMessage);
 }

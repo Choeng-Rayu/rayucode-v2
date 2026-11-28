@@ -14,7 +14,9 @@ import type {
   WorkspaceIntegrationsView,
 } from "@shared/vscodeProtocol";
 
-import { callRpc } from "@/lib";
+import { toast } from "sonner";
+import { callRpc, useAppStore } from "@/lib";
+import { requireOperation } from "@/lib/operation-result";
 
 export type PluginsTabId = "mcp" | "skills" | "memory" | "workspace";
 
@@ -854,6 +856,17 @@ export function findCatalogTemplate(
   );
 }
 
+export function isEditableMcpLayer(layer: string): boolean {
+  const norm = layer.trim().toLowerCase();
+  return (
+    norm === "workspace" ||
+    norm === "project" ||
+    norm === "user" ||
+    norm === "global" ||
+    norm === ""
+  );
+}
+
 export function normalizeConfigLayerBadge(layer: string): string {
   switch (layer.toLowerCase()) {
     case "workspace":
@@ -977,7 +990,7 @@ export function useMcpActions() {
 
   const toggleMutation = useMutation({
     mutationFn: async (params: { id: string; enabled: boolean }) => {
-      await callRpc("plugins.mcp.toggle", params);
+      await requireOperation(callRpc("plugins.mcp.toggle", params));
       return params;
     },
     onSuccess: ({ id, enabled }) => {
@@ -1012,16 +1025,17 @@ export function useMcpActions() {
 
   const testMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await callRpc("plugins.mcp.test", { id });
+      const res = await requireOperation(callRpc("plugins.mcp.test", { id }));
       return { id, ...res };
     },
   });
 
   const reloadMutation = useMutation({
     mutationFn: async () => {
-      return callRpc("plugins.mcp.reload");
+      return requireOperation(callRpc("plugins.mcp.reload"));
     },
     onSuccess: () => {
+      toast.success("Reloaded MCP servers.");
       void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.mcp() });
     },
   });
@@ -1033,7 +1047,8 @@ export function useMcpActions() {
       name?: string;
       brandId?: string;
       scope: "global" | "workspace";
-      transport: McpTransport;
+      workspacePath?: string;
+      transport?: McpTransport;
       command?: string;
       args?: string[];
       url?: string;
@@ -1043,71 +1058,59 @@ export function useMcpActions() {
     }) => {
       const rpcMethod =
         params.mode === "edit" ? "plugins.mcp.edit" : "plugins.mcp.add";
-      const res = await callRpc(rpcMethod, {
-        id: params.id,
-        scope: params.scope,
-        transport: params.transport,
-        command: params.command,
-        args: params.args,
-        url: params.url,
-        env: params.env,
-        shared: params.shared,
-        timeoutSecs: params.timeoutSecs,
-      });
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? `Failed to save MCP server "${params.id}".`,
+      const workspacePath =
+        params.scope === "workspace"
+          ? params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined
+          : undefined;
+      const payload =
+        params.mode === "edit"
+          ? {
+              id: params.id,
+              scope: params.scope,
+              ...(workspacePath ? { workspacePath } : {}),
+              ...(params.transport !== undefined ? { transport: params.transport } : {}),
+              ...(params.command !== undefined ? { command: params.command } : {}),
+              ...(params.args !== undefined ? { args: params.args } : {}),
+              ...(params.url !== undefined ? { url: params.url } : {}),
+              ...(params.env !== undefined ? { env: params.env } : {}),
+              ...(params.shared !== undefined ? { shared: params.shared } : {}),
+              ...(params.timeoutSecs !== undefined ? { timeoutSecs: params.timeoutSecs } : {}),
+            }
+          : {
+              id: params.id,
+              scope: params.scope,
+              workspacePath,
+              transport: params.transport ?? "stdio",
+              command: params.command,
+              args: params.args,
+              url: params.url,
+              env: params.env,
+              shared: params.shared,
+              timeoutSecs: params.timeoutSecs,
+            };
+      const res = await requireOperation(callRpc(rpcMethod, payload));
+      if (res.reloaded === false) {
+        toast.warning(
+          res.reloadError
+            ? `Saved MCP config, but engine reload failed: ${res.reloadError}`
+            : res.message ?? "Saved MCP config, but engine reload failed.",
+        );
+      } else {
+        toast.success(
+          res.reloaded === true
+            ? `Saved MCP connector "${params.id}" and reloaded engine.`
+            : res.message ?? `Saved MCP connector "${params.id}".`,
         );
       }
-      const tpl = findCatalogTemplate(params.brandId ?? params.id);
-      const server: McpServerView = res.server ?? {
-        id: params.id,
-        name: params.name ?? tpl?.name ?? params.id,
-        brandId: params.brandId ?? tpl?.brandId ?? params.id,
-        status: "connected",
-        enabled: true,
-        transport: params.transport,
-        configLayer: params.scope,
-        shared: params.shared ?? true,
-      };
+      if (!res.server) throw new Error("The host returned no connector receipt.");
       return {
-        ...server,
-        name: params.name ?? tpl?.name ?? server.name,
-        brandId: params.brandId ?? tpl?.brandId ?? server.brandId ?? server.id,
-        command: params.command ?? server.command,
-        args: params.args ?? server.args,
-        url: params.url ?? server.url,
-        envKeys: params.env ? Object.keys(params.env) : server.envKeys,
-        timeoutSecs: params.timeoutSecs ?? server.timeoutSecs ?? 30,
-        cachedToolCount:
-          server.cachedToolCount ?? tpl?.defaultTools.length ?? 6,
-        tokenBudgetUsed: server.tokenBudgetUsed ?? 480,
-        tools: server.tools ?? tpl?.defaultTools,
+        ...res.server,
+        name: params.name ?? res.server.name,
+        brandId: params.brandId ?? res.server.brandId,
       };
     },
-    onSuccess: (saved) => {
-      queryClient.setQueryData(
-        PLUGINS_KEYS.mcp(),
-        (
-          prev:
-            | {
-                servers: McpServerView[];
-                totalTokenBudget: number;
-                usedTokenBudget: number;
-              }
-            | undefined,
-        ) => {
-          if (!prev) return prev;
-          const exists = prev.servers.some((s) => s.id === saved.id);
-          const servers = exists
-            ? prev.servers.map((s) => (s.id === saved.id ? saved : s))
-            : [saved, ...prev.servers];
-          return {
-            ...prev,
-            servers,
-          };
-        },
-      );
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.mcp() });
     },
   });
 
@@ -1115,34 +1118,32 @@ export function useMcpActions() {
     mutationFn: async (params: {
       id: string;
       scope?: "global" | "workspace";
+      workspacePath?: string;
     }) => {
-      const res = await callRpc("plugins.mcp.remove", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? `Failed to remove MCP server "${params.id}".`,
+      const res = await requireOperation(callRpc("plugins.mcp.remove", {
+        ...params,
+        workspacePath:
+          params.scope === "workspace"
+            ? params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined
+            : undefined,
+      }));
+      if (res.reloaded === false) {
+        toast.warning(
+          res.reloadError
+            ? `Removed MCP entry from config, but engine reload failed: ${res.reloadError}`
+            : res.message ?? "Removed MCP entry from config, but engine reload failed.",
+        );
+      } else {
+        toast.success(
+          res.reloaded === true
+            ? `Removed MCP connector "${params.id}" and reloaded engine.`
+            : res.message ?? `Removed MCP connector "${params.id}".`,
         );
       }
-      return params.id;
+      return res;
     },
-    onSuccess: (removedId) => {
-      queryClient.setQueryData(
-        PLUGINS_KEYS.mcp(),
-        (
-          prev:
-            | {
-                servers: McpServerView[];
-                totalTokenBudget: number;
-                usedTokenBudget: number;
-              }
-            | undefined,
-        ) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            servers: prev.servers.filter((s) => s.id !== removedId),
-          };
-        },
-      );
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.mcp() });
     },
   });
 
@@ -1151,22 +1152,26 @@ export function useMcpActions() {
       id: string;
       action: "login" | "logout";
     }) => {
-      const actionRes =
+      const actionCall =
         params.action === "login"
-          ? await callRpc("plugins.mcp.login", { id: params.id })
-          : await callRpc("plugins.mcp.logout", { id: params.id });
-      if (!actionRes.ok) {
-        throw new Error(
-          actionRes.message ??
+          ? callRpc("plugins.mcp.login", { id: params.id })
+          : callRpc("plugins.mcp.logout", { id: params.id });
+      await requireOperation(
+        actionCall.then((actionRes) => ({
+          ...actionRes,
+          message:
+            actionRes.message ??
             `MCP OAuth ${params.action} is not supported here; run \`rayu mcp ${params.action}\` in the terminal.`,
-        );
-      }
-      const res = await callRpc("plugins.mcp.oauth", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? `MCP OAuth ${params.action} failed for "${params.id}".`,
-        );
-      }
+        })),
+      );
+      const res = await requireOperation(
+        callRpc("plugins.mcp.oauth", params).then((oauthRes) => ({
+          ...oauthRes,
+          message:
+            oauthRes.message ??
+            `MCP OAuth ${params.action} failed for "${params.id}".`,
+        })),
+      );
       return { id: params.id, authenticated: res.authenticated };
     },
     onSuccess: ({ id, authenticated }) => {
@@ -1222,8 +1227,21 @@ export function useSkillActions() {
       description: string;
       content?: string;
       scope?: "project" | "global";
+      workspacePath?: string;
     }) => {
-      const res = await callRpc("plugins.skills.create", params);
+      const res = await requireOperation(callRpc("plugins.skills.create", {
+        ...params,
+        workspacePath: params.scope === "global" ? undefined : params.workspacePath ?? useAppStore.getState().activeProjectPath ?? undefined,
+      }));
+      if (res.reloaded === false) {
+        toast.warning(
+          res.reloadError
+            ? `Created SKILL.md, but engine refresh failed: ${res.reloadError}`
+            : "Created SKILL.md, but engine skills list did not refresh.",
+        );
+      } else {
+        toast.success(`Created skill "${res.skill.name}".`);
+      }
       return res.skill;
     },
     onSuccess: (created) => {
@@ -1244,17 +1262,13 @@ export function useSkillActions() {
           };
         },
       );
+      void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.skills() });
     },
   });
 
   const installSkillMutation = useMutation({
     mutationFn: async (skill: SkillView) => {
-      const res = await callRpc("plugins.skills.install", { name: skill.name });
-      if (!res.ok) {
-        throw new Error(
-          `Installing endorsed skill "${skill.name}" via runtime_command is not supported yet.`,
-        );
-      }
+      await requireOperation(callRpc("plugins.skills.install", { name: skill.name }));
       return skill;
     },
     onSuccess: (installedSkill) => {
@@ -1287,7 +1301,7 @@ export function useSkillActions() {
 
   const reloadSkillsMutation = useMutation({
     mutationFn: async () => {
-      return callRpc("plugins.skills.reload");
+      return requireOperation(callRpc("plugins.skills.reload"));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.skills() });
@@ -1300,14 +1314,7 @@ export function useSkillActions() {
       name: string;
       args?: string;
     }) => {
-      const res = await callRpc("plugins.skills.run", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ??
-            `Running "/${params.name}" here is not supported yet; invoke it directly in chat.`,
-        );
-      }
-      return res;
+      return requireOperation(callRpc("plugins.skills.run", params));
     },
   });
 
@@ -1328,7 +1335,7 @@ export function useMemoryActions() {
 
   const toggleMemoryMutation = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const res = await callRpc("plugins.memory.toggle", { enabled });
+      const res = await requireOperation(callRpc("plugins.memory.toggle", { enabled }));
       return res.enabled;
     },
     onSuccess: (enabled) => {
@@ -1341,10 +1348,10 @@ export function useMemoryActions() {
 
   const togglePersistInjectionsMutation = useMutation({
     mutationFn: async (enabled: boolean) => {
-      await callRpc("settings.features.set", {
+      await requireOperation(callRpc("settings.features.set", {
         key: "persist_memory_injections",
         value: enabled,
-      });
+      }));
       return enabled;
     },
     onSuccess: (persistInjections) => {
@@ -1357,10 +1364,10 @@ export function useMemoryActions() {
 
   const extractMemoryMutation = useMutation({
     mutationFn: async (sessionId?: string) => {
-      return callRpc(
+      return requireOperation(callRpc(
         "plugins.memory.extract",
         sessionId ? { sessionId } : undefined,
-      );
+      ));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PLUGINS_KEYS.memory() });
@@ -1373,7 +1380,7 @@ export function useMemoryActions() {
       scope: "project" | "global";
       tags: string[];
     }) => {
-      const res = await callRpc("plugins.memory.remember", params);
+      const res = await requireOperation(callRpc("plugins.memory.remember", params));
       return res.fact;
     },
     onSuccess: (fact) => {
@@ -1394,12 +1401,12 @@ export function useMemoryActions() {
 
   const forgetFactMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await callRpc("plugins.memory.forget", { id });
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? "Deleting memory facts is not supported yet.",
-        );
-      }
+      await requireOperation(
+        callRpc("plugins.memory.forget", { id }).then((res) => ({
+          ...res,
+          message: res.message ?? "Deleting memory facts is not supported yet.",
+        })),
+      );
       return id;
     },
     onSuccess: (id) => {
@@ -1420,12 +1427,12 @@ export function useMemoryActions() {
 
   const tagFactMutation = useMutation({
     mutationFn: async (params: { id: string; tags: string[] }) => {
-      const res = await callRpc("plugins.memory.tag", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? "Tagging memory facts is not supported yet.",
-        );
-      }
+      await requireOperation(
+        callRpc("plugins.memory.tag", params).then((res) => ({
+          ...res,
+          message: res.message ?? "Tagging memory facts is not supported yet.",
+        })),
+      );
       return params;
     },
     onSuccess: ({ id, tags }) => {
@@ -1450,12 +1457,12 @@ export function useMemoryActions() {
       targetId: string;
       relation?: string;
     }) => {
-      const res = await callRpc("plugins.memory.link", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ?? "Linking memory facts is not supported yet.",
-        );
-      }
+      await requireOperation(
+        callRpc("plugins.memory.link", params).then((res) => ({
+          ...res,
+          message: res.message ?? "Linking memory facts is not supported yet.",
+        })),
+      );
       return params;
     },
     onSuccess: ({ sourceId, targetId }) => {
@@ -1504,13 +1511,7 @@ export function useTriggerWorkspaceIntegration() {
       action: string;
       payload?: Record<string, unknown>;
     }) => {
-      const res = await callRpc("plugins.workspace.trigger", params);
-      if (!res.ok) {
-        throw new Error(
-          res.message ??
-            `Workspace action '${params.integration}:${params.action}' is not supported yet.`,
-        );
-      }
+      const res = await requireOperation(callRpc("plugins.workspace.trigger", params));
       return { ...params, ...res };
     },
     onSuccess: ({ integration, action }) => {

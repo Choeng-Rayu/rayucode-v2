@@ -1,6 +1,8 @@
+import fsSync from "node:fs"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { StringDecoder } from "node:string_decoder"
 import type { BrowserWindow, OpenDialogOptions } from "electron"
 
 import { getGitBranch } from "./git-bridge.js"
@@ -18,6 +20,8 @@ export interface WorkspaceCodeFile {
   language: string
   startLine: number
   lines: string[]
+  truncated?: boolean
+  isBinary?: boolean
 }
 
 const EXT_TO_LANG: Record<string, string> = {
@@ -48,6 +52,27 @@ export function detectLanguageFromPath(filePath: string): string {
   return EXT_TO_LANG[ext] ?? "text"
 }
 
+function resolveRealpathWithFallback(targetPath: string): string {
+  const abs = path.resolve(targetPath)
+  const missingSegments: string[] = []
+  let probe = abs
+  while (true) {
+    try {
+      const real = fsSync.realpathSync(probe)
+      return missingSegments.length > 0
+        ? path.join(real, ...missingSegments)
+        : real
+    } catch {
+      const parent = path.dirname(probe)
+      if (parent === probe) {
+        return abs
+      }
+      missingSegments.unshift(path.basename(probe))
+      probe = parent
+    }
+  }
+}
+
 export function resolveSafeWorkspacePath(
   rootDir: string,
   targetPath: string
@@ -56,11 +81,17 @@ export function resolveSafeWorkspacePath(
   const candidate = path.isAbsolute(targetPath)
     ? path.resolve(targetPath)
     : path.resolve(normalizedRoot, targetPath)
-  const rel = path.relative(normalizedRoot, candidate)
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  const lexicalRel = path.relative(normalizedRoot, candidate)
+  if (lexicalRel.startsWith("..") || path.isAbsolute(lexicalRel)) {
     throw new Error("Path escapes active workspace root")
   }
-  return candidate
+  const realRoot = resolveRealpathWithFallback(normalizedRoot)
+  const realCandidate = resolveRealpathWithFallback(candidate)
+  const realRel = path.relative(realRoot, realCandidate)
+  if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
+    throw new Error("Path escapes active workspace root via symlink")
+  }
+  return fsSync.existsSync(candidate) ? realCandidate : candidate
 }
 
 function formatHostLabel(): string {
@@ -90,6 +121,7 @@ export async function readWorkspaceFile(
   maxBytes = 256_000
 ): Promise<WorkspaceCodeFile> {
   const resolved = resolveSafeWorkspacePath(rootDir, filePath)
+  const realRoot = resolveRealpathWithFallback(rootDir)
   const stat = await fs.stat(resolved)
   if (!stat.isFile()) {
     throw new Error(`Not a file: ${filePath}`)
@@ -99,15 +131,38 @@ export async function readWorkspaceFile(
   try {
     const readSize = Math.min(stat.size, maxBytes)
     const buffer = Buffer.alloc(readSize)
-    await handle.read(buffer, 0, readSize, 0)
-    const content = buffer.toString("utf8")
-    const relPath = path.relative(path.resolve(rootDir), resolved)
+    const { bytesRead } = await handle.read(buffer, 0, readSize, 0)
+    const active = buffer.subarray(0, bytesRead)
+    const probeLen = Math.min(bytesRead, 8192)
+    const hasNulByte = active.subarray(0, probeLen).includes(0)
+    const truncated = stat.size > bytesRead
+    const relPath =
+      path.relative(realRoot, resolved) ||
+      path.relative(path.resolve(rootDir), resolved) ||
+      path.basename(resolved)
+
+    if (hasNulByte) {
+      return {
+        pill: path.basename(resolved),
+        path: relPath,
+        language: "text",
+        startLine: 1,
+        lines: ["[Binary file — preview unavailable]"],
+        truncated,
+        isBinary: true,
+      }
+    }
+
+    const decoder = new StringDecoder("utf8")
+    const content = truncated ? decoder.write(active) : decoder.end(active)
     return {
       pill: path.basename(resolved),
-      path: relPath || path.basename(resolved),
+      path: relPath,
       language: detectLanguageFromPath(resolved),
       startLine: 1,
       lines: content.split("\n"),
+      truncated,
+      isBinary: false,
     }
   } finally {
     await handle.close()

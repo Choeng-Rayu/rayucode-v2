@@ -1,6 +1,7 @@
 {
   "name": "@rayu-dev/rayucode-desktop",
   "productName": "RayuCode",
+  "desktopName": "rayucode.desktop",
   "version": "0.1.0",
   "private": true,
   "type": "module",

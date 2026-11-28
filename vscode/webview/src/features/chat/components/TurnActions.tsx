@@ -4,7 +4,6 @@ import {
   Clock,
   Copy,
   Download,
-  GitFork,
   Pin,
   RotateCcw,
 } from "lucide-react";
@@ -44,7 +43,6 @@ export function TurnActions({
   kvCachePct,
   kvCacheMissReason,
   pinned: initialPinned = false,
-  onForked,
   onPinToggled,
   onRetry,
   onExport,
@@ -52,7 +50,6 @@ export function TurnActions({
 }: TurnActionsProps) {
   const [copied, setCopied] = React.useState(false);
   const [pinned, setPinned] = React.useState(initialPinned);
-  const [isForking, setIsForking] = React.useState(false);
   const copyTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
@@ -85,22 +82,6 @@ export function TurnActions({
       setCopied(false);
       copyTimerRef.current = null;
     }, 1500);
-  };
-
-  const handleFork = async () => {
-    if (isForking) return;
-    setIsForking(true);
-    try {
-      const result = await callRpc("sessions.fork", {
-        sessionId,
-        atTurnId: turnId,
-      });
-      onForked?.(result.session);
-    } catch {
-      // ignore offline error
-    } finally {
-      setIsForking(false);
-    }
   };
 
   const handleTogglePin = () => {
@@ -172,31 +153,6 @@ export function TurnActions({
             </TooltipContent>
           </Tooltip>
         )}
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              data-testid={`turn-fork-${turnId}`}
-              onClick={() => void handleFork()}
-              disabled={isForking}
-              aria-label="Fork from here"
-              className="grid size-7 cursor-pointer place-items-center rounded-lg border border-transparent text-muted-ink transition-colors hover:bg-active hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              <GitFork className="size-[15px]" aria-hidden="true" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent
-            side="top"
-            align="start"
-            className="flex w-[240px] flex-col items-start gap-1 p-2.5"
-          >
-            <div className="text-xs font-semibold text-ink">Fork from here</div>
-            <div className="text-[11.5px] leading-snug text-muted-ink">
-              Starts a new session from this point. This one stays as it is.
-            </div>
-          </TooltipContent>
-        </Tooltip>
 
         <Tooltip>
           <TooltipTrigger asChild>

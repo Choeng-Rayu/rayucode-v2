@@ -22,6 +22,7 @@ import {
   onHostMessage,
   useAppStore,
 } from "@/lib";
+import * as rpcClient from "@/lib/rpc-client";
 import { __resetProcessesStateForTest } from "@/features/processes";
 
 import { App } from "../App";
@@ -761,5 +762,218 @@ describe("App end-to-end integration", () => {
     }
 
     invalidateSpy.mockRestore();
+  });
+
+  it("coalesces bursty catalog change notifications across Composer, Settings, and Agents and updates open pickers with arbitrary future models", async () => {
+    const prevScrollIntoView = Element.prototype.scrollIntoView;
+    const prevHasPointerCapture = HTMLElement.prototype.hasPointerCapture;
+    Element.prototype.scrollIntoView = vi.fn();
+    HTMLElement.prototype.hasPointerCapture = vi.fn(() => false);
+
+    const origCallRpc = rpcClient.callRpc;
+    const rpcSpy = vi.spyOn(rpcClient, "callRpc");
+    let catalogVersion = 1;
+    let modelsGetCount = 0;
+
+    rpcSpy.mockImplementation((async (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => {
+      if (method === "settings.models.get") {
+        modelsGetCount += 1;
+        const baseRoutes = [
+          {
+            id: "claude-sonnet-4-5",
+            model: "claude-sonnet-4-5",
+            modelSpec: "rayu:claude-sonnet-4-5",
+            provider: "rayu",
+            apiMethod: "rayu",
+            label: "Claude Sonnet 4.5",
+            available: true,
+          },
+        ];
+        const liveRoutes =
+          catalogVersion >= 2
+            ? [
+                ...baseRoutes,
+                {
+                  id: "future-zenith-9000",
+                  model: "future-zenith-9000",
+                  modelSpec: "rayu:future-zenith-9000",
+                  provider: "rayu",
+                  apiMethod: "rayu",
+                  label: "Future Zenith 9000",
+                  available: true,
+                },
+              ]
+            : baseRoutes;
+        return {
+          defaultModel: "rayu:claude-sonnet-4-5",
+          defaultEffort: "medium",
+          serviceTier: "auto",
+          cacheTtl: "5m",
+          transport: "auto",
+          roleOverrides: [
+            {
+              role: "swarm",
+              label: "Swarm Workers",
+              model: "inherit",
+              scope: "global",
+            },
+          ],
+          routes: liveRoutes,
+        };
+      }
+      return origCallRpc(method as never, params as never);
+    }) as typeof rpcClient.callRpc);
+
+    const client = createQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    try {
+      render(
+        <QueryClientProvider client={client}>
+          <TooltipProvider delayDuration={0}>
+            <App />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+
+      // Open Workspace Composer model picker
+      act(() => {
+        __dispatchHostMessageForTest({
+          type: "rayucode.ui.navigate",
+          route: "workspace",
+          sessionId: "ses_vscode_shell",
+        });
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("chat-workspace-view")).toBeTruthy();
+      });
+
+      fireEvent.click(screen.getByTestId("model-effort-trigger"));
+      fireEvent.click(screen.getByTestId("open-model-list-btn"));
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", { name: /Claude Sonnet 4\.5/i }),
+        ).toBeTruthy();
+      });
+      expect(
+        screen.queryByRole("option", { name: /Future Zenith 9000/i }),
+      ).toBeNull();
+
+      // Unrelated session notification does not invalidate active session queries
+      invalidateSpy.mockClear();
+      act(() => {
+        __dispatchHostMessageForTest({
+          type: "rayucode.models.changed",
+          sessionIds: ["ses_unrelated_background"],
+          credentialsChanged: false,
+        });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(invalidateSpy).not.toHaveBeenCalled();
+
+      // Burst of 4 catalog change notifications (both models.changed and catalog.changed) coalesces into 1 flush
+      catalogVersion = 2;
+      modelsGetCount = 0;
+      invalidateSpy.mockClear();
+      act(() => {
+        __dispatchHostMessageForTest({
+          type: "rayucode.models.changed",
+          sessionIds: ["ses_vscode_shell"],
+          credentialsChanged: false,
+        });
+        __dispatchHostMessageForTest({
+          type: "rayucode.catalog.changed",
+          sessionId: "ses_vscode_shell",
+          credentialsChanged: false,
+        });
+        __dispatchHostMessageForTest({
+          type: "rayucode.models.changed",
+          sessionIds: ["ses_vscode_shell"],
+          credentialsChanged: false,
+        });
+        __dispatchHostMessageForTest({
+          type: "rayucode.models.changed",
+          sessionIds: [],
+          credentialsChanged: true,
+        });
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", { name: /Future Zenith 9000/i }),
+        ).toBeTruthy();
+      });
+
+      // Coalesced: each query key prefix invalidated once (not 4x) and single settings.models.get refetch
+      const composerInvalidateCalls = invalidateSpy.mock.calls.filter(
+        (call) =>
+          JSON.stringify((call[0] as { queryKey?: unknown })?.queryKey) ===
+          JSON.stringify(["composer", "model-settings"]),
+      );
+      const settingsInvalidateCalls = invalidateSpy.mock.calls.filter(
+        (call) =>
+          JSON.stringify((call[0] as { queryKey?: unknown })?.queryKey) ===
+          JSON.stringify(["settings", "models"]),
+      );
+      const agentsInvalidateCalls = invalidateSpy.mock.calls.filter(
+        (call) =>
+          JSON.stringify((call[0] as { queryKey?: unknown })?.queryKey) ===
+          JSON.stringify(["agents", "models"]),
+      );
+      expect(composerInvalidateCalls).toHaveLength(1);
+      expect(settingsInvalidateCalls).toHaveLength(1);
+      expect(agentsInvalidateCalls).toHaveLength(1);
+      expect(modelsGetCount).toBe(1);
+
+      // Open Settings -> Models & Agents and verify Future Zenith 9000 is present
+      act(() => {
+        useAppStore.getState().setActiveSettingsSection("models");
+        __dispatchHostMessageForTest({
+          type: "rayucode.ui.navigate",
+          route: "settings",
+          sessionId: "ses_vscode_shell",
+        });
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("settings-section-models")).toBeTruthy();
+      });
+      fireEvent.keyDown(screen.getByTestId("default-model-select"), {
+        key: "ArrowDown",
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", {
+            name: "Future Zenith 9000 (Rayu Cloud)",
+          }),
+        ).toBeTruthy();
+      });
+      fireEvent.keyDown(screen.getByTestId("default-model-select"), {
+        key: "Escape",
+      });
+
+      // Navigate to Agents & Personas and verify Future Zenith 9000 is available there too
+      fireEvent.click(screen.getByTestId("settings-nav-agents"));
+      await waitFor(() => {
+        expect(screen.getByTestId("agents-view")).toBeTruthy();
+      });
+      fireEvent.keyDown(screen.getByTestId("agents-subagent-model-select"), {
+        key: "ArrowDown",
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByRole("option", {
+            name: "Future Zenith 9000 (Rayu Cloud)",
+          }),
+        ).toBeTruthy();
+      });
+    } finally {
+      invalidateSpy.mockRestore();
+      rpcSpy.mockRestore();
+      Element.prototype.scrollIntoView = prevScrollIntoView;
+      HTMLElement.prototype.hasPointerCapture = prevHasPointerCapture;
+    }
   });
 });

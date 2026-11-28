@@ -41,8 +41,16 @@ const rayuApi = {
       ipcRenderer.invoke("rayu:harness:restore-session", { sessionId }),
     attachSession: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:attach-session", { sessionId }),
-    forkSession: (sessionId) =>
-      ipcRenderer.invoke("rayu:harness:fork-session", { sessionId }),
+    forkSession: (sessionId, options) =>
+      ipcRenderer.invoke("rayu:harness:fork-session", {
+        sessionId,
+        ...(options && options.upToMessageIndex !== undefined
+          ? { upToMessageIndex: options.upToMessageIndex }
+          : {}),
+        ...(options && options.upToMessageId !== undefined
+          ? { upToMessageId: options.upToMessageId }
+          : {}),
+      }),
     getHistory: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:get-history", { sessionId }),
     sendMessage: (sessionId, content, images) =>
@@ -51,6 +59,23 @@ const rayuApi = {
         content,
         ...(images && images.length > 0 ? { images } : {}),
       }),
+    softInterrupt: (sessionId, content, options) =>
+      ipcRenderer.invoke("rayu:harness:soft-interrupt", {
+        sessionId,
+        content,
+        ...(options && options.urgent !== undefined
+          ? { urgent: options.urgent }
+          : {}),
+        ...(options && options.clientId ? { clientId: options.clientId } : {}),
+        ...(options && options.images && options.images.length > 0
+          ? { images: options.images }
+          : {}),
+      }),
+    cancelSoftInterrupts: (sessionId, interruptId) =>
+      ipcRenderer.invoke("rayu:harness:cancel-soft-interrupts", {
+        sessionId,
+        ...(interruptId ? { interruptId } : {}),
+      }),
     cancel: (sessionId) =>
       ipcRenderer.invoke("rayu:harness:cancel", { sessionId }),
     respondToPermission: (sessionId, requestId, decision) =>
@@ -58,6 +83,12 @@ const rayuApi = {
         sessionId,
         requestId,
         decision,
+      }),
+    respondToQuestion: (sessionId, requestId, response) =>
+      ipcRenderer.invoke("rayu:harness:question-response", {
+        sessionId,
+        requestId,
+        response,
       }),
     setPermissionMode: (sessionId, mode) =>
       ipcRenderer.invoke("rayu:harness:set-permission-mode", {
@@ -87,6 +118,11 @@ const rayuApi = {
     runtimeCommand: (sessionId, command, args) =>
       ipcRenderer.invoke("rayu:harness:runtime-command", {
         sessionId,
+        command,
+        args,
+      }),
+    globalRuntimeCommand: (command, args) =>
+      ipcRenderer.invoke("rayu:harness:global-runtime-command", {
         command,
         args,
       }),
@@ -180,6 +216,8 @@ const rayuApi = {
   },
   git: {
     getChanges: () => ipcRenderer.invoke("rayu:git:changes"),
+    getFileDiff: (filePath) =>
+      ipcRenderer.invoke("rayu:git:file-diff", { filePath }),
     getCommits: () => ipcRenderer.invoke("rayu:git:commits"),
     listBranches: () => ipcRenderer.invoke("rayu:git:branches"),
     checkoutBranch: (branch) =>

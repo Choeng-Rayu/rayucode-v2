@@ -140,6 +140,10 @@ export function applyTraceEvents(
         next.answerIntro = `${next.answerIntro}${event.delta}`
         break
       }
+      case "answer-replace": {
+        next.answerIntro = event.text
+        break
+      }
       case "summary-title": {
         next.answerSummaryTitle = event.title
         break
@@ -185,6 +189,7 @@ export interface StartLiveTurnInput {
   userImages?: PromptImageAttachment[]
   userRefFiles?: string
   initialNote?: string
+  activeToolStatus?: string | null
   startedAtMs?: number
   baseHistoryTurnCount?: number
 }

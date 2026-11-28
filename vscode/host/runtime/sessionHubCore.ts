@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 import {
   API_VERSION_MAJOR,
   HarnessError,
@@ -48,6 +50,7 @@ import {
   type RiskTier,
   type ServiceTier,
   type SessionHistoryView,
+  type SessionPrefsPatch,
   type SessionSourceId,
   type SessionSummaryView,
   type SidePanelPageView,
@@ -80,7 +83,6 @@ export interface StoredSessionComposerPrefs {
   effort?: EffortLevel;
   permissionMode?: PermissionModeId;
   serviceTier?: ServiceTier;
-  cacheTtl?: CacheTtl;
 }
 
 const VALID_EFFORT_LEVELS = new Set<EffortLevel>([
@@ -169,6 +171,13 @@ export class SessionHubCore extends EventEmitter {
   >();
   private readonly sessionInfoCache = new Map<string, SessionInfo>();
   private readonly sessionWorkingDirs = new Map<string, string>();
+  private readonly pendingCatalogSessions = new Set<string>();
+  private catalogTimer?: ReturnType<typeof setTimeout>;
+  private catalogBroadcastAll = false;
+  private catalogCredentialsChanged = false;
+  private readonly sessionOperations = new Map<string, Promise<unknown>>();
+  private readonly appliedTierBySession = new Map<string, ServiceTier>();
+  private readonly appliedPermissionBySession = new Map<string, PermissionModeId>();
   private readonly newlyCreatedSessions = new Set<string>();
   private readonly creditsAccumulator = new RayuCreditsAccumulator();
 
@@ -273,9 +282,8 @@ export class SessionHubCore extends EventEmitter {
       this.streamingBySession.clear();
       this.appliedModelBySession.clear();
       this.appliedEffortBySession.clear();
-      this.pendingModelBySession.clear();
-      this.pendingEffortBySession.clear();
-      this.pendingPermissionModeBySession.clear();
+      this.appliedPermissionBySession.clear();
+      this.appliedTierBySession.clear();
       this.pendingPermissionsBySession.clear();
       this.isTurnStreaming = false;
       this.emit("stateChanged");
@@ -620,10 +628,122 @@ export class SessionHubCore extends EventEmitter {
     return this.activeSessionId;
   }
 
-  getSessionWorkingDir(sessionId?: string): string | undefined {
-    const sid = sessionId ?? this.activeSessionId;
+  getSessionWorkingDirForSession(sessionId: string): string | undefined {
+    const sid = sessionId.trim();
     if (!sid) return undefined;
-    return this.sessionWorkingDirs.get(sid);
+    return (
+      this.sessionWorkingDirs.get(sid) ??
+      this.sessionInfoCache.get(sid)?.working_dir
+    );
+  }
+
+  getSessionWorkingDir(sessionId?: string): string | undefined {
+    if (sessionId !== undefined) {
+      return this.getSessionWorkingDirForSession(sessionId);
+    }
+    if (!this.activeSessionId) return undefined;
+    return this.getSessionWorkingDirForSession(this.activeSessionId);
+  }
+
+  private canonicalizeDirPath(rawPath: string): string {
+    const trimmed = rawPath.trim();
+    try {
+      return fs.realpathSync(trimmed);
+    } catch {
+      return path.resolve(trimmed);
+    }
+  }
+
+  private resolveAvailableWorkspaceCandidates(): string[] {
+    const candidates = new Set<string>();
+    for (const folder of this.host.getWorkspaceFolders()) {
+      if (folder.fsPath?.trim()) {
+        candidates.add(this.canonicalizeDirPath(folder.fsPath));
+      }
+    }
+    const ledger = this.workspaceRegistry.getSnapshot();
+    for (const ws of ledger.workspaces) {
+      if (
+        !ws.hidden &&
+        !ws.missingOnDisk &&
+        (ws.canonicalPath || ws.path)?.trim()
+      ) {
+        candidates.add(this.canonicalizeDirPath(ws.canonicalPath || ws.path));
+      }
+    }
+    return [...candidates];
+  }
+
+  private resolveCreateSessionWorkingDir(
+    requestedWorkingDir?: string,
+    fallbackToCwd = true,
+  ): string | undefined {
+    const trimmed = requestedWorkingDir?.trim();
+    if (trimmed) {
+      try {
+        return fs.realpathSync(trimmed);
+      } catch {
+        return trimmed;
+      }
+    }
+    const candidates = this.resolveAvailableWorkspaceCandidates();
+    if (candidates.length > 1) {
+      throw new HarnessError(
+        "invalid_request",
+        "Select a project workspace before starting a session.",
+      );
+    }
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    return fallbackToCwd ? process.cwd() : undefined;
+  }
+
+  private buildAcknowledgedPrefs(sessionId: string): SessionPrefsPatch {
+    const saved = this.getSessionPrefs(sessionId);
+    const appliedModel = this.appliedModelBySession.get(sessionId);
+    const appliedEffort = normalizeStoredEffort(
+      this.appliedEffortBySession.get(sessionId),
+    );
+    const appliedPermission = this.appliedPermissionBySession.get(sessionId);
+    const appliedTier = this.appliedTierBySession.get(sessionId);
+    const model = appliedModel ?? saved?.model;
+    const provider =
+      saved?.provider ?? (model?.startsWith("rayu:") ? "rayu" : undefined);
+    const effort = appliedEffort ?? saved?.effort;
+    const permissionMode = appliedPermission ?? saved?.permissionMode;
+    const serviceTier = appliedTier ?? saved?.serviceTier;
+    return {
+      ...(model ? { model } : {}),
+      ...(provider ? { provider } : {}),
+      ...(effort ? { effort } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(serviceTier ? { serviceTier } : {}),
+    };
+  }
+
+  private buildPendingPrefs(sessionId: string): SessionPrefsPatch {
+    const pendingModel = this.pendingModelBySession.get(sessionId);
+    const pendingEffort = normalizeStoredEffort(
+      this.pendingEffortBySession.get(sessionId),
+    );
+    const pendingPermission = this.pendingPermissionModeBySession.get(sessionId);
+    return {
+      ...(pendingModel?.modelSpec ? { model: pendingModel.modelSpec } : {}),
+      ...(pendingModel?.provider ? { provider: pendingModel.provider } : {}),
+      ...(pendingEffort ? { effort: pendingEffort } : {}),
+      ...(pendingPermission ? { permissionMode: pendingPermission } : {}),
+    };
+  }
+
+  private broadcastSessionPrefsSync(sessionId: string): void {
+    if (!sessionId) return;
+    this.broadcast({
+      type: "rayucode.session.prefsSync",
+      sessionId,
+      acknowledged: this.buildAcknowledgedPrefs(sessionId),
+      pending: this.buildPendingPrefs(sessionId),
+    });
   }
 
   getActiveModel(): string | undefined {
@@ -680,61 +800,187 @@ export class SessionHubCore extends EventEmitter {
     return /\btimeout\b|timed out/i.test(msg);
   }
 
+  private runSessionOperation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.sessionOperations.get(sessionId);
+    const next = (previous?.catch(() => {}) ?? Promise.resolve()).then(operation);
+    this.sessionOperations.set(sessionId, next);
+    const cleanup = () => {
+      if (this.sessionOperations.get(sessionId) === next) this.sessionOperations.delete(sessionId);
+    };
+    void next.then(cleanup, cleanup);
+    return next;
+  }
+
   private flushPendingNextTurnSettings(sessionId: string): void {
-    const hasPendingModel = this.pendingModelBySession.has(sessionId);
-    const hasPendingEffort = this.pendingEffortBySession.has(sessionId);
-    const hasPendingPerm = this.pendingPermissionModeBySession.has(sessionId);
-    if (!hasPendingModel && !hasPendingEffort && !hasPendingPerm) return;
-
-    void (async () => {
-      if (this.isSessionTurnActive(sessionId)) return;
+    if (
+      !this.pendingModelBySession.has(sessionId) &&
+      !this.pendingEffortBySession.has(sessionId) &&
+      !this.pendingPermissionModeBySession.has(sessionId)
+    ) return;
+    void this.runSessionOperation(sessionId, async () => {
       const client = this.socketPool.get(sessionId);
-      if (!client) return;
+      if (client && !this.isSessionTurnActive(sessionId)) {
+        await this.applyNextTurnSettings(sessionId, client, {}, true);
+      }
+    }).catch(() => {
+      // Retain unacknowledged selections for the next explicit submit.
+    });
+  }
 
-      const pendingPerm = this.pendingPermissionModeBySession.get(sessionId);
-      if (pendingPerm && !this.isSessionTurnActive(sessionId)) {
-        try {
-          await client.setPermissionMode(
+  private async applyNextTurnSettings(
+    sessionId: string,
+    client: RayucodeClient,
+    requested: {
+      model?: string;
+      provider?: string;
+      effort?: string;
+      permissionMode?: PermissionModeId;
+      serviceTier?: ServiceTier;
+    },
+    applyDeferred = false,
+  ): Promise<void> {
+    let prefsDirty = false;
+    try {
+      const pendingMode = applyDeferred
+        ? this.pendingPermissionModeBySession.get(sessionId)
+        : undefined;
+      const mode = requested.permissionMode ?? pendingMode;
+      if (mode) {
+        if (this.appliedPermissionBySession.get(sessionId) !== mode) {
+          if (this.clientSupportsPermissionModes(client)) {
+            await client.setPermissionMode(
+              sessionId,
+              toHarnessPermissionMode(mode),
+            );
+          } else if (mode !== "default") {
+            throw new HarnessError(
+              "unsupported",
+              "The engine cannot apply this permission mode.",
+            );
+          }
+          this.appliedPermissionBySession.set(sessionId, mode);
+          if (this.activeSessionId === sessionId) this.activePermissionMode = mode;
+          await this.saveSessionPrefs(sessionId, { permissionMode: mode });
+          this.broadcast({
+            type: "rayucode.permission.modeSync",
             sessionId,
-            toHarnessPermissionMode(pendingPerm),
-          );
-          if (this.pendingPermissionModeBySession.get(sessionId) === pendingPerm) {
-            this.pendingPermissionModeBySession.delete(sessionId);
+            mode,
+          });
+          prefsDirty = true;
+        }
+        if (
+          requested.permissionMode !== undefined ||
+          this.pendingPermissionModeBySession.get(sessionId) === pendingMode
+        ) {
+          if (this.pendingPermissionModeBySession.delete(sessionId)) {
+            prefsDirty = true;
           }
-        } catch {
-          // Keep queued so the next send_message applies it.
         }
       }
 
-      const pendingModel = this.pendingModelBySession.get(sessionId);
-      if (pendingModel && !this.isSessionTurnActive(sessionId)) {
-        try {
-          await client.setModel(sessionId, pendingModel.modelSpec);
-          if (
-            this.pendingModelBySession.get(sessionId)?.modelSpec ===
-            pendingModel.modelSpec
-          ) {
-            this.pendingModelBySession.delete(sessionId);
+      const pendingModel = applyDeferred
+        ? this.pendingModelBySession.get(sessionId)
+        : undefined;
+      const requestedModel = requested.model?.trim() || undefined;
+      const model = requestedModel ?? pendingModel?.modelSpec;
+      const provider = requestedModel
+        ? requested.provider ?? (model?.startsWith("rayu:") ? "rayu" : undefined)
+        : pendingModel?.provider ??
+          (model?.startsWith("rayu:") ? "rayu" : undefined);
+      const modelChanged = Boolean(
+        model &&
+          ((!requestedModel && pendingModel) ||
+            model !== this.appliedModelBySession.get(sessionId)),
+      );
+      if (model) {
+        if (modelChanged) {
+          await client.setModel(sessionId, model);
+          this.appliedModelBySession.set(sessionId, model);
+          this.appliedEffortBySession.delete(sessionId);
+          if (this.activeSessionId === sessionId) {
+            this.activeModel = model;
+            if (provider) this.activeProvider = provider;
           }
-          this.appliedModelBySession.set(sessionId, pendingModel.modelSpec);
-        } catch {
-          // Keep queued in pendingModelBySession so the next send_message applies it.
+          await this.saveSessionPrefs(sessionId, { model, provider });
+          prefsDirty = true;
+        }
+        if (
+          requestedModel !== undefined ||
+          this.pendingModelBySession.get(sessionId) === pendingModel
+        ) {
+          if (this.pendingModelBySession.delete(sessionId)) {
+            prefsDirty = true;
+          }
         }
       }
 
-      const pendingEffort = this.pendingEffortBySession.get(sessionId);
-      if (pendingEffort && !this.isSessionTurnActive(sessionId)) {
-        try {
-          await client.setReasoningEffort(sessionId, pendingEffort);
-          if (this.pendingEffortBySession.get(sessionId) === pendingEffort) {
-            this.pendingEffortBySession.delete(sessionId);
+      const pendingEffort = applyDeferred
+        ? this.pendingEffortBySession.get(sessionId)
+        : undefined;
+      const requestedEffort = requested.effort?.trim() || undefined;
+      const effort = requestedEffort ?? pendingEffort;
+      if (effort) {
+        if (effort !== this.appliedEffortBySession.get(sessionId)) {
+          await client.setReasoningEffort(sessionId, effort);
+          this.appliedEffortBySession.set(sessionId, effort);
+          const normalized = normalizeStoredEffort(effort);
+          if (normalized) {
+            await this.saveSessionPrefs(sessionId, { effort: normalized });
           }
-          this.appliedEffortBySession.set(sessionId, pendingEffort);
-        } catch {
-          // Keep queued in pendingEffortBySession so the next send_message applies it.
+          prefsDirty = true;
+        }
+        if (
+          requestedEffort !== undefined ||
+          this.pendingEffortBySession.get(sessionId) === pendingEffort
+        ) {
+          if (this.pendingEffortBySession.delete(sessionId)) {
+            prefsDirty = true;
+          }
         }
       }
-    })();
+
+      if (requested.serviceTier) {
+        const appliedTier = this.appliedTierBySession.get(sessionId);
+        const hasActiveNonAutoTier =
+          appliedTier === "priority" ||
+          appliedTier === "ultrafast" ||
+          appliedTier === "flex";
+        if (requested.serviceTier === "auto") {
+          if (hasActiveNonAutoTier) {
+            await client.runtimeCommand(sessionId, "fast", ["off"]);
+            this.appliedTierBySession.set(sessionId, "auto");
+            await this.saveSessionPrefs(sessionId, { serviceTier: "auto" });
+            prefsDirty = true;
+          } else if (appliedTier !== "auto") {
+            this.appliedTierBySession.set(sessionId, "auto");
+            const prevSaved = this.getSessionPrefs(sessionId)?.serviceTier;
+            if (prevSaved && prevSaved !== "auto") {
+              await this.saveSessionPrefs(sessionId, { serviceTier: "auto" });
+              prefsDirty = true;
+            }
+          }
+        } else if (requested.serviceTier === "off") {
+          if (appliedTier !== "off") {
+            await client.runtimeCommand(sessionId, "fast", ["off"]);
+            this.appliedTierBySession.set(sessionId, "off");
+            await this.saveSessionPrefs(sessionId, { serviceTier: "off" });
+            prefsDirty = true;
+          }
+        } else if (modelChanged || appliedTier !== requested.serviceTier) {
+          await client.runtimeCommand(sessionId, "fast", [requested.serviceTier]);
+          this.appliedTierBySession.set(sessionId, requested.serviceTier);
+          await this.saveSessionPrefs(sessionId, {
+            serviceTier: requested.serviceTier,
+          });
+          prefsDirty = true;
+        }
+      }
+    } finally {
+      if (prefsDirty) {
+        this.broadcastSessionPrefsSync(sessionId);
+      }
+      this.emit("stateChanged");
+    }
   }
 
   getTotalSessionCredits(): number | undefined {
@@ -868,6 +1114,7 @@ export class SessionHubCore extends EventEmitter {
 
   async fetchFileChanges(
     sessionId?: string,
+    opts?: { throwOnError?: boolean },
   ): Promise<FileChangesSnapshotView | null> {
     const rawSid = sessionId ?? this.activeSessionId;
     if (!rawSid) return null;
@@ -875,13 +1122,14 @@ export class SessionHubCore extends EventEmitter {
       const sid = await this.resolveAttachableSessionId(rawSid);
       const client = await this.ensureAttachedClient(sid);
       if (!this.clientSupportsFileChanges(client)) {
-        return this.fileChangesBySession.get(sid) ?? null;
+        return opts?.throwOnError ? null : (this.fileChangesBySession.get(sid) ?? null);
       }
       const raw = await client.getFileChanges(sid);
       const snapshot = mapRawFileChangesSnapshot(raw, sid);
       this.fileChangesBySession.set(sid, snapshot);
       return snapshot;
-    } catch {
+    } catch (error) {
+      if (opts?.throwOnError) throw error;
       return this.fileChangesBySession.get(rawSid) ?? null;
     }
   }
@@ -910,19 +1158,34 @@ export class SessionHubCore extends EventEmitter {
     if (!this.clientSupportsFileChanges(client)) {
       return null;
     }
-    const targetPath =
-      opts?.path !== undefined
-        ? this.resolveTrackedFilePath(sid, opts.path)
-        : undefined;
-    const raw = await client.fileChangeAction(sid, action, {
-      ...(targetPath !== undefined ? { path: targetPath } : {}),
-      ...(opts?.force !== undefined ? { force: opts.force } : {}),
-    });
-    const mapped = mapRawFileChangeActionResponse(raw, sid);
-    if (mapped.snapshot) {
-      this.broadcastFileChanges(sid, mapped.snapshot);
+    const snapshot = mapRawFileChangesSnapshot(await client.getFileChanges(sid), sid);
+    const target = opts?.path === undefined
+      ? undefined
+      : snapshot.files.find((file) => file.path === opts.path || file.displayPath === opts.path);
+    if (snapshot.sessionId !== sid || (opts?.path !== undefined && !target)) {
+      return { ok: false, message: "This file has no review snapshot in the selected session." };
     }
-    return mapped;
+    let mapped: FileChangeActionResultView | undefined;
+    try {
+      const raw = await client.fileChangeAction(sid, action, {
+        ...(target ? { path: target.path } : {}),
+        ...(opts?.force ? { force: true } : {}),
+      });
+      mapped = mapRawFileChangeActionResponse(raw, sid);
+      if (mapped.snapshot?.sessionId === sid) {
+        this.broadcastFileChanges(sid, mapped.snapshot);
+      }
+      return mapped;
+    } finally {
+      try {
+        const latest = await this.fetchFileChanges(sid, { throwOnError: true });
+        if (latest?.sessionId === sid) {
+          this.broadcastFileChanges(sid, latest);
+        }
+      } catch {
+        // Never re-broadcast pre-action cached snapshot if fresh readback fails.
+      }
+    }
   }
 
   registerSurface(
@@ -971,13 +1234,15 @@ export class SessionHubCore extends EventEmitter {
       ? this.socketPool.get(this.activeSessionId)
       : undefined;
     const activeClient = attachedClient ?? this.bridgeManager.getActiveClient();
-    if (!activeClient) return;
-    await activeClient.notifyAuthChanged(provider).catch(() => {});
-    if (this.activeSessionId && attachedClient) {
-      await attachedClient
-        .runtimeCommand(this.activeSessionId, "refresh_model_list", [])
-        .catch(() => {});
+    if (activeClient) {
+      await activeClient.notifyAuthChanged(provider).catch(() => {});
+      if (this.activeSessionId && attachedClient) {
+        await attachedClient
+          .runtimeCommand(this.activeSessionId, "refresh_model_list", [])
+          .catch(() => {});
+      }
     }
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async setDaemonApiKey(provider: string, apiKey: string): Promise<void> {
@@ -987,6 +1252,7 @@ export class SessionHubCore extends EventEmitter {
         : undefined) ?? this.bridgeManager.getActiveClient();
     if (!client) return;
     await client.setApiKey(provider, apiKey);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async clearDaemonApiKey(provider: string): Promise<void> {
@@ -996,12 +1262,14 @@ export class SessionHubCore extends EventEmitter {
         : undefined) ?? this.bridgeManager.getActiveClient();
     if (!client) return;
     await client.clearApiKey(provider);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   async logoutDaemonProvider(provider: string): Promise<void> {
     const sid = this.activeSessionId;
     if (!sid) return;
     await this.runtimeCommand("logout", [provider, "confirm"], sid);
+    this.notifyCatalogChanged(undefined, true);
   }
 
   /**
@@ -1063,6 +1331,12 @@ export class SessionHubCore extends EventEmitter {
                 attached.session_id,
                 toHarnessPermissionMode(desiredMode),
               )
+              .then(() => {
+                this.appliedPermissionBySession.set(
+                  attached.session_id,
+                  desiredMode,
+                );
+              })
               .catch(() => {});
           }
         } catch (err) {
@@ -1076,6 +1350,39 @@ export class SessionHubCore extends EventEmitter {
       }
       return client;
     });
+  }
+
+  public notifyCatalogChanged(
+    sessionId?: string,
+    credentialsChanged = false,
+  ): void {
+    this.publishCatalogChange(sessionId, credentialsChanged);
+  }
+
+  private publishCatalogChange(sessionId?: string, credentialsChanged = false): void {
+    const trimmed = sessionId?.trim();
+    if (!trimmed) {
+      this.catalogBroadcastAll = true;
+    } else {
+      this.pendingCatalogSessions.add(trimmed);
+      if (this.pendingCatalogSessions.size > 1) {
+        this.catalogBroadcastAll = true;
+      }
+    }
+    this.catalogCredentialsChanged ||= credentialsChanged;
+    if (this.catalogTimer) return;
+    this.catalogTimer = setTimeout(() => {
+      this.catalogTimer = undefined;
+      const sessionIds = this.catalogBroadcastAll
+        ? []
+        : [...this.pendingCatalogSessions];
+      this.pendingCatalogSessions.clear();
+      this.catalogBroadcastAll = false;
+      const credentialsChanged = this.catalogCredentialsChanged;
+      this.catalogCredentialsChanged = false;
+      this.broadcast({ type: "rayucode.models.changed", sessionIds, credentialsChanged });
+    }, 40);
+    this.catalogTimer.unref?.();
   }
 
   private ingestFrame(rawFrame: ServerFrame, boundSessionId?: string): void {
@@ -1223,6 +1530,14 @@ export class SessionHubCore extends EventEmitter {
       case "permission_mode_changed": {
         if (typeof frame.mode === "string") {
           const uiMode = fromHarnessPermissionMode(frame.mode);
+          if (resolvedSessionId) {
+            this.appliedPermissionBySession.set(resolvedSessionId, uiMode);
+            if (
+              this.pendingPermissionModeBySession.get(resolvedSessionId) === uiMode
+            ) {
+              this.pendingPermissionModeBySession.delete(resolvedSessionId);
+            }
+          }
           if (isFocusedSession) {
             this.activePermissionMode = uiMode;
           }
@@ -1230,6 +1545,7 @@ export class SessionHubCore extends EventEmitter {
             void this.saveSessionPrefs(resolvedSessionId, {
               permissionMode: uiMode,
             });
+            this.broadcastSessionPrefsSync(resolvedSessionId);
           }
           this.broadcast({
             type: "rayucode.permission.modeSync",
@@ -1240,9 +1556,19 @@ export class SessionHubCore extends EventEmitter {
         }
         break;
       }
+      case "models": {
+        if (frame.reply_to === undefined) this.publishCatalogChange(resolvedSessionId);
+        break;
+      }
+      case "credential_updated": {
+        this.publishCatalogChange(undefined, true);
+        break;
+      }
       case "model_info":
       case "runtime_info": {
+        if (frame.reply_to === undefined) this.publishCatalogChange(resolvedSessionId);
         if (resolvedSessionId) {
+          let reconciled = false;
           if (typeof frame.model === "string" && frame.model.trim()) {
             const formatted = formatHarnessModelSpec(
               frame.model,
@@ -1250,6 +1576,13 @@ export class SessionHubCore extends EventEmitter {
             );
             if (formatted) {
               this.appliedModelBySession.set(resolvedSessionId, formatted);
+              if (
+                this.pendingModelBySession.get(resolvedSessionId)?.modelSpec ===
+                formatted
+              ) {
+                this.pendingModelBySession.delete(resolvedSessionId);
+              }
+              reconciled = true;
             }
           }
           const rawEffort =
@@ -1260,6 +1593,15 @@ export class SessionHubCore extends EventEmitter {
                 : "";
           if (rawEffort) {
             this.appliedEffortBySession.set(resolvedSessionId, rawEffort);
+            if (
+              this.pendingEffortBySession.get(resolvedSessionId) === rawEffort
+            ) {
+              this.pendingEffortBySession.delete(resolvedSessionId);
+            }
+            reconciled = true;
+          }
+          if (reconciled) {
+            this.broadcastSessionPrefsSync(resolvedSessionId);
           }
         }
         if (isFocusedSession) {
@@ -1498,7 +1840,7 @@ export class SessionHubCore extends EventEmitter {
       next.permissionMode = patch.permissionMode;
     }
     if (patch.serviceTier !== undefined) next.serviceTier = patch.serviceTier;
-    if (patch.cacheTtl !== undefined) next.cacheTtl = patch.cacheTtl;
+    delete (next as Record<string, unknown>).cacheTtl;
     await this.host.workspaceState.update(SESSION_PREFS_KEY, {
       ...existingMap,
       [sessionId]: next,
@@ -1534,17 +1876,10 @@ export class SessionHubCore extends EventEmitter {
     sessionId: string,
     archived: boolean,
   ): Promise<WorkspaceLedgerView> {
+    await this.workspacesReadyPromise;
     const ledger = await this.workspaceRegistry.setArchived(sessionId, archived);
     const map = { ...this.getLegacyArchivedMap(), [sessionId]: archived };
     await this.host.workspaceState.update(ARCHIVED_SESSIONS_KEY, map);
-    const client = await this.getClient(sessionId).catch(() => null);
-    if (client) {
-      if (archived) {
-        await client.archiveSession(sessionId).catch(() => {});
-      } else {
-        await client.restoreSession(sessionId).catch(() => {});
-      }
-    }
     return this.buildWorkspaceLedgerView(ledger);
   }
 
@@ -1604,7 +1939,6 @@ export class SessionHubCore extends EventEmitter {
           : undefined),
       ...(savedPrefs?.effort ? { effort: savedPrefs.effort } : {}),
       ...(savedPrefs?.serviceTier ? { serviceTier: savedPrefs.serviceTier } : {}),
-      ...(savedPrefs?.cacheTtl ? { cacheTtl: savedPrefs.cacheTtl } : {}),
       permissionMode: resolvedPermissionMode,
       updatedAtMs: info.updated_at_ms ?? info.last_active_at_ms ?? Date.now(),
       pinned: isPinned,
@@ -1750,13 +2084,14 @@ export class SessionHubCore extends EventEmitter {
       effort?: EffortLevel;
       serviceTier?: ServiceTier;
       cacheTtl?: CacheTtl;
+      deferSettings?: boolean;
     } = {},
   ): Promise<SessionSummaryView> {
     return this.socketPool.runSerialized(async () => {
-      const defaultDir =
-        options.workingDir ??
-        this.host.getWorkspaceFolders()[0]?.fsPath ??
-        process.cwd();
+      const defaultDir = this.resolveCreateSessionWorkingDir(
+        options.workingDir,
+        true,
+      )!;
       const client = await this.socketPool.dialFreshClient();
       let info: SessionInfo;
       try {
@@ -1783,79 +2118,33 @@ export class SessionHubCore extends EventEmitter {
       this.syncBackgroundPollTimer();
       await this.host.workspaceState.update(ACTIVE_SESSION_KEY, info.session_id);
 
-      const desiredMode = options.permissionMode ?? this.getDefaultPermissionMode();
-      this.activePermissionMode = desiredMode;
-
-      let resolvedModelSpec: string | undefined;
-      let resolvedProvider: string | undefined = options.provider;
-      if (options.model) {
-        const modelSpec = formatHarnessModelSpec(
-          options.model,
-          options.provider,
-          options.apiMethod,
+      if (!options.deferSettings) {
+        await this.applyNextTurnSettings(info.session_id, client, {
+          permissionMode: options.permissionMode ?? this.getDefaultPermissionMode(),
+          model: options.model ? formatHarnessModelSpec(options.model, options.provider, options.apiMethod) : undefined,
+          provider: options.provider,
+          effort: normalizeStoredEffort(options.effort),
+          serviceTier: options.serviceTier,
+        });
+      }
+      const runtimeInfo = await client.getRuntimeInfo(info.session_id).catch(() => null);
+      if (runtimeInfo?.model) {
+        const actualSpec = formatHarnessModelSpec(
+          runtimeInfo.model,
+          runtimeInfo.provider,
         );
-        if (modelSpec) {
-          resolvedModelSpec = modelSpec;
-          if (!resolvedProvider && modelSpec.startsWith("rayu:")) {
-            resolvedProvider = "rayu";
-          }
+        if (actualSpec && !this.appliedModelBySession.has(info.session_id)) {
+          this.appliedModelBySession.set(info.session_id, actualSpec);
         }
+        this.activeModel = runtimeInfo.model;
       }
-      const normalizedEffort = normalizeStoredEffort(options.effort);
-
-      await this.saveSessionPrefs(info.session_id, {
-        permissionMode: desiredMode,
-        ...(resolvedModelSpec ? { model: resolvedModelSpec } : {}),
-        ...(resolvedProvider ? { provider: resolvedProvider } : {}),
-        ...(normalizedEffort ? { effort: normalizedEffort } : {}),
-        ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
-        ...(options.cacheTtl ? { cacheTtl: options.cacheTtl } : {}),
-      });
-
-      if (this.clientSupportsPermissionModes(client)) {
-        await client
-          .setPermissionMode(info.session_id, toHarnessPermissionMode(desiredMode))
-          .catch(() => {});
-      }
-      this.broadcast({
-        type: "rayucode.permission.modeSync",
-        sessionId: info.session_id,
-        mode: desiredMode,
-      });
-      if (resolvedModelSpec) {
-        await client
-          .setModel(info.session_id, resolvedModelSpec)
-          .then(() => {
-            this.appliedModelBySession.set(info.session_id, resolvedModelSpec!);
-          })
-          .catch(() => {});
-        this.activeModel = resolvedModelSpec;
-        if (resolvedProvider) {
-          this.activeProvider = resolvedProvider;
-        }
-      }
-      if (normalizedEffort) {
-        await client
-          .setReasoningEffort(info.session_id, normalizedEffort)
-          .then(() => {
-            this.appliedEffortBySession.set(info.session_id, normalizedEffort);
-          })
-          .catch(() => {});
-      }
-
-      const runtimeInfo = await client
-        .getRuntimeInfo(info.session_id)
-        .catch(() => null);
-      if (runtimeInfo) {
-        this.activeModel = resolvedModelSpec ?? runtimeInfo.model ?? this.activeModel;
-        this.activeProvider =
-          resolvedProvider ?? runtimeInfo.provider ?? this.activeProvider;
-      }
+      if (runtimeInfo?.provider) this.activeProvider = runtimeInfo.provider;
 
       this.fileChangesBySession.set(
         info.session_id,
         emptyFileChangesSnapshot(info.session_id),
       );
+      this.broadcastSessionPrefsSync(info.session_id);
       this.emit("stateChanged");
       return this.mapSessionInfoToSummary(info);
     });
@@ -1927,6 +2216,9 @@ export class SessionHubCore extends EventEmitter {
       ) {
         await client
           .setPermissionMode(info.session_id, toHarnessPermissionMode(desiredMode))
+          .then(() => {
+            this.appliedPermissionBySession.set(info.session_id, desiredMode);
+          })
           .catch(() => {});
       }
       if (savedPrefs?.effort && !reused && !this.isSessionTurnActive(info.session_id)) {
@@ -1956,6 +2248,12 @@ export class SessionHubCore extends EventEmitter {
             );
             if (actualSpec) {
               this.appliedModelBySession.set(info.session_id, actualSpec);
+              if (
+                this.pendingModelBySession.get(info.session_id)?.modelSpec ===
+                actualSpec
+              ) {
+                this.pendingModelBySession.delete(info.session_id);
+              }
             }
           }
           this.activeModel = savedPrefs?.model ?? runtimeInfo.model ?? this.activeModel;
@@ -1963,6 +2261,11 @@ export class SessionHubCore extends EventEmitter {
             savedPrefs?.provider ?? runtimeInfo.provider ?? this.activeProvider;
         }
       }
+
+      if (!this.isSessionTurnActive(info.session_id)) {
+        this.flushPendingNextTurnSettings(info.session_id);
+      }
+      this.broadcastSessionPrefsSync(info.session_id);
 
       if (this.clientSupportsFileChanges(client)) {
         void this.fetchFileChanges(info.session_id)
@@ -1984,41 +2287,20 @@ export class SessionHubCore extends EventEmitter {
     mode: PermissionModeId,
   ): Promise<{ ok: boolean; mode: PermissionModeId; deferred?: boolean }> {
     const resolvedId = await this.resolveAttachableSessionId(sessionId);
-    if (!this.activeSessionId || this.activeSessionId === resolvedId) {
-      this.activePermissionMode = mode;
-    }
-    await this.saveSessionPrefs(resolvedId, { permissionMode: mode });
-
-    // Rust daemon handles SetPermissionMode lock-free mid-turn, so apply immediately
-    // and only defer to the next turn on a genuine timeout or busy error.
-    const client = await this.ensureAttachedClient(resolvedId);
-    const wireMode = toHarnessPermissionMode(mode);
-    try {
-      await client.setPermissionMode(resolvedId, wireMode);
-      this.pendingPermissionModeBySession.delete(resolvedId);
-    } catch (permErr) {
-      if (
-        this.isTimeoutError(permErr) ||
-        (permErr instanceof HarnessError && permErr.code === "busy")
-      ) {
-        this.pendingPermissionModeBySession.set(resolvedId, mode);
-        this.broadcast({
-          type: "rayucode.permission.modeSync",
-          sessionId: resolvedId,
-          mode,
-        });
-        this.emit("stateChanged");
-        return { ok: true, mode, deferred: true };
+    return this.runSessionOperation(resolvedId, async () => {
+      const client = await this.ensureAttachedClient(resolvedId);
+      try {
+        await this.applyNextTurnSettings(resolvedId, client, { permissionMode: mode });
+      } catch (error) {
+        if (this.isTimeoutError(error) || (error instanceof HarnessError && error.code === "busy")) {
+          this.pendingPermissionModeBySession.set(resolvedId, mode);
+          this.broadcastSessionPrefsSync(resolvedId);
+          return { ok: true, mode, deferred: true };
+        }
+        throw error;
       }
-      throw permErr;
-    }
-    this.broadcast({
-      type: "rayucode.permission.modeSync",
-      sessionId: resolvedId,
-      mode,
+      return { ok: true, mode };
     });
-    this.emit("stateChanged");
-    return { ok: true, mode };
   }
 
   async setSessionModel(
@@ -2041,58 +2323,27 @@ export class SessionHubCore extends EventEmitter {
       return { ok: true };
     }
 
-    const effectiveProvider =
-      requestedProvider ?? (modelSpec.startsWith("rayu:") ? "rayu" : undefined);
-    await this.saveSessionPrefs(sessionId, {
-      model: modelSpec,
-      ...(effectiveProvider ? { provider: effectiveProvider } : {}),
-    });
-
-    const updateFocusedModel = () => {
-      if (!this.activeSessionId || this.activeSessionId === sessionId) {
-        this.activeModel = modelSpec;
-        if (effectiveProvider) {
-          this.activeProvider = effectiveProvider;
-        }
-      }
-    };
-
-    const deferForNextTurn =
-      options.applyNextTurn === true || this.isSessionTurnActive(sessionId);
-    if (deferForNextTurn) {
-      this.pendingModelBySession.set(sessionId, {
-        modelSpec,
-        provider: effectiveProvider,
-      });
-      updateFocusedModel();
-      this.emit("stateChanged");
-      return { ok: true, deferred: true, message: "Applies on next turn" };
-    }
-
-    const client = await this.ensureAttachedClient(sessionId);
-    try {
-      await client.setModel(sessionId, modelSpec);
-      this.pendingModelBySession.delete(sessionId);
-      this.appliedModelBySession.set(sessionId, modelSpec);
-    } catch (modelErr) {
-      if (
-        this.isTimeoutError(modelErr) ||
-        (modelErr instanceof HarnessError && modelErr.code === "busy")
-      ) {
-        this.pendingModelBySession.set(sessionId, {
-          modelSpec,
-          provider: effectiveProvider,
-        });
-        updateFocusedModel();
-        this.emit("stateChanged");
+    const resolvedId = await this.resolveAttachableSessionId(sessionId);
+    const pending = { modelSpec, provider: requestedProvider };
+    return this.runSessionOperation(resolvedId, async () => {
+      if (options.applyNextTurn || this.isSessionTurnActive(resolvedId)) {
+        this.pendingModelBySession.set(resolvedId, pending);
+        this.broadcastSessionPrefsSync(resolvedId);
         return { ok: true, deferred: true, message: "Applies on next turn" };
       }
-      throw modelErr;
-    }
-
-    updateFocusedModel();
-    this.emit("stateChanged");
-    return { ok: true };
+      const client = await this.ensureAttachedClient(resolvedId);
+      try {
+        await this.applyNextTurnSettings(resolvedId, client, { model: modelSpec, provider: requestedProvider });
+      } catch (error) {
+        if (this.isTimeoutError(error) || (error instanceof HarnessError && error.code === "busy")) {
+          this.pendingModelBySession.set(resolvedId, pending);
+          this.broadcastSessionPrefsSync(resolvedId);
+          return { ok: true, deferred: true, message: "Applies on next turn" };
+        }
+        throw error;
+      }
+      return { ok: true };
+    });
   }
 
   async setSessionEffort(
@@ -2101,42 +2352,27 @@ export class SessionHubCore extends EventEmitter {
     options: { applyNextTurn?: boolean } = {},
   ): Promise<{ ok: boolean; deferred?: boolean; code?: string; message?: string }> {
     const effort = rawEffort.trim();
-    if (!effort) {
-      return { ok: true };
-    }
-    const normalizedEffort = normalizeStoredEffort(effort);
-    if (normalizedEffort) {
-      await this.saveSessionPrefs(sessionId, { effort: normalizedEffort });
-    }
-
-    const deferForNextTurn =
-      options.applyNextTurn === true || this.isSessionTurnActive(sessionId);
-    if (deferForNextTurn) {
-      this.pendingEffortBySession.set(sessionId, effort);
-      return { ok: true, deferred: true, message: "Applies on next turn" };
-    }
-
-    if (this.appliedEffortBySession.get(sessionId) === effort) {
-      this.pendingEffortBySession.delete(sessionId);
-      return { ok: true };
-    }
-
-    const client = await this.ensureAttachedClient(sessionId);
-    try {
-      await client.setReasoningEffort(sessionId, effort);
-      this.pendingEffortBySession.delete(sessionId);
-      this.appliedEffortBySession.set(sessionId, effort);
-    } catch (effortErr) {
-      if (
-        this.isTimeoutError(effortErr) ||
-        (effortErr instanceof HarnessError && effortErr.code === "busy")
-      ) {
-        this.pendingEffortBySession.set(sessionId, effort);
+    if (!effort) return { ok: true };
+    const resolvedId = await this.resolveAttachableSessionId(sessionId);
+    return this.runSessionOperation(resolvedId, async () => {
+      if (options.applyNextTurn || this.isSessionTurnActive(resolvedId)) {
+        this.pendingEffortBySession.set(resolvedId, effort);
+        this.broadcastSessionPrefsSync(resolvedId);
         return { ok: true, deferred: true, message: "Applies on next turn" };
       }
-      throw effortErr;
-    }
-    return { ok: true };
+      const client = await this.ensureAttachedClient(resolvedId);
+      try {
+        await this.applyNextTurnSettings(resolvedId, client, { effort });
+      } catch (error) {
+        if (this.isTimeoutError(error) || (error instanceof HarnessError && error.code === "busy")) {
+          this.pendingEffortBySession.set(resolvedId, effort);
+          this.broadcastSessionPrefsSync(resolvedId);
+          return { ok: true, deferred: true, message: "Applies on next turn" };
+        }
+        throw error;
+      }
+      return { ok: true };
+    });
   }
 
   async cancelSession(sessionId: string): Promise<void> {
@@ -2267,6 +2503,7 @@ export class SessionHubCore extends EventEmitter {
       id !== undefined
         ? { v: API_VERSION_MAJOR, reply_to: id }
         : { v: API_VERSION_MAJOR };
+    let sendDispatched = false;
 
     try {
       const apiReq = normalizeHarnessRequestFrame(rawFrame);
@@ -2274,10 +2511,14 @@ export class SessionHubCore extends EventEmitter {
 
       if (req === "create_session") {
         const session = await this.socketPool.runSerialized(async () => {
-          const workingDir =
-            typeof apiReq.working_dir === "string"
-              ? apiReq.working_dir
-              : this.host.getWorkspaceFolders()[0]?.fsPath;
+          const rawWorkingDir =
+            typeof apiReq.working_dir === "string" && apiReq.working_dir.trim()
+              ? apiReq.working_dir.trim()
+              : undefined;
+          const workingDir = this.resolveCreateSessionWorkingDir(
+            rawWorkingDir,
+            false,
+          );
           const systemPrompt =
             typeof apiReq.system_prompt === "string"
               ? apiReq.system_prompt
@@ -2316,6 +2557,12 @@ export class SessionHubCore extends EventEmitter {
                 created.session_id,
                 toHarnessPermissionMode(initialMode),
               )
+              .then(() => {
+                this.appliedPermissionBySession.set(
+                  created.session_id,
+                  initialMode,
+                );
+              })
               .catch(() => {});
           }
           this.newlyCreatedSessions.add(created.session_id);
@@ -2330,6 +2577,7 @@ export class SessionHubCore extends EventEmitter {
             ACTIVE_SESSION_KEY,
             created.session_id,
           );
+          this.broadcastSessionPrefsSync(created.session_id);
           this.emit("stateChanged");
           return created;
         });
@@ -2384,6 +2632,12 @@ export class SessionHubCore extends EventEmitter {
                 attached.session_id,
                 toHarnessPermissionMode(desiredMode),
               )
+              .then(() => {
+                this.appliedPermissionBySession.set(
+                  attached.session_id,
+                  desiredMode,
+                );
+              })
               .catch(() => {});
           }
           this.sessionInfoCache.set(attached.session_id, attached);
@@ -2411,6 +2665,10 @@ export class SessionHubCore extends EventEmitter {
             ACTIVE_SESSION_KEY,
             attached.session_id,
           );
+          if (!this.isSessionTurnActive(attached.session_id)) {
+            this.flushPendingNextTurnSettings(attached.session_id);
+          }
+          this.broadcastSessionPrefsSync(attached.session_id);
           this.emit("stateChanged");
           return attached;
         });
@@ -2455,116 +2713,70 @@ export class SessionHubCore extends EventEmitter {
             ? apiReq.effort.trim()
             : undefined;
 
-        const explicitDir =
-          typeof apiReq.working_dir === "string" && apiReq.working_dir.trim()
-            ? apiReq.working_dir.trim()
+        await this.runSessionOperation(sessionId, async () => {
+          if (apiReq.no_reply !== true && this.isSessionTurnActive(sessionId)) {
+            throw new HarnessError("busy", "This session is already running. Queue the message or wait for the turn to finish.");
+          }
+          const permission = typeof apiReq.permission_mode === "string"
+            ? fromHarnessPermissionMode(apiReq.permission_mode)
             : undefined;
-        const resolvedWorkingDir =
-          explicitDir ??
-          this.sessionWorkingDirs.get(sessionId) ??
-          this.host.getWorkspaceFolders()[0]?.fsPath;
+          const tier = apiReq.service_tier;
+          const serviceTier: ServiceTier | undefined =
+            tier === "auto" ||
+            tier === "off" ||
+            tier === "priority" ||
+            tier === "ultrafast" ||
+            tier === "flex"
+              ? tier
+              : undefined;
+          await this.applyNextTurnSettings(sessionId, client, {
+            model: requestedModelSpec,
+            provider: requestedProvider,
+            effort: requestedEffort,
+            permissionMode: permission,
+            serviceTier,
+          }, true);
 
-        if (
-          resolvedWorkingDir &&
-          (this.newlyCreatedSessions.has(sessionId) || Boolean(explicitDir))
-        ) {
-          this.newlyCreatedSessions.delete(sessionId);
-          await this.workspaceRegistry
-            .attachSession(resolvedWorkingDir, sessionId)
-            .catch(() => {});
-        }
-
-        const pendingModel = this.pendingModelBySession.get(sessionId);
-        const pendingEffort = this.pendingEffortBySession.get(sessionId);
-        const pendingPerm = this.pendingPermissionModeBySession.get(sessionId);
-        this.pendingModelBySession.delete(sessionId);
-        this.pendingEffortBySession.delete(sessionId);
-        this.pendingPermissionModeBySession.delete(sessionId);
-
-        if (pendingPerm) {
-          try {
-            await client.setPermissionMode(
-              sessionId,
-              toHarnessPermissionMode(pendingPerm),
-            );
-          } catch {
-            // Non-fatal: keep proceeding with send_message
+          const workingDir = this.sessionWorkingDirs.get(sessionId);
+          if (workingDir && this.newlyCreatedSessions.has(sessionId)) {
+            await this.workspaceRegistry.attachSession(workingDir, sessionId);
+            this.newlyCreatedSessions.delete(sessionId);
           }
-        }
 
-        const effectiveModelSpec = pendingModel?.modelSpec || requestedModelSpec;
-        const effectiveProvider = pendingModel?.provider || requestedProvider;
-        const effectiveEffort = pendingEffort || requestedEffort;
-        const normalizedEffectiveEffort = normalizeStoredEffort(effectiveEffort);
-
-        if (effectiveModelSpec || normalizedEffectiveEffort) {
-          void this.saveSessionPrefs(sessionId, {
-            ...(effectiveModelSpec ? { model: effectiveModelSpec } : {}),
-            ...(effectiveProvider ? { provider: effectiveProvider } : {}),
-            ...(normalizedEffectiveEffort
-              ? { effort: normalizedEffectiveEffort }
-              : {}),
-          });
-        }
-
-        const appliedModelSpec = this.appliedModelBySession.get(sessionId) ?? "";
-
-        if (effectiveModelSpec && effectiveModelSpec !== appliedModelSpec) {
+          const noReply = apiReq.no_reply === true;
+          // Capture the pre-send user message count so an identical previous prompt cannot
+          // be mistaken for an acknowledgement after reconnect.
+          const before = !noReply && id !== undefined
+            ? await client.getHistory(sessionId).then((messages) => messages.filter((message) => message.role === "user").length).catch(() => undefined)
+            : undefined;
+          if (!noReply) this.socketPool.markTurnActive(sessionId);
+          sendDispatched = true;
           try {
-            await client.setModel(sessionId, effectiveModelSpec);
-            this.appliedModelBySession.set(sessionId, effectiveModelSpec);
-          } catch (modelErr) {
-            if (!this.isTimeoutError(modelErr)) {
-              throw modelErr;
+            if (reminder && !noReply) {
+              await client.sendMessageWithReminder(sessionId, content, images, reminder, {
+                requireAccept: true, acceptTimeoutMs: 30_000,
+              });
+            } else {
+              await client.sendMessage(sessionId, content, {
+                images,
+                ...(reminder ? { systemReminder: reminder } : {}),
+                ...(noReply ? { noReply: true } : { requireAccept: true, acceptTimeoutMs: 30_000 }),
+              });
             }
-          }
-          if (!this.activeSessionId || this.activeSessionId === sessionId) {
-            this.activeModel = effectiveModelSpec;
-            if (effectiveProvider) {
-              this.activeProvider = effectiveProvider;
-            } else if (effectiveModelSpec.startsWith("rayu:")) {
-              this.activeProvider = "rayu";
+          } catch (error) {
+            if (error instanceof HarnessError && (error.code === "timeout" || error.code === "disconnected")) {
+              const history = await this.getHistory(sessionId).catch(() => undefined);
+              const users = history?.messages.filter((message) => message.role === "user");
+              if (before !== undefined && users?.[before]?.content === content) {
+                return;
+              }
+              if (!noReply) this.socketPool.markTurnSettled(sessionId);
+              throw new HarnessError("timeout", "Rayu could not confirm this prompt. Review session history before retrying.");
             }
+            if (!noReply) this.socketPool.markTurnSettled(sessionId);
+            throw error;
           }
-          this.emit("stateChanged");
-        }
-
-        const appliedEffort = this.appliedEffortBySession.get(sessionId);
-        if (effectiveEffort && effectiveEffort !== appliedEffort) {
-          try {
-            await client.setReasoningEffort(sessionId, effectiveEffort);
-            this.appliedEffortBySession.set(sessionId, effectiveEffort);
-          } catch {
-            // Non-fatal: model may not support effort or daemon is mid-handoff.
-          }
-        }
-
-        const noReply = apiReq.no_reply === true;
-        if (!noReply) {
-          this.socketPool.markTurnActive(sessionId);
-        }
-        try {
-          if (reminder && !noReply) {
-            await client.sendMessageWithReminder(
-              sessionId,
-              content,
-              images,
-              reminder,
-              { requireAccept: true, acceptTimeoutMs: 30_000 },
-            );
-          } else {
-            await client.sendMessage(sessionId, content, {
-              images,
-              ...(reminder ? { systemReminder: reminder } : {}),
-              ...(noReply ? { noReply: true } : { requireAccept: true, acceptTimeoutMs: 30_000 }),
-            });
-          }
-        } catch (err) {
-          if (!noReply) {
-            this.socketPool.markTurnSettled(sessionId);
-          }
-          throw err;
-        }
+        });
         replyCallback({ ...replyMeta, ev: "ok" });
         return;
       }
@@ -2719,9 +2931,17 @@ export class SessionHubCore extends EventEmitter {
           : "Rayu could not complete the request.";
       const sessionId =
         typeof rawFrame.session_id === "string" ? rawFrame.session_id : undefined;
-      const reqName = typeof rawFrame.req === "string" ? rawFrame.req : undefined;
+      const reqName =
+        typeof rawFrame.req === "string"
+          ? rawFrame.req
+          : typeof rawFrame.type === "string"
+            ? rawFrame.type
+            : typeof rawFrame.op === "string"
+              ? rawFrame.op
+              : undefined;
       const isTurnMutation =
-        reqName === "send_message" || reqName === "user_input";
+        (reqName === "send_message" || reqName === "user_input") &&
+        sendDispatched;
       replyCallback({
         ...replyMeta,
         ev: "error",
@@ -2847,6 +3067,13 @@ export class SessionHubCore extends EventEmitter {
   }
 
   dispose(): void {
+    if (this.catalogTimer) {
+      clearTimeout(this.catalogTimer);
+      this.catalogTimer = undefined;
+    }
+    this.pendingCatalogSessions.clear();
+    this.catalogBroadcastAll = false;
+    this.catalogCredentialsChanged = false;
     if (this.backgroundPollTimer) {
       clearInterval(this.backgroundPollTimer);
       this.backgroundPollTimer = null;

@@ -126,6 +126,36 @@ impl RuntimeCommand {
             Self::Ambient => "ambient",
         }
     }
+
+    /// Whether this command can execute globally without an attached session.
+    pub const fn supports_global_scope(self) -> bool {
+        matches!(
+            self,
+            Self::Skills
+                | Self::Memory
+                | Self::Swarm
+                | Self::Agents
+                | Self::SubagentModel
+                | Self::Telemetry
+                | Self::Subscription
+                | Self::Overnight
+                | Self::Productivity
+                | Self::Initiatives
+                | Self::ProviderTestCoverage
+                | Self::RefreshModelList
+                | Self::ResumeAll
+                | Self::ServerReload
+                | Self::Auth
+                | Self::Logout
+                | Self::Mcp
+                | Self::Telegram
+                | Self::Features
+                | Self::Doctor
+                | Self::SessionSearch
+                | Self::Schedules
+                | Self::Ambient
+        )
+    }
 }
 
 impl std::fmt::Display for RuntimeCommand {

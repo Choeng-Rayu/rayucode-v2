@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   Box,
@@ -17,7 +18,7 @@ import { useSkillActions, useSkills } from "../hooks/usePlugins";
 import { CreateSkillDialog } from "./CreateSkillDialog";
 
 export function SkillsTab() {
-  const { data } = useSkills();
+  const { data, isError, refetch } = useSkills();
   const {
     createSkillMutation,
     installSkillMutation,
@@ -78,6 +79,12 @@ export function SkillsTab() {
 
   return (
     <div data-testid="skills-tab" className="flex flex-col gap-6">
+      {isError && (
+        <div role="alert" className="flex items-center gap-2 p-3 text-xs text-muted-ink">
+          {data ? "Showing last known skills." : "Could not load skills from the engine."}
+          <Button type="button" variant="ghost" size="xs" onClick={() => void refetch()}>Retry</Button>
+        </div>
+      )}
       {/* Header */}
       <header className="flex flex-col gap-3.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -263,6 +270,7 @@ export function SkillsTab() {
                     variant="ghost"
                     size="xs"
                     data-testid={`run-skill-btn-${skill.name}`}
+                    disabled={!operationAvailable("plugins.skills.run")}
                     onClick={() => {
                       void handleRunSkill(skill.name);
                     }}
@@ -340,6 +348,7 @@ export function SkillsTab() {
                     variant="default"
                     size="xs"
                     data-testid={`install-endorsed-skill-${item.name}`}
+                    disabled={!operationAvailable("plugins.skills.install")}
                     onClick={() => installSkillMutation.mutate(item)}
                   >
                     <Plus className="size-3" aria-hidden="true" />

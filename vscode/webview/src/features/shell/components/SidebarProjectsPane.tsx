@@ -72,6 +72,8 @@ import {
   resolveSessionForOpen,
   useAppStore,
 } from "@/lib";
+import { toast } from "sonner";
+import { requireOperation } from "@/lib/operation-result";
 import { callRpc } from "@/lib/rpc-client";
 import { basenameOf, cn, formatRelativeTime } from "@/lib/utils";
 
@@ -567,41 +569,65 @@ export function SidebarProjectsPane({
 
   const handleTogglePin = async (session: SessionSummaryView) => {
     const nextPinned = !(pinnedSet.has(session.sessionId) || session.pinned);
-    await callRpc("sessions.pin", {
-      sessionId: session.sessionId,
-      pinned: nextPinned,
-    });
-    refreshSessions();
+    try {
+      await requireOperation(
+        callRpc("sessions.pin", {
+          sessionId: session.sessionId,
+          pinned: nextPinned,
+        }),
+      );
+      refreshSessions();
+    } catch {
+      // Error surfaced via requireOperation toast
+    }
   };
 
   const handleToggleArchive = async (session: SessionSummaryView) => {
-    await callRpc("sessions.archive", {
-      sessionId: session.sessionId,
-      archived: !session.archived,
-    });
-    refreshSessions();
+    try {
+      await requireOperation(
+        callRpc("sessions.archive", {
+          sessionId: session.sessionId,
+          archived: !session.archived,
+        }),
+      );
+      refreshSessions();
+    } catch {
+      // Error surfaced via requireOperation toast
+    }
   };
 
   const handleForkSession = async (session: SessionSummaryView) => {
-    const res = await callRpc("sessions.fork", { sessionId: session.sessionId });
-    setActiveSession(res.session.sessionId, res.session.title);
-    refreshSessions();
-    onSessionSelected?.();
+    try {
+      const res = await callRpc("sessions.fork", { sessionId: session.sessionId });
+      setActiveSession(res.session.sessionId, res.session.title);
+      refreshSessions();
+      onSessionSelected?.();
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to fork session.",
+      );
+    }
   };
 
   const handleRenameSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!renamingSession || !renameTitle.trim()) return;
     const trimmed = renameTitle.trim();
-    await callRpc("sessions.rename", {
-      sessionId: renamingSession.sessionId,
-      title: trimmed,
-    });
-    if (activeSessionId === renamingSession.sessionId) {
-      setActiveSession(renamingSession.sessionId, trimmed);
+    try {
+      await requireOperation(
+        callRpc("sessions.rename", {
+          sessionId: renamingSession.sessionId,
+          title: trimmed,
+        }),
+      );
+      if (activeSessionId === renamingSession.sessionId) {
+        setActiveSession(renamingSession.sessionId, trimmed);
+      }
+      setRenamingSession(null);
+      refreshSessions();
+    } catch {
+      // Keep rename dialog open; error surfaced via requireOperation toast
     }
-    setRenamingSession(null);
-    refreshSessions();
   };
 
   const handleProjectIconChange = async (
@@ -609,16 +635,22 @@ export function SidebarProjectsPane({
     spec: ProjectIconSpec,
   ) => {
     const iconView = toProjectIconView(spec);
-    const updated = resolvedFolders.map((w) =>
-      w.path === folderPath ? { ...w, icon: iconView } : w,
-    );
-    if (updated.length > 0) {
-      setWorkspaces(updated);
+    try {
+      await requireOperation(
+        callRpc("workspace.setProjectIcon", {
+          workspacePath: folderPath,
+          icon: iconView,
+        }),
+      );
+      const updated = resolvedFolders.map((w) =>
+        w.path === folderPath ? { ...w, icon: iconView } : w,
+      );
+      if (updated.length > 0) {
+        setWorkspaces(updated);
+      }
+    } catch {
+      // Error surfaced via requireOperation toast
     }
-    await callRpc("workspace.setProjectIcon", {
-      workspacePath: folderPath,
-      icon: iconView,
-    });
   };
 
   const renderDraftRow = () => {
@@ -743,16 +775,21 @@ export function SidebarProjectsPane({
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={() => void handleToggleArchive(session)}
+                  title={
+                    session.archived
+                      ? "Restore this session to the local VS Code sidebar list without mutating engine history"
+                      : "Hide this session locally in the VS Code sidebar ledger without mutating engine history"
+                  }
                 >
                   {session.archived ? (
                     <>
                       <ArchiveRestore className="size-3.5" />
-                      <span>Restore from archive</span>
+                      <span>Restore to Sidebar</span>
                     </>
                   ) : (
                     <>
                       <Archive className="size-3.5" />
-                      <span>Archive</span>
+                      <span>Archive in Sidebar</span>
                     </>
                   )}
                 </DropdownMenuItem>
@@ -941,6 +978,13 @@ export function SidebarProjectsPane({
           </Button>
         )}
       </div>
+
+      {sessionsQuery.isError && (
+        <div role="alert" className="mx-2 mb-2 flex items-center gap-2 text-xs text-muted-ink">
+          <span>{sessionsQuery.data ? "Showing last known sessions." : "Could not load sessions."}</span>
+          <Button type="button" variant="ghost" size="xs" onClick={() => void sessionsQuery.refetch()}>Retry</Button>
+        </div>
+      )}
 
       {/* Expandable Search Filter + Cross-Tool Search Toggle */}
       {searchOpen && (
@@ -1229,11 +1273,12 @@ export function SidebarProjectsPane({
             <button
               type="button"
               onClick={() => setArchivedExpanded((v) => !v)}
+              title="Hides sessions locally in the sidebar ledger without mutating engine history"
               className="flex h-7 w-full cursor-pointer items-center justify-between rounded-md px-2 text-[11px] font-medium text-muted-ink hover:bg-hover hover:text-ink"
             >
               <span className="inline-flex items-center gap-1.5">
                 <Archive className="size-3" />
-                <span>Archived ({sidebarTree.archived.length})</span>
+                <span>Archived (Local Sidebar) ({sidebarTree.archived.length})</span>
               </span>
               {archivedExpanded ? (
                 <ChevronDown className="size-3" />

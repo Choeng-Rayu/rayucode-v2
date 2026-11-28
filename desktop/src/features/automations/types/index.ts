@@ -45,6 +45,8 @@ export interface AutomationsState {
   running: OvernightRun[]
   schedules: AutomationSchedule[]
   reports: MorningHandoffReport[]
+  available?: boolean
+  unavailableReason?: string
 }
 
 export interface LaunchOvernightInput {

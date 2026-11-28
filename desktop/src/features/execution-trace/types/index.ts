@@ -76,6 +76,7 @@ export type LiveTraceEvent =
   | { type: "artifact"; artifact: TurnOutputArtifact }
   | { type: "file-changes"; snapshot: FileChangesSnapshot }
   | { type: "answer-delta"; delta: string }
+  | { type: "answer-replace"; text: string }
   | { type: "summary-title"; title: string }
   | { type: "bullet"; bullet: AnswerBullet }
   | { type: "diff"; diffCard: InlineDiffCardData }

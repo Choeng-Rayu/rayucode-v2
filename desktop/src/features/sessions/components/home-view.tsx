@@ -139,22 +139,27 @@ export function HomeView({
       void queryClient.invalidateQueries({ queryKey: ["models"] })
 
       // Sync the chosen Local Permissions mode to the Rust core before the first turn runs
-      void ipcClient.harness
-        .setPermissionMode(result.data.id, payload.permissionMode)
-        .then((res) => {
-          if (!res.ok) {
-            toast.error(
-              res.error ?? "RayuCode core rejected the permission mode"
-            )
-          }
-        })
-        .catch((error: unknown) => {
+      try {
+        const permRes = await ipcClient.harness.setPermissionMode(
+          result.data.id,
+          payload.permissionMode
+        )
+        if (!permRes.ok) {
           toast.error(
-            error instanceof Error
-              ? error.message
-              : "Failed to set permission mode for the new session"
+            permRes.error ?? "RayuCode core rejected the permission mode"
           )
-        })
+          setComposerValue(payload.prompt)
+          return
+        }
+      } catch (error: unknown) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to set permission mode for the new session"
+        )
+        setComposerValue(payload.prompt)
+        return
+      }
       ipcClient.harness.stagePromptEffort(result.data.id, payload.effort)
       useAppStore.getState().setPendingStreamPrompt({
         sessionId: result.data.id,

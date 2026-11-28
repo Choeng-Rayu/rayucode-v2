@@ -107,6 +107,7 @@ export interface MidTurnMessageItem {
   mode: MidTurnSendMode;
   text: string;
   createdAtMs: number;
+  workingDir?: string;
   images?: ImageAttachmentView[];
   editorSelection?: EditorSelectionView | null;
   modelSpec?: string;
@@ -171,6 +172,7 @@ export interface AppStoreState {
   pendingUserTurn: OptimisticUserTurn | null;
   composerDrafts: Record<string, string>;
   sessionPrefsBySession: Record<string, SessionComposerPrefs>;
+  pendingSessionPrefsBySession: Record<string, SessionComposerPrefs>;
   midTurnSendMode: MidTurnSendMode;
   midTurnMessagesBySession: Record<string, MidTurnMessageItem[]>;
   pausedQueueSessions: Record<string, boolean>;
@@ -229,6 +231,15 @@ export interface AppStoreState {
     sessionId: string,
     field: keyof SessionComposerPrefs,
   ) => void;
+  setPendingSessionPrefs: (
+    sessionId: string,
+    patch: Partial<SessionComposerPrefs> | null,
+    replace?: boolean,
+  ) => void;
+  clearPendingSessionPrefs: (
+    sessionId: string,
+    field?: keyof SessionComposerPrefs,
+  ) => void;
   seedSessionPrefsFromSummary: (
     summary: Pick<
       SessionSummaryView,
@@ -277,7 +288,7 @@ export interface AppStoreState {
   enqueueOptimisticTurn: (turn: OptimisticUserTurn) => void;
   consumeOptimisticTurn: (id: string) => void;
   setMidTurnSendMode: (mode: MidTurnSendMode) => void;
-  addMidTurnMessage: (item: MidTurnMessageItem) => void;
+  addMidTurnMessage: (item: MidTurnMessageItem, restoreFirst?: boolean) => void;
   removeMidTurnMessage: (sessionId: string, id: string) => void;
   updateMidTurnMessage: (
     sessionId: string,
@@ -538,6 +549,7 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
   pendingUserTurn: null,
   composerDrafts: {},
   sessionPrefsBySession: readInitialSessionPrefs(),
+  pendingSessionPrefsBySession: {},
   midTurnSendMode: "steer",
   midTurnMessagesBySession: {},
   pausedQueueSessions: {},
@@ -864,6 +876,9 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
       const next: SessionComposerPrefs = { ...prev };
       if (patch.modelId !== undefined && patch.modelId !== prev.modelId) {
         next.modelId = patch.modelId;
+        if (patch.modelLabel === undefined) {
+          delete next.modelLabel;
+        }
         didChange = true;
       }
       if (
@@ -895,16 +910,68 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         next.serviceTier = patch.serviceTier;
         didChange = true;
       }
-      if (patch.cacheTtl !== undefined && patch.cacheTtl !== prev.cacheTtl) {
-        next.cacheTtl = patch.cacheTtl;
+      if ("cacheTtl" in next) {
+        delete next.cacheTtl;
         didChange = true;
       }
-      if (!didChange) return state;
+
+      const prevPending = state.pendingSessionPrefsBySession[sessionId];
+      let nextPendingMap = state.pendingSessionPrefsBySession;
+      if (prevPending) {
+        const nextPending: SessionComposerPrefs = { ...prevPending };
+        let pendingChanged = false;
+        if (
+          patch.modelId !== undefined &&
+          nextPending.modelId === patch.modelId
+        ) {
+          delete nextPending.modelId;
+          delete nextPending.modelLabel;
+          delete nextPending.apiMethod;
+          pendingChanged = true;
+        }
+        if (patch.effort !== undefined && nextPending.effort === patch.effort) {
+          delete nextPending.effort;
+          pendingChanged = true;
+        }
+        if (
+          patch.permissionMode !== undefined &&
+          nextPending.permissionMode === patch.permissionMode
+        ) {
+          delete nextPending.permissionMode;
+          pendingChanged = true;
+        }
+        if (
+          patch.serviceTier !== undefined &&
+          nextPending.serviceTier === patch.serviceTier
+        ) {
+          delete nextPending.serviceTier;
+          pendingChanged = true;
+        }
+        if (pendingChanged) {
+          nextPendingMap = { ...state.pendingSessionPrefsBySession };
+          if (Object.keys(nextPending).length === 0) {
+            delete nextPendingMap[sessionId];
+          } else {
+            nextPendingMap[sessionId] = nextPending;
+          }
+        }
+      }
+
+      if (!didChange && nextPendingMap === state.pendingSessionPrefsBySession) {
+        return state;
+      }
       return {
-        sessionPrefsBySession: {
-          ...state.sessionPrefsBySession,
-          [sessionId]: next,
-        },
+        ...(didChange
+          ? {
+              sessionPrefsBySession: {
+                ...state.sessionPrefsBySession,
+                [sessionId]: next,
+              },
+            }
+          : {}),
+        ...(nextPendingMap !== state.pendingSessionPrefsBySession
+          ? { pendingSessionPrefsBySession: nextPendingMap }
+          : {}),
       };
     });
     if (didChange) {
@@ -933,6 +1000,64 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
   },
 
+  setPendingSessionPrefs: (sessionId, patch, replace = false) => {
+    if (!sessionId) return;
+    set((state) => {
+      const nextMap = { ...state.pendingSessionPrefsBySession };
+      if (patch === null) {
+        if (!(sessionId in nextMap)) return state;
+        delete nextMap[sessionId];
+        return { pendingSessionPrefsBySession: nextMap };
+      }
+      const base: SessionComposerPrefs = replace
+        ? {}
+        : { ...(state.pendingSessionPrefsBySession[sessionId] ?? {}) };
+      if (patch.modelId !== undefined) base.modelId = patch.modelId;
+      if (patch.modelLabel !== undefined) base.modelLabel = patch.modelLabel;
+      if (patch.apiMethod !== undefined) base.apiMethod = patch.apiMethod;
+      if (patch.effort !== undefined) base.effort = patch.effort;
+      if (patch.permissionMode !== undefined) {
+        base.permissionMode = patch.permissionMode;
+      }
+      if (patch.serviceTier !== undefined) base.serviceTier = patch.serviceTier;
+      delete base.cacheTtl;
+
+      if (Object.keys(base).length === 0) {
+        if (!(sessionId in nextMap)) return state;
+        delete nextMap[sessionId];
+      } else {
+        nextMap[sessionId] = base;
+      }
+      return { pendingSessionPrefsBySession: nextMap };
+    });
+  },
+
+  clearPendingSessionPrefs: (sessionId, field) => {
+    if (!sessionId) return;
+    set((state) => {
+      const prev = state.pendingSessionPrefsBySession[sessionId];
+      if (!prev) return state;
+      const nextMap = { ...state.pendingSessionPrefsBySession };
+      if (!field) {
+        delete nextMap[sessionId];
+        return { pendingSessionPrefsBySession: nextMap };
+      }
+      if (!(field in prev)) return state;
+      const next: SessionComposerPrefs = { ...prev };
+      delete next[field];
+      if (field === "modelId") {
+        delete next.modelLabel;
+        delete next.apiMethod;
+      }
+      if (Object.keys(next).length === 0) {
+        delete nextMap[sessionId];
+      } else {
+        nextMap[sessionId] = next;
+      }
+      return { pendingSessionPrefsBySession: nextMap };
+    });
+  },
+
   seedSessionPrefsFromSummary: (summary) => {
     if (!summary.sessionId) return;
     const prev = get().sessionPrefsBySession[summary.sessionId] ?? {};
@@ -948,9 +1073,6 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
     }
     if (summary.serviceTier && prev.serviceTier === undefined) {
       patch.serviceTier = summary.serviceTier;
-    }
-    if (summary.cacheTtl && prev.cacheTtl === undefined) {
-      patch.cacheTtl = summary.cacheTtl;
     }
     if (Object.keys(patch).length > 0) {
       get().setSessionPrefs(summary.sessionId, patch);
@@ -1190,14 +1312,14 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
 
   setMidTurnSendMode: (midTurnSendMode) => set({ midTurnSendMode }),
 
-  addMidTurnMessage: (item) =>
+  addMidTurnMessage: (item, restoreFirst) =>
     set((state) => {
       const existing = state.midTurnMessagesBySession[item.sessionId] ?? [];
       if (existing.some((m) => m.id === item.id)) return state;
       return {
         midTurnMessagesBySession: {
           ...state.midTurnMessagesBySession,
-          [item.sessionId]: [...existing, item],
+          [item.sessionId]: restoreFirst ? [item, ...existing] : [...existing, item],
         },
       };
     }),
@@ -1596,7 +1718,77 @@ export const useAppStore = create<AppStoreState>((set, get) => ({
         }
         if (msg.sessionId) {
           get().setSessionPrefs(msg.sessionId, { permissionMode: msg.mode });
+          get().clearPendingSessionPrefs(msg.sessionId, "permissionMode");
         }
+        return;
+      }
+      case "rayucode.session.prefsSync": {
+        const sid = msg.sessionId;
+        if (!sid) return;
+        const prevPending = get().pendingSessionPrefsBySession[sid];
+        const ackRaw = (msg.acknowledged ?? {}) as Record<string, unknown>;
+        const ackModel =
+          typeof ackRaw.model === "string" && ackRaw.model
+            ? ackRaw.model
+            : typeof ackRaw.modelId === "string" && ackRaw.modelId
+              ? ackRaw.modelId
+              : undefined;
+        const ackPatch: Partial<SessionComposerPrefs> = {
+          ...(ackModel !== undefined ? { modelId: ackModel } : {}),
+          ...(ackModel !== undefined &&
+          prevPending?.modelId === ackModel &&
+          prevPending.modelLabel
+            ? { modelLabel: prevPending.modelLabel }
+            : {}),
+          ...(ackModel !== undefined &&
+          prevPending?.modelId === ackModel &&
+          prevPending.apiMethod
+            ? { apiMethod: prevPending.apiMethod }
+            : {}),
+          ...(typeof ackRaw.effort === "string"
+            ? { effort: ackRaw.effort as EffortLevel }
+            : {}),
+          ...(typeof ackRaw.permissionMode === "string"
+            ? { permissionMode: ackRaw.permissionMode as PermissionModeId }
+            : {}),
+          ...(typeof ackRaw.serviceTier === "string"
+            ? { serviceTier: ackRaw.serviceTier as ServiceTier }
+            : {}),
+        };
+        if (Object.keys(ackPatch).length > 0) {
+          get().setSessionPrefs(sid, ackPatch);
+        }
+
+        const pendingRaw = (msg.pending ?? {}) as Record<string, unknown>;
+        const pendingModel =
+          typeof pendingRaw.model === "string" && pendingRaw.model
+            ? pendingRaw.model
+            : typeof pendingRaw.modelId === "string" && pendingRaw.modelId
+              ? pendingRaw.modelId
+              : undefined;
+        const pendingPatch: Partial<SessionComposerPrefs> = {
+          ...(pendingModel !== undefined ? { modelId: pendingModel } : {}),
+          ...(pendingModel !== undefined &&
+          prevPending?.modelId === pendingModel &&
+          prevPending.modelLabel
+            ? { modelLabel: prevPending.modelLabel }
+            : {}),
+          ...(pendingModel !== undefined &&
+          prevPending?.modelId === pendingModel &&
+          prevPending.apiMethod
+            ? { apiMethod: prevPending.apiMethod }
+            : {}),
+          ...(typeof pendingRaw.effort === "string"
+            ? { effort: pendingRaw.effort as EffortLevel }
+            : {}),
+          ...(typeof pendingRaw.permissionMode === "string"
+            ? { permissionMode: pendingRaw.permissionMode as PermissionModeId }
+            : {}),
+          ...(typeof pendingRaw.serviceTier === "string"
+            ? { serviceTier: pendingRaw.serviceTier as ServiceTier }
+            : {}),
+        };
+        get().setPendingSessionPrefs(sid, pendingPatch, true);
         return;
       }
       case "rayucode.ui.navigate": {

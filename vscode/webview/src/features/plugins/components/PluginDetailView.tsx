@@ -16,6 +16,7 @@ import { postToHost } from "@/lib";
 import {
   type CatalogConnectorTemplate,
   findCatalogTemplate,
+  isEditableMcpLayer,
   normalizeConfigLayerBadge,
 } from "../hooks/usePlugins";
 
@@ -169,6 +170,12 @@ export function PluginDetailView({
                   variant="secondary"
                   size="sm"
                   data-testid="detail-configure-btn"
+                  disabled={!isEditableMcpLayer(server.configLayer)}
+                  title={
+                    isEditableMcpLayer(server.configLayer)
+                      ? `Configure ${displayName}`
+                      : `Config layer "${configLayer}" is read-only in RayuCode`
+                  }
                   onClick={onConfigure}
                 >
                   <Settings2 className="size-3.5" aria-hidden="true" />

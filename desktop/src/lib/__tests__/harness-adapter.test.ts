@@ -737,4 +737,80 @@ describe("harness-adapter", () => {
       )
     ).toEqual([{ type: "text-done", stopReason: "end_turn" }])
   })
+
+  it("handles text_replace frames for partial rollback and full retraction", () => {
+    const tracker = createHarnessStreamTracker()
+    const replaceEvents = mapHarnessFrameToLiveEvents(
+      { ev: "text_replace", session_id: "s1", text: "Corrected text" },
+      tracker
+    )
+    expect(replaceEvents).toEqual([
+      { type: "answer-replace", text: "Corrected text" },
+    ])
+    expect(tracker.turnActive).toBe(true)
+    expect(tracker.hasStreamedTextInPhase).toBe(true)
+
+    const retractEvents = mapHarnessFrameToLiveEvents(
+      { ev: "text_replace", session_id: "s1", text: "" },
+      tracker
+    )
+    expect(retractEvents).toEqual([{ type: "answer-replace", text: "" }])
+    expect(tracker.hasStreamedTextInPhase).toBe(false)
+  })
+
+  it("surfaces TurnStopReason variants accurately (crash as Error, limit_reached/provider_guardrail plain, interrupted silent) and clears toolInputs", () => {
+    const crashTracker = createHarnessStreamTracker()
+    crashTracker.turnActive = true
+    crashTracker.toolInputs.set("c1", '{"command":"echo hi"}')
+    const crashEvents = mapHarnessFrameToLiveEvents(
+      {
+        ev: "turn_stopped",
+        session_id: "s1",
+        reason: "crash",
+        message: "Worker panicked cleanly",
+      },
+      crashTracker
+    )
+    expect(crashEvents).toEqual([
+      { type: "tool-status", label: null },
+      { type: "answer-delta", delta: "\n\n**Error:** Worker panicked cleanly" },
+      expect.objectContaining({ type: "complete" }),
+    ])
+    expect(crashTracker.toolInputs.size).toBe(0)
+
+    const guardrailTracker = createHarnessStreamTracker()
+    guardrailTracker.turnActive = true
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "turn_stopped",
+          session_id: "s1",
+          reason: "limit_reached",
+          message: "Max turn limit reached.",
+        },
+        guardrailTracker
+      )
+    ).toEqual([
+      { type: "tool-status", label: null },
+      { type: "answer-delta", delta: "\n\nMax turn limit reached." },
+      expect.objectContaining({ type: "complete" }),
+    ])
+
+    const interruptTracker = createHarnessStreamTracker()
+    interruptTracker.turnActive = true
+    expect(
+      mapHarnessFrameToLiveEvents(
+        {
+          ev: "turn_stopped",
+          session_id: "s1",
+          reason: "interrupted",
+          message: "The turn was interrupted by a cancellation request.",
+        },
+        interruptTracker
+      )
+    ).toEqual([
+      { type: "tool-status", label: null },
+      expect.objectContaining({ type: "complete" }),
+    ])
+  })
 })

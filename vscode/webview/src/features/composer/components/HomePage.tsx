@@ -14,22 +14,18 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { RayuProcessingMark } from "@/components/ui";
-import { startSessionLiveTurn } from "@/features/chat";
 import {
   callRpc,
   cn,
   formatRelativeTime,
   mediaUrl,
   resolveSessionForOpen,
-  sendHarnessRequest,
   useAppStore,
 } from "@/lib";
 
-import { HOME_QUICK_ACTIONS, normalizeEffortLevel } from "../constants";
-import {
-  recentSessionsQueryOptions,
-  useCreateSessionMutation,
-} from "../hooks/useComposerData";
+import { HOME_QUICK_ACTIONS } from "../constants";
+import { recentSessionsQueryOptions } from "../hooks/useComposerData";
+import { useSubmitComposer } from "../hooks/useSubmitComposer";
 import type { ComposerSubmitPayload, QuickActionItem } from "../types";
 import { SessionComposer } from "./SessionComposer";
 
@@ -83,7 +79,6 @@ export function HomePage({
   const activeDraft = useAppStore((s) => s.activeDraft);
   const setAuthDialogOpen = useAppStore((s) => s.setAuthDialogOpen);
   const setActiveSession = useAppStore((s) => s.setActiveSession);
-  const setIsStreamActive = useAppStore((s) => s.setIsStreamActive);
 
   const displayName = resolveDisplayName(
     userName,
@@ -98,6 +93,9 @@ export function HomePage({
     (next: string) => setComposerDraft("__home__", next),
     [setComposerDraft],
   );
+  const [composerImages, setComposerImages] = React.useState<
+    ImageAttachmentView[]
+  >([]);
   const [pendingSubmit, setPendingSubmit] = React.useState<{
     prompt: string;
     images?: ImageAttachmentView[];
@@ -110,7 +108,7 @@ export function HomePage({
   const submitAttemptRef = React.useRef(0);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
-  const createSessionMutation = useCreateSessionMutation();
+  const submitComposer = useSubmitComposer();
   const sessionsQuery = useQuery(recentSessionsQueryOptions());
 
   const recentSessions = React.useMemo(
@@ -135,10 +133,13 @@ export function HomePage({
     submitAttemptRef.current += 1;
     if (pendingSubmit) {
       setComposerValue(pendingSubmit.prompt);
+      if (pendingSubmit.images && pendingSubmit.images.length > 0) {
+        setComposerImages(pendingSubmit.images);
+      }
     }
     setPendingSubmit(null);
     setPendingElapsedSec(0);
-  }, [pendingSubmit]);
+  }, [pendingSubmit, setComposerValue]);
 
   const handleQuickActionClick = (action: QuickActionItem) => {
     setComposerValue(action.prompt);
@@ -191,121 +192,30 @@ export function HomePage({
       });
       setPendingElapsedSec(0);
       setComposerValue("");
-
-      const storeSnapshot = useAppStore.getState();
-      const draft = storeSnapshot.activeDraft;
-      const draftPrefs = storeSnapshot.sessionPrefsBySession.__draft__;
-      const effectiveWorkingDir =
-        payload.workingDir ??
-        draft?.workingDir ??
-        storeSnapshot.activeProjectPath ??
-        undefined;
-      const effectiveModel =
-        payload.modelSpec ||
-        payload.modelId ||
-        draft?.model ||
-        draftPrefs?.modelId ||
-        undefined;
-      const effectiveEffort = normalizeEffortLevel(
-        payload.effort ?? draft?.reasoningEffort ?? draftPrefs?.effort,
-      );
-      const effectivePermissionMode =
-        payload.permissionMode ??
-        (draft?.permissionMode as
-          | ComposerSubmitPayload["permissionMode"]
-          | undefined) ??
-        draftPrefs?.permissionMode ??
-        storeSnapshot.defaultPermissionMode ??
-        "default";
-      const effectiveServiceTier =
-        payload.serviceTier ?? draftPrefs?.serviceTier;
-      const effectiveCacheTtl = payload.cacheTtl ?? draftPrefs?.cacheTtl;
+      setComposerImages([]);
 
       try {
-        const created = await createSessionMutation.mutateAsync({
-          workingDir: effectiveWorkingDir,
-          permissionMode: effectivePermissionMode,
-          model: effectiveModel,
-          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
-          effort: effectiveEffort,
-          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
-          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
+        const created = await submitComposer(payload, {
+          fromDraft: true,
+          shouldContinue: () => submitAttemptRef.current === attemptId,
         });
-
-        if (submitAttemptRef.current !== attemptId) {
-          return;
+        if (created && submitAttemptRef.current === attemptId) onSessionCreated?.(created);
+      } catch (error) {
+        if (submitAttemptRef.current === attemptId) {
+          setComposerValue(payload.prompt);
+          if (payload.images && payload.images.length > 0) {
+            setComposerImages(payload.images);
+          }
         }
-
-        const session = created.session;
-        setPendingSubmit(null);
-        setPendingElapsedSec(0);
-
-        // Persist the user's chosen composer configuration on this session BEFORE
-        // transitioning from HomePage -> Workspace so the 2nd+ messages never reset.
-        useAppStore.getState().setSessionPrefs(session.sessionId, {
-          ...(effectiveModel ? { modelId: effectiveModel } : {}),
-          ...(payload.modelLabel ? { modelLabel: payload.modelLabel } : {}),
-          ...(payload.apiMethod ? { apiMethod: payload.apiMethod } : {}),
-          effort: effectiveEffort,
-          permissionMode: effectivePermissionMode,
-          ...(effectiveServiceTier ? { serviceTier: effectiveServiceTier } : {}),
-          ...(effectiveCacheTtl ? { cacheTtl: effectiveCacheTtl } : {}),
-        });
-
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-        void queryClient.invalidateQueries({
-          queryKey: ["workspace", "ledger"],
-        });
-
-        const formattedSelectionContext = payload.editorSelection
-          ? `\n\n[Active Editor Selection: ${payload.editorSelection.relativePath}#L${payload.editorSelection.lineStart}-L${payload.editorSelection.lineEnd}]`
-          : "";
-
-        const refFiles = payload.editorSelection
-          ? `${payload.editorSelection.relativePath}:${payload.editorSelection.lineStart}-${payload.editorSelection.lineEnd}`
-          : undefined;
-
-        startSessionLiveTurn({
-          sessionId: session.sessionId,
-          userPrompt: payload.prompt,
-          userRefFiles: refFiles,
-          userImages: payload.images?.map((img) => ({
-            name: img.name ?? "Attachment",
-            dataUrl: img.data,
-          })),
-          startedAtMs: Date.now(),
-          baseHistoryTurnCount: 0,
-        });
-
-        setIsStreamActive(true);
-        setActiveSession(session.sessionId, session.title);
-        onSessionCreated?.(session);
-
-        sendHarnessRequest({
-          req: "send_message",
-          session_id: session.sessionId,
-          content: `${payload.prompt}${formattedSelectionContext}`,
-          ...(effectiveModel ? { model: effectiveModel } : {}),
-          ...(payload.apiMethod ? { api_method: payload.apiMethod } : {}),
-          effort: effectiveEffort,
-          images: payload.images,
-          ...(effectiveWorkingDir ? { working_dir: effectiveWorkingDir } : {}),
-        });
-      } catch {
-        if (submitAttemptRef.current !== attemptId) return;
-        setPendingSubmit(null);
-        setPendingElapsedSec(0);
-        setComposerValue(payload.prompt);
+        throw error;
+      } finally {
+        if (submitAttemptRef.current === attemptId) {
+          setPendingSubmit(null);
+          setPendingElapsedSec(0);
+        }
       }
     },
-    [
-      createSessionMutation,
-      onSessionCreated,
-      queryClient,
-      setActiveSession,
-      setComposerValue,
-      setIsStreamActive,
-    ],
+    [submitComposer, onSessionCreated, setComposerValue],
   );
 
   return (
@@ -493,6 +403,8 @@ export function HomePage({
         mode="home"
         value={composerValue}
         onValueChange={setComposerValue}
+        images={composerImages}
+        onImagesChange={setComposerImages}
         inputRef={textareaRef}
         modelId={activeDraft?.model}
         effort={activeDraft?.reasoningEffort}
@@ -503,9 +415,7 @@ export function HomePage({
         }
         onSubmit={handleSubmit}
         onStop={handleStopPending}
-        isSubmitting={
-          Boolean(pendingSubmit) || createSessionMutation.isPending
-        }
+        isSubmitting={Boolean(pendingSubmit)}
       />
     </div>
   );

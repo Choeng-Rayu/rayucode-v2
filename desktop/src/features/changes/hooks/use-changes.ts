@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import type { ActionResult } from "@/lib/action-result"
+import { ipcClient } from "@/lib/ipc-client"
 
 import {
   changesQueryKeys,
@@ -42,12 +43,14 @@ export function computeChangesSummary(
     else if (decision === "rejected") rejectedCount += 1
   }
 
+  const totalFiles = changes?.totalChangedFiles ?? files.length
+
   return {
-    fileCount: files.length,
+    fileCount: totalFiles,
     stagedCount,
     acceptedCount,
     rejectedCount,
-    pendingCount: files.length - acceptedCount - rejectedCount,
+    pendingCount: totalFiles - acceptedCount - rejectedCount,
     totalAdditions:
       changes?.totalAdditions ??
       files.reduce((sum, file) => sum + file.additions, 0),
@@ -66,6 +69,7 @@ export interface UseChangesResult {
   summary: ChangesSummaryMetrics
   selectedFileId: string | null
   selectedFile: ChangedFileDiff | undefined
+  isLoadingDiff: boolean
   selectFile: (fileId: string) => void
   diffMode: DiffViewMode
   setDiffMode: (mode: DiffViewMode) => void
@@ -104,7 +108,7 @@ export function useChanges(): UseChangesResult {
     [query.data]
   )
 
-  const selectedFile = React.useMemo(() => {
+  const rawSelectedFile = React.useMemo(() => {
     const files = query.data?.files ?? []
     if (files.length === 0) return undefined
     if (selectedFileId) {
@@ -113,6 +117,31 @@ export function useChanges(): UseChangesResult {
     }
     return files[0]
   }, [query.data, selectedFileId])
+
+  const lazyDiffQuery = useQuery({
+    queryKey: ["changes", "file-diff", rawSelectedFile?.path ?? ""] as const,
+    queryFn: () => ipcClient.changes.getFileDiff(rawSelectedFile!.path),
+    enabled: Boolean(
+      rawSelectedFile && rawSelectedFile.diffLoaded === false
+    ),
+    staleTime: 15_000,
+  })
+
+  const selectedFile = React.useMemo(() => {
+    if (!rawSelectedFile) return undefined
+    if (
+      rawSelectedFile.diffLoaded === false &&
+      Array.isArray(lazyDiffQuery.data) &&
+      lazyDiffQuery.data.length > 0
+    ) {
+      return {
+        ...rawSelectedFile,
+        diffLoaded: true,
+        lines: lazyDiffQuery.data,
+      }
+    }
+    return rawSelectedFile
+  }, [lazyDiffQuery.data, rawSelectedFile])
 
   const resolvedSelectedFileId = selectedFile?.id ?? null
 
@@ -238,6 +267,8 @@ export function useChanges(): UseChangesResult {
         return
       }
       setLastCommit(result.data)
+      void queryClient.invalidateQueries({ queryKey: changesQueryKeys.state() })
+      void queryClient.invalidateQueries({ queryKey: ["inspector", "changes"] })
       toast(
         `Committed ${result.data.committedCount} staged file(s) (${result.data.hash})`
       )
@@ -311,6 +342,11 @@ export function useChanges(): UseChangesResult {
     summary,
     selectedFileId: resolvedSelectedFileId,
     selectedFile,
+    isLoadingDiff: Boolean(
+      rawSelectedFile &&
+        rawSelectedFile.diffLoaded === false &&
+        lazyDiffQuery.isPending
+    ),
     selectFile: setSelectedFileId,
     diffMode,
     setDiffMode,

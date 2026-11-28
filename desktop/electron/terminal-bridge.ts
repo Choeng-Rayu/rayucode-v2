@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { StringDecoder } from "node:string_decoder"
 
 export interface TerminalCommandResult {
   id: string
@@ -104,12 +105,32 @@ rows = max(5, int(sys.argv[3]))
 
 pid, master_fd = pty.fork()
 if pid == 0:
+    try:
+        os.setsid()
+    except OSError:
+        pass
     os.environ["TERM"] = "xterm-256color"
     os.environ["COLORTERM"] = "truecolor"
     try:
         os.execv(shell, [shell, "-i", "-l"])
     except OSError:
         os.execv("/bin/sh", ["/bin/sh", "-i"])
+
+stop_requested = False
+
+def terminate_child_group(signum=None, frame=None):
+    global stop_requested
+    stop_requested = True
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+signal.signal(signal.SIGTERM, terminate_child_group)
+signal.signal(signal.SIGHUP, terminate_child_group)
 
 def set_size(c, r):
     try:
@@ -129,7 +150,7 @@ stdin_fd = sys.stdin.fileno()
 stdout_fd = sys.stdout.fileno()
 in_buf = b""
 
-while True:
+while not stop_requested:
     try:
         rlist, _, _ = select.select([master_fd, stdin_fd], [], [], 0.25)
     except InterruptedError:
@@ -175,6 +196,11 @@ while True:
     except ChildProcessError:
         break
 
+terminate_child_group()
+try:
+    os.waitpid(pid, os.WNOHANG)
+except ChildProcessError:
+    pass
 try:
     os.close(master_fd)
 except OSError:
@@ -202,8 +228,15 @@ interface PtySessionEntry {
   cwd: string
 }
 
+interface PtySessionEntry {
+  child: ChildProcess
+  cwd: string
+  generation: number
+}
+
 export class TerminalPtyManager {
   private sessions = new Map<string, PtySessionEntry>()
+  private nextGeneration = 0
 
   create(options: {
     sessionId: string
@@ -216,6 +249,7 @@ export class TerminalPtyManager {
   }): { ok: boolean; cwd: string; shell: string } {
     this.kill(options.sessionId)
 
+    const generation = ++this.nextGeneration
     const cwd = resolveExistingCwd(options.cwd, options.fallbackCwd)
     const cols = Math.max(20, Math.min(400, options.cols ?? 96))
     const rows = Math.max(5, Math.min(200, options.rows ?? 28))
@@ -241,23 +275,43 @@ export class TerminalPtyManager {
             stdio: ["pipe", "pipe", "pipe"],
           })
 
-    this.sessions.set(options.sessionId, { child, cwd })
+    this.sessions.set(options.sessionId, { child, cwd, generation })
+    if (process.platform === "win32") {
+      options.onData(
+        "[Windows terminal mode: interactive piped shell without POSIX PTY resize]\r\n"
+      )
+    }
+
+    const stdoutDecoder = new StringDecoder("utf8")
+    const stderrDecoder = new StringDecoder("utf8")
 
     child.stdout?.on("data", (buf: Buffer) => {
-      options.onData(buf.toString("utf8"))
+      const current = this.sessions.get(options.sessionId)
+      if (!current || current.generation !== generation) return
+      const text = stdoutDecoder.write(buf)
+      if (text) options.onData(text)
     })
     child.stderr?.on("data", (buf: Buffer) => {
-      options.onData(buf.toString("utf8"))
+      const current = this.sessions.get(options.sessionId)
+      if (!current || current.generation !== generation) return
+      const text = stderrDecoder.write(buf)
+      if (text) options.onData(text)
     })
     child.once("error", (err) => {
+      const current = this.sessions.get(options.sessionId)
+      if (!current || current.generation !== generation) return
       options.onData(`\r\n[terminal error: ${err.message}]\r\n`)
     })
     child.once("close", (code) => {
+      const restOut = stdoutDecoder.end()
+      const restErr = stderrDecoder.end()
       const current = this.sessions.get(options.sessionId)
-      if (current?.child === child) {
+      if (current && current.generation === generation) {
+        if (restOut) options.onData(restOut)
+        if (restErr) options.onData(restErr)
         this.sessions.delete(options.sessionId)
+        options.onExit(code ?? 0)
       }
-      options.onExit(code ?? 0)
     })
 
     return { ok: true, cwd, shell }

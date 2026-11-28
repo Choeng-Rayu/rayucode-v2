@@ -1508,7 +1508,11 @@ impl RemoteConnection {
     /// Split the current session - ask server to clone conversation into a new session
     pub async fn split(&mut self) -> Result<u64> {
         let id = self.next_request_id;
-        let request = Request::Split { id };
+        let request = Request::Split {
+            id,
+            up_to_message_index: None,
+            up_to_message_id: None,
+        };
         self.next_request_id += 1;
         self.send_request(request).await?;
         Ok(id)

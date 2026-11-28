@@ -1,4 +1,5 @@
 export * from "./components/ApprovalCard";
+export * from "./components/ChatSessionContext";
 export * from "./components/ChatStream";
 export * from "./components/ChatWorkspaceView";
 export * from "./components/CiteLink";

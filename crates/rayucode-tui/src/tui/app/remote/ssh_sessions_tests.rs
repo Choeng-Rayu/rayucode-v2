@@ -110,7 +110,7 @@ fn ssh_session_wire_controls_and_navigation() {
         assert!(app.ssh_sessions.back.is_empty());
 
         handle_command(&mut app, &mut remote, "/btw a remote side question").await.unwrap();
-        let split_id = match read_request(&mut reader).await { Request::Split { id } => id, other => panic!("{other:?}") };
+        let split_id = match read_request(&mut reader).await { Request::Split { id, .. } => id, other => panic!("{other:?}") };
         let response = ServerEvent::SplitResponse { id: split_id, new_session_id: "remote-fork".into(), new_session_name: "fork".into() };
         assert!(handle_event(&mut app, &mut remote, &response).await.unwrap());
         assert!(matches!(read_request(&mut reader).await, Request::ResumeSession { session_id, .. } if session_id == "remote-fork"));

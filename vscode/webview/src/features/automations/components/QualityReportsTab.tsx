@@ -59,26 +59,34 @@ export function QualityReportsTab() {
   } | null>(null);
 
   const handleRunReview = async () => {
-    const res = await runReviewMutation.mutateAsync(
-      activeSessionId ?? undefined,
-    );
-    setLastGateResult({
-      kind: "review",
-      summary:
-        res.summary ?? "Independent review worker completed with 0 blockers.",
-    });
+    try {
+      const res = await runReviewMutation.mutateAsync(
+        activeSessionId ?? undefined,
+      );
+      setLastGateResult({
+        kind: "review",
+        summary:
+          res.summary ?? "Independent review worker completed with 0 blockers.",
+      });
+    } catch {
+      // Error surfaced via requireOperation toast; do not set lastGateResult
+    }
   };
 
   const handleRunJudge = async () => {
-    const res = await runJudgeMutation.mutateAsync(
-      activeSessionId ?? undefined,
-    );
-    setLastGateResult({
-      kind: "judge",
-      summary:
-        res.summary ??
-        "Acceptance judge verified all spec requirements passed.",
-    });
+    try {
+      const res = await runJudgeMutation.mutateAsync(
+        activeSessionId ?? undefined,
+      );
+      setLastGateResult({
+        kind: "judge",
+        summary:
+          res.summary ??
+          "Acceptance judge verified all spec requirements passed.",
+      });
+    } catch {
+      // Error surfaced via requireOperation toast; do not set lastGateResult
+    }
   };
 
   const handleGenerateReport = () => {

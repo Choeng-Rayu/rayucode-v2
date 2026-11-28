@@ -24,10 +24,16 @@ interface MockRayuServer {
     body?: Record<string, unknown>;
   }>;
   setEntitlementsHandler(
-    handler: () => { status: number; body: unknown } | null,
+    handler: () =>
+      | { status: number; body: unknown }
+      | null
+      | Promise<{ status: number; body: unknown } | null>,
   ): void;
   setGatewayModelsHandler(
-    handler: () => { status: number; body: unknown } | null,
+    handler: () =>
+      | { status: number; body: unknown }
+      | null
+      | Promise<{ status: number; body: unknown } | null>,
   ): void;
   close(): Promise<void>;
 }
@@ -41,7 +47,10 @@ async function startMockRayuServer(options?: {
 }): Promise<MockRayuServer> {
   const requests: MockRayuServer["requests"] = [];
   let limitMode: "gated" | "full_credits" = "gated";
-  let entitlementsHandler: () => { status: number; body: unknown } | null = () =>
+  let entitlementsHandler: () =>
+    | { status: number; body: unknown }
+    | null
+    | Promise<{ status: number; body: unknown } | null> = () =>
     options?.entitlementsResponse ?? {
       status: 200,
       body: {
@@ -61,7 +70,10 @@ async function startMockRayuServer(options?: {
         ],
       },
     };
-  let gatewayModelsHandler: () => { status: number; body: unknown } | null = () =>
+  let gatewayModelsHandler: () =>
+    | { status: number; body: unknown }
+    | null
+    | Promise<{ status: number; body: unknown } | null> = () =>
     options?.gatewayModelsResponse ?? {
       status: 200,
       body: {
@@ -206,13 +218,14 @@ async function startMockRayuServer(options?: {
           sendJson(401, { message: "Unauthorized" });
           return;
         }
-        const reply = entitlementsHandler();
-        if (!reply) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end("{malformed-json");
-          return;
-        }
-        sendJson(reply.status, reply.body);
+        void Promise.resolve(entitlementsHandler()).then((reply) => {
+          if (!reply) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("{malformed-json");
+            return;
+          }
+          sendJson(reply.status, reply.body);
+        });
         return;
       }
 
@@ -221,13 +234,14 @@ async function startMockRayuServer(options?: {
           sendJson(401, { message: "Unauthorized" });
           return;
         }
-        const reply = gatewayModelsHandler();
-        if (!reply) {
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end("{malformed-json");
-          return;
-        }
-        sendJson(reply.status, reply.body);
+        void Promise.resolve(gatewayModelsHandler()).then((reply) => {
+          if (!reply) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end("{malformed-json");
+            return;
+          }
+          sendJson(reply.status, reply.body);
+        });
         return;
       }
 
@@ -869,11 +883,27 @@ test("OAuth discovers arbitrary future models via /me/entitlements, caches, bypa
           body: { error: "upstream down" },
         }));
         mock.setGatewayModelsHandler(() => null);
-        const preserved = await manager.fetchHostedModels(true);
+        const preserved = await manager.getHostedModelCatalog(true);
+        assert.equal(preserved.status, "stale");
         assert.deepEqual(
-          preserved.map((m) => m.code),
+          preserved.models.map((m) => m.code),
           ["rayu-future-nova-2099", "rayu-future-omega-9999"],
         );
+
+        mock.setEntitlementsHandler(() => ({ status: 401, body: { error: "expired" } }));
+        mock.setGatewayModelsHandler(() => ({ status: 401, body: { error: "expired" } }));
+        const rejected = await manager.getHostedModelCatalog(true);
+        assert.equal(rejected.status, "stale");
+        assert.deepEqual(rejected.models, preserved.models);
+
+        const otherGateway = process.env.RAYU_GATEWAY_URL;
+        try {
+          process.env.RAYU_GATEWAY_URL = "http://127.0.0.1:1";
+          assert.deepEqual(manager.getCachedHostedModels(), []);
+          assert.deepEqual(await manager.getHostedModelCatalog(true), { models: [], status: "failed" });
+        } finally {
+          process.env.RAYU_GATEWAY_URL = otherGateway;
+        }
 
         // signOut clears cachedModels
         await manager.signOut();
@@ -969,6 +999,188 @@ test("OAuth falls back to /v1/models when /me/entitlements fails or returns empt
         // signOut clears API key models too
         await manager.signOut();
         assert.deepEqual(manager.getCachedHostedModels(), []);
+      } finally {
+        manager.dispose();
+      }
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test("getHostedModelCatalog coalesces concurrent reads, discovers rayu:future-zenith-9000 on forced refresh, isolates credentials/endpoints, and marks stale on 401/5xx/network/malformed JSON", async () => {
+  const mock = await startMockRayuServer();
+  try {
+    await withIsolatedAuthEnv(mock.baseUrl, async () => {
+      const manager = new RayuHostAuthManager();
+      try {
+        await manager.signInWithApiKey("rayu_sk_live_coalesce_1");
+
+        // 1. Concurrent identical reads (forceRefresh=false) coalesce into a single HTTP request
+        let releaseInitial!: () => void;
+        const initialGate = new Promise<void>((resolve) => {
+          releaseInitial = resolve;
+        });
+        mock.setGatewayModelsHandler(async () => {
+          await initialGate;
+          return {
+            status: 200,
+            body: {
+              object: "list",
+              data: [
+                {
+                  id: "rayu:future-zenith-9000",
+                  name: "Future Zenith 9000",
+                  description: "Arbitrary unlisted future model",
+                },
+                { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+              ],
+            },
+          };
+        });
+
+        const callsBefore = mock.requests.filter((r) => r.path === "/v1/models").length;
+        const [r1, r2, r3] = await Promise.all([
+          manager.getHostedModelCatalog(false),
+          manager.getHostedModelCatalog(false),
+          (async () => {
+            await new Promise((r) => setTimeout(r, 15));
+            releaseInitial();
+            return manager.getHostedModelCatalog(false);
+          })(),
+        ]);
+        const callsAfterCoalesce = mock.requests.filter((r) => r.path === "/v1/models").length;
+        assert.equal(callsAfterCoalesce - callsBefore, 1, "Concurrent reads must coalesce to 1 request");
+        assert.equal(r1.status, "fresh");
+        assert.equal(r2.status, "fresh");
+        assert.deepEqual(
+          r1.models.map((m) => m.code),
+          ["future-zenith-9000", "claude-sonnet-4-6"],
+        );
+        assert.deepEqual(r2.models, r1.models);
+        assert.deepEqual(r3.models, r1.models);
+
+        // 2. Warm cache hit returns status: "cached" with 0 network calls
+        const warmHit = await manager.getHostedModelCatalog(false);
+        assert.equal(warmHit.status, "cached");
+        assert.equal(
+          mock.requests.filter((r) => r.path === "/v1/models").length,
+          callsAfterCoalesce,
+        );
+
+        // 3. Concurrent forceRefresh=true bypasses fresh cache and coalesces into 1 network request
+        let releaseForced!: () => void;
+        const forcedGate = new Promise<void>((resolve) => {
+          releaseForced = resolve;
+        });
+        mock.setGatewayModelsHandler(async () => {
+          await forcedGate;
+          return {
+            status: 200,
+            body: {
+              object: "list",
+              data: [
+                { id: "rayu:future-zenith-9000", name: "Future Zenith 9000" },
+                { id: "rayu:future-zenith-9001", name: "Future Zenith 9001" },
+              ],
+            },
+          };
+        });
+        const [f1, f2] = await Promise.all([
+          manager.getHostedModelCatalog(true),
+          (async () => {
+            await new Promise((r) => setTimeout(r, 15));
+            const p = manager.getHostedModelCatalog(true);
+            releaseForced();
+            return p;
+          })(),
+        ]);
+        assert.equal(
+          mock.requests.filter((r) => r.path === "/v1/models").length,
+          callsAfterCoalesce + 1,
+          "Concurrent forceRefresh=true calls must coalesce to 1 request",
+        );
+        assert.equal(f1.status, "fresh");
+        assert.equal(f2.status, "fresh");
+        assert.deepEqual(
+          f1.models.map((m) => m.code),
+          ["future-zenith-9000", "future-zenith-9001"],
+        );
+
+        // 4. 401, 5xx, malformed JSON, and network error all preserve last-good models marked stale
+        mock.setGatewayModelsHandler(() => ({ status: 401, body: { error: "unauthorized" } }));
+        const on401 = await manager.getHostedModelCatalog(true);
+        assert.equal(on401.status, "stale");
+        assert.deepEqual(on401.models.map((m) => m.code), ["future-zenith-9000", "future-zenith-9001"]);
+
+        mock.setGatewayModelsHandler(() => ({ status: 502, body: { error: "bad gateway" } }));
+        const on502 = await manager.getHostedModelCatalog(true);
+        assert.equal(on502.status, "stale");
+        assert.deepEqual(on502.models.map((m) => m.code), ["future-zenith-9000", "future-zenith-9001"]);
+
+        mock.setGatewayModelsHandler(() => null);
+        const onMalformed = await manager.getHostedModelCatalog(true);
+        assert.equal(onMalformed.status, "stale");
+        assert.deepEqual(onMalformed.models.map((m) => m.code), ["future-zenith-9000", "future-zenith-9001"]);
+
+        const origFetch = globalThis.fetch;
+        globalThis.fetch = async () => {
+          throw new TypeError("fetch failed: ECONNREFUSED");
+        };
+        try {
+          const onNetworkErr = await manager.getHostedModelCatalog(true);
+          assert.equal(onNetworkErr.status, "stale");
+          assert.deepEqual(
+            onNetworkErr.models.map((m) => m.code),
+            ["future-zenith-9000", "future-zenith-9001"],
+          );
+        } finally {
+          globalThis.fetch = origFetch;
+        }
+
+        // 5. Slow in-flight response from old credential NEVER overwrites new credential's catalog
+        let releaseSlowOld!: () => void;
+        const slowOldGate = new Promise<void>((resolve) => {
+          releaseSlowOld = resolve;
+        });
+        mock.setGatewayModelsHandler(async () => {
+          await slowOldGate;
+          return {
+            status: 200,
+            body: {
+              object: "list",
+              data: [{ id: "rayu:stale-old-account-model" }],
+            },
+          };
+        });
+        const oldInFlight = manager.getHostedModelCatalog(true);
+        await new Promise((r) => setTimeout(r, 15));
+
+        // Switch API key while old request is in flight
+        await manager.signInWithApiKey("rayu_sk_live_coalesce_2");
+        mock.setGatewayModelsHandler(() => ({
+          status: 200,
+          body: {
+            object: "list",
+            data: [{ id: "rayu:new-account-zenith-9002" }],
+          },
+        }));
+        const newAccountRes = await manager.getHostedModelCatalog(true);
+        assert.equal(newAccountRes.status, "fresh");
+        assert.deepEqual(
+          newAccountRes.models.map((m) => m.code),
+          ["new-account-zenith-9002"],
+        );
+
+        // Now resolve old in-flight request — MUST return unavailable and NEVER overwrite new account state
+        releaseSlowOld();
+        const settledOld = await oldInFlight;
+        assert.equal(settledOld.status, "unavailable");
+        assert.deepEqual(settledOld.models, []);
+        assert.deepEqual(
+          manager.getCachedHostedModels().map((m) => m.code),
+          ["new-account-zenith-9002"],
+        );
       } finally {
         manager.dispose();
       }

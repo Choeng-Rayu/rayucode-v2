@@ -18,6 +18,8 @@ import {
   type ShellCommandStep,
 } from "@/lib";
 
+import { ChatSessionContext } from "./ChatSessionContext";
+
 export interface ShellCardProps {
   step: ShellCommandStep;
   sessionId?: string;
@@ -41,9 +43,12 @@ export function ShellCard({
   standalone = false,
   className,
 }: ShellCardProps) {
+  const contextSessionId = React.useContext(ChatSessionContext);
   const activeSessionId = useAppStore((s) => s.activeSessionId);
   const activeProjectPath = useAppStore((s) => s.activeProjectPath);
-  const resolvedSessionId = sessionId ?? activeSessionId ?? "ses_vscode_shell";
+  const explicitSessionId =
+    sessionId ?? contextSessionId ?? activeSessionId ?? undefined;
+  const resolvedSessionId = explicitSessionId ?? "ses_vscode_shell";
 
   const [uncontrolledExpanded, setUncontrolledExpanded] = React.useState(
     standalone || defaultExpanded,
@@ -150,7 +155,10 @@ export function ShellCard({
               onClick={() =>
                 postToHost({
                   type: "rayucode.editor.openTerminal",
-                  cwd: activeProjectPath ?? undefined,
+                  sessionId: explicitSessionId,
+                  cwd: explicitSessionId
+                    ? undefined
+                    : (activeProjectPath ?? undefined),
                 })
               }
               title="Open VS Code Integrated Terminal"

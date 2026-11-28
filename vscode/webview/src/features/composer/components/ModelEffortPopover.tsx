@@ -1,5 +1,9 @@
+import { requireOperation } from "@/lib/operation-result";
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -25,7 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui";
-import { callRpc, cn } from "@/lib";
+import { callRpc, cn, useAppStore } from "@/lib";
 
 import {
   CACHE_TTL_OPTIONS,
@@ -39,6 +43,7 @@ import {
   formatHarnessModelSpec,
   formatProviderBadgeLabel,
 } from "../constants";
+import { modelSettingsQueryOptions } from "../hooks/useComposerData";
 import type { ModelOption } from "../types";
 
 export interface ModelEffortPopoverProps {
@@ -48,8 +53,14 @@ export interface ModelEffortPopoverProps {
   serviceTier?: ServiceTier;
   cacheTtl?: CacheTtl;
   sessionId?: string | null;
-  models?: readonly ModelOption[];
+  models?: readonly (ModelOption & { supportsFast?: boolean })[];
   defaultModelId?: string;
+  supportsFast?: boolean;
+  stale?: boolean;
+  catalogMessage?: string | null;
+  pendingModel?: boolean;
+  pendingEffort?: boolean;
+  pendingServiceTier?: boolean;
   deferredNotice?: string | null;
   onDeferredChange?: (notice: string | null) => void;
   onSelectModel: (model: ModelOption) => void;
@@ -100,6 +111,12 @@ export function ModelEffortPopover({
   sessionId,
   models = FALLBACK_MODELS,
   defaultModelId,
+  supportsFast,
+  stale,
+  catalogMessage,
+  pendingModel,
+  pendingEffort,
+  pendingServiceTier,
   deferredNotice,
   onDeferredChange,
   onSelectModel,
@@ -118,7 +135,57 @@ export function ModelEffortPopover({
   const [triggerTipOpen, setTriggerTipOpen] = React.useState(false);
   const [isDragging, setIsDragging] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
+  const [localRefreshStale, setLocalRefreshStale] = React.useState(false);
+  const [localRefreshMessage, setLocalRefreshMessage] = React.useState<
+    string | null
+  >(null);
   const sliderRef = React.useRef<HTMLDivElement>(null);
+
+  const cachedModelSettings = useQuery({
+    ...modelSettingsQueryOptions(sessionId),
+    enabled: false,
+  });
+  const cachedCatalogMeta = cachedModelSettings.data as
+    | { stale?: boolean; message?: string }
+    | undefined;
+  const isCatalogStale =
+    stale ?? Boolean(cachedCatalogMeta?.stale || localRefreshStale);
+  const resolvedCatalogMessage =
+    catalogMessage ??
+    cachedCatalogMeta?.message ??
+    localRefreshMessage ??
+    "Showing last known models — refresh failed";
+
+  const storePendingPrefs = useAppStore((s) =>
+    sessionId ? s.pendingSessionPrefsBySession[sessionId] : undefined,
+  );
+  const storeAckPrefs = useAppStore((s) =>
+    sessionId ? s.sessionPrefsBySession[sessionId] : undefined,
+  );
+
+  const isModelPending =
+    pendingModel !== undefined
+      ? pendingModel
+      : Boolean(
+          storePendingPrefs?.modelId &&
+            storePendingPrefs.modelId !== storeAckPrefs?.modelId,
+        );
+  const isEffortPending =
+    pendingEffort !== undefined
+      ? pendingEffort
+      : Boolean(
+          storePendingPrefs?.effort &&
+            storePendingPrefs.effort !== storeAckPrefs?.effort,
+        );
+  const isServiceTierPending =
+    pendingServiceTier !== undefined
+      ? pendingServiceTier
+      : Boolean(
+          storePendingPrefs?.serviceTier &&
+            storePendingPrefs.serviceTier !== storeAckPrefs?.serviceTier,
+        );
+  const hasAnyPending =
+    isModelPending || isEffortPending || isServiceTierPending;
 
   const isFastTier = serviceTier === "priority" || serviceTier === "ultrafast";
   const catalog = models;
@@ -146,6 +213,12 @@ export function ModelEffortPopover({
     matchedActiveModel ??
     catalog.find((m) => m.available !== false) ??
     catalog[0];
+
+  const activeModelSupportsFast =
+    supportsFast !== undefined
+      ? supportsFast
+      : (activeModel as { supportsFast?: boolean } | undefined)
+          ?.supportsFast !== false;
 
   // Resolve dynamic effort ladder from engine ModelRouteInfo via packages/session-core.
   // When a route explicitly reports `supportedEfforts: []`, ladder.supported is false (0-stop model).
@@ -240,6 +313,11 @@ export function ModelEffortPopover({
       if (nextEffort.toLowerCase() !== activeStop.toLowerCase()) {
         onSelectEffort(nextEffort as EffortLevel);
         if (sessionId) {
+          if (isStreaming) {
+            useAppStore.getState().setPendingSessionPrefs(sessionId, {
+              effort: nextEffort as EffortLevel,
+            });
+          }
           void callRpc("sessions.setEffort", {
             sessionId,
             effort: nextEffort,
@@ -247,8 +325,19 @@ export function ModelEffortPopover({
           })
             .then((res) => {
               if (res.deferred || (!res.ok && res.code === "busy")) {
+                useAppStore.getState().setPendingSessionPrefs(sessionId, {
+                  effort: nextEffort as EffortLevel,
+                });
                 onDeferredChange?.("Applies on next turn");
               } else if (res.ok) {
+                if (!isStreaming) {
+                  useAppStore.getState().setSessionPrefs(sessionId, {
+                    effort: nextEffort as EffortLevel,
+                  });
+                  useAppStore
+                    .getState()
+                    .clearPendingSessionPrefs(sessionId, "effort");
+                }
                 onDeferredChange?.(null);
               }
             })
@@ -346,24 +435,43 @@ export function ModelEffortPopover({
   };
 
   const handleServiceTierSelect = (nextTier: ServiceTier) => {
-    onSelectServiceTier?.(nextTier);
-    void callRpc("settings.models.setFast", {
-      tier: nextTier,
-      sessionId: sessionId ?? undefined,
-    }).catch(() => {});
+    if (!activeModelSupportsFast && nextTier !== "auto" && nextTier !== "off") {
+      return;
+    }
+    if (!sessionId) {
+      onSelectServiceTier?.(nextTier);
+      return;
+    }
+    if (isStreaming) {
+      useAppStore.getState().setPendingSessionPrefs(sessionId, {
+        serviceTier: nextTier,
+      });
+    }
+    void requireOperation(callRpc("settings.models.setFast", { tier: nextTier, sessionId }))
+      .then((result) => {
+        if (!isStreaming) {
+          useAppStore.getState().setSessionPrefs(sessionId, {
+            serviceTier: result.tier,
+          });
+          useAppStore
+            .getState()
+            .clearPendingSessionPrefs(sessionId, "serviceTier");
+        }
+        onSelectServiceTier?.(result.tier);
+      })
+      .catch(() => {});
   };
 
   const handleFastToggle = () => {
+    if (!activeModelSupportsFast && !isFastTier) return;
     const nextTier: ServiceTier = isFastTier ? "auto" : "priority";
     handleServiceTierSelect(nextTier);
   };
 
   const handleCacheTtlSelect = (nextTtl: CacheTtl) => {
-    onSelectCacheTtl?.(nextTtl);
-    void callRpc("settings.models.setCacheTtl", {
-      ttl: nextTtl,
-      sessionId: sessionId ?? undefined,
-    }).catch(() => {});
+    void requireOperation(callRpc("settings.models.setCacheTtl", { ttl: nextTtl }))
+      .then((result) => onSelectCacheTtl?.(result.ttl))
+      .catch(() => {});
   };
 
   const resetTargetModel =
@@ -443,6 +551,13 @@ export function ModelEffortPopover({
       formatHarnessModelSpec(model.id, model.provider, model.apiMethod) ||
       model.id;
     if (sessionId) {
+      if (isStreaming) {
+        useAppStore.getState().setPendingSessionPrefs(sessionId, {
+          modelId: spec,
+          modelLabel: model.label,
+          apiMethod: model.apiMethod,
+        });
+      }
       void callRpc("sessions.setModel", {
         sessionId,
         model: spec,
@@ -452,8 +567,23 @@ export function ModelEffortPopover({
       })
         .then((res) => {
           if (res.deferred || (!res.ok && res.code === "busy")) {
+            useAppStore.getState().setPendingSessionPrefs(sessionId, {
+              modelId: spec,
+              modelLabel: model.label,
+              apiMethod: model.apiMethod,
+            });
             onDeferredChange?.("Applies on next turn");
           } else if (res.ok) {
+            if (!isStreaming) {
+              useAppStore.getState().setSessionPrefs(sessionId, {
+                modelId: spec,
+                modelLabel: model.label,
+                apiMethod: model.apiMethod,
+              });
+              useAppStore
+                .getState()
+                .clearPendingSessionPrefs(sessionId, "modelId");
+            }
             onDeferredChange?.(null);
           }
         })
@@ -475,11 +605,41 @@ export function ModelEffortPopover({
 
   const handleRefresh = () => {
     if (onRefreshModels) {
-      void onRefreshModels();
+      void Promise.resolve(onRefreshModels())
+        .then(() => {
+          setLocalRefreshStale(false);
+          setLocalRefreshMessage(null);
+        })
+        .catch((err) => {
+          setLocalRefreshStale(true);
+          setLocalRefreshMessage(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Showing last known models — refresh failed",
+          );
+        });
     } else {
-      void callRpc("settings.models.refresh", {
+      void requireOperation(callRpc("settings.models.refresh", {
         sessionId: sessionId ?? undefined,
-      }).catch(() => {});
+      }))
+        .then((res) => {
+          const isStaleRes = res.sources?.hosted === "stale";
+          setLocalRefreshStale(isStaleRes);
+          setLocalRefreshMessage(
+            isStaleRes
+              ? (res.message ?? "Showing last known models — refresh failed")
+              : null,
+          );
+          if (res.message) toast.warning(res.message);
+        })
+        .catch((err) => {
+          setLocalRefreshStale(true);
+          setLocalRefreshMessage(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "Showing last known models — refresh failed",
+          );
+        });
     }
   };
 
@@ -540,6 +700,14 @@ export function ModelEffortPopover({
                   {effortLabel}
                 </span>
               ) : null}
+              {hasAnyPending ? (
+                <span
+                  data-testid="model-effort-pending-badge"
+                  className="shrink-0 rounded-full border border-hairline bg-inset px-1.5 py-px text-[10px] font-medium text-muted-ink"
+                >
+                  Pending
+                </span>
+              ) : null}
               <ChevronDown
                 className={cn(
                   "size-3 shrink-0 text-muted-ink transition-transform duration-150 @max-[340px]/composer:hidden",
@@ -578,12 +746,13 @@ export function ModelEffortPopover({
                     <TooltipTrigger asChild>
                       <button
                         type="button"
+                        disabled={!activeModelSupportsFast && !isFastTier}
                         onClick={handleFastToggle}
                         aria-label="Priority fast service tier"
                         aria-pressed={isFastTier}
                         data-testid="effort-fast-btn"
                         className={cn(
-                          "grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink",
+                          "grid size-[30px] cursor-pointer place-items-center rounded-[9px] border border-transparent text-muted-ink transition-colors hover:border-hairline hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-45",
                           isFastTier &&
                             "border-brand/40 bg-brand-soft text-brand-text",
                         )}
@@ -592,30 +761,52 @@ export function ModelEffortPopover({
                       </button>
                     </TooltipTrigger>
                     <TooltipContent side="top">
-                      Fast / Priority service tier ({serviceTier})
+                      {activeModelSupportsFast
+                        ? `Fast / Priority service tier (${serviceTier})`
+                        : "Fast service tier is not supported by this model"}
                     </TooltipContent>
                   </Tooltip>
 
                   <div className="flex flex-col items-center gap-0.5 pt-0.5 text-center">
-                    <div
-                      data-testid="effort-level-value"
-                      data-effort={activeStop}
-                      className="text-[19px] leading-[1.15] font-semibold tracking-[-0.02em] text-brand-text"
-                    >
-                      {effortLabel}
+                    <div className="inline-flex items-center gap-1.5">
+                      <div
+                        data-testid="effort-level-value"
+                        data-effort={activeStop}
+                        className="text-[19px] leading-[1.15] font-semibold tracking-[-0.02em] text-brand-text"
+                      >
+                        {effortLabel}
+                      </div>
+                      {isEffortPending ? (
+                        <span
+                          data-testid="effort-pending-badge"
+                          className="rounded-full border border-hairline bg-inset px-1.5 py-px text-[10px] font-medium text-muted-ink"
+                        >
+                          Pending
+                        </span>
+                      ) : null}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setStage("list")}
-                      data-testid="open-model-list-btn"
-                      className="group inline-flex cursor-pointer items-center gap-0.5 rounded-full py-0.5 pr-2 pl-2.5 text-[13.5px] font-normal text-body transition-colors hover:bg-hover hover:text-ink"
-                    >
-                      <span>{modelLabel}</span>
-                      <ChevronRight
-                        className="size-3.5 text-muted-ink transition-transform group-hover:translate-x-0.5 group-hover:text-ink"
-                        aria-hidden="true"
-                      />
-                    </button>
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setStage("list")}
+                        data-testid="open-model-list-btn"
+                        className="group inline-flex cursor-pointer items-center gap-0.5 rounded-full py-0.5 pr-2 pl-2.5 text-[13.5px] font-normal text-body transition-colors hover:bg-hover hover:text-ink"
+                      >
+                        <span>{modelLabel}</span>
+                        <ChevronRight
+                          className="size-3.5 text-muted-ink transition-transform group-hover:translate-x-0.5 group-hover:text-ink"
+                          aria-hidden="true"
+                        />
+                      </button>
+                      {isModelPending ? (
+                        <span
+                          data-testid="model-pending-badge"
+                          className="rounded-full border border-hairline bg-inset px-1.5 py-px text-[10px] font-medium text-muted-ink"
+                        >
+                          Pending
+                        </span>
+                      ) : null}
+                    </div>
                     {authTag ? (
                       <span className="text-[10.5px] text-muted-ink">
                         {authTag}
@@ -789,19 +980,32 @@ export function ModelEffortPopover({
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-ink">
                   <Zap className="size-3 text-brand-text" aria-hidden="true" />
                   <span>Tier</span>
+                  {isServiceTierPending ? (
+                    <span
+                      data-testid="service-tier-pending-badge"
+                      className="rounded-full border border-hairline bg-inset px-1.5 py-px text-[10px] font-medium text-muted-ink"
+                    >
+                      Pending
+                    </span>
+                  ) : null}
                 </span>
                 <div className="flex items-center gap-0.5 rounded-lg border border-hairline-soft bg-inset p-0.5">
                   {SERVICE_TIER_OPTIONS.map((opt) => {
                     const active = serviceTier === opt.id;
+                    const isFastOption =
+                      opt.id !== "auto" && opt.id !== "off";
+                    const optionDisabled =
+                      !activeModelSupportsFast && isFastOption;
                     return (
                       <button
                         key={opt.id}
                         type="button"
+                        disabled={optionDisabled}
                         data-testid={`service-tier-${opt.id}`}
                         aria-pressed={active}
                         onClick={() => handleServiceTierSelect(opt.id)}
                         className={cn(
-                          "cursor-pointer rounded-md px-1.5 py-0.5 text-[10.5px] font-medium transition-colors",
+                          "cursor-pointer rounded-md px-1.5 py-0.5 text-[10.5px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                           active
                             ? "bg-active text-ink shadow-bevel-surface"
                             : "text-muted-ink hover:text-ink",
@@ -819,8 +1023,8 @@ export function ModelEffortPopover({
                 className="flex items-center justify-between gap-1.5"
               >
                 <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-ink">
-                  <Clock className="size-3 text-muted-ink" aria-hidden="true" />
-                  <span>KV Cache</span>
+                  <Clock className="size-3 shrink-0 text-muted-ink" aria-hidden="true" />
+                  <span>Anthropic Prompt Cache TTL (Global)</span>
                 </span>
                 <div className="flex items-center gap-0.5 rounded-lg border border-hairline-soft bg-inset p-0.5">
                   {CACHE_TTL_OPTIONS.map((opt) => {
@@ -906,6 +1110,20 @@ export function ModelEffortPopover({
                 className="h-7 w-full rounded-lg border border-hairline bg-inset pr-2.5 pl-7 text-xs text-ink placeholder:text-muted-ink focus:border-premium-hi focus:outline-none"
               />
             </div>
+
+            {isCatalogStale ? (
+              <div
+                role="status"
+                data-testid="model-catalog-stale-notice"
+                className="mx-1 mb-2 flex items-start gap-1.5 rounded-lg border border-warn/30 bg-warn-soft px-2.5 py-1.5 text-[11px] leading-snug text-warn"
+              >
+                <AlertTriangle
+                  className="mt-0.5 size-3 shrink-0"
+                  aria-hidden="true"
+                />
+                <span>{resolvedCatalogMessage}</span>
+              </div>
+            ) : null}
 
             <ScrollArea className="h-[280px]">
               <div

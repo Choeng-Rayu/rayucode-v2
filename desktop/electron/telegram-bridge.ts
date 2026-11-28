@@ -40,6 +40,11 @@ export interface TelegramState {
 }
 
 export interface TelegramDaemonAdapter {
+  runGlobalRuntimeCommand?(
+    command: RuntimeCommand,
+    args?: string[],
+    workingDir?: string
+  ): Promise<{ command: RuntimeCommand; data: unknown; message: string }>
   runRuntimeCommandOnAnySession(
     command: RuntimeCommand,
     args?: string[],
@@ -152,20 +157,30 @@ export class RayuTelegramManager {
     private readonly getWorkingDir: () => string
   ) {}
 
+  private runGlobalTelegramCommand(
+    args: string[],
+    workingDir = this.getWorkingDir()
+  ): Promise<{ command: RuntimeCommand; data: unknown; message: string }> {
+    if (typeof this.daemonClient.runGlobalRuntimeCommand === "function") {
+      return this.daemonClient.runGlobalRuntimeCommand(
+        "telegram",
+        args,
+        workingDir
+      )
+    }
+    return this.daemonClient.runRuntimeCommandOnAnySession(
+      "telegram",
+      args,
+      workingDir
+    )
+  }
+
   async getState(): Promise<TelegramState> {
     const workingDir = this.getWorkingDir()
     try {
       const [statusRes, approvalsRes] = await Promise.all([
-        this.daemonClient.runRuntimeCommandOnAnySession(
-          "telegram",
-          ["status"],
-          workingDir
-        ),
-        this.daemonClient.runRuntimeCommandOnAnySession(
-          "telegram",
-          ["approvals"],
-          workingDir
-        ),
+        this.runGlobalTelegramCommand(["status"], workingDir),
+        this.runGlobalTelegramCommand(["approvals"], workingDir),
       ])
 
       const status = (statusRes.data ?? {}) as RustTelegramStatusData
@@ -281,11 +296,7 @@ export class RayuTelegramManager {
 
   async startHosted(replaceExisting = false): Promise<TelegramState> {
     const args = replaceExisting ? ["link_hosted", "replace"] : ["link_hosted"]
-    const res = await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      args,
-      this.getWorkingDir()
-    )
+    const res = await this.runGlobalTelegramCommand(args)
     const data = (res.data ?? {}) as {
       generation?: string | null
       username?: string | null
@@ -324,11 +335,7 @@ export class RayuTelegramManager {
     if (input.replaceExisting) {
       args.push("replace")
     }
-    const res = await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      args,
-      this.getWorkingDir()
-    )
+    const res = await this.runGlobalTelegramCommand(args)
     const data = (res.data ?? {}) as {
       generation?: string | null
       linked?: boolean
@@ -358,11 +365,7 @@ export class RayuTelegramManager {
 
   async disconnect(localOnly = false): Promise<TelegramState> {
     const args = localOnly ? ["disconnect", "local_only"] : ["disconnect"]
-    await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      args,
-      this.getWorkingDir()
-    )
+    await this.runGlobalTelegramCommand(args)
     this.pendingPairing = null
     return this.getState()
   }
@@ -371,29 +374,24 @@ export class RayuTelegramManager {
     approvalId: string,
     decision: "approved" | "denied"
   ): Promise<TelegramState> {
-    await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      ["decide", approvalId, decision === "approved" ? "allow" : "deny"],
-      this.getWorkingDir()
-    )
+    await this.runGlobalTelegramCommand([
+      "decide",
+      approvalId,
+      decision === "approved" ? "allow" : "deny",
+    ])
     return this.getState()
   }
 
   async setRemoteUninstall(enabled: boolean): Promise<TelegramState> {
-    await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      ["uninstall", enabled ? "enable" : "disable"],
-      this.getWorkingDir()
-    )
+    await this.runGlobalTelegramCommand([
+      "uninstall",
+      enabled ? "enable" : "disable",
+    ])
     return this.getState()
   }
 
   async selectSession(sessionId: string): Promise<TelegramState> {
-    await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      ["select_session", sessionId],
-      this.getWorkingDir()
-    )
+    await this.runGlobalTelegramCommand(["select_session", sessionId])
     return this.getState()
   }
 
@@ -402,11 +400,7 @@ export class RayuTelegramManager {
     target?: string
     chatId?: string
   }> {
-    const res = await this.daemonClient.runRuntimeCommandOnAnySession(
-      "telegram",
-      ["ping"],
-      this.getWorkingDir()
-    )
+    const res = await this.runGlobalTelegramCommand(["ping"])
     const data = (res.data ?? {}) as {
       ok?: boolean
       username?: string | null

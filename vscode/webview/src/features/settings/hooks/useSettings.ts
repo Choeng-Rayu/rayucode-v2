@@ -1,3 +1,4 @@
+import { requireOperation } from "@/lib/operation-result";
 import { formatDaemonVersionLabel } from "@rayu-dev/rayucode-session-core/client";
 import * as React from "react";
 import {
@@ -32,7 +33,7 @@ import type {
 } from "@shared/vscodeProtocol";
 
 import { useAppStore } from "@/lib/app-store";
-import { callRpc, onHostMessage, sendHarnessRequest } from "@/lib/rpc-client";
+import { callRpc, onHostMessage } from "@/lib/rpc-client";
 
 export type SettingsSectionId =
   | "account"
@@ -869,20 +870,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       const keys = Object.keys(patch);
       setConfigSectionError(null);
       try {
-        const res = await callRpc("config.patch", { patch });
-        if (!res.ok) {
-          const message =
-            res.message || "Failed to update ~/.rayu/config.toml.";
-          if (keys.length === 1 && keys[0]) {
-            setConfigFieldErrors((prev) => ({
-              ...prev,
-              [keys[0]!]: message,
-            }));
-          } else {
-            setConfigSectionError(message);
-          }
-          return res;
-        }
+        const res = await requireOperation(callRpc("config.patch", { patch }));
         setConfigFieldErrors((prev) => {
           const next = { ...prev };
           for (const k of keys) delete next[k];
@@ -911,6 +899,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         } else {
           setConfigSectionError(message);
         }
+        setStatusMessage(message);
         return { ok: false, message };
       }
     },
@@ -1014,6 +1003,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         const res = await callRpc("settings.models.get", {
           sessionId: activeSessionId ?? undefined,
         });
+        const rawRes = res as typeof res & { stale?: boolean; message?: string };
         const byRole = new Map(res.roleOverrides.map((r) => [r.role, r]));
         const roleOverrides = DEFAULT_5_ROLE_OVERRIDES.map(
           (def) => byRole.get(def.role) ?? def,
@@ -1022,6 +1012,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           res.routes?.find((r) => r.available !== false) ?? res.routes?.[0];
         return {
           ...res,
+          stale: Boolean(rawRes.stale),
+          catalogMessage: rawRes.message,
           defaultModel:
             res.defaultModel ??
             fallbackRoute?.modelSpec ??
@@ -1136,7 +1128,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
 
   const signInBrowserMutation = useMutation({
     mutationFn: (mode?: "vscode" | "loopback") =>
-      callRpc("settings.account.signInBrowser", mode ? { mode } : undefined),
+      requireOperation(
+        callRpc("settings.account.signInBrowser", mode ? { mode } : undefined),
+      ),
     onSuccess: (res) => {
       if (res.state) {
         syncAccountEverywhere(res.state);
@@ -1153,7 +1147,6 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           ? err.message
           : "Failed to start browser sign-in";
       setStatusMessage(msg);
-      toast.error(msg);
     },
   });
 
@@ -1207,7 +1200,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
 
   const bypassPacingMutation = useMutation({
     mutationFn: (enabled: boolean) =>
-      callRpc("settings.account.setBypassPacing", { enabled }),
+      requireOperation(callRpc("settings.account.setBypassPacing", { enabled })),
     onSuccess: (_res, enabled) => {
       queryClient.setQueryData<AccountStatusView>(
         ["settings", "account"],
@@ -1223,7 +1216,6 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       const msg =
         err instanceof Error ? err.message : "Failed to update pacing setting";
       setStatusMessage(msg);
-      toast.error(msg);
     },
   });
 
@@ -1232,7 +1224,7 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       providerId: string;
       apiKey: string;
       baseUrl?: string;
-    }) => callRpc("settings.providers.setApiKey", input),
+    }) => requireOperation(callRpc("settings.providers.setApiKey", input)),
     onSuccess: (_res, { providerId, baseUrl }) => {
       queryClient.setQueryData<ProviderEntryView[]>(
         ["settings", "providers"],
@@ -1273,13 +1265,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       const msg =
         err instanceof Error ? err.message : "Failed to save provider API key";
       setStatusMessage(msg);
-      toast.error(msg);
     },
   });
 
   const clearProviderKeyMutation = useMutation({
     mutationFn: (providerId: string) =>
-      callRpc("settings.providers.clearApiKey", { providerId }),
+      requireOperation(callRpc("settings.providers.clearApiKey", { providerId })),
     onSuccess: (_res, providerId) => {
       queryClient.setQueryData<ProviderEntryView[]>(
         ["settings", "providers"],
@@ -1315,13 +1306,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       const msg =
         err instanceof Error ? err.message : "Failed to clear provider API key";
       setStatusMessage(msg);
-      toast.error(msg);
     },
   });
 
   const logoutProviderMutation = useMutation({
     mutationFn: (providerId: string) =>
-      callRpc("settings.providers.logout", { providerId }),
+      requireOperation(callRpc("settings.providers.logout", { providerId })),
     onSuccess: (_res, providerId) => {
       queryClient.setQueryData<ProviderEntryView[]>(
         ["settings", "providers"],
@@ -1362,24 +1352,52 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       const msg =
         err instanceof Error ? err.message : "Failed to log out provider";
       setStatusMessage(msg);
-      toast.error(msg);
     },
   });
 
   const refreshModelsMutation = useMutation({
     mutationFn: () =>
-      callRpc("settings.models.refresh", {
+      requireOperation(callRpc("settings.models.refresh", {
         sessionId: activeSessionId ?? undefined,
-      }),
+      })),
     onSuccess: (res) => {
+      const isStaleResult = res.sources?.hosted === "stale";
+      const resultMessage =
+        res.message ??
+        (isStaleResult
+          ? "Showing last known models — refresh failed"
+          : undefined);
+      if (isStaleResult && resultMessage) {
+        toast.warning(resultMessage);
+      }
       if (res.routes && res.routes.length > 0) {
         queryClient.setQueryData(
           ["settings", "models", activeSessionId ?? "global"],
           (prev: Record<string, unknown> | undefined) =>
-            prev ? { ...prev, routes: res.routes } : prev,
+            prev
+              ? {
+                  ...prev,
+                  routes: res.routes,
+                  stale: isStaleResult,
+                  catalogMessage: isStaleResult ? resultMessage : undefined,
+                }
+              : prev,
         );
+      } else if (isStaleResult) {
+        queryClient.setQueryData(
+          ["settings", "models", activeSessionId ?? "global"],
+          (prev: Record<string, unknown> | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  stale: true,
+                  catalogMessage: resultMessage,
+                }
+              : prev,
+        );
+      } else {
+        void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
       }
-      void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
       void queryClient.invalidateQueries({
         queryKey: ["composer", "model-settings"],
       });
@@ -1388,17 +1406,37 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
       setStatusMessage(
-        `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
+        resultMessage ?? `Refreshed live model discovery catalog (${res.routeCount ?? res.routes?.length ?? 0} routes discovered).`,
       );
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Failed to refresh model catalog.";
+      queryClient.setQueryData(
+        ["settings", "models", activeSessionId ?? "global"],
+        (prev: Record<string, unknown> | undefined) =>
+          prev
+            ? {
+                ...prev,
+                stale: true,
+                catalogMessage: msg,
+              }
+            : prev,
+      );
+      setStatusMessage(msg);
     },
   });
 
   const setFastTierMutation = useMutation({
     mutationFn: (tier: ServiceTier) =>
-      callRpc("settings.models.setFast", {
-        tier,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.models.setFast", {
+          tier,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, tier) => {
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
@@ -1410,14 +1448,21 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       });
       setStatusMessage(`Service tier updated to ${tier}.`);
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to update service tier.",
+      );
+    },
   });
 
   const setCacheTtlMutation = useMutation({
     mutationFn: (ttl: CacheTtl) =>
-      callRpc("settings.models.setCacheTtl", {
-        ttl,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.models.setCacheTtl", {
+          ttl,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, ttl) => {
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
@@ -1429,6 +1474,11 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       });
       setStatusMessage(`Prompt KV-Cache TTL updated to ${ttl}.`);
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to update KV-Cache TTL.",
+      );
+    },
   });
 
   const setRoleOverrideMutation = useMutation({
@@ -1437,10 +1487,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       model: string;
       scope: "session" | "global";
     }) =>
-      callRpc("settings.models.setRoleOverride", {
-        ...input,
-        sessionId: activeSessionId ?? undefined,
-      }),
+      requireOperation(
+        callRpc("settings.models.setRoleOverride", {
+          ...input,
+          sessionId: activeSessionId ?? undefined,
+        }),
+      ),
     onSuccess: (_res, input) => {
       queryClient.setQueryData(
         ["settings", "models", activeSessionId ?? "global"],
@@ -1467,6 +1519,11 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         `Updated ${input.role} model override to ${input.model} (${input.scope}).`,
       );
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to update role override.",
+      );
+    },
   });
 
   const setFeatureFlagMutation = useMutation({
@@ -1488,10 +1545,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           );
         }
       }
-      return callRpc("settings.features.set", {
-        key: String(input.key),
-        value: input.value,
-      });
+      return requireOperation(
+        callRpc("settings.features.set", {
+          key: String(input.key),
+          value: input.value,
+        }),
+      );
     },
     onSuccess: (res, input) => {
       queryClient.setQueryData(
@@ -1520,6 +1579,11 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         `Updated [features] ${String(input.key)} = ${String(input.value)}.`,
       );
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to update feature flag.",
+      );
+    },
   });
 
   const updateVoiceMutation = useMutation({
@@ -1528,7 +1592,18 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       deviceId?: string;
       noiseSuppression?: boolean;
       autoSendOnSilence?: boolean;
-    }) => callRpc("settings.voice.update", patch),
+    }) =>
+      requireOperation(
+        callRpc("settings.voice.update", patch).then((voice) => ({
+          ...voice,
+          ok:
+            (voice as { ok?: boolean })?.ok !== false &&
+            typeof voice?.enabled === "boolean",
+          message:
+            (voice as { message?: string })?.message ??
+            "Failed to update voice dictation settings.",
+        })),
+      ),
     onSuccess: (nextVoice) => {
       queryClient.setQueryData(
         ["settings", "features"],
@@ -1544,6 +1619,13 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       );
       setStatusMessage("Updated voice dictation settings.");
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to update voice dictation settings.",
+      );
+    },
   });
 
   const setPermissionModeMutation = useMutation({
@@ -1552,15 +1634,12 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       setDefaultPermissionModeState(mode);
       setStoreDefaultPermissionMode(mode);
       try {
-        const res = await callRpc("settings.permission.setDefault", {
-          mode,
-          applyToActiveSession: Boolean(activeSessionId),
-        });
-        if (!res.ok) {
-          setDefaultPermissionModeState(previous);
-          setStoreDefaultPermissionMode(previous);
-          throw new Error("RayuCode rejected the permission mode.");
-        }
+        const res = await requireOperation(
+          callRpc("settings.permission.setDefault", {
+            mode,
+            applyToActiveSession: Boolean(activeSessionId),
+          }),
+        );
         if (activeSessionId) {
           useAppStore
             .getState()
@@ -1589,14 +1668,21 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
   });
 
   const openHooksConfigMutation = useMutation({
-    mutationFn: () => callRpc("settings.hooks.openConfig"),
+    mutationFn: () => requireOperation(callRpc("settings.hooks.openConfig")),
     onSuccess: () => {
       setStatusMessage("Opened hooks configuration in VS Code editor.");
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to open hooks configuration.",
+      );
     },
   });
 
   const pingDaemonMutation = useMutation({
-    mutationFn: () => callRpc("daemon.ping"),
+    mutationFn: () => requireOperation(callRpc("daemon.ping")),
     onSuccess: (res) => {
       queryClient.setQueryData<DaemonStatusView>(
         ["daemon", "status"],
@@ -1610,23 +1696,40 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
               }
             : prev,
       );
-      const formatted = formatDaemonVersionLabel(res.version ?? "2.4.0") || "v2.4.0";
+      const formatted = res.version ? formatDaemonVersionLabel(res.version) : "";
       setStatusMessage(
-        `Daemon healthy (${res.latencyMs} ms RTT · ${formatted}).`,
+        `Daemon healthy (${res.latencyMs} ms RTT${formatted ? ` · ${formatted}` : ""}).`,
+      );
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to ping Rayu daemon.",
       );
     },
   });
 
   const reloadDaemonMutation = useMutation({
     mutationFn: async () => {
-      await callRpc("daemon.reload");
-      return callRpc("daemon.restart");
+      await requireOperation(callRpc("daemon.reload"));
+      try {
+        return await callRpc("daemon.restart");
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to restart Rayu daemon.",
+        );
+        throw err;
+      }
     },
     onSuccess: (nextStatus) => {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
       setConfigRequiresRestart(false);
       setStatusMessage("Reloaded Rayu Daemon & Bridge connection.");
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to reload Rayu daemon.",
+      );
     },
   });
 
@@ -1635,7 +1738,22 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     onSuccess: (nextStatus) => {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
-      setStatusMessage("Reconnected to Rayu Daemon socket.");
+      if (nextStatus.state === "error" || nextStatus.error) {
+        const msg =
+          nextStatus.error ?? "Failed to reconnect to Rayu Daemon socket.";
+        setStatusMessage(msg);
+        toast.error(msg);
+      } else {
+        setStatusMessage("Reconnected to Rayu Daemon socket.");
+      }
+    },
+    onError: (err) => {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to reconnect to Rayu Daemon socket.";
+      setStatusMessage(msg);
+      toast.error(msg);
     },
   });
 
@@ -1645,7 +1763,9 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       setDaemonStatus(nextStatus);
       queryClient.setQueryData(["daemon", "status"], nextStatus);
       if (nextStatus.error) {
-        setStatusMessage(`Rayu engine update failed: ${nextStatus.error}`);
+        const msg = `Rayu engine update failed: ${nextStatus.error}`;
+        setStatusMessage(msg);
+        toast.error(msg);
       } else {
         setStatusMessage(
           nextStatus.statusMessage ??
@@ -1653,32 +1773,47 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         );
       }
     },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to update Rayu engine.";
+      setStatusMessage(msg);
+      toast.error(msg);
+    },
   });
 
   const openOutputLogMutation = useMutation({
-    mutationFn: () => callRpc("daemon.openOutputLog"),
+    mutationFn: () => requireOperation(callRpc("daemon.openOutputLog")),
     onSuccess: () => {
       setStatusMessage("Opened RayuCode daemon output log in VS Code.");
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to open daemon output log.",
+      );
     },
   });
 
   const updateRuntimeMutation = useMutation({
-    mutationFn: (patch: {
+    mutationFn: async (patch: {
       socketPath?: string;
       binaryPath?: string;
       autoStart?: boolean;
       transport?: ProviderTransport;
     }) => {
       if (patch.transport) {
-        void callRpc("settings.models.setTransport", {
-          transport: patch.transport,
-        });
+        await requireOperation(
+          callRpc("settings.models.setTransport", {
+            transport: patch.transport,
+          }),
+        );
       }
-      return callRpc("settings.runtime.update", {
-        socketPath: patch.socketPath,
-        binaryPath: patch.binaryPath,
-        autoStart: patch.autoStart,
-      });
+      return requireOperation(
+        callRpc("settings.runtime.update", {
+          socketPath: patch.socketPath,
+          binaryPath: patch.binaryPath,
+          autoStart: patch.autoStart,
+        }),
+      );
     },
     onSuccess: (_res, patch) => {
       queryClient.setQueryData(
@@ -1687,6 +1822,13 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
           prev ? { ...prev, ...patch } : prev,
       );
       setStatusMessage("Updated daemon runtime & bridge settings.");
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to update daemon runtime settings.",
+      );
     },
   });
 
@@ -1702,16 +1844,27 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
         `Completed ${scope === "providers" ? "Provider" : "Auth"} Doctor check (${res.checks.length} item(s)).`,
       );
     },
+    onError: (err) => {
+      const msg =
+        err instanceof Error ? err.message : "Failed to run Doctor check.";
+      setStatusMessage(msg);
+      toast.error(msg);
+    },
   });
 
   const runSelfDevMutation = useMutation({
     mutationFn: (action: "status" | "build" | "reload") =>
-      callRpc("daemon.selfdev", { action }),
+      requireOperation(callRpc("daemon.selfdev", { action })),
     onSuccess: (res, action) => {
       setSelfDevOutput(
         res.output ?? `Self-dev (${action}): ${res.status}`,
       );
       setStatusMessage(`Self-dev ${action} finished (${res.status}).`);
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Self-dev command failed.",
+      );
     },
   });
 
@@ -1719,7 +1872,18 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     mutationFn: (input: {
       category: TelemetryCategory | "all" | "none";
       enabled?: boolean;
-    }) => callRpc("settings.telemetry.set", input),
+    }) =>
+      requireOperation(
+        callRpc("settings.telemetry.set", input).then((res) => ({
+          ...res,
+          ok:
+            (res as { ok?: boolean })?.ok !== false &&
+            typeof res?.usage === "boolean",
+          message:
+            (res as { message?: string })?.message ??
+            "Failed to update telemetry preference.",
+        })),
+      ),
     onSuccess: (_res, input) => {
       queryClient.setQueryData(
         ["settings", "features"],
@@ -1767,6 +1931,13 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       );
       setStatusMessage(`Updated telemetry preference (${input.category}).`);
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to update telemetry preference.",
+      );
+    },
   });
 
   const submitFeedbackMutation = useMutation({
@@ -1774,58 +1945,66 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
       kind: "bug" | "suggestion" | "usability";
       summary: string;
       details?: string;
-    }) => callRpc("settings.feedback.submit", input),
+    }) => requireOperation(callRpc("settings.feedback.submit", input)),
     onSuccess: () => {
       setStatusMessage("Submitted feedback report to RayuCode maintainers.");
+    },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to submit feedback.",
+      );
     },
   });
 
   const openKeybindingsMutation = useMutation({
-    mutationFn: () => callRpc("settings.shortcuts.openKeybindings"),
+    mutationFn: () => requireOperation(callRpc("settings.shortcuts.openKeybindings")),
     onSuccess: () => {
       setStatusMessage("Opened VS Code Keyboard Shortcuts editor.");
     },
+    onError: (err) => {
+      setStatusMessage(
+        err instanceof Error ? err.message : "Failed to open keyboard shortcuts.",
+      );
+    },
   });
 
-  const setDefaultModel = React.useCallback(
-    async (model: string) => {
-      if (configSupported) {
-        const res = await patchConfig({ "provider.default_model": model });
-        if (!res.ok) return;
-      }
-      queryClient.setQueryData(
-        ["settings", "models", activeSessionId ?? "global"],
-        (prev: Record<string, unknown> | undefined) =>
-          prev ? { ...prev, defaultModel: model } : prev,
-      );
-      sendHarnessRequest({
-        req: "set_model",
-        session_id: activeSessionId ?? undefined,
-        model,
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["composer", "model-settings"],
-      });
-      setStatusMessage(`Default model route set to ${model}.`);
-    },
-    [activeSessionId, configSupported, patchConfig, queryClient],
-  );
+  const setDefaultModel = React.useCallback(async (model: string) => {
+    if (!configSupported) {
+      setStatusMessage("This engine cannot change the global default model from VS Code.");
+      return;
+    }
+    const result = await patchConfig({ "provider.default_model": model });
+    if (!result.ok) return;
+    void queryClient.invalidateQueries({ queryKey: ["settings", "models"] });
+    void queryClient.invalidateQueries({ queryKey: ["composer", "model-settings"] });
+    setStatusMessage(`Default model route set to ${model} for new sessions.`);
+  }, [configSupported, patchConfig, queryClient]);
 
-  const setDefaultEffort = React.useCallback(
-    async (effort: EffortChoice) => {
-      if (configSupported && effort) {
-        const res = await patchConfig({ "provider.default_effort": effort });
-        if (!res.ok) return;
-      }
-      queryClient.setQueryData(
-        ["settings", "models", activeSessionId ?? "global"],
-        (prev: Record<string, unknown> | undefined) =>
-          prev ? { ...prev, defaultEffort: effort } : prev,
-      );
-      setStatusMessage(`Default reasoning effort set to ${effort ?? "default"}.`);
-    },
-    [activeSessionId, configSupported, patchConfig, queryClient],
+  const defaultModel = modelsQuery.data?.defaultModel ?? "";
+  const defaultRoute = modelsQuery.data?.routes?.find((route) =>
+    route.modelSpec === defaultModel || route.model === defaultModel || route.id === defaultModel,
   );
+  const modelName = defaultModel.toLowerCase();
+  const defaultEffortKey = defaultRoute?.apiMethod === "messages" || /(?:^|:)claude-/.test(modelName)
+    ? "provider.anthropic_reasoning_effort"
+    : /(?:^|:)(?:gpt-|o[1-9])/.test(modelName) ? "provider.openai_reasoning_effort" : undefined;
+  const availableEffortKey = configSchema.some((field) => field.key === defaultEffortKey)
+    ? defaultEffortKey
+    : configSchema.some((field) => field.key === "provider.default_effort") ? "provider.default_effort" : undefined;
+
+  const setDefaultEffort = React.useCallback(async (effort: EffortChoice) => {
+    if (!configSupported || !availableEffortKey) {
+      setStatusMessage("The selected route does not expose an editable global reasoning default.");
+      return;
+    }
+    const result = await patchConfig({ [availableEffortKey]: effort });
+    if (!result.ok) return;
+    queryClient.setQueryData(
+      ["settings", "models", activeSessionId ?? "global"],
+      (prev: Record<string, unknown> | undefined) => prev ? { ...prev, defaultEffort: effort } : prev,
+    );
+    setStatusMessage(`Default reasoning effort set to ${effort ?? "default"}.`);
+  }, [activeSessionId, availableEffortKey, configSupported, patchConfig, queryClient]);
 
   const filteredSections = React.useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1860,6 +2039,8 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     setAnalyticsGroupBy,
     providers: providersQuery.data ?? ALL_57_DEFAULT_PROVIDERS,
     models: modelsQuery.data ?? null,
+    stale: Boolean(modelsQuery.data?.stale),
+    catalogMessage: modelsQuery.data?.catalogMessage,
     features: featuresQuery.data?.features ?? null,
     voice: featuresQuery.data?.voice ?? null,
     telemetry: featuresQuery.data?.telemetry ?? null,
@@ -1875,8 +2056,13 @@ export function useSettings(initialSection: SettingsSectionId = "account") {
     configValues,
     configSchema,
     configRequiresRestart,
-    configFieldErrors,
-    clearConfigFieldError,
+    configFieldErrors: {
+      ...configFieldErrors,
+      ...(availableEffortKey && configFieldErrors[availableEffortKey]
+        ? { "provider.default_effort": configFieldErrors[availableEffortKey] }
+        : {}),
+    },
+    clearConfigFieldError: (key: string) => clearConfigFieldError(key === "provider.default_effort" ? availableEffortKey ?? key : key),
     configSectionError,
     clearConfigSectionError: () => setConfigSectionError(null),
     patchConfig,

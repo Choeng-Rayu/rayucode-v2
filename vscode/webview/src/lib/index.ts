@@ -10,3 +10,5 @@ export * from "./rpc-client";
 export * from "./app-store";
 export * from "./external-session";
 export * from "./mock-vscode-bridge";
+
+export * from "./operation-result";

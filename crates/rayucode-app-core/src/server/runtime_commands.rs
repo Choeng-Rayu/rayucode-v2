@@ -1,4 +1,6 @@
 //! Runtime-backed slash command execution. No command becomes an agent prompt.
+use std::sync::Arc;
+
 use crate::agent::Agent;
 use anyhow::{Result, bail};
 use rayucode_harness_api::RuntimeCommand;
@@ -505,6 +507,387 @@ pub(super) async fn execute(
     };
     let message = serde_json::to_string_pretty(&data)?;
     Ok((data, message))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn handle_global_runtime_command(
+    id: u64,
+    command: &str,
+    args: &[String],
+    provider_template: &Arc<dyn crate::provider::Provider>,
+    mcp_pool: Option<&Arc<crate::mcp::SharedMcpPool>>,
+    swarm_members: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
+    swarms_by_id: &Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    >,
+    swarm_coordinators: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    swarm_plans: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::VersionedPlan>>>,
+    event_history: &Arc<tokio::sync::RwLock<std::collections::VecDeque<super::SwarmEvent>>>,
+    client_event_tx: &tokio::sync::mpsc::UnboundedSender<crate::protocol::ServerEvent>,
+) {
+    match execute_global(
+        command,
+        args,
+        provider_template,
+        mcp_pool,
+        swarm_members,
+        swarms_by_id,
+        swarm_coordinators,
+        swarm_plans,
+        event_history,
+    )
+    .await
+    {
+        Ok((data, message)) => {
+            let _ = client_event_tx.send(crate::protocol::ServerEvent::RuntimeCommandResult {
+                id,
+                command: command.to_string(),
+                data,
+                message,
+            });
+        }
+        Err(error) => {
+            let _ = client_event_tx.send(crate::protocol::ServerEvent::Error {
+                id,
+                message: error.to_string(),
+                retry_after_secs: None,
+            });
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn execute_global(
+    command: &str,
+    args: &[String],
+    provider_template: &Arc<dyn crate::provider::Provider>,
+    mcp_pool: Option<&Arc<crate::mcp::SharedMcpPool>>,
+    swarm_members: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::SwarmMember>>>,
+    swarms_by_id: &Arc<
+        tokio::sync::RwLock<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+    >,
+    swarm_coordinators: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+    swarm_plans: &Arc<tokio::sync::RwLock<std::collections::HashMap<String, super::VersionedPlan>>>,
+    event_history: &Arc<tokio::sync::RwLock<std::collections::VecDeque<super::SwarmEvent>>>,
+) -> Result<(Value, String)> {
+    let parsed: RuntimeCommand = serde_json::from_value(json!(command))?;
+    if !parsed.supports_global_scope() {
+        bail!(
+            "Runtime command `{}` requires an attached session.",
+            parsed.as_str()
+        );
+    }
+
+    match parsed {
+        RuntimeCommand::ServerReload => {
+            if !args.is_empty() {
+                bail!("Server reload accepts no arguments.");
+            }
+            crate::config::Config::invalidate_cache();
+            let has_newer = super::server_has_newer_binary();
+            if has_newer {
+                let hash = rayucode_build_meta::git_hash().to_string();
+                let _ = crate::server::send_reload_signal(hash, None, false);
+            }
+            let message = if has_newer {
+                "Reloaded daemon configuration and queued binary upgrade."
+            } else {
+                "Reloaded daemon configuration; server is already running the newest binary."
+            };
+            let data = json!({
+                "requested": true,
+                "config_reloaded": true,
+                "binary_upgrade_queued": has_newer,
+                "already_latest_binary": !has_newer,
+            });
+            Ok((data, message.into()))
+        }
+        RuntimeCommand::RefreshModelList => {
+            if !args.is_empty() {
+                bail!("This command accepts no arguments");
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(25),
+                provider_template.refresh_model_catalog(),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Timed out refreshing provider model catalog after 25s"))??;
+            crate::bus::Bus::global().publish_models_updated();
+            let data = json!({
+                "refreshed": true,
+                "models": provider_template.available_models_for_switching(),
+                "routes": provider_template.model_routes(),
+            });
+            Ok((data, "Provider model catalog refreshed.".into()))
+        }
+        RuntimeCommand::Subscription => {
+            if !args.is_empty() && args != ["status".to_string()] {
+                bail!("Usage: subscription [status]");
+            }
+            let data = rayu_credits_data().await?;
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        RuntimeCommand::Swarm => {
+            let sub = args.first().map(String::as_str).unwrap_or("status");
+            if !matches!(sub, "status" | "show" | "stats" | "list" | "board") || args.len() > 1 {
+                bail!("Usage: /swarm [status|show|list|board]");
+            }
+            let config = crate::config::Config::load();
+            let data = super::client_lifecycle::build_live_swarm_snapshot(
+                sub,
+                "",
+                config.features.swarm,
+                swarm_members,
+                swarms_by_id,
+                swarm_coordinators,
+                swarm_plans,
+                event_history,
+            )
+            .await;
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        RuntimeCommand::Agents => {
+            let effective_args = match args.split_first() {
+                Some((scope, rest)) if matches!(scope.as_str(), "global" | "default") => rest,
+                _ => args,
+            };
+            if let Some((first, rest)) = effective_args.split_first()
+                && matches!(first.as_str(), "profile" | "profiles")
+            {
+                let message = crate::agent_profiles::run_global(rest)?;
+                return Ok((global_agents_snapshot_json(provider_template), message));
+            }
+            match effective_args {
+                [] => {}
+                [arg]
+                    if matches!(
+                        arg.as_str(),
+                        "show" | "status" | "swarm" | "review" | "judge" | "memory" | "ambient"
+                    ) => {}
+                [target, model] => {
+                    let next = if model == "default" {
+                        None
+                    } else {
+                        Some(model.as_str())
+                    };
+                    crate::config::Config::set_agent_model_default(target, next)?;
+                    let snapshot = global_agents_snapshot_json(provider_template);
+                    let message = format!(
+                        "{target} agent model [global] → {}",
+                        next.unwrap_or("default")
+                    );
+                    return Ok((snapshot, message));
+                }
+                _ => bail!(
+                    "Usage: /agents [global] [swarm|review|judge|memory|ambient] [model|inherit]."
+                ),
+            }
+            let data = global_agents_snapshot_json(provider_template);
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        RuntimeCommand::SubagentModel => {
+            let effective_args = match args.split_first() {
+                Some((scope, rest)) if matches!(scope.as_str(), "global" | "default") => rest,
+                _ => args,
+            };
+            match effective_args {
+                [] => {}
+                [arg] if matches!(arg.as_str(), "status" | "show") => {}
+                [model] => {
+                    let next = if model == "default" {
+                        None
+                    } else {
+                        Some(model.as_str())
+                    };
+                    crate::config::Config::set_agent_model_default("swarm", next)?;
+                }
+                _ => bail!("Usage: /subagent-model [global] [show|inherit|default|model]"),
+            }
+            let cfg = crate::config::Config::load();
+            let data = json!({
+                "model": cfg.agents.swarm_model,
+                "configured_default": cfg.agents.swarm_model,
+                "inherit_model": provider_template.model(),
+                "models": provider_template.available_models_for_switching(),
+            });
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        RuntimeCommand::Mcp if args.first().map(String::as_str) == Some("reload") => {
+            let (connected_count, errors) = if let Some(pool) = mcp_pool {
+                pool.reload().await
+            } else {
+                (0, Vec::new())
+            };
+            let configured_count =
+                tokio::task::spawn_blocking(|| crate::mcp::McpConfig::load_for_dir(None).servers.len())
+                    .await?;
+            let error_details: Vec<String> = errors
+                .iter()
+                .map(|(name, err)| format!("{name}: {err}"))
+                .collect();
+            let detail = if error_details.is_empty() {
+                format!(
+                    "Reloaded MCP configuration ({configured_count} configured, {connected_count} connected)."
+                )
+            } else {
+                format!(
+                    "Reloaded MCP configuration ({configured_count} configured, {connected_count} connected) with errors: {}",
+                    error_details.join("; ")
+                )
+            };
+            let data = json!({
+                "reloaded": true,
+                "configured_count": configured_count,
+                "connected_count": connected_count,
+                "errors": error_details,
+                "detail": detail,
+            });
+            Ok((data, detail))
+        }
+        RuntimeCommand::Skills => {
+            status_only(args)?;
+            let data = tokio::task::spawn_blocking(global_skills_snapshot).await??;
+            let report = skills_report(&data);
+            Ok((data, report))
+        }
+        RuntimeCommand::Memory => {
+            let cfg = crate::config::Config::load();
+            if let Some(enabled) = boolean_action(args, cfg.features.memory, false)? {
+                let mut patch = serde_json::Map::new();
+                patch.insert("features.memory".to_string(), json!(enabled));
+                crate::config::rpc_config::patch_curated_config(&patch)?;
+            }
+            let updated = crate::config::Config::load();
+            let data = json!({
+                "enabled": updated.features.memory,
+                "scope": "global",
+                "pipeline_active": crate::memory_agent::is_active(),
+            });
+            let message = serde_json::to_string_pretty(&data)?;
+            Ok((data, message))
+        }
+        RuntimeCommand::ProviderTestCoverage => {
+            let report = if args.is_empty() {
+                let (coverage, path) = crate::live_tests::load_coverage(None)?;
+                let summary = crate::live_tests::strict_live_provider_model_coverage_summary(
+                    &coverage,
+                    path.display().to_string(),
+                );
+                crate::live_tests::format_strict_live_provider_model_coverage_summary(&summary, 0)
+            } else {
+                let model = if args.len() > 1 {
+                    args[1..].join(" ")
+                } else {
+                    provider_template.model()
+                };
+                crate::live_tests::format_provider_test_coverage_report(&args[0], &model, None)
+            };
+            Ok((
+                json!({"report": report, "source": "persisted_verification"}),
+                report,
+            ))
+        }
+        RuntimeCommand::ResumeAll => bail!("ResumeAll is dispatched via its dedicated handler."),
+        other => {
+            let ctx = super::runtime_special_commands::LockFreeCommandContext {
+                session_id: String::new(),
+                working_dir: None,
+                registry: None,
+                provider_name: provider_template.name().to_string(),
+                provider_model: provider_template.model(),
+                provider_context_window: provider_template.context_window(),
+                provider_transport: provider_template.transport(),
+                route_counts: None,
+            };
+            if let Some(res) =
+                super::runtime_special_commands::try_execute_lock_free(&ctx, other, args).await
+            {
+                res
+            } else {
+                bail!(
+                    "Runtime command `{}` is not supported in global scope.",
+                    other.as_str()
+                )
+            }
+        }
+    }
+}
+
+fn global_skills_snapshot() -> Result<Value> {
+    let registry = crate::skill::SkillRegistry::load_global()?;
+    let mut loaded = registry.list();
+    loaded.sort_by(|a, b| a.name.cmp(&b.name));
+    let skills: Vec<Value> = loaded
+        .iter()
+        .map(|skill| {
+            json!({
+                "name": skill.name,
+                "description": skill.description,
+                "path": skill.path,
+                "allowed_tools": skill.allowed_tools,
+            })
+        })
+        .collect();
+    let endorsed: Vec<Value> = crate::skill::endorsed_skills()
+        .iter()
+        .map(|skill| {
+            json!({
+                "name": skill.name,
+                "description": skill.description,
+                "category": skill.category,
+                "source": skill.source,
+                "install": skill.install,
+                "installed": registry.contains(skill.name),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "skills": skills,
+        "endorsed": endorsed,
+        "active_skill": Value::Null,
+    }))
+}
+
+fn global_agents_snapshot_json(provider_template: &Arc<dyn crate::provider::Provider>) -> Value {
+    let config = crate::config::Config::load();
+    let global_profiles = config.agents.profiles.clone();
+    let annotated_profiles: Vec<Value> = global_profiles
+        .iter()
+        .map(|profile| {
+            json!({
+                "name": profile.name,
+                "model": profile.model,
+                "description": profile.description,
+                "effort": profile.effort,
+                "scope": "global",
+            })
+        })
+        .collect();
+    let defaults = json!({
+        "swarm": config.agents.swarm_model,
+        "memory": config.agents.memory_model,
+        "review": config.autoreview.model,
+        "judge": config.autojudge.model,
+        "ambient": config.ambient.model,
+    });
+    json!({
+        "scope": "global",
+        "defaults": defaults.clone(),
+        "overrides": json!({}),
+        "effective": defaults,
+        "subagent_model": config.agents.swarm_model,
+        "inherit_model": provider_template.model(),
+        "profiles": annotated_profiles,
+        "global_profiles": global_profiles,
+        "session_profiles": Vec::<Value>::new(),
+        "swarm_allowlist": config.agents.swarm_model_allowlist,
+        "models": provider_template.available_models_for_switching(),
+        "config_path": crate::config::Config::path().map(|p| p.display().to_string()),
+    })
 }
 
 pub(super) async fn load_durable_swarm_snapshots_async() -> Vec<Value> {

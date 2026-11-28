@@ -635,3 +635,46 @@ test("extension.manifest.json enforces Tier 1 + Tier 2 workbench placement and c
     );
   }
 });
+
+test("rayucode.openChanges and rayucode.scmOpenChanges are declared, registered, and both route to workbench.view.scm", () => {
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8")) as {
+    contributes: {
+      commands: Array<{ command: string; title: string }>;
+      menus: Record<string, Array<{ command?: string }>>;
+    };
+  };
+  const declared = new Set(manifest.contributes.commands.map((c) => c.command));
+  assert.equal(declared.has("rayucode.openChanges"), true);
+  assert.equal(declared.has("rayucode.scmOpenChanges"), true);
+  assert.equal(
+    (manifest.contributes.menus["scm/title"] ?? []).some(
+      (entry) => entry.command === "rayucode.scmOpenChanges",
+    ),
+    true,
+  );
+
+  const hostEntry = fs.readFileSync(
+    path.resolve(__dirname, "../host/harnessExtension.ts"),
+    "utf8",
+  );
+  for (const commandId of ["rayucode.openChanges", "rayucode.scmOpenChanges"]) {
+    const escaped = commandId.replace(/\./g, "\\.");
+    const match = hostEntry.match(
+      new RegExp(
+        `registerCommand\\(\\s*["']${escaped}["']\\s*,\\s*async\\s*\\(\\)\\s*=>\\s*\\{([\\s\\S]*?)\\}\\s*\\)`,
+      ),
+    );
+    assert.ok(match, `Expected registerCommand handler for ${commandId} in host/harnessExtension.ts`);
+    const body = match[1] ?? "";
+    assert.match(
+      body,
+      /executeCommand\(\s*["']workbench\.view\.scm["']\s*\)/,
+      `${commandId} must route to workbench.view.scm`,
+    );
+    assert.equal(
+      body.includes("openPreferredSurface"),
+      false,
+      `${commandId} must not route to a webview Changes screen`,
+    );
+  }
+});

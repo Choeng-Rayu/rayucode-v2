@@ -1,5 +1,7 @@
 # Spec 09 — Settings (Full-Page Shell Covering All Rust Engine Configuration)
 
+> **Current behavior.** In the packaged extension, runtime UI renders the negotiated Harness protocol major (`v1`, or `v1.<minor>` only when a minor version is supplied by the server) alongside advertised capability badges rather than falling back to a hardcoded `v1.14`. Unsupported host operations (such as self-dev build/reload writes, maintainer feedback submission, voice capture in unsupported hosts, cloud session handoff, and unsupported schedule/overnight/swarm mutations) remain gated or marked unavailable, and offline or failed reads report truthful unavailable/error states instead of live-empty zero values. Both Changes commands (`rayucode.openChanges`, `rayucode.scmOpenChanges`) open native VS Code Source Control, file review and todos live in Chat (no dedicated Changes or Inspector screens exist in the current package), and sidebar archive/restore is a local workspace-ledger preference.
+
 > **Desktop Reference:** `desktop/src/features/settings/components/settings-view.tsx`, `desktop/src/features/settings/components/appearance-panel.tsx`.
 > **Rust Engine Backing:** `RuntimeCommand::{Auth, Logout, Subscription, Agents, Fast, Cache, Transport, Telemetry, Features, Doctor, ServerReload}`, `set_api_key`, `clear_api_key`, `notify_auth_changed`, `rayucode-provider-metadata` (10 native + 45 OpenAI-compatible profiles + Azure + Google), `rayucode-config-types` (all 11 `[features]`), `rayucode-base/src/hooks.rs` (7 lifecycle hooks), `rayucode-voice`, `rayucode-provider-doctor`.
 > **Owned Files (Wave 3F — Part 3):** `vscode/webview/src/features/settings/**`.
@@ -64,13 +66,13 @@
   - Shows status (`Configured` / `Unset`) for `pre_tool` (sync gate), `post_tool` (async), `post_tool_feedback` (sync feedback), `turn_start`, `turn_end`, `session_start`, `session_end`, with **`[Open Hooks Config in VS Code]`** button.
 
 ### Section 6 — Runtime, Bridge & Doctor (`System` Group)
-- **Live Bridge & Daemon Card:** Status dot, latency (`ms` via `Ping`), daemon/bridge version, negotiated Harness protocol (`v1.14`) + capability pills (`permissions`, `background_tasks`, `swarm_control`, `session_tools`, `user_questions`, `runtime_commands`, etc.).
+- **Live Bridge & Daemon Card:** Status dot, latency (`ms` via `Ping`), daemon/bridge version, negotiated Harness protocol (`v1`, or `v1.<minor>` when supplied by the server) + capability pills (`permissions`, `background_tasks`, `swarm_control`, `session_tools`, `user_questions`, `runtime_commands`, etc.).
 - **Connection Settings (synced with VS Code Settings):** `rayucode.runtime.socketPath`, `rayucode.runtime.binaryPath`, `rayucode.runtime.autoStart` switch, `Provider Transport` (`auto` | `https` | `websocket` via `RuntimeCommand::Transport`), **`[Ping]`**, **`[Reconnect]`**, **`[Reload Daemon]`** (`ServerReload`), **`[Open Output Log]`**.
 - **Diagnostics (`Doctor`):**
   - **`[Run Provider Doctor]`** & **`[Run Auth Doctor]`** (`RuntimeCommand::Doctor`) rendering clean structured pass/warn/fail diagnostic rows right inside Settings!
-- **Contextual Self-Dev Card:** Shown ONLY when the open workspace is a RayuCode source checkout (`selfdev` / `desktop_selfdev` status + build/reload controls).
+- **Contextual Self-Dev Card:** Shown ONLY when the open workspace is a RayuCode source checkout (`selfdev` / `desktop_selfdev` status + terminal-gated build/reload controls).
 - **Privacy & Telemetry (`RuntimeCommand::Telemetry`):** 6 individual category switches (`content`, `usage`, `crashes`, `features`, `cost`, `accounts`) + `All` / `None` quick buttons (respects env opt-out lock).
-- **Send Maintainer Feedback (`maintainer_feedback`):** Quiet modal for bug/suggestion/usability reports.
+- **Send Maintainer Feedback (`maintainer_feedback`):** Quiet feedback card for bug/suggestion/usability reports (gated when unsupported by the active runtime).
 
 ### Section 7 — Shortcuts (`System` Group)
 - Clean 2-column keybinding table (`Shift+Tab` cycle permissions, `⇧⌘S` toggle session pane, `Alt+B` background running tool, `⌘J` VS Code terminal, `⌘K` search sessions, `⌘[`/`⌘]` nav history, `⌘1` restore clipped chat, `⌘↵` send / `Esc` stop) + **`[Customize in VS Code Keyboard Shortcuts]`** (`workbench.action.openGlobalKeybindings`).

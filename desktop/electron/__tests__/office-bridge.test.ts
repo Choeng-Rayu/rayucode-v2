@@ -114,4 +114,61 @@ describe("office-bridge (real .xlsx & .pptx generation and reading)", () => {
     expect(buf[0]).toBe(0x50)
     expect(buf[1]).toBe(0x4b)
   })
+
+  it("preserves untouched sheets when updating an existing workbook and round-trips fractional percents accurately", async () => {
+    const outPath = path.join(tmpDir, "Preserve.xlsx")
+    await writeRealExcelWorkbook(tmpDir, {
+      filePath: outPath,
+      sheets: [
+        {
+          name: "Existing",
+          columns: ["A", "B"],
+          headers: { A: "Key", B: "Rate" },
+          rows: [
+            {
+              rowNumber: 2,
+              cells: { A: "Margin", B: 94.5 },
+              formats: { B: "percent" },
+            },
+          ],
+        },
+        {
+          name: "Notes",
+          columns: ["A"],
+          headers: { A: "Keep Me" },
+          rows: [{ rowNumber: 2, cells: { A: "Untouched sheet row" } }],
+        },
+      ],
+    })
+
+    // Read fractional decimal (0.945) then write another sheet update
+    const before = await readRealExcelWorkbook(tmpDir, outPath)
+    const decimalRate = before.sheets[0].rows[0].cells.B
+    expect(Number(decimalRate)).toBeCloseTo(0.945, 4)
+
+    await writeRealExcelWorkbook(tmpDir, {
+      filePath: outPath,
+      sheets: [
+        {
+          name: "Existing",
+          columns: ["A", "B"],
+          headers: { A: "Key", B: "Rate" },
+          rows: [
+            {
+              rowNumber: 2,
+              cells: { A: "Margin", B: decimalRate },
+              formats: { B: "percent" },
+            },
+          ],
+        },
+      ],
+    })
+
+    const after = await readRealExcelWorkbook(tmpDir, outPath)
+    expect(after.sheets.map((s) => s.name)).toContain("Notes")
+    expect(after.sheets.find((s) => s.name === "Notes")?.rows[0].cells.A).toBe(
+      "Untouched sheet row"
+    )
+    expect(Number(after.sheets[0].rows[0].cells.B)).toBeCloseTo(0.945, 4)
+  })
 })

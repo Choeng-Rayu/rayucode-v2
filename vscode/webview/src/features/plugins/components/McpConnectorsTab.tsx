@@ -1,3 +1,4 @@
+import { operationAvailable } from "@/lib/operation-result";
 import * as React from "react";
 import {
   Check,
@@ -22,13 +23,14 @@ import {
   type RunStatusTone,
   Switch,
 } from "@/components/ui";
-import { cn } from "@/lib";
+import { cn, useAppStore } from "@/lib";
 
 import {
   CATALOG_CONNECTOR_TEMPLATES,
   type CatalogConnectorTemplate,
   type ConnectorCategoryId,
   findCatalogTemplate,
+  isEditableMcpLayer,
   normalizeConfigLayerBadge,
   useMcpActions,
   useMcpConnectors,
@@ -81,7 +83,8 @@ function formatMcpStatusLabel(status: McpServerStatus): string {
 }
 
 export function McpConnectorsTab() {
-  const { data } = useMcpConnectors();
+  const { data, isError, refetch } = useMcpConnectors();
+  const activeProjectPath = useAppStore((s) => s.activeProjectPath);
   const {
     toggleMutation,
     testMutation,
@@ -140,6 +143,7 @@ export function McpConnectorsTab() {
   const handleOpenAddCustomDialog = () => {
     setDialogDraft({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: "",
       displayName: "Custom MCP Server",
       scope: "global",
@@ -158,17 +162,27 @@ export function McpConnectorsTab() {
   const handleOpenConfigureServer = (server: McpServerView) => {
     const tpl = findCatalogTemplate(server.brandId ?? server.id);
     const envKeys = server.envKeys ?? tpl?.requiredEnvKeys ?? [];
+    const scope =
+      server.configLayer === "workspace" || server.configLayer === "project"
+        ? "workspace"
+        : "global";
+    const workspacePath =
+      server.configPath && /^(\/|[A-Za-z]:[/\\])/.test(server.configPath)
+        ? server.configPath.replace(/[/\\]\.mcp\.json$/, "")
+        : (activeProjectPath ?? undefined);
     setDialogDraft({
       mode: "edit",
       id: server.id,
       displayName: server.name,
       brandId: server.brandId ?? server.id,
-      scope: server.configLayer === "workspace" ? "workspace" : "global",
+      scope,
+      workspacePath,
       transport: server.transport,
-      command: server.command ?? tpl?.command ?? "npx",
-      argsText: (server.args ?? tpl?.args ?? []).join(" "),
-      url: server.url ?? tpl?.url ?? "",
-      envText: envKeys.map((k) => `${k}=`).join("\n"),
+      command: server.command ?? "",
+      argsText: (server.args ?? []).join(" "),
+      url: server.url ?? "",
+      envText: "",
+      existingEnvKeys: envKeys,
       shared: server.shared,
       timeoutSecs: server.timeoutSecs ?? 30,
       isInstalled: true,
@@ -186,6 +200,7 @@ export function McpConnectorsTab() {
     }
     setDialogDraft({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: tpl.id,
       displayName: tpl.name,
       brandId: tpl.brandId,
@@ -211,6 +226,7 @@ export function McpConnectorsTab() {
     }
     saveServerMutation.mutate({
       mode: "add",
+      workspacePath: activeProjectPath ?? undefined,
       id: tpl.id,
       name: tpl.name,
       brandId: tpl.brandId,
@@ -318,6 +334,12 @@ export function McpConnectorsTab() {
 
   return (
     <div data-testid="mcp-connectors-tab" className="flex flex-col gap-6">
+      {isError && (
+        <div role="alert" className="flex items-center gap-2 p-3 text-xs text-muted-ink">
+          {data ? "Showing last known MCP connectors." : "Could not load MCP connectors from the engine."}
+          <Button type="button" variant="ghost" size="xs" onClick={() => void refetch()}>Retry</Button>
+        </div>
+      )}
       {/* Header & Controls */}
       <header className="flex flex-col gap-3.5">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -585,6 +607,8 @@ export function McpConnectorsTab() {
                           }
                           size="xs"
                           data-testid={`mcp-oauth-btn-${srv.id}`}
+                          disabled={!operationAvailable("plugins.mcp.login")}
+                          title="Use Rayu MCP login or logout in the terminal"
                           onClick={() =>
                             oauthMutation.mutate({
                               id: srv.id,
@@ -626,6 +650,12 @@ export function McpConnectorsTab() {
                         variant="outline"
                         size="xs"
                         data-testid={`mcp-configure-btn-${srv.id}`}
+                        disabled={!isEditableMcpLayer(srv.configLayer)}
+                        title={
+                          isEditableMcpLayer(srv.configLayer)
+                            ? `Configure ${srv.name}`
+                            : `Config layer "${layerLabel}" is read-only in RayuCode`
+                        }
                         onClick={() => handleOpenConfigureServer(srv)}
                       >
                         <Settings2 className="size-3" aria-hidden="true" />
@@ -743,8 +773,8 @@ export function McpConnectorsTab() {
         onSave={async (draft) => {
           await saveServerMutation.mutateAsync(draft);
         }}
-        onRemove={async (id, scope) => {
-          await removeServerMutation.mutateAsync({ id, scope });
+        onRemove={async (id, scope, workspacePath) => {
+          await removeServerMutation.mutateAsync({ id, scope, workspacePath });
         }}
       />
     </div>

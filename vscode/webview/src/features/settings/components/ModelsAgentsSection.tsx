@@ -1,5 +1,6 @@
 import * as React from "react";
-import { ArrowUpRight, Bot, RefreshCw } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { AlertTriangle, ArrowUpRight, Bot, RefreshCw } from "lucide-react";
 import type {
   AgentProfileView,
   AgentRoleId,
@@ -23,6 +24,8 @@ import {
   formatHarnessModelSpec,
   formatProviderBadgeLabel,
 } from "@/features/composer";
+import { useAppStore } from "@/lib/app-store";
+import { callRpc } from "@/lib/rpc-client";
 import { cn } from "@/lib/utils";
 
 import {
@@ -66,6 +69,8 @@ export interface ModelsAgentsSectionProps {
   onOpenAgentsStudio?: () => void;
   onRefreshModels: () => Promise<unknown>;
   isRefreshingModels: boolean;
+  stale?: boolean;
+  catalogMessage?: string | null;
 }
 
 const DISCOVERED_MODEL_ROUTES = [
@@ -105,10 +110,30 @@ export function ModelsAgentsSection({
   onOpenAgentsStudio,
   onRefreshModels,
   isRefreshingModels,
+  stale,
+  catalogMessage,
 }: ModelsAgentsSectionProps) {
   const [overrideScope, setOverrideScope] = React.useState<
     "session" | "global"
   >("global");
+  const activeSessionId = useAppStore((s) => s.activeSessionId);
+  const cachedModelsQuery = useQuery({
+    queryKey: ["settings", "models", activeSessionId ?? "global"] as const,
+    queryFn: () =>
+      callRpc("settings.models.get", {
+        sessionId: activeSessionId ?? undefined,
+      }),
+    enabled: false,
+  });
+  const cachedCatalogMeta = cachedModelsQuery.data as
+    | { stale?: boolean; catalogMessage?: string; message?: string }
+    | undefined;
+  const isCatalogStale = stale ?? Boolean(cachedCatalogMeta?.stale);
+  const resolvedCatalogMessage =
+    catalogMessage ??
+    cachedCatalogMeta?.catalogMessage ??
+    cachedCatalogMeta?.message ??
+    "Showing last known models — refresh failed";
 
   const schemaByKey = React.useMemo(
     () => new Map(configSchema.map((f) => [f.key, f])),
@@ -229,7 +254,7 @@ export function ModelsAgentsSection({
           variant="default"
           size="sm"
           disabled={isRefreshingModels}
-          onClick={() => void onRefreshModels()}
+          onClick={() => void onRefreshModels().catch(() => {})}
           data-testid="models-refresh-btn"
         >
           <RefreshCw
@@ -239,6 +264,17 @@ export function ModelsAgentsSection({
           <span>Refresh Models</span>
         </Button>
       </div>
+
+      {isCatalogStale && (
+        <div
+          role="status"
+          data-testid="models-stale-notice"
+          className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn-soft px-3.5 py-2 text-xs text-warn"
+        >
+          <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+          <span>{resolvedCatalogMessage}</span>
+        </div>
+      )}
 
       <LegacyDaemonBanner visible={engineReadOnly} />
       <ConfigRestartBanner
@@ -388,7 +424,7 @@ export function ModelsAgentsSection({
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
           <div>
             <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
-              <span>Prompt KV-Cache TTL (RuntimeCommand::Cache)</span>
+              <span>Anthropic Prompt Cache TTL (Global)</span>
               <FieldApplyModeBadge
                 applyMode={schemaByKey.get("provider.cache_ttl")?.apply_mode}
               />
@@ -399,7 +435,7 @@ export function ModelsAgentsSection({
           </div>
           <div
             role="group"
-            aria-label="Prompt KV-Cache TTL"
+            aria-label="Anthropic Prompt Cache TTL (Global)"
             className="inline-flex items-center rounded-md border border-hairline bg-inset p-[2px]"
           >
             {(["5m", "1h"] as const).map((ttl) => (

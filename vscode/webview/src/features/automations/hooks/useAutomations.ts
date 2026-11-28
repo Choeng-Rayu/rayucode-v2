@@ -1,3 +1,4 @@
+import { requireOperation } from "@/lib/operation-result";
 import {
   queryOptions,
   useMutation,
@@ -28,27 +29,6 @@ export const AUTOMATIONS_KEYS = {
   quality: () => [...AUTOMATIONS_KEYS.all, "quality"] as const,
 };
 
-const FALLBACK_AMBIENT_APPROVALS: AmbientApprovalView[] = [
-  {
-    id: "amb_appr_01",
-    action: "cargo test --workspace --all-targets",
-    urgency: "normal",
-    reason:
-      "Ambient drift detector noticed 3 modified Rust crates since last validation cycle.",
-    createdAtMs: Date.now() - 240_000,
-    status: "pending",
-  },
-  {
-    id: "amb_appr_02",
-    action: "git worktree prune && cargo clippy -p rayu-harness",
-    urgency: "high",
-    reason:
-      "Stale worktree lock detected after interrupted background task; requires cleanup confirmation.",
-    createdAtMs: Date.now() - 95_000,
-    status: "pending",
-  },
-];
-
 export function overnightRunsQueryOptions() {
   return queryOptions({
     queryKey: AUTOMATIONS_KEYS.overnight(),
@@ -72,28 +52,7 @@ export function schedulesQueryOptions() {
 export function ambientStatusQueryOptions() {
   return queryOptions({
     queryKey: AUTOMATIONS_KEYS.ambient(),
-    queryFn: async (): Promise<AmbientStatusView> => {
-      const res = await callRpc("automations.ambient.status");
-      const approvals =
-        res.approvals.length > 0 ? res.approvals : FALLBACK_AMBIENT_APPROVALS;
-      const recentCycles =
-        res.recentCycles.length > 0
-          ? res.recentCycles
-          : [
-              {
-                id: "cyc_01",
-                summary:
-                  "Scanned 14 workspace crates — 0 clippy regressions, 2 memory facts consolidated",
-                startedAtMs: Date.now() - 1_800_000,
-                status: "completed",
-              },
-            ];
-      return {
-        ...res,
-        approvals,
-        recentCycles,
-      };
-    },
+    queryFn: (): Promise<AmbientStatusView> => callRpc("automations.ambient.status"),
   });
 }
 
@@ -125,23 +84,24 @@ export interface StartOvernightInput {
 export function useStartOvernightRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: StartOvernightInput) => {
-      const res = await callRpc("automations.overnight.start", {
-        mission: input.mission,
-        duration: input.duration,
-        maxAgents: input.maxAgents,
-        permissionMode: input.permissionMode,
-        workingDir: input.workingDir,
-      });
-      const enriched: OvernightRunView = {
-        ...res.run,
-        mode: input.mode ?? res.run.mode ?? "worktree",
-        repo: input.repo ?? res.run.repo ?? "rayucode-v2",
-        branch: input.branch ?? res.run.branch ?? "overnight/auto",
-        wakesAt: res.run.wakesAt ?? "06:00",
-        handoffAt: input.handoffAt ?? res.run.handoffAt ?? "07:30",
-      };
-      return enriched;
+    mutationFn: async (input: StartOvernightInput): Promise<OvernightRunView> => {
+      // `automations.overnight.start` returns a run receipt rather than `{ ok }`;
+      // an absent/empty receipt means the engine did not start a run.
+      const res = await requireOperation(
+        callRpc("automations.overnight.start", {
+          mission: input.mission,
+          duration: input.duration,
+          maxAgents: input.maxAgents,
+          permissionMode: input.permissionMode,
+          workingDir: input.workingDir,
+        }).then((receipt) => ({
+          ...receipt,
+          ok: Boolean(receipt?.run?.runId),
+          message: "The engine did not return an overnight run receipt.",
+        })),
+      );
+      // Only engine-reported run facts are shown; no fabricated schedule/branch defaults.
+      return res.run;
     },
     onSuccess: (created) => {
       queryClient.setQueryData<OvernightRunView[]>(
@@ -160,7 +120,7 @@ export function useOvernightRunActions() {
 
   const pauseMutation = useMutation({
     mutationFn: async (params: { runId: string; resume?: boolean }) => {
-      await callRpc("automations.overnight.pause", params);
+      await requireOperation(callRpc("automations.overnight.pause", params));
       return params;
     },
     onSuccess: ({ runId, resume }) => {
@@ -185,7 +145,7 @@ export function useOvernightRunActions() {
 
   const runNowMutation = useMutation({
     mutationFn: async (runId: string) => {
-      await callRpc("automations.overnight.runNow", { runId });
+      await requireOperation(callRpc("automations.overnight.runNow", { runId }));
       return runId;
     },
     onSuccess: (runId) => {
@@ -207,7 +167,7 @@ export function useOvernightRunActions() {
 
   const cancelMutation = useMutation({
     mutationFn: async (runId: string) => {
-      await callRpc("automations.overnight.cancel", { runId });
+      await requireOperation(callRpc("automations.overnight.cancel", { runId }));
       return runId;
     },
     onSuccess: (runId) => {
@@ -265,21 +225,21 @@ export function useCreateSchedule() {
       schedule: string;
       permissionMode?: PermissionModeId;
       repo?: string;
-    }) => {
-      const res = await callRpc("automations.schedules.create", {
-        title: params.title,
-        prompt: params.prompt,
-        schedule: params.schedule,
-        permissionMode: params.permissionMode,
-      });
-      const enriched: ScheduleItemView = {
-        ...res.schedule,
-        permissionMode: params.permissionMode ?? res.schedule.permissionMode,
-        repo: params.repo ?? res.schedule.repo ?? "rayucode-v2",
-        description: res.schedule.description ?? params.prompt,
-        nextRunAt: res.schedule.nextRunAt ?? "Scheduled",
-      };
-      return enriched;
+    }): Promise<ScheduleItemView> => {
+      const res = await requireOperation(
+        callRpc("automations.schedules.create", {
+          title: params.title,
+          prompt: params.prompt,
+          schedule: params.schedule,
+          permissionMode: params.permissionMode,
+        }).then((receipt) => ({
+          ...receipt,
+          ok: Boolean(receipt?.schedule?.id),
+          message: "The engine did not return a schedule receipt.",
+        })),
+      );
+      // Show the engine receipt as-is: no fabricated repo or next-run labels.
+      return res.schedule;
     },
     onSuccess: (created) => {
       queryClient.setQueryData<ScheduleItemView[]>(
@@ -298,7 +258,7 @@ export function useScheduleActions() {
 
   const toggleMutation = useMutation({
     mutationFn: async (params: { id: string; enabled: boolean }) => {
-      await callRpc("automations.schedules.toggle", params);
+      await requireOperation(callRpc("automations.schedules.toggle", params));
       return params;
     },
     onSuccess: ({ id, enabled }) => {
@@ -312,7 +272,7 @@ export function useScheduleActions() {
 
   const runNowMutation = useMutation({
     mutationFn: async (id: string) => {
-      await callRpc("automations.schedules.runNow", { id });
+      await requireOperation(callRpc("automations.schedules.runNow", { id }));
       return id;
     },
     onSuccess: (id) => {
@@ -328,7 +288,7 @@ export function useScheduleActions() {
 
   const cancelMutation = useMutation({
     mutationFn: async (id: string) => {
-      await callRpc("automations.schedules.cancel", { id });
+      await requireOperation(callRpc("automations.schedules.cancel", { id }));
       return id;
     },
     onSuccess: (id) => {
@@ -354,7 +314,7 @@ export function useDecideAmbientApproval() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (params: { id: string; decision: "allow" | "deny" }) => {
-      await callRpc("automations.ambient.decide", params);
+      await requireOperation(callRpc("automations.ambient.decide", params));
       return params;
     },
     onSuccess: ({ id, decision }) => {
@@ -388,9 +348,9 @@ export function useQualityActions() {
 
   const setAutoReviewMutation = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const res = await callRpc("automations.quality.setAutoReview", {
+      const res = await requireOperation(callRpc("automations.quality.setAutoReview", {
         enabled,
-      });
+      }));
       return res.enabled;
     },
     onSuccess: (enabled) => {
@@ -403,9 +363,9 @@ export function useQualityActions() {
 
   const setAutoJudgeMutation = useMutation({
     mutationFn: async (enabled: boolean) => {
-      const res = await callRpc("automations.quality.setAutoJudge", {
+      const res = await requireOperation(callRpc("automations.quality.setAutoJudge", {
         enabled,
-      });
+      }));
       return res.enabled;
     },
     onSuccess: (enabled) => {
@@ -418,18 +378,22 @@ export function useQualityActions() {
 
   const runReviewMutation = useMutation({
     mutationFn: async (sessionId?: string) => {
-      return callRpc(
-        "automations.quality.runReview",
-        sessionId ? { sessionId } : undefined,
+      return requireOperation(
+        callRpc(
+          "automations.quality.runReview",
+          sessionId ? { sessionId } : undefined,
+        ),
       );
     },
   });
 
   const runJudgeMutation = useMutation({
     mutationFn: async (sessionId?: string) => {
-      return callRpc(
-        "automations.quality.runJudge",
-        sessionId ? { sessionId } : undefined,
+      return requireOperation(
+        callRpc(
+          "automations.quality.runJudge",
+          sessionId ? { sessionId } : undefined,
+        ),
       );
     },
   });

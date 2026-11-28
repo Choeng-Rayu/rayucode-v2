@@ -47,7 +47,11 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { prefetchTraceTurns, traceKeys } from "@/features/execution-trace"
+import {
+  prefetchTraceTurns,
+  traceKeys,
+  useLiveTraceStore,
+} from "@/features/execution-trace"
 import { sessionsQueryOptions } from "@/features/sessions"
 import { useAppStore } from "@/lib/app-store"
 import { formatRelativeTimestamp, isTempDirectoryPath } from "@/lib/harness-adapter"
@@ -178,6 +182,10 @@ export function SidebarProjectsPane({
   const setActiveSessionTitle = useAppStore((s) => s.setActiveSessionTitle)
   const setActiveRoute = useAppStore((s) => s.setActiveRoute)
   const openNewChatDraft = useAppStore((s) => s.openNewChatDraft)
+  const liveTurnsBySession = useLiveTraceStore((s) => s.liveTurnsBySession)
+  const midTurnMessagesBySession = useAppStore(
+    (s) => s.midTurnMessagesBySession
+  )
 
   const sessionsQuery = useQuery(sessionsQueryOptions())
   const projectsQuery = useQuery({
@@ -309,6 +317,21 @@ export function SidebarProjectsPane({
     () => sessionsQuery.data ?? [],
     [sessionsQuery.data]
   )
+  const runningSessionIds = React.useMemo(() => {
+    const running = new Set<string>()
+    for (const [sid, turn] of Object.entries(liveTurnsBySession)) {
+      if (turn?.isLive) {
+        running.add(sid)
+      }
+    }
+    for (const session of liveSessions) {
+      const normalized = session.status?.trim().toLowerCase()
+      if (normalized === "running" || normalized === "processing") {
+        running.add(session.id)
+      }
+    }
+    return running
+  }, [liveSessions, liveTurnsBySession])
 
   const archivedSet = React.useMemo(
     () => new Set(sidebarState.archivedChatIds),
@@ -1098,6 +1121,8 @@ export function SidebarProjectsPane({
   const renderChatRow = (chat: ChatListItem, indented: boolean) => {
     const isActive = activeRoute === "workspace" && activeSessionId === chat.id
     const isPinned = pinnedChatSet.has(chat.id)
+    const isRunning = runningSessionIds.has(chat.id)
+    const queuedCount = midTurnMessagesBySession[chat.id]?.length ?? 0
     const isRenaming = renamingChatId === chat.id
     const parentProj = chat.projectId
       ? (projectById.get(chat.projectId) ?? null)
@@ -1140,6 +1165,7 @@ export function SidebarProjectsPane({
         onMouseEnter={(e) => {
           if (
             !useAppStore.getState().isStreamActive &&
+            !liveTurnsBySession[chat.id]?.isLive &&
             chat.id !== activeSessionId &&
             !chat.id.startsWith("ses_") &&
             !queryClient.getQueryData(traceKeys.turns(chat.id))
@@ -1174,6 +1200,23 @@ export function SidebarProjectsPane({
         >
           <AgentSourceBadge source={chat.source} />
           <span className="min-w-0 flex-1 truncate">{chat.title}</span>
+          {queuedCount > 0 ? (
+            <span
+              data-testid={`sidebar-chat-queued-${chat.id}`}
+              className="shrink-0 rounded bg-brand-soft px-1.5 py-px font-mono text-[10px] font-medium text-brand-text tabular-nums"
+              title={`${queuedCount} pending mid-turn message${queuedCount === 1 ? "" : "s"}`}
+            >
+              {queuedCount}
+            </span>
+          ) : null}
+          {isRunning ? (
+            <span
+              data-testid={`sidebar-chat-running-${chat.id}`}
+              aria-label="Working in background"
+              title="Working in background"
+              className="size-2 shrink-0 animate-pulse rounded-full bg-brand"
+            />
+          ) : null}
         </button>
 
         {isPinned ? (
