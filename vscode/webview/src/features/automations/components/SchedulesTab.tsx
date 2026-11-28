@@ -230,7 +230,7 @@ export function SchedulesTab() {
           }}
           className="rayu-card-bevel flex flex-col gap-3.5 rounded-[14px] border border-premium-hi bg-pane p-4"
         >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 @min-[520px]/automations:grid-cols-2">
             <div className="flex flex-col gap-1">
               <label
                 htmlFor="sched-title"

@@ -176,7 +176,7 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
         <div
           role="group"
           aria-label="Theme mode"
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          className="grid grid-cols-1 gap-3 @min-[480px]/settings-stage:grid-cols-2"
         >
           {THEME_OPTIONS.map((opt) => {
             const isSelected = theme === opt.id;
@@ -233,7 +233,7 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
         <div
           role="group"
           aria-label="Brand accent color"
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          className="grid grid-cols-1 gap-3 @min-[480px]/settings-stage:grid-cols-2"
         >
           {ACCENT_OPTIONS.map((opt) => {
             const isSelected = accent === opt.id;
@@ -354,7 +354,7 @@ export function AppearanceSection({ className }: AppearanceSectionProps) {
           <div
             role="group"
             aria-label="Default open location"
-            className="grid w-full grid-cols-1 gap-1 rounded-lg border border-hairline bg-pane p-1 sm:grid-cols-3"
+            className="grid w-full grid-cols-1 gap-1 rounded-lg border border-hairline bg-pane p-1 @min-[520px]/settings-stage:grid-cols-3"
           >
             {WORKBENCH_LOCATION_OPTIONS.map((opt) => {
               const isSelected = workbench.openLocation === opt.id;

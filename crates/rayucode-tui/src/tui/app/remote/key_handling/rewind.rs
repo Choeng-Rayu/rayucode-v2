@@ -43,8 +43,9 @@ pub(super) async fn handle_remote_rewind_command(
     }
 
     if trimmed == "/rewind undo" {
-        remote.rewind_undo().await?;
+        let request_id = remote.rewind_undo().await?;
         app.pending_remote_rewind_notice = Some(PendingRemoteRewindNotice {
+            request_id: Some(request_id),
             undo: true,
             message_index: None,
             changed_messages: 0,
@@ -67,8 +68,9 @@ pub(super) async fn handle_remote_rewind_command(
 
     match num_str.trim().parse::<usize>() {
         Ok(n) if n > 0 && n <= message_count => {
-            remote.rewind(n).await?;
+            let request_id = remote.rewind(n).await?;
             app.pending_remote_rewind_notice = Some(PendingRemoteRewindNotice {
+                request_id: Some(request_id),
                 undo: false,
                 message_index: Some(n),
                 changed_messages: message_count - n,

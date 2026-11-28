@@ -2350,7 +2350,10 @@ fn test_rejected_refresh_token_stops_all_automatic_resends_immediately() {
                 app.status = ProcessingStatus::Streaming;
                 app.current_message_id = Some(30);
 
-                assert!(!app.handle_server_event(
+                // Terminal OAuth refresh failures mutate display messages, status
+                // notice, input restoration, and is_processing, so handle_server_event
+                // returns true (needs_redraw) while still suppressing all auto-resends.
+                assert!(app.handle_server_event(
                     crate::protocol::ServerEvent::Error {
                         id: 30,
                         message: "Claude OAuth refresh token was previously rejected by Anthropic and cannot be refreshed. Run `rayu login --provider claude` to mint a fresh token.".to_string(),

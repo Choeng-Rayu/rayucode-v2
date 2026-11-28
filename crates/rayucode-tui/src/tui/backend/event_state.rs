@@ -5,6 +5,14 @@ impl RemoteEventState for RemoteConnection {
         Self::finish_runtime_command(self, id)
     }
 
+    fn finish_control_request(&mut self, id: u64) -> bool {
+        Self::finish_control_request(self, id)
+    }
+
+    fn finish_split_request(&mut self, id: u64) -> bool {
+        Self::finish_split_request(self, id)
+    }
+
     fn handle_tool_start(&mut self, id: &str, name: &str) {
         Self::handle_tool_start(self, id, name);
     }

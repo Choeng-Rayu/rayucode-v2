@@ -491,6 +491,7 @@ fn test_handle_server_event_history_same_session_rewind_reapply_clears_streaming
     // The client-side /rewind path arms a pending notice before the server's
     // History redelivery arrives (remote/key_handling.rs).
     app.pending_remote_rewind_notice = Some(crate::tui::app::PendingRemoteRewindNotice {
+        request_id: None,
         undo: false,
         message_index: Some(1),
         changed_messages: 2,
@@ -812,6 +813,7 @@ fn test_handle_server_event_history_same_session_rewind_then_late_done_does_not_
     // The client-side /rewind path arms the pending notice before the server's
     // History redelivery arrives (remote/key_handling.rs).
     app.pending_remote_rewind_notice = Some(crate::tui::app::PendingRemoteRewindNotice {
+        request_id: None,
         undo: false,
         message_index: Some(1),
         changed_messages: 2,

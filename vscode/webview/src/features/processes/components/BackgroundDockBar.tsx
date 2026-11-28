@@ -154,7 +154,7 @@ export function BackgroundDockBar({
       data-running-count={runningCount}
       data-stalled-count={stalledCount}
       className={cn(
-        "w-full border-t border-hairline bg-pane px-2.5",
+        "@container/dock w-full border-t border-hairline bg-pane px-2.5",
         className,
       )}
     >
@@ -237,7 +237,7 @@ export function BackgroundDockBar({
             className="h-5 shrink-0 gap-1 rounded-sm px-1.5 text-[11px] text-muted-ink hover:bg-danger-soft hover:text-danger"
           >
             <Square className="size-2.5 fill-current" />
-            <span>Stop</span>
+            <span className="hidden @min-[300px]/dock:inline">Stop</span>
           </Button>
         )}
 
@@ -258,7 +258,7 @@ export function BackgroundDockBar({
           }}
           className="h-5 shrink-0 gap-1 rounded-sm px-1.5 text-[11px] font-medium text-body hover:bg-active hover:text-ink"
         >
-          <span>Inspect</span>
+          <span className="hidden @min-[280px]/dock:inline">Inspect</span>
           {isDrawerOpen ? (
             <ChevronDown className="size-3" />
           ) : (

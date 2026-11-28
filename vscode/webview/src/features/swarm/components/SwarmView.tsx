@@ -53,10 +53,10 @@ export function SwarmView({
 }: SwarmViewProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const surface = useAppStore((s) => s.surface);
-  const { formFactor } = useShellFormFactor(containerRef);
+  const { width } = useShellFormFactor(containerRef);
   const { openInEditorPanel } = useShellNavigation();
 
-  const isCompactSurface = surface === "sidebar" || formFactor === "compact";
+  const isCompactSurface = surface === "sidebar" || width < 640;
 
   const {
     swarm,
@@ -165,10 +165,13 @@ export function SwarmView({
         ref={containerRef}
         data-slot="swarm-view"
         data-testid="swarm-view"
-        className={cn("flex min-h-full w-full flex-col", className)}
+        className={cn(
+          "flex h-full min-h-0 w-full flex-col overflow-x-hidden overflow-y-auto @container/swarm",
+          className,
+        )}
       >
         {isCompactSurface && (
-          <div className="flex items-center justify-between gap-2 border-b border-hairline bg-chrome px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline bg-chrome px-3 py-2">
             <span className="text-xs font-medium text-muted-ink">
               Swarm Mission Control
             </span>
@@ -205,11 +208,16 @@ export function SwarmView({
       data-testid="swarm-view"
       data-surface={isCompactSurface ? "compact" : "wide"}
       className={cn(
-        "mx-auto flex w-full max-w-[1120px] flex-col gap-4",
-        isCompactSurface ? "px-3 py-3" : "px-[26px] pt-5 pb-8",
+        "h-full min-h-0 w-full overflow-x-hidden overflow-y-auto @container/swarm",
         className,
       )}
     >
+      <div
+        className={cn(
+          "mx-auto flex w-full max-w-[1120px] flex-col gap-4",
+          isCompactSurface ? "px-3 py-3" : "px-[26px] pt-5 pb-8",
+        )}
+      >
         {/* Top Header with Multi-Swarm Switcher, Compact Expand CTA, Spawn & Pause/Stop */}
         <div
           data-slot="swarm-header"
@@ -277,7 +285,7 @@ export function SwarmView({
             </span>
           </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
             {isCompactSurface && (
               <Button
                 type="button"
@@ -475,7 +483,7 @@ export function SwarmView({
         ) : (
           <>
             {/* Wide Two-Column Agent Roster + Live Worker Inspector */}
-            <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(300px,370px)_minmax(0,1fr)]">
+            <div className="grid grid-cols-1 items-start gap-4 @min-[780px]/swarm:grid-cols-[minmax(280px,350px)_minmax(0,1fr)]">
               <AgentRoster
                 agents={swarm.agents}
                 selectedAgentId={selectedAgentId}
@@ -524,5 +532,6 @@ export function SwarmView({
           </>
         )}
       </div>
+    </div>
   );
 }

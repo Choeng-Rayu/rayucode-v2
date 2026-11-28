@@ -769,7 +769,7 @@ export function WorkTrace({
                     <div
                       key={entry.id}
                       data-slot="work-note"
-                      className="max-w-[70ch] text-sm leading-[1.6] text-ink"
+                      className="rayu-prose max-w-[70ch] min-w-0 text-[14px] leading-[1.6] break-words text-ink"
                     >
                       <EditorialMarkdown content={entry.text} inline />
                     </div>
@@ -802,7 +802,7 @@ export function WorkTrace({
                     {note && (
                       <div
                         data-slot="work-note"
-                        className="max-w-[70ch] text-sm leading-[1.58] text-ink"
+                        className="rayu-prose max-w-[70ch] min-w-0 text-[14px] leading-[1.6] break-words text-ink"
                       >
                         <EditorialMarkdown content={note} inline />
                       </div>

@@ -351,7 +351,7 @@ export function AccountProvidersSection({
 
               <TabsContent value="overview" className="mt-4 flex flex-col gap-5">
                 {/* Credits & Usage Ring Summary */}
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="grid grid-cols-1 gap-3 @min-[540px]/settings-stage:grid-cols-3">
                   <div className="rayu-card-bevel flex items-center gap-3 rounded-xl border border-hairline bg-pane p-3.5">
                     <UsageRingSvg className="size-6 shrink-0 text-brand-text" />
                     <div className="min-w-0">
@@ -469,7 +469,7 @@ export function AccountProvidersSection({
                     <SelectTrigger
                       aria-label="Group analytics by"
                       disabled={analytics?.available === false}
-                      className="w-[170px]"
+                      className="w-full max-w-full @min-[360px]/settings-stage:w-[170px]"
                     >
                       <SelectValue />
                     </SelectTrigger>
@@ -732,7 +732,7 @@ export function AccountProvidersSection({
                       if (inlineAuthError) setInlineAuthError(null);
                     }}
                     placeholder="rayu_sk_live_... or vscode://rayucode.rayucode/auth?code=..."
-                    className="h-8 min-w-0 flex-1 rounded-md border border-control-border bg-pane px-2.5 font-mono text-xs text-ink placeholder:text-faint focus-visible:border-ring focus-visible:outline-none sm:min-w-[220px]"
+                    className="h-8 min-w-0 flex-1 rounded-md border border-control-border bg-pane px-2.5 font-mono text-xs text-ink placeholder:text-faint focus-visible:border-ring focus-visible:outline-none @min-[480px]/settings-stage:min-w-[220px]"
                   />
                   <Button
                     type="submit"
@@ -791,7 +791,7 @@ export function AccountProvidersSection({
           {planLadderExpanded && (
             <div
               data-testid="plan-ladder-grid"
-              className="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3"
+              className="mt-3.5 grid grid-cols-1 gap-2.5 @min-[480px]/settings-stage:grid-cols-2 @min-[740px]/settings-stage:grid-cols-3"
             >
               {plans.map((tier) => (
                 <div
@@ -906,7 +906,7 @@ export function AccountProvidersSection({
             </button>
           </div>
 
-          <div className="relative min-w-0 flex-1 sm:min-w-[210px] sm:flex-none">
+          <div className="relative min-w-0 flex-1 @min-[520px]/settings-stage:min-w-[210px] @min-[520px]/settings-stage:flex-none">
             <Search
               className="pointer-events-none absolute top-2 left-2.5 size-3.5 text-muted-ink"
               aria-hidden="true"
@@ -1052,7 +1052,7 @@ export function AccountProvidersSection({
                       onChange={(e) => setApiKeyDraft(e.target.value)}
                       placeholder={`Enter ${provider.name} API key...`}
                       data-testid={`provider-key-input-${provider.id}`}
-                      className="h-7 min-w-0 flex-1 rounded border border-control-border bg-pane px-2 font-mono text-xs text-ink focus-visible:border-ring focus-visible:outline-none sm:min-w-[200px]"
+                      className="h-7 min-w-0 flex-1 rounded border border-control-border bg-pane px-2 font-mono text-xs text-ink focus-visible:border-ring focus-visible:outline-none @min-[520px]/settings-stage:min-w-[200px]"
                     />
                     {provider.category !== "native" && (
                       <input
@@ -1060,7 +1060,7 @@ export function AccountProvidersSection({
                         value={baseUrlDraft}
                         onChange={(e) => setBaseUrlDraft(e.target.value)}
                         placeholder="Base URL (optional)"
-                        className="h-7 min-w-0 flex-1 rounded border border-control-border bg-pane px-2 font-mono text-xs text-ink focus-visible:border-ring focus-visible:outline-none sm:min-w-[180px] sm:flex-none"
+                        className="h-7 min-w-0 flex-1 rounded border border-control-border bg-pane px-2 font-mono text-xs text-ink focus-visible:border-ring focus-visible:outline-none @min-[520px]/settings-stage:min-w-[180px] @min-[520px]/settings-stage:flex-none"
                       />
                     )}
                     <Button

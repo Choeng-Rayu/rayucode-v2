@@ -278,7 +278,33 @@ pub(super) async fn start_processing_message(
             }
         }
     } else {
-        agent.lock().await
+        match agent.try_lock() {
+            Ok(guard) => guard,
+            Err(_) if crate::turn_cancel_registry::has_active_turn(client_session_id) => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: "Already processing a message".to_string(),
+                    retry_after_secs: None,
+                });
+                return None;
+            }
+            Err(_) => match tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                agent.lock(),
+            )
+            .await
+            {
+                Ok(guard) => guard,
+                Err(_) => {
+                    let _ = client_event_tx.send(ServerEvent::Error {
+                        id,
+                        message: "Already processing a message".to_string(),
+                        retry_after_secs: None,
+                    });
+                    return None;
+                }
+            },
+        }
     };
     let turn_lease = match agent_guard.claim_server_turn() {
         Ok(lease) => lease,

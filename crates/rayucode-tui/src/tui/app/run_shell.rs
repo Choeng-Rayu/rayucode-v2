@@ -1043,9 +1043,25 @@ impl App {
                     event = event_stream.next() => {
                         super::wake_stats::note("terminal");
                         if event.is_some() {
-                            let event_redraw = remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
-                            needs_redraw |= event_redraw;
-                            input_redraw |= event_redraw;
+                            match remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await {
+                                Ok(event_redraw) => {
+                                    needs_redraw |= event_redraw;
+                                    input_redraw |= event_redraw;
+                                }
+                                Err(error) if crate::tui::backend::is_remote_write_disconnect_error(&remote_conn, &error) => {
+                                    crate::logging::warn(&format!(
+                                        "Remote socket write failed during terminal event; triggering reconnect: {error}"
+                                    ));
+                                    remote::handle_disconnect(
+                                        &mut self,
+                                        &mut remote_state,
+                                        Some(crate::tui::backend::RemoteDisconnectReason::Io(error.to_string())),
+                                    );
+                                    needs_redraw = true;
+                                    continue 'outer;
+                                }
+                                Err(error) => return Err(error),
+                            }
                         } else if super::terminal_liveness::terminal_abandoned() {
                             // Input EOF with the controlling terminal gone:
                             // orphaned client (see local loop). Exit; the
@@ -1094,14 +1110,36 @@ impl App {
                             crate::tui::backend::RemoteRead::Event(event) => super::wake_stats::note_debug("server", event),
                             crate::tui::backend::RemoteRead::Disconnected(_) => super::wake_stats::note("server:closed"),
                         }
-                        let (outcome, event_redraw) = remote::handle_remote_event(
+                        let (outcome, event_redraw) = match remote::handle_remote_event(
                             &mut self,
                             &mut terminal,
                             &mut remote_conn,
                             &mut remote_state,
                             event,
                         )
-                        .await?;
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(error)
+                                if crate::tui::backend::is_remote_write_disconnect_error(
+                                    &remote_conn,
+                                    &error,
+                                ) =>
+                            {
+                                crate::logging::warn(&format!(
+                                    "Remote socket write failed during server event handling; triggering reconnect: {error}"
+                                ));
+                                remote::handle_disconnect(
+                                    &mut self,
+                                    &mut remote_state,
+                                    Some(crate::tui::backend::RemoteDisconnectReason::Io(
+                                        error.to_string(),
+                                    )),
+                                );
+                                (remote::RemoteEventOutcome::Reconnect, true)
+                            }
+                            Err(error) => return Err(error),
+                        };
                         needs_redraw |= event_redraw;
                         match outcome {
                             remote::RemoteEventOutcome::Continue => {}

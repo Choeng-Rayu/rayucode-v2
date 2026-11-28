@@ -285,7 +285,7 @@ export function FeaturesVoiceSection({
                 aria-label="Update channel"
                 data-testid="feature-select-update_channel"
                 className={cn(
-                  "w-[150px]",
+                  "w-full @min-[420px]/settings-stage:w-[150px]",
                   configFieldErrors["features.update_channel"] &&
                     "border-danger/40",
                 )}
@@ -391,7 +391,7 @@ export function FeaturesVoiceSection({
         </div>
         <div className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane">
           <div className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="font-medium text-ink">
                 Enable voice dictation ({voice.hotkeyHint ?? "Alt+V"})
               </div>
@@ -415,7 +415,7 @@ export function FeaturesVoiceSection({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3 text-xs">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="font-medium text-ink">Input microphone</div>
               <div className="mt-0.5 text-muted-ink">
                 Audio input device for push-to-talk composer dictation
@@ -431,7 +431,7 @@ export function FeaturesVoiceSection({
                 aria-label="Input microphone"
                 data-testid="voice-device-select"
                 disabled={!voice.supported || !operationAvailable("settings.voice.update")}
-                className="w-full sm:w-[230px]"
+                className="w-full @min-[500px]/settings-stage:w-[230px]"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -446,7 +446,7 @@ export function FeaturesVoiceSection({
           </div>
 
           <div className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="font-medium text-ink">Noise suppression</div>
               <div className="mt-0.5 text-muted-ink">
                 Filter keyboard clicks and ambient fan noise during dictation
@@ -464,7 +464,7 @@ export function FeaturesVoiceSection({
           </div>
 
           <div className="flex items-center justify-between gap-4 px-4 py-3 text-xs">
-            <div>
+            <div className="min-w-0 flex-1">
               <div className="font-medium text-ink">Auto-send on silence</div>
               <div className="mt-0.5 text-muted-ink">
                 Automatically submit dictated prompt after 1.5 seconds of

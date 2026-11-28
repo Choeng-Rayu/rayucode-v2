@@ -120,7 +120,7 @@ pub(super) async fn cancel_spawned_descendant_turns(
             continue;
         }
         for signal in &signals {
-            signal.fire();
+            signal.fire_user_cancel();
         }
         // Workers usually have no attached client; the status update below
         // is what the coordinator's swarm view shows.

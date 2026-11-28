@@ -1564,7 +1564,7 @@ export function SessionComposer({
       data-testid="session-composer"
       data-mode={mode}
       className={cn(
-        "@container/composer relative mx-auto w-full max-w-[732px] px-2.5 pb-2.5 @min-[640px]/app:px-4 @min-[640px]/app:pb-4",
+        "@container/composer relative mx-auto w-full max-w-[732px] min-w-0 px-2 pb-2 @min-[420px]/composer:px-2.5 @min-[420px]/composer:pb-2.5 @min-[640px]/composer:px-4 @min-[640px]/composer:pb-4",
         className,
       )}
     >
@@ -1805,7 +1805,7 @@ export function SessionComposer({
             />
 
             {/* Bottom Control Bar — matches Desktop Composer 1:1: [+] + ModelEffortPopover | spacer | PermissionPopover + Send/Stop Orb */}
-            <div className="flex items-center gap-1.5 px-2.5 pt-1 pb-2">
+            <div className="flex min-w-0 items-center gap-1 px-2 pt-1 pb-2 @min-[360px]/composer:gap-1.5 @min-[360px]/composer:px-2.5">
               <Popover open={plusMenuOpen} onOpenChange={setPlusMenuOpen}>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1829,7 +1829,7 @@ export function SessionComposer({
                   side="top"
                   align="start"
                   sideOffset={10}
-                  className="w-[248px] rounded-[14px] border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
+                  className="w-[min(248px,calc(100vw-16px))] rounded-[14px] border border-premium-hi bg-popover-solid p-1.5 shadow-popover"
                 >
                   <div className="px-2.5 pt-1 pb-1 text-[11px] font-medium text-muted-ink">
                     Add

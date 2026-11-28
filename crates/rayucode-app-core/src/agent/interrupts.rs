@@ -202,6 +202,10 @@ impl Agent {
         self.graceful_shutdown.is_set()
     }
 
+    pub(super) fn is_user_cancel(&self) -> bool {
+        self.graceful_shutdown.is_user_cancel()
+    }
+
     /// Check if there are pending soft interrupts
     pub fn has_soft_interrupts(&self) -> bool {
         self.soft_interrupt_queue

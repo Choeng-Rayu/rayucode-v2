@@ -71,13 +71,13 @@ export function FeaturedShowcase({
       data-testid="featured-showcase"
       aria-label="Featured MCP connectors"
       className={cn(
-        "rayu-card-bevel grid min-h-[212px] grid-cols-1 overflow-hidden rounded-[18px] border border-premium-hi bg-pane @min-[760px]/app:grid-cols-[1.2fr_1fr]",
+        "rayu-card-bevel grid min-h-[212px] grid-cols-1 overflow-hidden rounded-[18px] border border-premium-hi bg-pane @min-[640px]/plugins-stage:grid-cols-[1.2fr_1fr]",
         className,
       )}
     >
       {/* Left Interactive BrandLogo Tile Stage */}
       <div
-        className="relative grid min-h-[196px] grid-cols-3 grid-rows-2 place-items-center overflow-hidden border-b border-hairline bg-inset px-5 py-4 @min-[760px]/app:min-h-[212px] @min-[760px]/app:border-r @min-[760px]/app:border-b-0"
+        className="relative grid min-h-[196px] grid-cols-3 grid-rows-2 place-items-center overflow-hidden border-b border-hairline bg-inset px-5 py-4 @min-[640px]/plugins-stage:min-h-[212px] @min-[640px]/plugins-stage:border-r @min-[640px]/plugins-stage:border-b-0"
         style={{
           backgroundImage:
             "radial-gradient(220px 160px at 72% 36%, var(--accent-soft), transparent 72%), radial-gradient(240px 190px at 22% 76%, var(--accent-softer), transparent 74%)",

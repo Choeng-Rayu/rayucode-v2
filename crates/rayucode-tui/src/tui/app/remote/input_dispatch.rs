@@ -155,6 +155,8 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
     // A manually submitted prompt supersedes any armed post-error fallback
     // offer (and its staged resend): the user chose to continue differently.
     app.clear_pending_fallback_offer();
+    let raw_input_for_restore = prepared.raw_input.clone();
+    let images_for_restore = prepared.images.clone();
     // Remember the typed prompt so we can restore it to the input box if this turn
     // fails (e.g. "token refresh needed"), instead of dropping it.
     app.last_submitted_input = Some(prepared.raw_input.clone());
@@ -166,9 +168,37 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
         title: None,
         tool_data: None,
     });
-    let _ = app
+    if let Err(error) = app
         .begin_remote_send(remote, prepared.expanded, prepared.images, false)
-        .await;
+        .await
+    {
+        let last_is_this_prompt = app
+            .display_messages()
+            .last()
+            .is_some_and(|m| m.role == "user" && m.content == raw_input_for_restore);
+        if last_is_this_prompt {
+            let idx = app.display_messages().len() - 1;
+            let _ = app.remove_display_message(idx);
+        }
+        app.last_submitted_input = None;
+        if app.input.is_empty() && app.pending_images.is_empty() {
+            restore_prepared_remote_input(
+                app,
+                input::PreparedInput {
+                    raw_input: raw_input_for_restore,
+                    expanded: String::new(),
+                    images: images_for_restore,
+                },
+            );
+        }
+        if crate::tui::backend::is_remote_write_disconnect_error(remote, &error) {
+            return Err(error);
+        }
+        app.push_display_message(DisplayMessage::error(format!(
+            "Failed to send message: {error}"
+        )));
+        app.set_status_notice("Failed to send message");
+    }
     Ok(())
 }
 

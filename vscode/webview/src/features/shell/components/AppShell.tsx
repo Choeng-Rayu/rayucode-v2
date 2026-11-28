@@ -101,7 +101,7 @@ export function AppShell({
           <CompactTopBar
             onOpenSessionsDrawer={() => setMobileSidebarOpen(true)}
           />
-          <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <main className="@container/main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             <div
               className={cn(
                 "flex min-h-0 flex-1 flex-col",
@@ -122,7 +122,7 @@ export function AppShell({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
             <DaemonBanner />
             <TopBar />
-            <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <main className="@container/main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <div
                 className={cn(
                   "flex min-h-0 flex-1 flex-col",
@@ -143,10 +143,10 @@ export function AppShell({
             data-slot="workspace-split-stage"
             className="flex min-h-0 min-w-0 flex-1 overflow-hidden"
           >
-            <div className="flex min-h-0 min-w-[320px] flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
               <main
                 className={cn(
-                  "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas",
+                  "@container/main relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-canvas",
                   !sidebarCollapsed &&
                     "rounded-tl-[14px] border-t border-l border-hairline",
                 )}
@@ -181,13 +181,14 @@ export function AppShell({
             onClick={() => setMobileSidebarOpen(false)}
             className="rayu-animate-fade fixed inset-0 bg-chrome/70 backdrop-blur-xs"
           />
-          <div className="relative z-10 flex h-full max-w-[90vw] border-r border-premium-hi bg-chrome shadow-modal">
+          <div className="relative z-10 flex h-full max-w-[calc(100vw-16px)] min-w-0 border-r border-premium-hi bg-chrome shadow-modal">
             {formFactor === "compact" && (
               <IconRail
                 onCloseDrawer={() => setMobileSidebarOpen(false)}
               />
             )}
             <SidebarProjectsPane
+              className="min-w-0 max-w-[244px] flex-1"
               onSessionSelected={() => setMobileSidebarOpen(false)}
               onCloseDrawer={() => setMobileSidebarOpen(false)}
             />

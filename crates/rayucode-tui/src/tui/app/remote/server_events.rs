@@ -333,18 +333,62 @@ pub(in crate::tui::app) fn handle_server_event(
         return false;
     }
     let terminal = matches!(&event, ServerEvent::Done { .. } | ServerEvent::Error { .. });
-    // Legacy control errors still use Error. Let their request-owned handlers
-    // run, but never let an unscoped terminal settle an identity-aware turn.
-    if terminal && identity.is_none() && app.remote_turn_fence.scoped() {
-        if let ServerEvent::Error { id, message, .. } = &event {
+    // Unscoped control errors belong to specific client requests (rewind, split,
+    // clear, feature/model/session controls) and must surface cleanly without
+    // disturbing any active scoped turn or falling into prompt-retry handlers.
+    if terminal && identity.is_none() {
+        if let ServerEvent::Done { id } = &event {
+            remote.finish_control_request(*id);
+        } else if let ServerEvent::Error { id, message, .. } = &event {
             if app.pending_agent_model_request_id == Some(*id) {
                 return handle_server_event_inner(app, event, remote);
+            }
+            if app.usage_reset.invalidate_requests.remove(id).is_some() {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Reset result is unchanged, but the daemon usage cache could not be refreshed: {message}. Reconnect to refresh daemon state."
+                )));
+                return true;
             }
             if remote.finish_runtime_command(*id) {
                 app.push_display_message(DisplayMessage::error(message.clone()));
                 return true;
             }
+            if app
+                .pending_remote_rewind_notice
+                .as_ref()
+                .is_some_and(|notice| notice.request_id == Some(*id))
+            {
+                app.pending_remote_rewind_notice = None;
+                remote.mark_history_loaded();
+                remote.finish_control_request(*id);
+                app.push_display_message(DisplayMessage::error(message.clone()));
+                app.set_status_notice("Rewind failed");
+                return true;
+            }
+            if remote.finish_split_request(*id) {
+                remote.finish_control_request(*id);
+                super::input_dispatch::finish_remote_split_launch(app);
+                app.pending_split_request = false;
+                app.pending_split_started_at = None;
+                app.pending_split_startup_message = None;
+                app.pending_split_parent_session_id = None;
+                app.pending_split_prompt = None;
+                app.pending_split_model_override = None;
+                app.pending_split_provider_key_override = None;
+                app.pending_split_label = None;
+                app.push_display_message(DisplayMessage::error(message.clone()));
+                app.set_status_notice("Split failed");
+                return true;
+            }
+            if remote.finish_control_request(*id) {
+                app.push_display_message(DisplayMessage::error(message.clone()));
+                return true;
+            }
         }
+    }
+    // Legacy control errors still use Error. Let their request-owned handlers
+    // run, but never let an unscoped terminal settle an identity-aware turn.
+    if terminal && identity.is_none() && app.remote_turn_fence.scoped() {
         if let ServerEvent::Done { id } | ServerEvent::Error { id, .. } = &event {
             if app.current_message_id == Some(*id) {
                 if app.remote_turn_fence.active.is_none() {
@@ -380,7 +424,9 @@ pub(in crate::tui::app) fn handle_server_event(
                     return true;
                 }
             }
-            if app.usage_reset.invalidate_requests.remove(id).is_some() {
+            if let ServerEvent::Done { id } = &event
+                && app.usage_reset.invalidate_requests.remove(id).is_some()
+            {
                 app.usage_reset.refresh_usage = true;
                 return true;
             }
@@ -1217,7 +1263,7 @@ fn handle_server_event_inner(
             if !auto_poked {
                 app.clear_visible_turn_started();
             }
-            auto_poked
+            true
         }
         ServerEvent::ProviderGuardrail {
             stop_reason,
@@ -1385,7 +1431,7 @@ fn handle_server_event_inner(
                     "Session agent model update failed: {message}"
                 )));
                 app.set_status_notice("Agent model update failed");
-                return false;
+                return true;
             }
             // Exhaustion can be reported again while the route switch is staged
             // or awaiting acknowledgement. It belongs to the failed route, not
@@ -1489,10 +1535,21 @@ fn handle_server_event_inner(
                 app.status = ProcessingStatus::Idle;
                 app.stream_message_ended = false;
                 app.processing_started = None;
+                app.replay_processing_started_ms = None;
+                app.replay_elapsed_override = None;
+                app.remote_resume_activity = None;
+                app.batch_progress = None;
+                app.clear_pending_tool_calls();
+                app.stream_buffer.clear();
+                app.clear_streaming_render_state();
+                app.streaming.streaming_rayu_credits.reset();
+                app.deferred_stream_done_id = None;
+                app.deferred_stream_done_identity = None;
+                app.clear_visible_turn_started();
                 app.current_message_id = None;
                 remote.clear_pending();
                 remote.reset_call_output_tokens_seen();
-                return false;
+                return true;
             }
             if app.is_processing {
                 app.finish_turn_footer(crate::tui::TurnFooterOutcome::Failed);
@@ -1525,6 +1582,19 @@ fn handle_server_event_inner(
             app.is_processing = false;
             app.status = ProcessingStatus::Idle;
             app.stream_message_ended = false;
+            app.current_message_id = None;
+            app.processing_started = None;
+            app.replay_processing_started_ms = None;
+            app.replay_elapsed_override = None;
+            app.remote_resume_activity = None;
+            app.batch_progress = None;
+            app.clear_pending_tool_calls();
+            app.stream_buffer.clear();
+            app.clear_streaming_render_state();
+            app.streaming.streaming_rayu_credits.reset();
+            app.deferred_stream_done_id = None;
+            app.deferred_stream_done_identity = None;
+            app.clear_visible_turn_started();
             let recovered_local = recover_local_interleave_to_queue(app, "request error");
             crate::tui::mermaid::clear_streaming_preview_diagram();
             app.thought_line_inserted = false;
@@ -1560,7 +1630,7 @@ fn handle_server_event_inner(
                 {
                     app.restore_failed_input_to_box();
                 }
-                return false;
+                return true;
             }
             if crate::provider::parse_failover_prompt_message(&message).is_some() {
                 // The server already exhausted the same-provider account pool.
@@ -1568,7 +1638,7 @@ fn handle_server_event_inner(
                 // leave any cross-provider resend behind explicit user consent.
                 app.handle_turn_error(message.clone());
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
             if rate_limit_retry_exhausted {
                 // Do not fall through to the generic retry or turn-end
@@ -1581,7 +1651,7 @@ fn handle_server_event_inner(
                     "Paused: provider limit did not clear",
                 );
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
             // A refresh token explicitly rejected or revoked by the provider
             // cannot recover by resending. Stop on the first such error, even
@@ -1594,7 +1664,7 @@ fn handle_server_event_inner(
                     "Stopped: OAuth login needs attention",
                 );
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
             // Stream-idle failures follow an accepted request. The provider
             // owns transport retries and fallback already. A network probe
@@ -1610,7 +1680,7 @@ fn handle_server_event_inner(
                     "Paused: provider stream stopped responding",
                 );
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
             // Connection-establishment failures can recover when the network
             // returns. Keep these separate from accepted but stalled streams.
@@ -1620,7 +1690,7 @@ fn handle_server_event_inner(
             if is_connectivity_error
                 && app.schedule_pending_remote_network_wait_with_force(&message, true)
             {
-                return false;
+                return true;
             }
             if is_connectivity_error && app.rate_limit_pending_message.is_some() {
                 // The generic connectivity probe can succeed while this
@@ -1635,7 +1705,7 @@ fn handle_server_event_inner(
                     "Paused: provider connection did not recover",
                 );
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return false;
+                return true;
             }
             // Credential-failure circuit breaker: repeated auth failures mean
             // the login/API key is dead. Resending the identical request can
@@ -1648,7 +1718,7 @@ fn handle_server_event_inner(
                     &message,
                     failed_fallback_payload.clone(),
                 );
-                return false;
+                return true;
             }
             // Deterministic model/endpoint-capability failures (e.g. Volcengine
             // Ark's coding-plan endpoint returning 404 UnsupportedModel, or a
@@ -1673,7 +1743,7 @@ fn handle_server_event_inner(
                     &message,
                     failed_fallback_payload.clone(),
                 );
-                return false;
+                return true;
             }
             if app.auto_poke_incomplete_todos
                 && crate::tui::app::commands::is_non_retryable_auto_poke_error(&message)
@@ -1682,7 +1752,7 @@ fn handle_server_event_inner(
                     "⚠ The request failed in a way a retry probably won't fix. Trying once more anyway.",
                     2,
                 ) {
-                    return false;
+                    return true;
                 }
                 crate::tui::app::commands::stop_auto_poke_for_non_retryable_error(app, &message);
                 // Terminal: no retry will fire. Offer a one-keypress switch to
@@ -1692,14 +1762,14 @@ fn handle_server_event_inner(
                     &message,
                     failed_fallback_payload.clone(),
                 );
-                return false;
+                return true;
             }
             if app.stop_overnight_auto_poke_for_non_retryable_error(&message) {
                 app.offer_fallback_after_error_with_payload(
                     &message,
                     failed_fallback_payload.clone(),
                 );
-                return false;
+                return true;
             }
             if !is_failover_prompt && !app.schedule_pending_remote_retry("⚠ Remote request failed.")
             {
@@ -1712,9 +1782,10 @@ fn handle_server_event_inner(
                 // that is known to work), instead of leaving the user to run
                 // /login or /model manually.
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return app.schedule_turn_end_followups();
+                let _ = app.schedule_turn_end_followups();
+                return true;
             }
-            false
+            true
         }
         ServerEvent::SessionId { session_id } => {
             if app.remote_session_id.as_deref() != Some(session_id.as_str()) {
@@ -2634,7 +2705,7 @@ fn handle_server_event_inner(
         }
         ServerEvent::SidePanelState { snapshot } => {
             app.set_side_panel_snapshot(snapshot);
-            false
+            true
         }
         ServerEvent::Todos {
             session_id,
@@ -2721,7 +2792,7 @@ fn handle_server_event_inner(
                 );
                 app.set_status_notice(notice);
             }
-            false
+            !stale_regression
         }
         ServerEvent::SwarmPlanProposal {
             swarm_id,
@@ -2739,10 +2810,10 @@ fn handle_server_event_inner(
             app.push_display_message(DisplayMessage::system(message.clone()));
             persist_replay_display_message(app, "system", None, &message);
             app.set_status_notice("Plan proposal received");
-            false
+            true
         }
         ServerEvent::McpStatus { servers } => {
-            app.mcp_server_names = servers
+            let next: Vec<(String, usize)> = servers
                 .iter()
                 .filter_map(|s| {
                     let (name, count_str) = s.split_once(':')?;
@@ -2750,11 +2821,13 @@ fn handle_server_event_inner(
                     Some((name.to_string(), count))
                 })
                 .collect();
+            let changed = app.mcp_server_names != next;
+            app.mcp_server_names = next;
             // Keep MCP readiness non-intrusive. The footer/tool indicator reads
             // `mcp_server_names` directly, so avoid a transient status notice here:
             // status notices render near the prompt and can cover text while the
             // user is typing during startup.
-            false
+            changed
         }
         ServerEvent::ModelChanged {
             id,
@@ -3077,7 +3150,7 @@ fn handle_server_event_inner(
                 )));
                 app.set_status_notice(format!("Effort: {}", label));
             }
-            false
+            true
         }
         ServerEvent::ServiceTierChanged {
             service_tier,
@@ -3139,7 +3212,7 @@ fn handle_server_event_inner(
                 )));
                 app.set_status_notice(format!("Transport: {}", label));
             }
-            false
+            true
         }
         ServerEvent::CompactionModeChanged { mode, error, .. } => {
             if let Some(err) = error {
@@ -3156,7 +3229,7 @@ fn handle_server_event_inner(
                 )));
                 app.set_status_notice(format!("Compaction: {}", label));
             }
-            false
+            true
         }
         ServerEvent::SoftInterruptInjected {
             content,
@@ -3231,7 +3304,7 @@ fn handle_server_event_inner(
             if let Some(n) = tools_skipped {
                 app.set_status_notice(format!("⚡ {} tool(s) skipped", n));
             }
-            false
+            true
         }
         ServerEvent::MemoryInjected {
             count,
@@ -3258,7 +3331,7 @@ fn handle_server_event_inner(
                 app.push_display_message(DisplayMessage::memory(summary, display_prompt));
                 app.set_status_notice(format!("🧠 {} relevant {} injected", count, plural));
             }
-            false
+            app.memory_enabled
         }
         ServerEvent::MemoryActivity { activity } => {
             if app.memory_enabled {
@@ -3326,13 +3399,13 @@ fn handle_server_event_inner(
                     }
                 }
                 app.set_status_notice(presentation.status_notice);
-                return false;
+                return true;
             }
 
             if let Some(scope) = runtime_activity_scope {
                 if message.trim().is_empty() {
                     app.set_status_notice(runtime_activity_status_notice(&message));
-                    return false;
+                    return true;
                 }
                 if scope == "catalog_activity"
                     && (message.starts_with("**Model ready:**")
@@ -3344,7 +3417,7 @@ fn handle_server_event_inner(
                     && matches!(scope, "auth_activity" | "catalog_activity")
                 {
                     app.set_status_notice(runtime_activity_status_notice(&message));
-                    return false;
+                    return true;
                 }
                 if scope == "catalog_activity"
                     && let Some(progress) =
@@ -3355,7 +3428,7 @@ fn handle_server_event_inner(
                     let status_notice = progress.summary.clone();
                     app.upsert_running_background_task_progress(&message);
                     app.set_status_notice(status_notice);
-                    return false;
+                    return true;
                 } else if scope == "background_activity" {
                     if let Some(completed) =
                         crate::message::parse_background_task_notification_markdown(&message)
@@ -3370,7 +3443,7 @@ fn handle_server_event_inner(
                             completed.display_name.as_deref(),
                         );
                         app.finish_background_task(completed.task_id, label, status);
-                        return false;
+                        return true;
                     } else if !app.upsert_running_background_task_started(&message) {
                         app.push_display_message(DisplayMessage::background_task(message.clone()));
                         persist_replay_display_message(app, "background_task", None, &message);
@@ -3380,7 +3453,7 @@ fn handle_server_event_inner(
                     persist_replay_display_message(app, "system", None, &message);
                 }
                 app.set_status_notice(runtime_activity_status_notice(&message));
-                return false;
+                return true;
             }
 
             let presentation = present_swarm_notification(
@@ -3402,7 +3475,7 @@ fn handle_server_event_inner(
             );
             if plan_scope {
                 app.set_status_notice(format!("{} · {}", presentation.title, presentation.message));
-                return false;
+                return true;
             }
             let swarm_report_scope = matches!(
                 &notification_type,
@@ -3442,7 +3515,7 @@ fn handle_server_event_inner(
                     crate::id::session_icon(&sender),
                     sender
                 ));
-                return false;
+                return true;
             }
             let now = std::time::Instant::now();
             let since_last = app
@@ -3460,11 +3533,11 @@ fn handle_server_event_inner(
                 &presentation.message,
             );
             app.set_status_notice(presentation.status_notice);
-            false
+            true
         }
         ServerEvent::Transcript { text, mode } => {
             apply_transcript_event(app, text, mode);
-            false
+            true
         }
         ServerEvent::VoiceActivity { activity } => {
             app.apply_external_voice_activity(activity);
@@ -3475,7 +3548,7 @@ fn handle_server_event_inner(
                 crate::message::format_input_shell_result_markdown(&result),
             ));
             app.set_status_notice(crate::message::input_shell_status_notice(&result));
-            false
+            true
         }
         ServerEvent::Compaction {
             trigger,
@@ -3499,13 +3572,16 @@ fn handle_server_event_inner(
                 summary_chars,
                 active_messages,
             });
-            false
+            true
         }
         ServerEvent::SplitResponse {
+            id,
             new_session_id,
             new_session_name,
             ..
         } => {
+            remote.finish_split_request(id);
+            remote.finish_control_request(id);
             if app.workspace_client.handle_split_response(&new_session_id) {
                 finish_remote_split_launch(app);
                 app.pending_split_request = false;
@@ -3520,14 +3596,14 @@ fn handle_server_event_inner(
                     new_session_name,
                 )));
                 app.set_status_notice(format!("Workspace + {}", new_session_name));
-                return false;
+                return true;
             }
             if crate::tui::is_ssh_remote() {
                 app.pending_split_request = false;
                 app.set_status_notice(format!(
                     "Remote session created: {new_session_id}. Resume using --ssh and --resume."
                 ));
-                return false;
+                return true;
             }
             finish_remote_split_launch(app);
             app.pending_split_request = false;
@@ -3607,7 +3683,7 @@ fn handle_server_event_inner(
                     }
                 }
             }
-            false
+            true
         }
         ServerEvent::CompactResult {
             message, success, ..
@@ -3619,7 +3695,7 @@ fn handle_server_event_inner(
                 app.push_display_message(DisplayMessage::system(message));
                 app.set_status_notice("Compaction failed");
             }
-            false
+            true
         }
         ServerEvent::ResumeAllResult {
             resumed, message, ..
@@ -3632,11 +3708,11 @@ fn handle_server_event_inner(
             } else {
                 app.set_status_notice(format!("Resuming {} sessions", resumed));
             }
-            false
+            true
         }
         ServerEvent::StdinRequest { .. } => {
             app.set_status_notice("⌨ Interactive terminal detected (command will timeout)");
-            false
+            true
         }
         ServerEvent::PeerUserMessage { content } => {
             app.handle_peer_user_message(&content);

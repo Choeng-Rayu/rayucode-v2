@@ -321,7 +321,7 @@ export function ModelsAgentsSection({
               aria-label="Default model route"
               data-testid="default-model-select"
               className={cn(
-                "w-full sm:w-[250px]",
+                "w-full @min-[520px]/settings-stage:w-[250px]",
                 configFieldErrors["provider.default_model"] &&
                   "border-danger/40",
               )}
@@ -368,7 +368,7 @@ export function ModelsAgentsSection({
               aria-label="Default reasoning effort"
               data-testid="default-effort-select"
               className={cn(
-                "w-[170px]",
+                "w-full @min-[480px]/settings-stage:w-[170px]",
                 configFieldErrors["provider.default_effort"] &&
                   "border-danger/40",
               )}
@@ -387,7 +387,7 @@ export function ModelsAgentsSection({
 
         {/* Fast / Service Tier */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
               <span>Fast / Service Tier (RuntimeCommand::Fast)</span>
               <FieldApplyModeBadge
@@ -406,7 +406,7 @@ export function ModelsAgentsSection({
             <SelectTrigger
               aria-label="Service tier"
               data-testid="service-tier-select"
-              className="w-[170px]"
+              className="w-full @min-[480px]/settings-stage:w-[170px]"
             >
               <SelectValue />
             </SelectTrigger>
@@ -422,7 +422,7 @@ export function ModelsAgentsSection({
 
         {/* Anthropic KV-Cache TTL */}
         <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-3.5 text-xs">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 font-medium text-ink">
               <span>Anthropic Prompt Cache TTL (Global)</span>
               <FieldApplyModeBadge
@@ -556,7 +556,7 @@ export function ModelsAgentsSection({
               data-testid={`role-override-row-${row.role}`}
               className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs"
             >
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">{row.label}</div>
                 <div className="font-mono text-[11px] text-muted-ink">
                   agents.{row.role}_model · Scope: {overrideScope}
@@ -577,7 +577,7 @@ export function ModelsAgentsSection({
                 <SelectTrigger
                   aria-label={`${row.label} model`}
                   data-testid={`role-override-select-${row.role}`}
-                  className="w-full sm:w-[250px]"
+                  className="w-full @min-[520px]/settings-stage:w-[250px]"
                 >
                   <SelectValue />
                 </SelectTrigger>

@@ -138,7 +138,7 @@ function CodeBlockView({
           {langLabel}
         </span>
 
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <button
             type="button"
             data-testid="code-block-insert-cursor"
@@ -289,12 +289,12 @@ function MermaidCodeBlockCard({ value }: { value: string }) {
           <span className="truncate text-xs font-medium text-ink">
             {layout.title}
           </span>
-          <span className="hidden font-mono text-[10px] text-muted-ink sm:inline">
+          <span className="hidden font-mono text-[10px] text-muted-ink @min-[420px]/chat:inline">
             {layout.direction}
           </span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <div
             role="tablist"
             aria-label="Diagram view mode"
@@ -492,7 +492,7 @@ function renderMdastNode(
       );
     case "paragraph":
       return (
-        <p key={key} className="rayu-prose m-0 max-w-[72ch] text-body">
+        <p key={key} className="rayu-prose m-0 max-w-[72ch] text-[14px] leading-[1.6] text-body">
           {renderMdastChildren(node.children, key, contextDiagramSource, insideLink)}
         </p>
       );
@@ -650,9 +650,9 @@ function renderMdastNode(
         <div
           key={key}
           data-slot="markdown-table"
-          className="my-2 overflow-x-auto"
+          className="my-2 max-w-full overflow-x-auto"
         >
-          <table className="w-full border-collapse text-left text-[13.5px] leading-[1.6] tabular-nums">
+          <table className="w-full border-collapse text-left text-[14px] leading-[1.6] tabular-nums">
             {headerRow ? (
               <thead>
                 <tr className="border-b border-hairline">
@@ -660,7 +660,7 @@ function renderMdastNode(
                     <th
                       key={`${key}-th-${cIdx}`}
                       className={cn(
-                        "py-2.5 pr-5 pl-0 text-[13px] font-semibold text-ink last:pr-0",
+                        "py-2.5 pr-5 pl-0 text-[13.5px] font-semibold text-ink last:pr-0",
                         (alignList[cIdx] === "right" || numericCols[cIdx]) &&
                           "text-right",
                         alignList[cIdx] === "center" && "text-center",
@@ -686,7 +686,7 @@ function renderMdastNode(
                         className={cn(
                           "py-3 pr-5 pl-0 align-top text-body last:pr-0",
                           (alignList[cIdx] === "right" || numericCols[cIdx]) &&
-                            "text-right font-mono text-[13px] text-ink",
+                            "text-right font-mono text-[13.5px] text-ink",
                           alignList[cIdx] === "center" && "text-center",
                         )}
                       >
@@ -710,7 +710,7 @@ function renderMdastNode(
         return (
           <ol
             key={key}
-            className="rayu-prose m-0 flex max-w-[72ch] list-decimal flex-col gap-2 pl-5 text-body marker:font-medium marker:text-muted-ink"
+            className="rayu-prose m-0 flex max-w-[72ch] list-decimal flex-col gap-2 pl-5 text-[14px] leading-[1.6] text-body marker:font-medium marker:text-muted-ink"
           >
             {renderMdastChildren(node.children, key, contextDiagramSource)}
           </ol>
@@ -719,7 +719,7 @@ function renderMdastNode(
       return (
         <ul
           key={key}
-          className="rayu-prose m-0 flex max-w-[72ch] list-disc flex-col gap-2 pl-5 text-body marker:text-muted-ink"
+          className="rayu-prose m-0 flex max-w-[72ch] list-disc flex-col gap-2 pl-5 text-[14px] leading-[1.6] text-body marker:text-muted-ink"
         >
           {renderMdastChildren(node.children, key, contextDiagramSource)}
         </ul>
@@ -734,7 +734,7 @@ function renderMdastNode(
       return (
         <blockquote
           key={key}
-          className="m-0 border-l-2 border-hairline-strong py-0.5 pl-3.5 text-[13.5px] leading-[1.6] text-muted-ink"
+          className="m-0 border-l-2 border-hairline-strong py-0.5 pl-3.5 text-[14px] leading-[1.6] text-muted-ink"
         >
           {renderMdastChildren(node.children, key, contextDiagramSource)}
         </blockquote>
@@ -855,7 +855,7 @@ export function EditorialMarkdown({
     <div
       data-slot="editorial-markdown"
       className={cn(
-        "rayu-prose flex min-w-0 flex-col gap-3 break-words",
+        "rayu-prose flex min-w-0 flex-col gap-3 text-[14px] leading-[1.6] break-words",
         className,
       )}
     >

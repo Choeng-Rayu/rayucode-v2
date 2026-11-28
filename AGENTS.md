@@ -2,38 +2,22 @@
 
 ## Repository Scope
 
-- The Rust CLI/daemon (`crates/`) is the single coding engine shared across CLI, VS Code (`vscode/`), and RayuCode Desktop (`desktop/`).
-- `prototype/` is the frozen HTML/CSS visual golden baseline for RayuCode Desktop, codified in root `DESIGN.md`.
+- The Rust CLI/daemon (`crates/`, `src/`) is the single coding engine shared across CLI/TUI, VS Code (`vscode/`), and the standalone RayuCode Desktop repository (`Choeng-Rayu/rayucode-app`).
+- `sdk/typescript` and `packages/*` (`session-core`, `ui`) are the shared TypeScript packages consumed by both `vscode/` (in-repo) and `Choeng-Rayu/rayucode-app` (pinned via `engine.json` and `scripts/sync-engine.mjs`).
+- `prototype/` is the frozen HTML/CSS visual golden baseline shared by RayuCode Desktop and VS Code, codified in root `DESIGN.md`.
+- **RayuCode Desktop (`desktop/`) has moved permanently to `Choeng-Rayu/rayucode-app`.** Do not add or duplicate Electron/Desktop UI code inside `rayucode-v2`; release engine/SDK updates here and bump `engine.json` in `Choeng-Rayu/rayucode-app`.
 
-## RayuCode Desktop UI Rules (`desktop/`)
+## Shared UI & Design Token Rules (`DESIGN.md`, `packages/ui/`, `vscode/`)
 
-Every coordinator, sub-agent, and swarm worker touching `desktop/` MUST follow these binding rules:
+Every coordinator, sub-agent, and swarm worker touching shared UI (`packages/ui/` or `vscode/webview/`) MUST follow these binding rules:
 
-1. **Read Authority Files First:** Before writing any UI code, read `DESIGN.md`, `desktop/src/styles/globals.css`, and the matching `prototype/*.html` reference file.
-2. **Single-Source Tailwind v4 Styling ("Change Once, Change Everywhere"):**
-   - All theme/accent colors, borders, specular bevels, and surfaces MUST come from semantic tokens in `desktop/src/styles/globals.css` (`bg-chrome`, `bg-canvas`, `bg-pane`, `bg-raised`, `bg-inset`, `bg-active`, `text-ink`, `text-body`, `text-muted`, `text-accent`, `border-hairline`, `border-premium`).
-   - Raw hex literals (`#...`), arbitrary Tailwind color classes (`bg-[#...]`), default shadcn zinc/slate classes, and UI emojis in TSX are forbidden and fail `pnpm lint:design`.
-3. **Mandatory Pre-Flight shadcn/ui Check:**
-   - Run `node desktop/scripts/check-shadcn.mjs check <names...> --json` BEFORE building UI.
-   - Reuse installed Radix/shadcn primitives from `desktop/src/components/ui/*` (restyled with `globals.css` tokens) or install missing ones via `node desktop/scripts/check-shadcn.mjs ensure <names...>`.
-4. **Feature-Sliced Encapsulation & React 19 Patterns:**
-   - Business domains live strictly in `desktop/src/features/<name>/` (`__tests__/`, `api/`, `components/`, `constants/`, `hooks/`, `schemas/`, `types/`, `index.ts`).
-   - Never deep-import another feature's internals — import ONLY from `@/features/<name>` barrel exports (enforced by ESLint `no-restricted-imports`).
-   - Heavy libraries (`@xterm/xterm`, `shiki`) must stay inside their owning feature and be lazy-loaded via `React.lazy` + `<Suspense>` with zero-CLS skeletons and `<SectionErrorBoundary>`.
-   - Use React 19 `ref`-as-prop (no `React.forwardRef`), TanStack Query v5 `queryOptions()` factories + hover prefetching, `Zod` validation, and `createStreamBatcher()` (`16–33ms` rAF batching) for live Rust daemon events.
-5. **Standard Agent Commands (`cd desktop`):**
-   - Pre-flight UI check: `node scripts/check-shadcn.mjs check <names...> --json`
-   - Typecheck gate: `pnpm typecheck` (0 errors)
-   - Lint gate: `pnpm lint` (ESLint 9 architectural + React Hooks rules, 0 errors)
-   - Design token gate: `pnpm lint:design` (0 raw hex, 0 `bg-[#...]`, 0 emojis)
-   - Unit test gate: `pnpm test` (Vitest)
-   - Build gate: `pnpm build` (Vite renderer + Electron main/preload)
-   - Full mandatory gate: `pnpm verify` (`typecheck && lint && lint:design && test && build`)
-6. **Autonomous Swarm Protocol & Closed-Loop Screen Verification:**
-   - Delegate with explicit Task & Goal, Owned Files, Target `prototype/` reference, and Verification Route(s).
-   - Execute autonomously end-to-end without pausing for minor questions when the answer is in `DESIGN.md`, `docs/superpowers/specs/2026-11-23-rayucode-desktop-design.md`, or `prototype/`.
-   - **Mandatory Screen Verification:** Before finishing, render owned views at `1440×934` in Dark (Rayu Green), Dark (Ocean Blue), and Light modes into `.swarm-logs/verify/<task-id>-*.png`, visually compare against `prototype/`, fix any discrepancy, and include screenshot paths + `pnpm verify` output in the completion report.
-   - Commit ONLY owned files with conventional commits (`feat(desktop): ...`) on your scoped branch (`swarm/<task-id>`) and open a PR to `main` once CI passes.
+1. **Read Authority Files First:** Before writing any UI code, read `DESIGN.md`, `vscode/VSCODE_DESIGN.md` (for VS Code), and the matching `prototype/*.html` reference file.
+2. **Single-Source Semantic Token Styling:**
+   - All theme/accent colors, borders, specular bevels, and surfaces MUST come from semantic CSS tokens (`bg-chrome`, `bg-canvas`, `bg-pane`, `bg-raised`, `bg-inset`, `bg-active`, `text-ink`, `text-body`, `text-muted`, `text-accent`, `border-hairline`, `border-premium`).
+   - Raw hex literals (`#...`), arbitrary Tailwind color classes (`bg-[#...]`), default shadcn zinc/slate classes, and UI emojis in TSX are forbidden and fail `lint:design`.
+3. **Desktop Repo Sync Contract (`Choeng-Rayu/rayucode-app`):**
+   - `release.yml` compiles the unified `rayu` binary (CLI + TUI + Daemon + `api-bridge`) once for all 6 OS/arch targets with `SHA256SUMS` and notifies `Choeng-Rayu/rayucode-app` (`engine-released` dispatch when `RAYUCODE_APP_DISPATCH_TOKEN` is configured).
+   - Keep `ApiRequest`, `ApiEvent`, `RuntimeCommand`, and `Capabilities` backwards-compatible across mixed client/daemon versions.
 
 ## TUI style
 

@@ -140,7 +140,7 @@ export function BackgroundProcessDrawer({
       data-form-factor={formFactor}
       style={!isCompact ? { height: `${drawerHeightPx}px` } : undefined}
       className={cn(
-        "flex w-full min-w-0 flex-col overflow-hidden border-t border-hairline bg-pane text-ink",
+        "@container/drawer flex w-full min-w-0 flex-col overflow-hidden border-t border-hairline bg-pane text-ink",
         isCompact ? "h-full min-h-[260px]" : "min-h-[220px]",
         className,
       )}
@@ -248,7 +248,7 @@ export function BackgroundProcessDrawer({
 
       {/* Filter Tabs + Search Row */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hairline-soft bg-chrome/40 px-3 py-1.5">
-        <div className="w-full max-w-full overflow-x-auto sm:w-auto">
+        <div className="w-full max-w-full overflow-x-auto @min-[560px]/drawer:w-auto">
           <Tabs
             value={filter}
             onValueChange={(val) => setFilter(val as ProcessFilterTab)}
@@ -275,7 +275,7 @@ export function BackgroundProcessDrawer({
           </Tabs>
         </div>
 
-        <div className="relative min-w-0 flex-1 sm:min-w-[180px] sm:max-w-[260px]">
+        <div className="relative min-w-0 flex-1 @min-[560px]/drawer:min-w-[180px] @min-[560px]/drawer:max-w-[260px]">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-muted-ink" />
           <Input
             type="search"
@@ -299,13 +299,13 @@ export function BackgroundProcessDrawer({
       </div>
 
       {/* Main Split Body: Grouped Process List + Live Output Tail */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden @min-[680px]/drawer:flex-row">
         {/* Left Column: Grouped Process List */}
         {(!isCompact || compactViewMode === "list" || !selectedTask) && (
           <div
             data-testid="process-list-pane"
             className={cn(
-              "flex min-h-0 flex-col overflow-y-auto border-b border-hairline p-2 md:w-[44%] md:max-w-[440px] md:border-r md:border-b-0",
+              "flex min-h-0 flex-col overflow-y-auto border-b border-hairline p-2 @min-[680px]/drawer:w-[44%] @min-[680px]/drawer:max-w-[440px] @min-[680px]/drawer:border-r @min-[680px]/drawer:border-b-0",
               isCompact ? "flex-1" : "h-full",
             )}
           >

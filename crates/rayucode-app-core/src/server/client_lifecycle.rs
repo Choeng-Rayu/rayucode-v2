@@ -160,6 +160,58 @@ use request_watchdog::{
     RequestHandlerWatchdog, RequestHandlerWatchdogContext, log_request_lifecycle_handled,
     reject_if_agent_busy_for_request, send_agent_busy_error, should_start_idle_soft_interrupt,
 };
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ConnectionActivityUpdate {
+    Started,
+    ToolStart(String),
+    ToolDone,
+    Finished,
+}
+
+pub(super) fn classify_connection_activity(
+    active_turn: &mut Option<crate::protocol::TurnIdentity>,
+    event: &ServerEvent,
+) -> Option<ConnectionActivityUpdate> {
+    match event {
+        ServerEvent::TurnStarted { identity } => {
+            *active_turn = Some(identity.clone());
+            Some(ConnectionActivityUpdate::Started)
+        }
+        ServerEvent::TurnEvent { identity, event } => {
+            if active_turn.as_ref().is_some_and(|active| active != identity) {
+                return None;
+            }
+            match event.as_ref() {
+                ServerEvent::ToolStart { name, .. } => {
+                    Some(ConnectionActivityUpdate::ToolStart(name.clone()))
+                }
+                ServerEvent::ToolDone { .. } => Some(ConnectionActivityUpdate::ToolDone),
+                ServerEvent::Done { .. }
+                | ServerEvent::Error { .. }
+                | ServerEvent::Interrupted => {
+                    *active_turn = None;
+                    Some(ConnectionActivityUpdate::Finished)
+                }
+                _ => None,
+            }
+        }
+        ServerEvent::ToolStart { name, .. } if active_turn.is_none() => {
+            Some(ConnectionActivityUpdate::ToolStart(name.clone()))
+        }
+        ServerEvent::ToolDone { .. } if active_turn.is_none() => {
+            Some(ConnectionActivityUpdate::ToolDone)
+        }
+        ServerEvent::Interrupted => {
+            *active_turn = None;
+            Some(ConnectionActivityUpdate::Finished)
+        }
+        ServerEvent::Done { .. } | ServerEvent::Error { .. } if active_turn.is_none() => {
+            Some(ConnectionActivityUpdate::Finished)
+        }
+        _ => None,
+    }
+}
+
 fn server_reload_starting() -> bool {
     matches!(
         crate::server::recent_reload_state(RELOAD_STARTING_GUARD_MAX_AGE),
@@ -1031,33 +1083,29 @@ pub(super) async fn handle_client(
     let client_connection_id_for_events = client_connection_id.clone();
     let client_connections_for_events = Arc::clone(&client_connections);
     let event_handle = tokio::spawn(async move {
+        let mut active_turn_identity: Option<crate::protocol::TurnIdentity> = None;
         while let Some(event) = client_event_rx.recv().await {
+            if let Some(update) =
+                classify_connection_activity(&mut active_turn_identity, &event)
             {
                 let mut connections = client_connections_for_events.write().await;
                 if let Some(info) = connections.get_mut(&client_connection_id_for_events) {
-                    let observed = match &event {
-                        ServerEvent::TurnEvent { event, .. } => event.as_ref(),
-                        event => event,
-                    };
-                    match observed {
-                        ServerEvent::TurnStarted { .. } => {
+                    match update {
+                        ConnectionActivityUpdate::Started => {
                             info.is_processing = true;
                             info.current_tool_name = None;
                         }
-                        ServerEvent::ToolStart { name, .. } => {
+                        ConnectionActivityUpdate::ToolStart(name) => {
                             info.is_processing = true;
-                            info.current_tool_name = Some(name.clone());
+                            info.current_tool_name = Some(name);
                         }
-                        ServerEvent::ToolDone { .. } => {
+                        ConnectionActivityUpdate::ToolDone => {
                             info.current_tool_name = None;
                         }
-                        ServerEvent::Done { .. }
-                        | ServerEvent::Error { .. }
-                        | ServerEvent::Interrupted => {
+                        ConnectionActivityUpdate::Finished => {
                             info.is_processing = false;
                             info.current_tool_name = None;
                         }
-                        _ => {}
                     }
                 }
             }
@@ -1784,6 +1832,13 @@ pub(super) async fn handle_client(
                 {
                     processing_fallback = Some(fallback);
                 }
+                if !client_is_processing {
+                    let mut connections = client_connections.write().await;
+                    if let Some(info) = connections.get_mut(&client_connection_id) {
+                        info.is_processing = false;
+                        info.current_tool_name = None;
+                    }
+                }
                 // Other windows attached to this session only see the turn's
                 // stream events, never the message that started it. Tell them
                 // so the prompt (or auto-poke notice) shows up everywhere.
@@ -2023,7 +2078,22 @@ pub(super) async fn handle_client(
                 }
 
                 let rewind_result = {
-                    let mut agent_guard = agent.lock().await;
+                    let mut agent_guard = match tokio::time::timeout(
+                        Duration::from_millis(100),
+                        agent.lock(),
+                    )
+                    .await
+                    {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            let _ = client_event_tx.send(ServerEvent::Error {
+                                id,
+                                message: "Cannot rewind while a turn is processing.".to_string(),
+                                retry_after_secs: None,
+                            });
+                            continue;
+                        }
+                    };
                     agent_guard.rewind_to_message(message_index)
                 };
 
@@ -2086,7 +2156,23 @@ pub(super) async fn handle_client(
                 }
 
                 let undo_result = {
-                    let mut agent_guard = agent.lock().await;
+                    let mut agent_guard = match tokio::time::timeout(
+                        Duration::from_millis(100),
+                        agent.lock(),
+                    )
+                    .await
+                    {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            let _ = client_event_tx.send(ServerEvent::Error {
+                                id,
+                                message: "Cannot undo rewind while a turn is processing."
+                                    .to_string(),
+                                retry_after_secs: None,
+                            });
+                            continue;
+                        }
+                    };
                     agent_guard.undo_rewind()
                 };
 
@@ -3039,6 +3125,7 @@ pub(super) async fn handle_client(
                     model,
                     session_id,
                     &agent,
+                    &swarm_members,
                     &client_event_tx,
                 );
             }
@@ -3346,8 +3433,7 @@ pub(super) async fn handle_client(
                         event_counter: &event_counter,
                         swarm_event_tx: &swarm_event_tx,
                     },
-                )
-                .await;
+                );
             }
 
             Request::AgentCapabilities { id } => {
@@ -3424,16 +3510,46 @@ pub(super) async fn handle_client(
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::RefreshModelList {
                         if !args.is_empty() { anyhow::bail!("This command accepts no arguments"); }
-                        tokio::time::timeout(
-                            Duration::from_secs(25),
-                            provider.refresh_model_catalog(),
-                        )
-                        .await
-                        .map_err(|_| anyhow::anyhow!("Timed out refreshing provider model catalog after 25s"))??;
-                        crate::bus::Bus::global().publish_models_updated();
-                        let guard = agent.try_lock().map_err(|_| anyhow::anyhow!("Catalog refreshed, but session is busy. Open the model picker after the turn."))?;
-                        let data = serde_json::json!({"refreshed": true, "models": guard.available_models_for_switching(), "routes": guard.model_routes()});
-                        return Ok((data, "Provider model catalog refreshed.".into()));
+                        let refresh_provider = Arc::clone(&provider);
+                        let refresh_agent_weak = Arc::downgrade(&agent);
+                        let refresh_tx = client_event_tx.clone();
+                        let refresh_command = command.clone();
+                        tokio::spawn(async move {
+                            let outcome: anyhow::Result<(serde_json::Value, String)> = async {
+                                tokio::time::timeout(
+                                    Duration::from_secs(25),
+                                    refresh_provider.refresh_model_catalog(),
+                                )
+                                .await
+                                .map_err(|_| anyhow::anyhow!("Timed out refreshing provider model catalog after 25s"))??;
+                                crate::bus::Bus::global().publish_models_updated();
+                                let Some(agent_arc) = refresh_agent_weak.upgrade() else {
+                                    anyhow::bail!("Catalog refreshed, but session closed before reading model routes.");
+                                };
+                                let guard = agent_arc.try_lock().map_err(|_| anyhow::anyhow!("Catalog refreshed, but session is busy. Open the model picker after the turn."))?;
+                                let data = serde_json::json!({"refreshed": true, "models": guard.available_models_for_switching(), "routes": guard.model_routes()});
+                                Ok((data, "Provider model catalog refreshed.".into()))
+                            }
+                            .await;
+                            match outcome {
+                                Ok((data, message)) => {
+                                    let _ = refresh_tx.send(ServerEvent::RuntimeCommandResult {
+                                        id,
+                                        command: refresh_command,
+                                        data,
+                                        message,
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = refresh_tx.send(ServerEvent::Error {
+                                        id,
+                                        message: error.to_string(),
+                                        retry_after_secs: None,
+                                    });
+                                }
+                            }
+                        });
+                        return Ok((serde_json::Value::Null, String::new()));
                     }
                     if parsed == rayucode_harness_api::RuntimeCommand::Swarm {
                         let first_arg = args.first().map(|a| a.to_ascii_lowercase());
@@ -3576,6 +3692,13 @@ pub(super) async fn handle_client(
                                 },
                             ).await {
                                 processing_fallback = Some(fallback);
+                            }
+                            if !client_is_processing {
+                                let mut connections = client_connections.write().await;
+                                if let Some(info) = connections.get_mut(&client_connection_id) {
+                                    info.is_processing = false;
+                                    info.current_tool_name = None;
+                                }
                             }
                         }
                     },
@@ -3956,7 +4079,7 @@ pub(super) async fn handle_client(
             } => {
                 let spawn_mode = match parse_swarm_spawn_mode(id, spawn_mode, &client_event_tx) {
                     Some(spawn_mode) => spawn_mode,
-                    None => return Ok(()),
+                    None => continue,
                 };
                 handle_comm_spawn(
                     id,

@@ -3154,20 +3154,16 @@ async fn run_single_message_command_ndjson(
     let session_id = agent.session_id().to_string();
     let provider_name =
         run_report_provider_name(provider.as_ref(), agent.session_provider_key().as_deref());
-    let mut stdout = std::io::stdout().lock();
     let mut state = NdjsonRunState {
         session_id: Some(session_id.clone()),
         ..NdjsonRunState::default()
     };
-    write_json_line(
-        &mut stdout,
-        &serde_json::json!({
-            "type": "start",
-            "session_id": session_id,
-            "provider": provider_name,
-            "model": provider.model(),
-        }),
-    )?;
+    write_stdout_json_line(&serde_json::json!({
+        "type": "start",
+        "session_id": session_id,
+        "provider": provider_name,
+        "model": provider.model(),
+    }))?;
 
     let max_turns = run_command_auto_poke_max_turns();
     let mut next_message = message.to_string();
@@ -3192,14 +3188,14 @@ async fn run_single_message_command_ndjson(
                     }
                     event = event_rx.recv() => {
                         match event {
-                            Some(event) => emit_ndjson_event(&mut stdout, &mut state, event)?,
+                            Some(event) => emit_ndjson_event_stdout(&mut state, event)?,
                             None => break,
                         }
                     }
                 }
                 if run_result.is_some() {
                     while let Ok(event) = event_rx.try_recv() {
-                        emit_ndjson_event(&mut stdout, &mut state, event)?;
+                        emit_ndjson_event_stdout(&mut state, event)?;
                     }
                     break;
                 }
@@ -3227,45 +3223,36 @@ async fn run_single_message_command_ndjson(
             incomplete_budget = crate::todo::IncompleteTodoBudget::default();
             gate_digest_delivered = false;
             next_message = message;
-            write_json_line(
-                &mut stdout,
-                &serde_json::json!({
-                    "type": "auto_poke_dependency_resolved",
-                    "session_id": session_id,
-                    "message": next_message,
-                }),
-            )?;
+            write_stdout_json_line(&serde_json::json!({
+                "type": "auto_poke_dependency_resolved",
+                "session_id": session_id,
+                "message": next_message,
+            }))?;
             continue;
         }
         if todos.iter().any(crate::todo::is_incomplete_todo)
             && !actionable_todos.iter().any(crate::todo::is_incomplete_todo)
         {
-            write_json_line(
-                &mut stdout,
-                &serde_json::json!({
-                    "type": "auto_poke_stopped",
-                    "session_id": session_id,
-                    "reason": if run_completely_blocked_notice(&todos).is_some() { "completely_blocked" } else if run_external_blocker_notice(&todos).is_some() { "external_blocker" } else { "turn_limit" },
-                    "message": run_blocked_notice(&todos),
-                    "completely_blocked": todos.iter().any(crate::todo::todo_completely_blocked),
-                    "waiting_on_background": todos.iter().any(|todo| !todo.waiting_on.is_empty()),
-                    "waiting_on_external": todos.iter().any(crate::todo::todo_has_external_blocker),
-                    "max_turns": max_turns,
-                }),
-            )?;
+            write_stdout_json_line(&serde_json::json!({
+                "type": "auto_poke_stopped",
+                "session_id": session_id,
+                "reason": if run_completely_blocked_notice(&todos).is_some() { "completely_blocked" } else if run_external_blocker_notice(&todos).is_some() { "external_blocker" } else { "turn_limit" },
+                "message": run_blocked_notice(&todos),
+                "completely_blocked": todos.iter().any(crate::todo::todo_completely_blocked),
+                "waiting_on_background": todos.iter().any(|todo| !todo.waiting_on.is_empty()),
+                "waiting_on_external": todos.iter().any(crate::todo::todo_has_external_blocker),
+                "max_turns": max_turns,
+            }))?;
             break;
         }
         if !incomplete_budget.allow_follow_up(&actionable_todos) {
-            writeln!(
-                stdout,
-                "{}",
-                serde_json::json!({
-                    "type": "auto_poke_stopped",
-                    "reason": "unchanged_todos",
-                    "max_attempts": crate::todo::INCOMPLETE_TODO_MAX_ATTEMPTS,
-                    "incomplete_todos": todos.iter().filter(|todo| crate::todo::is_incomplete_todo(todo)).count(),
-                })
-            )?;
+            write_stdout_json_line(&serde_json::json!({
+                "type": "auto_poke_stopped",
+                "session_id": session_id,
+                "reason": "unchanged_todos",
+                "max_attempts": crate::todo::INCOMPLETE_TODO_MAX_ATTEMPTS,
+                "incomplete_todos": todos.iter().filter(|todo| crate::todo::is_incomplete_todo(todo)).count(),
+            }))?;
             break;
         }
         let gate_digest = take_run_gate_digest_if_turn_ended(
@@ -3283,17 +3270,22 @@ async fn run_single_message_command_ndjson(
             Some(RunAutoPokeFollowUp::GateDigest { message }) => {
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
-                        eprintln!(
-                            "We stopped poking after {max_turns} turn(s); some quality-review points are still open."
-                        );
+                        write_stdout_json_line(&serde_json::json!({
+                            "type": "auto_poke_stopped",
+                            "session_id": session_id,
+                            "reason": "gate_digest_turn_limit",
+                            "max_turns": max_turns,
+                        }))?;
                     }
                     break;
                 }
                 gate_digest_delivered = true;
                 next_message = message;
-                eprintln!(
-                    "We asked the agent to double-check this turn's weak points. Set RAYU_RUN_AUTO_POKE=0 to disable."
-                );
+                write_stdout_json_line(&serde_json::json!({
+                    "type": "auto_poke_gate_digest",
+                    "session_id": session_id,
+                    "message": next_message,
+                }))?;
                 continue;
             }
             Some(RunAutoPokeFollowUp::ConfidenceSummary {
@@ -3303,30 +3295,24 @@ async fn run_single_message_command_ndjson(
             }) => {
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
-                        write_json_line(
-                            &mut stdout,
-                            &serde_json::json!({
-                                "type": "auto_poke_stopped",
-                                "session_id": session_id,
-                                "completion_confidence_needs_validation": true,
-                                "max_turns": max_turns,
-                            }),
-                        )?;
+                        write_stdout_json_line(&serde_json::json!({
+                            "type": "auto_poke_stopped",
+                            "session_id": session_id,
+                            "completion_confidence_needs_validation": true,
+                            "max_turns": max_turns,
+                        }))?;
                     }
                     break;
                 }
                 confidence_spike_challenged |= confidence_spike_challenge;
                 next_message = message;
-                write_json_line(
-                    &mut stdout,
-                    &serde_json::json!({
-                        "type": "auto_poke_confidence_summary",
-                        "session_id": session_id,
-                        "todos": total_todos,
-                        "confidence_spike_challenge": confidence_spike_challenge,
-                        "message": next_message,
-                    }),
-                )?;
+                write_stdout_json_line(&serde_json::json!({
+                    "type": "auto_poke_confidence_summary",
+                    "session_id": session_id,
+                    "todos": total_todos,
+                    "confidence_spike_challenge": confidence_spike_challenge,
+                    "message": next_message,
+                }))?;
                 continue;
             }
             Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
@@ -3334,28 +3320,22 @@ async fn run_single_message_command_ndjson(
                 gate_digest_delivered = false;
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
-                        write_json_line(
-                            &mut stdout,
-                            &serde_json::json!({
-                                "type": "auto_poke_stopped",
-                                "session_id": session_id,
-                                "incomplete_todos": count,
-                                "max_turns": max_turns,
-                            }),
-                        )?;
+                        write_stdout_json_line(&serde_json::json!({
+                            "type": "auto_poke_stopped",
+                            "session_id": session_id,
+                            "incomplete_todos": count,
+                            "max_turns": max_turns,
+                        }))?;
                     }
                     break;
                 }
                 next_message = message;
-                write_json_line(
-                    &mut stdout,
-                    &serde_json::json!({
-                        "type": "auto_poke",
-                        "session_id": session_id,
-                        "incomplete_todos": count,
-                        "message": next_message,
-                    }),
-                )?;
+                write_stdout_json_line(&serde_json::json!({
+                    "type": "auto_poke",
+                    "session_id": session_id,
+                    "incomplete_todos": count,
+                    "message": next_message,
+                }))?;
             }
             None => break,
         }
@@ -3365,20 +3345,17 @@ async fn run_single_message_command_ndjson(
         Ok(()) => {
             let done_payload =
                 ndjson_done_payload(&state, &session_id, &provider_name, &provider.model());
-            write_json_line(&mut stdout, &done_payload)?;
+            write_stdout_json_line(&done_payload)?;
             Ok(())
         }
         Err(err) => {
-            write_json_line(
-                &mut stdout,
-                &serde_json::json!({
-                    "type": "error",
-                    "session_id": session_id,
-                    "provider": provider_name,
-                    "model": provider.model(),
-                    "message": format!("{err:#}"),
-                }),
-            )?;
+            write_stdout_json_line(&serde_json::json!({
+                "type": "error",
+                "session_id": session_id,
+                "provider": provider_name,
+                "model": provider.model(),
+                "message": format!("{err:#}"),
+            }))?;
             Err(err)
         }
     }
@@ -3661,6 +3638,19 @@ fn emit_ndjson_event(
         ServerEvent::Ack { .. } | ServerEvent::Done { .. } | ServerEvent::Pong { .. } => Ok(()),
         _ => Ok(()),
     }
+}
+
+fn write_stdout_json_line(value: &impl Serialize) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    write_json_line(&mut stdout, value)
+}
+
+fn emit_ndjson_event_stdout(
+    state: &mut NdjsonRunState,
+    event: crate::protocol::ServerEvent,
+) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    emit_ndjson_event(&mut stdout, state, event)
 }
 
 fn write_json_line(stdout: &mut impl Write, value: &impl Serialize) -> Result<()> {

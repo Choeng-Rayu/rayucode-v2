@@ -224,7 +224,7 @@ export function MemoryGraphTab() {
               onChange={(e) => setNewFactTagsText(e.target.value)}
               placeholder="Tags (comma-separated, e.g. rust, daemon)"
               aria-label="Memory tags"
-              className="h-7 min-w-0 flex-1 rounded-md border border-control-border bg-inset px-2.5 font-mono text-xs text-ink focus:border-ring focus:outline-none sm:min-w-[200px] sm:flex-none"
+              className="h-7 min-w-0 flex-1 rounded-md border border-control-border bg-inset px-2.5 font-mono text-xs text-ink focus:border-ring focus:outline-none @min-[480px]/plugins-stage:min-w-[200px] @min-[480px]/plugins-stage:flex-none"
             />
 
             <div className="flex items-center gap-2">
@@ -254,7 +254,7 @@ export function MemoryGraphTab() {
       {/* Search & Scope / Tag Filter Bar */}
       <div className="flex flex-col gap-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi sm:min-w-[220px]">
+          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi @min-[480px]/plugins-stage:min-w-[220px]">
             <Search
               className="size-3.5 shrink-0 text-muted-ink"
               aria-hidden="true"
@@ -280,7 +280,7 @@ export function MemoryGraphTab() {
             )}
           </label>
 
-          <div className="inline-flex items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
+          <div className="flex max-w-full flex-wrap items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
             {(["all", "project", "global"] as const).map((sc) => (
               <button
                 key={sc}

@@ -133,14 +133,14 @@ export function SpawnWorkerBar({
           }}
           aria-label="Worker name"
           placeholder="worker-2"
-          className="h-[32px] w-[138px] shrink-0 rounded-[8px] border border-premium bg-inset px-2.5 font-mono text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none"
+          className="h-[32px] w-full max-w-full rounded-[8px] border border-premium bg-inset px-2.5 font-mono text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none @min-[420px]/swarm:w-[138px] @min-[420px]/swarm:shrink-0"
         />
 
         <Select value={role} onValueChange={setRole}>
           <SelectTrigger
             aria-label="Worker role"
             data-testid="spawn-worker-role"
-            className="h-[32px] min-w-[124px] rounded-[8px] text-xs"
+            className="h-[32px] min-w-0 max-w-full rounded-[8px] text-xs @min-[420px]/swarm:min-w-[124px]"
           >
             <SelectValue placeholder="Role" />
           </SelectTrigger>
@@ -157,7 +157,7 @@ export function SpawnWorkerBar({
           <SelectTrigger
             aria-label="Model"
             data-testid="spawn-worker-model"
-            className="h-[32px] min-w-[152px] rounded-[8px] font-mono text-xs"
+            className="h-[32px] min-w-0 max-w-full rounded-[8px] font-mono text-xs @min-[420px]/swarm:min-w-[152px]"
           >
             <SelectValue placeholder="Model" />
           </SelectTrigger>
@@ -202,7 +202,7 @@ export function SpawnWorkerBar({
           }}
           aria-label="Worker task"
           placeholder="Assign worker brief & owned files, e.g. Port SwarmMissionControl and add Vitest tests"
-          className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-premium bg-inset px-3 text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none sm:min-w-[210px]"
+          className="h-[32px] min-w-0 flex-1 rounded-[8px] border border-premium bg-inset px-3 text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none @min-[480px]/swarm:min-w-[210px]"
         />
 
         {onCancel && (

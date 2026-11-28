@@ -63,9 +63,12 @@ function AutomationsViewContent({
   return (
     <div
       data-testid="automations-view"
-      className={cn("h-full w-full overflow-y-auto bg-canvas", className)}
+      className={cn(
+        "h-full w-full overflow-x-hidden overflow-y-auto bg-canvas @container/automations",
+        className,
+      )}
     >
-      <div className="mx-auto flex w-full max-w-[1040px] flex-col gap-5 px-4 pt-5 pb-8 @min-[640px]/app:px-[26px]">
+      <div className="mx-auto flex w-full max-w-[1040px] flex-col gap-5 px-3.5 pt-5 pb-8 @min-[520px]/automations:px-[26px]">
         {/* Page Header */}
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>

@@ -287,7 +287,7 @@ export function AgentInspector({
               <SelectTrigger
                 aria-label="Switch worker model"
                 data-testid="inspector-model-select"
-                className="h-6 min-w-[132px] rounded-md border-hairline bg-inset px-2 font-mono text-[11px]"
+                className="h-6 min-w-0 max-w-full rounded-md border-hairline bg-inset px-2 font-mono text-[11px] @min-[360px]/swarm:min-w-[132px]"
               >
                 <SelectValue placeholder="Model" />
               </SelectTrigger>
@@ -312,7 +312,7 @@ export function AgentInspector({
           )}
         </div>
 
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
           {onOpenChat && (
             <Button
               type="button"
@@ -397,10 +397,10 @@ export function AgentInspector({
               data-slot="owned-file-pill"
               data-testid={`owned-file-${basenameOf(filePath)}`}
               onClick={() => onOpenFile?.(filePath, 1)}
-              className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-ink transition-colors hover:border-brand/50 hover:bg-brand-softer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-ink transition-colors hover:border-brand/50 hover:bg-brand-softer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <TechFileBadge path={filePath} />
-              <span>{basenameOf(filePath)}</span>
+              <span className="truncate">{basenameOf(filePath)}</span>
             </button>
           ))}
         </div>
@@ -486,10 +486,10 @@ export function AgentInspector({
                     type="button"
                     data-slot="read-file-pill"
                     onClick={() => onOpenFile?.(filePath, 1)}
-                    className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text transition-colors hover:border-brand/50"
+                    className="inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-md border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text transition-colors hover:border-brand/50"
                   >
                     <TechFileBadge path={filePath} />
-                    <span>{filePath}</span>
+                    <span className="truncate">{filePath}</span>
                   </button>
                 ))}
               </div>
@@ -545,7 +545,7 @@ export function AgentInspector({
         onSubmit={(e) => void handleDmSubmit(e)}
         className="flex flex-col gap-1.5 border-t border-hairline bg-chrome px-3.5 py-2.5"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <input
             ref={dmInputRef}
             data-testid="agent-dm-input"
@@ -561,7 +561,7 @@ export function AgentInspector({
             aria-label={`Message @${agent.label} directly`}
             aria-invalid={Boolean(dmError)}
             className={cn(
-              "h-8 flex-1 rounded-[9px] border bg-inset px-3 text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none",
+              "h-8 min-w-0 flex-1 rounded-[9px] border bg-inset px-3 text-[12.5px] text-ink placeholder:text-muted-ink focus:border-brand focus:outline-none",
               dmError ? "border-danger" : "border-premium",
             )}
           />

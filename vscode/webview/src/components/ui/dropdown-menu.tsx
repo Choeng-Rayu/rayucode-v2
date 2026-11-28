@@ -40,7 +40,7 @@ function DropdownMenuContent({
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         className={cn(
-          "rayu-animate-pop z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[220px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg border border-premium-hi bg-popover-solid p-1.5 text-ink shadow-popover",
+          "rayu-animate-pop z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[min(220px,calc(100vw-16px))] max-w-[calc(100vw-16px)] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg border border-premium-hi bg-popover-solid p-1.5 text-ink shadow-popover",
           className,
         )}
         {...props}

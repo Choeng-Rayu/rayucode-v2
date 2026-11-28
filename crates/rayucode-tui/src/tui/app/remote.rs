@@ -1368,6 +1368,18 @@ pub(super) fn handle_disconnect(
 ) {
     app.question_dialog = None;
     app.reset_activity_dashboard_on_disconnect();
+    app.remote_model_switch_in_flight = false;
+    app.pending_agent_model_request_id = None;
+    app.pending_remote_file_change_request_ids.clear();
+    app.pending_remote_rewind_notice = None;
+    app.pending_split_request = false;
+    app.pending_split_started_at = None;
+    app.pending_split_startup_message = None;
+    app.pending_split_parent_session_id = None;
+    app.pending_split_prompt = None;
+    app.pending_split_model_override = None;
+    app.pending_split_provider_key_override = None;
+    app.pending_split_label = None;
     // The daemon may have applied the switch, but the acknowledgement was
     // lost. Never wait on an old connection's request ID or blindly resend.
     if app.pending_automatic_failover_request_id.is_some() {
@@ -1411,6 +1423,9 @@ pub(super) fn handle_disconnect(
     app.remote_resume_activity = None;
     let ops = app.stream_buffer.flush();
     app.apply_stream_ops(ops);
+    app.deferred_stream_done_id = None;
+    app.deferred_stream_done_identity = None;
+    app.processing_started = None;
     if !app.streaming.streaming_text.is_empty() {
         let content = app.take_streaming_text();
         let content = app.collapse_reasoning_for_commit(content);

@@ -290,7 +290,7 @@ export function RuntimeDoctorSection({
           </div>
         )}
 
-        <div className="mt-3.5 grid grid-cols-2 gap-3 border-t border-hairline-soft pt-3 text-xs sm:grid-cols-4">
+        <div className="mt-3.5 grid grid-cols-1 gap-3 border-t border-hairline-soft pt-3 text-xs @min-[300px]/settings-stage:grid-cols-2 @min-[540px]/settings-stage:grid-cols-4">
           <div>
             <div className="text-[11px] text-muted-ink">Daemon version</div>
             <div className="mt-0.5 font-mono text-ink">
@@ -363,17 +363,17 @@ export function RuntimeDoctorSection({
       {/* Socket Path, Binary Path, Auto-Start & Transport */}
       <div className="rayu-card-bevel divide-y divide-hairline overflow-hidden rounded-xl border border-premium bg-pane text-xs">
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <label htmlFor="runtime-socket-path" className="font-medium text-ink">
+          <label htmlFor="runtime-socket-path" className="min-w-0 flex-1 font-medium text-ink">
             Daemon Unix socket path (rayucode.apiSocketPath)
           </label>
-          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <div className="flex w-full min-w-0 items-center gap-2 @min-[520px]/settings-stage:w-auto">
             <input
               id="runtime-socket-path"
               type="text"
               value={socketPath}
               onChange={(e) => setSocketPath(e.target.value)}
               data-testid="runtime-socket-path-input"
-              className="h-7 min-w-0 flex-1 rounded border border-control-border bg-inset px-2 font-mono text-xs text-ink sm:w-[250px] sm:flex-none"
+              className="h-7 min-w-0 flex-1 rounded border border-control-border bg-inset px-2 font-mono text-xs text-ink @min-[520px]/settings-stage:w-[250px] @min-[520px]/settings-stage:flex-none"
             />
             <Button
               type="button"
@@ -388,17 +388,17 @@ export function RuntimeDoctorSection({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <label htmlFor="runtime-binary-path" className="font-medium text-ink">
+          <label htmlFor="runtime-binary-path" className="min-w-0 flex-1 font-medium text-ink">
             Rayu binary path (rayucode.binaryPath)
           </label>
-          <div className="flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <div className="flex w-full min-w-0 items-center gap-2 @min-[520px]/settings-stage:w-auto">
             <input
               id="runtime-binary-path"
               type="text"
               value={binaryPath}
               onChange={(e) => setBinaryPath(e.target.value)}
               data-testid="runtime-binary-path-input"
-              className="h-7 min-w-0 flex-1 rounded border border-control-border bg-inset px-2 font-mono text-xs text-ink sm:w-[250px] sm:flex-none"
+              className="h-7 min-w-0 flex-1 rounded border border-control-border bg-inset px-2 font-mono text-xs text-ink @min-[520px]/settings-stage:w-[250px] @min-[520px]/settings-stage:flex-none"
             />
             <Button
               type="button"
@@ -413,7 +413,7 @@ export function RuntimeDoctorSection({
         </div>
 
         <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="font-medium text-ink">
               Auto-start shared daemon (rayucode.autoStartBridge)
             </div>
@@ -432,7 +432,7 @@ export function RuntimeDoctorSection({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="font-medium text-ink">
               Provider Transport (RuntimeCommand::Transport)
             </div>
@@ -451,7 +451,7 @@ export function RuntimeDoctorSection({
             <SelectTrigger
               aria-label="Provider transport"
               data-testid="runtime-transport-select"
-              className="w-[150px]"
+              className="w-full @min-[420px]/settings-stage:w-[150px]"
             >
               <SelectValue />
             </SelectTrigger>
@@ -477,7 +477,7 @@ export function RuntimeDoctorSection({
             </h2>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="default"
@@ -526,9 +526,9 @@ export function RuntimeDoctorSection({
               <div
                 key={chk.id}
                 data-testid={`doctor-check-${chk.id}`}
-                className="flex items-center justify-between gap-3 px-4 py-3 text-xs"
+                className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs"
               >
-                <div className="flex items-center gap-2.5">
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
                   {chk.status === "pass" ? (
                     <CheckCircle2 className="size-4 shrink-0 text-brand-text" />
                   ) : chk.status === "warn" ? (
@@ -536,14 +536,14 @@ export function RuntimeDoctorSection({
                   ) : (
                     <XCircle className="size-4 shrink-0 text-danger" />
                   )}
-                  <div>
+                  <div className="min-w-0">
                     <div className="font-medium text-ink">{chk.label}</div>
                     <div className="text-[11px] text-muted-ink">
                       {chk.detail}
                     </div>
                   </div>
                 </div>
-                <span className="rounded-full border border-hairline bg-inset px-2 py-0.5 font-mono text-[10px] uppercase text-muted-ink">
+                <span className="shrink-0 rounded-full border border-hairline bg-inset px-2 py-0.5 font-mono text-[10px] uppercase text-muted-ink">
                   {chk.scope} · {chk.status}
                 </span>
               </div>
@@ -571,7 +571,7 @@ export function RuntimeDoctorSection({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
               variant="ghost"
@@ -637,7 +637,7 @@ export function RuntimeDoctorSection({
             )}
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
               type="button"
               variant="ghost"
@@ -671,7 +671,7 @@ export function RuntimeDoctorSection({
               data-testid={`telemetry-row-${cat.id}`}
               className="flex items-center justify-between gap-4 px-4 py-3 text-xs"
             >
-              <div>
+              <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">{cat.label}</div>
                 <div className="mt-0.5 text-muted-ink">{cat.description}</div>
               </div>

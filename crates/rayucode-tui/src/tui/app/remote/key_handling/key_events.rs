@@ -324,9 +324,16 @@ pub(super) async fn handle_remote_key_internal(
                         app_mod::commands::poke_triggered_display_message(incomplete_count),
                     ));
 
-                    let _ =
-                        begin_remote_send(app, remote, poke_msg, vec![], true, None, true, 0).await;
-                    app.visible_turn_started = Some(Instant::now());
+                    if super::send_remote_command_prompt(
+                        app,
+                        remote,
+                        poke_msg,
+                        "send poke message",
+                    )
+                    .await?
+                    {
+                        app.visible_turn_started = Some(Instant::now());
+                    }
                 }
             }
         }
