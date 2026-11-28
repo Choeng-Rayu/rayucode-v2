@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+import { requireOperation } from "@/lib/operation-result";
 import {
   queryOptions,
   useMutation,
@@ -210,15 +212,41 @@ export function useComposerModelCatalog(sessionId?: string | null) {
 
   const refreshMutation = useMutation({
     mutationFn: () =>
-      callRpc("settings.models.refresh", {
+      requireOperation(callRpc("settings.models.refresh", {
         sessionId: sessionId ?? undefined,
-      }),
+      })),
     onSuccess: (res) => {
+      const isStaleResult = res.sources?.hosted === "stale";
+      const resultMessage =
+        res.message ??
+        (isStaleResult
+          ? "Showing last known models — refresh failed"
+          : undefined);
+      if (resultMessage) toast.warning(resultMessage);
       if (res.routes && res.routes.length > 0) {
         queryClient.setQueryData(
           ["composer", "model-settings", sessionId ?? "global"] as const,
           (prev: Record<string, unknown> | undefined) =>
-            prev ? { ...prev, routes: res.routes } : prev,
+            prev
+              ? {
+                  ...prev,
+                  routes: res.routes,
+                  stale: isStaleResult,
+                  message: isStaleResult ? resultMessage : undefined,
+                }
+              : prev,
+        );
+      } else if (isStaleResult) {
+        queryClient.setQueryData(
+          ["composer", "model-settings", sessionId ?? "global"] as const,
+          (prev: Record<string, unknown> | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  stale: true,
+                  message: resultMessage,
+                }
+              : prev,
         );
       } else {
         void queryClient.invalidateQueries({
@@ -231,6 +259,23 @@ export function useComposerModelCatalog(sessionId?: string | null) {
       void queryClient.invalidateQueries({
         queryKey: ["settings", "models"],
       });
+    },
+    onError: (err) => {
+      const message =
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Showing last known models — refresh failed";
+      queryClient.setQueryData(
+        ["composer", "model-settings", sessionId ?? "global"] as const,
+        (prev: Record<string, unknown> | undefined) =>
+          prev
+            ? {
+                ...prev,
+                stale: true,
+                message,
+              }
+            : prev,
+      );
     },
   });
 
@@ -436,6 +481,15 @@ export function useComposerModelCatalog(sessionId?: string | null) {
   const cacheTtl: CacheTtl =
     modelSettingsQuery.data?.cacheTtl ?? DEFAULT_CACHE_TTL;
 
+  const rawModelSettings = modelSettingsQuery.data as
+    | (NonNullable<typeof modelSettingsQuery.data> & {
+        stale?: boolean;
+        message?: string;
+      })
+    | undefined;
+  const stale = Boolean(rawModelSettings?.stale);
+  const catalogMessage = rawModelSettings?.message;
+
   return {
     models,
     defaultModel: matchedDefault,
@@ -444,6 +498,8 @@ export function useComposerModelCatalog(sessionId?: string | null) {
     defaultEffort,
     serviceTier,
     cacheTtl,
+    stale,
+    catalogMessage,
     isRefreshing: refreshMutation.isPending,
     refreshModels: () => refreshMutation.mutateAsync(),
     setServiceTier: (tier: ServiceTier) => setFastMutation.mutateAsync(tier),

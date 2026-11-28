@@ -120,23 +120,96 @@ export function App() {
 
   // Handle host commands and query invalidations pushed from Extension Host.
   React.useEffect(() => {
+    const MODEL_AND_PROVIDER_KEYS = [
+      ["composer", "model-settings"],
+      ["composer", "providers"],
+      ["settings", "models"],
+      ["settings", "providers"],
+      ["agents", "models"],
+      ["models"],
+    ] as const;
+
     const invalidateModelAndProviderQueries = () => {
-      void queryClient.invalidateQueries({
-        queryKey: ["composer", "model-settings"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["composer", "providers"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["settings", "models"],
-      });
-      void queryClient.invalidateQueries({
-        queryKey: ["settings", "providers"],
-      });
-      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      for (const queryKey of MODEL_AND_PROVIDER_KEYS) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
     };
 
-    return onHostMessage((msg: HostToWebviewMessage) => {
+    let catalogFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingCatalogGlobal = false;
+    const pendingCatalogSessions = new Set<string>();
+
+    const flushCatalogInvalidation = () => {
+      catalogFlushTimer = null;
+      const isGlobal = pendingCatalogGlobal;
+      const sessionIds = [...pendingCatalogSessions];
+      pendingCatalogGlobal = false;
+      pendingCatalogSessions.clear();
+
+      if (isGlobal || sessionIds.length === 0) {
+        invalidateModelAndProviderQueries();
+        return;
+      }
+
+      for (const prefix of [
+        ["composer", "model-settings"],
+        ["settings", "models"],
+        ["agents", "models"],
+        ["models"],
+      ] as const) {
+        void queryClient.invalidateQueries({
+          queryKey: prefix,
+          predicate: (query) => {
+            const session = query.queryKey.at(-1);
+            return (
+              session === "global" ||
+              session === prefix.at(-1) ||
+              (typeof session === "string" && sessionIds.includes(session))
+            );
+          },
+        });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["composer", "providers"] });
+      void queryClient.invalidateQueries({ queryKey: ["settings", "providers"] });
+    };
+
+    const scheduleCatalogInvalidation = (
+      targetSessionIds: readonly string[],
+      isGlobal: boolean,
+    ) => {
+      const activeSid = useAppStore.getState().activeSessionId;
+      if (!isGlobal) {
+        const hasMatchingActive = Boolean(
+          activeSid && targetSessionIds.includes(activeSid),
+        );
+        const hasGlobalToken = targetSessionIds.includes("global");
+        if (activeSid && !hasMatchingActive && !hasGlobalToken) {
+          return;
+        }
+        if (hasGlobalToken) {
+          pendingCatalogGlobal = true;
+        } else {
+          for (const sid of targetSessionIds) {
+            if (sid) pendingCatalogSessions.add(sid);
+          }
+        }
+      } else {
+        pendingCatalogGlobal = true;
+      }
+
+      if (catalogFlushTimer !== null) return;
+      catalogFlushTimer = setTimeout(flushCatalogInvalidation, 16);
+    };
+
+    const unsubscribe = onHostMessage((msg: HostToWebviewMessage) => {
+      const rawMsg = msg as
+        | HostToWebviewMessage
+        | {
+            type: "rayucode.catalog.changed";
+            sessionId?: string;
+            sessionIds?: string[];
+            credentialsChanged?: boolean;
+          };
       if (msg.type === "rayucode.host.init") {
         void queryClient.invalidateQueries({ queryKey: ["sessions"] });
         void queryClient.invalidateQueries({ queryKey: ["processes"] });
@@ -180,21 +253,29 @@ export function App() {
         }
         return;
       }
-      if (msg.type === "rayucode.models.changed") {
-        if (msg.credentialsChanged || msg.sessionIds.length === 0) {
-          invalidateModelAndProviderQueries();
-        } else {
-          for (const prefix of [["composer", "model-settings"], ["settings", "models"], ["models"]]) {
-            void queryClient.invalidateQueries({
-              queryKey: prefix,
-              predicate: (query) => {
-                const session = query.queryKey.at(-1);
-                return session === "global" || session === prefix.at(-1) ||
-                  (typeof session === "string" && msg.sessionIds.includes(session));
-              },
-            });
-          }
-        }
+      if (
+        rawMsg.type === "rayucode.catalog.changed" ||
+        rawMsg.type === "rayucode.models.changed"
+      ) {
+        const singleSession =
+          "sessionId" in rawMsg && typeof rawMsg.sessionId === "string"
+            ? rawMsg.sessionId.trim()
+            : "";
+        const listSessions =
+          "sessionIds" in rawMsg && Array.isArray(rawMsg.sessionIds)
+            ? rawMsg.sessionIds.filter(
+                (id): id is string => typeof id === "string" && id.trim().length > 0,
+              )
+            : [];
+        const ids = [
+          ...listSessions,
+          ...(singleSession ? [singleSession] : []),
+        ];
+        const isGlobal =
+          Boolean(rawMsg.credentialsChanged) ||
+          ids.length === 0 ||
+          ids.includes("global");
+        scheduleCatalogInvalidation(ids, isGlobal);
         return;
       }
       if (msg.type === "rayucode.config.changed") {
@@ -252,6 +333,14 @@ export function App() {
         }
       }
     });
+
+    return () => {
+      if (catalogFlushTimer !== null) {
+        clearTimeout(catalogFlushTimer);
+        catalogFlushTimer = null;
+      }
+      unsubscribe();
+    };
   }, [
     openNewChatDraft,
     queryClient,

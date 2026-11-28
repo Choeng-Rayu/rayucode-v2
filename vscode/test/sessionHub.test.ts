@@ -92,6 +92,8 @@ class FakeRayucodeClient extends EventEmitter {
     forkOnConflict?: boolean;
   }> = [];
   readonly authNotifyCalls: string[] = [];
+  readonly setApiKeyCalls: Array<{ provider: string; apiKey: string }> = [];
+  readonly clearApiKeyCalls: string[] = [];
   readonly archiveSessionCalls: string[] = [];
   readonly restoreSessionCalls: string[] = [];
   throwTimeoutOnControl = false;
@@ -272,6 +274,14 @@ class FakeRayucodeClient extends EventEmitter {
 
   async notifyAuthChanged(provider: string): Promise<void> {
     this.authNotifyCalls.push(provider);
+  }
+
+  async setApiKey(provider: string, apiKey: string): Promise<void> {
+    this.setApiKeyCalls.push({ provider, apiKey });
+  }
+
+  async clearApiKey(provider: string): Promise<void> {
+    this.clearApiKeyCalls.push(provider);
   }
 
   async sendMessage(sessionId: string, content: string): Promise<void> {
@@ -2807,4 +2817,98 @@ test("StatusBarBridge formats negotiated protocol version and engine fallback wi
   }).join("\n");
   assert.match(tooltipNoVersion, /\*\*RayuCode\*\* \(engine\)/);
   assert.equal(tooltipNoVersion.includes("v1.14"), false);
+});
+
+test("SessionHubCore coalesces catalog invalidation bursts and emits rayucode.models.changed on auth/API key/logout mutations", async (t) => {
+  const tmpDir = createTempDir("rayu-vscode-hub-catalog-");
+  const wsPath = path.join(tmpDir, "repo-catalog");
+  fs.mkdirSync(wsPath, { recursive: true });
+  const registry = new WorkspaceRegistry({
+    filePath: path.join(tmpDir, "workspaces.json"),
+    enableWatch: false,
+  });
+
+  const sharedClient = new FakeRayucodeClient();
+  const bridge = new FakeBridgeManager({ sharedClient });
+  const { adapter } = createHostAdapter({
+    folders: [{ name: "repo-catalog", fsPath: wsPath }],
+  });
+  const hub = new SessionHubCore(adapter, bridge, {
+    workspaceRegistry: registry,
+  });
+
+  t.after(() => {
+    hub.dispose();
+    registry.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  await hub.waitUntilWorkspacesReady();
+
+  const eventsSurfaceA: Array<
+    Extract<HostToWebviewMessage, { type: "rayucode.models.changed" }>
+  > = [];
+  const eventsSurfaceB: Array<
+    Extract<HostToWebviewMessage, { type: "rayucode.models.changed" }>
+  > = [];
+  hub.registerSurface("surf-a", "sidebar", (msg) => {
+    if (msg.type === "rayucode.models.changed") eventsSurfaceA.push(msg);
+  });
+  hub.registerSurface("surf-b", "editorPanel", (msg) => {
+    if (msg.type === "rayucode.models.changed") eventsSurfaceB.push(msg);
+  });
+
+  // 1. Burst invalidations for a single session coalesce into one scoped broadcast
+  hub.notifyCatalogChanged("sess_1", false);
+  hub.notifyCatalogChanged("sess_1", false);
+  assert.equal(eventsSurfaceA.length, 0);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(eventsSurfaceA, [
+    { type: "rayucode.models.changed", sessionIds: ["sess_1"], credentialsChanged: false },
+  ]);
+  assert.deepEqual(eventsSurfaceB, eventsSurfaceA);
+
+  // 2. Multi-session burst widens to global (sessionIds: []) and merges credentialsChanged |= true
+  eventsSurfaceA.length = 0;
+  eventsSurfaceB.length = 0;
+  hub.notifyCatalogChanged("sess_1", false);
+  hub.notifyCatalogChanged("sess_2", true);
+  hub.notifyCatalogChanged("sess_1", false);
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(eventsSurfaceA, [
+    { type: "rayucode.models.changed", sessionIds: [], credentialsChanged: true },
+  ]);
+  assert.deepEqual(eventsSurfaceB, eventsSurfaceA);
+
+  // 3. Auth mutations (notifyDaemonAuthChanged, setDaemonApiKey, clearDaemonApiKey, logoutDaemonProvider) coalesce into credentialsChanged: true
+  await hub.attachSession("sess_auth");
+  eventsSurfaceA.length = 0;
+  eventsSurfaceB.length = 0;
+  await hub.notifyDaemonAuthChanged("rayu");
+  await hub.setDaemonApiKey("openai", "sk-test-123");
+  await hub.clearDaemonApiKey("openai");
+  await hub.logoutDaemonProvider("openai");
+  await new Promise((r) => setTimeout(r, 80));
+
+  assert.equal(sharedClient.authNotifyCalls.includes("rayu"), true);
+  assert.deepEqual(sharedClient.setApiKeyCalls, [
+    { provider: "openai", apiKey: "sk-test-123" },
+  ]);
+  assert.deepEqual(sharedClient.clearApiKeyCalls, ["openai"]);
+  assert.ok(
+    sharedClient.runtimeCommands.some(
+      (c) => c.command === "logout" && c.args[0] === "openai",
+    ),
+  );
+  assert.deepEqual(eventsSurfaceA, [
+    { type: "rayucode.models.changed", sessionIds: [], credentialsChanged: true },
+  ]);
+  assert.deepEqual(eventsSurfaceB, eventsSurfaceA);
+
+  // 4. dispose() cancels pending catalog timer cleanly
+  eventsSurfaceA.length = 0;
+  hub.notifyCatalogChanged("sess_disposed", true);
+  hub.dispose();
+  await new Promise((r) => setTimeout(r, 80));
+  assert.deepEqual(eventsSurfaceA, []);
 });

@@ -2109,12 +2109,15 @@ test("settings.models.get works with no active session (HomePage) and settings.m
       },
       getHostedModelCatalog: async (forceRefresh = false) => {
         fetchCalls.push(forceRefresh);
-        hostedModels = [...hostedModels, {
-          code: "rayu-quantum-2099",
-          label: "Rayu Quantum 2099",
-          description: "Arbitrary future model",
-        }];
-        return { models: [...hostedModels], status: "fresh" as const };
+        if (forceRefresh) {
+          hostedModels = [...hostedModels, {
+            code: "rayu-quantum-2099",
+            label: "Rayu Quantum 2099",
+            description: "Arbitrary future model",
+          }];
+          return { models: [...hostedModels], status: "fresh" as const };
+        }
+        return { models: [...hostedModels], status: "cached" as const };
       },
     },
     gitBridge: {
@@ -4415,4 +4418,223 @@ test("featureRouters propagates daemon/disconnect failures on read RPCs instead 
   const docNoProto = await customRouter.call("settings.doctor.run", { scope: "auth" });
   assert.equal(docNoProto.checks[0]?.detail, "Connected to Harness API socket.");
   assert.equal(docNoProto.checks[0]?.detail.includes("v1.14"), false);
+});
+
+test("settings.models.get exposes per-source status and stale flag; settings.models.refresh returns ok:false on stale+failed daemon and notifies catalog change", async () => {
+  const catalogNotifications: Array<{ sessionId?: string; credentialsChanged?: boolean }> = [];
+  let hostedStatus: "fresh" | "cached" | "stale" | "failed" | "unavailable" = "fresh";
+  let hostedModels = [
+    {
+      code: "future-zenith-9000",
+      label: "Future Zenith 9000",
+      description: "Arbitrary unlisted model",
+    },
+  ];
+  let failDaemonRefresh = false;
+  let failRuntimeInfo = false;
+
+  const daemonStatus: DaemonStatusView = {
+    state: "connected",
+    version: "rayu-harness-v1.16",
+    protocolVersion: "1.16",
+    capabilities: ["permissions"],
+  };
+
+  const router = createFeatureRouter({
+    bridgeManager: {
+      getStatus: () => daemonStatus,
+      ping: async () => ({ ok: true, latencyMs: 1 }),
+      reconnect: async () => daemonStatus,
+      restart: async () => daemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => "sess_catalog",
+      getActiveModel: () => undefined,
+      getActiveProvider: () => undefined,
+      getActivePermissionMode: () => "default",
+      getClient: async () =>
+        ({
+          getRuntimeInfo: async (sessionId: string) => {
+            if (failRuntimeInfo) {
+              throw new HarnessError("timeout", "runtime_info failed");
+            }
+            return {
+              server: "rayu-harness-v1.16",
+              protocolVersion: 1,
+              capabilities: ["permissions"],
+              healthy: true,
+              sessionId,
+              provider: "openai",
+              model: "gpt-5.4",
+              providers: ["openai"],
+              routes: [
+                {
+                  model: "gpt-5.4",
+                  provider: "openai",
+                  api_method: "responses",
+                  available: true,
+                  detail: "OpenAI Direct",
+                },
+              ],
+            };
+          },
+        }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+      listSessions: async () => ({ sessions: [] }),
+      createSession: async () => ({
+        sessionId: "sess_catalog",
+        title: "Catalog",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      attachSession: async (sessionId) => ({
+        sessionId,
+        title: "Catalog",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      runtimeCommand: async (command) => {
+        if (command === "refresh_model_list" && failDaemonRefresh) {
+          throw new HarnessError("internal", "daemon refresh failed");
+        }
+        return {
+          session_id: "sess_catalog",
+          command,
+          data: { routes: [] },
+          message: "ok",
+        };
+      },
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      notifyCatalogChanged: (sessionId, credentialsChanged) => {
+        catalogNotifications.push({ sessionId, credentialsChanged });
+      },
+    },
+    authManager: {
+      getAccountStatusSnapshot: () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        windows: [],
+      }),
+      getAccountStatus: async () => ({
+        signedIn: true,
+        authMethod: "oauth",
+        email: "dev@rayucode.com",
+        windows: [],
+      }),
+      startBrowserSignIn: async () => ({
+        ok: true,
+        authUrl: "https://rayucode.com/vscode-login",
+        state: { signedIn: true, authMethod: "oauth", windows: [] },
+      }),
+      cancelSignIn: () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signInWithApiKey: async () => ({ signedIn: true, authMethod: "apiKey", windows: [] }),
+      completeManualCallback: async () => ({ signedIn: true, authMethod: "oauth", windows: [] }),
+      signOut: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      clearSavedApiKeyOnly: async () => ({ signedIn: false, authMethod: "none", windows: [] }),
+      setBypassPacing: async (enabled) => ({ ok: true, enabled }),
+      getHostedModelCatalog: async () => ({
+        models: [...hostedModels],
+        status: hostedStatus,
+      }),
+    },
+    gitBridge: {
+      getStatus: async () => ({
+        branch: "main",
+        totalAdditions: 0,
+        totalDeletions: 0,
+        files: [],
+        stagedCount: 0,
+      }),
+      getDiff: async ({ path: p }) => ({
+        path: p,
+        originalContent: "",
+        modifiedContent: "",
+        unifiedDiff: "",
+        additions: 0,
+        deletions: 0,
+      }),
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: () => ({ ok: true }),
+      undo: async () => ({ ok: true }),
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_w, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(_k: string, d: T) => d,
+    updateGlobalState: async () => {},
+    getRuntimeSettings: () => ({
+      socketPath: "/tmp/rayu-test.sock",
+      binaryPath: "/usr/local/bin/rayu",
+      autoStart: true,
+    }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  });
+
+  // 1. Fresh get exposes future-zenith-9000 + sources + stale: false
+  const freshGet = await router.call("settings.models.get", { sessionId: "sess_catalog" });
+  const parsedFreshGet = RpcContractSchemas["settings.models.get"].result.parse(freshGet);
+  assert.deepEqual(parsedFreshGet.sources, { engine: "fresh", hosted: "fresh" });
+  assert.equal(parsedFreshGet.stale, false);
+  assert.equal(parsedFreshGet.message, undefined);
+  assert.ok(
+    parsedFreshGet.routes?.some((r) => r.modelSpec === "rayu:future-zenith-9000"),
+    "Discovered future model must appear in structured routes",
+  );
+
+  // 2. Stale hosted + failed engine get exposes stale: true, sources, and message while retaining last-good models
+  hostedStatus = "stale";
+  failRuntimeInfo = true;
+  const staleGet = await router.call("settings.models.get", { sessionId: "sess_catalog" });
+  const parsedStaleGet = RpcContractSchemas["settings.models.get"].result.parse(staleGet);
+  assert.deepEqual(parsedStaleGet.sources, { engine: "failed", hosted: "stale" });
+  assert.equal(parsedStaleGet.stale, true);
+  assert.ok(parsedStaleGet.message && parsedStaleGet.message.includes("last known"));
+  assert.ok(
+    parsedStaleGet.routes?.some((r) => r.modelSpec === "rayu:future-zenith-9000"),
+  );
+
+  // 3. Refresh when hosted is stale AND daemon refresh failed MUST return ok: false and notify catalog change
+  failDaemonRefresh = true;
+  const failedRefresh = await router.call("settings.models.refresh", {
+    sessionId: "sess_catalog",
+  });
+  const parsedFailedRefresh = RpcContractSchemas["settings.models.refresh"].result.parse(failedRefresh);
+  assert.equal(parsedFailedRefresh.ok, false);
+  assert.deepEqual(parsedFailedRefresh.sources, { engine: "failed", hosted: "stale" });
+  assert.ok(parsedFailedRefresh.message && parsedFailedRefresh.message.includes("last known"));
+  assert.ok(
+    parsedFailedRefresh.routes?.some((r) => r.modelSpec === "rayu:future-zenith-9000"),
+  );
+  assert.deepEqual(catalogNotifications, [{ sessionId: "sess_catalog", credentialsChanged: undefined }]);
 });
