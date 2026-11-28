@@ -51,6 +51,7 @@ import {
   type HookEventId,
   type HostToWebviewMessage,
   type McpServerView,
+  type McpTransport,
   type MemoryFactView,
   type MemoryStatusView,
   type ModelRouteOptionView,
@@ -1156,6 +1157,10 @@ export interface FeatureRouterAuthManager {
   setBypassPacing(enabled: boolean): Promise<{ ok: boolean; enabled: boolean }>;
   getCachedHostedModels?(): RayuCloudModelEntry[];
   fetchHostedModels?(forceRefresh?: boolean): Promise<RayuCloudModelEntry[]>;
+  getHostedModelCatalog?(forceRefresh?: boolean): Promise<{
+    models: RayuCloudModelEntry[];
+    status: "fresh" | "cached" | "stale" | "failed" | "unavailable";
+  }>;
 }
 
 export interface FeatureRouterGit {
@@ -1559,7 +1564,15 @@ function readMcpConfig(target: string): Record<string, unknown> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw error;
   }
-  const parsed: unknown = JSON.parse(fs.readFileSync(target, "utf8"));
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(target, "utf8"));
+  } catch {
+    throw new HarnessError(
+      "invalid_request",
+      "Existing MCP config contains malformed JSON. Repair it before editing.",
+    );
+  }
   if (
     !parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
     ("mcpServers" in parsed &&
@@ -1713,6 +1726,9 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     if (!sessionId) {
       return { ok: false, message: "Select the session that made these edits." };
     }
+    if (opts?.force && (action === "undo_all" || action === "redo_all")) {
+      return { ok: false, message: "Force Restore requires an explicitly confirmed file." };
+    }
     const unavailable = {
       ok: false,
       message: "Agent file actions require an engine with session file tracking.",
@@ -1731,12 +1747,38 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     if (snapshot.sessionId !== sessionId || (opts?.path !== undefined && !target)) {
       return { ok: false, message: "This file has no review snapshot in the selected session." };
     }
-    const raw = await client.fileChangeAction(sessionId, action, {
-      ...(target ? { path: target.path } : {}),
-      ...(opts?.force ? { force: true } : {}),
-    });
+    const raw = await (async () => {
+      try {
+        return await client.fileChangeAction(sessionId, action, {
+          ...(target ? { path: target.path } : {}),
+          ...(opts?.force ? { force: true } : {}),
+        });
+      } catch (error) {
+        try {
+          const fresh = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+          if (fresh.sessionId === sessionId) {
+            deps.sessionHub.broadcastFileChanges?.(sessionId, fresh);
+          }
+        } catch {
+          // Best-effort snapshot recovery after uncertain error.
+        }
+        throw error;
+      }
+    })();
     const mapped = mapRawFileChangeActionResponse(raw, sessionId);
-    if (mapped.snapshot) deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
+    if (mapped.snapshot?.sessionId === sessionId) {
+      deps.sessionHub.broadcastFileChanges?.(sessionId, mapped.snapshot);
+    } else if (!mapped.ok || !mapped.snapshot) {
+      try {
+        const fresh = mapRawFileChangesSnapshot(await client.getFileChanges(sessionId), sessionId);
+        if (fresh.sessionId === sessionId) {
+          deps.sessionHub.broadcastFileChanges?.(sessionId, fresh);
+          mapped.snapshot = fresh;
+        }
+      } catch {
+        // Leave original response intact when snapshot readback fails.
+      }
+    }
     return mapped;
   };
 
@@ -1889,8 +1931,12 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       }
     }
     if (requestedPath && path.isAbsolute(requestedPath)) {
-      const resolved = fs.realpathSync(requestedPath);
-      if (roots.has(resolved)) return resolved;
+      try {
+        const resolved = fs.realpathSync(requestedPath);
+        if (roots.has(resolved)) return resolved;
+      } catch {
+        throw new HarnessError("invalid_request", "Selected workspace directory does not exist on disk.");
+      }
     } else if (!requestedPath && roots.size === 1) {
       return [...roots][0]!;
     }
@@ -1914,51 +1960,72 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
   ): Promise<RpcResult<"plugins.mcp.edit">> => {
     const id = params.id.trim();
     if (!/^[a-zA-Z0-9._-]+$/.test(id) || Object.hasOwn(Object.prototype, id)) {
-      return { ok: false, message: "Enter a valid MCP server ID." };
+      return { ok: false, saved: false, message: "Enter a valid MCP server ID." };
     }
     const configPath = await mcpConfigPath(params.scope, params.workspacePath);
     const config = readMcpConfig(configPath);
     const servers = asRecord(config.mcpServers);
     const exists = Object.hasOwn(servers, id);
     if (editing !== exists) {
-      return { ok: false, message: editing ? "Connector does not exist in this config." : "This connector ID already exists in this scope." };
+      return { ok: false, saved: false, message: editing ? "Connector does not exist in this config." : "This connector ID already exists in this scope." };
     }
 
-    const entry = { ...asRecord(servers[id]) };
-    const transport = params.transport ?? (entry.command ? "stdio" : entry.type === "sse" ? "sse" : "streamable-http");
+    const existingEntry = asRecord(servers[id]);
+    const entry = { ...existingEntry };
+    const existingTransport: McpTransport = existingEntry.command
+      ? "stdio"
+      : existingEntry.type === "sse"
+        ? "sse"
+        : "streamable-http";
+    const transport = params.transport ?? existingTransport;
+    const transportChanged = !editing || (params.transport !== undefined && params.transport !== existingTransport);
+
     if (transport === "stdio") {
       const command = params.command ?? entry.command;
       if (typeof command !== "string" || !command.trim()) {
-        return { ok: false, message: "Provide an executable command for stdio MCP servers." };
+        return { ok: false, saved: false, message: "Provide an executable command for stdio MCP servers." };
       }
       entry.command = command.trim();
       if (params.args !== undefined) entry.args = params.args;
-      if (params.transport) {
+      if (transportChanged) {
         delete entry.type;
         delete entry.url;
       }
     } else {
       const url = params.url ?? entry.url;
       if (typeof url !== "string" || !url.trim()) {
-        return { ok: false, message: "Provide a remote URL for HTTP/SSE MCP servers." };
+        return { ok: false, saved: false, message: "Provide a remote URL for HTTP/SSE MCP servers." };
       }
       entry.url = url.trim();
-      if (params.transport) {
+      if (transportChanged) {
         entry.type = transport === "sse" ? "sse" : "http";
         delete entry.command;
         delete entry.args;
+      } else if (params.transport && entry.type === undefined) {
+        entry.type = transport === "sse" ? "sse" : "http";
       }
     }
-    if (params.env) entry.env = { ...asRecord(entry.env), ...params.env };
+    if (params.env) {
+      const mergedEnv = { ...asRecord(entry.env) };
+      for (const [k, v] of Object.entries(params.env)) {
+        if (v !== "" || !(k in mergedEnv)) {
+          mergedEnv[k] = v;
+        }
+      }
+      entry.env = mergedEnv;
+    }
     if (params.shared !== undefined) entry.shared = params.shared;
     if (params.timeoutSecs !== undefined) entry.timeout_secs = params.timeoutSecs;
     writeMcpConfig(configPath, { ...config, mcpServers: { ...servers, [id]: entry } });
 
     const reload = await execRuntimeCmd("mcp", ["reload"]);
+    const reloadError = reload.ok ? undefined : (reload.message || "Engine MCP reload failed.");
     return {
       ok: true,
+      saved: true,
       reloaded: reload.ok,
-      message: reload.ok ? "Connector saved and engine reloaded." : `Connector saved. Engine reload failed: ${reload.message}`,
+      ...(reloadError ? { reloadError } : {}),
+      message: reload.ok ? "Connector saved and engine reloaded." : `Connector saved to disk. Engine reload failed: ${reloadError}`,
       server: {
         id,
         name: id,
@@ -1971,6 +2038,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         command: typeof entry.command === "string" ? entry.command : undefined,
         args: Array.isArray(entry.args) ? entry.args.map(String) : undefined,
         url: typeof entry.url === "string" ? entry.url : undefined,
+        envKeys: entry.env ? Object.keys(asRecord(entry.env)) : undefined,
         timeoutSecs: typeof entry.timeout_secs === "number" ? entry.timeout_secs : undefined,
       },
     };
@@ -2143,7 +2211,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { files };
     },
     "workspace.contextSnapshot": async (params) => {
-      const data = await safeRuntimeCmd("context", [], params.sessionId);
+      const { data } = await requireRuntimeCmd("context", [], params.sessionId);
       const breakdown = asRecord(data.token_breakdown ?? data);
       const system = Number(breakdown.system ?? 0);
       const tools = Number(breakdown.tools ?? 0);
@@ -2223,22 +2291,10 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     // 3. Sessions
     // -------------------------------------------------------------------------
-    "sessions.list": async (params) => {
-      try {
-        return await deps.sessionHub.listSessions(
-          params?.includeArchived ?? false,
-          {
-            includeExternal: params?.includeExternal ?? true,
-            sources: params?.sources,
-          },
-        );
-      } catch {
-        return {
-          sessions: [],
-          activeSessionId: deps.sessionHub.getActiveSessionId(),
-        };
-      }
-    },
+    "sessions.list": async (params) => deps.sessionHub.listSessions(
+      params?.includeArchived ?? false,
+      { includeExternal: params?.includeExternal ?? true, sources: params?.sources },
+    ),
     "sessions.listExternalProjects": async (params) => {
       try {
         if (typeof deps.sessionHub.listExternalProjects === "function") {
@@ -2320,6 +2376,9 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, title: params.title };
     },
     "sessions.fork": async (params) => {
+      if (params.atTurnId) {
+        throw new HarnessError("unsupported", "The engine can fork a whole session. Forking at a particular turn is unavailable.");
+      }
       const client = await getSessionClient(params.sessionId);
       const info = await client.forkSession(params.sessionId);
       return { session: deps.sessionHub.mapSessionInfoToSummary(info) };
@@ -2558,7 +2617,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // -------------------------------------------------------------------------
     "swarm.status": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`status` / `list` / `board`)
-      const data = await safeRuntimeCmd("swarm", ["status"]);
+      const { data } = await requireRuntimeCmd("swarm", ["status"]);
       const rawSwarms = asArray(data.swarms).map(asRecord);
       const selectedSwarm = params?.swarmId
         ? rawSwarms.find((s) => String(s.swarm_id ?? s.swarmId ?? "") === params.swarmId)
@@ -2807,7 +2866,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { swarm };
     },
     "swarm.list": async () => {
-      const data = await safeRuntimeCmd("swarm", ["list"]);
+      const { data } = await requireRuntimeCmd("swarm", ["list"]);
       const swarms: SwarmSummaryView[] = asArray(data.swarms).map((raw, idx) => {
         const s = asRecord(raw);
         const members = asArray(s.members).map(asRecord);
@@ -2869,7 +2928,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     }),
     "swarm.board": async (params) => {
       // Rust `swarm` accepts at most 1 arg (`board`)
-      const data = await safeRuntimeCmd("swarm", ["board"]);
+      const { data } = await requireRuntimeCmd("swarm", ["board"]);
       const messages: SwarmBoardMessageView[] = asArray(data.board ?? data.messages)
         .map(asRecord)
         .filter((m) => {
@@ -2953,7 +3012,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 6. Automations
     // -------------------------------------------------------------------------
     "automations.overnight.list": async () => {
-      const data = await safeRuntimeCmd("overnight", ["list"]);
+      const { data } = await requireRuntimeCmd("overnight", ["list"]);
       const runs: OvernightRunView[] = asArray(data.runs).map((raw, idx) => {
         const r = asRecord(raw);
         const taskSummary = asRecord(r.task_summary);
@@ -3164,7 +3223,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "automations.schedules.list": async () => {
-      const data = await safeRuntimeCmd("schedules", ["list"]);
+      const { data } = await requireRuntimeCmd("schedules", ["list"]);
       const schedules: ScheduleItemView[] = asArray(data.schedules).map(
         (raw, idx) => {
           const s = asRecord(raw);
@@ -3272,7 +3331,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: data.cancelled !== false, message: message || undefined };
     },
     "automations.ambient.status": async (): Promise<AmbientStatusView> => {
-      const data = await safeRuntimeCmd("ambient", ["status"]);
+      const { data } = await requireRuntimeCmd("ambient", ["status"]);
       const stateObj = asRecord(data.state);
       const rawCycle = String(
         data.active_cycle ?? stateObj.status ?? stateObj.phase ?? "idle",
@@ -3408,7 +3467,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     // 7. Plugins, MCP, Skills, Memory & Workspace Integrations
     // -------------------------------------------------------------------------
     "plugins.mcp.list": async () => {
-      const data = await safeRuntimeCmd("mcp", ["list"]);
+      const { data } = await requireRuntimeCmd("mcp", ["list"]);
       const servers: McpServerView[] = asArray(data.servers).map((raw, idx) => {
         const s = asRecord(raw);
         const id = String(s.id ?? `mcp_${idx}`);
@@ -3556,15 +3615,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const config = readMcpConfig(target);
       const servers = { ...asRecord(config.mcpServers) };
       if (!Object.hasOwn(servers, params.id)) {
-        return { ok: false, message: "Connector does not exist in this config." };
+        return { ok: false, saved: false, message: "Connector does not exist in this config." };
       }
       delete servers[params.id];
       writeMcpConfig(target, { ...config, mcpServers: servers });
       const reload = await execRuntimeCmd("mcp", ["reload"]);
+      const reloadError = reload.ok ? undefined : (reload.message || "Engine MCP reload failed.");
       return {
         ok: true,
+        saved: true,
         reloaded: reload.ok,
-        message: reload.ok ? "Connector removed and engine reloaded." : `Connector removed from config. Engine reload failed: ${reload.message}`,
+        ...(reloadError ? { reloadError } : {}),
+        message: reload.ok ? "Connector removed and engine reloaded." : `Connector removed from config. Engine reload failed: ${reloadError}`,
       };
     },
     "plugins.mcp.login": async () => ({
@@ -3594,7 +3656,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
     },
     "plugins.skills.list": async () => {
       // Rust `skills` accepts `[] | ["status"]` (rejects `["list"]`)
-      const data = await safeRuntimeCmd("skills", []);
+      const { data } = await requireRuntimeCmd("skills", []);
       const mapSkill = (raw: unknown, defaultScope: SkillView["scope"]): SkillView => {
         const s = asRecord(raw);
         return {
@@ -3621,12 +3683,18 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "plugins.skills.create": async (params) => {
-      const slug = params.name
-        .trim()
+      const rawName = params.name.trim();
+      if (/[/\\]/.test(rawName) || rawName.includes("..")) {
+        throw new HarnessError(
+          "invalid_request",
+          "Skill name cannot contain path separators or '..'.",
+        );
+      }
+      const slug = rawName
         .toLowerCase()
         .replace(/[^a-z0-9-_]+/g, "-")
         .replace(/^-+|-+$/g, "");
-      if (!slug) {
+      if (!slug || !/[a-z0-9]/.test(slug)) {
         throw new HarnessError(
           "invalid_request",
           "Skill name must contain letters or numbers.",
@@ -3641,10 +3709,11 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
           : path.join(await workspaceRootFor(params.workspacePath), ".agents", "skills");
       const skillDir = path.join(baseDir, slug);
       const skillFile = path.join(skillDir, "SKILL.md");
+      const cleanDescription = params.description.trim();
       const body =
         params.content?.trim() ||
-        `# ${params.name.trim()}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
-      const markdown = `---\nname: ${slug}\ndescription: ${params.description.trim()}\n---\n\n${body}\n`;
+        `# ${rawName}\n\nDescribe step-by-step instructions and verification rules for this skill.\n`;
+      const markdown = `---\nname: ${slug}\ndescription: ${JSON.stringify(cleanDescription)}\n---\n\n${body}\n`;
       fs.mkdirSync(skillDir, { recursive: true });
       try {
         fs.writeFileSync(skillFile, markdown, { encoding: "utf8", flag: "wx" });
@@ -3654,11 +3723,16 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         }
         throw error;
       }
+      const reload = await execRuntimeCmd("skills", []);
+      const reloadError = reload.ok ? undefined : (reload.message || "Could not refresh engine skills list.");
       return {
         ok: true,
+        saved: true,
+        reloaded: reload.ok,
+        ...(reloadError ? { reloadError } : {}),
         skill: {
           name: slug,
-          description: params.description.trim(),
+          description: cleanDescription,
           path: skillFile,
           scope,
           installed: true,
@@ -3678,7 +3752,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         "Running skills via runtime_command is not supported yet; invoke the skill from chat.",
     }),
     "plugins.memory.status": async (): Promise<MemoryStatusView> => {
-      const data = await safeRuntimeCmd("memory", ["status"]);
+      const { data } = await requireRuntimeCmd("memory", ["status"]);
       const facts: MemoryFactView[] = asArray(data.facts).map((raw, idx) => {
         const f = asRecord(raw);
         return {
@@ -3755,6 +3829,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       message: "Linking memory facts via runtime_command is not supported yet.",
     }),
     "plugins.workspace.status": async (): Promise<WorkspaceIntegrationsView> => ({
+      available: false,
       gmail: {
         connected: false,
         actionCount: 0,
@@ -3921,7 +3996,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
         turnId: 1,
         editCount: 1,
         isBinary: false,
-        undoable: true,
+        undoable: false,
         canRedo: false,
         previewHunks: [],
         previewTruncated: false,
@@ -3938,7 +4013,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       };
     },
     "changes.diff": async (params) => {
-      const sessionId = params.sessionId ?? deps.sessionHub.getActiveSessionId();
+      const sessionId = params.sessionId;
       if (params.scope === "session" && sessionId) {
         const engineDiff = await tryEngineFileChangeDiff(sessionId, params.path);
         if (engineDiff) {
@@ -4638,6 +4713,7 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       return { ok: true, enabled: params.enabled };
     },
     "settings.analytics.get": async (params): Promise<AnalyticsSummaryView> => ({
+      available: false,
       range: params.range,
       groupBy: params.groupBy,
       totalCredits: 0,
@@ -5039,25 +5115,16 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
       const hostAccount = deps.authManager?.getAccountStatusSnapshot();
       const daemonConnected = deps.bridgeManager.getStatus().state === "connected";
 
-      const [rayuHostedModels, daemonRefresh] = await Promise.all([
-        hostAccount?.signedIn && deps.authManager?.fetchHostedModels
-          ? deps.authManager.fetchHostedModels(true).catch(() => [])
-          : Promise.resolve([]),
+      const [hostedRefresh, daemonRefresh] = await Promise.all([
+        hostAccount?.signedIn && deps.authManager?.getHostedModelCatalog
+          ? deps.authManager.getHostedModelCatalog(true).catch(() => ({ models: [], status: "failed" as const }))
+          : Promise.resolve({ models: [], status: "unavailable" as const }),
         daemonConnected
-          ? (async () => {
-              await deps.sessionHub
-                .notifyDaemonAuthChanged?.("rayu")
-                .catch(() => {});
-              return execRuntimeCmd("refresh_model_list", [], params?.sessionId);
-            })()
-          : Promise.resolve({
-              ok: false,
-              data: {} as Record<string, unknown>,
-              rawData: undefined,
-              message: "",
-            }),
+          ? execRuntimeCmd("refresh_model_list", [], params?.sessionId)
+          : Promise.resolve({ ok: false, data: {} as Record<string, unknown>, message: "" }),
       ]);
 
+      const rayuHostedModels = hostedRefresh.models;
       const rawRoutes = asArray(daemonRefresh.data.routes);
       const { routes } = reconcileAuthConsistentRoutes({
         rawRoutes,
@@ -5071,7 +5138,16 @@ export function createFeatureRouter(deps: FeatureRouterDeps): FeatureRouter {
             ? daemonRefresh.data.route_count
             : 0;
       return {
-        ok: daemonRefresh.ok || rayuHostedModels.length > 0,
+        ok: daemonRefresh.ok || hostedRefresh.status === "fresh",
+        message: hostedRefresh.status === "stale"
+          ? "Hosted catalogs could not refresh. Keeping last known models."
+          : !daemonRefresh.ok && hostedRefresh.status !== "fresh"
+            ? daemonRefresh.message || "Model catalogs could not refresh."
+            : undefined,
+        sources: {
+          engine: daemonConnected ? (daemonRefresh.ok ? "fresh" : "failed") : "unavailable",
+          hosted: hostedRefresh.status,
+        },
         routeCount,
         routes,
       };

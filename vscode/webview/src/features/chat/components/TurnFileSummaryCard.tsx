@@ -1,6 +1,5 @@
 import * as React from "react";
 import {
-  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
@@ -13,7 +12,6 @@ import {
 } from "lucide-react";
 import type {
   FileChangeActionResultView,
-  FileChangeConflictView,
   FileChangeEntryView,
   FileChangeHunkView,
   FileChangeKind,
@@ -25,12 +23,6 @@ import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
   TechFileBadge,
   Tooltip,
   TooltipContent,
@@ -39,6 +31,10 @@ import {
 import { basenameOf, callRpc, cn, postToHost, useAppStore } from "@/lib";
 
 import { applyFileReview, useFileReviewAvailable } from "../hooks/fileReview";
+import {
+  FileReviewConflictDialog,
+  type ConflictDialogState,
+} from "./FileReviewConflictDialog";
 
 const DEFAULT_VISIBLE_FILES = 3;
 
@@ -47,13 +43,6 @@ export interface TurnFileSummaryCardProps {
   sessionId?: string;
   onSnapshotUpdated?: (snapshot: FileChangesSnapshotView) => void;
   className?: string;
-}
-
-interface ConflictDialogState {
-  action: "undo" | "undo_all" | "redo" | "redo_all";
-  path?: string;
-  conflicts: FileChangeConflictView[];
-  message?: string;
 }
 
 interface ParsedHunkRow {
@@ -402,7 +391,13 @@ export function TurnFileSummaryCard({
     setBusyKey(targetPath ? `${action}:${targetPath}` : `batch:${action}`);
     setActionError(null);
     try {
-      const result = await applyFileReview(resolvedSessionId, action, targetPath, force);
+      const result = await applyFileReview(
+        resolvedSessionId,
+        action,
+        targetPath,
+        force,
+        onSnapshotUpdated,
+      );
       const conflictAction = action === "keep" || action === "keep_all" || force ? undefined : action;
       applyActionResult(result, conflictAction, targetPath);
     } catch (err) {
@@ -426,10 +421,31 @@ export function TurnFileSummaryCard({
       await runUndoFile(target.path, true);
     } else if (target.action === "redo" && target.path) {
       await runRedoFile(target.path, true);
-    } else if (target.action === "undo_all") {
-      await runBatchAction("undo_all", true);
-    } else if (target.action === "redo_all") {
-      await runBatchAction("redo_all", true);
+    } else if (target.action === "undo_all" || target.action === "redo_all") {
+      const action = target.action === "undo_all" ? "undo" : "redo";
+      const failures: string[] = [];
+      setBusyKey("force:conflicts");
+      setActionError(null);
+      try {
+        for (const file of target.conflicts) {
+          try {
+            const result = await applyFileReview(
+              resolvedSessionId,
+              action,
+              file.path,
+              true,
+              onSnapshotUpdated,
+            );
+            if (result.snapshot) onSnapshotUpdated?.(result.snapshot);
+            if (!result.ok) failures.push(`${file.displayPath}: ${result.message ?? "Restore failed."}`);
+          } catch (error) {
+            failures.push(`${file.displayPath}: ${error instanceof Error ? error.message : "Restore failed."}`);
+          }
+        }
+        if (failures.length) setActionError(failures.join(" "));
+      } finally {
+        setBusyKey(null);
+      }
     }
   };
 
@@ -437,85 +453,12 @@ export function TurnFileSummaryCard({
   const isBusy = busyKey !== null || !canReview;
 
   const conflictDialog = (
-    <Dialog
-      open={Boolean(conflictPrompt)}
-      onOpenChange={(open) => {
-        if (!open) setConflictPrompt(null);
-      }}
-    >
-      <DialogContent data-testid="file-change-conflict-dialog">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <AlertTriangle
-              className="size-4 shrink-0 text-warn"
-              aria-hidden="true"
-            />
-            <span>Manual edits conflict</span>
-          </DialogTitle>
-          <DialogDescription>
-            {conflictPrompt?.message ||
-              "One or more files were modified on disk after the AI finished. Review the diff or force restore to overwrite manual edits."}
-          </DialogDescription>
-        </DialogHeader>
-
-        {conflictPrompt && conflictPrompt.conflicts.length > 0 && (
-          <div className="flex flex-col gap-1.5 rounded-lg border border-hairline bg-inset p-2.5">
-            {conflictPrompt.conflicts.map((conflict) => (
-              <div
-                key={conflict.path}
-                className="flex flex-col gap-0.5 text-xs"
-              >
-                <div className="flex items-center gap-1.5">
-                  <TechFileBadge path={conflict.displayPath} />
-                  <span className="truncate font-mono font-medium text-ink">
-                    {conflict.displayPath}
-                  </span>
-                </div>
-                <span className="pl-5 text-[11px] text-muted-ink">
-                  {conflict.reason}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <DialogFooter>
-          {conflictPrompt?.conflicts[0] && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              data-testid="conflict-open-diff-btn"
-              onClick={() => {
-                const target = conflictPrompt.conflicts[0]!.path;
-                openDiffInVsCode(target);
-              }}
-            >
-              <ExternalLink className="size-3.5" aria-hidden="true" />
-              <span>Open in VS Code Diff</span>
-            </Button>
-          )}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            data-testid="conflict-cancel-btn"
-            onClick={() => setConflictPrompt(null)}
-          >
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            size="sm"
-            data-testid="conflict-force-restore-btn"
-            onClick={() => void handleForceRestore()}
-          >
-            Force Restore
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FileReviewConflictDialog
+      conflictPrompt={conflictPrompt}
+      onClose={() => setConflictPrompt(null)}
+      onOpenDiff={openDiffInVsCode}
+      onForceRestore={handleForceRestore}
+    />
   );
 
   // Collapsed 1-line resolved receipt when all files are kept or undone
@@ -528,63 +471,81 @@ export function TurnFileSummaryCard({
           data-slot="turn-file-summary-receipt"
           data-testid="turn-file-summary-receipt"
           className={cn(
-            "@container/file-summary rayu-card-bevel flex flex-wrap items-center justify-between gap-2 rounded-xl bg-pane px-3 py-2 text-xs shadow-diff-card",
+            "@container/file-summary rayu-card-bevel flex flex-col rounded-xl bg-pane text-xs shadow-diff-card",
             className,
           )}
         >
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            {allUndone ? (
-              <RotateCcw
-                className="size-3.5 shrink-0 text-warn"
-                aria-hidden="true"
-              />
-            ) : (
-              <Check
-                className="size-3.5 shrink-0 text-brand-text"
-                aria-hidden="true"
-              />
-            )}
-            <span className="font-medium text-ink">
-              {allKept
-                ? `Kept ${files.length} ${fileWord}`
-                : allUndone
-                  ? `Undid ${files.length} ${fileWord}`
-                  : `Reviewed ${files.length} ${fileWord} (${keptFiles.length} kept, ${undoneFiles.length} undone)`}
-            </span>
-            {!allUndone && (keptAdditions > 0 || keptDeletions > 0) && (
-              <span className="font-mono text-[11px] tabular-nums">
-                <span className="text-brand-text">+{keptAdditions}</span>{" "}
-                <span className="text-danger">−{keptDeletions}</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {allUndone ? (
+                <RotateCcw
+                  className="size-3.5 shrink-0 text-warn"
+                  aria-hidden="true"
+                />
+              ) : (
+                <Check
+                  className="size-3.5 shrink-0 text-brand-text"
+                  aria-hidden="true"
+                />
+              )}
+              <span className="font-medium text-ink">
+                {allKept
+                  ? `Kept ${files.length} ${fileWord}`
+                  : allUndone
+                    ? `Undid ${files.length} ${fileWord}`
+                    : `Reviewed ${files.length} ${fileWord} (${keptFiles.length} kept, ${undoneFiles.length} undone)`}
               </span>
-            )}
-          </div>
+              {!allUndone && (keptAdditions > 0 || keptDeletions > 0) && (
+                <span className="font-mono text-[11px] tabular-nums">
+                  <span className="text-brand-text">+{keptAdditions}</span>{" "}
+                  <span className="text-danger">−{keptDeletions}</span>
+                </span>
+              )}
+            </div>
 
-          <div className="flex items-center gap-1">
-            {hasRedoable && (
+            <div className="flex items-center gap-1">
+              {hasRedoable && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  disabled={isBusy}
+                  data-testid="file-summary-redo-all-btn"
+                  onClick={() => void runBatchAction("redo_all")}
+                >
+                  <Redo2 className="size-3" aria-hidden="true" />
+                  <span>Redo all</span>
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="ghost"
                 size="xs"
-                disabled={isBusy}
-                data-testid="file-summary-redo-all-btn"
-                onClick={() => void runBatchAction("redo_all")}
+                data-testid="file-summary-receipt-expand-btn"
+                onClick={() => setReceiptExpanded(true)}
+                aria-label="Expand file change details"
               >
-                <Redo2 className="size-3" aria-hidden="true" />
-                <span>Redo all</span>
+                <span>Details</span>
+                <ChevronDown className="size-3" aria-hidden="true" />
               </Button>
-            )}
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              data-testid="file-summary-receipt-expand-btn"
-              onClick={() => setReceiptExpanded(true)}
-              aria-label="Expand file change details"
-            >
-              <span>Details</span>
-              <ChevronDown className="size-3" aria-hidden="true" />
-            </Button>
+            </div>
           </div>
+          {actionError && (
+            <div
+              data-testid="file-summary-error"
+              role="alert"
+              className="flex items-center justify-between gap-2 border-t border-danger/30 bg-danger-soft px-3 py-1.5 text-[11px] text-danger"
+            >
+              <span className="min-w-0 truncate">{actionError}</span>
+              <button
+                type="button"
+                onClick={() => setActionError(null)}
+                className="shrink-0 cursor-pointer font-medium hover:underline"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
         </div>
         {conflictDialog}
       </>

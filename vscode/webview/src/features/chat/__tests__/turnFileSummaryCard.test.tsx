@@ -1,10 +1,11 @@
 import * as React from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileChangesSnapshotView } from "@shared/vscodeProtocol";
 
-import { ChatStream, TurnFileSummaryCard, type ChatTurnView } from "@/features/chat";
+import { ChatStream, TurnFileSummaryCard, useChatStream, type ChatTurnView } from "@/features/chat";
+import { applyFileReview } from "../hooks/fileReview";
 import {
   __dispatchHostMessageForTest,
   createQueryClient,
@@ -619,5 +620,117 @@ describe("TurnFileSummaryCard & Live File Changes Sync", () => {
     fireEvent.click(screen.getByTestId("file-summary-collapse-list-btn"));
     expect(screen.queryByTestId("file-summary-row-src/older.ts")).toBeNull();
     expect(screen.queryByTestId("file-summary-row-src/oldest.ts")).toBeNull();
+  });
+
+  it("renders actionError alert inside collapsed resolved receipt when an action fails", async () => {
+    const base = makeSnapshot();
+    const undoneAllSnapshot: FileChangesSnapshotView = {
+      ...base,
+      totalPendingFiles: 0,
+      totalAdditions: 0,
+      totalDeletions: 0,
+      files: base.files.map((f) => ({ ...f, status: "undone", canRedo: true })),
+    };
+
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "changes.redoAll") {
+        return {
+          ok: false,
+          message: "Unable to redo because workspace disk is read-only",
+        };
+      }
+      if (method === "changes.getSessionSummary") {
+        return undoneAllSnapshot;
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    renderWithQuery(<TurnFileSummaryCard snapshot={undoneAllSnapshot} />);
+
+    // Starts in collapsed resolved receipt state
+    const receipt = screen.getByTestId("turn-file-summary-receipt");
+    expect(receipt).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("file-summary-redo-all-btn"));
+
+    await waitFor(() => {
+      const alert = screen.getByTestId("file-summary-error");
+      expect(alert.getAttribute("role")).toBe("alert");
+      expect(alert.textContent).toContain(
+        "Unable to redo because workspace disk is read-only",
+      );
+      expect(receipt.contains(alert)).toBe(true);
+    });
+
+    // Dismissing clears the alert cleanly
+    fireEvent.click(screen.getByText("Dismiss"));
+    expect(screen.queryByTestId("file-summary-error")).toBeNull();
+  });
+
+  it("useChatStream does not shadow store fileChangesSnapshot updated by applyFileReview when initialFileChanges is undefined", async () => {
+    const initialSnap = makeSnapshot({ sessionId: "ses_stream_live" });
+    const keptSnap: FileChangesSnapshotView = {
+      ...initialSnap,
+      totalPendingFiles: 1,
+      files: [
+        { ...initialSnap.files[0]!, status: "kept" },
+        initialSnap.files[1]!,
+      ],
+    };
+
+    vi.spyOn(rpcClient, "callRpc").mockImplementation((async (method: string) => {
+      if (method === "changes.getSessionSummary") {
+        return initialSnap;
+      }
+      if (method === "changes.keep") {
+        return { ok: true, snapshot: keptSnap };
+      }
+      if (method === "inspector.todos.get") {
+        return { todos: [] };
+      }
+      return { ok: true };
+    }) as typeof rpcClient.callRpc);
+
+    let setFromHook: ((snap: FileChangesSnapshotView) => void) | undefined;
+
+    function StreamHarness() {
+      const stream = useChatStream({
+        sessionId: "ses_stream_live",
+        initialTurns: [],
+      });
+      setFromHook = stream.setFileChangesSnapshot;
+      return (
+        <div>
+          <span data-testid="stream-pending-count">
+            {stream.fileChangesSnapshot?.totalPendingFiles ?? "none"}
+          </span>
+          <span data-testid="stream-auth-status">
+            {stream.fileChangesSnapshot?.files[0]?.status ?? "none"}
+          </span>
+        </div>
+      );
+    }
+
+    renderWithQuery(<StreamHarness />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stream-pending-count").textContent).toBe("2");
+      expect(screen.getByTestId("stream-auth-status").textContent).toBe("pending");
+    });
+
+    // Even if setFileChangesSnapshot was called earlier on the hook, localFileChanges must NOT
+    // be populated or shadow subsequent store updates written by applyFileReview.
+    act(() => {
+      setFromHook?.(initialSnap);
+    });
+
+    await act(async () => {
+      await applyFileReview("ses_stream_live", "keep", "/repo/src/auth.ts");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("stream-pending-count").textContent).toBe("1");
+      expect(screen.getByTestId("stream-auth-status").textContent).toBe("kept");
+    });
   });
 });

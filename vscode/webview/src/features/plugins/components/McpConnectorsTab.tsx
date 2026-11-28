@@ -30,6 +30,7 @@ import {
   type CatalogConnectorTemplate,
   type ConnectorCategoryId,
   findCatalogTemplate,
+  isEditableMcpLayer,
   normalizeConfigLayerBadge,
   useMcpActions,
   useMcpConnectors,
@@ -161,18 +162,27 @@ export function McpConnectorsTab() {
   const handleOpenConfigureServer = (server: McpServerView) => {
     const tpl = findCatalogTemplate(server.brandId ?? server.id);
     const envKeys = server.envKeys ?? tpl?.requiredEnvKeys ?? [];
+    const scope =
+      server.configLayer === "workspace" || server.configLayer === "project"
+        ? "workspace"
+        : "global";
+    const workspacePath =
+      server.configPath && /^(\/|[A-Za-z]:[/\\])/.test(server.configPath)
+        ? server.configPath.replace(/[/\\]\.mcp\.json$/, "")
+        : (activeProjectPath ?? undefined);
     setDialogDraft({
       mode: "edit",
       id: server.id,
       displayName: server.name,
       brandId: server.brandId ?? server.id,
-      scope: server.configLayer === "workspace" ? "workspace" : "global",
-      workspacePath: server.configPath?.replace(/[/\\]\.mcp\.json$/, "") ?? activeProjectPath ?? undefined,
+      scope,
+      workspacePath,
       transport: server.transport,
-      command: server.command ?? tpl?.command ?? "npx",
-      argsText: (server.args ?? tpl?.args ?? []).join(" "),
-      url: server.url ?? tpl?.url ?? "",
-      envText: envKeys.map((k) => `${k}=`).join("\n"),
+      command: server.command ?? "",
+      argsText: (server.args ?? []).join(" "),
+      url: server.url ?? "",
+      envText: "",
+      existingEnvKeys: envKeys,
       shared: server.shared,
       timeoutSecs: server.timeoutSecs ?? 30,
       isInstalled: true,
@@ -640,6 +650,12 @@ export function McpConnectorsTab() {
                         variant="outline"
                         size="xs"
                         data-testid={`mcp-configure-btn-${srv.id}`}
+                        disabled={!isEditableMcpLayer(srv.configLayer)}
+                        title={
+                          isEditableMcpLayer(srv.configLayer)
+                            ? `Configure ${srv.name}`
+                            : `Config layer "${layerLabel}" is read-only in RayuCode`
+                        }
                         onClick={() => handleOpenConfigureServer(srv)}
                       >
                         <Settings2 className="size-3" aria-hidden="true" />

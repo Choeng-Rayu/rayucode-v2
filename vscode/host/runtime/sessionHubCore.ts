@@ -169,6 +169,9 @@ export class SessionHubCore extends EventEmitter {
   >();
   private readonly sessionInfoCache = new Map<string, SessionInfo>();
   private readonly sessionWorkingDirs = new Map<string, string>();
+  private readonly pendingCatalogSessions = new Set<string>();
+  private catalogTimer?: ReturnType<typeof setTimeout>;
+  private catalogCredentialsChanged = false;
   private readonly sessionOperations = new Map<string, Promise<unknown>>();
   private readonly appliedTierBySession = new Map<string, ServiceTier>();
   private readonly appliedPermissionBySession = new Map<string, PermissionModeId>();
@@ -897,6 +900,7 @@ export class SessionHubCore extends EventEmitter {
 
   async fetchFileChanges(
     sessionId?: string,
+    opts?: { throwOnError?: boolean },
   ): Promise<FileChangesSnapshotView | null> {
     const rawSid = sessionId ?? this.activeSessionId;
     if (!rawSid) return null;
@@ -904,13 +908,14 @@ export class SessionHubCore extends EventEmitter {
       const sid = await this.resolveAttachableSessionId(rawSid);
       const client = await this.ensureAttachedClient(sid);
       if (!this.clientSupportsFileChanges(client)) {
-        return this.fileChangesBySession.get(sid) ?? null;
+        return opts?.throwOnError ? null : (this.fileChangesBySession.get(sid) ?? null);
       }
       const raw = await client.getFileChanges(sid);
       const snapshot = mapRawFileChangesSnapshot(raw, sid);
       this.fileChangesBySession.set(sid, snapshot);
       return snapshot;
-    } catch {
+    } catch (error) {
+      if (opts?.throwOnError) throw error;
       return this.fileChangesBySession.get(rawSid) ?? null;
     }
   }
@@ -946,19 +951,26 @@ export class SessionHubCore extends EventEmitter {
     if (snapshot.sessionId !== sid || (opts?.path !== undefined && !target)) {
       return { ok: false, message: "This file has no review snapshot in the selected session." };
     }
+    let mapped: FileChangeActionResultView | undefined;
     try {
       const raw = await client.fileChangeAction(sid, action, {
         ...(target ? { path: target.path } : {}),
         ...(opts?.force ? { force: true } : {}),
       });
-      const mapped = mapRawFileChangeActionResponse(raw, sid);
+      mapped = mapRawFileChangeActionResponse(raw, sid);
       if (mapped.snapshot?.sessionId === sid) {
         this.broadcastFileChanges(sid, mapped.snapshot);
       }
       return mapped;
     } finally {
-      const latest = await this.fetchFileChanges(sid);
-      if (latest?.sessionId === sid) this.broadcastFileChanges(sid, latest);
+      try {
+        const latest = await this.fetchFileChanges(sid, { throwOnError: true });
+        if (latest?.sessionId === sid) {
+          this.broadcastFileChanges(sid, latest);
+        }
+      } catch {
+        // Never re-broadcast pre-action cached snapshot if fresh readback fails.
+      }
     }
   }
 
@@ -1113,6 +1125,20 @@ export class SessionHubCore extends EventEmitter {
       }
       return client;
     });
+  }
+
+  private publishCatalogChange(sessionId?: string, credentialsChanged = false): void {
+    if (sessionId) this.pendingCatalogSessions.add(sessionId);
+    this.catalogCredentialsChanged ||= credentialsChanged;
+    if (this.catalogTimer) return;
+    this.catalogTimer = setTimeout(() => {
+      this.catalogTimer = undefined;
+      const sessionIds = [...this.pendingCatalogSessions];
+      this.pendingCatalogSessions.clear();
+      const credentialsChanged = this.catalogCredentialsChanged;
+      this.catalogCredentialsChanged = false;
+      this.broadcast({ type: "rayucode.models.changed", sessionIds, credentialsChanged });
+    }, 40);
   }
 
   private ingestFrame(rawFrame: ServerFrame, boundSessionId?: string): void {
@@ -1278,8 +1304,17 @@ export class SessionHubCore extends EventEmitter {
         }
         break;
       }
+      case "models": {
+        if (frame.reply_to === undefined) this.publishCatalogChange(resolvedSessionId);
+        break;
+      }
+      case "credential_updated": {
+        this.publishCatalogChange(undefined, true);
+        break;
+      }
       case "model_info":
       case "runtime_info": {
+        if (frame.reply_to === undefined) this.publishCatalogChange(resolvedSessionId);
         if (resolvedSessionId) {
           if (typeof frame.model === "string" && frame.model.trim()) {
             const formatted = formatHarnessModelSpec(
@@ -2704,6 +2739,7 @@ export class SessionHubCore extends EventEmitter {
   }
 
   dispose(): void {
+    if (this.catalogTimer) clearTimeout(this.catalogTimer);
     if (this.backgroundPollTimer) {
       clearInterval(this.backgroundPollTimer);
       this.backgroundPollTimer = null;

@@ -1,6 +1,7 @@
 import type {
   FileChangeActionKind,
   FileChangeActionResultView,
+  FileChangesSnapshotView,
 } from "@shared/vscodeProtocol";
 import { callRpc, isVsCodeWebview, useAppStore } from "@/lib";
 
@@ -18,6 +19,7 @@ export async function applyFileReview(
   action: FileChangeActionKind,
   path?: string,
   force = false,
+  onSnapshot?: (snapshot: FileChangesSnapshotView) => void,
 ): Promise<FileChangeActionResultView> {
   if (!sessionId) throw new Error("Select the session that made these edits.");
   if ((action === "keep" || action === "undo" || action === "redo") && !path) {
@@ -33,18 +35,22 @@ export async function applyFileReview(
     undo_all: () => callRpc("changes.undoAll", batch),
     redo_all: () => callRpc("changes.redoAll", batch),
   };
+  const updateSnapshot = (snapshot: FileChangeActionResultView["snapshot"]) => {
+    if (snapshot?.sessionId === sessionId) {
+      useAppStore.getState().setFileChangesSnapshot(sessionId, snapshot);
+      onSnapshot?.(snapshot);
+    }
+  };
+  const refresh = () => callRpc("changes.getSessionSummary", { sessionId })
+    .then(updateSnapshot)
+    .catch(() => {});
   try {
     const result = await requests[action]();
-    if (result.snapshot?.sessionId === sessionId) {
-      useAppStore.getState().setFileChangesSnapshot(sessionId, result.snapshot);
-    }
+    updateSnapshot(result.snapshot);
+    if (!result.ok || !result.snapshot) await refresh();
     return result;
-  } finally {
-    // The request may have partially completed even if the reply was lost.
-    void callRpc("changes.getSessionSummary", { sessionId }).then((snapshot) => {
-      if (snapshot.sessionId === sessionId) {
-        useAppStore.getState().setFileChangesSnapshot(sessionId, snapshot);
-      }
-    }).catch(() => {});
+  } catch (error) {
+    await refresh();
+    throw error;
   }
 }

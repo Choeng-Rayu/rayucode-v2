@@ -1770,10 +1770,12 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
   });
   assert.equal(keepAllRes.ok, true);
 
-  const undoAllRes = await engineRouter.call("changes.undoAll", {
+  const forceAllRes = await engineRouter.call("changes.undoAll", {
     sessionId: "sess_fc",
     force: true,
   });
+  assert.equal(forceAllRes.ok, false);
+  const undoAllRes = await engineRouter.call("changes.undoAll", { sessionId: "sess_fc" });
   assert.equal(undoAllRes.ok, true);
 
   const redoAllRes = await engineRouter.call("changes.redoAll", {
@@ -1789,7 +1791,7 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
       "undo:/repo/src/app.ts:true",
       "redo:/repo/src/app.ts:false",
       "keep_all:*:false",
-      "undo_all:*:true",
+      "undo_all:*:false",
       "redo_all:*:false",
     ],
   );
@@ -1804,6 +1806,8 @@ test("featureRouters routes session file-change RPCs through Rust RayucodeClient
   });
   assert.equal(fallbackSummary.files.length, 1);
   assert.equal(fallbackSummary.files[0]?.displayPath, "src/app.ts");
+  assert.equal(fallbackSummary.files[0]?.undoable, false);
+  assert.equal(fallbackSummary.files[0]?.canRedo, false);
 
   const fallbackDiff = await legacyRouter.call("changes.diff", {
     path: "src/app.ts",
@@ -2101,17 +2105,16 @@ test("settings.models.get works with no active session (HomePage) and settings.m
       getCachedHostedModels: () => [...hostedModels],
       fetchHostedModels: async (forceRefresh = false) => {
         fetchCalls.push(forceRefresh);
-        if (forceRefresh) {
-          hostedModels = [
-            ...hostedModels,
-            {
-              code: "rayu-quantum-2099",
-              label: "Rayu Quantum 2099",
-              description: "Arbitrary future model",
-            },
-          ];
-        }
         return [...hostedModels];
+      },
+      getHostedModelCatalog: async (forceRefresh = false) => {
+        fetchCalls.push(forceRefresh);
+        hostedModels = [...hostedModels, {
+          code: "rayu-quantum-2099",
+          label: "Rayu Quantum 2099",
+          description: "Arbitrary future model",
+        }];
+        return { models: [...hostedModels], status: "fresh" as const };
       },
     },
     gitBridge: {
@@ -2175,11 +2178,12 @@ test("settings.models.get works with no active session (HomePage) and settings.m
   assert.equal(homeModels.routes?.[0]?.accountLabel, "dev@rayucode.com");
   assert.equal(homeModels.routes?.[0]?.authMethod, "oauth");
 
-  // 2. settings.models.refresh forces fetchHostedModels(true) + notifies daemon + merges & orders routes
+  // 2. settings.models.refresh forces the hosted catalog and merges live engine routes
   const refreshed = await router.call("settings.models.refresh", undefined);
   assert.equal(refreshed.ok, true);
   assert.deepEqual(fetchCalls, [false, true]);
-  assert.deepEqual(notifyCalls, ["rayu"]);
+  assert.deepEqual(notifyCalls, []);
+  assert.deepEqual(refreshed.sources, { engine: "fresh", hosted: "fresh" });
   assert.ok(runtimeCalls.includes("refresh_model_list"));
   assert.equal(refreshed.routeCount, 4);
   assert.deepEqual(
@@ -3089,4 +3093,877 @@ test("featureRouters handles settings.permission.getDefault and settings.permiss
 
   const reloaded = await router.call("settings.permission.getDefault", undefined);
   assert.equal(reloaded.mode, "acceptEdits");
+});
+
+test("changes.getSessionSummary legacy fallback returns read-only rows with undoable: false and canRedo: false", async () => {
+  const daemonStatus: DaemonStatusView = {
+    state: "connected",
+    version: "rayu-harness-v1.13",
+    protocolVersion: "1.13",
+    socketPath: "/tmp/rayu-legacy.sock",
+    latencyMs: 2,
+    capabilities: ["permissions"],
+    isRayuRepo: true,
+  };
+  const gitMutations: string[] = [];
+
+  const router = createFeatureRouter({
+    bridgeManager: {
+      getStatus: () => daemonStatus,
+      ping: async () => ({ ok: true, latencyMs: 2 }),
+      reconnect: async () => daemonStatus,
+      restart: async () => daemonStatus,
+      reloadDaemon: async () => ({ ok: true }),
+      openOutputLog: () => {},
+    },
+    sessionHub: {
+      getActiveSessionId: () => "sess_legacy",
+      getActiveModel: () => "claude-opus-4-6",
+      getActiveProvider: () => "rayu",
+      getActivePermissionMode: () => "default",
+      getClient: async () =>
+        ({
+          supports: () => false,
+        }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+      listSessions: async () => ({ sessions: [], activeSessionId: "sess_legacy" }),
+      createSession: async () => ({
+        sessionId: "sess_legacy",
+        title: "Legacy",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      attachSession: async (sessionId) => ({
+        sessionId,
+        title: "Legacy",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+      getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+      setSessionPinned: async () => {},
+      setSessionArchived: async () => {},
+      setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+      respondPermission: async () => {},
+      runtimeCommand: async (command, _args, sessionId) => ({
+        session_id: sessionId ?? "sess_legacy",
+        command,
+        data: {},
+        message: "ok",
+      }),
+      getBackgroundTasks: () => [],
+      refreshBackgroundProcesses: async () => [],
+      removeCompletedBackgroundTasks: () => 0,
+      getSidePanelState: () => ({ pages: [] }),
+      closeSidePanelPage: () => {},
+      getApplets: () => [],
+      getCachedTodos: () => [],
+      mapSessionInfoToSummary: (info) => ({
+        sessionId: info.session_id,
+        title: info.title ?? "Untitled",
+        status: "idle",
+        updatedAtMs: 1,
+      }),
+    },
+    gitBridge: {
+      getStatus: async () => ({
+        branch: "main",
+        baseBranch: "main",
+        totalAdditions: 15,
+        totalDeletions: 4,
+        files: [
+          {
+            path: "src/pending.ts",
+            status: "modified",
+            staged: false,
+            additions: 10,
+            deletions: 2,
+            decision: "pending",
+            fromSession: true,
+          },
+          {
+            path: "src/rejected.ts",
+            status: "added",
+            staged: false,
+            additions: 5,
+            deletions: 0,
+            decision: "rejected",
+            fromSession: true,
+          },
+          {
+            path: "src/manual-only.ts",
+            status: "modified",
+            staged: false,
+            additions: 0,
+            deletions: 2,
+            decision: "pending",
+            fromSession: false,
+          },
+        ],
+        stagedCount: 0,
+        hasGhCli: true,
+      }),
+      getDiff: async ({ path: p }) => ({
+        path: p,
+        originalContent: "",
+        modifiedContent: "",
+        unifiedDiff: "",
+        additions: 0,
+        deletions: 0,
+        languageId: "typescript",
+      }),
+      stage: async () => ({ ok: true }),
+      unstage: async () => ({ ok: true }),
+      keep: ({ path: p }) => {
+        gitMutations.push(`keep:${p}`);
+        return { ok: true };
+      },
+      undo: async ({ path: p }) => {
+        gitMutations.push(`undo:${p}`);
+        return { ok: true };
+      },
+      commit: async () => ({ ok: true }),
+      createPr: async () => ({ ok: true }),
+      listBranches: async () => ({ current: "main", branches: ["main"] }),
+      checkoutBranch: async (_ws, branch) => ({ ok: true, branch }),
+    },
+    editorBridge: {
+      openFile: async () => {},
+      openWorktreeWindow: async () => {},
+      openExternal: async () => {},
+      pickFiles: async () => [],
+      findWorkspaceFiles: async () => [],
+    },
+    getWorkspaceFolders: async () => [],
+    setProjectIcon: async () => {},
+    getGlobalState: <T>(_k: string, d: T) => d,
+    updateGlobalState: async () => {},
+    getRuntimeSettings: () => ({
+      socketPath: "/tmp/rayu-legacy.sock",
+      binaryPath: "/usr/local/bin/rayu",
+      autoStart: true,
+    }),
+    updateRuntimeSettings: async () => {},
+    openKeybindings: async () => {},
+  });
+
+  const summary = await router.call("changes.getSessionSummary", {
+    sessionId: "sess_legacy",
+  });
+  assert.equal(summary.sessionId, "sess_legacy");
+  assert.equal(summary.files.length, 2);
+  for (const row of summary.files) {
+    assert.equal(row.undoable, false);
+    assert.equal(row.canRedo, false);
+  }
+  assert.equal(summary.files.find((f) => f.path === "src/rejected.ts")?.status, "undone");
+  assert.equal(summary.files.find((f) => f.path === "src/manual-only.ts"), undefined);
+
+  assert.equal((await router.call("changes.keep", { path: "src/pending.ts", sessionId: "sess_legacy" })).ok, false);
+  assert.equal((await router.call("changes.undo", { path: "src/pending.ts", sessionId: "sess_legacy" })).ok, false);
+  assert.equal((await router.call("changes.redo", { path: "src/rejected.ts", sessionId: "sess_legacy" })).ok, false);
+  assert.equal((await router.call("changes.keepAll", { sessionId: "sess_legacy" })).ok, false);
+  assert.equal((await router.call("changes.undoAll", { sessionId: "sess_legacy" })).ok, false);
+  assert.deepEqual(gitMutations, []);
+});
+
+test("runReviewAction refreshes and broadcasts after thrown error or partial batch result, and never re-broadcasts stale cached snapshot on refresh failure", async () => {
+  const makeRawSnapshot = (pending: number, appStatus: "pending" | "kept" | "undone") => ({
+    session_id: "sess_refresh",
+    latest_turn_id: 5,
+    total_pending_files: pending,
+    total_additions: pending * 4,
+    total_deletions: pending,
+    files: [
+      {
+        path: "/repo/src/app.ts",
+        display_path: "src/app.ts",
+        kind: "modified" as const,
+        status: appStatus,
+        additions: 4,
+        deletions: 1,
+        changed_in_latest_turn: true,
+        turn_id: 5,
+        edit_count: 1,
+        is_binary: false,
+        undoable: true,
+        can_redo: appStatus === "undone",
+        preview_hunks: [],
+        preview_truncated: false,
+        updated_at_ms: 1_700_000_000_000,
+      },
+      {
+        path: "/repo/src/other.ts",
+        display_path: "src/other.ts",
+        kind: "modified" as const,
+        status: "pending" as const,
+        additions: 4,
+        deletions: 1,
+        changed_in_latest_turn: true,
+        turn_id: 5,
+        edit_count: 1,
+        is_binary: false,
+        undoable: true,
+        can_redo: false,
+        preview_hunks: [],
+        preview_truncated: false,
+        updated_at_ms: 1_700_000_000_100,
+      },
+    ],
+  });
+
+  const buildRouter = (handlers: {
+    getFileChanges: () => Promise<unknown>;
+    fileChangeAction: (
+      sessionId: string,
+      action: string,
+      opts?: { path?: string; force?: boolean },
+    ) => Promise<unknown>;
+  }) => {
+    const broadcasts: Array<{ sessionId: string; totalPendingFiles: number; appStatus: string }> = [];
+    const preActionCached = mapRawFileChangesSnapshot(makeRawSnapshot(2, "pending"), "sess_refresh");
+    const daemonStatus: DaemonStatusView = {
+      state: "connected",
+      version: "rayu-harness-v1.16",
+      protocolVersion: "1.16",
+      socketPath: "/tmp/rayu-refresh.sock",
+      latencyMs: 2,
+      capabilities: ["permissions", "file_changes"],
+      isRayuRepo: true,
+    };
+
+    const router = createFeatureRouter({
+      bridgeManager: {
+        getStatus: () => daemonStatus,
+        ping: async () => ({ ok: true, latencyMs: 2 }),
+        reconnect: async () => daemonStatus,
+        restart: async () => daemonStatus,
+        reloadDaemon: async () => ({ ok: true }),
+        openOutputLog: () => {},
+      },
+      sessionHub: {
+        getActiveSessionId: () => "sess_refresh",
+        getActiveModel: () => "claude-opus-4-6",
+        getActiveProvider: () => "rayu",
+        getActivePermissionMode: () => "default",
+        getClient: async () =>
+          ({
+            supports: (cap: string) => cap === "file_changes",
+            getFileChanges: handlers.getFileChanges,
+            fileChangeAction: handlers.fileChangeAction,
+          }) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+        listSessions: async () => ({ sessions: [], activeSessionId: "sess_refresh" }),
+        createSession: async () => ({
+          sessionId: "sess_refresh",
+          title: "Refresh",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        attachSession: async (sessionId) => ({
+          sessionId,
+          title: "Refresh",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+        setSessionPinned: async () => {},
+        setSessionArchived: async () => {},
+        setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+        respondPermission: async () => {},
+        runtimeCommand: async (command, _args, sessionId) => ({
+          session_id: sessionId ?? "sess_refresh",
+          command,
+          data: {},
+          message: "ok",
+        }),
+        getBackgroundTasks: () => [],
+        refreshBackgroundProcesses: async () => [],
+        removeCompletedBackgroundTasks: () => 0,
+        getSidePanelState: () => ({ pages: [] }),
+        closeSidePanelPage: () => {},
+        getApplets: () => [],
+        getCachedTodos: () => [],
+        mapSessionInfoToSummary: (info) => ({
+          sessionId: info.session_id,
+          title: info.title ?? "Untitled",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getFileChangesSnapshot: () => preActionCached,
+        broadcastFileChanges: (sid, snap) => {
+          broadcasts.push({
+            sessionId: sid,
+            totalPendingFiles: snap.totalPendingFiles,
+            appStatus: snap.files.find((f) => f.displayPath === "src/app.ts")?.status ?? "missing",
+          });
+        },
+      },
+      gitBridge: {
+        getStatus: async () => ({
+          branch: "main",
+          baseBranch: "main",
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+          stagedCount: 0,
+          hasGhCli: true,
+        }),
+        getDiff: async ({ path: p }) => ({
+          path: p,
+          originalContent: "",
+          modifiedContent: "",
+          unifiedDiff: "",
+          additions: 0,
+          deletions: 0,
+          languageId: "typescript",
+        }),
+        stage: async () => ({ ok: true }),
+        unstage: async () => ({ ok: true }),
+        keep: () => ({ ok: true }),
+        undo: async () => ({ ok: true }),
+        commit: async () => ({ ok: true }),
+        createPr: async () => ({ ok: true }),
+        listBranches: async () => ({ current: "main", branches: ["main"] }),
+        checkoutBranch: async (_ws, branch) => ({ ok: true, branch }),
+      },
+      editorBridge: {
+        openFile: async () => {},
+        openWorktreeWindow: async () => {},
+        openExternal: async () => {},
+        pickFiles: async () => [],
+        findWorkspaceFiles: async () => [],
+      },
+      getWorkspaceFolders: async () => [],
+      setProjectIcon: async () => {},
+      getGlobalState: <T>(_k: string, d: T) => d,
+      updateGlobalState: async () => {},
+      getRuntimeSettings: () => ({
+        socketPath: "/tmp/rayu-refresh.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+      }),
+      updateRuntimeSettings: async () => {},
+      openKeybindings: async () => {},
+    });
+
+    return { router, broadcasts };
+  };
+
+  // 1. Thrown error on changes.keep / changes.undo / changes.keepAll / changes.undoAll still refreshes & broadcasts latest snapshot
+  for (const scenario of [
+    {
+      name: "changes.keep",
+      invoke: (r: ReturnType<typeof createFeatureRouter>) =>
+        r.call("changes.keep", { sessionId: "sess_refresh", path: "src/app.ts" }),
+      postStatus: "kept" as const,
+    },
+    {
+      name: "changes.undo",
+      invoke: (r: ReturnType<typeof createFeatureRouter>) =>
+        r.call("changes.undo", { sessionId: "sess_refresh", path: "src/app.ts" }),
+      postStatus: "undone" as const,
+    },
+    {
+      name: "changes.keepAll",
+      invoke: (r: ReturnType<typeof createFeatureRouter>) =>
+        r.call("changes.keepAll", { sessionId: "sess_refresh" }),
+      postStatus: "kept" as const,
+    },
+    {
+      name: "changes.undoAll",
+      invoke: (r: ReturnType<typeof createFeatureRouter>) =>
+        r.call("changes.undoAll", { sessionId: "sess_refresh" }),
+      postStatus: "undone" as const,
+    },
+  ]) {
+    let reads = 0;
+    const { router, broadcasts } = buildRouter({
+      getFileChanges: async () => {
+        reads += 1;
+        return reads === 1
+          ? makeRawSnapshot(2, "pending")
+          : makeRawSnapshot(1, scenario.postStatus);
+      },
+      fileChangeAction: async () => {
+        throw new Error(`${scenario.name} timed out after partial mutation`);
+      },
+    });
+    await assert.rejects(scenario.invoke(router), /timed out after partial mutation/);
+    assert.equal(reads, 2);
+    assert.deepEqual(broadcasts, [
+      { sessionId: "sess_refresh", totalPendingFiles: 1, appStatus: scenario.postStatus },
+    ]);
+  }
+
+  // 2. Partial batch result (ok: false, no inline snapshot) refreshes & broadcasts updated snapshot
+  {
+    let reads = 0;
+    const { router, broadcasts } = buildRouter({
+      getFileChanges: async () => {
+        reads += 1;
+        return reads === 1
+          ? makeRawSnapshot(2, "pending")
+          : makeRawSnapshot(1, "undone");
+      },
+      fileChangeAction: async () => ({
+        ok: false,
+        message: "1 file conflicted after undoing src/app.ts",
+        conflicts: [
+          {
+            path: "/repo/src/other.ts",
+            display_path: "src/other.ts",
+            reason: "Modified on disk",
+          },
+        ],
+      }),
+    });
+
+    const partial = await router.call("changes.undoAll", { sessionId: "sess_refresh" });
+    assert.equal(partial.ok, false);
+    assert.equal(partial.conflict, true);
+    assert.equal(partial.snapshot?.totalPendingFiles, 1);
+    assert.equal(reads, 2);
+    assert.deepEqual(broadcasts, [
+      { sessionId: "sess_refresh", totalPendingFiles: 1, appStatus: "undone" },
+    ]);
+  }
+
+  // 3. When refresh getFileChanges fails after thrown error, NEVER re-broadcast stale pre-action cached snapshot
+  {
+    let reads = 0;
+    const { router, broadcasts } = buildRouter({
+      getFileChanges: async () => {
+        reads += 1;
+        if (reads === 1) return makeRawSnapshot(2, "pending");
+        throw new Error("daemon disconnected during refresh");
+      },
+      fileChangeAction: async () => {
+        throw new Error("socket closed mid-action");
+      },
+    });
+
+    await assert.rejects(
+      router.call("changes.undo", { sessionId: "sess_refresh", path: "src/app.ts" }),
+      /socket closed mid-action/,
+    );
+    assert.equal(reads, 2);
+    assert.deepEqual(broadcasts, []);
+  }
+
+  // 4. When refresh getFileChanges fails after partial batch result without snapshot, NEVER re-broadcast stale cached snapshot
+  {
+    let reads = 0;
+    const { router, broadcasts } = buildRouter({
+      getFileChanges: async () => {
+        reads += 1;
+        if (reads === 1) return makeRawSnapshot(2, "pending");
+        throw new Error("refresh readback failed");
+      },
+      fileChangeAction: async () => ({
+        ok: false,
+        message: "Partial batch conflict",
+        conflicts: [
+          {
+            path: "/repo/src/other.ts",
+            display_path: "src/other.ts",
+            reason: "Manual edit",
+          },
+        ],
+      }),
+    });
+
+    const partial = await router.call("changes.undoAll", { sessionId: "sess_refresh" });
+    assert.equal(partial.ok, false);
+    assert.equal(partial.snapshot, undefined);
+    assert.equal(reads, 2);
+    assert.deepEqual(broadcasts, []);
+  }
+});
+
+test("plugins.mcp.edit merges edits, preserves env secrets on empty string, preserves entry.type & custom fields via atomic write, and rejects malformed .mcp.json byte-for-byte", async (t) => {
+  const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-vsc-mcp-safety-"));
+  t.after(() => fs.rmSync(workspaceDir, { recursive: true, force: true }));
+
+  const makeWorkspaceRouter = (reloadFailure?: string) => {
+    const daemonStatus: DaemonStatusView = {
+      state: "connected",
+      version: "rayu-harness-v1.16",
+      protocolVersion: "1.16",
+      socketPath: "/tmp/rayu-mcp.sock",
+      latencyMs: 2,
+      capabilities: ["permissions", "mcp_control"],
+      isRayuRepo: true,
+    };
+
+    return createFeatureRouter({
+      bridgeManager: {
+        getStatus: () => daemonStatus,
+        ping: async () => ({ ok: true, latencyMs: 2 }),
+        reconnect: async () => daemonStatus,
+        restart: async () => daemonStatus,
+        reloadDaemon: async () => ({ ok: true }),
+        openOutputLog: () => {},
+      },
+      sessionHub: {
+        getActiveSessionId: () => "sess_mcp",
+        getActiveModel: () => "claude-opus-4-6",
+        getActiveProvider: () => "rayu",
+        getActivePermissionMode: () => "default",
+        getClient: async () =>
+          ({}) as unknown as Awaited<ReturnType<FeatureRouterDeps["sessionHub"]["getClient"]>>,
+        listSessions: async () => ({ sessions: [], activeSessionId: "sess_mcp" }),
+        createSession: async () => ({
+          sessionId: "sess_mcp",
+          title: "MCP",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        attachSession: async (sessionId) => ({
+          sessionId,
+          title: "MCP",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+        getHistory: async (sessionId) => ({ sessionId, messages: [] }),
+        setSessionPinned: async () => {},
+        setSessionArchived: async () => {},
+        setPermissionMode: async (_sid, mode) => ({ ok: true, mode }),
+        respondPermission: async () => {},
+        runtimeCommand: async (command, _args, sessionId) => {
+          if (reloadFailure) {
+            throw new Error(reloadFailure);
+          }
+          return {
+            session_id: sessionId ?? "sess_mcp",
+            command,
+            data: { reloaded: true },
+            message: "ok",
+          };
+        },
+        getBackgroundTasks: () => [],
+        refreshBackgroundProcesses: async () => [],
+        removeCompletedBackgroundTasks: () => 0,
+        getSidePanelState: () => ({ pages: [] }),
+        closeSidePanelPage: () => {},
+        getApplets: () => [],
+        getCachedTodos: () => [],
+        mapSessionInfoToSummary: (info) => ({
+          sessionId: info.session_id,
+          title: info.title ?? "Untitled",
+          status: "idle",
+          updatedAtMs: 1,
+        }),
+      },
+      gitBridge: {
+        getStatus: async () => ({
+          branch: "main",
+          baseBranch: "main",
+          totalAdditions: 0,
+          totalDeletions: 0,
+          files: [],
+          stagedCount: 0,
+          hasGhCli: true,
+        }),
+        getDiff: async ({ path: p }) => ({
+          path: p,
+          originalContent: "",
+          modifiedContent: "",
+          unifiedDiff: "",
+          additions: 0,
+          deletions: 0,
+          languageId: "typescript",
+        }),
+        stage: async () => ({ ok: true }),
+        unstage: async () => ({ ok: true }),
+        keep: () => ({ ok: true }),
+        undo: async () => ({ ok: true }),
+        commit: async () => ({ ok: true }),
+        createPr: async () => ({ ok: true }),
+        listBranches: async () => ({ current: "main", branches: ["main"] }),
+        checkoutBranch: async (_ws, branch) => ({ ok: true, branch }),
+      },
+      editorBridge: {
+        openFile: async () => {},
+        openWorktreeWindow: async () => {},
+        openExternal: async () => {},
+        pickFiles: async () => [],
+        findWorkspaceFiles: async () => [],
+      },
+      getWorkspaceFolders: async () => [
+        { name: "repo", path: workspaceDir, branch: "main", isPrimary: true },
+      ],
+      setProjectIcon: async () => {},
+      getGlobalState: <T>(_k: string, d: T) => d,
+      updateGlobalState: async () => {},
+      getRuntimeSettings: () => ({
+        socketPath: "/tmp/rayu-mcp.sock",
+        binaryPath: "/usr/local/bin/rayu",
+        autoStart: true,
+      }),
+      updateRuntimeSettings: async () => {},
+      openKeybindings: async () => {},
+    });
+  };
+
+  const mcpPath = path.join(workspaceDir, ".mcp.json");
+  const initialConfig = {
+    $schema: "https://example.invalid/mcp.schema.json",
+    customTopLevel: { keepMe: true },
+    mcpServers: {
+      remoteApi: {
+        type: "streamable-http",
+        url: "https://api.example.invalid/v1/mcp",
+        env: {
+          API_SECRET: "top-secret-token",
+          REGION: "us-east-1",
+        },
+        headers: {
+          "X-Tenant": "acme",
+        },
+        customNested: {
+          retries: 3,
+          tags: ["prod"],
+        },
+        shared: true,
+        timeout_secs: 20,
+      },
+      sibling: {
+        command: "node",
+        args: ["sibling.js"],
+      },
+    },
+  };
+  fs.writeFileSync(mcpPath, JSON.stringify(initialConfig, null, 2) + "\n", "utf8");
+
+  const router = makeWorkspaceRouter();
+  const editRes = await router.call("plugins.mcp.edit", {
+    id: "remoteApi",
+    scope: "workspace",
+    workspacePath: workspaceDir,
+    transport: "streamable-http",
+    url: "https://api.example.invalid/v2/mcp",
+    env: {
+      API_SECRET: "",
+      REGION: "eu-west-1",
+      NEW_KEY: "added-value",
+    },
+    timeoutSecs: 45,
+  });
+
+  assert.equal(editRes.ok, true);
+  assert.equal(editRes.saved, true);
+  assert.equal(editRes.reloaded, true);
+  assert.equal(editRes.reloadError, undefined);
+
+  const afterEdit = JSON.parse(fs.readFileSync(mcpPath, "utf8")) as {
+    $schema?: string;
+    customTopLevel?: Record<string, unknown>;
+    mcpServers: Record<string, Record<string, unknown>>;
+  };
+  assert.equal(afterEdit.$schema, "https://example.invalid/mcp.schema.json");
+  assert.deepEqual(afterEdit.customTopLevel, { keepMe: true });
+  assert.deepEqual(afterEdit.mcpServers.sibling, { command: "node", args: ["sibling.js"] });
+
+  const edited = afterEdit.mcpServers.remoteApi!;
+  assert.equal(edited.type, "streamable-http");
+  assert.equal(edited.url, "https://api.example.invalid/v2/mcp");
+  assert.equal(edited.timeout_secs, 45);
+  assert.equal(edited.shared, true);
+  assert.deepEqual(edited.env, {
+    API_SECRET: "top-secret-token",
+    REGION: "eu-west-1",
+    NEW_KEY: "added-value",
+  });
+  assert.deepEqual(edited.headers, { "X-Tenant": "acme" });
+  assert.deepEqual(edited.customNested, { retries: 3, tags: ["prod"] });
+
+  // Atomic write leaves no leftover .tmp files
+  assert.deepEqual(
+    fs.readdirSync(workspaceDir).filter((name) => name.includes(".tmp")),
+    [],
+  );
+
+  // Malformed .mcp.json rejects with invalid_request and preserves exact bytes on disk
+  const malformedBytes = Buffer.from(
+    '{\r\n  "mcpServers": {\r\n    "remoteApi": { "url": "https://keep" }\r\n  // trailing garbage',
+    "utf8",
+  );
+  fs.writeFileSync(mcpPath, malformedBytes);
+
+  for (const call of [
+    () =>
+      router.call("plugins.mcp.add", {
+        id: "fresh",
+        scope: "workspace",
+        workspacePath: workspaceDir,
+        transport: "stdio",
+        command: "npx",
+      }),
+    () =>
+      router.call("plugins.mcp.edit", {
+        id: "remoteApi",
+        scope: "workspace",
+        workspacePath: workspaceDir,
+        timeoutSecs: 10,
+      }),
+    () =>
+      router.call("plugins.mcp.remove", {
+        id: "remoteApi",
+        scope: "workspace",
+        workspacePath: workspaceDir,
+      }),
+  ]) {
+    await assert.rejects(call, (err: unknown) => {
+      assert.ok(err instanceof HarnessError);
+      assert.equal(err.code, "invalid_request");
+      return true;
+    });
+    assert.equal(Buffer.compare(fs.readFileSync(mcpPath), malformedBytes), 0);
+  }
+
+  // Non-object mcpServers also rejects with invalid_request and preserves exact bytes
+  const invalidShapeBytes = Buffer.from('{"mcpServers":["not-an-object"]}\n', "utf8");
+  fs.writeFileSync(mcpPath, invalidShapeBytes);
+  await assert.rejects(
+    router.call("plugins.mcp.add", {
+      id: "fresh",
+      scope: "workspace",
+      workspacePath: workspaceDir,
+      transport: "stdio",
+      command: "npx",
+    }),
+    (err: unknown) => err instanceof HarnessError && err.code === "invalid_request",
+  );
+  assert.equal(Buffer.compare(fs.readFileSync(mcpPath), invalidShapeBytes), 0);
+
+  // When config write succeeds and engine reload fails, add / edit / remove report
+  // { ok: true, saved: true, reloaded: false, reloadError }
+  fs.unlinkSync(mcpPath);
+  const failingReloadRouter = makeWorkspaceRouter("daemon reload refused");
+
+  const addDegraded = await failingReloadRouter.call("plugins.mcp.add", {
+    id: "linear",
+    scope: "workspace",
+    workspacePath: workspaceDir,
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "linear-mcp"],
+  });
+  assert.equal(addDegraded.ok, true);
+  assert.equal(addDegraded.saved, true);
+  assert.equal(addDegraded.reloaded, false);
+  assert.equal(addDegraded.reloadError, "daemon reload refused");
+
+  const editDegraded = await failingReloadRouter.call("plugins.mcp.edit", {
+    id: "linear",
+    scope: "workspace",
+    workspacePath: workspaceDir,
+    timeoutSecs: 90,
+  });
+  assert.equal(editDegraded.ok, true);
+  assert.equal(editDegraded.saved, true);
+  assert.equal(editDegraded.reloaded, false);
+  assert.equal(editDegraded.reloadError, "daemon reload refused");
+  assert.equal(
+    (JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, { timeout_secs?: number }> })
+      .mcpServers.linear?.timeout_secs,
+    90,
+  );
+
+  const removeDegraded = await failingReloadRouter.call("plugins.mcp.remove", {
+    id: "linear",
+    scope: "workspace",
+    workspacePath: workspaceDir,
+  });
+  assert.equal(removeDegraded.ok, true);
+  assert.equal(removeDegraded.saved, true);
+  assert.equal(removeDegraded.reloaded, false);
+  assert.equal(removeDegraded.reloadError, "daemon reload refused");
+  assert.equal(
+    "linear" in
+      (JSON.parse(fs.readFileSync(mcpPath, "utf8")) as { mcpServers: Record<string, unknown> })
+        .mcpServers,
+    false,
+  );
+});
+
+test("plugins.skills.create rejects traversal/non-alnum names, safely quotes YAML description, prevents duplicate overwrite, and reports saved/reloaded/reloadError", async (t) => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rayu-vsc-skills-safety-"));
+  const rayuHome = path.join(tmpDir, "rayu-home");
+  const prevRayuHome = process.env.RAYU_HOME;
+  process.env.RAYU_HOME = rayuHome;
+  t.after(() => {
+    if (prevRayuHome === undefined) {
+      delete process.env.RAYU_HOME;
+    } else {
+      process.env.RAYU_HOME = prevRayuHome;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const { router } = createTestFeatureRouter({
+    runtimeHandler: () => ({ data: { skills: [] }, message: "ok" }),
+  });
+
+  // Reject path traversal and punctuation-only names
+  for (const badName of ["../../evil", "___"]) {
+    await assert.rejects(
+      router.call("plugins.skills.create", {
+        name: badName,
+        description: "Should fail",
+        scope: "global",
+      }),
+      (err: unknown) => err instanceof HarnessError && err.code === "invalid_request",
+    );
+  }
+  assert.equal(fs.existsSync(path.join(tmpDir, "evil")), false);
+
+  // Quotes YAML description safely (colons, quotes, hashes, newlines)
+  const trickyDescription = 'Run: "strict" check #1\nsecond line: safe';
+  const created = await router.call("plugins.skills.create", {
+    name: "YAML Safety Gate",
+    description: trickyDescription,
+    scope: "global",
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.saved, true);
+  assert.equal(created.reloaded, true);
+  assert.equal(created.reloadError, undefined);
+  assert.equal(created.skill.name, "yaml-safety-gate");
+
+  const originalBytes = fs.readFileSync(created.skill.path);
+  const originalText = originalBytes.toString("utf8");
+  assert.ok(
+    originalText.includes(`description: ${JSON.stringify(trickyDescription)}\n`),
+    `Expected YAML-quoted description in SKILL.md, got:\n${originalText}`,
+  );
+
+  // Exclusive creation: duplicate rejects with invalid_request and preserves original bytes byte-for-byte
+  await assert.rejects(
+    router.call("plugins.skills.create", {
+      name: "yaml-safety-gate",
+      description: "Attempted overwrite",
+      scope: "global",
+    }),
+    (err: unknown) =>
+      err instanceof HarnessError &&
+      err.code === "invalid_request" &&
+      /already exists/i.test(err.message),
+  );
+  assert.equal(Buffer.compare(fs.readFileSync(created.skill.path), originalBytes), 0);
+
+  // Reload failure still saves skill and reports saved: true, reloaded: false, reloadError
+  const { router: offlineSkillsRouter } = createTestFeatureRouter({
+    runtimeHandler: () => {
+      throw new Error("skills reload unavailable");
+    },
+  });
+  const degraded = await offlineSkillsRouter.call("plugins.skills.create", {
+    name: "Offline Skill",
+    description: "Created while daemon reload fails",
+    scope: "global",
+  });
+  assert.equal(degraded.ok, true);
+  assert.equal(degraded.saved, true);
+  assert.equal(degraded.reloaded, false);
+  assert.equal(degraded.reloadError, "skills reload unavailable");
+  assert.equal(fs.existsSync(degraded.skill.path), true);
 });

@@ -26,6 +26,7 @@ export interface McpServerDraft {
   argsText: string;
   url: string;
   envText: string;
+  existingEnvKeys?: string[];
   shared: boolean;
   timeoutSecs: number;
   isInstalled?: boolean;
@@ -42,7 +43,7 @@ export interface McpServerDialogProps {
     brandId?: string;
     scope: "global" | "workspace";
     workspacePath?: string;
-    transport: McpTransport;
+    transport?: McpTransport;
     command?: string;
     args?: string[];
     url?: string;
@@ -54,7 +55,10 @@ export interface McpServerDialogProps {
   isSaving?: boolean;
 }
 
-function parseEnvLines(raw: string): Record<string, string> {
+function parseEnvLines(
+  raw: string,
+  omitEmptyValues = false,
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -63,7 +67,9 @@ function parseEnvLines(raw: string): Record<string, string> {
     if (eq <= 0) continue;
     const key = trimmed.slice(0, eq).trim();
     const val = trimmed.slice(eq + 1).trim();
-    if (key) env[key] = val;
+    if (!key) continue;
+    if (omitEmptyValues && !val) continue;
+    env[key] = val;
   }
   return env;
 }
@@ -98,35 +104,84 @@ export function McpServerDialog({
       setErrorMessage("Enter a server ID (e.g. github, linear, context7).");
       return;
     }
-    if (draft.transport === "stdio" && !draft.command.trim()) {
+
+    const isEdit = draft.mode === "edit";
+    const transportChanged = draft.transport !== initialDraft.transport;
+    const commandChanged = draft.command.trim() !== initialDraft.command.trim();
+    const urlChanged = draft.url.trim() !== initialDraft.url.trim();
+
+    if (
+      draft.transport === "stdio" &&
+      !draft.command.trim() &&
+      (!isEdit ||
+        transportChanged ||
+        commandChanged ||
+        Boolean(initialDraft.command.trim()))
+    ) {
       setErrorMessage("Enter the executable command for stdio transport.");
       return;
     }
-    if (draft.transport !== "stdio" && !draft.url.trim()) {
+    if (
+      draft.transport !== "stdio" &&
+      !draft.url.trim() &&
+      (!isEdit ||
+        transportChanged ||
+        urlChanged ||
+        Boolean(initialDraft.url.trim()))
+    ) {
       setErrorMessage("Enter the remote server URL for HTTP/SSE transport.");
       return;
     }
 
     setErrorMessage(null);
     const args = draft.argsText.trim().split(/\s+/).filter(Boolean);
-    const env = parseEnvLines(draft.envText);
+    const initialArgs = initialDraft.argsText
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    const argsChanged = args.join(" ") !== initialArgs.join(" ");
+    const sharedChanged = draft.shared !== initialDraft.shared;
+    const timeoutChanged = draft.timeoutSecs !== initialDraft.timeoutSecs;
+    const env = parseEnvLines(draft.envText, isEdit);
 
     try {
-      await onSave({
-        mode: draft.mode,
-        id: cleanId,
-        name: draft.displayName || cleanId,
-        brandId: draft.brandId ?? cleanId,
-        scope: draft.scope,
-        workspacePath: draft.workspacePath,
-        transport: draft.transport,
-        ...(draft.transport === "stdio"
-          ? { command: draft.command.trim(), args }
-          : { url: draft.url.trim() }),
-        ...(Object.keys(env).length > 0 ? { env } : {}),
-        shared: draft.shared,
-        timeoutSecs: draft.timeoutSecs,
-      });
+      if (isEdit) {
+        await onSave({
+          mode: "edit",
+          id: cleanId,
+          name: draft.displayName || cleanId,
+          brandId: draft.brandId ?? cleanId,
+          scope: draft.scope,
+          workspacePath: draft.workspacePath,
+          ...(transportChanged ? { transport: draft.transport } : {}),
+          ...(draft.transport === "stdio" && commandChanged
+            ? { command: draft.command.trim() }
+            : {}),
+          ...(draft.transport === "stdio" && argsChanged ? { args } : {}),
+          ...(draft.transport !== "stdio" && urlChanged
+            ? { url: draft.url.trim() }
+            : {}),
+          ...(Object.keys(env).length > 0 ? { env } : {}),
+          ...(sharedChanged ? { shared: draft.shared } : {}),
+          ...(timeoutChanged ? { timeoutSecs: draft.timeoutSecs } : {}),
+        });
+      } else {
+        await onSave({
+          mode: "add",
+          id: cleanId,
+          name: draft.displayName || cleanId,
+          brandId: draft.brandId ?? cleanId,
+          scope: draft.scope,
+          workspacePath: draft.workspacePath,
+          transport: draft.transport,
+          ...(draft.transport === "stdio"
+            ? { command: draft.command.trim(), args }
+            : { url: draft.url.trim() }),
+          ...(Object.keys(env).length > 0 ? { env } : {}),
+          shared: draft.shared,
+          timeoutSecs: draft.timeoutSecs,
+        });
+      }
       onOpenChange(false);
     } catch (err) {
       setErrorMessage(
@@ -309,6 +364,24 @@ export function McpServerDialog({
               Environment variables (one{" "}
               <code className="font-mono">KEY=VALUE</code> per line)
             </label>
+            {draft.mode === "edit" &&
+              draft.existingEnvKeys &&
+              draft.existingEnvKeys.length > 0 && (
+                <div
+                  data-testid="mcp-dialog-existing-env-keys"
+                  className="flex flex-wrap items-center gap-1.5 pb-1 text-[11px] text-muted-ink"
+                >
+                  <span>Existing keys kept unless overridden</span>
+                  {draft.existingEnvKeys.map((key) => (
+                    <code
+                      key={key}
+                      className="rounded border border-hairline bg-inset px-1.5 py-0.5 font-mono text-[10.5px] text-body"
+                    >
+                      {key}
+                    </code>
+                  ))}
+                </div>
+              )}
             <textarea
               id="mcp-dialog-env"
               data-testid="mcp-dialog-env-input"

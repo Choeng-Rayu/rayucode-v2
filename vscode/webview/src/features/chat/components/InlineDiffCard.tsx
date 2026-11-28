@@ -10,6 +10,11 @@ import {
 } from "@/lib";
 
 import { applyFileReview, useFileReviewAvailable } from "../hooks/fileReview";
+import { ChatSessionContext } from "./ChatSessionContext";
+import {
+  FileReviewConflictDialog,
+  type ConflictDialogState,
+} from "./FileReviewConflictDialog";
 
 export type InlineDiffDecision = "pending" | "accepted" | "rejected";
 
@@ -36,18 +41,27 @@ export function InlineDiffCard({
   onOpenInVSCodeDiff,
   className,
 }: InlineDiffCardProps) {
-  const resolvedSessionId = sessionId;
+  const contextSessionId = React.useContext(ChatSessionContext);
+  const resolvedSessionId = sessionId ?? contextSessionId;
   const canReview = useFileReviewAvailable(resolvedSessionId);
   const entry = useAppStore((state) => resolvedSessionId
     ? state.fileChangesBySession[resolvedSessionId]?.files.find(
         (file) => file.path === diff.file || file.displayPath === diff.file,
       )
     : undefined);
-  const decision = entry?.status === "kept" ? "accepted"
-    : entry?.status === "undone" ? "rejected"
+  const decision: InlineDiffDecision = entry
+    ? entry.status === "kept"
+      ? "accepted"
+      : entry.status === "undone"
+        ? "rejected"
+        : "pending"
     : initialDecision;
+  const undoDisabled = entry ? !entry.undoable : false;
+  const redoVisible = entry ? entry.canRedo : true;
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string>();
+  const [conflictPrompt, setConflictPrompt] =
+    React.useState<ConflictDialogState | null>(null);
 
   const firstCodeLine = React.useMemo(() => {
     const match = diff.lines.find(
@@ -56,15 +70,36 @@ export function InlineDiffCard({
     return match?.newLine ?? match?.oldLine ?? 1;
   }, [diff.lines]);
 
-  const review = async (action: "keep" | "undo" | "redo") => {
+  const review = async (action: "keep" | "undo" | "redo", force = false) => {
     if (!canReview || busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      const result = await applyFileReview(resolvedSessionId, action, diff.file);
+      const targetPath = entry?.path ?? diff.file;
+      const result = await applyFileReview(resolvedSessionId, action, targetPath, force);
       if (!result.ok) {
-        const conflicts = result.conflicts?.map((conflict) => `${conflict.displayPath}: ${conflict.reason}`).join(" ");
-        setError(conflicts ? `${conflicts} Open the turn’s file review to inspect or force restore.` : result.message ?? "File review failed.");
+        const conflicts = result.conflicts ?? [];
+        if ((conflicts.length > 0 || result.conflict) && !force && (action === "undo" || action === "redo")) {
+          setConflictPrompt({
+            action,
+            path: targetPath,
+            conflicts:
+              conflicts.length > 0
+                ? conflicts
+                : [
+                    {
+                      path: targetPath,
+                      displayPath: entry?.displayPath ?? diff.file,
+                      reason:
+                        result.message ??
+                        "File has manual edits made after the AI snapshot.",
+                    },
+                  ],
+            message: result.message,
+          });
+          return;
+        }
+        setError(result.message ?? "File review failed.");
         return;
       }
       if (action === "keep") onAccept?.(diff.id, diff.file);
@@ -75,6 +110,13 @@ export function InlineDiffCard({
     } finally {
       setBusy(false);
     }
+  };
+
+  const handleForceRestore = async () => {
+    if (!conflictPrompt) return;
+    const action = conflictPrompt.action === "redo" ? "redo" : "undo";
+    setConflictPrompt(null);
+    await review(action, true);
   };
 
   const handleOpenVSCodeDiff = () => {
@@ -216,7 +258,12 @@ export function InlineDiffCard({
               variant="destructive"
               size="xs"
               data-testid={`reject-diff-${diff.id}`}
-              disabled={!canReview || busy}
+              disabled={!canReview || busy || undoDisabled}
+              title={
+                undoDisabled
+                  ? "Exceeds 10 MiB snapshot limit — undo unavailable"
+                  : undefined
+              }
               onClick={() => void review("undo")}
             >
               Reject
@@ -233,7 +280,7 @@ export function InlineDiffCard({
               <span>Accept</span>
             </Button>
           </>
-        ) : decision === "rejected" ? (
+        ) : decision === "rejected" && redoVisible ? (
           <Button
             type="button"
             variant="ghost"
@@ -248,6 +295,20 @@ export function InlineDiffCard({
         ) : null}
       </div>
       {error && <p role="alert" className="px-3 pb-2 text-xs text-danger">{error}</p>}
+      <FileReviewConflictDialog
+        conflictPrompt={conflictPrompt}
+        onClose={() => setConflictPrompt(null)}
+        onOpenDiff={(target) => {
+          postToHost({
+            type: "rayucode.editor.openDiff",
+            path: target,
+            sessionId: resolvedSessionId,
+            scope: "session",
+          });
+          onOpenInVSCodeDiff?.(target);
+        }}
+        onForceRestore={handleForceRestore}
+      />
     </div>
   );
 }

@@ -384,12 +384,14 @@ export function useChatStream(
   const setFileChangesSnapshot = React.useCallback(
     (snapshot: FileChangesSnapshotView) => {
       const targetSid = snapshot.sessionId || sessionId;
-      setLocalFileChanges(snapshot);
+      if (options.initialFileChanges !== undefined) {
+        setLocalFileChanges(snapshot);
+      }
       if (targetSid) {
         setStoreFileChangesSnapshot(targetSid, snapshot);
       }
     },
-    [sessionId, setStoreFileChangesSnapshot],
+    [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot],
   );
 
   React.useEffect(() => {
@@ -407,7 +409,9 @@ export function useChatStream(
         msg.type === "rayucode.fileChanges.updated" &&
         msg.sessionId === sessionId
       ) {
-        setLocalFileChanges(msg.snapshot);
+        if (options.initialFileChanges !== undefined) {
+          setLocalFileChanges(msg.snapshot);
+        }
         setStoreFileChangesSnapshot(msg.sessionId, msg.snapshot);
       } else if (
         msg.type === "rayucode.permission.resolved" &&
@@ -416,7 +420,7 @@ export function useChatStream(
         clearStorePermission(msg.sessionId, msg.requestId);
       }
     });
-  }, [clearStorePermission, sessionId, setStoreFileChangesSnapshot]);
+  }, [clearStorePermission, options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
 
   React.useEffect(() => {
     if (options.initialFileChanges !== undefined) return;
@@ -425,7 +429,6 @@ export function useChatStream(
     void callRpc("changes.getSessionSummary", { sessionId })
       .then((snapshot) => {
         if (cancelled) return;
-        setLocalFileChanges(snapshot);
         setStoreFileChangesSnapshot(sessionId, snapshot);
       })
       .catch(() => {
@@ -436,7 +439,10 @@ export function useChatStream(
     };
   }, [options.initialFileChanges, sessionId, setStoreFileChangesSnapshot]);
 
-  const fileChangesSnapshot = localFileChanges ?? storeFileChanges;
+  const fileChangesSnapshot =
+    options.initialFileChanges !== undefined
+      ? (localFileChanges ?? options.initialFileChanges)
+      : storeFileChanges;
 
   const todos = useAppStore((s) =>
     sessionId ? (s.todosBySession[sessionId] ?? EMPTY_TODOS) : EMPTY_TODOS,

@@ -1977,7 +1977,9 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      saved: z.boolean().optional(),
       reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
       message: z.string().optional(),
     }),
   },
@@ -1997,7 +1999,9 @@ export const RpcContractSchemas = {
     result: z.object({
       ok: z.boolean(),
       server: McpServerViewSchema.optional(),
+      saved: z.boolean().optional(),
       reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
       message: z.string().optional(),
     }),
   },
@@ -2007,7 +2011,11 @@ export const RpcContractSchemas = {
       workspacePath: z.string().optional(),
       scope: z.enum(["global", "workspace"]).optional(),
     }),
-    result: OkResultSchema.extend({ reloaded: z.boolean().optional() }),
+    result: OkResultSchema.extend({
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
+    }),
   },
   "plugins.mcp.login": {
     params: z.object({ id: z.string() }),
@@ -2048,7 +2056,13 @@ export const RpcContractSchemas = {
       scope: z.enum(["project", "global"]).optional(),
       workspacePath: z.string().optional(),
     }),
-    result: z.object({ ok: z.boolean(), skill: SkillViewSchema }),
+    result: z.object({
+      ok: z.boolean(),
+      skill: SkillViewSchema,
+      saved: z.boolean().optional(),
+      reloaded: z.boolean().optional(),
+      reloadError: z.string().optional(),
+    }),
   },
   "plugins.skills.install": {
     params: z.object({ name: z.string().min(1) }),
