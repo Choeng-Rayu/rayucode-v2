@@ -219,16 +219,16 @@ export function SafetyHooksSection({
               data-testid={`risk-tier-${item.tier}`}
               className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-xs"
             >
-              <div className="flex items-center gap-2.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                 <span
                   className={cn(
-                    "inline-flex min-w-[82px] justify-center rounded-full px-2 py-0.5 font-mono text-[11px] font-medium",
+                    "inline-flex min-w-[82px] shrink-0 justify-center rounded-full px-2 py-0.5 font-mono text-[11px] font-medium",
                     item.tone,
                   )}
                 >
                   {item.label}
                 </span>
-                <span className="text-body">{item.rule}</span>
+                <span className="min-w-0 flex-1 text-body">{item.rule}</span>
               </div>
             </div>
           ))}

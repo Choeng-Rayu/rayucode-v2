@@ -56,7 +56,7 @@ export function ChatWorkspaceView({
           data-slot="chat-workspace-view"
           data-testid="chat-workspace-view"
           className={cn(
-            "flex h-full min-h-0 min-w-0 flex-1 flex-col bg-canvas",
+            "@container/workspace flex h-full min-h-0 min-w-0 flex-1 flex-col bg-canvas",
             className,
           )}
         >
@@ -125,7 +125,7 @@ export function ChatWorkspaceView({
           {backgroundDockSlot && (
             <div
               data-slot="chat-background-dock-slot"
-              className="mx-auto w-full max-w-[732px] shrink-0 px-4 @min-[640px]/app:px-6"
+              className="mx-auto w-full max-w-[732px] shrink-0 px-3 @min-[420px]/workspace:px-4 @min-[640px]/workspace:px-6"
             >
               {backgroundDockSlot}
             </div>
@@ -134,7 +134,7 @@ export function ChatWorkspaceView({
           {stream.todos.length > 0 && (
             <div
               data-slot="chat-tasks-dock-slot"
-              className="mx-auto w-full max-w-[732px] shrink-0 px-4 pb-2 @min-[640px]/app:px-6"
+              className="mx-auto w-full max-w-[732px] shrink-0 px-3 pb-2 @min-[420px]/workspace:px-4 @min-[640px]/workspace:px-6"
             >
               <TaskChecklistCard
                 sessionId={stream.sessionId}
@@ -146,7 +146,7 @@ export function ChatWorkspaceView({
           {composerSlot && (
             <div
               data-slot="chat-composer-slot"
-              className="mx-auto w-full max-w-[732px] shrink-0 px-4 pb-3 @min-[640px]/app:px-6"
+              className="mx-auto w-full max-w-[732px] shrink-0 px-3 pb-3 @min-[420px]/workspace:px-4 @min-[640px]/workspace:px-6"
             >
               {composerSlot}
             </div>

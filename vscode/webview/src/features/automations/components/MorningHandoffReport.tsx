@@ -83,15 +83,18 @@ function TaskOutcomeCard({ task }: { task: OvernightTaskOutcomeView }) {
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
           <span className="text-[11px] text-muted-ink">Commits / Files:</span>
           {task.evidence.map((ev) => (
-            <div key={ev} className="inline-flex items-center gap-1">
+            <div
+              key={ev}
+              className="inline-flex max-w-full min-w-0 flex-wrap items-center gap-1"
+            >
               <button
                 type="button"
                 data-testid={`handoff-evidence-file-${ev}`}
                 onClick={() => handleOpenEvidenceFile(ev)}
-                className="cite-link inline-flex items-center gap-1.5"
+                className="cite-link inline-flex max-w-full min-w-0 items-center gap-1.5"
               >
                 <TechFileBadge path={ev} />
-                <span>{ev}</span>
+                <span className="truncate">{ev}</span>
               </button>
               <button
                 type="button"

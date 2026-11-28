@@ -169,7 +169,7 @@ export function CompactTopBar({
           </Tooltip>
         )}
 
-        {/* [🌐] Open Browser in VS Code */}
+        {/* [🌐] Open Browser in VS Code (hidden <360px; always available in Overflow Menu) */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -181,7 +181,7 @@ export function CompactTopBar({
                   type: "rayucode.editor.openSimpleBrowser",
                 })
               }
-              className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+              className="hidden size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink @min-[360px]/app:grid"
             >
               <Globe className="size-3.5" />
             </button>
@@ -189,7 +189,7 @@ export function CompactTopBar({
           <TooltipContent side="bottom">Open Browser in VS Code</TooltipContent>
         </Tooltip>
 
-        {/* [>_] Open Terminal in VS Code */}
+        {/* [>_] Open Terminal in VS Code (hidden <360px; always available in Overflow Menu) */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -205,7 +205,7 @@ export function CompactTopBar({
                     : (activeProjectPath ?? undefined),
                 })
               }
-              className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+              className="hidden size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink @min-[360px]/app:grid"
             >
               <Terminal className="size-3.5" />
             </button>
@@ -213,7 +213,7 @@ export function CompactTopBar({
           <TooltipContent side="bottom">Open Terminal in VS Code</TooltipContent>
         </Tooltip>
 
-        {/* [⤢] Open Beside Editor */}
+        {/* [⤢] Open Beside Editor (hidden <300px; also available in Overflow Menu) */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
@@ -221,7 +221,7 @@ export function CompactTopBar({
               aria-label="Open Beside Editor"
               data-testid="compact-expand-editor-panel"
               onClick={handlePopOutEditorPanel}
-              className="grid size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink"
+              className="hidden size-7 cursor-pointer place-items-center rounded-[7px] text-muted-ink transition-colors hover:bg-hover hover:text-ink @min-[300px]/app:grid"
             >
               <ExternalLink className="size-3.5" />
             </button>
@@ -246,7 +246,17 @@ export function CompactTopBar({
             </TooltipTrigger>
             <TooltipContent side="bottom">More</TooltipContent>
           </Tooltip>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent
+            align="end"
+            className="w-[min(13rem,calc(100vw-16px))]"
+          >
+            <DropdownMenuItem
+              data-testid="compact-menu-open-beside"
+              onClick={handlePopOutEditorPanel}
+            >
+              <ExternalLink className="size-3.5" />
+              <span>Open Beside Editor</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               data-testid="compact-menu-open-browser"
               onClick={() =>

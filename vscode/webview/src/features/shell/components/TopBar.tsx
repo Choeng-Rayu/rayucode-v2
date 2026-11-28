@@ -87,7 +87,11 @@ export function MoreOptionsMenu({
         <TooltipContent side="bottom">More options</TooltipContent>
       </Tooltip>
 
-      <DropdownMenuContent align="end" sideOffset={6} className="w-[236px]">
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className="w-[min(236px,calc(100vw-16px))]"
+      >
         <DropdownMenuItem
           data-testid="more-menu-open-browser"
           onClick={() =>
@@ -334,7 +338,10 @@ export function TopBar() {
             <ChevronDown className="size-3 shrink-0 text-muted-ink" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-52">
+        <DropdownMenuContent
+          align="start"
+          className="w-[min(13rem,calc(100vw-16px))]"
+        >
           <DropdownMenuItem
             onClick={() => {
               openNewChatDraft({ workingDir: activeProjectPath });

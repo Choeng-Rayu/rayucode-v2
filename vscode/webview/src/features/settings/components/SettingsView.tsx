@@ -95,8 +95,8 @@ const NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
 
 export function SettingsView({ initialSection, className }: SettingsViewProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
-  const { formFactor } = useShellFormFactor(containerRef);
-  const isCompact = formFactor === "compact";
+  const { formFactor, width } = useShellFormFactor(containerRef);
+  const canShowSideRail = width >= 760;
 
   const {
     activeSection,
@@ -190,6 +190,22 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
     }
   }, [activeSection, filteredSections, setActiveSection]);
 
+  const showSideRail = canShowSideRail && !sidebarCollapsed;
+
+  // Keep active tab visible in the horizontal compact category strip when navigated programmatically
+  React.useEffect(() => {
+    if (showSideRail) return;
+    const header = containerRef.current?.querySelector(
+      '[data-testid="settings-compact-header"]',
+    );
+    const activeTab = header?.querySelector(
+      `[data-testid="settings-nav-${activeSection}"]`,
+    );
+    if (activeTab && typeof activeTab.scrollIntoView === "function") {
+      activeTab.scrollIntoView({ inline: "nearest", block: "nearest" });
+    }
+  }, [activeSection, showSideRail]);
+
   const isEmbeddedWorkspaceSection =
     activeSection === "agents" ||
     activeSection === "swarm" ||
@@ -220,8 +236,6 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
   }
 
   const isDaemonConnected = daemonStatus.state === "connected";
-
-  const showSideRail = !isCompact && !sidebarCollapsed;
 
   return (
     <SectionErrorBoundary title="Settings Error">
@@ -366,16 +380,16 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
         )}
 
         {/* Main Content Stage */}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas">
-          {/* Top Bar for Compact Sidebar (<560px) or Collapsed Rail */}
-          {(isCompact || sidebarCollapsed) && (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-canvas @container/settings-stage">
+          {/* Top Bar for Narrow / Compact Widths (<760px) or Collapsed Rail */}
+          {!showSideRail && (
             <header
               data-testid="settings-compact-header"
               className="flex flex-col gap-2 border-b border-hairline bg-chrome px-3.5 py-2.5"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  {!isCompact && sidebarCollapsed && (
+                  {canShowSideRail && sidebarCollapsed && (
                     <Button
                       type="button"
                       variant="ghost"
@@ -399,7 +413,7 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
                   </Button>
                 </div>
 
-                <div className="relative min-w-0 flex-1 sm:min-w-[160px]">
+                <div className="relative min-w-0 flex-1 @min-[420px]/settings-stage:min-w-[160px]">
                   <Search
                     className="pointer-events-none absolute top-1.5 left-2.5 size-3 text-muted-ink"
                     aria-hidden="true"
@@ -498,7 +512,7 @@ export function SettingsView({ initialSection, className }: SettingsViewProps) {
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto flex w-full max-w-[820px] flex-col gap-5 px-5 pt-6 pb-20 md:px-8">
+              <div className="mx-auto flex w-full max-w-[820px] flex-col gap-5 px-3.5 pt-5 pb-20 @min-[480px]/settings-stage:px-5 @min-[680px]/settings-stage:px-8">
                 {statusMessage && (
                   <div
                     data-testid="settings-status-banner"

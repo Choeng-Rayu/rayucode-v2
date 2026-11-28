@@ -227,7 +227,7 @@ export function ProjectIconPicker({
         sideOffset={8}
         data-testid="project-icon-picker-popover"
         onClick={(e) => e.stopPropagation()}
-        className="w-[248px] rounded-xl border-premium-hi bg-popover-solid p-2.5 text-ink shadow-popover"
+        className="w-[min(248px,calc(100vw-16px))] rounded-xl border-premium-hi bg-popover-solid p-2.5 text-ink shadow-popover"
       >
         <div className="mb-1.5 px-1 text-[11px] font-medium text-muted-ink">
           Emoji

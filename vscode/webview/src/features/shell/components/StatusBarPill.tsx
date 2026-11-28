@@ -134,7 +134,10 @@ export function StatusBarPill({
         </TooltipContent>
       </Tooltip>
 
-      <DropdownMenuContent align="end" className="w-60">
+      <DropdownMenuContent
+        align="end"
+        className="w-[min(15rem,calc(100vw-16px))]"
+      >
         <DropdownMenuLabel>
           Rayu Engine ({daemonStatus.state})
         </DropdownMenuLabel>

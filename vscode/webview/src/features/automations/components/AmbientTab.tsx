@@ -206,7 +206,7 @@ export function AmbientTab() {
       </section>
 
       {/* Trigger Rules & Recent Cycles */}
-      <div className="grid grid-cols-1 gap-4 @min-[720px]/app:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 @min-[620px]/automations:grid-cols-2">
         <section className="rayu-card-bevel rounded-[14px] border border-premium bg-pane p-4">
           <h3 className="m-0 text-xs font-semibold tracking-tight text-ink uppercase">
             Trigger Rules

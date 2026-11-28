@@ -94,11 +94,11 @@ export function RemoteView({ className }: RemoteViewProps) {
         data-slot="remote-view"
         data-testid="remote-view"
         className={cn(
-          "h-full w-full flex-1 overflow-y-auto bg-canvas",
+          "h-full w-full flex-1 overflow-x-hidden overflow-y-auto bg-canvas @container/remote",
           className,
         )}
       >
-        <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-5 pt-6 pb-16 md:px-10">
+        <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-3.5 pt-5 pb-16 @min-[520px]/remote:px-6 @min-[720px]/remote:px-10">
           {/* Page Header */}
           <header className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -156,22 +156,27 @@ export function RemoteView({ className }: RemoteViewProps) {
             onValueChange={(v) => setActiveTab(v as RemoteTopTabId)}
             className="gap-5"
           >
-            <TabsList aria-label="Remote access destination">
-              <TabsTrigger
-                value="telegram"
-                onClick={() => setActiveTab("telegram")}
-                data-testid="remote-tab-telegram"
+            <div className="max-w-full overflow-x-auto pb-0.5">
+              <TabsList
+                className="w-fit min-w-max"
+                aria-label="Remote access destination"
               >
-                Telegram Bot
-              </TabsTrigger>
-              <TabsTrigger
-                value="cloud-gateway"
-                onClick={() => setActiveTab("cloud-gateway")}
-                data-testid="remote-tab-cloud-gateway"
-              >
-                Cloud, SSH &amp; Mobile Gateway
-              </TabsTrigger>
-            </TabsList>
+                <TabsTrigger
+                  value="telegram"
+                  onClick={() => setActiveTab("telegram")}
+                  data-testid="remote-tab-telegram"
+                >
+                  Telegram Bot
+                </TabsTrigger>
+                <TabsTrigger
+                  value="cloud-gateway"
+                  onClick={() => setActiveTab("cloud-gateway")}
+                  data-testid="remote-tab-cloud-gateway"
+                >
+                  Cloud, SSH &amp; Mobile Gateway
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="telegram">
               <TelegramTab

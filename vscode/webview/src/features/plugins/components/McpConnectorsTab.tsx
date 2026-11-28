@@ -422,7 +422,7 @@ export function McpConnectorsTab() {
 
         {/* Search + Scope Filter + Category Filter Row */}
         <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi sm:min-w-[220px]">
+          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi @min-[480px]/plugins-stage:min-w-[220px]">
             <Search
               className="size-3.5 shrink-0 text-muted-ink"
               aria-hidden="true"
@@ -449,7 +449,7 @@ export function McpConnectorsTab() {
           </label>
 
           {/* Scope Filter Pills */}
-          <div className="inline-flex items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
+          <div className="flex max-w-full flex-wrap items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
             {(
               [
                 { id: "all", label: "All" },
@@ -698,7 +698,7 @@ export function McpConnectorsTab() {
 
           <div
             data-testid="mcp-catalog-grid"
-            className="grid grid-cols-1 gap-3 @min-[700px]/app:grid-cols-2"
+            className="grid grid-cols-1 gap-3 @min-[600px]/plugins-stage:grid-cols-2"
           >
             {filteredCatalog.map((tpl) => {
               const isInstalled = installedIds.has(tpl.id);

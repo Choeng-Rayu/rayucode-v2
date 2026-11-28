@@ -139,7 +139,7 @@ export function SkillsTab() {
 
         {/* Search & Scope Filter */}
         <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi sm:min-w-[220px]">
+          <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg border border-hairline bg-inset px-3 focus-within:border-premium-hi @min-[480px]/plugins-stage:min-w-[220px]">
             <Search
               className="size-3.5 shrink-0 text-muted-ink"
               aria-hidden="true"
@@ -165,7 +165,7 @@ export function SkillsTab() {
             )}
           </label>
 
-          <div className="inline-flex items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
+          <div className="flex max-w-full flex-wrap items-center rounded-lg border border-hairline bg-pane p-0.5 text-xs">
             {(["all", "project", "global"] as const).map((sc) => (
               <button
                 key={sc}
@@ -312,7 +312,7 @@ export function SkillsTab() {
 
         <div
           data-testid="endorsed-skills-list"
-          className="grid grid-cols-1 gap-3 @min-[700px]/app:grid-cols-3"
+          className="grid grid-cols-1 gap-3 @min-[520px]/plugins-stage:grid-cols-2 @min-[760px]/plugins-stage:grid-cols-3"
         >
           {endorsed.map((item) => (
             <div

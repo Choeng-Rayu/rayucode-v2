@@ -128,20 +128,25 @@ export function CoordinationLedger({
         className="gap-2.5"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <TabsList aria-label="Swarm coordination views">
-            <TabsTrigger value="board" data-testid="ledger-tab-board">
-              Message Board ({messages.length})
-            </TabsTrigger>
-            <TabsTrigger value="plan" data-testid="ledger-tab-plan">
-              Shared Plan ({planVersionShort})
-              {activePendingProposals.length > 0
-                ? ` · ${activePendingProposals.length} pending`
-                : ""}
-            </TabsTrigger>
-            <TabsTrigger value="worktrees" data-testid="ledger-tab-worktrees">
-              Worktrees ({worktrees.length})
-            </TabsTrigger>
-          </TabsList>
+          <div className="max-w-full overflow-x-auto pb-0.5">
+            <TabsList
+              className="w-fit min-w-max"
+              aria-label="Swarm coordination views"
+            >
+              <TabsTrigger value="board" data-testid="ledger-tab-board">
+                Message Board ({messages.length})
+              </TabsTrigger>
+              <TabsTrigger value="plan" data-testid="ledger-tab-plan">
+                Shared Plan ({planVersionShort})
+                {activePendingProposals.length > 0
+                  ? ` · ${activePendingProposals.length} pending`
+                  : ""}
+              </TabsTrigger>
+              <TabsTrigger value="worktrees" data-testid="ledger-tab-worktrees">
+                Worktrees ({worktrees.length})
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
           {activeTab === "board" && (
             <div className="flex flex-wrap items-center gap-2">
@@ -175,7 +180,7 @@ export function CoordinationLedger({
                 <SelectTrigger
                   aria-label="Filter by worker"
                   data-testid="board-worker-filter"
-                  className="h-7 min-w-[136px] rounded-[8px] font-mono text-xs"
+                  className="h-7 min-w-0 max-w-full rounded-[8px] font-mono text-xs @min-[360px]/swarm:min-w-[136px]"
                 >
                   <SelectValue placeholder="All workers" />
                 </SelectTrigger>
@@ -212,7 +217,7 @@ export function CoordinationLedger({
                     key={msg.seq}
                     data-slot="ledger-board-row"
                     data-testid={`ledger-board-row-${msg.seq}`}
-                    className="grid grid-cols-1 items-baseline gap-2 px-4 py-2.5 text-[12.5px] text-body md:grid-cols-[72px_188px_minmax(0,1fr)_auto] md:gap-3"
+                    className="grid grid-cols-1 items-baseline gap-2 px-4 py-2.5 text-[12.5px] text-body @min-[660px]/swarm:grid-cols-[72px_188px_minmax(0,1fr)_auto] @min-[660px]/swarm:gap-3"
                   >
                     <span className="font-mono text-[11px] text-muted-ink tabular-nums">
                       #{msg.seq} · {formatRelativeTime(msg.timestampMs)}
@@ -317,7 +322,7 @@ export function CoordinationLedger({
                       </div>
 
                       {isPending && (
-                        <div className="flex shrink-0 items-center gap-2">
+                        <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                           <Button
                             type="button"
                             variant="primary"
@@ -368,7 +373,7 @@ export function CoordinationLedger({
                     key={item.id}
                     data-slot="ledger-plan-row"
                     data-testid={`ledger-plan-row-${item.id}`}
-                    className="grid grid-cols-1 items-baseline gap-2 px-4 py-2.5 text-[12.5px] text-body md:grid-cols-[84px_150px_minmax(0,1fr)_auto] md:gap-3"
+                    className="grid grid-cols-1 items-baseline gap-2 px-4 py-2.5 text-[12.5px] text-body @min-[660px]/swarm:grid-cols-[84px_150px_minmax(0,1fr)_auto] @min-[660px]/swarm:gap-3"
                   >
                     <span className="font-mono text-[11px] text-muted-ink">
                       {item.phase ?? planVersionShort}
@@ -426,7 +431,7 @@ export function CoordinationLedger({
                       <span>{wt.branch}</span>
                     </span>
 
-                    <code className="truncate rounded-sm bg-inset px-1.5 py-0.5 font-mono text-[11.5px] text-muted-ink">
+                    <code className="max-w-full truncate rounded-sm bg-inset px-1.5 py-0.5 font-mono text-[11.5px] text-muted-ink">
                       {wt.path}
                     </code>
 
@@ -445,7 +450,7 @@ export function CoordinationLedger({
                     </span>
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                     <Button
                       type="button"
                       variant="outline"

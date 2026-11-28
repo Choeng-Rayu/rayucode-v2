@@ -643,11 +643,11 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
         data-slot="agents-view"
         data-testid="agents-view"
         className={cn(
-          "h-full w-full flex-1 overflow-y-auto bg-canvas",
+          "h-full w-full flex-1 overflow-y-auto bg-canvas @container/agents",
           className,
         )}
       >
-        <div className="mx-auto flex w-full max-w-[940px] flex-col gap-6 px-4 pt-6 pb-20 sm:px-6 md:px-10">
+        <div className="mx-auto flex w-full max-w-[940px] flex-col gap-6 px-3.5 pt-5 pb-20 @min-[520px]/agents:px-6 @min-[720px]/agents:px-10">
           {/* Header */}
           <header className="flex flex-wrap items-start justify-between gap-4">
             <div className="min-w-0">
@@ -821,7 +821,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
                   <SelectTrigger
                     aria-label="Default Subagent Model"
                     data-testid="agents-subagent-model-select"
-                    className="w-full sm:w-[250px]"
+                    className="w-full @min-[560px]/agents:w-[250px]"
                   >
                     <SelectValue />
                   </SelectTrigger>
@@ -888,7 +888,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
                       <SelectTrigger
                         aria-label={`${roleDef.label} model`}
                         data-testid={`agents-role-select-${roleDef.id}`}
-                        className="w-full sm:w-[250px]"
+                        className="w-full @min-[560px]/agents:w-[250px]"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -992,7 +992,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
             ) : (
               <div
                 data-testid="agents-profiles-grid"
-                className="grid grid-cols-1 gap-3 md:grid-cols-2"
+                className="grid grid-cols-1 gap-3 @min-[600px]/agents:grid-cols-2"
               >
                 {profiles.map((profile) => (
                   <div
@@ -1057,7 +1057,7 @@ export function AgentsPersonasView({ className }: AgentsPersonasViewProps) {
                       </div>
 
                       <div className="mt-2">
-                        <code className="inline-block rounded border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text">
+                        <code className="inline-block max-w-full break-all rounded border border-hairline bg-inset px-2 py-0.5 font-mono text-[11px] text-brand-text">
                           {profile.model}
                         </code>
                       </div>
